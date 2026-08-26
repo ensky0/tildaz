@@ -60,6 +60,12 @@ pub const Shortcut = enum {
     open_command_menu,
     /// command menu 의 `Keyboard Shortcuts` — 기본 브라우저 열기 (#329).
     open_shortcuts,
+    /// #483 — 화면 분할. 방향은 `config.ActionInput.direction` 에 있다 (`switch_tab` 의
+    /// `tab_index` 와 같은 방식). 상태를 바꾸므로 preedit 은 commit 후 실행한다.
+    split,
+    focus_pane,
+    resize_pane,
+    equalize_panes,
 };
 
 /// 진행 중 입력(terminal preedit)을 어떻게 처리할지.
@@ -134,7 +140,7 @@ fn expectDisp(input: Input, state: State, pending: Pending, target: Target) !voi
 test "SPEC §4.1 — preedit 중 action 단축키는 commit 후 실행" {
     // 상태를 바꾸는 단축키(탭/reset/about/config/log/fullscreen/quit)는 focus-loss 로
     // preedit 을 확정한 뒤 실행.
-    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .fullscreen_workarea, .quit, .open_command_menu, .open_shortcuts }) |sc| {
+    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .fullscreen_workarea, .quit, .open_command_menu, .open_shortcuts, .split, .focus_pane, .resize_pane, .equalize_panes }) |sc| {
         try expectDisp(.{ .shortcut = sc }, preedit, .commit, .run_action);
     }
 }

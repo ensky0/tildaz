@@ -6028,6 +6028,8 @@ const Client = struct {
             // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
             // 진입점 (마우스 · 전역 핫키) 이 처리한다.
             .toggle_visibility, .open_command_menu, .open_shortcuts => {},
+            // #483 4a — 액션만 먼저 들어왔다. 배선은 4b (layout → pane 목록 · 분할선 · 포커스).
+            .split, .focus_pane, .resize_pane, .equalize_panes => {},
         }
     }
 

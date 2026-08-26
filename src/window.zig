@@ -2826,6 +2826,8 @@ pub const Window = struct {
             // 이 host 의 키 경로가 내지 않는 것들 — toggle 은 전역 핫키가, menu 는
             // 마우스가 진입점이다.
             .toggle_visibility, .open_command_menu, .open_shortcuts => return,
+            // #483 4a — 분할 액션. `app_event.Shortcut` 매핑과 배선은 5단계 (Linux 4b 먼저).
+            .split, .focus_pane, .resize_pane, .equalize_panes => return,
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).

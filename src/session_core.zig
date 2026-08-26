@@ -804,6 +804,14 @@ pub const TabGroup = struct {
         return null;
     }
 
+    /// 비어 있는 pane 자리 — 새 pane 의 id. 꽉 찼으면 null (`MAX_PANES_PER_TAB`).
+    fn freePaneId(group: *const TabGroup) ?pane_layout.PaneId {
+        for (group.panes, 0..) |p, i| {
+            if (p == null) return @intCast(i);
+        }
+        return null;
+    }
+
     /// pane 하나를 닫는다 — 형제가 자리를 이어받고 포커스는 맞닿아 있던 pane 으로
     /// (`pane_layout.Tree.close`). **마지막 pane 은 닫지 않고 false** — 호출처가 그룹(탭)을
     /// 닫는다.
@@ -983,6 +991,19 @@ pub const SessionCore = struct {
     }
 
     pub fn createTab(self: *SessionCore, cols: u16, rows: u16) !void {
+        const tab = try self.spawnTab(cols, rows);
+        errdefer tab.deinit(self.allocator);
+        // #483 3단계 — 새 탭은 pane 하나짜리 그룹이다.
+        const group = try TabGroup.initSingle(self.allocator, tab);
+        errdefer self.allocator.destroy(group);
+        try self.tabs.append(self.allocator, group);
+        self.active_tab = self.tabs.items.len - 1;
+        self.releaseHiddenRenderStates();
+    }
+
+    /// 터미널 하나 (pane) 를 만들어 셸을 띄운다 — 탭 (`createTab`) 과 분할 (`splitActive`) 의
+    /// 공통 부분. 어느 그룹에도 넣지 않는다 — 호출처가 넣고, 넣지 못하면 `deinit` 한다.
+    fn spawnTab(self: *SessionCore, cols: u16, rows: u16) !*Tab {
         var cwd_buf: [pwd_uri.max_path_len]u8 = undefined;
         const cwd = self.inheritedCwd(&cwd_buf);
 
@@ -1008,12 +1029,7 @@ pub const SessionCore = struct {
         tab.output_wake_fn = self.output_wake_fn;
         tab.output_wake_userdata = self.output_wake_userdata;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
-        // #483 3단계 — 새 탭은 pane 하나짜리 그룹이다.
-        const group = try TabGroup.initSingle(self.allocator, tab);
-        errdefer self.allocator.destroy(group);
-        try self.tabs.append(self.allocator, group);
-        self.active_tab = self.tabs.items.len - 1;
-        self.releaseHiddenRenderStates();
+        return tab;
     }
 
     pub fn closeTab(self: *SessionCore, index: usize) CloseResult {
@@ -1054,6 +1070,109 @@ pub const SessionCore = struct {
             return self.closeTab(i);
         }
         return .none;
+    }
+
+    /// #483 4a — 활성 pane 을 `dir` 쪽으로 갈라 새 pane (새 셸) 을 그쪽에 놓고 활성으로
+    /// 한다. `rect` 는 탭바를 뺀 터미널 영역, `m` 은 host 의 격자 metrics — 트리가 최소
+    /// 크기를 판정하고 (`pane_layout.Tree.split`) 새 pane 의 첫 격자를 정하는 데 쓴다.
+    /// 성공하면 그룹의 pane 전부를 새 격자로 맞춘다 (`applyGroupLayout`).
+    ///
+    /// 거부 — `error.TooSmall` (최소 크기 아래) · `error.TooManyPanes` (`MAX_PANES_PER_TAB`)
+    /// · `error.NoActiveTab`. host 가 셋을 다른 문구로 안내한다 (확정 설계 §② "거부 +
+    /// 안내"). 셸을 띄우지 못하면 트리를 원복하고 그 오류를 그대로 낸다.
+    pub fn splitActive(self: *SessionCore, dir: pane_layout.Direction, rect: pane_layout.Rect, m: pane_layout.Metrics) !void {
+        const group = self.activeGroup() orelse return error.NoActiveTab;
+        const new_id = group.freePaneId() orelse return error.TooManyPanes;
+        group.tree.split(group.active_pane, dir, new_id, rect, m) catch |e| switch (e) {
+            error.TooManyPanes, error.TooSmall => |narrow| return narrow,
+            // `active_pane` 은 늘 트리에 있고 `new_id` 는 빈 자리다 — 둘 다 불변식 위반.
+            error.UnknownPane, error.DuplicatePane => unreachable,
+        };
+        // `close` 는 형제를 부모 자리에 되돌리므로 갈라지기 전 모양이 된다.
+        errdefer _ = group.tree.close(new_id) catch unreachable;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        const lay = pane_layout.layout(&group.tree, rect, m, &buf);
+        const pr = pane_layout.find(lay, new_id) orelse unreachable;
+        const tab = try self.spawnTab(pr.cols, pr.rows);
+        group.panes[new_id] = tab;
+        group.active_pane = new_id;
+        self.applyGroupLayout(group, lay);
+    }
+
+    /// 활성 pane 을 닫는다 — 그룹에 pane 이 둘 이상이면 그 pane 만 (형제가 자리를 이어받고
+    /// 포커스는 맞닿아 있던 pane 으로), 마지막 하나면 탭을 닫는다 (확정 설계 §② 의 `close`
+    /// 규칙 — `closeTabByPtr` 의 PTY 종료 경로와 같다). 남은 pane 의 격자는 host 가
+    /// `applyLayouts` 로 맞춘다 — 창 크기와 metrics 는 host 가 안다.
+    pub fn closeActivePane(self: *SessionCore) CloseResult {
+        const group = self.activeGroup() orelse return .none;
+        if (group.paneCount() > 1 and group.closePane(self.allocator, group.active_pane)) return .changed;
+        return self.closeTab(self.active_tab);
+    }
+
+    /// 포커스를 `dir` 쪽 이웃 pane 으로 (확정 설계 축 3 — 기하 기반, `pane_layout.neighbor`).
+    /// 광선의 위치는 활성 pane 커서의 화면 px — 좌우 이동이면 y, 상하면 x. 이웃이 없으면
+    /// (그쪽이 창 가장자리) false 고 바뀌는 것이 없다.
+    pub fn focusPane(self: *SessionCore, dir: pane_layout.Direction, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
+        const group = self.activeGroup() orelse return false;
+        if (group.paneCount() < 2) return false;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        const lay = pane_layout.layout(&group.tree, rect, m, &buf);
+        const anchor = cursorAnchor(group, lay, dir, m);
+        group.active_pane = pane_layout.neighbor(lay, group.active_pane, dir, anchor) orelse return false;
+        return true;
+    }
+
+    /// 활성 pane 의 커서 셀 중심의 화면 px — `dir` 의 교차 축 (좌우면 y, 상하면 x). 커서는
+    /// `render_state` 의 마지막 프레임 값이다 — 한 프레임 늦을 수 있지만 이웃을 고르는 데는
+    /// 충분하다. 아직 한 번도 그리지 않았으면 null → `neighbor` 가 변의 중점을 쓴다.
+    fn cursorAnchor(group: *const TabGroup, lay: []const pane_layout.PaneRect, dir: pane_layout.Direction, m: pane_layout.Metrics) ?i32 {
+        const pr = pane_layout.find(lay, group.active_pane) orelse return null;
+        const vp = group.activeTab().render_state.cursor.viewport orelse return null;
+        return switch (dir.axis()) {
+            .side_by_side => pr.grid_y + @as(i32, vp.y) * m.cell_h + @divTrunc(m.cell_h, 2),
+            .stacked => pr.grid_x + @as(i32, vp.x) * m.cell_w + @divTrunc(m.cell_w, 2),
+        };
+    }
+
+    /// 활성 pane 에 닿은 분할선을 `dir` 쪽으로 `cells` 셀 옮긴다 (`pane_layout.Tree.resize`
+    /// 가 어느 분할선인지 정한다). 옮길 분할선이 없거나 최소 크기 아래로 내려가는 pane 이
+    /// 생기면 false 고 바뀌는 것이 없다.
+    pub fn resizeActivePane(self: *SessionCore, dir: pane_layout.Direction, cells: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
+        const group = self.activeGroup() orelse return false;
+        if (!group.tree.resize(group.active_pane, dir, cells, rect, m)) return false;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+        return true;
+    }
+
+    /// 활성 탭의 분할 비율을 모두 반씩으로 (확정 설계 §② `equalize`).
+    pub fn equalizeActive(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
+        const group = self.activeGroup() orelse return;
+        group.tree.equalize();
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+    }
+
+    /// 모든 탭의 pane 격자를 `rect` · `m` 의 layout 에 맞춘다 — 창 크기 · 폰트가 바뀌었을 때,
+    /// 그리고 pane 을 닫은 뒤. `resizeAll(cols, rows)` 를 대신한다 — pane 마다 격자가 다르므로
+    /// host 가 격자 하나를 주는 대신 영역과 metrics 를 준다.
+    pub fn applyLayouts(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        for (self.tabs.items) |group| {
+            self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+        }
+    }
+
+    /// 그룹의 pane 들을 layout 결과의 격자로 resize 한다. 이미 그 격자인 pane 은 건너뛴다 —
+    /// 분할 · 크기 조절 뒤에는 대개 일부 pane 만 바뀐다.
+    fn applyGroupLayout(self: *SessionCore, group: *TabGroup, lay: []const pane_layout.PaneRect) void {
+        for (lay) |pr| {
+            const tab = group.panes[pr.pane] orelse continue;
+            if (tab.terminal.cols == pr.cols and tab.terminal.rows == pr.rows) continue;
+            // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
+            tab.terminal.resize(self.allocator, .{ .cols = pr.cols, .rows = pr.rows }) catch {};
+            tab.backend.resize(pr.cols, pr.rows) catch {};
+        }
     }
 
     /// 탭바 순서의 탭 (그룹) 목록. 제목은 `group.activeTab().title`.
@@ -1236,9 +1355,9 @@ pub const SessionCore = struct {
         return buf[0..n];
     }
 
+    /// 모든 pane 을 같은 격자로. #483 — host 배선이 `applyLayouts` 로 넘어가면 (Linux 4b ·
+    /// macOS · Windows 5단계) 지운다. 그때까지는 분할이 일어나지 않으므로 둘의 결과가 같다.
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
-        // #483 3단계 — 모든 그룹의 모든 pane. 4단계에서 pane 마다 격자가 다르면 이 함수는 host 의
-        // layout 결과를 받는 형태로 바뀐다.
         for (self.tabs.items) |group| {
             for (group.panes) |p| {
                 const tab = p orelse continue;
@@ -1710,6 +1829,96 @@ test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 
     const stranger = try std.testing.allocator.create(Tab);
     defer std.testing.allocator.destroy(stranger);
     try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeTabByPtr(@intFromPtr(stranger)));
+}
+
+test "POSIX: #483 4a — 분할 · 포커스 · 크기 조절 · pane 닫기가 격자를 맞춘다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    // macOS 2x 기준 metrics (`pane_layout` 테스트와 같은 값). 탭바를 뺀 영역 3052×1000 px.
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+
+    // 탭이 없으면 가를 곳이 없다.
+    try std.testing.expectError(error.NoActiveTab, session.splitActive(.right, rect, m));
+
+    try session.createTab(80, 24);
+    try session.splitActive(.right, rect, m);
+    const group = session.activeGroup().?;
+    try std.testing.expectEqual(@as(usize, 2), group.paneCount());
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    // 새 pane (id 1) 이 활성이고, 두 pane 의 격자는 layout 과 같다 — 78 | 77 열 (1단계 결정 2:
+    // 분할선은 앞 pane 의 셀 경계, 나머지는 뒤 pane), 25 줄.
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 1), group.active_pane);
+    const left = group.panes[0].?;
+    const right = group.panes[1].?;
+    try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
+    try std.testing.expectEqual(@as(u16, 77), right.terminal.cols);
+    try std.testing.expectEqual(@as(u16, 25), right.terminal.rows);
+    try expectGridMatchesLayout(group, rect, m);
+
+    // 포커스: 왼쪽 → pane 0. 다시 왼쪽은 창 가장자리, 위는 그 축의 분할이 없다 → false.
+    try std.testing.expect(session.focusPane(.left, rect, m));
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 0), group.active_pane);
+    try std.testing.expect(!session.focusPane(.left, rect, m));
+    try std.testing.expect(!session.focusPane(.up, rect, m));
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 0), group.active_pane);
+
+    // 크기 조절: 분할선을 오른쪽으로 1셀 → 79 | 76. 상하로는 옮길 분할선이 없다.
+    try std.testing.expect(session.resizeActivePane(.right, 1, rect, m));
+    try std.testing.expectEqual(@as(u16, 79), left.terminal.cols);
+    try std.testing.expectEqual(@as(u16, 76), right.terminal.cols);
+    try expectGridMatchesLayout(group, rect, m);
+    try std.testing.expect(!session.resizeActivePane(.up, 1, rect, m));
+    // equalize → 다시 반씩.
+    session.equalizeActive(rect, m);
+    try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
+    try std.testing.expectEqual(@as(u16, 77), right.terminal.cols);
+
+    // 최소 크기 아래로 내려가는 분할은 거부 — 트리 · pane 수 그대로.
+    const narrow: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 900, .h = 1000 };
+    try std.testing.expectError(error.TooSmall, session.splitActive(.right, narrow, m));
+    try std.testing.expectEqual(@as(usize, 2), group.paneCount());
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 0), group.active_pane);
+
+    // pane 닫기: 활성 pane 0 → 남은 pane 1 이 활성, 탭은 그대로. 남은 pane 이 전체를 차지하는
+    // 것은 host 가 `applyLayouts` 로 맞춘다 — 158 열.
+    try std.testing.expectEqual(SessionCore.CloseResult.changed, session.closeActivePane());
+    try std.testing.expectEqual(@as(usize, 1), group.paneCount());
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 1), group.active_pane);
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    try std.testing.expectEqual(@as(u16, 77), right.terminal.cols);
+    session.applyLayouts(rect, m);
+    try std.testing.expectEqual(@as(u16, 158), right.terminal.cols);
+    try expectGridMatchesLayout(group, rect, m);
+
+    // 마지막 pane 은 탭을 닫는다.
+    try std.testing.expectEqual(SessionCore.CloseResult.closed_last, session.closeActivePane());
+    try std.testing.expectEqual(@as(usize, 0), session.count());
+    try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeActivePane());
+}
+
+fn expectGridMatchesLayout(group: *TabGroup, rect: pane_layout.Rect, m: pane_layout.Metrics) !void {
+    var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+    for (pane_layout.layout(&group.tree, rect, m, &buf)) |pr| {
+        const tab = group.panes[pr.pane].?;
+        try std.testing.expectEqual(pr.cols, tab.terminal.cols);
+        try std.testing.expectEqual(pr.rows, tab.terminal.rows);
+    }
 }
 
 test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내려간다 (#366)" {

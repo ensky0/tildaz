@@ -26,6 +26,7 @@ const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
 const input_policy = @import("input_policy.zig");
+const pane_layout = @import("pane_layout.zig");
 /// #496 — host 가 key event 의 물리 위치를 넘길 때 쓴다 (`lookupAction` 의 3 번째
 /// 인자). config 표면의 타입이므로 여기서 다시 노출한다.
 pub const PhysicalCode = physical_key.PhysicalCode;
@@ -113,6 +114,12 @@ const HotkeyNamedKey = enum {
     @"return",
     page_up,
     page_down,
+    /// #483 — 방향키. 분할 pane 의 기본 bindings (`ctrl+shift+left` 등) 가 쓴다. 어느
+    /// layout 에나 있는 단일 물리 키라 라벨로 적어도 자리가 흔들리지 않는다 (#482).
+    arrow_left,
+    arrow_right,
+    arrow_up,
+    arrow_down,
     bracket_left,
     bracket_right,
 };
@@ -268,6 +275,10 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
                 .grave, .bracket_left, .bracket_right => true,
+                // #483 — 방향키는 글자를 내지 않지만 터미널에 escape sequence 를 보낸다 —
+                // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
+                // `else => true` 와 같은 취급이다.
+                .arrow_left, .arrow_right, .arrow_up, .arrow_down => true,
             },
             // #496 — 위치도 같은 기준이다. 그 *자리* 가 글자를 내는지로 본다: 어떤
             // layout 에서든 `KeyW` 자리는 글자를 내고 `F5` 자리는 내지 않는다.
@@ -319,6 +330,10 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // 어느 layout 에나 있는 단일 물리 키라 layout 종속 문제가 없다 (#482).
         .{ .name = "pageup", .key = .page_up },   .{ .name = "pgup", .key = .page_up },
         .{ .name = "pagedown", .key = .page_down }, .{ .name = "pgdn", .key = .page_down },
+        // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
+        // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
+        .{ .name = "left", .key = .arrow_left },  .{ .name = "right", .key = .arrow_right },
+        .{ .name = "up", .key = .arrow_up },      .{ .name = "down", .key = .arrow_down },
         // #493 — 기본 bindings 의 `prev_tab` / `next_tab` 이 쓴다. 세 platform 의 키
         // 값이 이미 기존 매처에 있어 추측이 아니다 (아래 각 map 의 주석 참고).
         .{ .name = "bracketleft", .key = .bracket_left },
@@ -503,6 +518,11 @@ const LinuxHotkey = struct {
                 .@"return" => 0xff0d,
                 .page_up => 0xff55,
                 .page_down => 0xff56,
+                // #483 — `wayland_minimal.xkb_key_left` / `..up` / `..right` / `..down` 과 같은 값.
+                .arrow_left => 0xff51,
+                .arrow_up => 0xff52,
+                .arrow_right => 0xff53,
+                .arrow_down => 0xff54,
                 // `wayland_minimal.xkb_key_bracketleft` / `..right` 와 같은 값.
                 .bracket_left => 0x5b,
                 .bracket_right => 0x5d,
@@ -879,6 +899,10 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         .{ .named = .grave, .code = .backquote },
         .{ .named = .page_up, .code = .page_up },
         .{ .named = .page_down, .code = .page_down },
+        .{ .named = .arrow_left, .code = .arrow_left },
+        .{ .named = .arrow_right, .code = .arrow_right },
+        .{ .named = .arrow_up, .code = .arrow_up },
+        .{ .named = .arrow_down, .code = .arrow_down },
         .{ .named = .bracket_left, .code = .bracket_left },
         .{ .named = .bracket_right, .code = .bracket_right },
     };
@@ -981,8 +1005,8 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 23 개 + prev_tab / next_tab 이 2 개씩 = 25.
-    try std.testing.expectEqual(@as(usize, 25), count);
+    // 액션 36 개 (#483 의 pane 13 개 포함) + prev_tab / next_tab 이 2 개씩 = 38.
+    try std.testing.expectEqual(@as(usize, 38), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1173,6 +1197,11 @@ const WindowsHotkey = struct {
                 // #493 — `VK_PRIOR` / `VK_NEXT`. #482 의 `wndProc` 이 쓰는 값과 같다.
                 .page_up => 0x21,
                 .page_down => 0x22,
+                // #483 — `VK_LEFT` / `VK_UP` / `VK_RIGHT` / `VK_DOWN`.
+                .arrow_left => 0x25,
+                .arrow_up => 0x26,
+                .arrow_right => 0x27,
+                .arrow_down => 0x28,
                 // `VK_OEM_4` / `VK_OEM_6`. `window.zig` 의 prev/next tab 이 쓰는 값.
                 .bracket_left => 0xDB,
                 .bracket_right => 0xDD,
@@ -1282,6 +1311,7 @@ const MacHotkey = struct {
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
+                .arrow_left, .arrow_right, .arrow_up, .arrow_down => 0,
             },
         };
     }
@@ -1319,6 +1349,12 @@ const MacHotkey = struct {
                 // 쓰는 값과 같다 (116 / 121 십진).
                 .page_up => 0x74,
                 .page_down => 0x79,
+                // #483 — `kVK_LeftArrow` 0x7B · `RightArrow` 0x7C · `DownArrow` 0x7D · `UpArrow`
+                // 0x7E. `physical_key.macKeyCode` 와 같은 값 — 위 named↔code 테스트가 맞춘다.
+                .arrow_left => 0x7B,
+                .arrow_right => 0x7C,
+                .arrow_down => 0x7D,
+                .arrow_up => 0x7E,
                 // `kVK_ANSI_LeftBracket` / `..RightBracket`. `host/macos.zig` 의
                 // prev/next tab 이 쓰는 값.
                 .bracket_left => 0x21,
@@ -1779,6 +1815,21 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .open_config => &.{"shift+cmd+p"},
         .open_log => &.{"shift+cmd+l"},
         .dump_perf => &.{"shift+cmd+f12"},
+        // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. iTerm2 의 `Cmd+D` 는
+        // 글자 키라 layout 종속이어서 (#482) 쓰지 않는다.
+        .split_left => &.{"ctrl+cmd+left"},
+        .split_right => &.{"ctrl+cmd+right"},
+        .split_up => &.{"ctrl+cmd+up"},
+        .split_down => &.{"ctrl+cmd+down"},
+        .focus_pane_left => &.{"cmd+left"},
+        .focus_pane_right => &.{"cmd+right"},
+        .focus_pane_up => &.{"cmd+up"},
+        .focus_pane_down => &.{"cmd+down"},
+        .resize_pane_left => &.{"shift+cmd+left"},
+        .resize_pane_right => &.{"shift+cmd+right"},
+        .resize_pane_up => &.{"shift+cmd+up"},
+        .resize_pane_down => &.{"shift+cmd+down"},
+        .equalize_panes => &.{"shift+cmd+0"},
     };
 }
 
@@ -1810,6 +1861,22 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .open_config => &.{"ctrl+shift+p"},
         .open_log => &.{"ctrl+shift+l"},
         .dump_perf => &.{"ctrl+shift+f12"},
+        // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
+        // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
+        // 않으므로 피했다.
+        .split_left => &.{"ctrl+shift+left"},
+        .split_right => &.{"ctrl+shift+right"},
+        .split_up => &.{"ctrl+shift+up"},
+        .split_down => &.{"ctrl+shift+down"},
+        .focus_pane_left => &.{"alt+left"},
+        .focus_pane_right => &.{"alt+right"},
+        .focus_pane_up => &.{"alt+up"},
+        .focus_pane_down => &.{"alt+down"},
+        .resize_pane_left => &.{"shift+alt+left"},
+        .resize_pane_right => &.{"shift+alt+right"},
+        .resize_pane_up => &.{"shift+alt+up"},
+        .resize_pane_down => &.{"shift+alt+down"},
+        .equalize_panes => &.{"shift+alt+0"},
     };
 }
 
@@ -1837,7 +1904,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         \\# KeyboardEvent.code values: https://www.w3.org/TR/uievents-code/
         \\#
         \\# Accepted labels: F1-F12, A-Z, 0-9, space, tab, escape, return,
-        \\#                  grave(`), pageup, pagedown, [, ]
+        \\#                  grave(`), pageup, pagedown, left, right, up, down, [, ]
         \\# Accepted positions: every key a keyboard can send -- letters, digits,
         \\#                  symbols, numpad, arrows, F13-F24. See CONFIG.md.
         \\#
@@ -1856,6 +1923,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
+        .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes } },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -1906,6 +1974,21 @@ pub const KeyAction = enum {
     open_config,
     open_log,
     dump_perf,
+    // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
+    // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
+    split_left,
+    split_right,
+    split_up,
+    split_down,
+    focus_pane_left,
+    focus_pane_right,
+    focus_pane_up,
+    focus_pane_down,
+    resize_pane_left,
+    resize_pane_right,
+    resize_pane_up,
+    resize_pane_down,
+    equalize_panes,
 
     /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
     /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
@@ -2011,6 +2094,8 @@ pub const ActionInput = struct {
     input: input_policy.Input,
     /// `switch_tab` 일 때 0-based 탭 인덱스. 그 외에는 null.
     tab_index: ?usize = null,
+    /// #483 — `split` · `focus_pane` · `resize_pane` 일 때 방향. 그 외에는 null.
+    direction: ?pane_layout.Direction = null,
 };
 
 pub fn inputForAction(action: KeyAction) ActionInput {
@@ -2038,6 +2123,19 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
+        .split_left => .{ .input = .{ .shortcut = .split }, .direction = .left },
+        .split_right => .{ .input = .{ .shortcut = .split }, .direction = .right },
+        .split_up => .{ .input = .{ .shortcut = .split }, .direction = .up },
+        .split_down => .{ .input = .{ .shortcut = .split }, .direction = .down },
+        .focus_pane_left => .{ .input = .{ .shortcut = .focus_pane }, .direction = .left },
+        .focus_pane_right => .{ .input = .{ .shortcut = .focus_pane }, .direction = .right },
+        .focus_pane_up => .{ .input = .{ .shortcut = .focus_pane }, .direction = .up },
+        .focus_pane_down => .{ .input = .{ .shortcut = .focus_pane }, .direction = .down },
+        .resize_pane_left => .{ .input = .{ .shortcut = .resize_pane }, .direction = .left },
+        .resize_pane_right => .{ .input = .{ .shortcut = .resize_pane }, .direction = .right },
+        .resize_pane_up => .{ .input = .{ .shortcut = .resize_pane }, .direction = .up },
+        .resize_pane_down => .{ .input = .{ .shortcut = .resize_pane }, .direction = .down },
+        .equalize_panes => .{ .input = .{ .shortcut = .equalize_panes } },
     };
 }
 

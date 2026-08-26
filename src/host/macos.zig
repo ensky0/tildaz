@@ -1135,6 +1135,8 @@ fn runKeyAction(action: config.KeyAction) bool {
         // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
         .quit, .show_about, .open_config, .open_log => return false,
         .toggle_visibility, .open_command_menu, .open_shortcuts => return false,
+        // #483 4a — 분할 액션. 배선은 5단계 (Linux 4b 먼저) — 그때까지 키를 흘린다.
+        .split, .focus_pane, .resize_pane, .equalize_panes => return false,
     }
     return true;
 }
