@@ -19,6 +19,10 @@
 #   - wtype 은 세션당 첫 프로세스만 유효하다 → 입력 전체를 단일 호출의 -s 타임라인에 넣는다.
 #   - cat 은 파일 출력 시 버퍼링한다 → 수신자는 무버퍼로 쓴다.
 #   - `-e` 인스턴스는 로그를 `tildaz_stress.log` 에 쓴다 → `*.log` 로 찾는다.
+#   - text-input-v3 IME (fcitx5 등) 가 떠 있으면 키가 앱의 xkb 경로로 오지 않고 IME 가 자기 Compose 로
+#     조합해 commit 한다 — 그러면 재는 것이 앱 코드가 아니다 (실기: 케이스 1~3 은 결과가 같아 구별이
+#     안 되고 `^`+`x` 만 `^x` 로 갈린다). nested headless sway 에는 IME 가 없다는 것이 이 스크립트의
+#     전제이고, 그 전제를 앱 로그의 `text_input preedit/commit` 줄 수 == 0 으로 판정에 넣는다.
 set -uo pipefail
 
 BIN=""
@@ -128,15 +132,19 @@ if [[ $USE_STRACE = 1 ]]; then
 fi
 echo "--- compose lines in app log"
 grep -h -i 'compose\|keyboard keymap loaded' "$T"/state/tildaz/*.log 2>/dev/null || echo "(no compose line — 앱 로그가 없거나 compose 초기화 전에 끝났어요)"
+echo "--- composition owner (text_input lines in app log — must be 0: an IME in the path means we did not measure tildaz)"
+IME_LINES=$(grep -h 'text_input \(preedit\|commit\)' "$T"/state/tildaz/*.log 2>/dev/null | wc -l | tr -d ' ')
+echo "text_input preedit/commit lines: $IME_LINES"
 echo "--- PTY bytes (hex)"
 GOT=$(xxd -p "$T/pty.bin" 2>/dev/null | tr -d '\n')
 EXPECT="03c3aa5e5e610d65036560c3a9c3bc0d"
 echo "EXPECT $EXPECT"
 echo "GOT    ${GOT:-(empty)}"
-if [[ "$GOT" == "$EXPECT" ]]; then
+if [[ "$GOT" == "$EXPECT" && "$IME_LINES" == "0" ]]; then
     echo "##### PASS #####"
     exit 0
 else
+    [[ "$IME_LINES" != "0" ]] && echo "an IME composed instead of tildaz (text_input lines=$IME_LINES) — this run does not measure the app path"
     echo "##### FAIL ##### (산출물: $T — drive.log · rec.diag · sway.log · pty.bin)"
     exit 1
 fi
