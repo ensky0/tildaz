@@ -725,15 +725,19 @@ fn syncTerminalGeometry() void {
     const new_cols = grid.cols;
     const new_rows = grid.rows;
 
-    for (g_session.tabs.items) |t| {
-        if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
-        t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
-            log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
-            continue;
-        };
-        t.backend.resize(new_cols, new_rows) catch |err| {
-            log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
-        };
+    // #483 3단계 — 탭은 pane 그룹. 모든 그룹의 모든 pane 을 같은 격자로.
+    for (g_session.tabs.items) |group| {
+        for (group.panes) |p| {
+            const t = p orelse continue;
+            if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
+            t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
+                log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
+                continue;
+            };
+            t.backend.resize(new_cols, new_rows) catch |err| {
+                log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
+            };
+        }
     }
 }
 
@@ -2190,14 +2194,17 @@ fn syncGeometryAfterScreenChange() void {
     // 도 같은 cols/rows 로 유지 (탭 전환 시 화면 깨짐 방지).
     const active_terminal = tab.terminal;
     if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
-        for (g_session.tabs.items) |t| {
-            t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
-                log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
-                continue;
-            };
-            t.backend.resize(new_cols, new_rows) catch |err| {
-                log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
-            };
+        for (g_session.tabs.items) |group| {
+            for (group.panes) |p| {
+                const t = p orelse continue;
+                t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
+                    log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
+                    continue;
+                };
+                t.backend.resize(new_cols, new_rows) catch |err| {
+                    log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
+                };
+            }
         }
         log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
             vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
@@ -3947,7 +3954,9 @@ fn renderFrameTick() void {
     // .MAX_TABS = 32 한도와 일치 (cross-platform 동등, Windows 도 [32]).
     var titles_buf: [session_core.MAX_TABS][]const u8 = undefined;
     const tab_count = @min(g_session.count(), titles_buf.len);
-    for (g_session.tabs.items[0..tab_count], 0..) |t, i| {
+    for (g_session.tabs.items[0..tab_count], 0..) |group, i| {
+        // #483 3단계 — 탭바 제목은 그 탭의 활성 pane 의 것.
+        const t = group.activeTab();
         titles_buf[i] = t.title[0..t.title_len];
     }
     const titles = titles_buf[0..tab_count];

@@ -3,6 +3,7 @@ const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 const builtin = @import("builtin");
 const ghostty = @import("ghostty-vt");
+const pane_layout = @import("pane_layout.zig");
 const app_event = @import("app_event.zig");
 const terminal = @import("terminal.zig");
 const TerminalBackend = terminal.TerminalBackend;
@@ -760,6 +761,61 @@ fn flushAutomaticTitle(
 /// 안내 (cross-platform 동등).
 pub const MAX_TABS: usize = 32;
 
+/// [#483](https://github.com/ensky0/tildaz/issues/483) 3단계 — 탭바의 탭 하나 = 화면 하나.
+/// pane (`Tab`, 터미널 하나) 들을 분할 트리 (`pane_layout.Tree`) 로 배치한다. 지금은 항상
+/// leaf 하나다 — 4단계가 `split` 을 부르기 전까지 host 가 보는 동작은 이전의 "탭 = 터미널
+/// 하나" 와 같다.
+///
+/// `Tab` 이름은 그대로 둔다 (확정 설계 "pane = 지금의 Tab"). 이 파일에서 *pane* 이라고 적은
+/// 것은 모두 `*Tab` 이다. 탭바 제목은 활성 pane 의 것이다.
+pub const TabGroup = struct {
+    /// leaf id 가 `panes` 의 index 다. host 가 아니라 이 struct 가 id 를 정한다.
+    tree: pane_layout.Tree,
+    panes: [pane_layout.MAX_PANES_PER_TAB]?*Tab = [_]?*Tab{null} ** pane_layout.MAX_PANES_PER_TAB,
+    /// 키보드 · 붙여넣기 · 스크롤이 가는 pane. 탭바 제목도 이 pane 의 것이다.
+    active_pane: pane_layout.PaneId = 0,
+
+    fn initSingle(alloc: std.mem.Allocator, tab: *Tab) !*TabGroup {
+        const group = try alloc.create(TabGroup);
+        group.* = .{ .tree = pane_layout.Tree.single(0) };
+        group.panes[0] = tab;
+        return group;
+    }
+
+    /// 그룹과 그 안의 pane 전부를 정리한다.
+    fn deinit(group: *TabGroup, alloc: std.mem.Allocator) void {
+        for (group.panes) |p| if (p) |tab| tab.deinit(alloc);
+        alloc.destroy(group);
+    }
+
+    pub fn activeTab(group: *const TabGroup) *Tab {
+        return group.panes[group.active_pane].?;
+    }
+
+    pub fn paneCount(group: *const TabGroup) usize {
+        return group.tree.count();
+    }
+
+    /// `tab` 이 이 그룹의 pane 이면 그 id.
+    fn paneIdOf(group: *const TabGroup, tab: *Tab) ?pane_layout.PaneId {
+        for (group.panes, 0..) |p, i| {
+            if (p == tab) return @intCast(i);
+        }
+        return null;
+    }
+
+    /// pane 하나를 닫는다 — 형제가 자리를 이어받고 포커스는 맞닿아 있던 pane 으로
+    /// (`pane_layout.Tree.close`). **마지막 pane 은 닫지 않고 false** — 호출처가 그룹(탭)을
+    /// 닫는다.
+    fn closePane(group: *TabGroup, alloc: std.mem.Allocator, id: pane_layout.PaneId) bool {
+        const next = group.tree.close(id) catch return false;
+        if (group.panes[id]) |tab| tab.deinit(alloc);
+        group.panes[id] = null;
+        if (group.active_pane == id) group.active_pane = next;
+        return true;
+    }
+};
+
 pub const SessionCore = struct {
     /// #451 — 탭 생성이 `Io` 를 타므로 (`ghostty.Terminal.init` · `WriteQueue`) 세션이
     /// 들고 있다가 `Tab.init` 에 넘긴다. host 의 `run(rt, …)` 에서 내려온 값이다.
@@ -777,10 +833,12 @@ pub const SessionCore = struct {
     /// `HWND` 와 macOS 의 `CFRunLoopSource` 는 세션보다 **뒤에** 준비된다).
     output_wake_fn: ?OutputWakeNotify = null,
     output_wake_userdata: ?*anyopaque = null,
-    tabs: std.ArrayList(*Tab) = .empty,
+    /// #483 3단계 — 탭바의 탭 (화면) 목록. 각 탭은 pane (`Tab`) 들의 그룹이다.
+    tabs: std.ArrayList(*TabGroup) = .empty,
     active_tab: usize = 0,
-    /// 비활성 탭 drain의 다음 시작 위치. 탭 close/reorder 뒤에는 drain 시점에
-    /// 현재 길이로 정규화하므로 별도 인덱스 보정이 필요 없다.
+    /// 보이지 않는 (활성 그룹 밖의) pane drain 의 다음 시작 위치 — 그 pane 들을 화면 순서로
+    /// 편 flat index. 탭 close/reorder 뒤에는 drain 시점에 현재 개수로 정규화하므로 별도
+    /// 보정이 필요 없다.
     inactive_drain_cursor: usize = 0,
     next_tab_id: usize = 1,
 
@@ -847,14 +905,17 @@ pub const SessionCore = struct {
     pub fn setOutputWake(self: *SessionCore, wake_fn: ?OutputWakeNotify, userdata: ?*anyopaque) void {
         self.output_wake_fn = wake_fn;
         self.output_wake_userdata = userdata;
-        for (self.tabs.items) |tab| {
-            tab.output_wake_fn = wake_fn;
-            tab.output_wake_userdata = userdata;
+        for (self.tabs.items) |group| {
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                tab.output_wake_fn = wake_fn;
+                tab.output_wake_userdata = userdata;
+            }
         }
     }
 
     pub fn deinit(self: *SessionCore) void {
-        for (self.tabs.items) |tab| tab.deinit(self.allocator);
+        for (self.tabs.items) |group| group.deinit(self.allocator);
         self.tabs.deinit(self.allocator);
     }
 
@@ -867,7 +928,7 @@ pub const SessionCore = struct {
     fn inheritedCwd(self: *SessionCore, buf: []u8) ?[]const u8 {
         // 첫 탭은 물려받을 곳이 없다.
         if (self.tabs.items.len == 0 or self.active_tab >= self.tabs.items.len) return null;
-        const tab = self.tabs.items[self.active_tab];
+        const tab = self.tabs.items[self.active_tab].activeTab();
 
         // 경로 표기는 **탭의 셸 기준** — WSL 탭은 host 가 Windows 여도 Linux 경로다.
         const wsl = terminal.isWslShell(self.shell_command);
@@ -947,7 +1008,10 @@ pub const SessionCore = struct {
         tab.output_wake_fn = self.output_wake_fn;
         tab.output_wake_userdata = self.output_wake_userdata;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
-        try self.tabs.append(self.allocator, tab);
+        // #483 3단계 — 새 탭은 pane 하나짜리 그룹이다.
+        const group = try TabGroup.initSingle(self.allocator, tab);
+        errdefer self.allocator.destroy(group);
+        try self.tabs.append(self.allocator, group);
         self.active_tab = self.tabs.items.len - 1;
         self.releaseHiddenRenderStates();
     }
@@ -957,7 +1021,7 @@ pub const SessionCore = struct {
 
         const remaining_len = self.tabs.items.len - 1;
         const next_active = nextActiveIndexAfterClose(self.active_tab, index, remaining_len);
-        const tab = self.tabs.orderedRemove(index);
+        const group = self.tabs.orderedRemove(index);
         // #397 — 측정 인스턴스는 탭을 버리기 전에 ring 에 남은 출력을 마저 파싱한다.
         // ring 은 Tab 소유라 아래 deinit 뒤에는 사라지고, 그 시점의 perf 스냅숏
         // (#396 의 종료 시 자동 덤프) 은 파싱하다 만 값이 된다 — macOS 실측에서
@@ -965,8 +1029,10 @@ pub const SessionCore = struct {
         // (macOS 는 `exit()` 직행) 종료 뒤에 기대면 platform 마다 결과가 갈리므로
         // 공통 경로인 여기서 끝낸다. `drainOutputChunk` 은 ring 이 비면 false 라
         // 그 자체가 종료 조건이고, producer 는 이미 죽어 EOF 다. worker 는 no-op.
-        if (instance_context.isStress()) while (Tab.drainOutputChunk(tab)) {};
-        defer tab.deinit(self.allocator);
+        if (instance_context.isStress()) {
+            for (group.panes) |p| if (p) |tab| while (Tab.drainOutputChunk(tab)) {};
+        }
+        defer group.deinit(self.allocator);
 
         if (next_active) |active| {
             self.active_tab = active;
@@ -977,17 +1043,21 @@ pub const SessionCore = struct {
         return .closed_last;
     }
 
+    /// pane 의 PTY 가 끝났을 때 (`tab_exit_fn`) — 그 pane 을 찾아 닫는다. #483 3단계 — 그룹에
+    /// pane 이 둘 이상이면 그 pane 만 (형제가 자리를 이어받음), 하나면 그룹(탭) 을 닫는다.
+    /// 확정 설계 §② 의 "pane 이 여럿이면 활성 pane, 마지막 하나면 탭" 과 같은 규칙이다.
     pub fn closeTabByPtr(self: *SessionCore, tab_ptr: usize) CloseResult {
         const needle: *Tab = @ptrFromInt(tab_ptr);
-        for (self.tabs.items, 0..) |tab, i| {
-            if (tab == needle) {
-                return self.closeTab(i);
-            }
+        for (self.tabs.items, 0..) |group, i| {
+            const id = group.paneIdOf(needle) orelse continue;
+            if (group.paneCount() > 1 and group.closePane(self.allocator, id)) return .changed;
+            return self.closeTab(i);
         }
         return .none;
     }
 
-    pub fn tabsSlice(self: *SessionCore) []*Tab {
+    /// 탭바 순서의 탭 (그룹) 목록. 제목은 `group.activeTab().title`.
+    pub fn tabsSlice(self: *SessionCore) []*TabGroup {
         return self.tabs.items;
     }
 
@@ -999,11 +1069,19 @@ pub const SessionCore = struct {
         return self.active_tab;
     }
 
+    /// index 번째 탭의 **활성 pane**. #483 3단계 — 탭은 pane 그룹이라 "그 탭의 터미널" 은
+    /// 활성 pane 을 뜻한다.
     pub fn tabAt(self: *SessionCore, index: usize) ?*Tab {
-        if (index < self.tabs.items.len) return self.tabs.items[index];
+        if (index < self.tabs.items.len) return self.tabs.items[index].activeTab();
         return null;
     }
 
+    pub fn activeGroup(self: *SessionCore) ?*TabGroup {
+        if (self.active_tab < self.tabs.items.len) return self.tabs.items[self.active_tab];
+        return null;
+    }
+
+    /// 활성 탭의 활성 pane — 키보드 · 붙여넣기 · 스크롤이 가는 터미널.
     pub fn activeTab(self: *SessionCore) ?*Tab {
         return self.tabAt(self.active_tab);
     }
@@ -1032,27 +1110,30 @@ pub const SessionCore = struct {
         return true;
     }
 
-    /// #483 2단계 ① — 활성 탭이 아닌 탭의 렌더 스냅숏을 비운다 (`Tab.render_state` 주석).
-    /// 활성 탭이 바뀌는 모든 자리에서 부른다. 4단계에서 "보이는 것" 이 활성 탭의 pane
-    /// 전부로 넓어지면 여기만 바꾼다.
+    /// #483 2단계 ① · 3단계 — 활성 그룹에 없는 (보이지 않는) pane 의 렌더 스냅숏을 비운다
+    /// (`Tab.render_state` 주석). 활성 탭이 바뀌는 모든 자리에서 부른다. 활성 그룹의 pane 은
+    /// 전부 보이는 것이라 남긴다.
     fn releaseHiddenRenderStates(self: *SessionCore) void {
-        for (self.tabs.items, 0..) |tab, i| {
+        for (self.tabs.items, 0..) |group, i| {
             if (i == self.active_tab) continue;
-            if (tab.render_state.row_data.len == 0 and tab.render_state.pending_styles.items.len == 0) continue;
-            tab.releaseRenderState(self.allocator);
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                if (tab.render_state.row_data.len == 0 and tab.render_state.pending_styles.items.len == 0) continue;
+                tab.releaseRenderState(self.allocator);
+            }
         }
     }
 
     pub fn reorderTabs(self: *SessionCore, from: usize, to: usize) !bool {
         if (from >= self.tabs.items.len or to >= self.tabs.items.len or from == to) return false;
 
-        const active_tab_ptr = self.activeTab();
+        const active_group = self.activeGroup();
         const moved = self.tabs.orderedRemove(from);
         try self.tabs.insert(self.allocator, to, moved);
 
-        if (active_tab_ptr) |active| {
-            for (self.tabs.items, 0..) |tab, i| {
-                if (tab == active) {
+        if (active_group) |active| {
+            for (self.tabs.items, 0..) |group, i| {
+                if (group == active) {
                     self.active_tab = i;
                     break;
                 }
@@ -1156,10 +1237,15 @@ pub const SessionCore = struct {
     }
 
     pub fn resizeAll(self: *SessionCore, cols: u16, rows: u16) void {
-        for (self.tabs.items) |tab| {
-            // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
-            tab.terminal.resize(self.allocator, .{ .cols = cols, .rows = rows }) catch {};
-            tab.backend.resize(cols, rows) catch {};
+        // #483 3단계 — 모든 그룹의 모든 pane. 4단계에서 pane 마다 격자가 다르면 이 함수는 host 의
+        // layout 결과를 받는 형태로 바뀐다.
+        for (self.tabs.items) |group| {
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
+                tab.terminal.resize(self.allocator, .{ .cols = cols, .rows = rows }) catch {};
+                tab.backend.resize(cols, rows) catch {};
+            }
         }
     }
 
@@ -1192,23 +1278,67 @@ pub const SessionCore = struct {
         return true;
     }
 
-    /// round-robin cursor에서 시작해 출력이 있는 비활성 탭 하나를 한 chunk 처리한다.
-    /// 빈 탭은 건너뛰고, 성공하면 다음 호출이 그 다음 탭부터 찾도록 전진한다.
-    fn drainNextInactiveChunk(self: *SessionCore) bool {
-        const len = self.tabs.items.len;
-        if (len <= 1) return false;
+    /// 보이지 않는 pane (활성 그룹 밖) 을 화면 순서로 편 flat index 와 함께 도는 iterator.
+    const HiddenPaneIter = struct {
+        session: *SessionCore,
+        group: usize = 0,
+        pane: usize = 0,
+        flat: usize = 0,
 
-        const start = self.inactive_drain_cursor % len;
-        for (0..len) |offset| {
-            const index = (start + offset) % len;
-            if (index == self.active_tab) continue;
-            const tab = self.tabs.items[index];
-            if (tab.output_ring.isEmpty()) continue;
-
-            self.inactive_drain_cursor = (index + 1) % len;
-            return tab.drainOutputChunk();
+        fn next(it: *HiddenPaneIter) ?struct { tab: *Tab, flat: usize } {
+            while (it.group < it.session.tabs.items.len) {
+                if (it.group == it.session.active_tab) {
+                    it.group += 1;
+                    it.pane = 0;
+                    continue;
+                }
+                const group = it.session.tabs.items[it.group];
+                while (it.pane < group.panes.len) {
+                    const p = group.panes[it.pane];
+                    it.pane += 1;
+                    if (p) |tab| {
+                        const flat = it.flat;
+                        it.flat += 1;
+                        return .{ .tab = tab, .flat = flat };
+                    }
+                }
+                it.group += 1;
+                it.pane = 0;
+            }
+            return null;
         }
-        self.inactive_drain_cursor = (start + 1) % len;
+    };
+
+    fn hiddenPaneCount(self: *SessionCore) usize {
+        var n: usize = 0;
+        for (self.tabs.items, 0..) |group, i| {
+            if (i == self.active_tab) continue;
+            n += group.paneCount();
+        }
+        return n;
+    }
+
+    /// round-robin cursor 에서 시작해 출력이 있는 **보이지 않는 pane** 하나를 한 chunk 처리한다.
+    /// 빈 pane 은 건너뛰고, 성공하면 다음 호출이 그 다음 pane 부터 찾도록 전진한다. #483 3단계 —
+    /// 그룹마다 pane 이 하나면 이전의 "비활성 탭 라운드로빈" 과 같다.
+    fn drainNextInactiveChunk(self: *SessionCore) bool {
+        const total = self.hiddenPaneCount();
+        if (total == 0) return false;
+
+        const start = self.inactive_drain_cursor % total;
+        // 두 바퀴 — start 부터 끝까지, 그다음 처음부터 start 앞까지 (원형 순회).
+        var pass: u8 = 0;
+        while (pass < 2) : (pass += 1) {
+            var it = HiddenPaneIter{ .session = self };
+            while (it.next()) |e| {
+                const in_range = if (pass == 0) e.flat >= start else e.flat < start;
+                if (!in_range) continue;
+                if (e.tab.output_ring.isEmpty()) continue;
+                self.inactive_drain_cursor = (e.flat + 1) % total;
+                return e.tab.drainOutputChunk();
+            }
+        }
+        self.inactive_drain_cursor = (start + 1) % total;
         return false;
     }
 
@@ -1216,22 +1346,35 @@ pub const SessionCore = struct {
     /// 매 frame 첫 순서를 보장하되, 모든 탭이 하나의 `DRAIN_FRAME_BUDGET_NS` 예산을 공유해 탭 수가
     /// 늘어나도 UI thread 점유 시간이 비례해 늘지 않는다.
     fn drainFrame(self: *SessionCore) DrainFrameResult {
-        const active = self.activeTab() orelse return .{};
+        const group = self.activeGroup() orelse return .{};
+        const active = group.activeTab();
         const started_ns = active.title_clock.read();
         var result: DrainFrameResult = .{};
 
         while (active.title_clock.read() - started_ns < DRAIN_FRAME_BUDGET_NS) {
-            const drained_active = active.drainOutputChunk();
-            result.active_output = result.active_output or drained_active;
+            // #483 3단계 — "활성 탭" 은 활성 그룹의 pane 전부다 (보이는 것은 모두 지연 민감).
+            // leaf 하나면 이전의 활성 탭 한 chunk 와 같다.
+            var drained_visible = false;
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                drained_visible = tab.drainOutputChunk() or drained_visible;
+            }
+            result.active_output = result.active_output or drained_visible;
 
             if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
             const drained_inactive = self.drainNextInactiveChunk();
-            if (!drained_active and !drained_inactive) break;
+            if (!drained_visible and !drained_inactive) break;
         }
 
-        result.active_output_pending = !active.output_ring.isEmpty();
-        for (self.tabs.items) |tab| {
-            result.title_changed = tab.flushPendingTitle() or result.title_changed;
+        for (group.panes) |p| {
+            const tab = p orelse continue;
+            if (!tab.output_ring.isEmpty()) result.active_output_pending = true;
+        }
+        for (self.tabs.items) |g| {
+            for (g.panes) |p| {
+                const tab = p orelse continue;
+                result.title_changed = tab.flushPendingTitle() or result.title_changed;
+            }
         }
         return result;
     }
@@ -1273,8 +1416,11 @@ pub const SessionCore = struct {
     /// **활성 탭만 보지 않는다** — `drainFrame` 이 비활성 탭도 같은 예산 안에서 번갈아
     /// 파싱하므로 (§13, 탭 제목 갱신), 비활성 탭에 밀린 것이 있어도 계속 돌아야 한다.
     pub fn hasPendingOutput(self: *SessionCore) bool {
-        for (self.tabs.items) |tab| {
-            if (!tab.output_ring.isEmpty()) return true;
+        for (self.tabs.items) |group| {
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                if (!tab.output_ring.isEmpty()) return true;
+            }
         }
         return false;
     }
@@ -1518,6 +1664,52 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
         testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
+}
+
+test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 같다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    try session.createTab(80, 24);
+    try session.createTab(80, 24);
+    try std.testing.expectEqual(@as(usize, 2), session.count());
+    try std.testing.expectEqual(@as(usize, 1), session.activeIndex());
+    for (session.tabsSlice()) |group| {
+        try std.testing.expectEqual(@as(usize, 1), group.paneCount());
+        try std.testing.expectEqual(@as(pane_layout.PaneId, 0), group.active_pane);
+    }
+    // 활성 탭 = 활성 그룹의 활성 pane.
+    const active = session.activeTab().?;
+    try std.testing.expectEqual(active, session.activeGroup().?.activeTab());
+    try std.testing.expectEqual(active, session.tabAt(1).?);
+
+    // PTY 종료 경로 — leaf 하나인 그룹의 pane 이 끝나면 그룹(탭) 이 닫힌다.
+    try std.testing.expectEqual(SessionCore.CloseResult.changed, session.closeTabByPtr(@intFromPtr(active)));
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    try std.testing.expectEqual(@as(usize, 0), session.activeIndex());
+    const last = session.activeTab().?;
+    try std.testing.expectEqual(SessionCore.CloseResult.closed_last, session.closeTabByPtr(@intFromPtr(last)));
+    try std.testing.expectEqual(@as(usize, 0), session.count());
+    try std.testing.expectEqual(@as(?*Tab, null), session.activeTab());
+    // 어느 그룹에도 없는 pane 포인터는 무시한다 (정렬이 맞는 진짜 주소여야 `@ptrFromInt`
+    // 안전 검사에 걸리지 않는다).
+    const stranger = try std.testing.allocator.create(Tab);
+    defer std.testing.allocator.destroy(stranger);
+    try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeTabByPtr(@intFromPtr(stranger)));
 }
 
 test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내려간다 (#366)" {

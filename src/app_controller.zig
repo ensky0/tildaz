@@ -546,7 +546,9 @@ pub const App = struct {
                 var tab_titles: [32][]const u8 = undefined;
                 const tabs = self.session.tabsSlice();
                 const n = @min(tabs.len, 32);
-                for (tabs[0..n], 0..) |t, i| {
+                for (tabs[0..n], 0..) |group, i| {
+                    // #483 3단계 — 탭바 제목은 그 탭의 활성 pane 의 것.
+                    const t = group.activeTab();
                     tab_titles[i] = t.title[0..t.title_len];
                 }
                 const terminal_bg = if (self.activeTabPtr()) |tab|
