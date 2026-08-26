@@ -28,6 +28,7 @@
 //! 덕분에 `appendLine` 계열 297 자리가 시그니처를 안 바꾼다.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// `Io` 와 환경변수 묶음. 복사가 싸다 (`Io` 는 vtable + userdata 포인터 쌍,
 /// `Environ` 은 작은 블록 참조) — 포인터가 아니라 값으로 넘긴다.
@@ -44,13 +45,42 @@ pub const Runtime = struct {
     /// `std.process.getEnvVarOwned` 자리. 호출부가 `rt.environ` 을 매번 꺼내지 않게 감싼다.
     /// 반환 메모리는 호출자 소유다.
     ///
-    /// **`getAlloc` 은 조회 한 번에 환경 전체를 할당한다** (`process/Environ.zig:691` 이
-    /// `createMap` 을 부른다). 우리 호출부는 시작 시점의 몇 번뿐이라 그대로 쓰지만, 뜨거운
-    /// 경로에 넣으면 안 된다 — 그럴 땐 할당이 없는 `rt.environ.getPosix` 를 쓴다 (POSIX 는
-    /// 블록을 그대로 훑고 이미 NUL 종단이다. 대신 반환값은 환경 블록을 가리키므로 소유하지
-    /// 않는다). 같은 성질 때문에 `envHas` 는 아래처럼 `containsConstant` 를 쓴다.
+    /// **`Environ.getAlloc` 을 쓰지 않는다** ([#519](https://github.com/ensky0/tildaz/issues/519)).
+    /// 그 함수는 조회 한 번에 `createMap` 으로 **환경 전체를 할당**해서, 값 하나를 얻는 데
+    /// 환경 블록 크기만큼의 메모리를 요구한다. 작은 고정 버퍼를 준 호출부는 **항상**
+    /// `OutOfMemory` 로 떨어졌다 — 실측 (환경 블록 4780 B) 에서 4096 · 8192 바이트
+    /// `FixedBufferAllocator` 가 모두 실패하고 16384 에서야 성공했다. 그래서 hotkey 실패
+    /// 다이얼로그가 config 경로 대신 `(unknown)` 을 보여 줬다.
+    ///
+    /// 대신 값 하나만 찾아 그것만 복사한다. 호출부 계약 (반환 메모리는 호출자 소유) 은 같다.
+    ///
+    ///   - **POSIX** — `getPosix` 가 블록을 그대로 훑어 **할당이 없다.** 반환값은 환경
+    ///     블록을 가리키므로 소유권을 주려면 여기서 dupe 한다.
+    ///   - **Windows** — `getWindows` 가 PEB 를 훑는다. 키를 WTF-16 으로, 값을 WTF-8 로
+    ///     한 번씩 옮기는 비용만 든다. `Block` 이 global 아니면 empty 뿐이라
+    ///     (`GlobalBlock`) `createMap` 과 결과가 갈리지 않는다 — empty 면 양쪽 다 "없음" 이다.
+    ///
+    /// 같은 성질 때문에 `envHas` 는 아래처럼 `containsConstant` 를 쓴다.
     pub fn envAlloc(rt: Runtime, allocator: std.mem.Allocator, key: []const u8) ![]u8 {
-        return rt.environ.getAlloc(allocator, key);
+        if (builtin.os.tag != .windows) {
+            const value = rt.environ.getPosix(key) orelse return error.EnvironmentVariableMissing;
+            return allocator.dupe(u8, value);
+        }
+
+        if (!std.unicode.wtf8ValidateSlice(key)) return error.InvalidWtf8;
+        // 환경변수 **이름**은 짧다 (우리 호출부는 전부 리터럴이다). 스택에서 변환해 호출부가
+        // 준 allocator 를 키 때문에 건드리지 않는다 — 그 allocator 가 작은 고정 버퍼일 수
+        // 있고, 애초에 그것이 이 함수를 고친 이유다.
+        var key_buf: [256]u16 = undefined;
+        // WTF-16 길이는 WTF-8 바이트 수를 넘지 않는다. 종단 NUL 자리를 한 칸 남긴다.
+        if (key.len >= key_buf.len) return rt.environ.getAlloc(allocator, key);
+        const key_len = std.unicode.wtf8ToWtf16Le(key_buf[0 .. key_buf.len - 1], key) catch
+            return error.InvalidWtf8;
+        key_buf[key_len] = 0;
+
+        const value = rt.environ.getWindows(key_buf[0..key_len :0].ptr) orelse
+            return error.EnvironmentVariableMissing;
+        return std.unicode.wtf16LeToWtf8Alloc(allocator, value);
     }
 
     /// `std.process.hasEnvVarConstant` 자리 — 0.16 의 `Environ.containsConstant` 다.
@@ -107,3 +137,33 @@ pub const Timer = struct {
         t.start_ns = std.Io.Timestamp.now(t.io, .awake).nanoseconds;
     }
 };
+
+test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
+    // Windows 는 `Block` 이 global 아니면 empty 뿐이라 (`GlobalBlock`) 합성 환경을 만들 수
+    // 없다. 그쪽 경로는 `zig build check` 의 컴파일과 실기 검증이 덮는다.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    // 환경 블록을 일부러 크게 만든다 — 예전 구현 (`Environ.getAlloc` → `createMap`) 은 값
+    // 하나를 얻으려고 **이 전체**를 복사했다. 그래서 아래 64 바이트 버퍼로는 실패했다.
+    const filler = "PAD=" ++ ("x" ** 512);
+    const entries = [_:null]?[*:0]const u8{
+        "TILDAZ_519=ok",
+        filler, filler, filler, filler,
+        filler, filler, filler, filler,
+    };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } } };
+
+    // 값이 2 바이트니 버퍼도 그만큼만 있으면 된다. 이 크기가 통과의 요점이다 — 환경 블록
+    // (약 4.6 KB) 에 비례하지 않는다는 뜻이다.
+    var buf: [64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+
+    const value = try rt.envAlloc(fba.allocator(), "TILDAZ_519");
+    try std.testing.expectEqualStrings("ok", value);
+
+    // 없는 키는 그대로 `EnvironmentVariableMissing` — 호출부가 `catch null` 로 쓰는 계약이다.
+    try std.testing.expectError(
+        error.EnvironmentVariableMissing,
+        rt.envAlloc(fba.allocator(), "TILDAZ_519_ABSENT"),
+    );
+}
