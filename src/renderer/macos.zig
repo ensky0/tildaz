@@ -235,7 +235,6 @@ pub const MetalRenderer = struct {
     atlas: GlyphAtlas,
     tab_font: CoreTextFontContext,
     tab_atlas: GlyphAtlas,
-    render_state: ghostty.RenderState = .empty,
 
     // Metal 객체 (모두 ObjC id, 우리는 ARC 안 쓰지만 process 종료 시 회수).
     device: objc.id,
@@ -614,6 +613,8 @@ pub const MetalRenderer = struct {
     pub fn renderTerminal(
         self: *MetalRenderer,
         terminal: *ghostty.Terminal,
+        /// #483 2단계 ① — `terminal` 의 `Tab.render_state`. 렌더러는 state 를 갖지 않는다.
+        state: *ghostty.RenderState,
         cell_w: i32,
         cell_h: i32,
         y_offset: i32,
@@ -643,7 +644,7 @@ pub const MetalRenderer = struct {
         // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
         self.uploadTabAtlasIfDirty();
 
-        self.renderTerminalContent(encoder, terminal, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8, blink_faint);
+        self.renderTerminalContent(encoder, terminal, state, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8, blink_faint);
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
@@ -685,6 +686,7 @@ pub const MetalRenderer = struct {
         self: *MetalRenderer,
         encoder: objc.id,
         terminal: *ghostty.Terminal,
+        state: *ghostty.RenderState,
         cell_w: i32,
         cell_h: i32,
         y_offset: i32,
@@ -694,12 +696,12 @@ pub const MetalRenderer = struct {
         /// `renderTerminal` 이 받은 프레임 단위 blink 위상 (#376).
         blink_faint: bool,
     ) void {
-        self.render_state.update(self.alloc, terminal) catch return;
+        state.update(self.alloc, terminal) catch return;
 
-        const rows = self.render_state.rows;
-        const cols = self.render_state.cols;
-        const colors = self.render_state.colors;
-        const row_slice = self.render_state.row_data.slice();
+        const rows = state.rows;
+        const cols = state.cols;
+        const colors = state.colors;
+        const row_slice = state.row_data.slice();
 
         const cw: f32 = @floatFromInt(cell_w);
         const ch: f32 = @floatFromInt(cell_h);
@@ -1114,8 +1116,8 @@ pub const MetalRenderer = struct {
         // --- Cursor (#297 — 세로 막대 bar, 세 platform 공통) ---
         // 셀 좌측에 opaque bar. wide char 는 wide_tail 보정으로 글자 시작
         // cell 의 좌측에 위치. 폭은 `ui_metrics.CURSOR_BAR_W_PT` × retina scale.
-        if (self.render_state.cursor.visible) {
-            if (self.render_state.cursor.viewport) |vp| {
+        if (state.cursor.visible) {
+            if (state.cursor.viewport) |vp| {
                 var cursor_x: f32 = @floatFromInt(vp.x);
                 const cursor_y: f32 = @floatFromInt(vp.y);
                 if (vp.wide_tail and vp.x > 0) cursor_x -= 1.0;
@@ -1161,8 +1163,8 @@ pub const MetalRenderer = struct {
         // cursor 위치부터 preedit_utf8 의 각 codepoint 를 그림. 배경 강조 +
         // 글자 + 아래 underline. PTY 에는 안 들어가지만 사용자가 조합 중인
         // 자모 / 음절을 볼 수 있게.
-        if (preedit_utf8.len > 0 and self.render_state.cursor.viewport != null) {
-            const vp = self.render_state.cursor.viewport.?;
+        if (preedit_utf8.len > 0 and state.cursor.viewport != null) {
+            const vp = state.cursor.viewport.?;
             var pre_col: f32 = @floatFromInt(vp.x);
             const pre_row: f32 = @floatFromInt(vp.y);
             const pre_y = pre_row * ch + y_off;

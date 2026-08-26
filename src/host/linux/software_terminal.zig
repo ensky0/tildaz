@@ -275,6 +275,8 @@ pub const FrameLayer = struct {
 /// 값을 받는다** — 입력이 갈리면 목록을 공유해도 소용이 없다.
 pub const FrameInputs = struct {
     terminal: *ghostty.Terminal,
+    /// #483 2단계 ① — `terminal` 의 `Tab.render_state`. 렌더러는 state 를 갖지 않는다.
+    state: *ghostty.RenderState,
     theme: *const themes.Theme,
     width: i32,
     height: i32,
@@ -330,7 +332,6 @@ pub var acc_frames: u64 = 0;
 pub var acc_cells_ns: u64 = 0;
 
 pub const Renderer = struct {
-    render_state: ghostty.RenderState = .empty,
     /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
     /// 채우고 CPU · GL 이 소비한다.
     layer: FrameLayer = .{},
@@ -443,7 +444,6 @@ pub const Renderer = struct {
         const chrome_bg = chrome_theme.background;
 
         return .{
-            .render_state = .empty,
             .font_ctx = terminal_ctx,
             .tab_font_ctx = tab_ctx,
             .font_chain = chain,
@@ -459,7 +459,6 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.layer.deinit(allocator);
-        self.render_state.deinit(allocator);
         self.releaseDialogFonts();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
@@ -669,18 +668,18 @@ pub const Renderer = struct {
         return @intCast(self.font_ctx.cell_height_px);
     }
 
-    /// #277 S2-3 — GL 경로용 프레임 준비. `render_state` 를 갱신하고 터미널 레이어
+    /// #277 S2-3 — GL 경로용 프레임 준비. `in.state` (탭의 `RenderState`) 를 갱신하고 터미널 레이어
     /// 목록을 만들어 돌려준다. 표면 배경색도 함께 준다 (GL 은 `glClear` 로 칠한다).
     ///
     /// CPU 경로의 `paint` 과 **같은 `collectTerminalLayer` 를 쓴다** — 그게 두 경로가
     /// 갈리지 않는 이유다. chrome (탭바 · 단일 탭 컨트롤 · command menu) 은 아직
     /// 여기 없다.
     ///
-    /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
+    /// `in.state` 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
     /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
     pub fn buildGlFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) GlFrame {
         const t_start = if (timing_enabled) timingNowNs() else 0;
-        self.render_state.update(allocator, in.terminal) catch {
+        in.state.update(allocator, in.terminal) catch {
             self.layer.clear();
             return .{ .background = in.theme.background, .layer = &self.layer };
         };
@@ -693,7 +692,7 @@ pub const Renderer = struct {
             acc_frames += 1;
         };
         self.collectFrame(allocator, in);
-        return .{ .background = self.render_state.colors.background, .layer = &self.layer };
+        return .{ .background = in.state.colors.background, .layer = &self.layer };
     }
 
     /// 그릴 세션이 없는 프레임용 — 목록을 비우고 그 자리를 돌려준다. 배경만 칠하는
@@ -713,7 +712,7 @@ pub const Renderer = struct {
     ///
     /// 목록의 순서는 `TerminalLayer` 주석 참고 (macOS · Windows 와 같은 계층 순서).
     ///
-    /// `render_state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
+    /// `in.state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
     /// 할당 실패는 조용히 무시한다 — 그 프레임의 일부가 빠질 뿐이고, 다음 프레임에
     /// 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
     pub fn collectFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
@@ -722,11 +721,11 @@ pub const Renderer = struct {
         const tab_bar_h = self.tabBarHeightPx(in.tab_titles.len);
         self.collectTabBar(allocator, in, tab_bar_h);
         const t_cells = if (timing_enabled) timingNowNs() else 0;
-        self.collectCells(allocator, tab_bar_h, in.blink_faint);
+        self.collectCells(allocator, in.state, tab_bar_h, in.blink_faint);
         if (timing_enabled) acc_cells_ns += @intCast(timingNowNs() - t_cells);
-        self.collectCursor(allocator, tab_bar_h);
+        self.collectCursor(allocator, in.state, tab_bar_h);
         self.collectScrollbar(allocator, in);
-        self.collectPreedit(allocator, tab_bar_h);
+        self.collectPreedit(allocator, in.state, tab_bar_h);
         self.collectSingleTabControls(allocator, in);
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
     }
@@ -765,15 +764,15 @@ pub const Renderer = struct {
     /// 텍스트가 각자 전체 셀을 돌아 4K 에서 프레임마다 95,824 번 방문했다. 셀 방문
     /// 자체가 수집 비용의 대부분이라 (셀당 작업을 셋이나 꺼도 8% 밖에 안 줄었다)
     /// 한 번만 도는 것이 곧 성능이다 (#362).
-    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32, blink_faint: bool) void {
-        const colors = self.render_state.colors;
+    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, state: *const ghostty.RenderState, tab_bar_h: i32, blink_faint: bool) void {
+        const colors = state.colors;
         const cw = self.cellWidth();
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
         const pad = self.paddingPx();
-        const rows = self.render_state.rows;
-        const cols = self.render_state.cols;
-        const row_slice = self.render_state.row_data.slice();
+        const rows = state.rows;
+        const cols = state.cols;
+        const row_slice = state.row_data.slice();
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
 
@@ -1190,9 +1189,9 @@ pub const Renderer = struct {
     /// Cursor (#297 — 세로 막대 bar, 세 platform 공통). 셀 좌측에 opaque bar.
     /// wide char 는 wide_tail 보정으로 글자 시작 cell 의 좌측에 위치. 폭은
     /// `ui_metrics.CURSOR_BAR_W_PT` × scale (Windows/macOS 와 동일 식).
-    fn collectCursor(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        if (!self.render_state.cursor.visible) return;
-        const vp = self.render_state.cursor.viewport orelse return;
+    fn collectCursor(self: *Renderer, allocator: std.mem.Allocator, state: *const ghostty.RenderState, tab_bar_h: i32) void {
+        if (!state.cursor.visible) return;
+        const vp = state.cursor.viewport orelse return;
         const cw = self.cellWidth();
         const ch = self.cellHeight();
         const pad = self.paddingPx();
@@ -1203,7 +1202,7 @@ pub const Renderer = struct {
             .y = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch,
             .w = @trunc(ui_metrics.cursorBarWidthPx(self.scale)),
             .h = ch,
-            .color = self.render_state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
+            .color = state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
         }) catch {};
     }
 
@@ -1211,7 +1210,7 @@ pub const Renderer = struct {
     /// 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
     /// #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
     fn collectScrollbar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
-        const colors = self.render_state.colors;
+        const colors = in.state.colors;
         const scrollbar_top: i32 = if (in.tab_titles.len > 0) self.chromeHeightPx() else 0;
         const sb = in.terminal.screens.active.pages.scrollbar();
         const r = scrollbar.thumbRect(
@@ -1243,9 +1242,9 @@ pub const Renderer = struct {
     /// 안 띄움". macOS / Windows 와 동등 색 (`renderer/macos.zig:686`,
     /// `renderer/windows.zig:1144`). PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가
     /// commit_string 으로 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
-    fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
+    fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, state: *const ghostty.RenderState, tab_bar_h: i32) void {
         if (self.preedit_text.len == 0) return;
-        const vp = self.render_state.cursor.viewport orelse return;
+        const vp = state.cursor.viewport orelse return;
 
         // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
         // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
@@ -1254,8 +1253,8 @@ pub const Renderer = struct {
         const ch = self.cellHeight();
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
         const pad = self.paddingPx();
-        const cols = self.render_state.cols;
-        const fg = self.render_state.colors.foreground;
+        const cols = state.cols;
+        const fg = state.colors.foreground;
         const pre_y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
 
         var col: i32 = @intCast(vp.x);
@@ -1593,12 +1592,12 @@ pub const Renderer = struct {
     ) void {
         const width = in.width;
         const height = in.height;
-        self.render_state.update(allocator, in.terminal) catch {
+        in.state.update(allocator, in.terminal) catch {
             fill(memory, width, height, stride, in.theme.background);
             return;
         };
 
-        fill(memory, width, height, stride, self.render_state.colors.background);
+        fill(memory, width, height, stride, in.state.colors.background);
 
         // #277 S2-4/S2-5 — **목록은 GL 경로와 같은 수집기가 만들고 여기서는 그리기만
         // 한다.** 순서는 `FrameLayer` 가 정의하고 두 경로가 그대로 따른다.

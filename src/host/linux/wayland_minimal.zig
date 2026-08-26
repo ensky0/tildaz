@@ -8,6 +8,8 @@
 const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
 const Timer = @import("../../runtime.zig").Timer;
+// #483 2단계 ① — 활성 탭의 `RenderState` 타입을 이름으로 쓰기 위해서다 (`activeRenderState`).
+const ghostty = @import("ghostty-vt");
 const linux = std.os.linux;
 const posix = std.posix;
 const session_core = @import("../../session_core.zig");
@@ -4564,6 +4566,7 @@ const Client = struct {
         }
         return .{
             .terminal = &tab.terminal,
+            .state = &tab.render_state,
             .theme = self.config.theme orelse fallback_theme,
             .width = width,
             .height = height,
@@ -5606,12 +5609,20 @@ const Client = struct {
         const ch = self.renderer.cellHeight();
         const pad = self.renderer.paddingPx();
         const tab_bar_h = self.effectiveTabBarHeightPx();
-        if (self.renderer.render_state.cursor.viewport) |vp| {
+        if (if (self.activeRenderState()) |st| st.cursor.viewport else null) |vp| {
             const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
             const y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
             return .{ .x = x, .y = y, .w = cw, .h = ch };
         }
         return .{ .x = pad, .y = tab_bar_h + pad, .w = cw, .h = ch };
+    }
+
+    /// #483 2단계 ① — 활성 탭의 렌더 스냅숏. 이전에는 렌더러가 하나를 들고 있었다.
+    /// 세션이 없거나 탭이 없으면 null.
+    fn activeRenderState(self: *const Client) ?*const ghostty.RenderState {
+        const sess = if (self.session) |*s| s else return null;
+        if (sess.active_tab >= sess.tabs.items.len) return null;
+        return &sess.tabs.items[sess.active_tab].render_state;
     }
 
     /// IME cursor rectangle 의 named 형 — `updateCursorRectangle` 용.
@@ -5632,7 +5643,8 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const rect: CursorRect = blk: {
-            const vp = self.renderer.render_state.cursor.viewport orelse return;
+            const st = self.activeRenderState() orelse return;
+            const vp = st.cursor.viewport orelse return;
             const pad = self.renderer.paddingPx();
             const tab_bar_h = self.effectiveTabBarHeightPx();
             const x: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
