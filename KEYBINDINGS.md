@@ -141,6 +141,7 @@ and Qt applications do, using the system Compose table:
 
 | You type | You get |
 |---|---|
+| `^` (and wait) | `^` shown highlighted at the cursor until the next key — the same way GTK applications show it |
 | `^` `e` | `ê` |
 | `^` `Space`, or `^` `^` | `^` |
 | `^` `x` (no such combination) | nothing — both keys are dropped |
