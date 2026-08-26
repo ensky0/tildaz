@@ -21,6 +21,7 @@ is not US QWERTY.
 | Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
 | Move the split next to the active pane by one cell | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
 | Make all panes of the tab the same size | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
+| Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -267,9 +268,11 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
 - `<` / `>` scroll the visible tab strip and disable at the corresponding end.
 - `×` closes the active tab, matching Cmd+W / Ctrl+Shift+W.
 - `+` opens a tab. At the 32-tab limit it stays in place, turns gray, and
-  ignores clicks.
-- `…` opens the command menu. It lists the common tab, clipboard, fullscreen,
-  config, shortcut-reference, and About actions together with their shortcuts.
+  ignores clicks. Alt+click splits the active pane instead (see
+  [Split panes](#split-panes)).
+- `…` opens the command menu. It lists the common tab, split-pane (*Split Right* /
+  *Split Down*), clipboard, fullscreen, config, shortcut-reference, and About actions
+  together with their shortcuts.
   Its first item toggles TildaZ and shows the current instance's configured
   global hotkey rather than assuming F1.
 - While the menu is open it captures the keyboard: `Esc` closes it,
@@ -311,8 +314,15 @@ the active pane by one cell; Shift+Alt+0 makes every pane in the tab the same si
 
 The active pane is marked by an amber line along the edges it shares with other panes
 (never along the window edge); inactive panes are not dimmed, so all of them stay
-readable. Clicking a pane focuses it and starts a selection there in one click;
-right-clicking an *inactive* pane only focuses it and does not paste. Ctrl+Shift+W
+readable. Ctrl+Shift+Z zooms the active pane to the whole tab (the other panes keep
+running but are not drawn); pressing it again, or splitting, moving focus, or
+resizing, restores the layout. Clicking a pane focuses it and starts a selection
+there in one click; right-clicking an *inactive* pane only focuses it and does not
+paste. Dragging the gray line between two panes moves the split: while you drag, an
+amber ghost shows where the line will land (snapped to a cell boundary), and the
+panes are resized once, when you release. The `…` menu has *Split Right* and *Split
+Down*, and Alt+clicking the `+` button splits the active pane instead of opening a
+tab (to the right if the pane is wider than it is tall, otherwise below). Ctrl+Shift+W
 closes the active pane — the neighbour that shared the split takes its place — and
 closes the tab when the pane is the last one; a shell exiting inside a pane does the
 same. A split that would leave any pane smaller than 20×5 cells is refused with a
@@ -335,5 +345,6 @@ do nothing there until the next step lands.
 | Mouse wheel | Scroll viewport |
 | Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
 | Click an inactive pane | Focus that pane and start selecting there |
+| Drag the line between two panes | Move the split (amber ghost while dragging, applied on release) |
 | Click `…` | Open the command menu and shortcut hints |
 | Scrollbar click / drag | Jump or follow viewport |
