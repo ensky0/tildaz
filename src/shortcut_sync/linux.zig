@@ -402,6 +402,11 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
     };
     defer allocator.free(content);
 
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+
     const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(allocator);
@@ -409,12 +414,17 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
     while (offset < content.len) {
         const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
         const line = content[offset..end];
-        if (offset == close_offset) try appendCosmicEntries(rt, &output, allocator, indices);
+        if (offset == close_offset) try appendCosmicEntries(rt, &output, allocator, indices, exe);
         // #496 1-c — 우리 줄은 지우고 다시 쓰는 구조다. 그런데 **위치 표기 인스턴스의
         // 줄은 워커가 쓴 것**이라 여기서 지우면 launcher 가 돌 때마다 사라진다. 그래서
         // 그 인스턴스의 줄만 남긴다.
+        //
+        // #514 — 표식 없는 옛 `install.sh` 줄은 **우리가 그 index 를 실제로 관리할 때만**
+        // 흡수한다. config 를 지운 인스턴스의 줄까지 지우면 판정 근거가 다시 넓어진다.
         const keep = if (tildazCosmicEntryIndex(line)) |idx|
             cosmicDeferredToWorker(rt, allocator, idx)
+        else if (legacyInstallScriptEntryIndex(line, exe)) |idx|
+            std.mem.findScalar(u32, indices, idx) == null
         else
             true;
         if (keep) {
@@ -477,6 +487,117 @@ fn tildazCosmicEntryIndex(line: []const u8) ?u32 {
     return std.fmt.parseInt(u32, rest[0..end], 10) catch null;
 }
 
+/// #514 — 예전 [`dist/linux/install.sh`](../../dist/linux/install.sh) 가 쓴 **표식 없는**
+/// COSMIC 항목이면 그 instance index.
+///
+/// 그 스크립트는 `description` 을 안 붙이고 자기 항목을 썼다. 그래서 launcher 가 자기
+/// 것으로 못 알아보고 하나 더 썼고, 같은 hotkey 가 RON 에 두 번 남았다. 지금 install.sh 는
+/// COSMIC 항목을 아예 쓰지 않으므로 (writer 는 이 파일 하나다), 남아 있는 옛 줄을 여기서
+/// 흡수한다.
+///
+/// **완전 일치만 본다.** #484 의 교훈이 "명령 문자열의 *부분* 일치로 판정하지 말라" 였다.
+/// 조건이 하나라도 어긋나면 남의 항목으로 본다.
+///
+/// - `description` 이 **아예 없다.** 사용자가 이름을 붙인 줄은 명령이 겹쳐도 남긴다.
+/// - `Spawn` 명령이 *지금 실행 파일 경로* + `--toggle <index>` 와 **바이트까지 같다.**
+///   경로가 다르면 (사용자가 옮겼거나 다른 빌드면) 건드리지 않는다. 래퍼 스크립트처럼
+///   명령이 더 붙은 줄도 여기서 걸린다.
+/// - 번호 없는 `--toggle` 도 받는다 — #230 의 첫 형태다 (인스턴스 번호가 생기기 전).
+///
+/// 그래도 위험이 하나 남는다: 사용자가 **같은 명령으로 두 번째 단축키**를 손수 만들어
+/// 뒀다면 그것도 지워진다. 호출부 (`syncCosmic`) 가 "우리가 그 index 를 실제로 관리할
+/// 때만" 으로 한 번 더 좁힌다.
+fn legacyInstallScriptEntryIndex(line: []const u8, exe: []const u8) ?u32 {
+    if (std.mem.find(u8, line, "description:") != null) return null;
+    const open = "): Spawn(\"";
+    const start = std.mem.find(u8, line, open) orelse return null;
+    var buf: [std.Io.Dir.max_path_bytes + 64]u8 = undefined;
+    const command = ronStringUnescape(line[start + open.len ..], &buf) orelse return null;
+    if (!std.mem.startsWith(u8, command, exe)) return null;
+    const tail = command[exe.len..];
+    // #230 의 첫 형태 — 인스턴스 번호가 없던 때라 0 번이다.
+    if (std.mem.eql(u8, tail, " --toggle")) return 0;
+    const numbered = " --toggle ";
+    if (!std.mem.startsWith(u8, tail, numbered)) return null;
+    return std.fmt.parseInt(u32, tail[numbered.len..], 10) catch null;
+}
+
+test "#514 legacy install.sh entries are absorbed only on an exact command match" {
+    const exe = "/home/u/.local/bin/tildaz";
+    // 옛 install.sh 가 쓴 형태 — 표식이 없고 명령이 정확히 우리 것이다.
+    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        exe,
+    ));
+    try std.testing.expectEqual(@as(?u32, 3), legacyInstallScriptEntryIndex(
+        "    (modifiers: [Ctrl, Shift], key: \"grave\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 3\"),",
+        exe,
+    ));
+    // #230 의 첫 형태 — 번호가 없던 때. 0 번이다.
+    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle\"),",
+        exe,
+    ));
+
+    // 표식이 있으면 여기 소관이 아니다 — 우리 줄이든 사용자가 이름 붙인 줄이든.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        exe,
+    ));
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\", description: Some(\"My toggle\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        exe,
+    ));
+
+    // 경로가 다르면 우리 것이 아니다 — 부분 일치로 떨어지지 않는다 (#484).
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        exe,
+    ));
+    // 명령 **앞**에 뭔가 붙은 줄 — 경로가 안에 들어 있을 뿐 우리 명령이 아니다.
+    // 부분 일치로 판정하면 이 줄이 통과한다 (#484 가 그랬다).
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/opt/wrap /home/u/.local/bin/tildaz --toggle 0\"),",
+        exe,
+    ));
+    // 래퍼 — 명령이 더 붙었다.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"sh -c '/home/u/.local/bin/tildaz --toggle 0; notify-send hi'\"),",
+        exe,
+    ));
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0 --extra\"),",
+        exe,
+    ));
+    // 명령이 우리 것으로 시작하지만 다른 하위 명령이다.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --autostart\"),",
+        exe,
+    ));
+    // 번호 자리가 정수가 아니다.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle x\"),",
+        exe,
+    ));
+    // 우리 항목이 아닌 남의 단축키.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [Super], key: \"e\"): Spawn(\"nautilus\"),",
+        exe,
+    ));
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex("{", exe));
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex("}", exe));
+}
+
+test "#514 escaped paths in a legacy entry are matched after unescaping" {
+    // `appendRonString` 이 `\\` 와 `"` 를 escape 한다. 읽는 쪽이 같은 규칙을 풀어야
+    // 따옴표가 든 경로에서 판정이 갈리지 않는다.
+    const exe = "/home/u/my \"odd\" dir/tildaz";
+    try std.testing.expectEqual(@as(?u32, 2), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/my \\\"odd\\\" dir/tildaz --toggle 2\"),",
+        exe,
+    ));
+}
+
 /// #496 1-c — 이 인스턴스의 hotkey 가 **위치 표기**인가.
 ///
 /// 그렇다면 launcher 는 COSMIC 항목을 쓰지 못한다. COSMIC 의 RON `key:` 는 글자만 받는데
@@ -496,11 +617,13 @@ fn cosmicDeferredToWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32)
 /// 그래서 명령 문자열 매칭으로 떨어졌다.
 const cosmic_entry_marker = "description: Some(\"TildaZ_";
 
-fn appendCosmicEntries(rt: Runtime, output: *std.ArrayList(u8), allocator: std.mem.Allocator, indices: []const u32) !void {
-    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
+fn appendCosmicEntries(
+    rt: Runtime,
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    indices: []const u32,
+    exe: []const u8,
+) !void {
     for (indices) |index| {
         const text = try instances.configHotkeyText(rt, allocator, index);
         defer allocator.free(text);
@@ -718,4 +841,27 @@ fn appendRonString(output: *std.ArrayList(u8), allocator: std.mem.Allocator, val
         if (byte == '\\' or byte == '"') try output.append(allocator, '\\');
         try output.append(allocator, byte);
     }
+}
+
+/// `appendRonString` 의 역이다. `escaped` 는 여는 `"` **다음**부터이고, 닫는 `"` 까지를
+/// escape 를 풀어 `buf` 에 담아 돌려준다. 버퍼가 모자라거나 문자열이 닫히지 않으면 `null`.
+///
+/// 읽는 쪽과 쓰는 쪽을 붙여 둔다 — 규칙이 갈리면 따옴표 · 역슬래시가 든 경로에서 자기
+/// 항목을 못 알아본다. 그 갈라짐이 #484 의 기전이었다.
+fn ronStringUnescape(escaped: []const u8, buf: []u8) ?[]const u8 {
+    var out: usize = 0;
+    var i: usize = 0;
+    while (i < escaped.len) : (i += 1) {
+        var byte = escaped[i];
+        if (byte == '"') return buf[0..out];
+        if (byte == '\\') {
+            i += 1;
+            if (i >= escaped.len) return null;
+            byte = escaped[i];
+        }
+        if (out >= buf.len) return null;
+        buf[out] = byte;
+        out += 1;
+    }
+    return null;
 }

@@ -250,7 +250,8 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
   `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
-  생략한다. XDG autostart는 지원.
+  생략한다. XDG autostart는 지원. **`install.sh` 는 COSMIC 항목을 쓰지 않는다** — writer 는
+  이 경로 하나다 ([#514](https://github.com/ensky0/tildaz/issues/514), Hyprland 와 같은 규칙).
   - **"TildaZ 전용 항목" 의 판정 근거는 우리가 쓰는 description 표식
     (`description: Some("TildaZ_<index>")`) 하나다** — 명령 문자열이 아니다
     ([#484](https://github.com/ensky0/tildaz/issues/484)). 이 파일에는 사용자가 만든
@@ -259,6 +260,12 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
     사라진다), 남의 항목을 자기 것으로 착각하면 **조용히 지운다**. 명령에는 바이너리
     경로와 이름이 들어가 사용자가 바꿀 수 있으므로 판정 근거가 될 수 없다. 표식 뒤의
     번호가 정수인지도 확인한다.
+  - **예외는 하나뿐이다 — 예전 `install.sh` 가 표식 없이 쓴 줄을 흡수한다**
+    ([#514](https://github.com/ensky0/tildaz/issues/514)). 그 시절엔 writer 가 둘이었고
+    스크립트 쪽이 표식을 안 붙여, 같은 hotkey 가 RON 에 두 번 남았다. 흡수 조건은 **완전
+    일치**다: `description` 이 아예 없고, `Spawn` 명령이 *지금 실행 파일 경로* +
+    `--toggle <index>` 와 바이트까지 같으며, 그 index 를 우리가 실제로 관리할 때. 셋 중
+    하나라도 어긋나면 사용자 항목으로 보고 남긴다.
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
   xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
