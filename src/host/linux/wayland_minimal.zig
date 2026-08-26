@@ -5767,8 +5767,11 @@ const Client = struct {
         self.compose_setup_done = true;
         var locale_buf: [128]u8 = undefined;
         const locale = self.composeLocale(&locale_buf);
+        // 네 갈래 모두 항상 남긴다 — 성공 줄만 verbose 로 두면 "dead key 가 안 된다" 는 제보에서
+        // 평소 로그로는 성공/실패를 가를 수 없다 (실기 검증에서 실제로 한 번 헛돌았다, #494).
+        // 부팅에 한 줄이고 `keyboard keymap loaded` 도 같은 자리에 항상 남는다.
         switch (self.keyboard.setComposeLocale(locale)) {
-            .ready => log.appendLineVerbose("wayland", "compose table loaded locale={s}", .{locale}),
+            .ready => log.appendLine("wayland", "compose table loaded locale={s}", .{locale}),
             .fallback_locale => log.appendLine("wayland", "compose table for locale={s} not found -- using en_US.UTF-8", .{locale}),
             .unavailable => log.appendLine("wayland", "compose table unavailable locale={s} -- dead keys will not combine", .{locale}),
             .no_symbols => log.appendLine("wayland", "libxkbcommon has no compose symbols -- dead keys will not combine", .{}),
