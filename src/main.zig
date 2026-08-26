@@ -132,7 +132,15 @@ pub fn main(init: std.process.Init) void {
         if (std.mem.eql(u8, arg, "--instance")) {
             if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
-            worker_index = std.fmt.parseInt(u32, args[i], 10) catch exitInvalidValue(rt.io, arg, args[i]);
+            const parsed_index = std.fmt.parseInt(u32, args[i], 10) catch exitInvalidValue(rt.io, arg, args[i]);
+            // #510 — 상한을 여기서 막는다. 안 막으면 `--instance 50` 이 config_50.toml 을
+            // 만드는데 `parseConfigFileName` 이 그 번호를 인식하지 않아, 목록에도 핫키
+            // 중복 검사에도 안 잡히는 **보이지 않는 인스턴스**가 생긴다. 그리고 기본 핫키
+            // 규칙 `F(N+1)` 에 줄 키도 없다.
+            if (parsed_index > instances.max_config_index) {
+                printOptionError(rt.io, messages.option_instance_out_of_range_format, .{ args[i], instances.max_config_index });
+            }
+            worker_index = parsed_index;
         } else if (std.mem.eql(u8, arg, "-e")) {
             if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
             i += 1;
@@ -281,7 +289,7 @@ fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool
         if (indices.len == 0 or indices[0] != 0) {
             const shell = try instances.defaultShell(rt, allocator);
             defer allocator.free(shell);
-            try instances.createDefaultConfig(rt, allocator, 0, shell, config.Defaults.hotkey);
+            try instances.createDefaultConfig(rt, allocator, 0, shell, config.Defaults.hotkeyFor(0));
             const expanded = try allocator.alloc(u32, indices.len + 1);
             expanded[0] = 0;
             @memcpy(expanded[1..], indices);

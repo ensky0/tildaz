@@ -1377,6 +1377,19 @@ const Client = struct {
     kde_position_keysym: u32 = 0,
     /// #496 1-c — COSMIC RON 에 지금 쓰여 있는 keysym. KDE 쪽과 같은 역할이다.
     cosmic_position_keysym: u32 = 0,
+    /// #510 — **기동 시** 전역 hotkey 를 못 잡았다는 기록.
+    ///
+    /// 발견한 자리에서 곧장 안내할 수 없어 여기 담아 둔다. Linux 의 다이얼로그는
+    /// layer-shell overlay 라 Wayland globals + keyboard 가 준비된 뒤에만 그릴 수 있는데
+    /// (#282 F9), KDE 라벨 등록은 그보다 앞이라 거기서 `showFatal` 을 부르면 paint 전에
+    /// 죽어 **사용자는 아무것도 못 본다.** shell · font 검증이 같은 제약을 같은 방식으로
+    /// 풀었고 (`keyboard ready` 뒤의 공통 지점), `fatalIfHotkeyClaimFailed` 가 그 옆에서
+    /// 이 값을 소비한다.
+    ///
+    /// **런타임 재등록 실패는 여기 넣지 않는다.** layout 전환 같은 기동 이후 사건에서
+    /// 앱을 죽이면 열려 있던 셸 세션이 함께 날아간다 — #510 이 다루는 것은 "앱이 안 뜬다"
+    /// 는 기동 시점이다.
+    hotkey_claim_failure: ?HotkeyClaimFailure = null,
     // surface visibility toggle state. macOS `g_visible` 동등. false
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
     // commit 송신 끝난 상태). 다음 toggle → flip + re-attach.
@@ -1752,6 +1765,24 @@ const Client = struct {
         if (!self.run_opts.isStressRun()) {
             self.registerKdePositionHotkey();
             self.writeCosmicPositionHotkey();
+        }
+
+        // #510 — **전역 hotkey 를 잡았는지 여기서 판정하고, 못 잡았으면 멈춘다.**
+        //
+        // 자리가 여기인 이유는 아래 shell · font 검증과 같다 — Wayland globals + keyboard
+        // 가 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 는 아직 안 띄웠다. 발견 시점
+        // (KDE 는 위 1743 줄) 에 바로 안내하면 paint 전에 죽는다 (#282 F9).
+        //
+        // sway 등록을 여기서 **당겨서** 돌린다. 원래는 main loop 의 `drainSwayToggleRegister`
+        // 가 맡는데 (`bindcode` 에 keymap 이 필요해 미뤘다 — #496 1-b), keymap 은 바로 위
+        // `keyboard ready` 에서 이미 왔다. 당기면 sway 도 다른 데스크톱과 같은 시점에
+        // 판정되고, **창이 뜨기 전에** 멈출 수 있다. main loop 의 drain 은 그대로 두어
+        // keymap 이 늦는 환경 (seat 에 keyboard 가 아직 없음) 을 계속 받는다 — flag 로
+        // 한 번만 도는 구조라 여기서 돌면 그쪽은 no-op 이다.
+        if (!self.run_opts.isStressRun()) {
+            self.drainSwayToggleRegister();
+            self.checkCompositorHotkeyOwner();
+            self.fatalIfHotkeyClaimFailed();
         }
 
         // #282 C2 — startup shell 검증. Windows / macOS host 는 Config.load 직후
@@ -7087,14 +7118,158 @@ const Client = struct {
         return error.WaylandDisplayError;
     }
 
+    /// #510 — 기동 hotkey 획득 실패 한 건. 문자열을 struct 안 고정 버퍼에 복사해 두므로
+    /// 기록 시점의 임시 버퍼가 사라져도 안전하다 (`self` 에 값으로 들어간다).
+    const HotkeyClaimFailure = struct {
+        /// 등록 상대 — `messages.hotkey_owner_*` 중 하나 (정적 문자열).
+        owner: []const u8,
+        reason_buf: [256]u8,
+        reason_len: usize,
+
+        fn reason(self: *const HotkeyClaimFailure) []const u8 {
+            return self.reason_buf[0..self.reason_len];
+        }
+    };
+
+    /// #510 — hotkey 를 못 잡았다고 기록한다. 실제 안내 · 종료는
+    /// `fatalIfHotkeyClaimFailed` 가 한다 (이유는 `hotkey_claim_failure` 주석).
+    ///
+    /// **첫 실패만 남긴다.** 한 인스턴스가 상대를 여럿 갖는 경우가 없어서 (데스크톱 하나당
+    /// 등록 경로 하나) 실제로는 한 번만 불리지만, 덮어쓰면 나중 것이 이기는 규칙이 조용히
+    /// 생기므로 명시한다.
+    fn recordHotkeyClaimFailure(self: *Client, owner: []const u8, comptime fmt: []const u8, args: anytype) void {
+        if (self.hotkey_claim_failure != null) return;
+        var failure: HotkeyClaimFailure = .{ .owner = owner, .reason_buf = undefined, .reason_len = 0 };
+        const text = std.fmt.bufPrint(&failure.reason_buf, fmt, args) catch blk: {
+            const fallback = messages.hotkey_reason_taken_unnamed_msg;
+            const n = @min(fallback.len, failure.reason_buf.len);
+            @memcpy(failure.reason_buf[0..n], fallback[0..n]);
+            break :blk failure.reason_buf[0..n];
+        };
+        failure.reason_len = text.len;
+        self.hotkey_claim_failure = failure;
+        log.appendLine("hotkey", "claim failed: owner={s} — {s}", .{ owner, failure.reason() });
+    }
+
+    /// #510 — 등록 상대가 **이미 그 조합을 다른 동작에 쓰고 있는지** 확인한다.
+    ///
+    /// KDE 와 sway 는 여기 없다 — 그쪽은 등록 자체가 답을 준다 (KDE 는 `claimKey` 의 4 단
+    /// 검사, sway 는 IPC 응답). 나머지는 등록이 fire-and-forget 이라 **쓰기 전에 읽어야만**
+    /// 안다. 자세한 근거는 `shortcut_sync/linux.zig` 의 같은 이름 절 주석에 있다.
+    ///
+    /// **판정에 실패하면 (도구 없음 · 파일 못 읽음) 조용히 넘어간다.** 못 봤다는 것이
+    /// 충돌했다는 뜻은 아니고, 잘못된 fatal 은 멀쩡한 환경에서 앱을 못 뜨게 한다.
+    fn checkCompositorHotkeyOwner(self: *Client) void {
+        if (self.hotkey_claim_failure != null) return;
+
+        var desc_buf: [shortcut_sync_linux.foreign_binding_desc_max]u8 = undefined;
+
+        if (currentDesktopContains(self.rt, "hyprland")) {
+            const found = shortcut_sync_linux.hyprlandForeignBinding(
+                self.rt,
+                self.allocator,
+                self.config.hotkey,
+                &desc_buf,
+            ) catch |err| {
+                log.appendLine("hyprland", "hotkey owner check skipped: {s}", .{@errorName(err)});
+                return;
+            };
+            if (found) |desc| {
+                self.recordHotkeyClaimFailure(
+                    messages.hotkey_owner_hyprland,
+                    messages.hotkey_reason_taken_by_format,
+                    .{desc},
+                );
+            }
+            return;
+        }
+
+        if (cosmicCompositor(self.rt)) {
+            const found = shortcut_sync_linux.cosmicForeignBinding(
+                self.rt,
+                self.allocator,
+                self.config.hotkey,
+                &desc_buf,
+            ) catch |err| {
+                log.appendLine("cosmic", "hotkey owner check skipped: {s}", .{@errorName(err)});
+                return;
+            };
+            if (found) |desc| {
+                self.recordHotkeyClaimFailure(
+                    messages.hotkey_owner_cosmic,
+                    messages.hotkey_reason_taken_by_format,
+                    .{desc},
+                );
+            }
+            return;
+        }
+
+        // GNOME · Cinnamon — extension 이 `grab_accelerator` / `addHotKey` 로 셸 안에서
+        // 이미 판정한 결과를 읽는다. 여기서 직접 물을 수 없는 이유는 **셸 안에서만 답이
+        // 나오기 때문**이고, 그 결과가 worker 보다 먼저 확정되는 것까지 포함해 자세한
+        // 사정은 `paths.instanceHotkeyStatePath` 주석에 있다.
+        if (gsettings_hotkey.shellExtensionHotkeyFailed(
+            self.rt,
+            self.allocator,
+            instance_context.requireWorkerIndex(),
+        )) {
+            const owner = if (currentDesktopContains(self.rt, "cinnamon"))
+                messages.hotkey_owner_cinnamon
+            else
+                messages.hotkey_owner_gnome_shell;
+            self.recordHotkeyClaimFailure(owner, "{s}", .{messages.hotkey_reason_grab_refused_msg});
+        }
+    }
+
+    /// #510 — 기록된 hotkey 획득 실패를 안내하고 종료한다. **세 platform 공통 정책**
+    /// (못 잡으면 멈춘다) 의 Linux 쪽 구현이고, Windows 의 `window.registerGlobalHotkey`
+    /// · macOS 의 `showPermDialogTrampoline` 과 같은 자리다.
+    ///
+    /// 호출 시점은 shell · font 검증과 같은 구간이다 — Wayland globals + keyboard 가
+    /// 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 를 아직 안 띄웠다.
+    fn fatalIfHotkeyClaimFailed(self: *Client) void {
+        const failure = self.hotkey_claim_failure orelse return;
+
+        var key_buf: [64]u8 = undefined;
+        const key = config_mod.hotkeyDisplay(&key_buf, self.config.hotkey);
+
+        // 경로는 **진짜 allocator** 로 얻는다. `paths.configPath` 는 `rt.envAlloc` 를
+        // 거치고 그 함수는 조회 한 번에 환경 전체를 할당하므로 (zig 0.16 `Environ.getAlloc`
+        // → `createMap`), 작은 고정 버퍼로는 항상 `OutOfMemory` 가 되어 경로 대신
+        // `(unknown)` 이 나온다.
+        const cfg_path = paths.configPath(self.rt, self.allocator) catch null;
+        defer if (cfg_path) |p| self.allocator.free(p);
+
+        var msg_buf: [2048]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, messages.linux_hotkey_failed_format, .{
+            key,
+            failure.owner,
+            failure.reason(),
+            cfg_path orelse messages.unknown_path_msg,
+        }) catch messages.linux_hotkey_failed_fallback_msg;
+
+        // overlay 를 못 띄우는 환경 (headless 등) 에서도 원인이 남게 stderr + log 를 먼저.
+        log.userFacing("fatal", msg);
+        self.runFatalDialog(messages.linux_hotkey_failed_title, msg);
+        std.process.exit(1);
+    }
+
     /// #244 — KDE Plasma에서만 session bus에 연결해 KGlobalAccel에 direct
     /// 등록한다. 다른 desktop은 launcher/extension/compositor가 `--toggle N`
     /// IPC를 호출하므로 worker에서 D-Bus hotkey client를 만들지 않는다.
-    /// 연결·등록 실패는 fatal이 아니며 hidden_start는 즉시 표시로 fallback한다.
+    /// #510 — 연결 · 등록 실패는 **기동을 멈춘다.** 예전에는 로그만 남기고 hotkey 없이
+    /// 계속 돌았는데, KDE 는 Linux 에서 유일하게 "남이 그 키를 쥐고 있다" 를 아는 경로라
+    /// (`claimKey` 의 사전 조회 → 사용자 확인 → 인수 → 사후 검증) 그 앎을 버리는 것이
+    /// 아까웠다. 실제 안내 · 종료는 `fatalIfHotkeyClaimFailed` 가 나중에 한다 — 여기서는
+    /// overlay 를 아직 못 그린다 (`hotkey_claim_failure` 주석).
     fn tryConnectKGlobalAccel(self: *Client, keysym: u32, codepoint: ?u21) void {
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
-            log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
+            self.recordHotkeyClaimFailure(
+                messages.hotkey_owner_kglobalaccel,
+                messages.hotkey_reason_backend_failed_format,
+                .{@errorName(err)},
+            );
             return;
         };
         self.dbus_session = session;
@@ -7110,7 +7285,31 @@ const Client = struct {
             onKGlobalAccelPressed,
             self,
         ) catch |err| {
-            log.appendLine("kglobalaccel", "direct hotkey registration failed: {s} — hotkey disabled", .{@errorName(err)});
+            // #510 — **인수 거절은 실패가 아니라 사용자의 선택이다.** 일반 경로로 흘리면
+            // 본문에 `KGlobalAccelTakeoverDeclined` 라는 내부 이름이 찍히고 (실측), 무엇을
+            // 해야 하는지도 안 보인다. 상대 이름을 아는 `claimKey` 가 남겨 둔 값을 써서
+            // "누가 쥐고 있으니 거기서 풀거나 다른 조합을 골라라" 로 바꾼다.
+            if (err == error.KGlobalAccelTakeoverDeclined) {
+                if (kglobalaccel.lastConflictOwner()) |owner| {
+                    self.recordHotkeyClaimFailure(
+                        messages.hotkey_owner_kglobalaccel,
+                        messages.hotkey_reason_takeover_declined_format,
+                        .{owner},
+                    );
+                } else {
+                    self.recordHotkeyClaimFailure(
+                        messages.hotkey_owner_kglobalaccel,
+                        "{s}",
+                        .{messages.hotkey_reason_takeover_declined_msg},
+                    );
+                }
+                return;
+            }
+            self.recordHotkeyClaimFailure(
+                messages.hotkey_owner_kglobalaccel,
+                messages.hotkey_reason_backend_failed_format,
+                .{@errorName(err)},
+            );
             return;
         };
         self.kglobalaccel_client = client;
@@ -8625,25 +8824,24 @@ const Client = struct {
 
         // #496 1-c — 위치 표기는 **판정이 필요 없다.** 자리가 곧 답이라 layout 을 물어볼
         // 것이 없다. 라벨은 "지금 자판이 그 글자를 내는가" 를 물어야 하지만 자리는 아니다.
-        if (self.config.hotkey.code) |code| {
-            sway_ipc.registerToggleIfSway(self.rt, self.allocator, self.config, physical_key.evdev(code));
-            return;
-        }
-
-        const keysym = self.config.hotkey.keysym;
-        const keycode: ?u16 = switch (self.keyboard.canProduceKeysym(keysym) orelse return sway_ipc.registerToggleIfSway(
-            self.rt,
-            self.allocator,
-            self.config,
-            null,
-        )) {
-            true => self.keyboard.evdevKeycodeForKeysym(keysym),
-            false => blk: {
-                const code = config_mod.fallbackCandidate(self.config.hotkey) orelse break :blk null;
-                break :blk physical_key.evdev(code.code);
-            },
+        const keycode: ?u16 = if (self.config.hotkey.code) |code|
+            physical_key.evdev(code)
+        else blk: {
+            const keysym = self.config.hotkey.keysym;
+            break :blk switch (self.keyboard.canProduceKeysym(keysym) orelse break :blk null) {
+                true => self.keyboard.evdevKeycodeForKeysym(keysym),
+                false => inner: {
+                    const code = config_mod.fallbackCandidate(self.config.hotkey) orelse break :inner null;
+                    break :inner physical_key.evdev(code.code);
+                },
+            };
         };
-        sway_ipc.registerToggleIfSway(self.rt, self.allocator, self.config, keycode);
+
+        // #510 — 실패하면 기록한다. 실제 안내 · 종료는 `fatalIfHotkeyClaimFailed` 몫이다.
+        var reason_buf: [256]u8 = undefined;
+        if (sway_ipc.registerToggleIfSway(self.rt, self.allocator, self.config, keycode, &reason_buf)) |reason| {
+            self.recordHotkeyClaimFailure(messages.hotkey_owner_sway, "{s}", .{reason});
+        }
     }
 
     /// #496 1-a — **비라틴 layout 에서 글자 단축키를 살린다.**

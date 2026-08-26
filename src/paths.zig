@@ -193,6 +193,30 @@ pub fn instanceEndpointStatePath(rt: Runtime, allocator: std.mem.Allocator, inde
     return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.endpoint", .{ dir, sep, index });
 }
 
+/// #510 — GNOME · Cinnamon Shell extension 이 전역 hotkey grab 결과를 남기는 자리.
+///
+/// **왜 별도 파일인가.** extension 은 `grab_accelerator` 가 실패한 것을 알지만 tildaz 로
+/// 돌려줄 채널이 하나도 없었다 (조사 결과: 지금 있는 것은 "extension 이 우리를 spawn 한다"
+/// 한 방향뿐이다). 그리고 GNOME 로그인 경로에서는 **그 실패가 worker 가 태어나기도 전에
+/// 확정된다** — extension 의 `enable()` 안에서 `--autostart` 로 우리를 띄우기 때문이다.
+/// 그래서 실시간 통보가 아니라 *worker 가 부팅 때 읽는 상태 파일* 이 유일하게 성립하는
+/// 형태다.
+///
+/// **왜 `lockDir` 인가.** config 디렉터리에 두면 안 된다 — extension 이 그 디렉터리를
+/// `Gio.FileMonitor` 로 통째로 감시하고 있어서, 거기 쓰면 자기 감시가 깨어나 config 재독
+/// → accelerator 재등록 → 재실패 → 재기록의 **자가 루프**가 된다. `lockDir` 는 tmpfs 이고
+/// 세션 수명이라 (`$XDG_RUNTIME_DIR/tildaz`) 그 감시와 무관하다.
+///
+/// **`instanceN.endpoint` 를 재사용하지 않는 이유**는 방향이 반대라서다. 그 파일은 worker 가
+/// 쓰고 launcher 가 읽으며 `waitUntilRunning` 이 그 값에 기대고 있다.
+pub fn instanceHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
+    const dir = try lockDir(rt, allocator);
+    defer allocator.free(dir);
+    try ensureDir(rt, dir);
+    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
+    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.hotkey", .{ dir, sep, index });
+}
+
 pub fn launcherLockPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
@@ -381,5 +405,39 @@ test "#496 1-c the Shell extensions read the same config filename we write" {
             return error.ExtensionConfigNameOutOfSync;
         }
         try std.testing.expect(std.mem.indexOf(u8, source.js, "config_${index}.json") == null);
+    }
+}
+
+test "#510 the Shell extensions record hotkey state where the worker reads it" {
+    // 확장은 zig 를 안 거치고 파일을 쓴다. 그래서 **경로 규칙이 두 언어에 복제**돼 있고,
+    // 한쪽만 바뀌면 worker 가 기록을 못 찾는다 — 증상은 "GNOME 에서 hotkey 실패가 다시
+    // 조용해짐" 이라 알아채기 어렵다. 바로 위 #496 1-c 테스트와 같은 종류의 가드다.
+    const sources = [_]struct { label: []const u8, js: []const u8 }{
+        .{ .label = "gnome", .js = @embedFile("gnome_extension_js") },
+        .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
+    };
+    for (sources) |source| {
+        // 파일 이름 — `instanceHotkeyStatePath` 가 만드는 것과 같아야 한다.
+        if (std.mem.indexOf(u8, source.js, "instance${index}.hotkey") == null) {
+            std.debug.print("{s} extension 이 instance_{{index}}.hotkey 를 안 쓴다\n", .{source.label});
+            return error.ExtensionHotkeyStateOutOfSync;
+        }
+        // 디렉터리 규칙 3 단 — `lockDir` 의 fallback 순서와 같아야 한다.
+        for ([_][]const u8{ "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", ".cache" }) |needle| {
+            if (std.mem.indexOf(u8, source.js, needle) == null) {
+                std.debug.print("{s} extension 의 상태 디렉터리 규칙에 {s} 가 없다\n", .{ source.label, needle });
+                return error.ExtensionHotkeyStateOutOfSync;
+            }
+        }
+        // 줄 형식 — `shellExtensionHotkeyFailed` 가 읽는 판별자와 두 상태.
+        if (std.mem.indexOf(u8, source.js, "v1 ${ok ? \"ok\" : \"failed\"}") == null) {
+            std.debug.print("{s} extension 의 상태 줄 형식이 v1 <ok|failed> 가 아니다\n", .{source.label});
+            return error.ExtensionHotkeyStateOutOfSync;
+        }
+        // **config 디렉터리에 쓰면 자가 루프가 된다** — 그 경로 helper 를 쓰지 않는지 본다.
+        if (std.mem.indexOf(u8, source.js, "configDirPath(), `instance") != null) {
+            std.debug.print("{s} extension 이 상태 파일을 config 디렉터리에 쓴다\n", .{source.label});
+            return error.ExtensionHotkeyStateOutOfSync;
+        }
     }
 }

@@ -134,8 +134,9 @@ pub const help_text =
     \\  tildaz [options]
     \\
     \\Options:
-    \\  --instance <N>   Run instance N (default: 0). Each instance keeps its own
-    \\                   window, config file, and log file.
+    \\  --instance <N>   Run instance N, 0 to 9 (default: 0). Each instance keeps
+    \\                   its own window, config file, log file, and hotkey. A new
+    \\                   config defaults to F1 for instance 0, F2 for 1, and so on.
     \\  --toggle [N]     Show or hide the running instance N (default: 0), then
     \\                   exit. Linux only.
     \\  --autostart      Start the way the desktop session starts TildaZ.
@@ -154,6 +155,12 @@ pub const option_needs_value_format =
     "tildaz: \"{s}\" needs a value.\nRun \"tildaz --help\" to see the available options.";
 pub const option_invalid_value_format =
     "tildaz: \"{s}\" is not a valid value for \"{s}\".\nRun \"tildaz --help\" to see the available options.";
+
+/// #510 — `--instance N` 의 상한. `option_invalid_value_format` 으로 대신하면 "10 이 왜
+/// 안 되는지" 를 알 방법이 없다. 그 숫자는 파일명 규칙이 아니라 **인스턴스마다 기본 핫키를
+/// 하나씩 주기 때문에** 나온 것이라, 범위와 이유를 같이 적는다.
+pub const option_instance_out_of_range_format =
+    "tildaz: \"{s}\" is out of range for \"--instance\" — pick 0 to {d}.\nEach instance gets its own default hotkey, F1 through F10.\nRun \"tildaz --help\" to see the available options.";
 
 /// 위 세 format 의 bufPrint 가 실패할 때 (사용자가 준 인자가 버퍼보다 길 때) 쓴다.
 /// 값을 못 넣더라도 다음 행동은 알려 준다.
@@ -510,6 +517,66 @@ pub const hotkey_registration_failed_format =
 ;
 pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit this instance's config file and restart.";
 
+/// #510 — Linux 의 전역 hotkey 획득 실패. 세 platform 이 같은 정책 (**못 잡으면 멈춘다**)
+/// 을 쓰지만 문구는 갈라야 한다: Windows 는 OS 의 hotkey 표가 상대이고, macOS 는 권한이
+/// 상대이며, Linux 는 **데스크톱마다 상대가 다르다** (KGlobalAccel · GNOME Shell ·
+/// Hyprland · COSMIC). 그래서 어느 상대에게 무엇이 막혔는지를 본문이 직접 말한다.
+///
+/// 인자: (1) hotkey 표기 (2) 상대 이름 (3) 그 상대가 준 구체적 사유 (4) config 경로.
+pub const linux_hotkey_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const linux_hotkey_failed_format =
+    \\TildaZ could not claim the global hotkey "{s}" from {s}.
+    \\
+    \\{s}
+    \\
+    \\A drop-down terminal you cannot summon is no terminal at all, so TildaZ stops here instead of starting into a window you have no way to reach.
+    \\
+    \\Pick a free combination in the config, then start TildaZ again:
+    \\{s}
+;
+pub const linux_hotkey_failed_fallback_msg =
+    "TildaZ could not claim its global hotkey and cannot run without one. Edit this instance's config file and start TildaZ again.";
+
+/// 위 format 의 두 번째 인자 — 등록 상대의 이름. 데스크톱 이름을 그대로 쓰지 않고 실제
+/// **등록 상대**를 적는다 (KDE 의 상대는 Plasma 가 아니라 KGlobalAccel 데몬이다).
+pub const hotkey_owner_kglobalaccel = "KGlobalAccel";
+pub const hotkey_owner_gnome_shell = "GNOME Shell";
+pub const hotkey_owner_cinnamon = "Cinnamon";
+pub const hotkey_owner_sway = "sway";
+pub const hotkey_owner_hyprland = "Hyprland";
+pub const hotkey_owner_cosmic = "COSMIC";
+
+/// 위 format 의 세 번째 인자 — 사유. 상대마다 알 수 있는 것이 달라서 문장이 갈린다.
+pub const hotkey_reason_taken_by_format =
+    "That combination is already bound to another action:\n\n  \u{2022} {s}";
+pub const hotkey_reason_taken_unnamed_msg =
+    "That combination is already bound to another action on this desktop.";
+pub const hotkey_reason_grab_refused_msg =
+    "The desktop refused the grab. Another application or the desktop itself holds the combination.";
+/// #510 — 인수를 **사용자가 거절한** 경우. 이것을 `hotkey_reason_backend_failed_format` 으로
+/// 흘리면 본문에 `KGlobalAccelTakeoverDeclined` 라는 내부 에러 이름이 그대로 찍힌다 (실측).
+/// 게다가 그것은 "등록이 실패했다" 가 아니라 **사용자가 고른 결과**라 서술 자체가 틀렸다.
+pub const hotkey_reason_takeover_declined_format =
+    "You chose to keep the existing binding, so {s} still owns that combination and TildaZ has none. Free it in your desktop's shortcut settings if you want TildaZ to have it.";
+pub const hotkey_reason_takeover_declined_msg =
+    "You chose to keep the existing binding, so TildaZ has no hotkey to open with.";
+
+pub const hotkey_reason_backend_failed_format =
+    "Registration failed: {s}.";
+
+/// #510 — sway 고유 사유. sway 는 등록 상대이자 compositor 자신이라 "다른 앱이 쥐고
+/// 있다" 가 아니라 **명령이 통하지 않았다** 쪽 문장이 맞다.
+pub const sway_reason_no_socket_msg =
+    "This session says it is sway, but SWAYSOCK is not set, so TildaZ cannot reach the compositor to bind the key.";
+pub const sway_reason_command_too_long_msg =
+    "The bind command did not fit -- the path to the TildaZ executable is unusually long.";
+pub const sway_reason_ipc_failed_format =
+    "The sway IPC call failed: {s}.";
+pub const sway_reason_rejected_msg =
+    "sway rejected the bind command.";
+pub const sway_reason_rejected_format =
+    "sway rejected the bind command:\n\n  \u{2022} {s}";
+
 /// #496 1-c — a position hotkey is matched by physical key, so it needs a low-level
 /// keyboard hook rather than the OS hotkey table. The failure causes are different
 /// enough from `RegisterHotKey` that reusing that text would misdirect the user.
@@ -553,8 +620,9 @@ pub const macos_menu_emoji_symbols_label = "Emoji & Symbols";
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =
     \\TildaZ needs two macOS permissions to work.
-    \\Without them the {s} hotkey will not respond.
-    \\(Cmd+Q from the menu still works either way.)
+    \\Without them the {s} hotkey cannot be registered, and a drop-down
+    \\terminal you cannot summon is no terminal at all -- so TildaZ closes
+    \\when you dismiss this dialog. Grant both, then start it again.
     \\
     \\Please follow these steps:
     \\
@@ -573,15 +641,12 @@ pub const macos_permission_required_format =
     \\  3. Same as above: turn "tildaz" ON,
     \\     or click "+" to add TildaZ.app and then turn it ON.
     \\
-    \\Step 3 — Restart TildaZ
-    \\  Quit and relaunch this app for the new permissions to take effect.
+    \\Step 3 — Start TildaZ again
+    \\  Launch the app. The new permissions take effect on the next start.
     \\
     \\Current status:
     \\  Input Monitoring : {s}
     \\  Accessibility    : {s}
-    \\
-    \\(Developer note: ad-hoc signed builds get a new identity on each
-    \\rebuild, so permissions must be re-granted after every rebuild.)
 ;
 pub const macos_permission_required_fallback_msg = "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
 pub const permission_status_granted = "GRANTED";

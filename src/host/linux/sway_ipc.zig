@@ -28,6 +28,7 @@ const config_mod = @import("../../config.zig");
 const hotkey_format = @import("hotkey_format.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
+const messages = @import("../../messages.zig");
 
 const native_endian = builtin.target.cpu.arch.endian();
 
@@ -57,30 +58,51 @@ const ipc_header_len = ipc_magic.len + 8; // magic(6) + len(4) + type(4)
 ///
 /// `keycode` 가 null 이면 예전처럼 `bindsym` 으로 등록한다 — libxkbcommon 이 keymap
 /// 조회 심볼을 안 내주는 환경에서 핫키를 아예 잃는 것보다 낫다.
+/// #510 — 반환값이 생겼다. **등록에 성공하면 `null`, 실패하면 사용자에게 보일 사유**
+/// (문자열은 인자로 받은 `reason_buf` 에 담는다).
+///
+/// 예전에는 `void` 라 네 갈래 실패가 전부 로그로만 사라졌다. 세 platform 이 "핫키를
+/// 못 잡으면 멈춘다" 로 정책을 맞추는데 (#510 D) 호출자가 실패를 알 방법이 없으면 그
+/// 정책을 sway 에서 지킬 수가 없다.
+///
+/// **sway 에서 감지되는 것과 안 되는 것을 갈라 둔다** (nested sway 1.12 실측):
+///   - 감지됨 — IPC 오류 · `success:false`. 후자는 sway 가 `"error"` 문자열까지 준다
+///     (`Unknown key or button 'NotAKeyAtAll'`). 그대로 사용자에게 보여 준다.
+///   - **감지 안 됨 — "이 조합을 남이 이미 쓰고 있다".** sway 는 기존 binding 을 조용히
+///     밀어내고 `success:true` 를 준다 (sway 로그의 `Overwriting binding ...` 은 sway 의
+///     stderr 라 우리 채널이 아니고, 기본 로그 레벨에선 찍히지도 않는다). 그런데 그것은
+///     *우리가 지는* 상황이 아니라 **이기는** 상황이라 멈출 대상이 아니다. 대신 사용자
+///     binding 을 말없이 빼앗는 반대편 문제가 남고, 그건 별 이슈다.
 pub fn registerToggleIfSway(
     rt: Runtime,
     allocator: std.mem.Allocator,
     cfg: *const config_mod.Config,
     keycode: ?u16,
-) void {
+    reason_buf: []u8,
+) ?[]const u8 {
     // sway 판별 — `SWAYSOCK` 존재가 가장 확실 (IPC 가능 == socket 있음).
     // `XDG_CURRENT_DESKTOP` 토큰은 보조 (SWAYSOCK 미설정 환경 hedge).
     //
     // #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 에서는 블록을 그대로 훑어
     // **할당이 없고** 이미 NUL 종단이라, 이 함수가 고정 버퍼만 쓰는 성질이 유지된다.
     const sock_path = rt.environ.getPosix("SWAYSOCK") orelse {
+        // #510 — sway 가 아니면 실패가 아니다 (호출 자체가 `is_sway` 뒤에 있지만, 이
+        // 함수 단독으로도 그 구분이 성립해야 한다). `XDG_CURRENT_DESKTOP` 만 sway 인
+        // 어긋난 환경은 등록을 못 한 것이 맞으므로 사유를 돌려준다.
         if (isSwayDesktop(rt)) {
-            log.appendLine("sway", "XDG_CURRENT_DESKTOP=sway but SWAYSOCK not set — bindsym auto-register skipped", .{});
+            log.appendLine("sway", "XDG_CURRENT_DESKTOP=sway but SWAYSOCK not set — cannot reach the compositor", .{});
+            return fitReason(reason_buf, messages.sway_reason_no_socket_msg);
         }
-        return;
+        return null;
     };
 
     // 자기 실행 파일 절대 경로 — `exec` command 로 다시 `--toggle` 호출.
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
     const exe_len = std.process.executablePath(rt.io, &exe_buf) catch |err| {
-        log.appendLine("sway", "executablePath failed: {s} — bindsym auto-register skipped", .{@errorName(err)});
-        return;
+        log.appendLine("sway", "executablePath failed: {s}", .{@errorName(err)});
+        return std.fmt.bufPrint(reason_buf, messages.hotkey_reason_backend_failed_format, .{@errorName(err)}) catch
+            fitReason(reason_buf, messages.linux_hotkey_failed_fallback_msg);
     };
     const exe_path = exe_buf[0..exe_len];
 
@@ -93,22 +115,40 @@ pub fn registerToggleIfSway(
     const verb = if (keycode == null) "bindsym" else "bindcode";
 
     // sway command — `exec` 인자는 sway 가 sh -c 로 실행하므로 path 를 따옴표로.
+    //
+    // #510 — `--no-warn` 은 그대로 둔다. 우리는 **실행할 때마다 다시 등록**하므로, sway
+    // 가 살아 있는 채 tildaz 만 재시작하면 지우는 것이 *직전의 우리 binding* 이다. 그
+    // 경고는 사용자에게 의미가 없다. 실측으로 이 플래그가 IPC 응답을 바꾸지 않는 것도
+    // 확인했다 — 빼도 얻는 정보가 없다.
     var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
     const command = std.fmt.bufPrint(&cmd_buf, "{s} --no-warn {s} exec \"{s}\" --toggle {d}", .{ verb, accel, exe_path, instance_context.requireWorkerIndex() }) catch {
-        log.appendLine("sway", "bind command too long — skip", .{});
-        return;
+        log.appendLine("sway", "bind command too long", .{});
+        return fitReason(reason_buf, messages.sway_reason_command_too_long_msg);
     };
 
     log.appendLineVerbose("sway", "RUN_COMMAND payload=[{s}] (sock={s})", .{ command, sock_path });
-    const ok = runCommand(allocator, sock_path, command) catch |err| {
-        log.appendLine("sway", "{s} IPC failed: {s} — single_instance toggle retained (user can register manually)", .{ verb, @errorName(err) });
-        return;
+    var detail_buf: [192]u8 = undefined;
+    const outcome = runCommand(allocator, sock_path, command, &detail_buf) catch |err| {
+        log.appendLine("sway", "{s} IPC failed: {s}", .{ verb, @errorName(err) });
+        return std.fmt.bufPrint(reason_buf, messages.sway_reason_ipc_failed_format, .{@errorName(err)}) catch
+            fitReason(reason_buf, messages.linux_hotkey_failed_fallback_msg);
     };
-    if (ok) {
+    if (outcome.ok) {
         log.appendLine("sway", "{s} auto-registered OK — {s} → tildaz --toggle (runtime, refreshed each launch)", .{ verb, accel });
-    } else {
-        log.appendLine("sway", "{s} auto-register rejected (sway success=false) — accel={s}", .{ verb, accel });
+        return null;
     }
+    log.appendLine("sway", "{s} auto-register rejected (sway success=false) — accel={s} detail={s}", .{ verb, accel, outcome.detail });
+    if (outcome.detail.len == 0) return fitReason(reason_buf, messages.sway_reason_rejected_msg);
+    return std.fmt.bufPrint(reason_buf, messages.sway_reason_rejected_format, .{outcome.detail}) catch
+        fitReason(reason_buf, messages.sway_reason_rejected_msg);
+}
+
+/// #510 — 고정 문구를 호출자 버퍼에 담아 돌려준다. 버퍼가 짧으면 자른다 — 사유가
+/// 잘리는 것이 사유가 사라지는 것보다 낫다.
+fn fitReason(reason_buf: []u8, text: []const u8) []const u8 {
+    const n = @min(text.len, reason_buf.len);
+    @memcpy(reason_buf[0..n], text[0..n]);
+    return reason_buf[0..n];
 }
 
 /// 이 세션에서 sway 의 xdg_toplevel + IPC 경로를 쓸 것인가
@@ -182,11 +222,14 @@ pub fn registerWindowRuleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: 
     };
 
     log.appendLineVerbose("sway", "RUN_COMMAND payload=[{s}]", .{command});
-    const ok = runCommand(allocator, sock_path, command) catch |err| {
+    // 창 규칙은 hotkey 와 달리 실패해도 기동을 막지 않는다 — 창이 기본 위치로 뜰 뿐이다.
+    // 그래서 `detail` 을 쓰지 않고 버린다.
+    var detail_buf: [1]u8 = undefined;
+    const outcome = runCommand(allocator, sock_path, command, &detail_buf) catch |err| {
         log.appendLine("sway", "for_window IPC failed: {s} — 창이 기본 위치로 뜬다", .{@errorName(err)});
         return;
     };
-    if (ok) {
+    if (outcome.ok) {
         log.appendLine("sway", "for_window registered — {s} {d}x{d} ppt", .{ app_id, @round(w), @round(h) });
     } else {
         log.appendLine("sway", "for_window rejected (sway success=false) — app_id={s}", .{app_id});
@@ -333,10 +376,12 @@ pub fn runForAppId(rt: Runtime, allocator: std.mem.Allocator, app_id: []const u8
         return false;
     };
     log.appendLineVerbose("sway", "RUN_COMMAND payload=[{s}]", .{full});
-    return runCommand(allocator, sock_path, full) catch |err| {
+    var detail_buf: [1]u8 = undefined;
+    const outcome = runCommand(allocator, sock_path, full, &detail_buf) catch |err| {
         log.appendLine("sway", "IPC failed: {s} — command skipped: {s}", .{ @errorName(err), command });
         return false;
     };
+    return outcome.ok;
 }
 
 /// `XDG_CURRENT_DESKTOP` (콜론 구분 다중 토큰) 에 sway 토큰 포함 여부.
@@ -380,10 +425,21 @@ fn buildAccel(buf: []u8, keysym: u32, modifiers: u32) []const u8 {
     return fbs.buffered();
 }
 
+/// sway 가 RUN_COMMAND 에 준 결과.
+///
+/// #510 — `detail` 이 생겼다. sway 는 거부할 때 `"error"` 에 사람이 읽을 문장을 담아
+/// 준다 (실측: `Unknown key or button 'NotAKeyAtAll'`). 예전에는 그 문장을 verbose 로그로만
+/// 흘렸는데, 이제 등록 실패가 fatal 이라 **사용자에게 보여 줄 사유**가 필요하다.
+const CommandOutcome = struct {
+    ok: bool,
+    /// sway 의 `"error"` 문자열. 호출자가 준 버퍼를 가리킨다. 없으면 빈 slice.
+    detail: []const u8,
+};
+
 /// `$SWAYSOCK` 에 i3-ipc RUN_COMMAND 송신 후 응답의 `"success":true` 여부 반환.
 /// connect / write / read 실패는 error. sway 가 command 를 거부하면 (false 반환)
-/// IPC 자체는 성공이므로 `false` 를 반환 (error 아님).
-fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []const u8) !bool {
+/// IPC 자체는 성공이므로 `ok = false` 를 반환 (error 아님).
+fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []const u8, detail_buf: []u8) !CommandOutcome {
     // #451 — `posix.socket` · `posix.connect` · `std.net.Address.initUnix` 가 모두 없어졌다.
     // `unix_socket.zig` 이 그 자리이고 `single_instance` · `wayland_minimal` 과 같은 배관이다.
     const fd = try unix_socket.openSocket(posix.SOCK.CLOEXEC);
@@ -422,8 +478,46 @@ fn runCommand(allocator: std.mem.Allocator, sock_path: []const u8, command: []co
     const any_false = std.mem.find(u8, payload, "\"success\": false") != null or
         std.mem.find(u8, payload, "\"success\":false") != null;
     const ok = any_true and !any_false;
-    if (!ok) log.appendLineVerbose("sway", "RUN_COMMAND resp(success=false)=[{s}]", .{payload});
-    return ok;
+    if (ok) return .{ .ok = true, .detail = &.{} };
+    log.appendLineVerbose("sway", "RUN_COMMAND resp(success=false)=[{s}]", .{payload});
+    return .{ .ok = false, .detail = extractJsonError(payload, detail_buf) };
+}
+
+/// #510 — 응답 JSON 에서 `"error"` 값을 꺼낸다.
+///
+/// **파서를 붙이지 않는다.** 바로 위 `"success"` 판정이 이미 부분 문자열 방식이고
+/// (그 주석의 근거가 그대로 적용된다 — 응답이 작고 형태가 고정이다), 이 값 하나 때문에
+/// JSON 파서를 끌어오면 이 모듈이 고정 버퍼만 쓴다는 성질이 깨진다.
+///
+/// sway 의 오류 문장은 평문이라 escape 가 사실상 없지만, `\"` 는 값의 끝으로 오인하지
+/// 않도록 넘긴다. 버퍼보다 길면 자른다 — 사유가 잘리는 것이 사라지는 것보다 낫다.
+fn extractJsonError(payload: []const u8, out: []u8) []const u8 {
+    const key_spaced = "\"error\": \"";
+    const key_tight = "\"error\":\"";
+    const start = if (std.mem.find(u8, payload, key_spaced)) |i|
+        i + key_spaced.len
+    else if (std.mem.find(u8, payload, key_tight)) |i|
+        i + key_tight.len
+    else
+        return &.{};
+
+    var written: usize = 0;
+    var i = start;
+    while (i < payload.len and written < out.len) : (i += 1) {
+        const c = payload[i];
+        if (c == '\\') {
+            // escape — 다음 문자를 그대로 싣고 종료 판정에서 뺀다.
+            i += 1;
+            if (i >= payload.len) break;
+            out[written] = payload[i];
+            written += 1;
+            continue;
+        }
+        if (c == '"') break;
+        out[written] = c;
+        written += 1;
+    }
+    return out[0..written];
 }
 
 const writeAll = unix_socket.writeAll;

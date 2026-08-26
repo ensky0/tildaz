@@ -119,6 +119,10 @@ const HyprlandBind = struct {
     keycode: u32 = 0,
     dispatcher: []const u8 = "",
     arg: []const u8 = "",
+    /// #510 — submap 안의 binding 은 그 submap 이 활성일 때만 산다. 전역 충돌 판정
+    /// (`hyprlandForeignBinding`) 이 이 값을 보고 걸러낸다. 우리 것은 항상 전역이라
+    /// 기존 sync 경로는 이 필드를 보지 않는다.
+    submap: []const u8 = "",
 };
 
 const hypr_mod_shift: u32 = 1;
@@ -871,4 +875,207 @@ fn ronStringUnescape(escaped: []const u8, buf: []u8) ?[]const u8 {
         out += 1;
     }
     return null;
+}
+
+// =============================================================================
+// #510 — 전역 hotkey 소유권 판정 (read-before-write)
+//
+// Hyprland 와 COSMIC 은 등록이 **결과를 돌려주지 않는다.** `hyprctl` 은 중복 bind 에도
+// exit 0 을 주고 (실측), COSMIC 은 RON 파일 쓰기라 되먹임이 아예 없다. 그래서 "등록이
+// 실패했나" 를 물을 수 없고, 대신 **쓰기 전에 이미 잡혀 있는지 읽어서** 판정한다.
+//
+// KDE 와 sway 는 여기 없다. KDE 는 `claimKey` 가 사전 조회 · 사용자 확인 · 인수 · 사후
+// 검증을 다 하고, sway 는 IPC 응답이 거절을 알려 준다 — 둘은 등록 자체가 답을 준다.
+// =============================================================================
+
+/// 남의 binding 설명을 담을 버퍼 크기. 명령 문자열이 길 수 있어 넉넉히 잡되, 다이얼로그
+/// 본문 한 줄로 읽히는 선에서 끊는다.
+pub const foreign_binding_desc_max = 240;
+
+/// #510 — 이 accel 을 **우리 것이 아닌** Hyprland binding 이 이미 쓰고 있는가.
+///
+/// Hyprland 는 같은 조합에 binding 을 여러 개 두고 **전부 발화시킨다** (실측: 중복 bind
+/// 뒤 `hyprctl -j binds` 에 두 항목이 남았다). 그래서 우리 토글과 남의 동작이 함께 돌고,
+/// 사용자는 드롭다운을 부를 때마다 엉뚱한 일이 같이 벌어지는 것을 보게 된다.
+///
+/// 반환: 충돌하는 남의 binding 설명 (`out_buf` 에 담긴다). 없으면 `null`.
+pub fn hyprlandForeignBinding(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    hotkey: config.Hotkey,
+    out_buf: []u8,
+) !?[]const u8 {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+
+    var want_buf: [96]u8 = undefined;
+    const want = try hyprlandAccel(&want_buf, hotkey);
+
+    const actual = try readHyprlandBindings(rt, allocator);
+    defer actual.deinit();
+
+    for (actual.value) |binding| {
+        // submap 안의 binding 은 그 submap 에서만 산다 — 전역 충돌이 아니다.
+        if (binding.submap.len != 0) continue;
+        // 우리 것은 충돌이 아니다. launcher 가 worker 를 띄우기 **전에** 등록하므로
+        // (`main.zig` 의 `shortcut_sync.sync` → `spawnWorker` 순서) 이 목록에는 방금
+        // 넣은 우리 binding 이 반드시 들어 있다.
+        if (std.mem.eql(u8, binding.dispatcher, "exec") and managedToggleCommand(binding.arg, exe)) continue;
+
+        var got_buf: [96]u8 = undefined;
+        const got = foreignHyprlandAccel(&got_buf, binding) orelse continue;
+        if (!std.ascii.eqlIgnoreCase(got, want)) continue;
+
+        return std.fmt.bufPrint(out_buf, "{s} → {s} {s}", .{ want, binding.dispatcher, binding.arg }) catch
+            std.fmt.bufPrint(out_buf, "{s} → {s}", .{ want, binding.dispatcher }) catch null;
+    }
+    return null;
+}
+
+/// `HyprlandBind` 를 `hyprlandAccel` 과 **같은 형식**의 문자열로 만든다. 우리 것만 보는
+/// `managedHyprlandAccel` 과 달리 남의 binding 도 받아야 해서 명령 조건이 없다.
+fn foreignHyprlandAccel(buf: []u8, binding: HyprlandBind) ?[]const u8 {
+    // 우리가 표현할 수 없는 modifier 가 섞여 있으면 비교 대상이 아니다.
+    if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
+
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
+    if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
+    if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
+    if ((binding.modmask & hypr_mod_alt) != 0) writer.writeAll("ALT ") catch return null;
+    if ((binding.modmask & hypr_mod_super) != 0) writer.writeAll("SUPER ") catch return null;
+    writer.writeByte(',') catch return null;
+    // 위치로 등록된 binding 은 `key` 가 비고 `keycode` 에 xkb 번호가 온다 —
+    // `hyprlandAccel` 이 쓰는 `code:NN` 과 같은 체계다.
+    if (binding.keycode != 0) {
+        writer.print("code:{d}", .{binding.keycode}) catch return null;
+        return fbs.buffered();
+    }
+    if (binding.key.len == 0) return null;
+    writer.writeAll(binding.key) catch return null;
+    return fbs.buffered();
+}
+
+/// #510 — 이 accel 을 **우리 것이 아닌** COSMIC 단축키가 이미 쓰고 있는가.
+///
+/// COSMIC 의 단축키 파일은 RON **map** 이고, 같은 키가 두 번 나오면 COSMIC 이 파일을
+/// 통째로 버린다 — 사용자 단축키까지 함께 사라지는 [#484](https://github.com/ensky0/tildaz/issues/484)
+/// 의 기전이다. 그래서 여기서의 충돌은 "우리 핫키가 안 먹는다" 보다 나쁘다.
+///
+/// **사용자 `custom` 파일만 본다.** 시스템 기본값
+/// (`/usr/share/cosmic/…/v1/defaults`) 과 `custom` 사이의 우선순위를 확인하지 못했다
+/// (**확인 필요**). `custom` 이 기본값을 덮는다면 기본값과의 겹침은 *우리가 이기는* 상황
+/// 이므로, 그것을 충돌로 읽으면 **멀쩡한 설정에서 앱이 안 뜬다.** 잘못된 fatal 은 놓친
+/// 감지보다 나쁘므로 확인될 때까지 보지 않는다.
+///
+/// 반환: 충돌하는 남의 항목 설명 (`out_buf` 에 담긴다). 없으면 `null`.
+pub fn cosmicForeignBinding(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    hotkey: config.Hotkey,
+    out_buf: []u8,
+) !?[]const u8 {
+    const want = cosmicAccelOf(hotkey) orelse return null;
+
+    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
+    const path = try std.Io.Dir.path.join(allocator, &.{
+        home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1", "custom",
+    });
+    defer allocator.free(path);
+
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
+        // 파일이 없으면 사용자 단축키가 하나도 없다 — 충돌할 것이 없다.
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close(rt.io);
+    var file_reader = file.reader(rt.io, &.{});
+    const content = try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    defer allocator.free(content);
+
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    const exe = exe_buf[0..exe_len];
+
+    var offset: usize = 0;
+    while (offset < content.len) {
+        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
+        const line = content[offset..end];
+        offset = if (end < content.len) end + 1 else content.len;
+
+        // 우리 줄은 충돌이 아니다 — 표식이 붙은 줄과, 옛 install.sh 가 쓴 표식 없는 줄.
+        if (tildazCosmicEntryIndex(line) != null) continue;
+        if (legacyInstallScriptEntryIndex(line, exe) != null) continue;
+
+        const got = parseCosmicAccel(line) orelse continue;
+        if (got.modifiers != want.modifiers) continue;
+        if (!std.mem.eql(u8, got.key(), want.key())) continue;
+
+        return std.fmt.bufPrint(out_buf, "{s}", .{std.mem.trim(u8, line, " \t\r,")}) catch
+            std.fmt.bufPrint(out_buf, "{s}", .{got.key()}) catch null;
+    }
+    return null;
+}
+
+/// COSMIC 단축키 한 줄에서 뽑아낸 비교용 accel. modifier 는 **집합**으로 본다 — 파일에
+/// 적힌 순서에 기대면 사용자가 손으로 쓴 줄에서 어긋난다.
+const CosmicAccel = struct {
+    modifiers: u32,
+    key_buf: [64]u8,
+    key_len: usize,
+
+    fn key(self: *const CosmicAccel) []const u8 {
+        return self.key_buf[0..self.key_len];
+    }
+};
+
+/// 우리 hotkey 를 `CosmicAccel` 로. 위치 표기는 `null` 이다 — COSMIC 은 자리를 못 받고
+/// 워커가 *현재 layout 이 내는 글자*로 바꿔 쓰므로 (`writeCosmicPositionHotkey`), 그
+/// 변환 결과로 비교해야 한다. 그 경로는 별도로 다룬다.
+fn cosmicAccelOf(hotkey: config.Hotkey) ?CosmicAccel {
+    if (hotkey.code != null) return null;
+    const name = config.linuxKeysymName(hotkey.keysym) orelse return null;
+    if (name.len > 64) return null;
+    var out: CosmicAccel = .{ .modifiers = hotkey.modifiers, .key_buf = undefined, .key_len = name.len };
+    @memcpy(out.key_buf[0..name.len], name);
+    return out;
+}
+
+/// `    (modifiers: [Super, Shift], key: "Escape"): System(LogOut),` 한 줄을 읽는다.
+///
+/// 파서를 붙이지 않는 이유는 이 파일의 다른 COSMIC 코드와 같다 — 한 항목이 한 줄이고
+/// 형태가 고정이라, 부분 문자열로 충분하고 그 편이 고정 버퍼만 쓰는 성질을 지킨다.
+fn parseCosmicAccel(line: []const u8) ?CosmicAccel {
+    const mods_open = std.mem.find(u8, line, "(modifiers: [") orelse return null;
+    const mods_start = mods_open + "(modifiers: [".len;
+    const mods_end = std.mem.findScalarPos(u8, line, mods_start, ']') orelse return null;
+
+    var modifiers: u32 = 0;
+    var it = std.mem.tokenizeAny(u8, line[mods_start..mods_end], ", \t");
+    while (it.next()) |token| {
+        if (std.ascii.eqlIgnoreCase(token, "Super")) {
+            modifiers |= config.Hotkey.MOD_SUPER;
+        } else if (std.ascii.eqlIgnoreCase(token, "Ctrl")) {
+            modifiers |= config.Hotkey.MOD_CTRL;
+        } else if (std.ascii.eqlIgnoreCase(token, "Alt")) {
+            modifiers |= config.Hotkey.MOD_ALT;
+        } else if (std.ascii.eqlIgnoreCase(token, "Shift")) {
+            modifiers |= config.Hotkey.MOD_SHIFT;
+        } else {
+            // 우리가 표현할 수 없는 modifier — 비교 대상이 아니다.
+            return null;
+        }
+    }
+
+    const key_open = "key: \"";
+    const key_at = std.mem.findPos(u8, line, mods_end, key_open) orelse return null;
+    const key_start = key_at + key_open.len;
+    const key_end = std.mem.findScalarPos(u8, line, key_start, '"') orelse return null;
+    const name = line[key_start..key_end];
+    if (name.len == 0 or name.len > 64) return null;
+
+    var out: CosmicAccel = .{ .modifiers = modifiers, .key_buf = undefined, .key_len = name.len };
+    @memcpy(out.key_buf[0..name.len], name);
+    return out;
 }
