@@ -13,11 +13,13 @@
 #   KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] 그룹
 #   ~/.config/sway/config 의 tildaz 블록 (install.sh 가 넣은 marker+exec 2줄만.
 #     파일/본문은 보존, marker 없는 사용자 작성 줄은 안 건드림)
+#   ~/.config/cosmic/...Shortcuts/v1/custom 의 TildaZ 단축키 줄 (표식 있는 줄 +
+#     예전 install.sh 가 쓴 표식 없는 줄. 사용자가 이름 붙인 줄은 보존)
 #   ~/.config/hypr/{hyprland.conf,hyprland.lua} 의 tildaz 블록 (marker + 다음 줄
 #     2줄만. .conf=exec-once / .lua=hl.on, 동일 규칙. 본문 보존)
 #
 # 보존:
-#   $XDG_CONFIG_HOME/tildaz/config_N.json  (fallback: ~/.config, 사용자 설정)
+#   $XDG_CONFIG_HOME/tildaz/config_N.toml  (fallback: ~/.config, 사용자 설정)
 #   $XDG_STATE_HOME/tildaz/               (fallback: ~/.local/state, log)
 #
 # 사용법:
@@ -220,16 +222,31 @@ remove_tildaz_block "$SWAY_CFG"  "$TILDAZ_MARKER"     "marker + exec 2줄"
 remove_tildaz_block "$HYPR_CONF" "$TILDAZ_MARKER"     "marker + exec-once 2줄"
 remove_tildaz_block "$HYPR_LUA"  "$TILDAZ_MARKER_LUA" "marker + hl.on 2줄"
 
-# COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 `Spawn("..tildaz
-# --toggle N")` 매칭으로 그 줄만 제거(구형 번호 없는 항목도 포함, 다른 단축키 + 바깥 '{ }' 보존). 바이너리 경로
-# 무관하게 매칭(uninstall 시 binary 가 이미 없을 수 있음).
+# COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 줄 단위로 지운다.
+# 지우는 것은 둘뿐이다.
+#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")`. 바이너리 경로 · 이름과
+#      무관하게 우리 것이다.
+#   ② 표식이 아예 없고 명령이 `tildaz --toggle[ N]` 인 줄 — 예전 install.sh 가 쓴 것
+#      (#514). 지금 install.sh 는 COSMIC 항목을 쓰지 않는다.
+# 사용자가 이름을 붙인 줄(`description: Some("My wrapper")`)은 명령이 겹쳐도 보존한다 —
+# 명령 문자열로 판정하면 남의 항목을 지운다(#484). 바깥 '{ }' 와 다른 단축키도 보존.
+# 경로를 안 보는 이유는 uninstall 시점엔 binary 가 이미 없을 수 있어서다.
 COSMIC_CUSTOM="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
-if [[ -f "$COSMIC_CUSTOM" ]] && grep -qE 'Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)' "$COSMIC_CUSTOM"; then
+if [[ -f "$COSMIC_CUSTOM" ]]; then
     tmp="$COSMIC_CUSTOM.tildaz-uninstall-tmp"
-    grep -vE 'Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)' "$COSMIC_CUSTOM" > "$tmp"
-    mv "$tmp" "$COSMIC_CUSTOM"
-    echo "Removed: tildaz hotkey shortcut in $COSMIC_CUSTOM"
-    removed=$((removed + 1))
+    awk '
+        /description: Some\("TildaZ_[0-9]+"\)/ { next }
+        /description:/ { print; next }
+        /Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)/ { next }
+        { print }
+    ' "$COSMIC_CUSTOM" > "$tmp"
+    if cmp -s "$tmp" "$COSMIC_CUSTOM"; then
+        rm -f "$tmp"
+    else
+        mv "$tmp" "$COSMIC_CUSTOM"
+        echo "Removed: tildaz hotkey shortcut in $COSMIC_CUSTOM"
+        removed=$((removed + 1))
+    fi
 fi
 
 if [[ "$removed" -eq 0 ]]; then
