@@ -157,8 +157,24 @@ A few positions do not exist on macOS — `[PrintScreen]`, `[ScrollLock]` and
 ### The global hotkey is different
 
 `hotkey` is registered with the desktop rather than handled inside TildaZ, and
-every path TildaZ uses for that — sway, Hyprland, GNOME, Cinnamon, COSMIC, KDE —
-accepts only a character, so it does **not** take the position form.
+the desktops do not agree on what they accept. It takes the position form, but
+how that reaches the desktop differs:
+
+| Desktop | How a position is registered |
+|---|---|
+| sway, Hyprland | by key position (`bindcode`, `code:`) |
+| GNOME, Cinnamon | by key position (`0x31`) |
+| **COSMIC, KDE** | **by the character that position types on your current layout** |
+| Windows | by the virtual key that position holds on your current layout |
+| macOS | by key position |
+
+The rows that follow your layout re-register themselves when you switch layouts
+while TildaZ is running. A layout switch while TildaZ is closed is picked up the
+next time it starts.
+
+**Dead keys are the exception.** On a German layout the `[Backquote]` position is
+a dead accent, and COSMIC and KDE have no way to express that, so TildaZ logs it
+instead of registering a shortcut that would fire the wrong key.
 
 **On macOS the global hotkey matches by position, not by label.** It is caught by
 an event tap before any layout translation, so `hotkey` and `[keys]` use

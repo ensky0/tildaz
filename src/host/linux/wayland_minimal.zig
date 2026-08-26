@@ -49,6 +49,7 @@ const checkErr = unix_socket.checkErr;
 const sway_ipc = @import("sway_ipc.zig");
 const signal_exit = @import("../../signal_exit.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
+const shortcut_sync_linux = @import("../../shortcut_sync/linux.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const shell_validate = @import("../../shell_validate.zig");
@@ -1371,6 +1372,11 @@ const Client = struct {
     // KGlobalAccel filter 안에서는 Wayland roundtrip을 시작하지 않는다. Pressed
     // callback은 이 flag만 세우고 main loop가 D-Bus dispatch 반환 뒤 toggle한다.
     kglobalaccel_toggle_pending: bool = false,
+    /// #496 1-c — KDE 에 지금 등록돼 있는 keysym (위치 표기 hotkey 일 때만 쓴다).
+    /// layout 이 바뀌었는지 비교하는 기준이라 0 은 "아직 등록 안 함" 이다.
+    kde_position_keysym: u32 = 0,
+    /// #496 1-c — COSMIC RON 에 지금 쓰여 있는 keysym. KDE 쪽과 같은 역할이다.
+    cosmic_position_keysym: u32 = 0,
     // surface visibility toggle state. macOS `g_visible` 동등. false
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
     // commit 송신 끝난 상태). 다음 toggle → flip + re-attach.
@@ -1728,7 +1734,13 @@ const Client = struct {
         // 정체를 바꾸는 것으로는 부족하다 (창 타이틀 · app_id 와 다른 점이다). 이름을
         // 달리해도 KDE 단축키 레지스트리에 측정용 항목이 남으므로 **등록 자체를 건너뛴다** —
         // 같은 파일의 sway `bindsym` · GSettings 등록과 같은 형태다.
-        if (!self.run_opts.isStressRun()) self.tryConnectKGlobalAccel();
+        // #496 1-c — **라벨 binding 만 여기서 등록한다.** 위치 표기는 그 자리가 내는
+        // keysym 을 알아야 하는데 (KDE 는 자리를 못 받는다) keymap 이 아직 없다. 아래
+        // `keyboard ready` roundtrip 뒤로 미루는데, 그 자리는 `hidden_at_start` 판단보다
+        // **앞이라** 동작이 달라지지 않는다 — 미룬 등록이 늦어 `has_kde_hotkey` 가 false
+        // 로 읽히면 숨은 채 시작해야 할 창이 뜬다.
+        if (!self.run_opts.isStressRun() and self.config.hotkey.code == null)
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, null);
         self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
@@ -1736,6 +1748,11 @@ const Client = struct {
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
         self.logBootElapsed("keyboard ready");
+        // #496 1-c — 위치 표기 hotkey 의 KDE 등록. keymap 이 방금 도착했다.
+        if (!self.run_opts.isStressRun()) {
+            self.registerKdePositionHotkey();
+            self.writeCosmicPositionHotkey();
+        }
 
         // #282 C2 — startup shell 검증. Windows / macOS host 는 Config.load 직후
         // `shell_validate.validateOrFatal` 로 잘못된 `config.shell` 을 안내 후 종료하지만
@@ -1915,6 +1932,7 @@ const Client = struct {
             self.drainInfoRequest();
             self.drainConfigNotice();
             self.drainSwayToggleRegister();
+            self.drainKdeLayoutChange();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -5635,6 +5653,8 @@ const Client = struct {
         log.appendLineVerbose("wayland", "keyboard keymap loaded size={}", .{size});
         // #496 1-a — layout 이 바뀌면 이 event 가 다시 온다. 그래서 매번 다시 푼다.
         self.resolveBindingFallbacks();
+        self.refreshKdePositionHotkey();
+        self.writeCosmicPositionHotkey();
     }
 
     fn handleKeyboardKey(self: *Client, payload: []const u8) !void {
@@ -5968,7 +5988,11 @@ const Client = struct {
             readU32(payload[12..16]),
             group,
         );
-        if (group_changed) self.resolveBindingFallbacks();
+        if (group_changed) {
+            self.resolveBindingFallbacks();
+            self.refreshKdePositionHotkey();
+            self.writeCosmicPositionHotkey();
+        }
     }
 
     fn handleKeyboardRepeatInfo(self: *Client, payload: []const u8) void {
@@ -7056,7 +7080,7 @@ const Client = struct {
     /// 등록한다. 다른 desktop은 launcher/extension/compositor가 `--toggle N`
     /// IPC를 호출하므로 worker에서 D-Bus hotkey client를 만들지 않는다.
     /// 연결·등록 실패는 fatal이 아니며 hidden_start는 즉시 표시로 fallback한다.
-    fn tryConnectKGlobalAccel(self: *Client) void {
+    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, codepoint: ?u21) void {
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
             log.appendLine("dbus", "session bus connect skipped: {s} — hotkey disabled", .{@errorName(err)});
@@ -7069,8 +7093,9 @@ const Client = struct {
             self.rt,
             self.allocator,
             &self.dbus_session.?,
-            self.config.hotkey.keysym,
+            keysym,
             self.config.hotkey.modifiers,
+            codepoint,
             onKGlobalAccelPressed,
             self,
         ) catch |err| {
@@ -7095,7 +7120,17 @@ const Client = struct {
             }
         }
         if (self.kglobalaccel_client) |client| {
-            client.drainOwnerRestart(self.config.hotkey.keysym, self.config.hotkey.modifiers);
+            // #496 1-c — 위치 표기는 `hotkey.keysym` 이 sentinel 0 이라 그대로 넘기면
+            // 재등록이 실패한다. 우리가 풀어 둔 값을 준다.
+            const keysym = if (self.config.hotkey.code == null)
+                self.config.hotkey.keysym
+            else
+                self.kde_position_keysym;
+            const codepoint: ?u21 = if (self.config.hotkey.code == null)
+                null
+            else
+                self.keyboard.keysymToUtf32(keysym);
+            client.drainOwnerRestart(keysym, self.config.hotkey.modifiers, codepoint);
         }
         if (self.kglobalaccel_toggle_pending) {
             self.kglobalaccel_toggle_pending = false;
@@ -7103,6 +7138,136 @@ const Client = struct {
                 log.appendLine("kglobalaccel", "toggle failed: {s}", .{@errorName(err)});
             };
         }
+    }
+
+    /// #496 1-c — 위치 표기 hotkey 가 **지금 layout 에서** 내는 keysym.
+    ///
+    /// KDE 와 COSMIC 은 자리를 받지 못하고 글자만 받으므로, 그 자리를 눌렀을 때 실제로
+    /// 나오는 글자로 등록한다. AZERTY 에서 `[Backquote]` 는 `twosuperior` 가 된다 —
+    /// #484 가 요청한 그 키다.
+    fn positionHotkeyKeysym(self: *Client) ?u32 {
+        const code = self.config.hotkey.code orelse return null;
+        return self.keyboard.keysymAtEvdev(physical_key.evdev(code));
+    }
+
+    /// #496 1-c — **dead keysym 은 글자로 넘길 수 없다.**
+    ///
+    /// KDE 실측에서 `Qt::Key_Dead_Circumflex` 를 주니 엉뚱한 문자 (`ោ`) 로 적혔다.
+    /// 독일어 자판의 `[Backquote]` 자리가 `dead_circumflex` 라 실제로 닿는 경로다
+    /// (`xkbcli compile-keymap --layout de` 의 `<TLDE>`). 자리를 그대로 받는 경로
+    /// (sway · Hyprland · GNOME) 는 해당이 없다 — 거기엔 글자가 끼지 않는다.
+    ///
+    /// 범위는 `xkbcommon-keysyms.h` 의 `XKB_KEY_dead_*` 다.
+    fn isDeadKeysym(keysym: u32) bool {
+        return keysym >= 0xfe50 and keysym <= 0xfe93;
+    }
+
+    /// #496 1-c — 위치 표기 hotkey 를 COSMIC 의 RON 에 쓴다 (`keyboard ready` 직후).
+    ///
+    /// launcher 가 이 인스턴스의 항목을 건너뛰고 기존 줄을 남겨 두므로
+    /// (`shortcut_sync/linux.zig` 의 `cosmicDeferredToWorker`), 여기서 쓰지 않으면
+    /// 항목이 없거나 낡은 채로 남는다.
+    fn writeCosmicPositionHotkey(self: *Client) void {
+        if (self.config.hotkey.code == null) return;
+        if (!cosmicCompositor(self.rt)) return;
+        const keysym = self.positionHotkeyKeysym() orelse {
+            log.appendLine("cosmic", "position hotkey unresolved -- keymap has no keysym at that spot", .{});
+            return;
+        };
+        if (isDeadKeysym(keysym)) {
+            // **직전 등록을 거둔다.** KDE 의 같은 자리 (`drainKdeLayoutChange`) 와 짝이다 —
+            // 남겨 두면 옛 layout 의 글자가 COSMIC 단축키 목록에 죽은 항목으로 남는다
+            // (실기: fr → de 로 바꾸니 `key: "twosuperior"` 가 그대로 남았다).
+            //
+            // `cosmic_position_keysym` 을 보지 않고 항상 부르는 이유는 **부팅 경로** 때문이다.
+            // 그 값은 매 실행 0 에서 시작하는데 RON 은 파일이라 지난 실행의 줄이 남아 있다.
+            // dead key layout 에서 tildaz 를 켜면 여기가 유일한 정리 시점이다. 실제 쓰기는
+            // `writeFileIfChanged` 가 거르므로 keymap 이벤트마다 파일이 바뀌지는 않는다.
+            self.cosmic_position_keysym = 0;
+            shortcut_sync_linux.removeCosmicPositionEntry(
+                self.rt,
+                self.allocator,
+                instance_context.requireWorkerIndex(),
+            ) catch |err| {
+                log.appendLine("cosmic", "position hotkey entry removal failed: {s}", .{@errorName(err)});
+            };
+            log.appendLine("cosmic", "position hotkey is a dead key on this layout -- not registered (use a function key)", .{});
+            return;
+        }
+        if (keysym == self.cosmic_position_keysym) return;
+        var name_buf: [64]u8 = undefined;
+        const name = self.keyboard.keysymName(keysym, &name_buf) orelse {
+            log.appendLine("cosmic", "position hotkey keysym 0x{x} has no xkb name -- not registered", .{keysym});
+            return;
+        };
+        shortcut_sync_linux.writeCosmicPositionEntry(
+            self.rt,
+            self.allocator,
+            instance_context.requireWorkerIndex(),
+            name,
+            self.config.hotkey.modifiers,
+        ) catch |err| {
+            log.appendLine("cosmic", "position hotkey entry write failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.cosmic_position_keysym = keysym;
+    }
+
+    /// #496 1-c — 위치 표기 hotkey 를 KDE 에 등록한다 (`keyboard ready` 직후).
+    fn registerKdePositionHotkey(self: *Client) void {
+        if (self.config.hotkey.code == null) return;
+        if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
+        const keysym = self.positionHotkeyKeysym() orelse {
+            log.appendLine("kglobalaccel", "position hotkey unresolved -- keymap has no keysym at that spot, hotkey disabled", .{});
+            return;
+        };
+        if (isDeadKeysym(keysym)) {
+            log.appendLine("kglobalaccel", "position hotkey is a dead key on this layout -- not registered (use a function key)", .{});
+            return;
+        }
+        self.kde_position_keysym = keysym;
+        self.tryConnectKGlobalAccel(keysym, self.keyboard.keysymToUtf32(keysym));
+    }
+
+    /// #496 1-c — KDE 가 D-Bus 로 알려 준 layout 전환을 처리한다.
+    ///
+    /// **포커스가 없어도 온다는 것이 이 경로의 전부다.** Wayland 의 group 전환은 포커스한
+    /// client 에게만 가는데 드롭다운은 대개 숨어 있고, 그때 layout 을 바꾸면 hotkey 가 옛
+    /// 글자로 남아 **창을 부를 수단이 사라진다** (실기 확인).
+    ///
+    /// `active_group` 을 여기서 직접 세우는 이유도 같다 — `wl_keyboard.modifiers` 가 오지
+    /// 않았으므로 그 값이 낡아 있고, 그대로 조회하면 옛 글자를 다시 등록한다. KDE 의
+    /// layout index 가 곧 xkb group 이라 그 자리에 쓸 수 있다.
+    fn drainKdeLayoutChange(self: *Client) void {
+        const client = self.kglobalaccel_client orelse return;
+        const index = client.takeLayoutChange() orelse return;
+        if (self.config.hotkey.code == null) return;
+        self.keyboard.active_group = index;
+        self.refreshKdePositionHotkey();
+    }
+
+    /// #496 1-c — layout 이 바뀌면 그 자리가 내는 글자도 바뀌므로 다시 등록한다.
+    ///
+    /// 자리를 그대로 받는 경로 (sway `bindcode`) 는 이것이 필요 없다 — 한 번 고정하면
+    /// 끝이다. KDE 는 글자만 받아서 따라다녀야 한다.
+    fn refreshKdePositionHotkey(self: *Client) void {
+        const client = self.kglobalaccel_client orelse return;
+        if (self.config.hotkey.code == null) return;
+        const keysym = self.positionHotkeyKeysym() orelse return;
+        if (keysym == self.kde_position_keysym) return;
+        self.kde_position_keysym = keysym;
+        // **가드가 여기에도 있어야 한다.** 처음엔 등록 경로에만 뒀는데, 실기에서 독일어로
+        // 전환하니 dead key 가 그대로 `rebind` 로 흘러 일반 실패
+        // (`KGlobalAccelUnsupportedKey`) 로 끝났다 — 결과는 "등록 안 됨" 으로 같지만
+        // 원인이 로그에 남지 않아 진단이 어렵다 (#496 1-c 검증).
+        if (isDeadKeysym(keysym)) {
+            // 직전 등록을 거둔다. 남겨 두면 옛 layout 의 글자가 KDE 단축키 목록에 죽은
+            // 항목으로 남는다 (실기에서 독일어로 바꾼 뒤 `Ctrl+Ё` 가 그대로 남았다).
+            client.unbind();
+            log.appendLine("kglobalaccel", "layout changed -- position is a dead key now, hotkey unregistered", .{});
+            return;
+        }
+        client.rebind(keysym, self.config.hotkey.modifiers, self.keyboard.keysymToUtf32(keysym));
     }
 
     fn onKGlobalAccelPressed(user_data: ?*anyopaque, timestamp: i64) void {
@@ -8446,6 +8611,13 @@ const Client = struct {
         if (!self.pending_sway_toggle_register) return;
         if (self.keyboard.keymap == null) return;
         self.pending_sway_toggle_register = false;
+
+        // #496 1-c — 위치 표기는 **판정이 필요 없다.** 자리가 곧 답이라 layout 을 물어볼
+        // 것이 없다. 라벨은 "지금 자판이 그 글자를 내는가" 를 물어야 하지만 자리는 아니다.
+        if (self.config.hotkey.code) |code| {
+            sway_ipc.registerToggleIfSway(self.rt, self.allocator, self.config, physical_key.evdev(code));
+            return;
+        }
 
         const keysym = self.config.hotkey.keysym;
         const keycode: ?u16 = switch (self.keyboard.canProduceKeysym(keysym) orelse return sway_ipc.registerToggleIfSway(

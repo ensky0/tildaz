@@ -143,19 +143,6 @@ pub const HotkeyFailure = enum {
     unknown_key,
     /// key 는 유효하지만 modifier 없이 전역 등록할 수 없는 키다 (F1~F12 만 허용).
     modifier_required,
-    /// #496 — 위치 표기 (`[KeyW]`) 를 전역 `hotkey` 에 썼다. 아직 `[keys]` 에서만
-    /// 받는다: 전역 핫키는 OS / compositor 에 *등록* 해야 하는데, 등록 5 경로 중
-    /// **COSMIC RON `key:` 와 KGlobalAccel `qtKey` 는 문자만 받아** 위치를 넘길 자리가
-    /// 없다. (처음에 "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.)
-    ///
-    /// 조용히 keysym 0 을 등록하는 대신 거부한다. 나머지 셋은 위치를 받는다 — sway
-    /// `bindcode` · Hyprland `code:` · GNOME / Cinnamon `0xNN`.
-    ///
-    /// **이 거부를 푸는 것은 1-b 가 아니라 1-c 다.** 1-b 는 사용자가 *라벨로* 적은
-    /// hotkey 를 sway 에 *위치로* 등록하는 일이었고 (그래서 지금 sway 는 `bindcode`
-    /// 를 쓴다), 사용자가 *위치 표기로 적을 수 있게* 하는 일은 그것과 별개다. COSMIC ·
-    /// KDE 에 무엇을 줄지가 1-c 의 결정거리다.
-    position_in_global_hotkey,
     /// #496 — macOS 가 이 자리를 **다른 이름으로 보고**한다. `PrintScreen` ·
     /// `ScrollLock` · `Pause` 를 PC 자판에서 누르면 `F13` · `F14` · `F15` 로 온다
     /// (Apple 확장 자판이 그 자리에 F13~F15 를 둔다). 키가 없는 것이 아니므로
@@ -174,7 +161,6 @@ pub fn hotkeyFailure(s: []const u8) ?HotkeyFailure {
         .ok => null,
         .unknown_key => .unknown_key,
         .modifier_required => .modifier_required,
-        .position_in_global_hotkey => .position_in_global_hotkey,
         .position_aliased_on_macos => .position_aliased_on_macos,
         .position_absent_on_macos => .position_absent_on_macos,
     };
@@ -184,7 +170,6 @@ const HotkeyParse = union(enum) {
     ok: ParsedHotkey,
     unknown_key,
     modifier_required,
-    position_in_global_hotkey,
     position_aliased_on_macos,
     position_absent_on_macos,
 };
@@ -226,8 +211,6 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // key 토큰이 아예 없는 경우 (예: `"ctrl"` 하나만) 도 "모르는 key" 로 묶는다 —
     // 사용자가 받아야 하는 안내가 같다 (받는 key 목록).
     const resolved = key orelse return .unknown_key;
-    // #496 — 위치 표기는 아직 `[keys]` 전용이다 (`HotkeyFailure` 주석 참고).
-    if (scope == .global_hotkey and resolved == .code) return .position_in_global_hotkey;
     // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
     // 사용자가 config 를 몇 번이고 다시 읽게 된다 (#208 이 막으려던 것).
     if (is_macos and resolved == .code and !physical_key.availableOnThisPlatform(resolved.code)) {
@@ -245,9 +228,21 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
             else => false,
         },
         .char => false,
-        // `global_hotkey` 는 위 분기에서 이미 돌아갔으므로 여기 오는 위치는
-        // `app_binding` 뿐이고, 그 판정은 아래 `types_text` 가 한다.
-        .code => false,
+        // #496 1-c — 위치 표기가 전역 hotkey 에 들어오면서 이 자리가 살아났다.
+        // 기준은 라벨과 같다: **글자를 내지 않는 함수 키만** modifier 없이 받는다.
+        //
+        // `F13`~`F24` 까지 넣는 것은 라벨 집합보다 넓지만 의도한 것이다. 그 자리는
+        // 라벨로 적을 방법이 아예 없고 (이름이 없다), 물리 자판에 달린 경우가 드물어
+        // **QMK · ZMK 로 다른 키를 그 코드에 매핑해 쓰는** 것이 실제 쓰임이다
+        // (`physical_key.zig` 헤더). 그런 사용자에게 modifier 를 요구하면 그 키를
+        // 전역 핫키로 쓸 방법이 없어진다. 글자를 내지 않으므로 일상 입력을 훔치지도
+        // 않는다 — 이 규칙이 막으려는 것이 그것이다.
+        .code => |c| switch (c) {
+            .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => true,
+            .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20 => true,
+            .f21, .f22, .f23, .f24 => true,
+            else => false,
+        },
     };
     if (scope == .global_hotkey) {
         if (!(ctrl or alt or super) and !is_function_key) return .modifier_required;
@@ -736,6 +731,30 @@ test "#496 macOS 에 값이 없는 자리는 그 platform 에서만 거부한다
         // 안내가 가리키는 대체 자리는 실제로 받아야 한다 — 그러지 않으면 막다른
         // 길이 된다 (#484).
         try std.testing.expect(parseHotkeyString("ctrl+[F13]", .app_binding) == .ok);
+
+        // #496 1-c — **전역 `hotkey` scope 에서도 같은 거부가 난다.** 위치 표기를 받기
+        // 시작하면서 생긴 경로이고, config 로드부는 이것을 `unreachable` 로 두고 있었다.
+        // ReleaseFast 는 안전 검사가 없어 크래시 대신 `modifier_required` 안내로
+        // 떨어졌고, `ctrl` 을 이미 준 사용자에게 "modifier 를 달라" 고 말했다 (macOS
+        // 실기 확인). 여기서 고정해 두면 그 전제가 다시 깨질 때 테스트가 잡는다.
+        try std.testing.expectEqual(
+            HotkeyParse.position_aliased_on_macos,
+            parseHotkeyString("ctrl+[PrintScreen]", .global_hotkey),
+        );
+        try std.testing.expectEqual(
+            HotkeyParse.position_absent_on_macos,
+            parseHotkeyString("ctrl+[F21]", .global_hotkey),
+        );
+        // config 로드부는 `parseHotkeyString` 이 아니라 `hotkeyFailure` 로 분기하므로
+        // 그쪽도 같은 값을 내야 한다.
+        try std.testing.expectEqual(
+            HotkeyFailure.position_aliased_on_macos,
+            hotkeyFailure("ctrl+[PrintScreen]").?,
+        );
+        try std.testing.expectEqual(
+            HotkeyFailure.position_absent_on_macos,
+            hotkeyFailure("ctrl+[F21]").?,
+        );
     } else {
         try std.testing.expect(parseHotkeyString("ctrl+[PrintScreen]", .app_binding) == .ok);
         try std.testing.expect(parseHotkeyString("ctrl+[F21]", .app_binding) == .ok);
@@ -921,14 +940,22 @@ test "#496 위치 표기 파싱" {
     try std.testing.expect(parseHotkeyString("[PageUp]", .app_binding) == .ok);
     try std.testing.expect(parseHotkeyString("shift+[PageUp]", .app_binding) == .ok);
 
-    // 전역 `hotkey` 는 아직 위치를 받지 않는다 (1-b 미구현). 조용히 keysym 0 을
-    // 등록하는 대신 원인이 분명한 실패를 낸다.
+    // #496 1-c — 전역 `hotkey` 도 위치를 받는다.
+    try std.testing.expect(parseHotkeyString("ctrl+[KeyW]", .global_hotkey) == .ok);
+    try std.testing.expectEqual(@as(?HotkeyFailure, null), hotkeyFailure("ctrl+[KeyW]"));
+    try std.testing.expect(Hotkey.fromString("ctrl+[KeyW]") != null);
+
+    // modifier 없이 받는 것은 함수 키 자리뿐이다 — 라벨 규칙과 짝이다.
+    try std.testing.expect(parseHotkeyString("[F1]", .global_hotkey) == .ok);
+    try std.testing.expect(parseHotkeyString("[F13]", .global_hotkey) == .ok);
     try std.testing.expectEqual(
-        HotkeyParse.position_in_global_hotkey,
-        parseHotkeyString("ctrl+[KeyW]", .global_hotkey),
+        HotkeyParse.modifier_required,
+        parseHotkeyString("[KeyW]", .global_hotkey),
     );
-    try std.testing.expectEqual(HotkeyFailure.position_in_global_hotkey, hotkeyFailure("ctrl+[KeyW]").?);
-    try std.testing.expectEqual(@as(?Hotkey, null), Hotkey.fromString("ctrl+[KeyW]"));
+    try std.testing.expectEqual(
+        HotkeyParse.modifier_required,
+        parseHotkeyString("shift+[Backquote]", .global_hotkey),
+    );
 }
 
 test "#493 default [keys] has no conflicting bindings" {
@@ -1517,6 +1544,39 @@ pub fn defaultConfigTomlWithHotkey(
         \\# Field meanings and accepted ranges: CONFIG.md
         \\
         \\# Global hotkey -- the OS delivers this even when TildaZ is not focused.
+        \\#
+        \\# Two ways to name the key:
+        \\#   label      "ctrl+space"        the character the key types
+        \\#   position   "ctrl+[Backquote]"  the physical spot, whatever it prints
+        \\#
+        \\# A function key is the safest choice: F1-F12 sit in the same place on
+        \\# every layout. Function-key positions are also the only ones accepted
+        \\# without a modifier -- "[F13]" is valid, "[KeyW]" is not.
+        \\#
+        \\# Reach for a position when the key you want prints something different
+        \\# from one layout to the next. The key left of 1 is the clearest case;
+        \\# these are measured, not guessed:
+        \\#
+        \\#   layout                      that key prints
+        \\#   US QWERTY                   `      (same on all three platforms)
+        \\#   French   (Linux)            ²
+        \\#   French   (Windows legacy)   ²
+        \\#   French   (Windows standard) @
+        \\#   French   (macOS)            <
+        \\#   Russian  (Linux, Windows)   ё
+        \\#   Russian  (macOS)            ]
+        \\#   German   (Linux)            a dead key -- refused, with a message
+        \\#
+        \\# "ctrl+[Backquote]" means that one physical key on every row above. A
+        \\# label such as "ctrl+grave" only fires where the layout types a backtick.
+        \\#
+        \\# More positions worth knowing:
+        \\#   "ctrl+[BracketLeft]"   [ on US. On French it needs AltGr, so the
+        \\#                          label form would be a four-finger chord.
+        \\#   "[F13]"                On a PC keyboard attached to a Mac this is
+        \\#                          the PrintScreen spot -- macOS reports F13.
+        \\#
+        \\# Position names are W3C KeyboardEvent.code values. Full list: CONFIG.md
         \\hotkey           = "{s}"
         \\
         \\shell            = "{s}"
@@ -2399,15 +2459,18 @@ pub const Config = struct {
                 const msg = switch (hotkeyFailure(v.string).?) {
                     .unknown_key => std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
                         messages.config_hotkey_unknown_key_fallback_msg,
-                    // #496 — 원인이 셋이 됐다. 위치 표기를 "modifier 를 달라" 로
-                    // 안내하면 #484 와 같은 막다른 길이 된다.
-                    .position_in_global_hotkey => std.fmt.bufPrint(&buf, messages.config_hotkey_position_format, .{v.string}) catch
-                        messages.config_hotkey_position_fallback_msg,
                     .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
-                    // 전역 `hotkey` 는 위치 표기를 아예 안 받으므로 그 전에 걸린다 —
-                    // 이 둘은 `[keys]` 쪽 경로에서만 나온다.
-                    .position_aliased_on_macos, .position_absent_on_macos => unreachable,
+                    // #496 1-c — **여기는 `unreachable` 이었다.** 전역 `hotkey` 가 위치
+                    // 표기를 아예 안 받던 시절의 전제였는데 1-c 가 그것을 받게 하면서
+                    // 깨졌다. ReleaseFast 는 안전 검사가 없어 크래시 대신 위의
+                    // `modifier_required` 안내로 떨어졌고, `ctrl` 을 이미 준 사용자에게
+                    // "modifier 를 달라" 고 말했다 (macOS 실기 확인) — 바로 위 주석이
+                    // 막으려던 실패다.
+                    .position_aliased_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
+                        messages.config_hotkey_position_aliased_fallback_msg,
+                    .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
+                        messages.config_hotkey_position_absent_fallback_msg,
                 };
                 showConfigFatalMsg(rt, config_path, msg);
             }
@@ -2571,10 +2634,6 @@ pub const Config = struct {
                     messages.config_key_needs_modifier_fallback_msg;
                 showConfigFatalMsg(rt, config_path, msg);
             },
-            // `app_binding` scope 는 이 값을 내지 않는다 (`parseHotkeyString` 이
-            // `global_hotkey` 에서만 낸다). exhaustive switch 를 유지하려고 둔다 —
-            // scope 별 규칙이 바뀌어 여기 도달하면 조용히 넘기지 말고 멈춰야 한다.
-            .position_in_global_hotkey => unreachable,
             // #496 — macOS 에서만 나온다. 겹침 / 부재를 갈라 다른 안내를 준다.
             .position_aliased_on_macos => {
                 var buf: [640]u8 = undefined;

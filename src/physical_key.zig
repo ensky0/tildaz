@@ -24,9 +24,13 @@
 //! 줄지 정해야 하는데, `VK_OEM_MINUS` / `kVK_ANSI_Minus` 는 라벨이 아니라 "US 자판
 //! 에서 `-` 가 있는 자리" 다. 그것을 라벨로 받으면 Linux 는 라벨로, Windows ·
 //! macOS 는 US 위치로 잡아 #496 의 세 갈래 불일치가 더 깊어진다. 라벨을 정직하게
-//! 넓히려면 live layout 조회가 필요하다 (macOS `UCKeyTranslate`, Windows
-//! `VkKeyScanExW`) — #496 항목 2 이고, 그것이 끝나면 라벨 집합은 "위치로 해석할
-//! 이름" 이 되어 이 표에 흡수된다.
+//! 넓히려면 live layout 조회가 필요하다 — #496 항목 2 다.
+//!
+//! **항목 2 는 그렇게 끝나지 않았다.** macOS 는 `NSEvent charactersByApplyingModifiers:`
+//! 로 라벨을 live layout 에서 해석하게 됐고 (Carbon 도 `UCKeyTranslate` 도 쓰지 않는다),
+//! Windows 는 layout DLL 이 이미 라벨을 따라가 손댈 것이 없었다. 그래서 **라벨 집합은
+//! 이 표에 흡수되지 않았고** 좁은 채로 남아 있다 — 넓히는 대신 이 부류의 답을 위치 표기로
+//! 정했기 때문이다. 남은 전제는 Windows 뿐이다 (거기만 라벨을 VK 로 바꿔야 한다).
 //!
 //! 위치 쪽은 그 문제가 없다. `[Minus]` 는 처음부터 "그 자리" 이고 세 platform 에
 //! 고정값이 있다. 그래서 기호 · numpad · 방향 · 편집 패드 · `F13`~`F24` · ISO / JIS
@@ -629,4 +633,40 @@ test "evdev 와 scan code 가 main block 에서 같고 extended 에서 갈린다
     try std.testing.expectEqual(evdev(.f12), scanCode(.f12).value);
     try std.testing.expect(evdev(.page_up) != scanCode(.page_up).value);
     try std.testing.expect(evdev(.arrow_up) != scanCode(.arrow_up).value);
+}
+
+test "#496 1-c the Shell extension position tables match physical_key" {
+    // GNOME · Cinnamon 은 zig 를 안 거친다 — 확장이 config 를 직접 읽어 GTK
+    // accelerator 로 바꾼다. 그래서 이 표가 JS 에 **한 벌 더** 있고, 두 벌이 갈리면
+    // 조용히 옆 키에 붙는다 (Mutter · Muffin 은 틀린 keycode 를 거부하지 않는다).
+    // sway `bindcode` 때와 같은 형태로 둘을 묶어 둔다.
+    const sources = [_]struct { label: []const u8, js: []const u8 }{
+        .{ .label = "gnome", .js = @embedFile("gnome_extension_js") },
+        .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
+    };
+    for (sources) |source| {
+        const open = std.mem.indexOf(u8, source.js, "const POSITION_KEYCODES = {").?;
+        const close = std.mem.indexOfPos(u8, source.js, open, "\n};").?;
+        const block = source.js[open..close];
+
+        for (table) |e| {
+            var lower_buf: [32]u8 = undefined;
+            const lower = std.ascii.lowerString(lower_buf[0..e.name.len], e.name);
+            var needle_buf: [64]u8 = undefined;
+            // JS 는 xkb keycode (= evdev + 8) 를 두 자리 hex 로 적는다 — GTK 의
+            // `is_keycode()` 가 그 형태만 인정하기 때문이다.
+            const needle = try std.fmt.bufPrint(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
+            if (std.mem.indexOf(u8, block, needle) == null) {
+                std.debug.print("{s} extension 의 위치 표에 없다: {s}\n", .{ source.label, needle });
+                return error.PositionTableOutOfSync;
+            }
+        }
+
+        // 반대 방향 — JS 에만 있는 행이 남아 있으면 이 표에서 지운 자리가 확장에
+        // 살아 있다는 뜻이다. 개수로 잡는다.
+        var js_rows: usize = 0;
+        var offset: usize = 0;
+        while (std.mem.indexOfPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
+        try std.testing.expectEqual(table.len, js_rows);
+    }
 }
