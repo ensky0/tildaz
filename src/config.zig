@@ -1005,8 +1005,8 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 36 개 (#483 의 pane 13 개 포함) + prev_tab / next_tab 이 2 개씩 = 38.
-    try std.testing.expectEqual(@as(usize, 38), count);
+    // 액션 37 개 (#483 의 pane 14 개 포함) + prev_tab / next_tab 이 2 개씩 = 39.
+    try std.testing.expectEqual(@as(usize, 39), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1830,6 +1830,8 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .resize_pane_up => &.{"shift+cmd+up"},
         .resize_pane_down => &.{"shift+cmd+down"},
         .equalize_panes => &.{"shift+cmd+0"},
+        // 최대화의 Z 는 WezTerm (`Ctrl+Shift+Z`) 선례 — 세 platform 이 같은 글자.
+        .zoom_pane => &.{"shift+cmd+z"},
     };
 }
 
@@ -1877,6 +1879,7 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .resize_pane_up => &.{"shift+alt+up"},
         .resize_pane_down => &.{"shift+alt+down"},
         .equalize_panes => &.{"shift+alt+0"},
+        .zoom_pane => &.{"ctrl+shift+z"},
     };
 }
 
@@ -1923,7 +1926,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
-        .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes } },
+        .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane } },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -1989,6 +1992,7 @@ pub const KeyAction = enum {
     resize_pane_up,
     resize_pane_down,
     equalize_panes,
+    zoom_pane,
 
     /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
     /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
@@ -2136,6 +2140,7 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .resize_pane_up => .{ .input = .{ .shortcut = .resize_pane }, .direction = .up },
         .resize_pane_down => .{ .input = .{ .shortcut = .resize_pane }, .direction = .down },
         .equalize_panes => .{ .input = .{ .shortcut = .equalize_panes } },
+        .zoom_pane => .{ .input = .{ .shortcut = .zoom_pane } },
     };
 }
 

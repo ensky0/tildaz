@@ -774,6 +774,10 @@ pub const TabGroup = struct {
     panes: [pane_layout.MAX_PANES_PER_TAB]?*Tab = [_]?*Tab{null} ** pane_layout.MAX_PANES_PER_TAB,
     /// 키보드 · 붙여넣기 · 스크롤이 가는 pane. 탭바 제목도 이 pane 의 것이다.
     active_pane: pane_layout.PaneId = 0,
+    /// #483 4c — 최대화된 pane. 있으면 `layout` 은 이 pane 하나가 영역 전체를 쓰고 다른 pane 은 그리지
+    /// 않는다 (셸은 계속 돈다). 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다 (`closePane`). 분할 ·
+    /// 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (`unzoom`) — tmux 의 zoom 과 같은 규칙.
+    zoomed: ?pane_layout.PaneId = null,
 
     fn initSingle(alloc: std.mem.Allocator, tab: *Tab) !*TabGroup {
         const group = try alloc.create(TabGroup);
@@ -794,6 +798,29 @@ pub const TabGroup = struct {
 
     pub fn paneCount(group: *const TabGroup) usize {
         return group.tree.count();
+    }
+
+    /// 이 그룹의 pane 배치 — 최대화 중이면 그 pane 하나가 `rect` 전체 (`pane_layout.leafRect`), 아니면
+    /// 트리대로. host 와 `SessionCore` 의 모든 격자 · hit-test 가 이 함수를 거친다.
+    pub fn layout(group: *const TabGroup, rect: pane_layout.Rect, m: pane_layout.Metrics, buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect) []pane_layout.PaneRect {
+        if (group.zoomed) |z| {
+            buf[0] = pane_layout.leafRect(z, rect, m);
+            return buf[0..1];
+        }
+        return pane_layout.layout(&group.tree, rect, m, buf);
+    }
+
+    /// 회색 분할선 목록 — 최대화 중이면 없다.
+    pub fn separators(group: *const TabGroup, rect: pane_layout.Rect, m: pane_layout.Metrics, buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator) []pane_layout.Separator {
+        if (group.zoomed != null) return buf[0..0];
+        return pane_layout.separators(&group.tree, rect, m, buf);
+    }
+
+    /// 최대화를 푼다. 풀 것이 있었으면 true — 호출처가 격자를 다시 맞춘다.
+    fn unzoom(group: *TabGroup) bool {
+        if (group.zoomed == null) return false;
+        group.zoomed = null;
+        return true;
     }
 
     /// `tab` 이 이 그룹의 pane 이면 그 id.
@@ -820,6 +847,8 @@ pub const TabGroup = struct {
         if (group.panes[id]) |tab| tab.deinit(alloc);
         group.panes[id] = null;
         if (group.active_pane == id) group.active_pane = next;
+        // 최대화된 pane 이 닫혔거나 pane 이 하나만 남으면 최대화는 뜻이 없다.
+        if (group.zoomed == id or group.paneCount() < 2) group.zoomed = null;
         return true;
     }
 };
@@ -1083,6 +1112,7 @@ pub const SessionCore = struct {
     pub fn splitActive(self: *SessionCore, dir: pane_layout.Direction, rect: pane_layout.Rect, m: pane_layout.Metrics) !void {
         const group = self.activeGroup() orelse return error.NoActiveTab;
         const new_id = group.freePaneId() orelse return error.TooManyPanes;
+        _ = group.unzoom();
         group.tree.split(group.active_pane, dir, new_id, rect, m) catch |e| switch (e) {
             error.TooManyPanes, error.TooSmall => |narrow| return narrow,
             // `active_pane` 은 늘 트리에 있고 `new_id` 는 빈 자리다 — 둘 다 불변식 위반.
@@ -1091,7 +1121,7 @@ pub const SessionCore = struct {
         // `close` 는 형제를 부모 자리에 되돌리므로 갈라지기 전 모양이 된다.
         errdefer _ = group.tree.close(new_id) catch unreachable;
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        const lay = pane_layout.layout(&group.tree, rect, m, &buf);
+        const lay = group.layout(rect, m, &buf);
         const pr = pane_layout.find(lay, new_id) orelse unreachable;
         const tab = try self.spawnTab(pr.cols, pr.rows);
         group.panes[new_id] = tab;
@@ -1115,10 +1145,12 @@ pub const SessionCore = struct {
     pub fn focusPane(self: *SessionCore, dir: pane_layout.Direction, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
         const group = self.activeGroup() orelse return false;
         if (group.paneCount() < 2) return false;
+        // 최대화 중이면 먼저 푼다 — 이웃은 펼친 배치에서 찾는다. 이웃이 없어도 푼 것은 변화다.
+        const was_zoomed = group.unzoom();
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        const lay = pane_layout.layout(&group.tree, rect, m, &buf);
+        const lay = group.layout(rect, m, &buf);
         const anchor = cursorAnchor(group, lay, dir, m);
-        group.active_pane = pane_layout.neighbor(lay, group.active_pane, dir, anchor) orelse return false;
+        group.active_pane = pane_layout.neighbor(lay, group.active_pane, dir, anchor) orelse return was_zoomed;
         return true;
     }
 
@@ -1139,9 +1171,14 @@ pub const SessionCore = struct {
     /// 생기면 false 고 바뀌는 것이 없다.
     pub fn resizeActivePane(self: *SessionCore, dir: pane_layout.Direction, cells: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
         const group = self.activeGroup() orelse return false;
-        if (!group.tree.resize(group.active_pane, dir, cells, rect, m)) return false;
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+        // 최대화 중이면 첫 조작은 푸는 것으로 끝난다.
+        if (group.unzoom()) {
+            self.applyGroupLayout(group, group.layout(rect, m, &buf));
+            return true;
+        }
+        if (!group.tree.resize(group.active_pane, dir, cells, rect, m)) return false;
+        self.applyGroupLayout(group, group.layout(rect, m, &buf));
         return true;
     }
 
@@ -1149,9 +1186,30 @@ pub const SessionCore = struct {
     /// `equalize`, `pane_layout.Tree.equalize` — tmux `even-*` 와 같은 정의).
     pub fn equalizeActive(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
         const group = self.activeGroup() orelse return;
+        _ = group.unzoom();
         group.tree.equalize();
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+        self.applyGroupLayout(group, group.layout(rect, m, &buf));
+    }
+
+    /// #483 4c — 활성 pane 최대화 토글 (`zoom_pane`). pane 이 하나면 할 일이 없어 false. 바뀌었으면 true —
+    /// 호출처가 `applyLayouts` 로 격자를 맞춘다 (켜면 그 pane 이 전체 격자, 풀면 모두 원래 격자).
+    pub fn toggleZoomActive(self: *SessionCore) bool {
+        const group = self.activeGroup() orelse return false;
+        if (group.unzoom()) return true;
+        if (group.paneCount() < 2) return false;
+        group.zoomed = group.active_pane;
+        return true;
+    }
+
+    /// #483 4c — 분할선 드래그를 놓았을 때: 분할 노드 `node` (`Separator.node`) 의 분할선을 `px` 에
+    /// (`pane_layout.Tree.setSeparatorPx`) 놓고 그룹 격자를 한 번 맞춘다. 최소 크기 아래면 false.
+    pub fn setSeparatorPx(self: *SessionCore, node: u8, px: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
+        const group = self.activeGroup() orelse return false;
+        if (!group.tree.setSeparatorPx(node, px, rect, m)) return false;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        self.applyGroupLayout(group, group.layout(rect, m, &buf));
+        return true;
     }
 
     /// #483 4b — 픽셀 아래의 pane (`pane_layout.paneAt`, 마우스 클릭 포커스). 분할선 위 · 영역 밖 ·
@@ -1159,7 +1217,7 @@ pub const SessionCore = struct {
     pub fn paneIdAt(self: *SessionCore, px: i32, py: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) ?pane_layout.PaneId {
         const group = self.activeGroup() orelse return null;
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        return pane_layout.paneAt(pane_layout.layout(&group.tree, rect, m, &buf), px, py);
+        return pane_layout.paneAt(group.layout(rect, m, &buf), px, py);
     }
 
     /// pane `id` 를 활성으로. 그 pane 이 없거나 이미 활성이면 false 고 바뀌는 것이 없다.
@@ -1176,7 +1234,7 @@ pub const SessionCore = struct {
     pub fn applyLayouts(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         for (self.tabs.items) |group| {
-            self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+            self.applyGroupLayout(group, group.layout(rect, m, &buf));
         }
     }
 
@@ -1848,7 +1906,7 @@ test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 
     try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeTabByPtr(@intFromPtr(stranger)));
 }
 
-test "POSIX: #483 4a·4b — 분할 · 포커스 · 클릭 pane · 크기 조절 · pane 닫기가 격자를 맞춘다" {
+test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
@@ -1906,6 +1964,36 @@ test "POSIX: #483 4a·4b — 분할 · 포커스 · 클릭 pane · 크기 조절
     try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
     try std.testing.expectEqual(@as(u16, 77), right.terminal.cols);
 
+    // 최대화 (4c): 활성 pane 0 이 영역 전체 — 배치는 pane 하나, 격자 158 열, 어느 픽셀도 pane 0. 다시
+    // 누르면 풀리고 원래 격자로.
+    try std.testing.expect(session.toggleZoomActive());
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, 0), group.zoomed);
+    session.applyLayouts(rect, m);
+    try std.testing.expectEqual(@as(u16, 158), left.terminal.cols);
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, 0), session.paneIdAt(2000, 500, rect, m));
+    try std.testing.expect(session.toggleZoomActive());
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, null), group.zoomed);
+    session.applyLayouts(rect, m);
+    try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
+    // 최대화 중 포커스 이동은 먼저 푼다 — 오른쪽 이웃 (pane 1) 으로 가고 격자는 펼친 것.
+    try std.testing.expect(session.toggleZoomActive());
+    try std.testing.expect(session.focusPane(.right, rect, m));
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, null), group.zoomed);
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 1), group.active_pane);
+    try std.testing.expect(session.focusPane(.left, rect, m));
+
+    // 분할선 드래그 (4c): x = 1000 에 놓으면 앞 pane 50 열 (셀 경계 스냅), 최소 크기 아래 (x = 100) 는 거부.
+    var sbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+    const seps = group.separators(rect, m, &sbuf);
+    try std.testing.expectEqual(@as(usize, 1), seps.len);
+    try std.testing.expect(session.setSeparatorPx(seps[0].node, 1000, rect, m));
+    try std.testing.expectEqual(@as(u16, 50), left.terminal.cols);
+    try expectGridMatchesLayout(group, rect, m);
+    try std.testing.expect(!session.setSeparatorPx(seps[0].node, 100, rect, m));
+    try std.testing.expectEqual(@as(u16, 50), left.terminal.cols);
+    session.equalizeActive(rect, m);
+    try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
+
     // 클릭 포커스 (4b): 오른쪽 pane 의 픽셀 → id 1, 왼쪽 → 0, 분할선 (x = 1526 · 1527) 위는 null.
     try std.testing.expectEqual(@as(?pane_layout.PaneId, 1), session.paneIdAt(2000, 500, rect, m));
     try std.testing.expectEqual(@as(?pane_layout.PaneId, 0), session.paneIdAt(100, 500, rect, m));
@@ -1941,7 +2029,7 @@ test "POSIX: #483 4a·4b — 분할 · 포커스 · 클릭 pane · 크기 조절
 
 fn expectGridMatchesLayout(group: *TabGroup, rect: pane_layout.Rect, m: pane_layout.Metrics) !void {
     var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-    for (pane_layout.layout(&group.tree, rect, m, &buf)) |pr| {
+    for (group.layout(rect, m, &buf)) |pr| {
         const tab = group.panes[pr.pane].?;
         try std.testing.expectEqual(pr.cols, tab.terminal.cols);
         try std.testing.expectEqual(pr.rows, tab.terminal.rows);

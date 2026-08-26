@@ -785,6 +785,8 @@ pub const App = struct {
         switch (command) {
             .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
             .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
+            // #483 4c — 분할 메뉴 항목. 배선은 5단계 (Linux 먼저).
+            .split_right, .split_down => {},
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),

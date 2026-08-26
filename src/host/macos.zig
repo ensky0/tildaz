@@ -1136,7 +1136,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         .quit, .show_about, .open_config, .open_log => return false,
         .toggle_visibility, .open_command_menu, .open_shortcuts => return false,
         // #483 4a — 분할 액션. 배선은 5단계 (Linux 4b 먼저) — 그때까지 키를 흘린다.
-        .split, .focus_pane, .resize_pane, .equalize_panes => return false,
+        .split, .focus_pane, .resize_pane, .equalize_panes, .zoom_pane => return false,
     }
     return true;
 }
@@ -2587,6 +2587,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
     switch (command) {
         .toggle_visibility => toggleWindow(),
         .new_tab => handleNewTab(),
+        // #483 4c — 분할 메뉴 항목. 배선은 5단계 (Linux 먼저).
+        .split_right, .split_down => {},
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
