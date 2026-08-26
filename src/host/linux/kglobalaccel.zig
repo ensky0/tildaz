@@ -814,6 +814,23 @@ fn getComponentPath(allocator: std.mem.Allocator, api: *const dbus.Api, conn: *d
     return allocator.dupe(u8, path);
 }
 
+/// #510 — 마지막 충돌에서 그 조합을 쥐고 있던 상대의 표시 이름.
+///
+/// 에러 값 (`error.KGlobalAccelTakeoverDeclined`) 은 "왜" 만 담고 "누구" 를 못 담는데,
+/// 사용자에게 가장 쓸모 있는 정보가 그 "누구" 다 (`yakuake` 를 알아야 어디서 풀지 안다).
+var last_conflict_owner_buf: [128]u8 = undefined;
+var last_conflict_owner_len: usize = 0;
+
+fn rememberConflictOwner(display_component: []const u8) void {
+    const n = @min(display_component.len, last_conflict_owner_buf.len);
+    @memcpy(last_conflict_owner_buf[0..n], display_component[0..n]);
+    last_conflict_owner_len = n;
+}
+
+pub fn lastConflictOwner() ?[]const u8 {
+    return if (last_conflict_owner_len == 0) null else last_conflict_owner_buf[0..last_conflict_owner_len];
+}
+
 fn claimKey(rt: Runtime, allocator: std.mem.Allocator, api: *const dbus.Api, conn: *dbus.DBusConnection, qt_key: i32, key_display: []const u8) !void {
     var bus_view = dbus.SessionBus{ .api = api.*, .conn = conn, .unique_name = "" };
     var owner_opt = queryOwnerForKey(allocator, &bus_view, qt_key);
@@ -830,12 +847,14 @@ fn claimKey(rt: Runtime, allocator: std.mem.Allocator, api: *const dbus.Api, con
     }) catch return error.KGlobalAccelDialogFormatFailed;
     if (!dialog.showConfirm(rt, messages.hotkey_takeover_title, confirm_message)) {
         log.appendLine("kglobalaccel", "takeover declined — owner={s}/{s} retained", .{ owner.component, owner.action });
-        var declined_buf: [256]u8 = undefined;
-        const declined_message = std.fmt.bufPrint(&declined_buf, messages.hotkey_takeover_declined_format, .{
-            key_display,
-            owner.display_component,
-        }) catch messages.hotkey_takeover_declined_fallback_msg;
-        dialog.showInfo(rt, messages.hotkey_takeover_declined_title, declined_message);
+        // #510 — 상대 이름을 남긴다. 에러 값에는 그 정보가 안 실려서, 안내를 만드는 쪽
+        // (`wayland_minimal.fatalIfHotkeyClaimFailed`) 이 "누가 쥐고 있는지" 를 말할 수
+        // 없다. 여기가 그것을 아는 유일한 자리다.
+        rememberConflictOwner(owner.display_component);
+        // **여기서 showInfo 를 부르지 않는다.** Linux 의 info 다이얼로그는 main loop 가
+        // 그리는 deferred 인데 (`drainInfoRequest`), 거절은 곧 기동 중단으로 이어져
+        // 그 loop 에 도달하지 못한다 — 실측에서 이 안내가 조용히 버려지고 사용자는
+        // 뒤이은 fatal 만 봤다. 같은 내용을 그 fatal 본문이 싣는다.
         return error.KGlobalAccelTakeoverDeclined;
     }
 
