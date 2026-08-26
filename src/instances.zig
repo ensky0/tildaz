@@ -5,7 +5,21 @@ const paths = @import("paths.zig");
 const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 
-pub const max_config_index: u32 = 999;
+/// 허용하는 config index 의 최대값 — **0 … 11 = 인스턴스 12 개**
+/// ([#510](https://github.com/ensky0/tildaz/issues/510)).
+///
+/// 예전 값 `999` 는 다중 인스턴스 최초 커밋 `2f3511a` (#267) 에서 주석도 근거도 없이
+/// 들어왔다. 파일명 3자리 파싱 가드로 읽히고 제품 상한을 고민한 흔적이 없었다.
+///
+/// **`11` 인 이유는 기본 핫키다.** `config.Defaults.hotkeyFor` 가 instance N 에 `F(N+1)`
+/// 을 주는데, index 가 0-based 라 상한 11 이 정확히 `F12` 에서 끝난다. 12 로 두면 index
+/// 12 에 줄 `F13` 이 없어 "핫키 없는 instance" 라는 예외 상태가 생긴다 — `11` 은 그
+/// 분기를 아예 없앤다. (`config.zig` 의 `index_hotkeys` 가 이 값과 길이를 comptime 에
+/// 대조한다.)
+///
+/// 인식 상한이기도 하다 — `parseConfigFileName` 과
+/// `instance_identity.parseDesktopFileName` 이 이 값을 넘는 번호를 거절한다.
+pub const max_config_index: u32 = 11;
 
 /// #282 G12 — instance 창 식별자 단일 소스. Windows 는 이 값들로 worker 창을
 /// IPC 조회한다: `instance_request` 가 FindWindowW 로 coordinator 를 찾고,
@@ -136,10 +150,27 @@ pub fn listConfigIndices(rt: Runtime, allocator: std.mem.Allocator) ![]u32 {
     return indices.toOwnedSlice(allocator);
 }
 
+/// 다음에 만들 config index — **비어 있는 가장 낮은 번호**
+/// ([#510](https://github.com/ensky0/tildaz/issues/510)).
+///
+/// 예전에는 `가장 높은 index + 1` 이라 빈 자리를 재사용하지 않았다. 그러면 상한이
+/// *동시 인스턴스 수* 가 아니라 ***누적 생성 횟수*** 에 걸린다. 999 일 때는 눈에 띄지
+/// 않았지만 상한이 11 로 내려온 이상 회귀다 — 만들고 지우기를 12 번 반복하면 실제로 2 개만
+/// 쓰고 있어도 `TooManyConfigs` 가 난다.
+///
+/// 기본 핫키가 index 파생이 된 것과도 맞물린다: instance 1 을 지우면 `F2` 가 다시 비고
+/// 다음 생성이 그 자리를 받는다.
+///
+/// `indices` 는 오름차순 · 중복 없음을 전제한다 (`listConfigIndices` 가 그렇게 준다).
 pub fn nextConfigIndex(indices: []const u32) !u32 {
-    if (indices.len == 0) return 0;
-    if (indices[indices.len - 1] >= max_config_index) return error.TooManyConfigs;
-    return indices[indices.len - 1] + 1;
+    var candidate: u32 = 0;
+    for (indices) |index| {
+        // 정렬돼 있으므로 candidate 보다 큰 번호를 만나면 그 앞이 빈 자리다.
+        if (index > candidate) break;
+        if (index == candidate) candidate += 1;
+    }
+    if (candidate > max_config_index) return error.TooManyConfigs;
+    return candidate;
 }
 
 pub fn createDefaultConfig(
@@ -151,7 +182,7 @@ pub fn createDefaultConfig(
 ) !void {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const json = try config.defaultConfigTomlWithHotkey(allocator, shell_resolved, hotkey);
+    const json = try config.defaultConfigToml(allocator, shell_resolved, hotkey);
     defer allocator.free(json);
 
     const file = try std.Io.Dir.createFileAbsolute(rt.io, path, .{ .exclusive = true });
@@ -606,11 +637,14 @@ test "핫키 중복은 뒤에 있는 인스턴스가 양보한다 (#431)" {
 
 test "only canonical numbered config names are accepted" {
     try std.testing.expectEqual(@as(?u32, 0), parseConfigFileName("config_0.toml"));
-    try std.testing.expectEqual(@as(?u32, 42), parseConfigFileName("config_42.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config0.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_01.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config-1.toml"));
+    // #510 — 상한이 11 이다. 12 부터는 이름이 정규 형식이어도 인식하지 않는다.
+    try std.testing.expectEqual(@as(?u32, 11), parseConfigFileName("config_11.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_12.toml"));
+    try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_42.toml"));
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_1000.toml"));
     // #493 — 남아 있는 `.json` 은 인스턴스로 세지 않는다. 마이그레이션이 없으므로
     // 옛 파일이 그대로 남는데, 그것을 인스턴스로 오인하면 없는 config 를 띄우려 한다.
@@ -619,11 +653,28 @@ test "only canonical numbered config names are accepted" {
     try std.testing.expectEqual(@as(?u32, null), parseConfigFileName("config_0.toml.bak"));
 }
 
-test "next config index follows the greatest existing index" {
+test "#510 다음 index 는 비어 있는 가장 낮은 번호다" {
     try std.testing.expectEqual(@as(u32, 0), try nextConfigIndex(&.{}));
     try std.testing.expectEqual(@as(u32, 1), try nextConfigIndex(&.{0}));
-    try std.testing.expectEqual(@as(u32, 8), try nextConfigIndex(&.{ 0, 3, 7 }));
-    try std.testing.expectError(error.TooManyConfigs, nextConfigIndex(&.{max_config_index}));
+
+    // 빈 자리 재사용 — 예전 구현은 `8` 을 돌려줬다. 상한이 11 로 내려온 이상 그 동작은
+    // 누적 생성 횟수에 상한이 걸리는 회귀다.
+    try std.testing.expectEqual(@as(u32, 1), try nextConfigIndex(&.{ 0, 3, 7 }));
+    try std.testing.expectEqual(@as(u32, 2), try nextConfigIndex(&.{ 0, 1, 3 }));
+    try std.testing.expectEqual(@as(u32, 0), try nextConfigIndex(&.{ 1, 2 }));
+
+    // 앞이 빈틈없이 차 있으면 그 다음 번호.
+    try std.testing.expectEqual(@as(u32, 3), try nextConfigIndex(&.{ 0, 1, 2 }));
+
+    // 상한까지 꽉 찼을 때만 `TooManyConfigs` — 동시 인스턴스 12 개다.
+    var full: [max_config_index + 1]u32 = undefined;
+    for (&full, 0..) |*slot, i| slot.* = @intCast(i);
+    try std.testing.expectError(error.TooManyConfigs, nextConfigIndex(&full));
+
+    // 하나만 비어 있으면 여전히 그 자리를 준다 — 최고값이 상한이어도 막지 않는다.
+    // 예전 구현은 `indices[last] >= max` 만 보고 `TooManyConfigs` 를 냈다.
+    try std.testing.expectEqual(@as(u32, 0), try nextConfigIndex(full[1..]));
+    try std.testing.expectEqual(@as(u32, max_config_index), try nextConfigIndex(full[0..max_config_index]));
 }
 
 test "current process id is available for lock diagnostics" {
