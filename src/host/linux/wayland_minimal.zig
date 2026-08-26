@@ -31,6 +31,7 @@ const command_menu = @import("../../command_menu.zig");
 const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
 const software_terminal = @import("software_terminal.zig");
+const pane_draw = @import("../../renderer/pane_draw.zig");
 const run_options = @import("../../run_options.zig");
 const dialog_layout = @import("dialog_layout.zig");
 const xkb = @import("xkb.zig");
@@ -4335,6 +4336,7 @@ const Client = struct {
 
             var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
             var hotkey_hint_buf: [64]u8 = undefined;
+            var pane_storage: [1]pane_draw.PaneDraw = undefined;
             var frame: software_terminal.GlFrame = .{
                 .background = theme.background,
                 .layer = self.renderer.emptyLayer(),
@@ -4351,6 +4353,7 @@ const Client = struct {
                         buffer.height,
                         &titles_storage,
                         &hotkey_hint_buf,
+                        &pane_storage,
                     ));
                 }
             }
@@ -4539,6 +4542,8 @@ const Client = struct {
         height: i32,
         titles_storage: *[session_core.MAX_TABS][]const u8,
         hotkey_buf: *[64]u8,
+        /// #483 2단계 ② — pane 목록의 저장 공간. `FrameInputs.panes` 가 이 안을 가리킨다.
+        pane_storage: *[1]pane_draw.PaneDraw,
     ) software_terminal.FrameInputs {
         const tabs = session.tabsSlice();
         const count = @min(tabs.len, titles_storage.len);
@@ -4564,9 +4569,26 @@ const Client = struct {
         if (!self.tab_scroll_override) {
             self.tab_scroll_x = tab_layout.ensureActiveVisible(layout_inputs, layout, @intCast(session.active_tab));
         }
-        return .{
+        // #483 2단계 ② — 활성 탭 하나를 pane 으로. rect 는 탭바를 뺀 영역이라 격자 원점 · scrollbar
+        // track 이 이전과 같은 값이다. 4단계에서는 `pane_layout.layout()` 의 pane 마다 하나씩.
+        const tab_bar_h = self.renderer.tabBarHeightPx(count);
+        const scrollbar_top: i32 = if (count > 0) self.renderer.chromeHeightPx() else 0;
+        pane_storage[0] = .{
             .terminal = &tab.terminal,
             .state = &tab.render_state,
+            .rect = .{ .x = 0, .y = tab_bar_h, .w = width, .h = height - tab_bar_h },
+            .cell_w = self.renderer.cellWidth(),
+            .cell_h = self.renderer.cellHeight(),
+            .pad = self.renderer.paddingPx(),
+            .scrollbar_w = @floatFromInt(self.renderer.scrollbarWPx()),
+            .scrollbar_min_thumb_h = @floatFromInt(self.renderer.scrollbarMinThumbHPx()),
+            // 단일 탭이면 컨트롤 스트립 아래로 track 을 내린다 (#329). 탭바가 있으면 0.
+            .scrollbar_top_inset = scrollbar_top - tab_bar_h,
+            .preedit_utf8 = self.renderer.preedit_text,
+            .blink_faint = self.last_blink_phase,
+        };
+        return .{
+            .panes = pane_storage[0..1],
             .theme = self.config.theme orelse fallback_theme,
             .width = width,
             .height = height,
@@ -4600,7 +4622,8 @@ const Client = struct {
                 // `FrameInputs` 가 그 안을 가리키므로 paint 동안만 valid 하다.
                 var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
                 var hotkey_hint_buf: [64]u8 = undefined;
-                const in = self.frameInputs(session, tab, width, height, &titles_storage, &hotkey_hint_buf);
+                var pane_storage: [1]pane_draw.PaneDraw = undefined;
+                const in = self.frameInputs(session, tab, width, height, &titles_storage, &hotkey_hint_buf, &pane_storage);
                 self.renderer.paint(self.allocator, memory, stride, in);
                 // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
                 // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor

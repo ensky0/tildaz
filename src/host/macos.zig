@@ -3970,15 +3970,32 @@ fn renderFrameTick() void {
     );
     var hotkey_hint_buf: [64]u8 = undefined;
     const hotkey_hint = config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey);
-    g_renderer.?.renderTerminal(
-        &tab.terminal,
-        &tab.render_state,
-        cell_w_px,
-        cell_h_px,
-        tab_bar_px,
-        scrollbarTopInsetPx(g_renderer.?.scale),
-        pad_px,
-        cell_preedit,
+    // #483 2단계 ② — 활성 탭 하나를 pane 으로 그린다. rect 는 탭바를 뺀 영역이라 격자 원점 ·
+    // scrollbar track 이 이전 인자와 같은 값이다. 4단계에서는 `pane_layout.layout()` 의 pane 마다
+    // `drawPane` 을 부른다. scrollbar 폭 · thumb 최소 높이는 이전과 같은 `scaledPxF` 값 (f32).
+    const r_scale = g_renderer.?.scale;
+    g_renderer.?.drawPane(.{
+        .terminal = &tab.terminal,
+        .state = &tab.render_state,
+        .rect = .{
+            .x = 0,
+            .y = tab_bar_px,
+            .w = @intCast(g_renderer.?.vp_width),
+            .h = @as(i32, @intCast(g_renderer.?.vp_height)) - tab_bar_px,
+        },
+        .cell_w = cell_w_px,
+        .cell_h = cell_h_px,
+        .pad = pad_px,
+        .scrollbar_w = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, r_scale),
+        .scrollbar_min_thumb_h = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, r_scale),
+        // 단일 탭이면 컨트롤 스트립 아래로 track 을 내린다 (#329). 탭바가 있으면 0.
+        .scrollbar_top_inset = scrollbarTopInsetPx(r_scale) - tab_bar_px,
+        .preedit_utf8 = cell_preedit,
+        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
+        // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+        .blink_faint = blink_phase_now,
+    });
+    g_renderer.?.endFrame(
         .{
             .open = g_command_menu_open,
             .hover = g_command_menu_hover,
@@ -3987,9 +4004,6 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
-        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
-        // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
-        blink_phase_now,
     );
 
     // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →

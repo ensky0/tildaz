@@ -28,6 +28,7 @@ const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
 const block_element = @import("block_element.zig");
 const cell_color = @import("cell_color.zig");
+const pane_draw = @import("pane_draw.zig");
 const font_constants = @import("../font/constants.zig");
 const cell_decoration = @import("cell_decoration.zig");
 const box_drawing = @import("../box_drawing.zig");
@@ -201,8 +202,12 @@ pub const D3d11Renderer = struct {
     /// 값과 위상 전환을 **함께** 봐서, blink 이 실제로 보일 때만 초당 2프레임을
     /// 추가로 그린다. "blink 셀이 있다" 만으로 게이트를 열면 매 tick 그리게 된다.
     saw_blink_cell: bool = false,
+    /// #483 2단계 ② — 이 프레임에 `drawPane` 이 불린 횟수. `renderTabBar` 가 0 으로 되돌리고, 첫
+    /// pane 이 `saw_blink_cell` 을 리셋하며 `render_t0` 를 찍는다.
+    panes_drawn: u32 = 0,
+    render_t0: @TypeOf(perf.now()) = undefined,
     /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
-    /// renderTerminal cell cursor 그리면서
+    /// drawPane 이 cell cursor 를 그리면서
     /// 갱신. App 가 IME composition 활성 시 ImmSetCompositionWindow(CFS_POINT)
     /// 로 IME 후보 popup 을 이 위치 근처에 띄움 (#164 1d).
     last_cursor_px_x: c_int = 0,
@@ -1091,13 +1096,15 @@ pub const D3d11Renderer = struct {
         /// 배경 박스.
         hover: tab_layout.Area,
     ) void {
+        // #483 2단계 ② — 프레임 시작. 이 프레임의 pane 수를 0 으로.
+        self.panes_drawn = 0;
         const tab_count = tab_titles.len;
         const rtv = self.rtv orelse return;
         const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
 
         // tab_bar_height == 0 면 탭바 자체를 그리지 않고 clear 만 하고 종료
         // (#127 — 단일 탭에서는 app_controller.effectiveTabBarHeight() 가 0).
-        // clear 는 항상 필요 — renderTerminal 보다 먼저 active terminal 의 현재
+        // clear 는 항상 필요 — drawPane 보다 먼저 active terminal 의 현재
         // background 로 채운다.
         if (tab_bar_height <= 0) {
             self.setupFrame(rtv);
@@ -1326,38 +1333,30 @@ pub const D3d11Renderer = struct {
         drawIcon(self, .more, layout.more_x, layout.more_w, tbh, icon_size, more_stroke, self.chrome.ctrl_active, &ctrl_text_buf, &ctrl_text_n);
         if (ctrl_text_n > 0) self.drawTextInstancesWithAtlas(ctrl_text_buf[0..ctrl_text_n], &self.tab_atlas);
 
-        // Don't present — renderTerminal will continue
+        // Don't present — drawPane / endFrame will continue
     }
 
     // === Terminal rendering ===
 
-    pub fn renderTerminal(
-        self: *D3d11Renderer,
-        terminal: *ghostty.Terminal,
-        /// #483 2단계 ① — `terminal` 의 `Tab.render_state`. 렌더러는 state 를 갖지 않는다.
-        state: *ghostty.RenderState,
-        cell_w: c_int,
-        cell_h: c_int,
-        vp_w: c_int,
-        vp_h: c_int,
-        y_offset: c_int,
-        scrollbar_y_offset: c_int,
-        padding: c_int,
-        scrollbar_w: c_int,
-        scrollbar_min_thumb_h: c_int,
-        /// IME 조합 중 자모 / 미완성 음절 — cursor 뒤 inline 표시 (#164). 빈
-        /// slice = 표시 안 함. Window 가 WM_IME_COMPOSITION 처리 후 buffer 채움.
-        preedit_utf8: []const u8,
-        control_layout: TabBarLayout,
-        control_hover: tab_layout.Area,
-        menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
-        /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
-        /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
-        /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
-        blink_faint: bool,
-    ) void {
-        const render_t0 = perf.now();
+    /// #483 2단계 ② — pane 하나를 그린다: 셀 배경 · 글리프 · 커서 · IME preedit · scrollbar 를
+    /// `pane.rect` 안에. 프레임 시작은 `renderTabBar`, 끝 (컨트롤 스트립 · 메뉴 · Present) 은
+    /// `endFrame` 이다. 4단계에서는 `pane_layout.layout()` 의 pane 마다 이 함수를 부른다.
+    pub fn drawPane(self: *D3d11Renderer, pane: pane_draw.PaneDraw) void {
+        if (self.panes_drawn == 0) {
+            // `perf.render` 의 시작 — 이전 `renderTerminal` 의 첫 줄과 같은 자리다.
+            self.render_t0 = perf.now();
+            // #376 — blink 셀 존재 판정은 프레임 단위다. 첫 pane 이 지우고 pane 들이 OR 로 모은다.
+            self.saw_blink_cell = false;
+        }
+        self.panes_drawn += 1;
+
+        const terminal = pane.terminal;
+        const state = pane.state;
+        const cell_w: c_int = pane.cell_w;
+        const cell_h: c_int = pane.cell_h;
+        const padding: c_int = pane.pad;
+        const preedit_utf8 = pane.preedit_utf8;
+        const blink_faint = pane.blink_faint;
         state.update(self.alloc, terminal) catch return;
 
         const rows = state.rows;
@@ -1367,8 +1366,10 @@ pub const D3d11Renderer = struct {
 
         const cw: f32 = @floatFromInt(cell_w);
         const ch: f32 = @floatFromInt(cell_h);
-        const y_off: f32 = @floatFromInt(y_offset + padding);
-        const x_pad: f32 = @floatFromInt(padding);
+        // #483 2단계 ② — 격자 원점은 pane 기준. `rect` 가 탭바를 뺀 영역이라 pane 하나면 이전의
+        // `padding` / `tab_bar_h + padding` 과 같은 값이다 (1단계 `leafRect` 의 `grid_x` / `grid_y`).
+        const y_off: f32 = @floatFromInt(pane.rect.y + padding);
+        const x_pad: f32 = @floatFromInt(pane.rect.x + padding);
 
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
@@ -1383,8 +1384,6 @@ pub const D3d11Renderer = struct {
         var bg_count: u32 = 0;
         var text_buf: [MAX_CELLS]TextInstance = undefined;
         var text_count: u32 = 0;
-
-        self.saw_blink_cell = false;
 
         // --- Background pass ---
         for (0..rows) |y| {
@@ -1859,6 +1858,9 @@ pub const D3d11Renderer = struct {
         // DPI changes. The same `scrollbar_min_thumb_h` is used by the
         // drag hit-test in `main.zig` to keep click → offset mapping
         // consistent with what's drawn.
+        // #483 2단계 ② — track 은 pane 기준이다. `thumbRect` 의 viewport 인자에 pane 의 오른쪽 · 아래
+        // **가장자리**를, track_top 에 `rect.y + scrollbar_top_inset` 을 넘기면 같은 식이 pane
+        // 좌표계에서 성립한다 (pane 하나면 이전 인자와 값이 같다).
         const sb = terminal.screens.active.pages.scrollbar();
         // #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
         // 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
@@ -1869,22 +1871,38 @@ pub const D3d11Renderer = struct {
             sb.total,
             sb.len,
             sb.offset,
-            @floatFromInt(vp_w),
-            @floatFromInt(vp_h),
-            @floatFromInt(scrollbar_y_offset),
+            @floatFromInt(pane.rect.x + pane.rect.w),
+            @floatFromInt(pane.rect.y + pane.rect.h),
+            @floatFromInt(pane.rect.y + pane.scrollbar_top_inset),
             @floatFromInt(padding),
-            @floatFromInt(scrollbar_min_thumb_h),
-            @floatFromInt(scrollbar_w),
+            pane.scrollbar_min_thumb_h,
+            pane.scrollbar_w,
             .{ colors.background.r, colors.background.g, colors.background.b },
         )) |r| {
             const scrollbar_inst = [1]BgInstance{bgFromChrome(r)};
             self.drawBgInstances(&scrollbar_inst);
         }
+    }
 
-        if (y_offset == 0) self.drawSingleControlStrip(control_layout, control_hover);
+    /// #483 2단계 ② — 프레임 끝: 단일 탭 컨트롤 스트립 · command menu · Present. `renderTabBar`
+    /// 로 시작한 프레임은 `drawPane` 이 몇 번 불렸든 (0 번 포함) 이것으로 끝낸다.
+    pub fn endFrame(
+        self: *D3d11Renderer,
+        vp_w: c_int,
+        /// 탭바 높이 (px). 0 이면 단일 탭이라 `[+][×][…]` 스트립을 터미널 위에 그린다 (#329).
+        tab_bar_h: c_int,
+        control_layout: TabBarLayout,
+        control_hover: tab_layout.Area,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
+    ) void {
+        if (tab_bar_h == 0) self.drawSingleControlStrip(control_layout, control_hover);
         if (menu_ui.open) self.drawCommandMenu(vp_w, @intCast(self.vp_height), menu_ui, toggle_hotkey);
 
-        perf.addTimed(&perf.render, render_t0);
+        // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
+        // 프레임에 한 번 잰다 (`addTimed` 가 호출 수도 세므로 pane 마다 재면 지표가 갈린다).
+        if (self.panes_drawn > 0) perf.addTimed(&perf.render, self.render_t0);
+        self.panes_drawn = 0;
 
         // Present
         //

@@ -23,8 +23,8 @@ policy, while each host owns the OS event loop and native APIs.
 | Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, TOML parse via `sam701/zig-toml`, current `config_N.toml` / `tildaz_N.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
-| Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape. Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
-| Renderer (Linux) | No — host-owned | `src/host/linux/software_terminal.zig`, `gl_*.zig` | `software_terminal.zig` owns the draw lists (`FrameLayer` — what to draw where) and the CPU rasterizer; `gl_atlas.zig` / `gl_text.zig` / `gl_rects.zig` consume the *same* lists on the GPU. Shares cross-platform pieces (`tab_layout`, `tab_chrome`, `block_element`, `ui_metrics`) |
+| Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape — `renderTabBar` → `drawPane(PaneDraw)` per visible pane → `endFrame`. `src/renderer/pane_draw.zig` is the per-pane input all three renderers share ([#483](https://github.com/ensky0/tildaz/issues/483) step 2). Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
+| Renderer (Linux) | No — host-owned | `src/host/linux/software_terminal.zig`, `gl_*.zig` | `software_terminal.zig` owns the draw lists (`FrameLayer` — what to draw where) and the CPU rasterizer; `gl_atlas.zig` / `gl_text.zig` / `gl_rects.zig` consume the *same* lists on the GPU. Shares cross-platform pieces (`tab_layout`, `tab_chrome`, `block_element`, `ui_metrics`); `FrameInputs.panes` carries the same `PaneDraw` list the GPU renderers take |
 | Fonts | Per OS with shared sizing policy | `src/font/spec.zig`, `src/font/windows`, `src/font/macos`, `src/font/linux` | Native font lookup and fallback; separate terminal and fixed-size tab-label contexts/atlases |
 | OS services | Wrapper | `src/autostart.zig`, `src/log.zig`, `src/paths.zig` | Startup registration, logging, platform paths |
 
@@ -101,7 +101,9 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    IUTF8 termios on macOS and tears down child process groups on tab close.
 3. The same `session_core.zig` tab/session model is used as Windows.
 4. `renderer/macos.zig` draws with CoreText glyph rasterization and a Metal
-   atlas. `renderTabBar` starts the frame; `renderTerminal` presents it.
+   atlas. `renderTabBar` starts the frame, `drawPane` draws one pane (the active
+   tab, until split panes land — [#483](https://github.com/ensky0/tildaz/issues/483)),
+   and `endFrame` presents it.
 5. `host/macos.zig` implements `NSTextInputClient` for Korean / Japanese /
    Chinese IME pre-edit and reconversion. Since v0.4.3, committed-text Hanja /
    kanji reconversion works for the active terminal row.
