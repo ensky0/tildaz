@@ -9,7 +9,8 @@
 #   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz --lang xx_XX.UTF-8  # 없는 locale → en_US.UTF-8 fallback
 #   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz --strace            # tildaz 의 write() 까지 기록
 #
-# 필요: sway · wtype · python3 · xxd (grim 은 있으면 스크린샷). 사용자의 세션은 건드리지 않는다 —
+# 필요: sway · wtype · python3 · xxd · grim, 그리고 조합 중 표시 판정 (#530) 에 imagemagick 또는
+# python3-pil (없으면 그 판정만 건너뛰고 스크린샷을 남긴다). 사용자의 세션은 건드리지 않는다 —
 # headless 백엔드라 화면이 없고, XDG_RUNTIME_DIR 을 /tmp 아래로 돌려 lock · 소켓을 격리한다.
 # 실행 중인 sway 세션이 있어도 죽이지 않는다 (자기 sway 는 timeout 으로 끝난다).
 #
@@ -108,10 +109,20 @@ wtype -s 500 \\
   -k dead_grave -k space -s 300 \\
   -k dead_acute -k e -s 300 \\
   -k dead_diaeresis -k u -s 300 \\
-  -k Return
-echo "wtype exit=\$?"
-sleep 2
-command -v grim >/dev/null 2>&1 && { grim "$T/shot.png" && echo "grim ok" || echo "grim failed"; }
+  -k Return -s 1500 \\
+  -k dead_circumflex -s 2500 \\
+  -k e -s 500 \\
+  -k Return &
+WTYPE_PID=\$!
+# #530 — 마지막 구간이 조합 중 표시 검증이다. wtype 은 세션당 1 회성이라 타임라인 하나를
+# 백그라운드로 두고 드라이버가 시각을 맞춰 grim 으로 찍는다. 앞 구간 ≈ 4.4 s (500 + 300×11 +
+# Return) 뒤 1.5 s 공백 → dead_circumflex ≈ 5.3 s → 2.5 s 공백 (이 사이에 찍는다) → e ≈ 7.8 s →
+# Return ≈ 8.3 s. 기대 바이트 끝에 ê(c3aa) \\r(0d) 이 붙는다.
+sleep 7.2
+grim "$T/shot_composing.png" && echo "grim composing ok" || echo "grim composing failed"
+sleep 2.3
+grim "$T/shot_after.png" && echo "grim after ok" || echo "grim after failed"
+wait \$WTYPE_PID; echo "wtype exit=\$?"
 sleep 1
 swaymsg exit
 EOF
@@ -135,16 +146,46 @@ grep -h -i 'compose\|keyboard keymap loaded' "$T"/state/tildaz/*.log 2>/dev/null
 echo "--- composition owner (text_input lines in app log — must be 0: an IME in the path means we did not measure tildaz)"
 IME_LINES=$(grep -h 'text_input \(preedit\|commit\)' "$T"/state/tildaz/*.log 2>/dev/null | wc -l | tr -d ' ')
 echo "text_input preedit/commit lines: $IME_LINES"
+# #530 — 조합 중 표시 판정. preedit 배경색 RGB(64,64,128) 은 코드에 고정된 값이고 (software_terminal.zig
+# `collectPreedit`), grim 은 렌더 픽셀을 그대로 담으므로 정확 일치로 센다. 도구가 없으면 -1 (미판정).
+count_preedit_px() {
+    if command -v magick >/dev/null 2>&1; then
+        magick "$1" -alpha off -fill black +opaque 'rgb(64,64,128)' -fill white -opaque 'rgb(64,64,128)' \
+            -format '%[fx:int(mean*w*h+0.5)]' info: 2>/dev/null || echo -1
+    elif python3 -c 'import PIL' >/dev/null 2>&1; then
+        python3 - "$1" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+print(sum(1 for p in im.getdata() if p == (64, 64, 128)))
+PY
+    else
+        echo -1
+    fi
+}
+echo "--- compose preview (#530): preedit-colour pixels while composing / after commit"
+PX_COMPOSING=$(count_preedit_px "$T/shot_composing.png" 2>/dev/null || echo -1)
+PX_AFTER=$(count_preedit_px "$T/shot_after.png" 2>/dev/null || echo -1)
+echo "composing: $PX_COMPOSING   after: $PX_AFTER   (-1 = no magick/PIL — not judged)"
+PREVIEW_OK=1
+if [[ "$PX_COMPOSING" == "-1" || "$PX_AFTER" == "-1" ]]; then
+    echo "WARN: preview not judged (install imagemagick or python3-pil) — shots kept at $T/shot_*.png"
+elif [[ "$PX_COMPOSING" -gt 0 && "$PX_AFTER" -eq 0 ]]; then
+    :
+else
+    PREVIEW_OK=0
+fi
 echo "--- PTY bytes (hex)"
 GOT=$(xxd -p "$T/pty.bin" 2>/dev/null | tr -d '\n')
-EXPECT="03c3aa5e5e610d65036560c3a9c3bc0d"
+EXPECT="03c3aa5e5e610d65036560c3a9c3bc0dc3aa0d"
 echo "EXPECT $EXPECT"
 echo "GOT    ${GOT:-(empty)}"
-if [[ "$GOT" == "$EXPECT" && "$IME_LINES" == "0" ]]; then
+if [[ "$GOT" == "$EXPECT" && "$IME_LINES" == "0" && "$PREVIEW_OK" == "1" ]]; then
     echo "##### PASS #####"
     exit 0
 else
     [[ "$IME_LINES" != "0" ]] && echo "an IME composed instead of tildaz (text_input lines=$IME_LINES) — this run does not measure the app path"
-    echo "##### FAIL ##### (산출물: $T — drive.log · rec.diag · sway.log · pty.bin)"
+    [[ "$PREVIEW_OK" != "1" ]] && echo "compose preview mismatch: expected >0 preedit-colour pixels while composing and 0 after (got $PX_COMPOSING / $PX_AFTER)"
+    echo "##### FAIL ##### (산출물: $T — drive.log · rec.diag · sway.log · pty.bin · shot_*.png)"
     exit 1
 fi

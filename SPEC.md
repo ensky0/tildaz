@@ -814,9 +814,9 @@ dead key (`^` `¨` `´` `` ` `` `~` — 프랑스어 · 독일어 · 스페인�
 
 | platform | 조합 주체 | 경로 |
 |---|---|---|
-| macOS | OS (코드 판정 — 실기 미확인) | `interpretKeyEvents:` — AppKit 텍스트 입력 시스템이 dead key 상태를 든다 |
-| Windows | OS (코드 판정 — 실기 미확인) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
-| **Linux** | **tildaz** | libxkbcommon **Compose** (`xkb_compose_state_feed`) — [`xkb.zig`](src/host/linux/xkb.zig) `Keyboard.composeFeed`. #494 전에는 `xkb_state_key_get_utf8` 만 있어 dead key 가 **빈 문자열** = 아무것도 보내지 않았다 |
+| macOS | OS — 조합 중 `ˆ` 를 marked text 로 **보여 준다** (2026-08-27 실기: ABC + `Option+i`, `setMarkedText:` → preedit 렌더) | `interpretKeyEvents:` — AppKit 텍스트 입력 시스템이 dead key 상태를 든다 |
+| Windows | OS — 조합 중 표시 **없음** (`WM_DEADCHAR` 를 그리는 코드가 없다 — 코드 확정, 실기 미확인) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
+| **Linux** | **tildaz** — #530 부터 조합 중 표시도 한다 | libxkbcommon **Compose** (`xkb_compose_state_feed`) — [`xkb.zig`](src/host/linux/xkb.zig) `Keyboard.composeFeed`. #494 전에는 `xkb_state_key_get_utf8` 만 있어 dead key 가 **빈 문자열** = 아무것도 보내지 않았다 |
 
 Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496 과 같은 뿌리). 규칙:
 
@@ -828,6 +828,7 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
 - key repeat 은 press 와 같은 경로라 `^` 를 누르고 있으면 `<dead_circumflex><dead_circumflex>` → `^` 가 두 번마다 하나 — X 앱과 같다.
 - **locale** 은 `LC_ALL` → `LC_CTYPE` → `LANG` (libxkbcommon 규약). 그 표가 없으면 `en_US.UTF-8` 로 한 번 더 시도한다 — X11 `compose.dir` 이 거의 모든 UTF-8 locale 을 그 파일로 보낸다. libxkbcommon 1.12+ 의 자체 fallback 은 C 라이브러리가 아는 locale 에만 적용된다 (실측 1.13.1: 미설치 `xx_XX.UTF-8` 은 `XKB-679` 에러 + `NULL` — 우리 재시도가 있어야 조합이 살았다). 둘 다 없으면 (Compose 파일 미설치 — Debian 계열 `libx11-data`) 로그 한 줄 (`compose table unavailable`) 을 남기고 종전처럼 동작한다. 사용자 `~/.XCompose` · `$XDG_CONFIG_HOME/XCompose` 도 libxkbcommon 이 읽는다.
 - Compose 심볼 8 개는 **optional** (`ComposeApi`, all-or-nothing) — 없으면 조합만 꺼지고 키보드는 그대로다.
+- **조합 중인 dead key 를 커서 자리에 보여 준다** ([#530](https://github.com/ensky0/tildaz/issues/530)) — IME preedit 과 같은 강조 (보라색 배경 + 글자) 로, 문자는 **GTK 표** (`gtkimcontextsimple.c` `append_dead_key`: `^` `´` `` ` `` `¨` `~` `¯` `˘` `˚` `˝` `ˇ` `¸` `˛` …) 를 따른다 — 같은 데스크톱의 GTK · Qt 앱과 같아야 하므로 macOS 의 `ˆ` (U+02C6) 대신 platform native 를 택했다. GTK 가 결합 문자로 근사하는 항목 (`abovedot` · `belowdot` · `horn` · `stroke` …) 과 `Multi_key` 는 표시하지 않는다 (조합은 된다 — 결합 문자는 셀에 그려지지 않는다). dead key 가 이어지면 덧붙인다 (`^´`). 조합을 버리는 모든 지점 (compose 를 거치지 않은 키 · `CANCELLED` · 키보드 focus 이탈 · IME preedit 도착) 에서 함께 지우고, 결과가 나오면 (`COMPOSED`) 지운 뒤 보낸다. IME preedit 이 있으면 IME 표시가 우선이다. 저장소는 IME `preedit_text` 와 **분리** — 그쪽은 `commitPendingInput` 이 PTY 로 보내고 `input_policy` 가 판정에 쓰기 때문이다.
 
 검증 상태 (2026-08-26 · 27): lima VM (Ubuntu aarch64 · libxkbcommon 1.13.1 · headless sway · `wtype` keysym 주입 — [`dist/linux/dead-key-compose-check.sh`](dist/linux/dead-key-compose-check.sh)) 통과에 이어, **실기 두 DE 에서 13 케이스 전부 일치** — 노트북 i5-1240P (CachyOS · libxkbcommon 1.13.2), COSMIC (cosmic-comp 1.6.0) 과 KDE Plasma (KWin 6.7.4), 실제 `fr` · `de` layout 에 `/dev/uinput` scancode 주입, 두 DE 가 같은 바이트 ([COSMIC](https://github.com/ensky0/tildaz/issues/494#issuecomment-5427290965) · [KDE](https://github.com/ensky0/tildaz/issues/494#issuecomment-5427566292)). 실기에서 확인된 사실:
 
@@ -835,7 +836,9 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
 - 대조군 foot 1.27.0 은 `^` 뒤 Enter 를 삼키고 (`65` 만 나옴) `^`+Ctrl+C 를 `ĉ` 로 조합해 **SIGINT 를 삼킨다** — "Ctrl/Alt 제외 · 조합 버림" 두 규칙의 근거가 실기로 재현됐다.
 - `ko_KR.UTF-8` 의 Compose 파일은 `en_US.UTF-8` 을 include 하는 한 줄이라 fallback 없이 바로 로드된다.
 
-**macOS · Windows 는 코드 판정이고 실기 미확인**이다 — OS 가 조합 주체라 코드 리뷰로는 드러나지 않으므로 따로 재야 한다.
+macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (위 표). **Windows 는 코드 판정이고 실기 미확인**이다 — OS 가 조합 주체라 코드 리뷰로는 드러나지 않으므로 따로 재야 한다.
+
+조합 중 표시 (#530) 의 검증 상태: **확인 필요** — lima headless sway 에서 `grim` 캡처의 preedit 배경색 픽셀 판정과 실기 (COSMIC · KDE) 결과를 #530 에 기록한 뒤 갱신한다.
 
 ---
 
