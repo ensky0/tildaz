@@ -1083,7 +1083,9 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들고 GitHu
    검증용 prerelease (`-dev.N` 등)는 릴리즈 노트를 생략할 수 있어요.
 
    **[`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 를 먼저 열어요.**
-   거기 쌓인 항목을 새 노트의 `Upgrade notes` 로 옮기고 그 파일은 비워요. 업그레이드 주의는
+   두 칸이 있어요 — `Upgrade notes` 는 새 노트의 같은 이름 절로, `Body candidates` 는
+   **본문 후보**라 5 줄 제한 안에서 골라 담아요 (다 넣는 목록이 아니에요). 옮긴 뒤 그
+   파일은 비워요. 업그레이드 주의는
    *변경할 때* 알게 되는데 *릴리스할 때* 발행되므로, 그 사이를 나르는 것이 없으면 기억에
    의존하게 돼요 (2026-08-26 [#510](https://github.com/ensky0/tildaz/issues/510) 에서
    instance 상한이 내려가 기존 config 가 인식 안 되는 주의가 나왔는데, 머지 시점에 적어 둘
