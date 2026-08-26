@@ -12,6 +12,8 @@
 //! 그것이 없으면 측정 한 번에 config 를 고치고 재시작하고 명령을 붙여넣는 절차가 든다.
 
 const std = @import("std");
+const log = @import("log.zig");
+const messages = @import("messages.zig");
 
 pub const Grid = struct { cols: u16, rows: u16 };
 
@@ -70,6 +72,32 @@ pub fn parseGrid(text: []const u8) ?Grid {
     const rows = std.fmt.parseInt(u16, text[sep + 1 ..], 10) catch return null;
     if (cols == 0 or rows == 0) return null;
     return .{ .cols = cols, .rows = rows };
+}
+
+/// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 요청을 **끝까지 지킬 수
+/// 없을 때의 단일 거부 경로.** 세 host 가 같은 문구 · 같은 종료 코드를 쓰도록 여기 하나만
+/// 둔다.
+///
+/// **다이얼로그가 아니다.** `-size` 는 `--help` 에 싣지 않는 측정 전용 옵션이라 호출처가
+/// 사람이 아니라 스크립트인 경우가 많고, 모달을 띄우면 그 스크립트가 그 자리에서 멈춘다.
+/// `log.userFacing` 이 stderr 와 로그 파일 양쪽에 남기므로 사람이 직접 띄운 경우에도
+/// 보인다. 종료 코드 2 는 `main.zig` 의 인자 오류 (`printOptionError`) 와 같은 값이다 —
+/// 둘 다 "준 명령을 그대로 수행할 수 없다" 이기 때문이다.
+///
+/// 밀린 채로 도는 창을 두지 않는 이유는 그것이 **측정이 되는 척** 하기 때문이다. 맨 아래
+/// 행이 화면 밖이면 그 회차의 숫자는 틀렸는데, 그 사실이 timing 파일에는 남지 않는다.
+pub fn exitSizeDoesNotFit(want: Grid, needed_w: i64, needed_h: i64, screen_w: i64, screen_h: i64) noreturn {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, messages.size_does_not_fit_format, .{
+        want.cols,
+        want.rows,
+        needed_w,
+        needed_h,
+        screen_w,
+        screen_h,
+    }) catch messages.size_error_fallback_msg;
+    log.userFacing("startup", msg);
+    std.process.exit(2);
 }
 
 test "parseGrid 는 COLSxROWS 를 읽는다" {

@@ -1060,6 +1060,13 @@ const Client = struct {
     next_id: u32 = first_client_alloc_id,
     pending_width: i32 = 0,
     pending_height: i32 = 0,
+    /// #506 — `-size` 로 창을 맞출 때 **마지막으로 보낸 layout 이 쓴 탭바 높이**.
+    /// 탭 수가 1↔2 로 바뀌면 이 값이 달라지고, 그때만 layout 을 다시 보낸다
+    /// (`resendLayoutForGridIfTabBarChanged`). 조건 없이 보내면 그 함수가 configure
+    /// 핸들러 안에서 불리므로 재송신 → configure → 재송신 의 무한 루프가 된다.
+    /// 초기값 0 = 탭바 없음 — boot 첫 layout 이 쓰는 값과 같아서 불필요한 재송신이
+    /// 없다 (session 은 탭 하나로 태어난다).
+    grid_layout_tab_bar_h: i32 = 0,
     window_width: i32 = default_width,
     window_height: i32 = default_height,
     mapped: bool = false,
@@ -2170,6 +2177,18 @@ const Client = struct {
             self.layer_shell_id,
             self.output_id,
         });
+        // [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 는 layer-shell 로
+        // 창 크기를 정한다 (`computeLayerLayout` → `sendLayerSurfaceLayout`). 그 protocol
+        // 을 내주지 않는 데스크톱 (GNOME · Cinnamon 의 xdg-shell 경로) 에서는 창 크기를
+        // compositor 가 정하고 우리는 요청 격자만 고정하므로, **창과 격자가 어긋난 채로
+        // 돌아가고 그 사실이 겉으로 드러나지 않는다** — 측정값이 조용히 틀린다.
+        //
+        // 여기서 거부하는 이유는 시점이다. surface 도 renderer 의 첫 탭도 PTY 도 아직
+        // 없어서 되돌릴 것이 없고, `layer_shell_id` 는 이 함수가 끝나면 확정이다.
+        if (self.run_opts.grid != null and self.layer_shell_id == 0) {
+            log.userFacing("startup", messages.size_needs_layer_shell_msg);
+            std.process.exit(2);
+        }
     }
 
     fn createKeyboardIfAvailable(self: *Client) !void {
@@ -2780,7 +2799,12 @@ const Client = struct {
                     want.rows,
                     self.renderer.paddingPx(),
                     self.renderer.scrollbarWPx(),
-                    0, // 측정은 탭 1 개 — 탭바가 없다 (`effectiveTabBarHeightPx` 가 0).
+                    // #506 — 탭이 늘어 탭바가 생기면 창이 그만큼 커져야 요청 격자가
+                    // 유지된다. 예전에는 여기가 `0` 고정 (탭 1 개 가정) 이라, 탭을
+                    // 만든 순간 탭바가 세로 공간을 먹는데 격자는 요청값 그대로여서
+                    // 맨 아래 행이 창 밖으로 밀렸다. 탭 수 변화에 맞춰 이 layout 을
+                    // 다시 보내는 것은 `resendLayoutForGridIfTabBarChanged` 다.
+                    self.effectiveTabBarHeightPx(),
                     cw,
                     ch,
                 );
@@ -3337,6 +3361,71 @@ const Client = struct {
         }
     }
 
+    /// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 요청을 이 화면에서
+    /// 지킬 수 있는지. 못 지키면 실행하지 않는다 (`run_options.exitSizeDoesNotFit`).
+    ///
+    /// **판정에 탭바를 포함한다.** 지금 탭이 하나여서 탭바가 0 이어도 (#127) 사용자는
+    /// 언제든 탭을 하나 더 만들 수 있고, 그때 창이 그만큼 커져야 요청 격자가 유지된다.
+    /// 탭바까지 넣어 미리 재 두면 통과한 요청은 탭을 만들어도 안전하다 — "시작은 됐는데
+    /// 탭에서 밀리는" 경우가 아예 없어진다.
+    ///
+    /// **work-area 가 아직 latch 되지 않았으면 판정을 미룬다** (#351 의 ①). 그 구간의
+    /// 값은 physical → logical 추정이라 ±1 px 오차가 있고 (compositor 마다 올림/내림이
+    /// 갈린다), 그 값으로 거부하면 실제로는 들어가는 요청을 막을 수 있다. latch 는 첫
+    /// configure 에 오고 `ensureSessionGrid` 는 그 뒤에 불리므로 실제로는 첫 호출에서
+    /// 판정된다.
+    fn guardRequestedGridFits(self: *const Client, want: run_options.Grid) void {
+        // **아직 시작하지 않았을 때만 판정한다.** session 이 없다는 것이 곧 "PTY 를 아직
+        // 안 띄웠다" 이고, 이 가드가 막으려는 것은 *처음부터 성립하지 않는 측정* 이다.
+        // 이 함수는 configure 마다 불리므로 이 가드가 없으면 실행 중에 더 작은 모니터로
+        // 옮겼을 때 (`applyScreenDimsChange` 가 새 work-area 를 latch 한 직후) 돌고 있던
+        // 터미널이 죽는다. macOS · Windows 의 같은 이름 함수도 boot 에서 한 번만 부른다.
+        if (self.session != null) return;
+        if (self.screen_logical_w <= 0 or self.screen_logical_h <= 0) return;
+        const cw = self.renderer.cellWidth();
+        const ch = self.renderer.cellHeight();
+        if (cw <= 0 or ch <= 0) return;
+        // 화면은 logical, viewport 는 physical 이다. `computeLayerLayout` 이 창 크기를
+        // 정할 때 쓰는 것과 **같은 scale** 로 맞춰야 판정과 실제 창이 어긋나지 않는다.
+        const scale_f: f32 = if (self.renderer.scale > 0.0) self.renderer.scale else 1.0;
+        const screen_w_px: i64 = @intFromFloat(@floor(@as(f32, @floatFromInt(self.screenLogicalWidth())) * scale_f));
+        const screen_h_px: i64 = @intFromFloat(@floor(@as(f32, @floatFromInt(self.screenLogicalHeight())) * scale_f));
+        const fit = ui_metrics.gridFitsScreen(
+            want.cols,
+            want.rows,
+            self.renderer.paddingPx(),
+            self.renderer.scrollbarWPx(),
+            // 탭 수와 무관한 탭바 높이 — 위 주석의 "탭을 하나 더 만들 수 있다".
+            self.renderer.chromeHeightPx(),
+            cw,
+            ch,
+            screen_w_px,
+            screen_h_px,
+        );
+        if (fit.fits) return;
+        run_options.exitSizeDoesNotFit(want, fit.needed_w, fit.needed_h, screen_w_px, screen_h_px);
+    }
+
+    /// #506 — 탭 수가 1↔2 로 바뀌면 탭바가 세로 공간을 먹거나 돌려준다. `-size` 는 격자를
+    /// 요청값으로 고정하므로 (#382) 창이 그만큼 커지지 않으면 맨 아래 행이 창 밖으로
+    /// 밀린다. 그래서 탭바 높이가 달라진 순간 layout 을 다시 보내 창 크기를 맞춘다.
+    ///
+    /// **마지막으로 보낸 높이를 기억해 값이 바뀔 때만 보낸다.** 이 함수는 configure
+    /// 핸들러가 부르는 `ensureSessionGrid` 안에 있어서, 조건 없이 보내면 재송신 →
+    /// configure → 재송신 의 무한 루프가 된다.
+    ///
+    /// layer-shell 이 없으면 (xdg-shell 경로) 보낼 layout 자체가 없다. 그 환경은
+    /// `guardLayerShellForGrid` 가 boot 에서 이미 걸러 여기 도달하지 않지만, 이 함수
+    /// 하나만 봐도 안전하도록 가드를 둔다.
+    fn resendLayoutForGridIfTabBarChanged(self: *Client) !void {
+        if (self.layer_surface_id == 0) return;
+        const tab_bar_h = self.effectiveTabBarHeightPx();
+        if (self.grid_layout_tab_bar_h == tab_bar_h) return;
+        self.grid_layout_tab_bar_h = tab_bar_h;
+        log.appendLine("stress", "tab bar height is now {}px — resizing window to keep the requested grid", .{tab_bar_h});
+        try self.sendLayerSurfaceLayout(false);
+    }
+
     fn ensureSessionGrid(self: *Client) !void {
         var grid = self.gridSize();
         // #382 — 측정 모드는 격자를 `-size` 로 **고정한다.** 창 크기에서 뽑은 `gridSize()` 를
@@ -3347,9 +3436,16 @@ const Client = struct {
         // 받는다 — 줄바꿈 횟수가 달라져 측정이 오염되는데 **timing 파일은 시작과 끝만 남기므로
         // 그 왕복이 보이지 않는다.**
         if (self.run_opts.grid) |want| {
+            // #506 — 요청 격자를 이 화면에서 끝까지 지킬 수 있는지 **PTY 를 띄우기
+            // 전에** 확인한다. 못 지키면 여기서 실행이 끝난다.
+            self.guardRequestedGridFits(want);
+            // #506 — 탭 수가 바뀌어 탭바 높이가 달라졌으면 창을 그만큼 다시 요청한다.
+            try self.resendLayoutForGridIfTabBarChanged();
             if (grid.cols < want.cols or grid.rows < want.rows) {
-                // 창이 요청 격자를 아직 (또는 끝까지) 담지 못한다 — configure 가 안 왔거나
-                // 요청이 화면보다 크다. 격자는 요청값을 유지한다 (측정의 기준이 그 값이다).
+                // 창이 아직 요청 격자를 담지 못한다 — configure 가 안 왔거나, 방금 보낸
+                // 크기 요청의 configure 를 기다리는 중이다 (#506 의 재송신). 격자는
+                // 요청값을 유지한다 (측정의 기준이 그 값이다). 요청이 화면보다 커서
+                // **영영** 못 담는 경우는 위 `guardRequestedGridFits` 가 이미 걸렀다.
                 log.appendLineVerbose("stress", "window fits {}x{} — keeping requested grid {}x{}", .{
                     grid.cols, grid.rows, want.cols, want.rows,
                 });
