@@ -248,6 +248,22 @@ extern "user32" fn BringWindowToTop(HWND) callconv(.c) BOOL;
 extern "user32" fn SetFocus(HWND) callconv(.c) HWND;
 extern "user32" fn RegisterHotKey(HWND, c_int, UINT, UINT) callconv(.c) BOOL;
 extern "user32" fn UnregisterHotKey(HWND, c_int) callconv(.c) BOOL;
+// #496 1-c — 위치 표기 hotkey 를 잡는 저수준 훅. 왜 `RegisterHotKey` 가 아닌지는
+// `Window.installPositionHotkey` 주석에 있다.
+const LowLevelKeyboardProc = fn (c_int, WPARAM, LPARAM) callconv(.c) LRESULT;
+extern "user32" fn SetWindowsHookExW(c_int, *const LowLevelKeyboardProc, ?*anyopaque, DWORD) callconv(.c) ?*anyopaque;
+extern "user32" fn UnhookWindowsHookEx(?*anyopaque) callconv(.c) BOOL;
+extern "user32" fn CallNextHookEx(?*anyopaque, c_int, WPARAM, LPARAM) callconv(.c) LRESULT;
+// modifier 상태는 아래 `GetAsyncKeyState` 로 읽는다 (이미 선언돼 있다).
+/// `WH_KEYBOARD_LL` 콜백이 받는 구조체. **`scanCode` 가 이 훅을 쓰는 이유다** — layout
+/// 이 개입하지 않은 raw 값이고, 위치 표기가 뜻하는 것이 정확히 그 값이다.
+const KBDLLHOOKSTRUCT = extern struct {
+    vkCode: DWORD,
+    scanCode: DWORD,
+    flags: DWORD,
+    time: DWORD,
+    dwExtraInfo: usize,
+};
 extern "user32" fn GetCursorPos(*POINT) callconv(.c) BOOL;
 extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.c) ?*anyopaque;
@@ -578,9 +594,29 @@ pub const Window = struct {
     hotkey_vkey: UINT = 0,
     hotkey_modifiers: UINT = 0,
     hotkey_registered: bool = false,
+    /// #496 1-c — 위치 표기로 적은 hotkey 의 자리. null 이면 라벨 binding 이다.
+    /// 이 값이 non-null 이면 등록 경로가 통째로 갈린다 — `hotkeyAcquire` 참고.
+    hotkey_code: ?physical_key.PhysicalCode = null,
+
+    /// #496 1-c — 위치 표기 hotkey 의 훅 상태.
+    ///
+    /// **왜 인스턴스 필드가 아니라 여기인가.** `WH_KEYBOARD_LL` 콜백은 `hwnd` 를 받지
+    /// 않아 `getSelf` 로 창을 찾을 수 없다. 전역 hotkey 를 가진 창은 프로세스에 하나뿐
+    /// (`HOTKEY_ID` 가 상수 하나인 것과 같은 전제) 이므로 콜백이 볼 값을 container 범위에
+    /// 둔다. 콜백은 이 값들을 **읽기만** 한다.
+    var g_hook: ?*anyopaque = null;
+    var g_hook_hwnd: ?HWND = null;
+    var g_hook_scan: u16 = 0;
+    var g_hook_extended: bool = false;
+    var g_hook_modifiers: UINT = 0;
 
     const CLASS_NAME = std.unicode.utf8ToUtf16LeStringLiteral(@import("instances.zig").window_class_name);
     const HOTKEY_ID: c_int = 1;
+    const WH_KEYBOARD_LL: c_int = 13;
+    const HC_ACTION: c_int = 0;
+    /// `KBDLLHOOKSTRUCT.flags` bit 0 — `0xE0` prefix 자리다 (control pad / numpad 구분).
+    const LLKHF_EXTENDED: DWORD = 0x01;
+    // 필요한 `VK_*` (`CONTROL` · `SHIFT` · `MENU` · `LWIN` · `RWIN`) 는 파일 범위에 이미 있다.
     const VK_F1: UINT = 0x70;
     const VK_RETURN: WPARAM = 0x0D;
     const RENDER_TIMER_ID: usize = 1;
@@ -740,19 +776,37 @@ pub const Window = struct {
     /// `if (!opts.isStressRun()) window.registerGlobalHotkey(...)` 로 정책을 드러내며,
     /// macOS 의 `installEventTap` · Linux 의 `sway_ipc.registerToggleIfSway` 와 같은
     /// 형태다. 이제 이 정책 분기가 창 초기화를 삼킬 구조 자체가 없다.
-    pub fn registerGlobalHotkey(self: *Window, hotkey_vkey: u32, hotkey_modifiers: u32) void {
-        self.hotkey_vkey = hotkey_vkey;
+    ///
+    /// #496 1-c — 위치 표기 (`ctrl+[Backquote]`) 도 받는다. 그쪽은 `RegisterHotKey` 를
+    /// 쓰지 않는다 — 이유는 `installPositionHotkey` 주석에 있다.
+    pub fn registerGlobalHotkey(
+        self: *Window,
+        hotkey_vkey: u32,
+        hotkey_modifiers: u32,
+        hotkey_code: ?physical_key.PhysicalCode,
+    ) void {
+        self.hotkey_code = hotkey_code;
         self.hotkey_modifiers = hotkey_modifiers;
-        if (!RegisterHotKey(self.requireHwnd(), HOTKEY_ID, hotkey_modifiers, hotkey_vkey).toBool()) {
+        self.hotkey_vkey = hotkey_vkey;
+        if (!self.hotkeyAcquire(self.requireHwnd())) {
             var alloc_buf: [4096]u8 = undefined;
             var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
             const cfg_path = paths.configPath(self.rt, fba.allocator()) catch messages.unknown_path_msg;
             var msg_buf: [1024]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &msg_buf,
-                messages.hotkey_registration_failed_format,
-                .{ hotkey_vkey, hotkey_modifiers, cfg_path },
-            ) catch messages.hotkey_registration_failed_fallback_msg;
+            // 두 경로의 실패 원인이 겹치지 않으므로 안내도 갈라야 한다 — 위치 표기는
+            // 훅 설치가 막힌 것이고, 라벨은 OS hotkey 표가 이미 차 있는 것이다.
+            const msg = if (self.hotkey_code) |code|
+                std.fmt.bufPrint(
+                    &msg_buf,
+                    messages.hotkey_hook_failed_format,
+                    .{ physical_key.name(code), self.hotkey_modifiers, cfg_path },
+                ) catch messages.hotkey_hook_failed_fallback_msg
+            else
+                std.fmt.bufPrint(
+                    &msg_buf,
+                    messages.hotkey_registration_failed_format,
+                    .{ self.hotkey_vkey, self.hotkey_modifiers, cfg_path },
+                ) catch messages.hotkey_registration_failed_fallback_msg;
             dialog.showFatal(self.rt, messages.hotkey_registration_failed_title, msg);
         }
         // 등록에 성공한 경로에만 세운다 — `deinit` 의 `UnregisterHotKey` 와
@@ -768,6 +822,124 @@ pub const Window = struct {
         // `FindWindowW` 로 worker 타이틀을 찾으므로 측정 창을 집지 않는다
         // (`instances.windowTitleForCurrentRole`).
         self.hotkey_registered = true;
+    }
+
+    /// #496 1-c — 전역 hotkey 를 잡는다. **두 표기가 서로 다른 OS 기능을 쓴다.**
+    ///
+    /// 등록 · 해제가 세 곳에서 일어나므로 (`registerGlobalHotkey` ·
+    /// `WM_HOTKEY_CAPTURE_BEGIN`/`_END` · `deinit`) 분기를 이 한 쌍에 모은다. 예전에는
+    /// 세 곳이 각자 `RegisterHotKey` / `UnregisterHotKey` 를 불렀는데, 표기에 따라 기능이
+    /// 갈리면 그 형태로는 한 곳만 고쳐도 어긋난다.
+    fn hotkeyAcquire(self: *Window, hwnd: HWND) bool {
+        if (self.hotkey_code) |code| return self.installPositionHotkey(hwnd, code);
+        return RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey).toBool();
+    }
+
+    fn hotkeyRelease(self: *Window, hwnd: HWND) bool {
+        if (self.hotkey_code != null) return removePositionHotkey();
+        return UnregisterHotKey(hwnd, HOTKEY_ID).toBool();
+    }
+
+    /// #496 1-c — 위치 표기 hotkey 를 `WH_KEYBOARD_LL` 훅으로 잡는다.
+    ///
+    /// **왜 `RegisterHotKey` 가 아닌가.** 그 API 는 virtual-key 만 받는데 **VK 는 layout
+    /// DLL 이 배정하는 값이라 자판마다 자리가 움직인다** (실측: `VK_OEM_3` 이 US `0x29` ·
+    /// 프랑스어 legacy `0x28` · 독일어 `0x27`). 그래서 자리를 VK 로 한 번 풀어 등록하면
+    /// 그 값은 *그 layout 에서만* 맞는 파생값이 된다. 처음 구현이 그 파생값을 캐시하고
+    /// `WM_INPUTLANGCHANGE` 에서 다시 풀었는데, 그 메시지는 **스레드별이고 포커스를 얻을
+    /// 때 온다**. 드롭다운은 숨어 있는 것이 기본 상태라, 숨은 동안 layout 이 바뀌면
+    /// 캐시가 낡은 채 남고 — 실측 — **핫키가 다른 물리 키로 옮겨갔다.** 위치 표기가
+    /// 없애려던 바로 그 증상이다. 게다가 핫키가 먹어야 포커스를 얻고 포커스를 얻어야
+    /// 캐시가 갱신되는 순환이라, 그 구조로는 창을 좁힐 수만 있고 닫을 수 없다.
+    ///
+    /// `KBDLLHOOKSTRUCT.scanCode` 는 layout 이 개입하지 않은 raw 값이고 위치 표기가 뜻하는
+    /// 것이 정확히 그 값이다. 변환도 캐시도 없어 갱신할 대상 자체가 생기지 않는다.
+    ///
+    /// **라벨 표기는 계속 `RegisterHotKey` 다.** 라벨은 OS 가 keypress 시점에 layout DLL 로
+    /// 풀어 주는 것이 옳은 동작이라 우리가 개입할 이유가 없다. 그래서 훅의 대가는 위치
+    /// 표기를 쓴 사용자에게만 발생한다.
+    ///
+    /// 훅은 `hMod = null` · `threadId = 0` 으로 건다 — `WH_KEYBOARD_LL` 은 별 DLL 없이
+    /// 이 프로세스의 콜백을 시스템이 부르는 형태다 (다른 훅 종류와 다르다).
+    fn installPositionHotkey(self: *Window, hwnd: HWND, code: physical_key.PhysicalCode) bool {
+        if (g_hook != null) _ = removePositionHotkey();
+        const sc = physical_key.scanCode(code);
+        g_hook_scan = sc.value;
+        g_hook_extended = sc.extended;
+        g_hook_modifiers = self.hotkey_modifiers;
+        g_hook_hwnd = hwnd;
+        g_hook = SetWindowsHookExW(WH_KEYBOARD_LL, &lowLevelKeyboardProc, null, 0);
+        if (g_hook == null) {
+            g_hook_hwnd = null;
+            log.appendLine("hotkey", "position hotkey hook install failed for [{s}]", .{physical_key.name(code)});
+            return false;
+        }
+        log.appendLine(
+            "hotkey",
+            "position hotkey armed: [{s}] scan=0x{x:0>2} extended={} modifiers=0x{x}",
+            .{ physical_key.name(code), sc.value, sc.extended, g_hook_modifiers },
+        );
+        return true;
+    }
+
+    fn removePositionHotkey() bool {
+        const hook = g_hook orelse return true;
+        const ok = UnhookWindowsHookEx(hook).toBool();
+        g_hook = null;
+        g_hook_hwnd = null;
+        return ok;
+    }
+
+    /// #496 1-c — 위치 표기 hotkey 의 훅 콜백.
+    ///
+    /// **여기서는 비교와 `PostMessageW` 만 한다.** 이 콜백은 시스템이 입력 스레드에서
+    /// 부르고, `LowLevelHooksTimeout` (기본 300 ms) 을 넘기면 **훅이 조용히 제거된다** —
+    /// 그러면 오류도 로그도 없이 핫키가 죽는다. 그래서 토글 같은 실제 작업은 창의
+    /// 메시지 큐로 넘기고, 여기서는 절대 블로킹하지 않는다. `WM_HOTKEY` 를 그대로 쓰므로
+    /// 라벨 경로와 처리부가 하나로 남는다.
+    ///
+    /// 맞으면 `1` 을 돌려 **삼킨다** — 아래 앱에 그 키가 새면 사용자가 핫키를 누를 때마다
+    /// 편집기에 문자가 들어간다. `RegisterHotKey` 도 같은 자리에서 키를 소비한다.
+    ///
+    /// **injected 입력을 걸러내지 않는다** (`LLKHF_INJECTED`). `RegisterHotKey` 가 합성
+    /// 입력에도 반응하므로 (실측) 그쪽과 동작을 맞춘다 — 자동화 · 접근성 도구가 핫키를
+    /// 누를 수 있어야 하고, 두 표기가 여기서 갈릴 이유가 없다.
+    fn lowLevelKeyboardProc(code: c_int, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT {
+        match: {
+            if (code != HC_ACTION) break :match;
+            if (wParam != WM_KEYDOWN and wParam != WM_SYSKEYDOWN) break :match;
+            const hwnd = g_hook_hwnd orelse break :match;
+            const kb: *const KBDLLHOOKSTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
+            if (@as(u16, @truncate(kb.scanCode)) != g_hook_scan) break :match;
+            if (((kb.flags & LLKHF_EXTENDED) != 0) != g_hook_extended) break :match;
+            if (!modifiersExactlyHeld(g_hook_modifiers)) break :match;
+            _ = PostMessageW(hwnd, WM_HOTKEY, @intCast(HOTKEY_ID), 0);
+            return 1;
+        }
+        return CallNextHookEx(null, code, wParam, lParam);
+    }
+
+    /// 요구한 modifier 가 눌려 있고 **나머지는 눌려 있지 않은지**. `RegisterHotKey` 가
+    /// 그렇게 동작한다 — `Ctrl+Alt+X` 는 `ctrl+x` 를 발동시키지 않는다. 그 규칙을 여기서
+    /// 다시 만들지 않으면 두 표기가 같은 config 로 다르게 동작한다.
+    ///
+    /// 훅은 modifier 상태를 주지 않으므로 `GetAsyncKeyState` 로 읽는다. 이 콜백은 키가
+    /// 눌린 그 순간에 불리므로 시점이 어긋나지 않는다.
+    fn modifiersExactlyHeld(mods: UINT) bool {
+        const held = struct {
+            fn f(vk: c_int) bool {
+                return (@as(u16, @bitCast(GetAsyncKeyState(vk))) & 0x8000) != 0;
+            }
+        }.f;
+        const want_alt = (mods & config_mod.Hotkey.MOD_ALT) != 0;
+        const want_ctrl = (mods & config_mod.Hotkey.MOD_CTRL) != 0;
+        const want_shift = (mods & config_mod.Hotkey.MOD_SHIFT) != 0;
+        const want_super = (mods & config_mod.Hotkey.MOD_SUPER) != 0;
+        if (held(VK_MENU) != want_alt) return false;
+        if (held(VK_CONTROL) != want_ctrl) return false;
+        if (held(VK_SHIFT) != want_shift) return false;
+        if ((held(VK_LWIN) or held(VK_RWIN)) != want_super) return false;
+        return true;
     }
 
     /// (Re)create the GDI font at `new_dpi` and re-measure cell metrics.
@@ -871,7 +1043,7 @@ pub const Window = struct {
             // clock 스레드를 **창을 부수기 전에** join 한다 — 아니면 죽은 hwnd 로
             // `PostMessageW` 가 갈 수 있다.
             self.stopFrameClock();
-            if (self.hotkey_registered) _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+            if (self.hotkey_registered) _ = self.hotkeyRelease(hwnd);
             if (self.dc) |dc| _ = ReleaseDC(hwnd, dc);
             _ = DestroyWindow(hwnd);
         }
@@ -1650,16 +1822,18 @@ pub const Window = struct {
                 // SendMessageW caller가 동기 처리 성공을 판별하는 protocol result.
                 return 1;
             },
+            // #496 1-c — `WM_INPUTLANGCHANGE` 를 듣지 않는다. 위치 표기가 훅으로 바뀌어
+            // layout 에 따라 다시 풀 값이 없어졌다 (`installPositionHotkey` 주석).
             WM_HOTKEY_CAPTURE_BEGIN => {
                 if (self.hotkey_registered) {
-                    if (!UnregisterHotKey(hwnd, HOTKEY_ID).toBool()) return 0;
+                    if (!self.hotkeyRelease(hwnd)) return 0;
                     self.hotkey_registered = false;
                 }
                 return 1;
             },
             WM_HOTKEY_CAPTURE_END => {
                 if (!self.hotkey_registered) {
-                    if (!RegisterHotKey(hwnd, HOTKEY_ID, self.hotkey_modifiers, self.hotkey_vkey).toBool()) return 0;
+                    if (!self.hotkeyAcquire(hwnd)) return 0;
                     self.hotkey_registered = true;
                 }
                 return 1;

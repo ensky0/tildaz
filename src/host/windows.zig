@@ -201,7 +201,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 폰트 · DC · 렌더 타이머 초기화까지 삼켰다 (`window.registerGlobalHotkey` 주석).
     // macOS 의 `if (!g_run_opts.isStressRun()) try installEventTap();` 와 같은 형태다.
     if (!opts.isStressRun()) {
-        app.window.registerGlobalHotkey(config.hotkey.vkey, config.hotkey.modifiers);
+        app.window.registerGlobalHotkey(config.hotkey.vkey, config.hotkey.modifiers, config.hotkey.code);
     } else {
         // 건너뛴 사실을 로그에 남긴다 — 측정 실행이 사용자의 핫키를 건드리지 않았는지
         // 확인하는 근거다 (세 host 의 `(stress run)` 로그와 같은 어휘).

@@ -486,6 +486,114 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 
 **tildaz 본체를 함께 검증할 때는 `--instance 9` 로 띄워요.** 사용자의 `config_0` 을 건드리지 않고 별 config 로 테스트할 수 있어요. 그 config 에 **`auto_start = false`** 를 넣고, 끝나면 `config_9.toml` · `tildaz_9.log` · `instance9*` 를 지워요 — 안 지우면 사용자 로그온 때 그 인스턴스가 같이 떠요.
 
+# 전역 hotkey 의 위치 표기 검증 — 데스크톱마다 받는 것이 다르다
+
+`hotkey = "ctrl+[Backquote]"` 같은 **위치 표기** ([#496](https://github.com/ensky0/tildaz/issues/496) 1-c) 는 데스크톱마다 등록 방식이 갈려요. 자리를 그대로 받는 곳, 그 자리가 *지금 내는 글자* 로 바꿔야 하는 곳, VK 로 바꿔야 하는 곳이 있어서 **한 환경에서 통과해도 다른 환경을 보장하지 못해요.** 그래서 어느 머신에서든 같은 절차로 돌리는 도구를 뒀어요.
+
+```sh
+./dist/hotkey/position-hotkey-check.sh                  # 기본 ctrl+[Backquote]
+./dist/hotkey/position-hotkey-check.sh --hotkey 'ctrl+[KeyT]'
+./dist/hotkey/position-hotkey-check.sh --keep           # 남겨 두고 직접 눌러 볼 때
+```
+
+`--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).
+
+| 데스크톱 | 받는 것 | 기대값 (`[Backquote]`) |
+|---|---|---|
+| sway · Hyprland | **자리** | `49` = evdev 41 + 8 (`bindcode 49` · `keycode=49`) |
+| GNOME · Cinnamon | **자리** | `0x31`. 확장이 켜져 있으면 **확장이** `grab_accelerator("<Control>0x31")`, 없으면 gsettings `binding=<Control>0x31` |
+| KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
+| Windows | **자리** (raw scan code) | `0x29`. `RegisterHotKey` 가 아니라 `WH_KEYBOARD_LL` 훅으로 잡아요 — 아래 |
+| macOS | 자리 (`kVK_*`) | 변화 없음 |
+
+**Windows 는 `RegisterHotKey` 로 위치 표기를 담을 수 없어요 — 실측으로 확정.** 그 API 는 VK 만 받는데 VK 는 layout DLL 이 배정하는 값이라 자판마다 자리가 움직여요 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27`). 그래서 자리를 VK 로 한 번 풀어 등록하면 그 값은 *그 layout 에서만* 맞아요. 처음 구현은 그 파생값을 캐시하고 `WM_INPUTLANGCHANGE` 에서 다시 풀었는데, **숨은 채 layout 이 바뀌면 핫키가 다른 물리 키로 옮겨갔어요** (실측: `[Backquote]` 로 적었는데 `1` 왼쪽 키는 죽고 `'` 키가 창을 띄웠어요 — [#512 코멘트](https://github.com/ensky0/tildaz/pull/512#issuecomment-5412301433)). 그 메시지가 **스레드별이고 포커스를 얻을 때** 와서, 핫키가 먹어야 포커스를 얻고 포커스를 얻어야 갱신되는 순환이라 그 구조로는 창을 좁힐 수만 있고 닫을 수 없어요.
+
+그래서 **위치 표기만 `WH_KEYBOARD_LL` 훅**으로 잡아요. `KBDLLHOOKSTRUCT.scanCode` 가 layout 이 개입하지 않은 raw 값이고 위치 표기가 뜻하는 것이 정확히 그 값이라, 변환도 캐시도 갱신도 없어져요. **라벨 표기는 계속 `RegisterHotKey`** 예요 — 라벨은 OS 가 keypress 시점에 layout DLL 로 풀어 주는 게 옳은 동작이고, 그래서 훅의 대가는 위치 표기를 쓴 사용자에게만 발생해요.
+
+훅을 만질 때 지킬 것:
+
+- **콜백에서 블로킹하지 않아요.** `LowLevelHooksTimeout` (기본 300 ms) 을 넘기면 **훅이 조용히 제거돼요** — 오류도 로그도 없이 핫키가 죽어요. 비교만 하고 실제 작업은 `PostMessageW(WM_HOTKEY)` 로 창의 메시지 큐에 넘겨요 (라벨 경로와 처리부가 하나로 남는 이점도 있어요).
+- **modifier 는 `GetAsyncKeyState` 로 읽고 "요구한 것만" 을 확인해요.** 훅은 modifier 상태를 주지 않아요. `RegisterHotKey` 는 여분 modifier 가 있으면 발동하지 않으므로 (`Ctrl+Alt+X` 가 `ctrl+x` 를 안 잡아요) 그 규칙을 훅 쪽에서도 그대로 만들어야 두 표기가 같은 config 로 같게 동작해요.
+- **injected 입력을 걸러내지 않아요** (`LLKHF_INJECTED`). `RegisterHotKey` 가 합성 입력에도 반응하므로 (실측) 맞춰요. 덕분에 `SendInput` 으로 핫키 검증을 자동화할 수 있어요.
+- **`extended` 를 함께 비교해요.** `0xE0` prefix 가 없으면 control pad 와 numpad 가 같은 하위 바이트를 써서 섞여요 (`physical_key.zig` 헤더).
+
+**실측 완료** (2026-08-25):
+
+| 환경 | 결과 | 기기 |
+|---|---|---|
+| KDE (KWin 6.7.4) | us · fr · ru · de + 해제/복구 왕복 | 미니PC Firebat ZY-A8 · CachyOS |
+| sway 1.12 | `bindcode Ctrl+49` | 같은 기기 (nested) |
+| Hyprland 0.56.2 | `keycode=49` | 같은 기기 (nested) |
+| GNOME 50.4 | gsettings `<Control>0x31` + **확장 경로** `action != 0` · fr 단독에서 자리 유지 | 노트북 i5-1240P |
+| COSMIC 1.0.0 | us `grave` · fr `twosuperior` · ru `Cyrillic_io` · de 거둠 · 복구 | 같은 노트북 |
+| Cinnamon 6.6.9 (Muffin) | 확장 `<Control>0x31` grab · fallback gsettings `['<Control>0x31']` · fr · ru 단독에서 자리 유지 | 같은 노트북 |
+
+**Windows · macOS 는 미검증이에요.**
+
+**확장 경로는 `TILDAZ_VERBOSE=1` 로 계측 없이 관측해요.** GNOME · Cinnamon 의 확장은 창을 minimize/unminimize 로 토글하므로 앱이 남기는 lifecycle 로그가 없어요. verbose 를 켜면 `[wayland] drainSurfaceOutputs entered=[] …` (숨김) 과 `entered=[11 ] …` (복귀) 가 그대로 보여서, 확장에 로그를 심지 않고도 왕복을 확인할 수 있어요.
+
+**GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
+
+**함정 일곱 — 앞의 넷은 스크립트가 이미 피하고, 뒤의 셋은 손으로 잴 때 걸려요.**
+
+- **`XDG_CURRENT_DESKTOP` 이 비면 등록 경로를 통째로 건너뛰어요.** tty · ssh 셸에는 대개 없고, 그러면 로그가 `de=(unset)` 이 되며 아무 데도 등록하지 않아요 — "등록이 안 된다" 로 오해하기 쉬워요.
+- **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요.
+- **`pkill -f 'instance 9'` 는 자기 명령줄을 매치해 셸을 죽여요** (그 문자열이 명령에도 들어 있어서요). `pgrep -x tildaz` 로 좁히고 `/proc/PID/cmdline` 에서 인자를 확인해요.
+- **layout 전환은 창을 띄우지 않고 해요.** Wayland 의 group 전환은 *포커스한 client* 에게만 가므로, 창을 띄우면 그 경로로 통과해 버려 D-Bus 통지 경로 (#496 1-c 의 ③) 가 검증되지 않아요.
+- **uinput 으로 가상 키보드를 새로 꽂으면 keymap 이 잠깐 바뀌어요.** cosmic-comp 실측에서 장치를 만든 직후 client 가 받은 keymap 이 `grave` → `twosuperior` 로 두 번 왔고, 그 사이에 키를 보내면 **발동하지 않아 거짓 실패**가 나요. 장치를 만든 뒤 **5 초쯤 두고** 눌러요 (`SETTLE`).
+- **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
+- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
+
+**KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). 추가한 뒤에는 D-Bus 로 전환해요.
+
+```sh
+gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
+  --method org.kde.KeyboardLayouts.getLayoutsList
+gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
+  --method org.kde.KeyboardLayouts.setLayout 1        # 목록 순서의 index
+```
+
+**nested 로도 돼요** — sway · Hyprland 는 KDE 안에서 중첩 실행해 잴 수 있어요. 단 **자식 세션이 부모의 `XDG_CURRENT_DESKTOP` 을 물려받으므로** 그 값을 명시해야 해요 (안 하면 `de=KDE` 인 채로 돌아 Hyprland 경로가 안 탑니다).
+
+```sh
+WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=sway sway -c <config>
+env -u XDG_CURRENT_DESKTOP WAYLAND_DISPLAY=wayland-0 Hyprland -c <config>
+
+# GNOME 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
+# 버스가 필요해서 `dbus-run-session` 으로 감싸요.
+XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
+  gnome-shell --devkit --wayland --wayland-display=wayland-9
+
+# COSMIC 은 `WAYLAND_DISPLAY` 가 있으면 스스로 중첩해요.
+WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
+```
+
+**COSMIC 에서 layout 전환하기.** `~/.config/cosmic/com.system76.CosmicComp/v1/xkb_config` 의 `layout` 을 고치면 cosmic-comp 가 바로 읽어요 (KDE 처럼 재시작이 필요하지 않아요).
+
+```ron
+(
+    rules: "", model: "pc105", layout: "fr", variant: "",
+    options: Some("grp:alt_shift_toggle"), repeat_delay: 600, repeat_rate: 25,
+)
+```
+
+**Cinnamon 에서 layout 전환하기.** 스키마가 **`org.cinnamon.desktop.input-sources`** 예요 — `org.gnome.desktop.input-sources` 도 `org.gnome.libgnomekbd.keyboard layouts` 도 **값만 바뀌고 아무 일도 안 일어나요** (`csd-keyboard` 가 전자를 읽기는 하지만 Wayland 에서 keymap 을 세우는 것은 `keyboardManager.js` 의 `Meta.get_backend().set_keymap` 이고, 그쪽은 cinnamon 스키마를 봐요). 이걸로 30 분 헤맸어요.
+
+```sh
+gsettings set org.cinnamon.desktop.input-sources sources "[('xkb','fr')]"
+```
+
+**적용됐는지는 앱 로그로 확인해요** — `ru` 로 바꾸면 `[keys] latin fallback active for N binding(s)` 이 떠요. `setxkbmap -query` 는 **쓸 수 없어요**: Cinnamon · COSMIC 둘 다 Xwayland 에 layout 을 안 내려서 늘 `us` 로 보여요.
+
+**Cinnamon 은 `org.Cinnamon.Eval` 이 열려 있어요** (GNOME 과 달라요). 셸 상태를 물어볼 때 씁니다 — 다만 `imports.ui` 는 막혀 있어요.
+
+```sh
+gdbus call --session --dest org.Cinnamon --object-path /org/Cinnamon \
+  --method org.Cinnamon.Eval '1+1'
+```
+
+**GNOME 에서 layout 전환하기.** `gsettings set org.gnome.desktop.input-sources sources "[('xkb','fr')]"` 예요. **대조군은 layout 을 하나만 켜고 재요** — 둘 이상 켜면 Mutter 가 keysym 을 모든 group 에서 찾아 걸어 주므로 라벨 표기도 되는 것처럼 보여, 위치 표기와 갈리지 않아요 (실측).
+
 # 터미널 시각 회귀 테스트 (한 줄)
 
 색 emoji / 스킨톤 / ZWJ family / 라틴 / 한글 / block element 까지 한 번에 화면에 띄우는 표준 시연 입력. emoji path / ClearType path / wide char / block element 회귀 다 동시 확인 가능. WT 와 나란히 띄워 비교 시 표준 입력으로 사용.
