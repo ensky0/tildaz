@@ -5650,7 +5650,18 @@ const Client = struct {
         defer posix.munmap(memory);
 
         try self.keyboard.setKeymap(self.allocator, memory);
-        log.appendLineVerbose("wayland", "keyboard keymap loaded size={}", .{size});
+        // #513 — **받은 keymap 이 어느 layout 인지 남긴다.** COSMIC 에서 키보드를 꽂으면
+        // 위치 표기 hotkey 가 직전 layout 의 글자로 재등록되는데, 로그만 봐서는
+        // *compositor 가 옛 keymap 을 보낸 것*인지 *우리가 잘못 읽은 것*인지 구분할 수
+        // 없었다. 아래 `writeCosmicPositionHotkey` 가 남기는 `key=` 와 나란히 읽으면
+        // 그 자리에서 갈린다 — 이름이 직전 layout 이면 compositor 쪽, 지금 layout 인데
+        // 글자가 엉뚱하면 우리 쪽이다.
+        var layout_buf: [256]u8 = undefined;
+        if (self.keyboard.layoutNames(&layout_buf)) |names| {
+            log.appendLine("wayland", "keyboard keymap loaded size={} layouts=[{s}]", .{ size, names });
+        } else {
+            log.appendLineVerbose("wayland", "keyboard keymap loaded size={}", .{size});
+        }
         // #496 1-a — layout 이 바뀌면 이 event 가 다시 온다. 그래서 매번 다시 푼다.
         self.resolveBindingFallbacks();
         self.refreshKdePositionHotkey();
