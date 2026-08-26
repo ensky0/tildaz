@@ -132,6 +132,32 @@ digit bindings ignore Shift, on every layout. Nothing to change.
 **The extra ISO key.** AZERTY has a `<>` key that US keyboards do not have. It
 is `[IntlBackslash]` if you want to bind it.
 
+### Dead keys
+
+On layouts with dead keys — French, German, Spanish, Italian and most other
+European layouts — `^`, `¨`, `´`, `` ` `` and `~` do not print by themselves; they
+wait for the next key and combine with it. TildaZ combines them the same way GTK
+and Qt applications do, using the system Compose table:
+
+| You type | You get |
+|---|---|
+| `^` `e` | `ê` |
+| `^` `Space`, or `^` `^` | `^` |
+| `^` `x` (no such combination) | nothing — both keys are dropped |
+| `^` then `Enter`, `Ctrl+C`, or a shortcut | the pending `^` is dropped; the key itself works normally |
+
+On German and Spanish layouts this is also the only way to type a backtick
+(`` ` ``): dead grave, then `Space`.
+
+The combinations come from the Compose file of your locale (`LC_ALL`, `LC_CTYPE`,
+or `LANG`), falling back to `en_US.UTF-8`; your own `~/.XCompose` is honoured
+too. If no Compose file is installed at all (the `libx11-data` package on Debian
+and Ubuntu), dead keys stay silent and the log says so: `compose table
+unavailable`.
+
+macOS and Windows are not affected — the OS combines dead keys before TildaZ
+sees the text.
+
 ### macOS
 
 **Letter shortcuts match the letter printed on the key**, the same way Safari and

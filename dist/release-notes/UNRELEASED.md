@@ -23,4 +23,5 @@ _(empty — folded into `v0.9.0.md`)_
 
 ## Body candidates
 
-_(empty)_
+- Dead keys combine on Linux — `^` then `e` gives `ê`, and German and Spanish
+  layouts can type a backtick. ([#494](https://github.com/ensky0/tildaz/issues/494))
