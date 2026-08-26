@@ -2290,13 +2290,15 @@ fn reportGeometryMac() ?terminal_interaction.ReportGeometry {
     if (g_renderer == null) return null;
     const tab = g_session.activeTab() orelse return null;
     const scale = g_renderer.?.scale;
+    const pad: i32 = @intFromFloat(ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale));
     return .{
         .cell_w = @intCast(g_renderer.?.font.cell_width_px),
         .cell_h = @intCast(g_renderer.?.font.cell_height_px),
         .cols = @intCast(tab.terminal.cols),
         .rows = @intCast(tab.terminal.rows),
-        .pad = @intFromFloat(ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale)),
-        .tab_bar_h = tabBarHeightPx(scale),
+        // #483 — 격자 원점. macOS 는 pane 하나 (5단계 전) 라 `pad` · `tab_bar_h + pad`.
+        .grid_x = pad,
+        .grid_y = tabBarHeightPx(scale) + pad,
     };
 }
 
