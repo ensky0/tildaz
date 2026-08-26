@@ -1028,6 +1028,14 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들고 GitHu
    `X.Y.Z-dev.N` / `-alpha.N` / `-beta.N` / `-rc.N` 형식만 사용해요.
 2. 정식 버전은 `dist/release-notes/vX.Y.Z.md`를 작성해요. GitHub Actions
    검증용 prerelease (`-dev.N` 등)는 릴리즈 노트를 생략할 수 있어요.
+
+   **[`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 를 먼저 열어요.**
+   거기 쌓인 항목을 새 노트의 `Upgrade notes` 로 옮기고 그 파일은 비워요. 업그레이드 주의는
+   *변경할 때* 알게 되는데 *릴리스할 때* 발행되므로, 그 사이를 나르는 것이 없으면 기억에
+   의존하게 돼요 (2026-08-26 [#510](https://github.com/ensky0/tildaz/issues/510) 에서
+   instance 상한이 내려가 기존 config 가 인식 안 되는 주의가 나왔는데, 머지 시점에 적어 둘
+   자리가 없었어요). **반대 방향도 규칙이에요** — 업그레이드 주의를 만드는 PR 은 그 파일에
+   한 줄을 **같은 PR 에서** 추가해요. 코드와 문서를 같은 PR 에 담는 규칙과 같은 이유예요.
 3. 커밋하고 `git push origin main` 해요.
 4. Windows PowerShell에서 아래 두 명령으로 태그를 push해 Actions를 트리거해요.
 
