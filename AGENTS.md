@@ -614,7 +614,28 @@ XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
 
 # COSMIC 은 `WAYLAND_DISPLAY` 가 있으면 스스로 중첩해요.
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
+
+# Cinnamon 은 `--nested` 예요. GNOME 처럼 자기 세션 버스가 필요해요.
+WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=X-Cinnamon dbus-run-session -- \
+  cinnamon --nested --wayland
 ```
+
+**Cinnamon 은 `--replace` 를 절대 쓰지 않아요.** `-r` / `--replace` 는 *지금 돌고 있는 창 관리자를
+갈아치우는* 옵션이라, 부모 세션에서 그대로 부르면 사용자의 데스크톱이 사라져요. 중첩은 `--nested`
+하나예요.
+
+- **`muffin-CRITICAL: Failed to init X11 display: Failed to initialize GDK` 는 정상이에요.** 중첩
+  세션에 X11 디스플레이가 없어서 나는 경고이고, 그 뒤로 셸은 정상 기동해요 (`JS LOG: Enabling
+  WindowAttentionHandler` 까지 오면 떴어요). 이 줄을 실패로 읽지 말아요.
+- **어느 `wayland-N` 을 가져갔는지는 로그에 안 나와요.** `ss` 로 확인해요 — 번호는 그때그때 달라요.
+
+    ```sh
+    ss -xlp | grep wayland-        # 소켓별로 잡고 있는 프로세스가 보여요
+    ```
+
+- Cinnamon extension 경로를 태우려면 `XDG_CURRENT_DESKTOP` 이 `X-Cinnamon` 이어야 해요
+  (`gsettings_hotkey.shellExtensionTargetForDesktopValue` 가 `GNOME` 을 먼저 보고 그다음
+  `X-Cinnamon` / `Cinnamon` 을 봐요).
 
 **COSMIC 에서 layout 전환하기.** `~/.config/cosmic/com.system76.CosmicComp/v1/xkb_config` 의 `layout` 을 고치면 cosmic-comp 가 바로 읽어요 (KDE 처럼 재시작이 필요하지 않아요).
 
@@ -835,11 +856,37 @@ PowerShell" 규칙이 적용되지 않는 유일한 도구예요.
 Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 스크립트예요. 자세한 내용은
 [`dist/stress/README.md`](dist/stress/README.md) 의 "돌리는 환경" 절에 있어요.
 
-**측정을 시작하기 전에 먼저 말하고 사용자 확인을 받아요** (2026-08-05 사용자 지시:
-*"테스트 하기 전에 말하고 해. 좀 전에도 내가 키보드 쳐서 오염되었어"*). 처리량 측정 · perf 덤프 ·
-합성 입력이 들어가는 검증은 **사용자가 그 시간 동안 기기를 건드리지 않아야** 값이 살아요. 조용히
-시작하면 사용자가 마우스 / 키보드를 쓰다 그 회차를 버리게 돼요 (실제로 두 번 발생). 그래서
-"지금부터 몇 초 동안 무엇을 재는지" 를 먼저 알리고, **확인을 받은 뒤에** 실행해요.
+**실기 검증은 무엇이든 시작 전에 말하고 사용자 동의를 받아요** (2026-08-05 사용자 지시:
+*"테스트 하기 전에 말하고 해. 좀 전에도 내가 키보드 쳐서 오염되었어"*, 2026-08-26 범위 확대).
+측정만이 아니라 **기기 상태를 건드리는 검증 전부**가 대상이에요.
+
+- **합성 키 · 마우스 입력** (`ydotool` · `SendInput` · `CGEvent` 등) — 사용자가 그 순간 타이핑
+  중이면 서로 섞여요.
+- **처리량 측정 · perf 덤프** — 사용자가 기기를 건드리면 그 회차를 버려요 (실제로 두 번 발생).
+  "지금부터 몇 초 동안 무엇을 재는지" 를 먼저 알려요.
+- **nested compositor 를 띄우는 것** (sway · Hyprland · GNOME · COSMIC · Cinnamon) — 창이 뜨고
+  Wayland 소켓 번호를 가져가요. **다른 세션 · 다른 agent 가 같은 기기에서 검증 중일 수 있어요.**
+- **세션 설정을 바꾸는 것** — 단축키 등록, layout 전환, dconf / RON / kxkbrc 수정. 잠깐이라도
+  사용자의 실제 세션 동작이 달라져요.
+- **앱을 띄우고 내리는 것** — 평소 쓰는 worker 를 종료시키는 절차가 들어가면 특히.
+
+2026-08-26 에 이것 때문에 실제로 부딪혔어요. 한 agent 가 #510 검증으로 nested Cinnamon 을
+띄웠는데 **같은 기기에서 다른 agent 가 이미 검증 중**이었고, 사용자가 멈추라고 해서야 알았어요.
+그때 정리하며 배운 것도 함께 적어요.
+
+- **띄운 것은 반드시 되돌려요.** nested compositor · 테스트 프로세스 · 임시 소켓까지.
+- **지우기 전에 지금 누가 쓰는지 확인해요.** 위 사례에서 자기가 만든 `wayland-1` 을 지우려다
+  `ss -xlp` 로 보니 **그 사이 다른 agent 의 Hyprland 가 그 번호를 물려받아** 있었어요. 소켓 번호는
+  재사용돼요 — 이름만 보고 지우면 남의 세션을 끊어요.
+- **검증은 임시 XDG 경로로 격리해요.** 사용자의 `config_N.toml` · lock 을 건드리지 않아요.
+
+    ```sh
+    env XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state XDG_RUNTIME_DIR=$T/run \
+        WAYLAND_DISPLAY=/run/user/$(id -u)/wayland-1 …            # 절대경로면 RUNTIME_DIR 격리와 양립
+    ```
+
+    `WAYLAND_DISPLAY` 는 `/` 로 시작하면 **절대 소켓 경로**로 쓰여요. 그래서 `XDG_RUNTIME_DIR` 를
+    임시 경로로 돌려 lock · endpoint 를 격리하면서도 compositor 에는 그대로 붙어요.
 
 **측정 완료를 비프음으로 알리지 않아요** (2026-08-06 사용자 지시: *"실험 완료 때 나오는 비프음 꼭
 삭제해줘"*). 측정이 길 때 끝을 알리려고 `[console]::beep` 을 붙이곤 했는데 쓰지 않아요 — 완료는
