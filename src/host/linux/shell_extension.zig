@@ -24,12 +24,27 @@ const cinnamon_resources = [_]Resource{
     .{ .relative_path = "metadata.json" },
 };
 
+/// #520 — 동기화 결과. 예전에는 `bool` 이라 **"복사했다" 와 "소스가 없어 손대지 않았다"
+/// 가 같은 값**이었고, 호출자가 둘 다 `Shell extension synchronized and enabled` 로
+/// 찍었다. 그래서 dev 빌드에서 extension 이 갱신되지 않는 것을 로그로 알아챌 수 없었다.
+pub const SyncOutcome = enum {
+    /// 소스에서 대상으로 반영했다 (내용이 같아 실제 쓰기가 없었던 경우도 포함).
+    synced,
+    /// **소스가 없어 손대지 않았다.** 설치본이 이미 있어서 진행은 가능하지만, 지금 레포의
+    /// extension 이 아닐 수 있다.
+    kept_installed,
+    /// 소스도 설치본도 없다.
+    unavailable,
+};
+
 /// Package resources live at <prefix>/share/tildaz. AppImage uses the same
 /// layout below AppDir/usr, so every packaged Linux format follows this path.
-/// A repository/portable install may not have this directory next to the
-/// executable; install.sh already copied those resources and this becomes a
-/// graceful no-op.
-pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
+/// `zig build` 도 #520 이후 같은 배치를 `zig-out/share/tildaz` 에 만든다.
+///
+/// 그래도 그 디렉터리가 없을 수 있다 — 레포에서 바이너리만 옮겨 쓰거나, install.sh 가
+/// 이미 복사해 둔 portable 설치가 그렇다. 그때는 설치본을 그대로 두고 `kept_installed`
+/// 를 돌려준다.
+pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !SyncOutcome {
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
@@ -57,8 +72,8 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         error.FileNotFound => {
             const installed_entry = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "extension.js" });
             defer allocator.free(installed_entry);
-            std.Io.Dir.accessAbsolute(rt.io, installed_entry, .{}) catch return false;
-            return true;
+            std.Io.Dir.accessAbsolute(rt.io, installed_entry, .{}) catch return .unavailable;
+            return .kept_installed;
         },
         else => return err,
     };
@@ -89,7 +104,7 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         };
         if (changed or !compiled_exists) try compileGnomeSchemas(rt, allocator, destination_dir);
     }
-    return true;
+    return .synced;
 }
 
 fn syncFile(rt: Runtime, allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {

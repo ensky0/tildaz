@@ -253,6 +253,28 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
+    // #520 — Linux 는 Shell extension 리소스를 exe 옆 `share/tildaz/` 에도 깐다.
+    //
+    // worker 가 부팅할 때 `shell_extension.syncForCurrentUser` 가 그 경로에서 GNOME ·
+    // Cinnamon extension 을 사용자 홈으로 복사하는데 (`<exe_dir>/../share/tildaz/`),
+    // 여기가 비어 있으면 **설치본을 그대로 두고 조용히 넘어간다.** 그래서 `zig build` 로
+    // 개발하는 동안에는 레포의 extension 을 고쳐도 셸에는 옛 파일이 남았다 — 게다가
+    // 로그는 성공처럼 찍혀서 (`Shell extension synchronized and enabled`) 그 사실을
+    // 알아챌 근거가 없었다.
+    //
+    // 경로 · 파일 구성은 `dist/linux/package.sh` 의 `install_extension_resources` 와
+    // 같다. 그쪽이 패키지에 넣는 것을 여기서는 `zig-out` 에 넣을 뿐이라, dev 빌드와
+    // 패키지가 같은 배치를 갖는다.
+    if (is_linux_target) {
+        for ([_][]const u8{ "gnome-extension", "cinnamon-extension" }) |family| {
+            b.installDirectory(.{
+                .source_dir = b.path(b.fmt("dist/linux/{s}", .{family})),
+                .install_dir = .{ .custom = "share/tildaz" },
+                .install_subdir = family,
+            });
+        }
+    }
+
     // stress 하네스도 같은 런타임을 exe 옆에 두고 실행해야 하므로 (아래 stress 단계)
     // install step 을 붙잡아 둡니다. Windows 아닌 target 에선 null 입니다.
     var conpty_dll_install: ?*std.Build.Step.InstallFile = null;
