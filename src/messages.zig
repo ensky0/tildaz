@@ -517,6 +517,59 @@ pub const hotkey_registration_failed_format =
 ;
 pub const hotkey_registration_failed_fallback_msg = "Failed to register the global hotkey. Edit this instance's config file and restart.";
 
+/// #510 — Linux 의 전역 hotkey 획득 실패. 세 platform 이 같은 정책 (**못 잡으면 멈춘다**)
+/// 을 쓰지만 문구는 갈라야 한다: Windows 는 OS 의 hotkey 표가 상대이고, macOS 는 권한이
+/// 상대이며, Linux 는 **데스크톱마다 상대가 다르다** (KGlobalAccel · GNOME Shell ·
+/// Hyprland · COSMIC). 그래서 어느 상대에게 무엇이 막혔는지를 본문이 직접 말한다.
+///
+/// 인자: (1) hotkey 표기 (2) 상대 이름 (3) 그 상대가 준 구체적 사유 (4) config 경로.
+pub const linux_hotkey_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const linux_hotkey_failed_format =
+    \\TildaZ could not claim the global hotkey "{s}" from {s}.
+    \\
+    \\{s}
+    \\
+    \\A drop-down terminal you cannot summon is no terminal at all, so TildaZ stops
+    \\here instead of starting into a window you have no way to reach.
+    \\
+    \\Pick a free combination in the config, then start TildaZ again:
+    \\{s}
+;
+pub const linux_hotkey_failed_fallback_msg =
+    "TildaZ could not claim its global hotkey and cannot run without one. Edit this instance's config file and start TildaZ again.";
+
+/// 위 format 의 두 번째 인자 — 등록 상대의 이름. 데스크톱 이름을 그대로 쓰지 않고 실제
+/// **등록 상대**를 적는다 (KDE 의 상대는 Plasma 가 아니라 KGlobalAccel 데몬이다).
+pub const hotkey_owner_kglobalaccel = "KGlobalAccel";
+pub const hotkey_owner_gnome_shell = "GNOME Shell";
+pub const hotkey_owner_cinnamon = "Cinnamon";
+pub const hotkey_owner_sway = "sway";
+pub const hotkey_owner_hyprland = "Hyprland";
+pub const hotkey_owner_cosmic = "COSMIC";
+
+/// 위 format 의 세 번째 인자 — 사유. 상대마다 알 수 있는 것이 달라서 문장이 갈린다.
+pub const hotkey_reason_taken_by_format =
+    "That combination is already bound to another action:\n\n  \u{2022} {s}";
+pub const hotkey_reason_taken_unnamed_msg =
+    "That combination is already bound to another action on this desktop.";
+pub const hotkey_reason_grab_refused_msg =
+    "The desktop refused the grab. Another application or the desktop itself holds the combination.";
+pub const hotkey_reason_backend_failed_format =
+    "Registration failed: {s}.";
+
+/// #510 — sway 고유 사유. sway 는 등록 상대이자 compositor 자신이라 "다른 앱이 쥐고
+/// 있다" 가 아니라 **명령이 통하지 않았다** 쪽 문장이 맞다.
+pub const sway_reason_no_socket_msg =
+    "This session says it is sway, but SWAYSOCK is not set, so TildaZ cannot reach the compositor to bind the key.";
+pub const sway_reason_command_too_long_msg =
+    "The bind command did not fit -- the path to the TildaZ executable is unusually long.";
+pub const sway_reason_ipc_failed_format =
+    "The sway IPC call failed: {s}.";
+pub const sway_reason_rejected_msg =
+    "sway rejected the bind command.";
+pub const sway_reason_rejected_format =
+    "sway rejected the bind command:\n\n  \u{2022} {s}";
+
 /// #496 1-c — a position hotkey is matched by physical key, so it needs a low-level
 /// keyboard hook rather than the OS hotkey table. The failure causes are different
 /// enough from `RegisterHotKey` that reusing that text would misdirect the user.
@@ -560,8 +613,9 @@ pub const macos_menu_emoji_symbols_label = "Emoji & Symbols";
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =
     \\TildaZ needs two macOS permissions to work.
-    \\Without them the {s} hotkey will not respond.
-    \\(Cmd+Q from the menu still works either way.)
+    \\Without them the {s} hotkey cannot be registered, and a drop-down
+    \\terminal you cannot summon is no terminal at all -- so TildaZ closes
+    \\when you dismiss this dialog. Grant both, then start it again.
     \\
     \\Please follow these steps:
     \\
@@ -580,8 +634,8 @@ pub const macos_permission_required_format =
     \\  3. Same as above: turn "tildaz" ON,
     \\     or click "+" to add TildaZ.app and then turn it ON.
     \\
-    \\Step 3 — Restart TildaZ
-    \\  Quit and relaunch this app for the new permissions to take effect.
+    \\Step 3 — Start TildaZ again
+    \\  Launch the app. The new permissions take effect on the next start.
     \\
     \\Current status:
     \\  Input Monitoring : {s}

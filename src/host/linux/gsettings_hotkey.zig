@@ -35,6 +35,8 @@ const physical_key = @import("../../physical_key.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
 const shell_extension = @import("shell_extension.zig");
+const paths = @import("../../paths.zig");
+const instances = @import("../../instances.zig");
 
 const c = struct {
     const GSettings = opaque {};
@@ -578,4 +580,66 @@ test "Shell extension target follows exact GNOME and Cinnamon desktop tokens" {
     try T.expect(shellExtensionTargetForDesktopValue("KDE") == null);
     try T.expect(shellExtensionTargetForDesktopValue("KDESomething") == null);
     try T.expect(shellExtensionTargetForDesktopValue("GNOME-Classic") == null);
+}
+
+// =============================================================================
+// #510 — Shell extension 의 grab 결과 읽기
+// =============================================================================
+
+/// extension 이 남기는 상태 줄의 형식 판별자. 형식을 바꾸면 이 값을 올리고, 모르는
+/// 판별자는 **무시**한다 (옛 extension 이 남긴 줄을 오해하지 않게).
+const hotkey_state_version = "v1";
+
+/// #510 — GNOME · Cinnamon Shell extension 이 **이 인스턴스의 전역 hotkey grab 에
+/// 실패했다고 남겼는가.**
+///
+/// extension 은 `grab_accelerator` (GNOME) / `addHotKey` (Cinnamon) 의 실패를 알지만
+/// 지금까지 셸 journal 에만 적었다. 그 결과를
+/// `paths.instanceHotkeyStatePath` 에 `v1 <ok|failed> <hotkey 문자열>` 한 줄로 남기게
+/// 하고, worker 가 부팅 때 이 함수로 읽는다. 왜 파일이어야 하는지는 그 경로의 주석에
+/// 있다 (grab 실패가 worker 탄생보다 앞선다).
+///
+/// **stale 파일이 멀쩡한 환경을 죽이지 않게** 두 겹으로 막는다.
+///   1. extension 이 성공하면 `ok` 로 덮어쓰고, `disable()` 에서 지운다.
+///   2. 줄에 적힌 hotkey 문자열이 **지금 config 의 값과 다르면 무시한다.** 사용자가
+///      키를 고쳐 다시 띄운 경우가 여기 걸린다 — 그때 파일이 아직 옛 값이면 그것은
+///      지난 실행의 기록이다.
+///
+/// 판정할 수 없으면 (extension 이 꺼져 있음 · 파일 없음 · 형식 모름) **false** 다.
+/// 못 봤다는 것과 충돌했다는 것은 다르고, 잘못된 fatal 은 놓친 감지보다 나쁘다.
+pub fn shellExtensionHotkeyFailed(rt: Runtime, allocator: std.mem.Allocator, index: u32) bool {
+    // extension 이 hotkey 를 맡고 있을 때만 이 파일이 의미가 있다. 꺼져 있으면 등록은
+    // 아래 `registerToggleHotkey` 의 GSettings 경로가 했고, 그쪽은 결과를 모른다.
+    if (enabledShellExtensionOwner(rt) == null) return false;
+
+    const path = paths.instanceHotkeyStatePath(rt, allocator, index) catch return false;
+    defer allocator.free(path);
+
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return false;
+    defer file.close(rt.io);
+    var file_reader = file.reader(rt.io, &.{});
+    const content = file_reader.interface.allocRemaining(allocator, .limited(4 * 1024)) catch return false;
+    defer allocator.free(content);
+
+    const line = std.mem.trim(u8, content[0 .. std.mem.findScalar(u8, content, '\n') orelse content.len], " \t\r");
+    var it = std.mem.tokenizeAny(u8, line, " \t");
+    const version = it.next() orelse return false;
+    if (!std.mem.eql(u8, version, hotkey_state_version)) return false;
+    const state = it.next() orelse return false;
+    if (!std.mem.eql(u8, state, "failed")) return false;
+
+    // hotkey 문자열은 **줄 끝까지**다 — 사용자가 `ctrl + space` 처럼 공백을 넣어 적을 수
+    // 있어서 토큰 하나로 자르면 안 된다.
+    const recorded = std.mem.trim(u8, it.rest(), " \t");
+    if (recorded.len == 0) return false;
+
+    const current = instances.configHotkeyText(rt, allocator, index) catch return false;
+    defer allocator.free(current);
+    if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, current, " \t\r\n"), recorded)) {
+        log.appendLine("hotkey", "shell extension state is stale (recorded={s}) — ignored", .{recorded});
+        return false;
+    }
+
+    log.appendLine("hotkey", "shell extension reported a failed grab for {s}", .{recorded});
+    return true;
 }

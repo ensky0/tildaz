@@ -3996,8 +3996,12 @@ fn renderFrameTick() void {
 
 }
 
-/// CGEventTap 생성 + run loop source 등록 + 활성화. 권한 없으면 사용자 안내 후
-/// tap 없이 진행 (mainMenu Cmd+Q 는 동작).
+/// CGEventTap 생성 + run loop source 등록 + 활성화.
+///
+/// #510 — 권한이 없으면 안내 다이얼로그를 띄우고 **종료한다.** 다이얼로그 자체는 run
+/// loop 시작 후로 미뤄야 해서 (#249 — 그 전에는 key window 가 못 된다) 여기서는 예약만
+/// 하고 반환하고, 실제 종료는 `showPermDialogTrampoline` 이 한다. 그래서 이 함수의
+/// 반환이 "계속 진행" 을 뜻하지 않는다.
 fn installEventTap() !void {
     // active CGEventTap 은 두 권한이 모두 필요: Input Monitoring (preflight) +
     // Accessibility (이벤트 consume / 변조). 한쪽만 있으면 CGEventTapCreate 가
@@ -4098,10 +4102,15 @@ fn recreateEventTapTrampoline(_: ?*anyopaque) callconv(.c) void {
 
 /// `dispatch_async_f` 트램폴린 — run loop 시작 후 권한 안내 다이얼로그 표시 (#249).
 /// 인자를 못 받아 메시지는 module-level `g_perm_msg_buf` 에서 읽는다.
+///
+/// #510 — **다이얼로그를 닫으면 종료한다** (`showFatal` 은 `noreturn`). 예전에는
+/// `showInfo` 뒤에 창을 복원하고 계속 돌았다. 전역 핫키를 못 잡은 채 도는 드롭다운은
+/// 부를 수단이 없는 창이고, 세 platform 중 macOS 만 그 상태로 남아 있었다 — Windows 는
+/// `RegisterHotKey` 실패가 fatal 이고 (`window.zig`) Linux 도 이제 감지되는 경로는
+/// 전부 멈춘다. 안내문의 마지막 단계가 원래부터 "앱을 다시 시작하라" 라서, 여기서
+/// 종료하는 것이 그 안내와도 이어진다.
 fn showPermDialogTrampoline(_: ?*anyopaque) callconv(.c) void {
-    dialog.showInfo(g_rt, messages.macos_permission_required_title, g_perm_msg_buf[0..g_perm_msg_len]);
-    // dialog 가 닫히면서 key window 를 우리 윈도우로 안 돌려줄 수 있어 강제 복원.
-    showWindow();
+    dialog.showFatal(g_rt, messages.macos_permission_required_title, g_perm_msg_buf[0..g_perm_msg_len]);
 }
 
 /// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 면

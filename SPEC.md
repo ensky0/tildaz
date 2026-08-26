@@ -297,6 +297,42 @@ minimize/restore.
 | 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
+**hotkey 를 못 잡으면 기동을 멈춘다 — 세 platform 공통** ([#510](https://github.com/ensky0/tildaz/issues/510)).
+부를 수 없는 드롭다운은 사용자가 도달할 방법이 없는 창이라, 그 상태로 도는 것보다 안내 후
+종료가 낫다. #431 의 *"뒤에 있는 것이 양보한다"* 를 실제로 세 platform 에 맞춘 것이고, 그전에는
+**Windows 만** 멈췄다.
+
+- **적용 대상은 기동 등록이다.** 기동 이후의 재등록 실패 (KDE 의 layout 전환 재bind 등) 는
+  멈추지 않는다 — 그때 프로세스를 죽이면 **열려 있던 셸 세션이 함께 날아간다.** 로그만 남긴다.
+- **측정 인스턴스 (`-e` · `-size`) 는 애초에 전역 hotkey 를 등록하지 않으므로** (#382) 이 정책
+  밖이다.
+- 안내는 세 platform 모두 공통 dialog 경로를 쓴다. Linux 는 overlay 를 Wayland globals +
+  keyboard 준비 뒤에만 그릴 수 있어 (#282 F9), 발견 시점에 기록해 두고 shell · font 검증과
+  **같은 구간에서** 한 번에 안내한다.
+
+**"못 잡았다" 를 아는 방법은 데스크톱마다 다르다.** Linux 는 등록 경로가 하나가 아니라 여섯이고,
+다섯이 fire-and-forget 이었다. 그래서 "등록이 실패했나" 를 물을 수 없는 곳은 **쓰기 전에 읽어**
+소유권을 판정한다.
+
+| 등록 상대 | 판정 방법 | 근거 |
+|---|---|---|
+| Windows | `RegisterHotKey` 반환값 / 위치 표기는 `WH_KEYBOARD_LL` 훅 설치 여부 | API 가 실패를 돌려준다 |
+| macOS | Input Monitoring · Accessibility preflight + `CGEventTapCreate` | 권한이 없어도 멈춘다 — 그 상태로는 hotkey 가 영영 안 온다 |
+| KDE Plasma | KGlobalAccel 의 사전 소유자 조회 → 사용자 확인 → 인수 → 사후 검증 | Linux 에서 유일하게 *남이 쥐고 있다* 를 직접 안다 |
+| GNOME · Cinnamon | Shell extension 이 `grab_accelerator` / `addHotKey` 결과를 `instanceN.hotkey` 에 남기고 worker 가 부팅 때 읽는다 | 셸 **안에서만** 답이 나오고, 그 답이 worker 탄생보다 먼저 확정된다 |
+| sway | `RUN_COMMAND` 응답의 `success` (거절 사유 문자열 포함) | 등록 실패는 알려 준다. **중복은 알 수 없고 알 필요도 없다** — sway 는 기존 binding 을 조용히 밀어내고 우리 등록이 항상 이긴다 (실측: sway 1.12 가 `Overwriting binding` 을 자기 로그에만 남기고 `success: true` 를 준다) |
+| Hyprland | `hyprctl -j binds` 로 **전체 목록을 읽어** 우리 accel 을 쓰는 남의 binding 을 찾는다 | 중복 bind 가 `ok` 를 돌려주고 **둘 다 살아 함께 발화한다** (실측: Hyprland 0.56.2) |
+| COSMIC | 사용자 `custom` RON 을 읽어 우리 accel 을 쓰는 남의 항목을 찾는다 | 파일 쓰기라 되먹임이 없다. 같은 키가 두 번 들어가면 COSMIC 이 파일을 통째로 버린다 (#484) |
+
+**판정하지 못하는 경우는 통과시킨다.** 도구가 없거나 파일을 못 읽은 것은 충돌했다는 뜻이
+아니고, 잘못된 종료는 놓친 감지보다 나쁘다. 알려진 갭 둘을 여기 적어 둔다.
+
+- **COSMIC 의 시스템 기본 단축키** (`/usr/share/cosmic/…/v1/defaults`) 는 보지 않는다.
+  `custom` 이 기본값을 덮는지 **확인하지 못했다** — 덮는다면 겹침은 우리가 이기는 상황이라,
+  충돌로 읽으면 멀쩡한 설정에서 앱이 안 뜬다.
+- **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
+  `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
+
 ### 2.2 탭 관리
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
