@@ -88,6 +88,76 @@ pub fn viewportForGrid(
     };
 }
 
+/// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 로 요청한 격자를
+/// **끝까지 지킬 수 있는지** 판정한다. `viewportForGrid` 와 같은 계산이되 호출처가
+/// **탭바가 있다고 가정한 높이**를 넘긴다.
+///
+/// 왜 탭바를 미리 넣는가: 시작 시점엔 탭이 하나라 탭바가 0 이다 (#127). 그런데 탭을
+/// 하나 더 만들면 탭바가 세로 공간을 먹으므로 요청 격자를 지키려면 창이 그만큼 커져야
+/// 한다. 탭바를 포함한 크기로 **미리** 재 두면 통과한 요청은 탭을 만들어도 안전하다 —
+/// "시작은 됐는데 탭에서 터지는" 두 번째 실패 경로가 코드에서 사라진다. 대가는 탭바
+/// 한 줄만큼의 여유를 더 요구하는 것이다.
+///
+/// **단위는 호출처가 맞춘다.** `screen_w` · `screen_h` 는 `cell_*` · `pad` 와 같은
+/// 단위여야 한다 — host 마다 physical / logical 이 갈린다 (Linux 의 layer-shell 은
+/// logical, Windows 의 work-area 는 physical).
+pub fn gridFitsScreen(
+    cols: u16,
+    rows: u16,
+    pad: i64,
+    scrollbar_w: i64,
+    tab_bar_h: i64,
+    cell_w: i64,
+    cell_h: i64,
+    screen_w: i64,
+    screen_h: i64,
+) GridFit {
+    const vp = viewportForGrid(cols, rows, pad, scrollbar_w, tab_bar_h, cell_w, cell_h);
+    return .{
+        .fits = vp.w <= screen_w and vp.h <= screen_h,
+        .needed_w = vp.w,
+        .needed_h = vp.h,
+    };
+}
+
+/// `gridFitsScreen` 의 결과. 거부 메시지가 "얼마가 필요한지" 를 함께 적을 수 있게
+/// 판정과 계산값을 같이 낸다 — 사용자가 격자를 얼마나 줄여야 하는지 바로 보인다.
+pub const GridFit = struct {
+    fits: bool,
+    needed_w: i64,
+    needed_h: i64,
+};
+
+test "gridFitsScreen 은 탭바를 포함해 잰다 — 탭바 한 줄 차이로 갈린다" {
+    // 실기 값 (KDE Plasma: cell=19x39px, pad=12px, scrollbar=20px, 탭바=56px).
+    const pad: i64 = 12;
+    const sb: i64 = 20;
+    const tab: i64 = 56;
+    const cw: i64 = 19;
+    const ch: i64 = 39;
+    const vp = viewportForGrid(120, 40, pad, sb, tab, cw, ch);
+
+    // 딱 맞는 화면 — 통과.
+    try std.testing.expect(gridFitsScreen(120, 40, pad, sb, tab, cw, ch, vp.w, vp.h).fits);
+    // 1px 이라도 모자라면 거부. 가로 / 세로 각각.
+    try std.testing.expect(!gridFitsScreen(120, 40, pad, sb, tab, cw, ch, vp.w - 1, vp.h).fits);
+    try std.testing.expect(!gridFitsScreen(120, 40, pad, sb, tab, cw, ch, vp.w, vp.h - 1).fits);
+
+    // 탭바를 빼면 들어가지만 탭바를 넣으면 안 들어가는 화면 — 거부해야 한다.
+    // 이걸 통과시키면 "시작은 되는데 탭을 만들면 밀리는" 창이 나온다 (#506).
+    const without = viewportForGrid(120, 40, pad, sb, 0, cw, ch);
+    try std.testing.expect(without.h < vp.h);
+    try std.testing.expect(!gridFitsScreen(120, 40, pad, sb, tab, cw, ch, vp.w, without.h).fits);
+}
+
+test "gridFitsScreen 은 필요한 크기를 함께 낸다" {
+    const fit = gridFitsScreen(80, 24, 12, 20, 56, 19, 39, 100, 100);
+    try std.testing.expect(!fit.fits);
+    const vp = viewportForGrid(80, 24, 12, 20, 56, 19, 39);
+    try std.testing.expectEqual(vp.w, fit.needed_w);
+    try std.testing.expectEqual(vp.h, fit.needed_h);
+}
+
 test "viewportForGrid 는 terminalCols/Rows 의 역함수다" {
     // 실기에서 나온 값 (macOS: cell=19x39px, pad=12px, scrollbar=20px, 탭 1개라 탭바 0).
     const pad: i64 = 12;
