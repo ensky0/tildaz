@@ -158,42 +158,6 @@ HYPR_CONF="$HYPR_DIR/hyprland.conf"
 HYPR_LUA="$HYPR_DIR/hyprland.lua"
 TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
 
-# tildaz config.hotkey → COSMIC RON 바인딩 키 `(modifiers: [..], key: "..")`.
-#   modifiers: Super/Ctrl/Alt/Shift, key: xkb keysym 이름(KEY_ prefix 없이) —
-#   letter 소문자("a"), 함수키 "F1", "grave"/"space"(소문자), "Tab"/"Escape"/"Return".
-#   (cosmic-comp 은 keysym 이름을 case-insensitive 로도 매칭하므로 casing 은 best-effort.)
-cosmic_translate_hotkey() {
-    local cfg="$TILDAZ_CONFIG_DIR/config_0.json" hk="f1" v=""
-    if [[ -f "$cfg" ]]; then
-        v="$(grep -oE '"hotkey"[[:space:]]*:[[:space:]]*"[^"]*"' "$cfg" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
-        [[ -n "$v" ]] && hk="$v"
-    fi
-    local -a parts=() mods=(); local key="" tok ckey m
-    IFS='+' read -ra parts <<< "$hk"
-    for tok in "${parts[@]}"; do
-        case "${tok,,}" in
-            ctrl|control) mods+=("Ctrl") ;;
-            shift) mods+=("Shift") ;;
-            alt) mods+=("Alt") ;;
-            super|meta|logo|win) mods+=("Super") ;;
-            "") ;;
-            *) key="$tok" ;;
-        esac
-    done
-    case "${key,,}" in
-        f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12) ckey="${key^^}" ;;
-        grave|'`') ckey="grave" ;;
-        space) ckey="space" ;;
-        tab) ckey="Tab" ;;
-        escape|esc) ckey="Escape" ;;
-        enter|return) ckey="Return" ;;
-        *) if [[ "$key" =~ ^[a-zA-Z]$ ]]; then ckey="${key,,}"; else ckey="$key"; fi ;;
-    esac
-    local mods_csv=""
-    for m in "${mods[@]}"; do mods_csv+="${mods_csv:+, }$m"; done
-    COSMIC_BINDING="(modifiers: [${mods_csv}], key: \"${ckey}\")"
-}
-
 # config 에 marker+line 을 idempotent append (needle 정규식이 이미 있으면 skip → return 1).
 append_marked() {
     local cfg="$1" marker="$2" needle="$3" line="$4"
@@ -263,42 +227,15 @@ elif [[ -f "$HYPR_LUA" ]]; then
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_LUA  (Lua ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_LUA  (이미 설정됨 — 변경 없음)"; fi
 fi
 
-# ~/.config/cosmic/...Shortcuts/v1/custom — COSMIC hotkey. COSMIC(smithay 기반
-# cosmic-comp)은 wlr-layer-shell 지원(drop-down 그대로 동작)이지만
-# compositor 단축키→`tildaz --toggle N`으로 건다.
-# COSMIC 단축키는 RON map 파일(`{ (modifiers:[..], key:".."): Spawn("..") }`).
-# 자동실행은 COSMIC 가 XDG user autostart를 지원하므로 tildaz 의
-# autostart 모듈(config.auto_start)이 담당 — 여기선 hotkey 만 등록.
-# 본문 보존: 기존 tildaz --toggle Spawn 줄만 제거 후 config_0 hotkey 로 재삽입(멱등 +
-# config=source of truth). RON 형태가 예상(닫는 '}' 독립 줄)과 다르면 안 건드림.
-cosmic_translate_hotkey
-COSMIC_DIR="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1"
-COSMIC_CUSTOM="$COSMIC_DIR/custom"
-COSMIC_ENTRY="    ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle 0\"),"
-COSMIC_MSG=""
-if [[ "${XDG_CURRENT_DESKTOP:-}" == *[Cc][Oo][Ss][Mm][Ii][Cc]* ]] || command -v cosmic-comp >/dev/null 2>&1 || [[ -f "$COSMIC_CUSTOM" ]]; then
-    mkdir -p "$COSMIC_DIR"
-    if [[ ! -f "$COSMIC_CUSTOM" ]]; then
-        printf '{\n%s\n}\n' "$COSMIC_ENTRY" > "$COSMIC_CUSTOM"
-        COSMIC_MSG="$COSMIC_CUSTOM  (생성 — hotkey shortcut 등록)"
-    elif grep -qE '^[[:space:]]*\}[[:space:]]*$' "$COSMIC_CUSTOM"; then
-        # pretty multi-line RON map(닫는 '}' 가 독립 줄) — 안전하게 마지막 '}' 직전 삽입.
-        cosmic_tmp="$(mktemp)"
-        grep -vE 'Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)' "$COSMIC_CUSTOM" > "$cosmic_tmp"
-        awk -v entry="$COSMIC_ENTRY" '
-            { lines[NR] = $0 }
-            END {
-                last = 0
-                for (i = NR; i >= 1; i--) if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) { last = i; break }
-                for (i = 1; i <= NR; i++) { if (i == last) print entry; print lines[i] }
-            }' "$cosmic_tmp" > "$COSMIC_CUSTOM"
-        rm -f "$cosmic_tmp"
-        COSMIC_MSG="$COSMIC_CUSTOM  (hotkey shortcut 등록/갱신)"
-    else
-        COSMIC_MSG="$COSMIC_CUSTOM  (형식이 예상과 달라 안 건드림 — 수동 추가: ${COSMIC_BINDING}: Spawn(\"$TILDAZ_EXE --toggle 0\"),)"
-    fi
-fi
-
+# COSMIC hotkey 는 여기서 등록하지 않는다 — TildaZ 가 실행될 때 등록한다.
+# 예전에는 이 자리에서 RON custom shortcut(`~/.config/cosmic/...Shortcuts/v1/custom`)
+# 을 직접 썼는데, 그 줄에는 우리 표식(`description: Some("TildaZ_<index>")`)이 없어서
+# launcher 가 자기 항목으로 알아보지 못하고 하나 더 썼다 — 같은 hotkey 가 두 번
+# 등록됐다 ([#514](https://github.com/ensky0/tildaz/issues/514)). writer 를 둘 두면
+# 표식이 갈라지고, 갈라지면 중복 맵 키로 COSMIC 이 파일을 통째로 버린다(#484).
+# Hyprland 도 같은 이유로 hotkey 를 런타임 등록으로 옮겼다(위 `remove_legacy_hypr_hotkey`).
+# 이 스크립트가 예전에 남긴 줄은 TildaZ 가 처음 실행될 때 흡수한다
+# (`src/shortcut_sync/linux.zig` 의 `legacyInstallScriptEntryIndex`).
 # GNOME Shell extension — GNOME(mutter) 은 wlr-layer-shell 미지원이라 drop-down
 # placement / lifecycle(launch·show·hide) 을 extension 이 담당한다 (#228). GNOME
 # 환경에서만 의미(다른 DE 는 gnome-shell 이 없어 무시). 복사는 항상, enable 은
@@ -371,7 +308,6 @@ echo "  $ICON_OUT"
 echo "  $BIN_LINK -> $TILDAZ_EXE"
 echo "  $SWAY_MSG"
 [[ -n "$HYPR_MSG" ]] && echo "  $HYPR_MSG"
-[[ -n "$COSMIC_MSG" ]] && echo "  $COSMIC_MSG"
 [[ -n "$EXT_MSG" ]] && echo "  $EXT_MSG"
 [[ -n "$CIN_MSG" ]] && echo "  $CIN_MSG"
 echo ""
@@ -385,10 +321,10 @@ echo "  - sway: ~/.config/sway/config 의 exec 로 자동실행(없으면 위에
 echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
 echo "  - Hyprland: layer-shell drop-down. hotkey 는 실행 시 config_N별 hyprctl bind→'tildaz --toggle N'."
 echo "          위에서 hyprland.lua/.conf 에 자동실행 추가 → 적용하려면 'hyprctl reload' 또는 재로그인."
-echo "  - COSMIC: layer-shell drop-down. hotkey 는 RON shortcut→'tildaz --toggle N'(portal 우회)."
-echo "          위에서 ~/.config/cosmic/...Shortcuts/v1/custom 에 등록 → cosmic-comp 가 live 반영(안 되면 재로그인)."
+echo "  - COSMIC: layer-shell drop-down. hotkey 는 실행 시 config_N별 RON shortcut→'tildaz --toggle N'(portal 우회)."
+echo "          TildaZ 를 한 번 띄우면 ~/.config/cosmic/...Shortcuts/v1/custom 에 등록됨 → cosmic-comp 가 live 반영(안 되면 재로그인)."
 echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동작."
 echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
-echo "  - config: $TILDAZ_CONFIG_DIR/config_N.json (instance별 auto_start/hidden_start/hotkey/위치)"
+echo "  - config: $TILDAZ_CONFIG_DIR/config_N.toml (instance별 auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 $CONFIG_HOME/autostart/"
 echo "    tildaz.desktop 자동 생성. GNOME 은 NotShowIn으로 건너뛰고 extension이 담당."
