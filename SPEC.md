@@ -806,6 +806,16 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 - `config_N.toml` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
+- **N 은 0 … 11 (인스턴스 12 개) 이다** (#510). 상한의 근거는 기본 hotkey 다 — TildaZ 가
+  **생성하는** config 의 `hotkey` 기본값은 `F(N+1)` 이라 index 0 → `F1`, 11 → `F12` 로
+  두 끝이 정확히 맞는다. 그래서 "hotkey 없는 instance" 예외가 생기지 않는다. 상한을 넘는
+  `--instance N` 은 범위를 안내하고 거절한다. 같은 상한을 `config_N.toml` ·
+  `tildaz.instanceN.desktop` 의 이름 인식에도 적용한다.
+- 기본 hotkey 가 index 파생인 것은 **새로 만드는 파일에만** 적용된다. 이미 있는
+  `config_N.toml` 은 적힌 값 그대로 읽고 `hotkey` 를 고쳐 쓰지 않는다.
+- 다음 config 번호는 **비어 있는 가장 낮은 index** 다 (#510). 최고값+1 이 아니라서
+  `config_1.toml` 을 지우면 그 번호와 `F2` 가 함께 다시 열리고, 상한이 *누적 생성 횟수*
+  가 아니라 *동시 인스턴스 수* 에 걸린다.
 - 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
   복구한 뒤 launcher가 종료한다. `config_0.toml`이 없으면 다른 번호의 config 존재
   여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
