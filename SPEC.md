@@ -829,7 +829,7 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
 - **locale** 은 `LC_ALL` → `LC_CTYPE` → `LANG` (libxkbcommon 규약). 그 표가 없으면 `en_US.UTF-8` 로 한 번 더 시도한다 — X11 `compose.dir` 이 거의 모든 UTF-8 locale 을 그 파일로 보낸다. libxkbcommon 1.12+ 의 자체 fallback 은 C 라이브러리가 아는 locale 에만 적용된다 (실측 1.13.1: 미설치 `xx_XX.UTF-8` 은 `XKB-679` 에러 + `NULL` — 우리 재시도가 있어야 조합이 살았다). 둘 다 없으면 (Compose 파일 미설치 — Debian 계열 `libx11-data`) 로그 한 줄 (`compose table unavailable`) 을 남기고 종전처럼 동작한다. 사용자 `~/.XCompose` · `$XDG_CONFIG_HOME/XCompose` 도 libxkbcommon 이 읽는다.
 - Compose 심볼 8 개는 **optional** (`ComposeApi`, all-or-nothing) — 없으면 조합만 꺼지고 키보드는 그대로다.
 
-검증 상태 (2026-08-26): lima VM (Ubuntu aarch64 · libxkbcommon 1.13.1 · headless sway · `wtype` keysym 주입) 에서 위 규칙 전부 통과 — 조합 8 종, `^` 뒤 Enter · Ctrl+C 가 삼켜지지 않음, 없는 locale 의 `en_US.UTF-8` fallback (#494 댓글에 바이트 기록). **실기 (COSMIC · KDE, 실제 AZERTY 자판, fcitx5 공존) 는 확인 필요.**
+검증 상태 (2026-08-26): lima VM (Ubuntu aarch64 · libxkbcommon 1.13.1 · headless sway · `wtype` keysym 주입 — [`dist/linux/dead-key-compose-check.sh`](dist/linux/dead-key-compose-check.sh)) 에서 위 규칙 전부 통과 — 조합 8 종, `^` 뒤 Enter · Ctrl+C 가 삼켜지지 않음, 없는 locale 의 `en_US.UTF-8` fallback (#494 댓글에 바이트 기록). **실기 (COSMIC · KDE, 실제 AZERTY 자판, fcitx5 공존) 는 확인 필요.**
 
 ---
 
