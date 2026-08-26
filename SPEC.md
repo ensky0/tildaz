@@ -297,6 +297,45 @@ minimize/restore.
 | 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([9803c62](https://github.com/ensky0/tildaz/commit/9803c62), #198) | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
+**hotkey 를 못 잡으면 기동을 멈춘다 — 세 platform 공통** ([#510](https://github.com/ensky0/tildaz/issues/510)).
+부를 수 없는 드롭다운은 사용자가 도달할 방법이 없는 창이라, 그 상태로 도는 것보다 안내 후
+종료가 낫다. #431 의 *"뒤에 있는 것이 양보한다"* 를 실제로 세 platform 에 맞춘 것이고, 그전에는
+**Windows 만** 멈췄다.
+
+- **적용 대상은 기동 등록이다.** 기동 이후의 재등록 실패 (KDE 의 layout 전환 재bind 등) 는
+  멈추지 않는다 — 그때 프로세스를 죽이면 **열려 있던 셸 세션이 함께 날아간다.** 로그만 남긴다.
+- **측정 인스턴스 (`-e` · `-size`) 는 애초에 전역 hotkey 를 등록하지 않으므로** (#382) 이 정책
+  밖이다.
+- 안내는 세 platform 모두 공통 dialog 경로를 쓴다. Linux 는 overlay 를 Wayland globals +
+  keyboard 준비 뒤에만 그릴 수 있어 (#282 F9), 발견 시점에 기록해 두고 shell · font 검증과
+  **같은 구간에서** 한 번에 안내한다.
+
+**"못 잡았다" 를 아는 방법은 데스크톱마다 다르다.** Linux 는 등록 경로가 하나가 아니라 여섯이고,
+다섯이 fire-and-forget 이었다. 그래서 "등록이 실패했나" 를 물을 수 없는 곳은 **쓰기 전에 읽어**
+소유권을 판정한다.
+
+| 등록 상대 | 판정 방법 | 근거 |
+|---|---|---|
+| Windows | `RegisterHotKey` 반환값 / 위치 표기는 `WH_KEYBOARD_LL` 훅 설치 여부 | API 가 실패를 돌려준다 |
+| macOS | Input Monitoring · Accessibility preflight + `CGEventTapCreate` | 권한이 없어도 멈춘다 — 그 상태로는 hotkey 가 영영 안 온다 |
+| KDE Plasma | KGlobalAccel 의 사전 소유자 조회 → 사용자 확인 → 인수 → 사후 검증 | Linux 에서 유일하게 *남이 쥐고 있다* 를 직접 안다 |
+| GNOME | Shell extension 이 `grab_accelerator` 결과를 `instanceN.hotkey` 에 남기고 worker 가 부팅 때 읽는다 | 셸 **안에서만** 답이 나오고, 그 답이 worker 탄생보다 먼저 확정된다 (실측: GNOME Shell 50.4 에서 grab 실패 → 파일 기록 → worker 종료까지 연쇄 확인) |
+| Cinnamon | 같은 배선이지만 **실질적으로는 감지되지 않는다** | `Main.keybindingManager.addHotKey` 가 **accel 충돌에 실패하지 않는다** — wm 키바인딩과 custom 키바인딩 양쪽으로 선점해 보아도 성공한다 (실측: Cinnamon 6.6.9). 배선 자체는 산다 — `addHotKey` 가 실제로 실패하는 경우 (표에 없는 위치 이름 등) 는 GNOME 과 같은 경로로 걸린다 |
+| sway | `RUN_COMMAND` 응답의 `success` (거절 사유 문자열 포함) | 등록 실패는 알려 준다. **중복은 알 수 없고 알 필요도 없다** — sway 는 기존 binding 을 조용히 밀어내고 우리 등록이 항상 이긴다 (실측: sway 1.12 가 `Overwriting binding` 을 자기 로그에만 남기고 `success: true` 를 준다) |
+| Hyprland | `hyprctl -j binds` 로 **전체 목록을 읽어** 우리 accel 을 쓰는 남의 binding 을 찾는다 | 중복 bind 가 `ok` 를 돌려주고 **둘 다 살아 함께 발화한다** (실측: Hyprland 0.56.2) |
+| COSMIC | 사용자 `custom` RON 을 읽어 우리 accel 을 쓰는 남의 항목을 찾는다 | 파일 쓰기라 되먹임이 없다. 같은 키가 두 번 들어가면 COSMIC 이 파일을 통째로 버린다 (#484) |
+
+**판정하지 못하는 경우는 통과시킨다.** 도구가 없거나 파일을 못 읽은 것은 충돌했다는 뜻이
+아니고, 잘못된 종료는 놓친 감지보다 나쁘다. 알려진 갭 셋을 여기 적어 둔다.
+
+- **COSMIC 의 시스템 기본 단축키** (`/usr/share/cosmic/…/v1/defaults`) 는 보지 않는다.
+  `custom` 이 기본값을 덮는지 **확인하지 못했다** — 덮는다면 겹침은 우리가 이기는 상황이라,
+  충돌로 읽으면 멀쩡한 설정에서 앱이 안 뜬다.
+- **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
+  `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
+- **Cinnamon 은 extension 이 켜져 있어도 accel 충돌을 못 본다** (위 표). 그래서 "다른 앱이 그
+  조합을 쓰고 있다" 는 Cinnamon 에서 유일하게 남는 미검출 경로다.
+
 ### 2.2 탭 관리
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -806,6 +845,22 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 - `config_N.toml` 하나가 worker process 하나, global hotkey 하나, `tildaz_N.log`
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
+- **N 은 0 … 9 (인스턴스 10 개) 이다** (#510). TildaZ 가 **생성하는** config 의 `hotkey`
+  기본값은 `F(N+1)` 이라 index 0 → `F1`, 9 → `F10` 이고, 그 표가 `0 … 9` 를 빠짐없이
+  덮으므로 "hotkey 없는 instance" 예외가 생기지 않는다. 상한을 넘는 `--instance N` 은 범위를
+  안내하고 거절한다. 같은 상한을 `config_N.toml` · `tildaz.instanceN.desktop` 의 이름
+  인식에도 적용한다.
+- **표가 `F12` 까지 가지 않는 이유는 Windows 다.** modifier 없는 `F12` 는 커널 디버거
+  예약이라 `RegisterHotKey` 가 `ERROR_HOTKEY_ALREADY_REGISTERED` 로 거절한다 (실측:
+  bare `F1`…`F11` 은 등록되고 `F12` 만 실패, `ctrl+alt+F12` 는 성공). 기본값이 `F12` 로
+  떨어지는 index 가 있으면 그 인스턴스는 **생성된 config 로 아예 기동하지 못한다** — 이
+  이슈가 없애려던 증상 그대로다. 사용자가 직접 `hotkey = "F12"` 로 적는 것은 여전히
+  유효한 표기이며, 실패하면 기동 시점에 안내 후 종료한다 (§2.1).
+- 기본 hotkey 가 index 파생인 것은 **새로 만드는 파일에만** 적용된다. 이미 있는
+  `config_N.toml` 은 적힌 값 그대로 읽고 `hotkey` 를 고쳐 쓰지 않는다.
+- 다음 config 번호는 **비어 있는 가장 낮은 index** 다 (#510). 최고값+1 이 아니라서
+  `config_1.toml` 을 지우면 그 번호와 `F2` 가 함께 다시 열리고, 상한이 *누적 생성 횟수*
+  가 아니라 *동시 인스턴스 수* 에 걸린다.
 - 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
   복구한 뒤 launcher가 종료한다. `config_0.toml`이 없으면 다른 번호의 config 존재
   여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라

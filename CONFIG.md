@@ -17,6 +17,25 @@ hotkey is captured. Each `config_N.toml` owns one TildaZ process. A legacy
 user's `$SHELL` env (or
 `/bin/bash`) into newly created configs.
 
+**N runs from 0 to 9 — ten instances.** Each one gets its own default hotkey: a
+config TildaZ generates for instance N uses `F(N+1)`, so instance 0 defaults to
+`F1`, instance 1 to `F2`, and instance 9 to `F10`. Numbering that way means two
+instances never open with the same hotkey, which is what the operating system
+needs — on Windows the second one cannot register its hotkey at all.
+`--instance 10` and above are rejected with a message naming the range.
+
+The table stops at `F10` rather than `F12` because Windows does not hand out a
+bare `F12` as a global hotkey — it is reserved for the kernel debugger, and
+`RegisterHotKey` reports it as already registered. An instance whose default
+landed on `F12` could never start from a generated config.
+
+The number is reused, not just incremented: TildaZ fills the **lowest free**
+slot, so deleting `config_1.toml` frees both the number and `F2` for the next
+instance you create.
+
+Only files TildaZ generates carry these defaults. An existing `config_N.toml` is
+read exactly as written, and nothing rewrites its `hotkey`.
+
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
@@ -28,6 +47,9 @@ user's `$SHELL` env (or
 Every field below is required, so a real config also carries the `[keys]`
 table -- see [Keyboard shortcuts](#keyboard-shortcuts). The examples omit it
 only to stay readable; TildaZ writes the whole file for you on first launch.
+
+These show `config_0.toml`, so `hotkey` reads `"F1"`. In `config_1.toml` that
+line is `"F2"`, and so on up to `"F10"` — everything else is the same.
 
 ### Linux
 
@@ -131,7 +153,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
-| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | "F1" | "F1" | "F1" | Global toggle hotkey. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
+| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
@@ -393,8 +415,14 @@ invalid value shows an error dialog and exits):
 
 #### Prefer a function key
 
-`F1`–`F12` are the same on every keyboard layout, which is why the default is
-`F1`. Letters and punctuation are not, and the failure is quiet.
+`F1`–`F12` are the same on every keyboard layout, which is why the generated
+defaults are function keys — `F(N+1)` for instance N. Letters and punctuation are
+not, and the failure is quiet.
+
+One exception: **on Windows a bare `F12` is not available.** Windows keeps it for
+the kernel debugger, so TildaZ cannot claim it and stops at startup with a
+message. `Ctrl+Alt+F12` and other combinations that include a modifier work
+normally.
 
 Letters are usually fine: GNOME, Cinnamon, COSMIC and KDE all translate a
 Latin-letter shortcut back to the key you actually pressed on a Cyrillic or Greek

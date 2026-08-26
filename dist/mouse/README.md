@@ -14,18 +14,16 @@ TUI 앱에게 마우스를 전달하는 경로 ([#502](https://github.com/ensky0
 git fetch origin && git checkout <브랜치>
 ```
 
-**항상 `--instance 1` 로 띄워요** — daily 인스턴스 (`--instance 0`) 를 안 건드려요. daily 의
-핫키는 그대로 두고, 테스트 인스턴스에는 **아래처럼 비어 있는 조합을 따로 줘요** (그래야
-창을 숨겨도 다시 불러올 수 있어요).
+**항상 `--instance 1` 로 띄워요** — daily 인스턴스 (`--instance 0`) 를 안 건드려요.
 
-**먼저 `config_1` 의 핫키를 비어 있는 조합으로 바꿔요.** 기본 핫키가 index 와 무관한
-상수 `F1` 이라 daily 와 충돌해요 ([#510](https://github.com/ensky0/tildaz/issues/510) —
-근본 해결은 index 에서 파생하는 것). **Windows 는 그 등록 실패가 fatal 이라**
-`Hotkey Registration Failed` 안내창 (버튼 `OK` 하나) 을 띄운 뒤 **종료돼요** — 예전 판의
-"충돌 다이얼로그가 뜨면 `Cancel`" 은 이 다이얼로그와 맞지 않아요. 한 번 띄워서
-`config_1.toml` 이 생기게 한 다음 `hotkey` 를 예를 들어 `"ctrl+alt+f9"` 로 바꾸고 다시
-띄워요. mac · Linux 는 종료되지 않지만 두 인스턴스가 같은 키에 함께 반응할 수 있어서
-(#510) 똑같이 바꿔 두는 게 좋아요.
+**핫키를 손으로 바꿀 필요는 없어요.** [#510](https://github.com/ensky0/tildaz/issues/510)
+이후 `config_1.toml` 은 자기 index 에서 파생한 `F2` 로 생성돼요 (daily 는 `F1`). 그래서
+그냥 띄우면 돼요 — 예전 판이 안내하던 "`config_1` 의 `hotkey` 를 `ctrl+alt+f9` 로 바꾼
+뒤 다시 띄워요" 우회는 더 필요 없어요.
+
+`F2` 를 이미 다른 앱이 쥐고 있는 기계라면 그때만 `config_1.toml` 의 `hotkey` 를 비어
+있는 조합으로 바꿔요. 세 platform 모두 전역 핫키를 못 잡으면 안내창을 띄우고 **종료**
+해요 (#510) — 어느 platform 에서든 조용히 넘어가지 않아요.
 
 **검증이 끝나면 `config_1.toml` 을 지워요** — 남겨 두면 사용자가 평소 TildaZ 를 띄울 때
 그 인스턴스가 같이 떠요.

@@ -987,7 +987,7 @@ test "#493 default [keys] has no conflicting bindings" {
 
 test "#493 generated config carries every action so none is silently missing" {
     const allocator = std.testing.allocator;
-    const doc = try defaultConfigToml(allocator, Defaults.shell);
+    const doc = try schemaReferenceToml(allocator);
     defer allocator.free(doc);
 
     // "모든 액션을 항상 파일에 적는다" 가 결정 3 이다. 하나라도 빠지면 사용자가
@@ -1445,7 +1445,6 @@ pub const Defaults = struct {
     /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음. 세 platform 공통.
     pub const cell_width_ratio: f32 = 1.0;
     pub const theme: []const u8 = "Tilda";
-    pub const hotkey: []const u8 = "F1";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
     /// 100,000 은 다른 터미널의 10~100 배였다 (#425 조사 — 2 위 alacritty · GNOME Terminal
@@ -1489,6 +1488,47 @@ pub const Defaults = struct {
     /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
     /// Windows 는 POSIX `$SHELL` 컨벤션 없어 무조건 cmd.exe.
     pub const shell: []const u8 = if (is_windows) "cmd.exe" else "/bin/bash";
+
+    /// **instance N 의 기본 전역 핫키는 `F(N+1)`** ([#510](https://github.com/ensky0/tildaz/issues/510)).
+    /// index 0 → `F1`, 1 → `F2`, … 9 → `F10`.
+    ///
+    /// 예전에는 index 와 무관한 상수 하나 (`"F1"`) 였다. config 경로 (`config_N.toml`)
+    /// 와 로그 경로 (`tildaz_N.log`) 는 이미 index 파생인데 **인스턴스마다 고유해야 하는
+    /// 자원 중 핫키만 상수**였다. 그래서 `tildaz --instance 1` 을 config 없이 띄우면
+    /// config_0 과 **같은 `F1`** 이 적힌 파일이 생겼고, Windows 실기에서 `RegisterHotKey`
+    /// 가 실패해 **앱이 아예 안 떴다** (#510).
+    ///
+    /// **예외 분기가 없다.** 상한이 `instances.max_config_index` (= 9) 라 index 10 은
+    /// 존재할 수 없고, 표가 그 상한을 덮으므로 "핫키 없는 instance" 라는 상태 자체가
+    /// 생기지 않는다. 규칙이 이 한 줄로 끝난다.
+    ///
+    /// **표를 `F12` 까지 채우지 않는 이유는 Windows 다.** modifier 없는 `F12` 는 전역
+    /// 핫키로 등록되지 않아서 (`ERROR_HOTKEY_ALREADY_REGISTERED` — 커널 디버거가 쥐고
+    /// 있다) 그 칸을 쓰면 그 index 가 기본 config 로 뜨지 못한다. 근거와 실측은
+    /// `instances.max_config_index` 주석에 있다.
+    ///
+    /// 새로 **만드는** 파일에만 적용된다 — 이미 있는 config 는 읽은 값 그대로다.
+    pub fn hotkeyFor(index: u32) []const u8 {
+        std.debug.assert(index < index_hotkeys.len);
+        return index_hotkeys[index];
+    }
+
+    /// 상한과 길이가 어긋나면 컴파일이 멈춘다 — 위 주석의 "표가 상한을 덮는다" 를
+    /// 주석이 아니라 컴파일러가 지키게 한다.
+    ///
+    /// **`F11` · `F12` 를 여기 더하지 않는다.** 표를 늘리면 `max_config_index` 도 함께
+    /// 올려야 이 검사를 통과하는데, 그러면 bare `F12` 를 쓰는 index 가 다시 생겨
+    /// Windows 에서 그 인스턴스가 뜨지 못한다 (위 `hotkeyFor` 주석).
+    const index_hotkeys = blk: {
+        const names = [_][]const u8{
+            "F1", "F2", "F3", "F4", "F5",
+            "F6", "F7", "F8", "F9", "F10",
+        };
+        if (names.len != instances.max_config_index + 1) {
+            @compileError("Defaults.hotkeyFor 의 표가 instances.max_config_index 와 어긋난다");
+        }
+        break :blk names;
+    };
 };
 
 /// `Defaults` + host 가 첫-실행 시 결정한 `shell_resolved` 로부터 JSON 템플릿
@@ -1507,6 +1547,13 @@ pub const Defaults = struct {
 /// 그래서 **새 필드를 추가할 때 `Defaults` 와 이 함수 두 곳만** 고치면 required key
 /// 검증까지 따라온다.
 ///
+/// #510 — `hotkey` 는 **인자로 받는다.** 예전에는 인자 없는 wrapper 가 `Defaults.hotkey`
+/// 상수를 넣었고, 파일을 만드는 경로가 그 wrapper 를 부르는 바람에 **어느 index 로 띄우든
+/// 같은 `F1`** 이 적혔다. 이제 기본값이 index 파생 (`Defaults.hotkeyFor`) 이라 그 wrapper
+/// 는 "index 를 모르는 채 파일을 만드는" 구멍이 된다. 그래서 없앴다 — 문서를 만드는 쪽이
+/// 어느 키를 적는지 항상 말해야 한다. schema 기준 문서만 index 를 안 따지므로
+/// `schemaReferenceToml` 이 따로 있다.
+///
 /// 키 순서와 빈 줄 묶음은 의도된 것이다 (#493 결정 10) — **부르는 법 → 안에서 도는 것
 /// → 언제 뜨는가 → 어떻게 보이는가 → 한계**. TOML 은 파싱이 순서와 무관하므로 순전히
 /// 읽는 사람을 위한 배치다.
@@ -1514,12 +1561,6 @@ pub const Defaults = struct {
 /// TOML 제약: **최상위 스칼라는 테이블 헤더보다 먼저** 와야 한다. `[window]` 뒤에
 /// `theme` 을 두면 `window.theme` 으로 해석된다.
 pub fn defaultConfigToml(
-    allocator: std.mem.Allocator,
-    shell_resolved: []const u8,
-) ![]const u8 {
-    return defaultConfigTomlWithHotkey(allocator, shell_resolved, Defaults.hotkey);
-}
-pub fn defaultConfigTomlWithHotkey(
     allocator: std.mem.Allocator,
     shell_resolved: []const u8,
     hotkey: []const u8,
@@ -1638,13 +1679,25 @@ pub fn defaultConfigTomlWithHotkey(
     return out;
 }
 
+/// schema 검증 (`validateStructure`) 의 기준 문서. **파일로 쓰는 용도가 아니다** —
+/// key set / 중첩 구조 / value type 만 보므로 `shell` 과 `hotkey` 의 *값* 은 무의미하다.
+///
+/// #510 — 그래서 index 를 안 받는다. 파일을 만드는 경로는 `defaultConfigToml` 을 직접
+/// 부르고 그 index 의 핫키를 명시해야 한다.
+pub fn schemaReferenceToml(allocator: std.mem.Allocator) ![]const u8 {
+    return defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+}
+
 // `Defaults` 의 string / float 값을 Config struct 가 보관하는 native type 으로
 // 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
 const default_dock_position: DockPosition = DockPosition.fromString(Defaults.dock_position) orelse unreachable;
 /// JSON 은 percent (0..100, f32), 메모리는 alpha (0..255 u8). `100.0` percent → `255` alpha.
 const default_opacity_alpha: u8 = @round(Defaults.opacity_percent * 255.0 / 100.0);
 const default_theme: ?*const themes.Theme = themes.findTheme(Defaults.theme);
-const default_hotkey: Hotkey = Hotkey.fromString(Defaults.hotkey) orelse unreachable;
+/// #510 — `Config{}` 의 field initializer 는 comptime 이라 index 를 모른다. 그래서 이
+/// 값은 **index 0 의 키**이고, 파일이 없거나 못 읽어 기본값으로 떨어지는 경로는
+/// `defaultOwned` 가 자기 index 의 키로 덮어쓴다.
+const default_hotkey: Hotkey = Hotkey.fromString(Defaults.hotkeyFor(0)) orelse unreachable;
 const default_font_size_point: u8 = Defaults.font_size_point;
 const default_cell_width_ratio: f32 = Defaults.cell_width_ratio;
 const default_line_height_ratio: f32 = Defaults.line_height_ratio;
@@ -2279,9 +2332,13 @@ pub const Config = struct {
         };
 
         // #431 — 핫키 중복 검사는 **여기 한 곳**이다. `parse` 안에 두면 위의 두 fallback
-        // (파일 없음 · 못 읽음) 이 구멍으로 남는데, 그 경로가 쓰는 `Defaults.hotkey` 는
-        // config_0 의 기본값과 **같은 키**라 오히려 겹치기 쉽다 (`tildaz --instance 9` 처럼
-        // config 없는 index 로 직접 띄우는 경우).
+        // (파일 없음 · 못 읽음) 이 구멍으로 남는다.
+        //
+        // #510 — 그 두 경로가 예전에 특히 위험했던 이유는 기본값이 index 무관 상수 `F1`
+        // 이라 `tildaz --instance 9` 가 config_0 과 **같은 키**로 떴기 때문이다. 이제
+        // 기본값이 `F(N+1)` 이라 *기본값끼리는* 겹치지 않는다. 그래도 검사는 그대로 둔다 —
+        // 사용자가 config 를 직접 겹치게 고치는 경우가 남고, 애초에 이 검사가 막는 것이
+        // 그쪽이다.
         fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path);
         return loaded;
     }
@@ -2313,9 +2370,19 @@ pub const Config = struct {
 
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
     /// default `font_families` 를 owned dupe 로 정규화 → deinit 이 일관 free.
+    ///
+    /// #510 — **핫키도 여기서 자기 index 로 맞춘다.** `Config{}` 의 field initializer 는
+    /// comptime 이라 index 0 의 키 (`default_hotkey`) 로 고정돼 있는데, 이 함수를 타는
+    /// 세 경로 (파일 없음 · 못 읽음 · 경로 조회 실패) 는 모두 *어느 index 인지 아는*
+    /// 상태다. 안 맞추면 방금 디스크에 적은 `F2` 와 메모리의 `F1` 이 갈린다 — 그 실행
+    /// 동안만 다른 키로 도는, 재시작해야 사라지는 종류의 어긋남이다.
+    ///
+    /// worker index 가 없는 경우 (단위 테스트) 는 index 0 으로 둔다.
     fn defaultOwned(allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
         var c: Config = .{};
         c.shell = shell_resolved;
+        const index = instance_context.workerIndex() orelse 0;
+        if (Hotkey.fromString(Defaults.hotkeyFor(index))) |hk| c.hotkey = hk;
         for (c.font_families[0..c.font_family_count]) |*f| {
             f.* = allocator.dupe(u8, f.*) catch f.*;
         }
@@ -2383,7 +2450,7 @@ pub const Config = struct {
 
         // Schema 검증 — `defaultConfigToml` 과 비교 (key set + nested 구조 + type).
         // shell 인자는 schema 검증 시 *값* 무관 — `Defaults.shell` 한 번 사용.
-        const default_doc = defaultConfigToml(allocator, Defaults.shell) catch unreachable;
+        const default_doc = schemaReferenceToml(allocator) catch unreachable;
         defer allocator.free(default_doc);
         var default_parser: toml.Parser(toml.Table) = .init(allocator);
         defer default_parser.deinit();
@@ -2692,7 +2759,11 @@ pub const Config = struct {
             return loadNoticeAlloc(allocator, messages.config_dir_create_failed_format, path, err);
         };
         defer file.close(rt.io);
-        const doc = defaultConfigToml(allocator, shell_resolved) catch |err| {
+        // #510 — 이 경로가 정확히 그 사고 지점이다. `tildaz --instance 1` 처럼 config
+        // 없는 index 로 직접 띄우면 여기서 파일이 생기는데, 예전에는 index 와 무관한
+        // `F1` 이 적혀 config_0 과 겹쳤다. `path` 는 이미 그 index 로 만들어졌으니
+        // (`paths.configPath`) 핫키도 같은 index 에서 파생한다.
+        const doc = defaultConfigToml(allocator, shell_resolved, Defaults.hotkeyFor(instance_context.requireWorkerIndex())) catch |err| {
             return loadNoticeAlloc(allocator, messages.config_default_write_failed_format, path, err);
         };
         defer allocator.free(doc);
@@ -3028,7 +3099,7 @@ test "terminal font defaults use the cross-platform logical size contract" {
 
 test "default config TOML uses the common terminal font defaults" {
     const allocator = std.testing.allocator;
-    const doc = try defaultConfigToml(allocator, Defaults.shell);
+    const doc = try schemaReferenceToml(allocator);
     defer allocator.free(doc);
 
     var parser: toml.Parser(toml.Table) = .init(allocator);
@@ -3059,7 +3130,7 @@ test "default config TOML uses the common terminal font defaults" {
 
 test "explicit line height ratio is preserved when parsing" {
     const allocator = std.testing.allocator;
-    const json_text = @constCast(try defaultConfigToml(allocator, Defaults.shell));
+    const json_text = @constCast(try schemaReferenceToml(allocator));
     defer allocator.free(json_text);
 
     const expected = "line_height_ratio = 1.1";

@@ -77,6 +77,58 @@ function configDirPath() {
   return GLib.build_filenamev([base, "tildaz"]);
 }
 
+/**
+ * #510 — worker 가 부팅 때 읽는 hotkey grab 결과 파일이 놓이는 디렉터리.
+ *
+ * **zig 의 `paths.lockDir` 와 규칙이 같아야 한다.** 한쪽만 바뀌면 worker 가 파일을 못
+ * 찾고, 그러면 grab 실패가 다시 조용해진다 (증상은 "가끔 안 잡힌다" 로 보인다).
+ * 순서: `$XDG_RUNTIME_DIR/tildaz` → `$XDG_CACHE_HOME/tildaz/run` → `~/.cache/tildaz/run`.
+ *
+ * **config 디렉터리에 두지 않는 이유**는 이 확장 자신이 그 디렉터리를 `FileMonitor` 로
+ * 감시하기 때문이다 — 거기 쓰면 감시가 깨어나 config 재독 → 재등록 → 재실패 → 재기록의
+ * 자가 루프가 된다.
+ */
+function hotkeyStateDirPath() {
+  const runtime = GLib.getenv("XDG_RUNTIME_DIR");
+  if (runtime && GLib.path_is_absolute(runtime))
+    return GLib.build_filenamev([runtime, "tildaz"]);
+  const cache = GLib.getenv("XDG_CACHE_HOME");
+  if (cache && GLib.path_is_absolute(cache))
+    return GLib.build_filenamev([cache, "tildaz", "run"]);
+  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", "tildaz", "run"]);
+}
+
+function hotkeyStatePath(index) {
+  return GLib.build_filenamev([hotkeyStateDirPath(), `instance${index}.hotkey`]);
+}
+
+/**
+ * #510 — grab 결과를 worker 가 읽을 수 있게 남긴다. 형식은 `v1 <ok|failed> <hotkey>`
+ * 한 줄이고, hotkey 는 **config 에 적힌 원문 그대로**다 — worker 가 그 값으로 "이 기록이
+ * 지금 config 의 것인가" 를 판정해 stale 파일에 속지 않는다.
+ */
+function writeHotkeyState(index, hotkey, ok) {
+  if (typeof hotkey !== "string" || hotkey.length === 0) return;
+  try {
+    GLib.mkdir_with_parents(hotkeyStateDirPath(), 0o700);
+    GLib.file_set_contents(
+      hotkeyStatePath(index),
+      `v1 ${ok ? "ok" : "failed"} ${hotkey}\n`
+    );
+  } catch (e) {
+    global.logError("[tildaz] could not record hotkey state for index " + index + ": " + e);
+  }
+}
+
+/** #510 — 확장이 물러나면 기록도 거둔다. 남겨 두면 worker 가 없는 실패를 읽는다. */
+function clearHotkeyState(index) {
+  try {
+    GLib.unlink(hotkeyStatePath(index));
+  } catch (e) {
+    global.logError("[tildaz] could not clear hotkey state for index " + index + ": " + e);
+  }
+}
+
 // CinnamonWindowTracker.is_window_interesting 의 원본(프로토타입) 메서드 — enable
 // 에서 인스턴스 메서드를 패치할 때 원본 호출용 (disable 에서 delete 로 복원).
 const TrackerProto = Cinnamon.WindowTracker.prototype;
@@ -232,6 +284,10 @@ function disable() {
     st.workAreasChangedId = 0;
   }
   for (const name of st?.hotkeys?.keys() || []) try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+  // #510 — grab 기록도 함께 거둔다. **`st.hotkeys` 가 아니라 `st.configs` 를 돈다** —
+  // 실패한 항목은 `st.hotkeys` 에 애초에 들어가지 않아서 (위 `registerHotkey`) 그쪽만
+  // 돌면 지워야 할 실패 기록이 그대로 남는다.
+  for (const index of st?.configs?.keys() || []) clearHotkeyState(index);
   if (st?.configMonitorId) st.configMonitor.disconnect(st.configMonitorId);
   if (st?.configMonitor) st.configMonitor.cancel();
   if (st?.configReloadId) GLib.source_remove(st.configReloadId);
@@ -281,7 +337,9 @@ function disable() {
 
 /** XDG config의 config_N.toml 읽기 (실패 시 해당 항목 제외). */
 function readConfig(index) {
-  const out = { accel: "", dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
+  // #510 — `hotkey` 는 config 원문이다. worker 가 grab 결과 기록의 stale 여부를 이 값으로
+  // 판정하므로 `accel` 로 변환하기 전 문자열이 그대로 필요하다.
+  const out = { accel: "", hotkey: null, dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
   try {
     const path = GLib.build_filenamev([
       configDirPath(),
@@ -291,6 +349,7 @@ function readConfig(index) {
     if (ok) {
       const j = parseTomlSubset(new TextDecoder().decode(bytes));
       if (typeof j.hotkey === "string") {
+        out.hotkey = j.hotkey;
         const a = toAccel(j.hotkey);
         if (a) out.accel = a;
       }
@@ -326,18 +385,30 @@ function readConfigs() {
 
 function registerHotkey(index, cfg) {
   const name = `tildaz-toggle-${index}`;
-  if (!cfg.accel || st.hotkeys.get(name) === cfg.accel) return;
+  if (!cfg.accel) {
+    // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치 이름 등).
+    global.logError(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
+    writeHotkeyState(index, cfg.hotkey, false);
+    return;
+  }
+  // 이미 같은 accel 로 잡혀 있으면 손대지 않는다 — 성공 기록도 그때 이미 남았다.
+  if (st.hotkeys.get(name) === cfg.accel) return;
   if (st.hotkeys.has(name)) {
     try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
   }
   // **실패가 조용하면 진단이 안 된다.** #496 1-c 검증에서 GNOME 쪽 같은 자리가
   // 위치 표기를 못 받아 grab 이 실패했는데 로그가 없어 원인이 안 보였다. 실패한
   // 것은 `st.hotkeys` 에 넣지 않는다 — 넣으면 config 가 다시 와도 재시도하지 않는다.
+  //
+  // #510 — 로그는 Cinnamon 쪽 journal 이라 tildaz 가 못 읽는다. 같은 사실을 worker 가
+  // 읽을 수 있는 자리에도 남긴다. 그래야 "부를 수 없는 창" 대신 안내 후 종료가 된다.
   if (Main.keybindingManager.addHotKey(name, cfg.accel, () => toggle(index)) === false) {
     global.logError(`[tildaz] hotkey registration failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+    writeHotkeyState(index, cfg.hotkey, false);
     return;
   }
   st.hotkeys.set(name, cfg.accel);
+  writeHotkeyState(index, cfg.hotkey, true);
 }
 
 function syncHotkeys(nextConfigs) {
