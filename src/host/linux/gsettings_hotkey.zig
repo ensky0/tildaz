@@ -115,13 +115,24 @@ pub fn ensureShellExtensionReady(rt: Runtime, allocator: std.mem.Allocator) void
     const target = currentShellExtensionTarget(rt) orelse return;
     const label = target.owner.logCategory();
 
-    const extension_available = shell_extension.syncForCurrentUser(rt, allocator, target.kind) catch |err| {
+    const outcome = shell_extension.syncForCurrentUser(rt, allocator, target.kind) catch |err| {
         log.appendLine(label, "Shell extension resource sync failed: {s}", .{@errorName(err)});
         return;
     };
-    if (!extension_available) {
-        log.appendLine(label, "Shell extension resources not installed — enable skipped", .{});
-        return;
+    switch (outcome) {
+        .synced => {},
+        // #520 — 진행은 하지만 **동기화한 것이 아니다.** 예전에는 이 경우도 아래의
+        // "synchronized and enabled" 로 찍혀서, dev 빌드로 extension 을 고치는 사람이
+        // 자기 변경이 반영되지 않은 것을 알 방법이 없었다.
+        .kept_installed => log.appendLine(
+            label,
+            "Shell extension resources not found next to the executable — kept the installed copy (it may be older than this build)",
+            .{},
+        ),
+        .unavailable => {
+            log.appendLine(label, "Shell extension resources not installed — enable skipped", .{});
+            return;
+        },
     }
     const api = Api.load() orelse return;
     const source = api.schema_source_get_default() orelse return;
@@ -134,7 +145,9 @@ pub fn ensureShellExtensionReady(rt: Runtime, allocator: std.mem.Allocator) void
         return;
     };
     api.settings_sync();
-    log.appendLine(label, "Shell extension synchronized and enabled", .{});
+    log.appendLine(label, "Shell extension {s} and enabled", .{
+        if (outcome == .synced) "synchronized" else "left as installed",
+    });
 }
 
 /// GSettings custom-keybinding 등록의 DE별 차이를 담는 descriptor. GNOME 과
