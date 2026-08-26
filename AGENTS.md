@@ -599,13 +599,15 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 
 **GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
 
-**함정 일곱 — 앞의 넷은 스크립트가 이미 피하고, 뒤의 셋은 손으로 잴 때 걸려요.**
+**함정 아홉 — 앞의 넷은 스크립트가 이미 피하고, 뒤의 다섯은 손으로 잴 때 걸려요.**
 
 - **`XDG_CURRENT_DESKTOP` 이 비면 등록 경로를 통째로 건너뛰어요.** tty · ssh 셸에는 대개 없고, 그러면 로그가 `de=(unset)` 이 되며 아무 데도 등록하지 않아요 — "등록이 안 된다" 로 오해하기 쉬워요.
-- **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요.
+- **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요. **`config_N.toml` 을 손으로 쓸 때는 `[keys]` 를 빼먹지 않아요** — 없으면 `missing required key "keys"` 로 같은 모달이 떠서 똑같이 부팅이 막혀요. `config_0.toml` 을 복사해 `hotkey` · `shell` · `auto_start` 만 바꾸는 게 안전해요.
 - **`pkill -f 'instance 9'` 는 자기 명령줄을 매치해 셸을 죽여요** (그 문자열이 명령에도 들어 있어서요). `pgrep -x tildaz` 로 좁히고 `/proc/PID/cmdline` 에서 인자를 확인해요.
 - **layout 전환은 창을 띄우지 않고 해요.** Wayland 의 group 전환은 *포커스한 client* 에게만 가므로, 창을 띄우면 그 경로로 통과해 버려 D-Bus 통지 경로 (#496 1-c 의 ③) 가 검증되지 않아요.
 - **uinput 으로 가상 키보드를 새로 꽂으면 keymap 이 잠깐 바뀌어요.** cosmic-comp 실측에서 장치를 만든 직후 client 가 받은 keymap 이 `grave` → `twosuperior` 로 두 번 왔고, 그 사이에 키를 보내면 **발동하지 않아 거짓 실패**가 나요. 장치를 만든 뒤 **5 초쯤 두고** 눌러요 (`SETTLE`).
+- **`fcitx5` 같은 text-input-v3 IME 가 떠 있으면 키가 앱의 xkb 경로로 오지 않아요.** IME 가 가로채 **자기 구현으로 조합한 뒤 commit** 하므로, 재고 있는 것이 앱 코드가 아니에요. **`fcitx5-remote -c` 로 영문 모드로 바꿔도 경로에서 빠지지 않아요** (fcitx5 에도 자체 Compose 가 있어요). 결과가 우연히 같아 보이는 케이스가 많아 눈치채기 어려워요 — [#494](https://github.com/ensky0/tildaz/issues/494) dead key 검증에서 이 때문에 세 케이스가 거짓 FAIL 로 나왔고, `pkill -x fcitx5` 뒤 전부 통과했어요 (끝나면 `setsid nohup fcitx5 -d &` 로 되돌려요). 판정은 앱 로그의 **`text_input preedit` · `text_input commit` 줄 개수**예요 — 케이스 구간에서 **0 이어야** 앱 자신의 경로를 잰 것이에요. IME 공존 자체를 보는 케이스는 반대로 띄운 채 재고, *조합 주체가 누구인지* 를 결과에 같이 적어요.
+- **`xkbcli interactive-wayland` 는 포커스를 훔치고 안 돌려줘요.** 그 자체가 Wayland client 라, 측정 중에 띄우면 tildaz 의 **layer-shell 표면으로 포커스가 돌아오지 않아** 이후 케이스가 전부 "바이트 없음" 이 돼요 (dead key 가 아니라 평범한 문자 키까지요). 받은 keymap 을 밖에서 확인하는 데는 좋은 도구지만 **tildaz 를 띄우기 전에만** 써요. 띄운 뒤에는 앱 로그의 `keyboard keymap loaded … layouts=[…]` 와 **인앱 가드 키**로 확인해요 — `KEY_Q` 는 fr 에서 `a`, us 에서 `q` 라 한 키로 layout 이 되돌아갔는지 케이스마다 갈려요. 이미 걸렸으면 `tildaz --toggle 9` 두 번으로 회복돼요.
 - **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
 - **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
