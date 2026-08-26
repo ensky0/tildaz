@@ -15,6 +15,7 @@ const block_element = @import("../../renderer/block_element.zig");
 const cell_color = @import("../../renderer/cell_color.zig");
 const cell_decoration = @import("../../renderer/cell_decoration.zig");
 const pane_draw = @import("../../renderer/pane_draw.zig");
+const pane_layout = @import("../../pane_layout.zig");
 const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
@@ -275,9 +276,16 @@ pub const FrameLayer = struct {
 /// #277 S2-5 — 한 프레임의 입력. `paint` (CPU) 와 `buildGlFrame` (GL) 이 **같은
 /// 값을 받는다** — 입력이 갈리면 목록을 공유해도 소용이 없다.
 pub const FrameInputs = struct {
-    /// #483 2단계 ② — 이 프레임에 그릴 pane 들 (화면 순서). 지금은 활성 탭 하나다. 각 pane 의
-    /// `state` 는 `paint` / `buildGlFrame` 이 갱신하고, 첫 pane 의 배경색이 표면 전체의 배경이다.
+    /// #483 — 이 프레임에 그릴 pane 들 (활성 탭의 `pane_layout.layout` 순서). 각 pane 의 `state` 는
+    /// `paint` / `buildGlFrame` 이 갱신하고, 첫 pane 의 배경색이 표면 전체의 배경이다.
     panes: []const pane_draw.PaneDraw,
+    /// #483 4b — pane 사이 회색 분할선 (`pane_layout.separators`). pane 하나면 빈 slice.
+    separators: []const pane_layout.Separator,
+    /// #483 4b — 탭바를 뺀 터미널 영역. 활성 pane 의 어느 변이 창 가장자리인지 (amber 를 긋지
+    /// 않는 변) 판정에 쓴다.
+    pane_area: pane_layout.Rect,
+    /// #483 4b — pane 이 둘 이상일 때 활성 pane 의 영역. 하나면 null — 알릴 것이 없다.
+    active_pane_rect: ?pane_layout.Rect,
     theme: *const themes.Theme,
     width: i32,
     height: i32,
@@ -738,8 +746,30 @@ pub const Renderer = struct {
             self.collectScrollbar(allocator, pane);
             self.collectPreedit(allocator, pane);
         }
+        self.collectPaneChrome(allocator, in);
         self.collectSingleTabControls(allocator, in);
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
+    }
+
+    /// #483 4b — pane 사이 회색 분할선과 활성 pane 의 amber 선. 회색은 탭 구분선과 같은 팔레트 값
+    /// (`chrome.separator`, 테마 파생), amber 는 `TAB_ACCENT_COLOR` (브랜드 색, 파생 안 함). amber 는
+    /// 활성 pane 의 padding 안쪽 가장자리에 `PANE_FOCUS_LINE_PT` 두께로, **다른 pane 과 맞닿는
+    /// 변에만** — 창 가장자리 변은 긋지 않는다 (결정 3). 비활성 pane 은 dim 하지 않는다 (2026-08-27
+    /// 사용자 결정). 둘 다 셀 위에 겹치지 않으므로 (분할선 · padding 자리) scrollbar 와 같은 overlay
+    /// 목록에 둔다.
+    fn collectPaneChrome(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
+        const sep_color = rgbFromMetrics(self.chrome.separator);
+        for (in.separators) |s| {
+            self.layer.overlay.append(allocator, .{ .x = s.rect.x, .y = s.rect.y, .w = s.rect.w, .h = s.rect.h, .color = sep_color }) catch {};
+        }
+        const r = in.active_pane_rect orelse return;
+        const a = in.pane_area;
+        const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.scale));
+        const amber = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
+        if (r.x > a.x) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (r.x + r.w < a.x + a.w) self.layer.overlay.append(allocator, .{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (r.y > a.y) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = r.w, .h = t, .color = amber }) catch {};
+        if (r.y + r.h < a.y + a.h) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t, .color = amber }) catch {};
     }
 
     /// #362 — 한 줄에서 실제로 볼 필요가 있는 칸의 개수.

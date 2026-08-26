@@ -972,8 +972,9 @@ pub const App = struct {
                 .cell_h = @intCast(self.window.cell_height_px),
                 .cols = grid.cols,
                 .rows = grid.rows,
-                .pad = @intCast(self.TERMINAL_PADDING),
-                .tab_bar_h = @intCast(self.effectiveTabBarHeight()),
+                // #483 — 격자 원점. Windows 는 pane 하나 (5단계 전) 라 `pad` · `tab_bar_h + pad`.
+                .grid_x = @intCast(self.TERMINAL_PADDING),
+                .grid_y = @as(i32, @intCast(self.effectiveTabBarHeight())) + @as(i32, @intCast(self.TERMINAL_PADDING)),
             },
             any_button,
         );

@@ -59,6 +59,14 @@ pub const quit_confirm_format = "This will close {d} open tab{s}.";
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
 
+/// #483 — 분할 거부 안내. 단축키에는 시각 피드백이 없어 탭 한도와 같은 dialog 로 알린다
+/// (확정 설계 §② "거부 + 안내"). {d} 는 `pane_layout.MAX_PANES_PER_TAB` (16).
+pub const pane_limit_title = "Pane limit reached";
+pub const pane_limit_format = "This tab already has {d} panes. Close one to split again.";
+/// 결과 pane 이 `pane_layout.MIN_PANE_COLS × MIN_PANE_ROWS` 아래로 내려갈 때. {d}x{d} 는 그 최소.
+pub const pane_too_small_title = "Not enough room to split";
+pub const pane_too_small_format = "Each pane needs at least {d}x{d} cells. Enlarge the window or close a pane first.";
+
 /// Linux KDE — 우리 config 의 hotkey 가 *다른 KDE 컴포넌트* (kwin / plasmashell
 /// 등) 의 단축키와 충돌 시 사용자 확인 (#207). OK = 충돌 컴포넌트에서 해당 키만
 /// 회수하고 tildaz 로 가져옴, Cancel = 기존 binding 유지.

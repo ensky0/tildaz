@@ -139,10 +139,10 @@ pub const ReportGeometry = struct {
     cell_h: i32,
     cols: u16,
     rows: u16,
-    /// `TERMINAL_PADDING` 상당.
-    pad: i32,
-    /// 탭바 높이 (단일 탭에서 0 일 수 있다).
-    tab_bar_h: i32,
+    /// 첫 셀의 좌상 px. #483 — pane 이 창의 왼쪽 위에 있지 않을 수 있어 `pad` · `tab_bar_h` 가
+    /// 아니라 격자 원점을 받는다 (pane 하나면 `pad` · `tab_bar_h + pad` 와 같은 값).
+    grid_x: i32,
+    grid_y: i32,
 };
 
 /// pointer 픽셀 좌표를 인코더 입력으로. cell 은 grid 안으로 clamp 하지만
@@ -157,8 +157,8 @@ pub fn reportEvent(
     geom: ReportGeometry,
     any_button_pressed: bool,
 ) mouse_report.Event {
-    const term_x = x - geom.pad;
-    const term_y = y - geom.tab_bar_h - geom.pad;
+    const term_x = x - geom.grid_x;
+    const term_y = y - geom.grid_y;
     const cols: i32 = @intCast(geom.cols);
     const rows: i32 = @intCast(geom.rows);
     const col: u32 = if (geom.cell_w > 0 and term_x >= 0)

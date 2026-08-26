@@ -1145,12 +1145,29 @@ pub const SessionCore = struct {
         return true;
     }
 
-    /// 활성 탭의 분할 비율을 모두 반씩으로 (확정 설계 §② `equalize`).
+    /// 활성 탭의 분할 비율을 양쪽 leaf 수에 비례시켜 pane 마다 넓이가 같아지게 (확정 설계 §②
+    /// `equalize`, `pane_layout.Tree.equalize` — tmux `even-*` 와 같은 정의).
     pub fn equalizeActive(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
         const group = self.activeGroup() orelse return;
         group.tree.equalize();
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         self.applyGroupLayout(group, pane_layout.layout(&group.tree, rect, m, &buf));
+    }
+
+    /// #483 4b — 픽셀 아래의 pane (`pane_layout.paneAt`, 마우스 클릭 포커스). 분할선 위 · 영역 밖 ·
+    /// 탭 없음이면 null.
+    pub fn paneIdAt(self: *SessionCore, px: i32, py: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) ?pane_layout.PaneId {
+        const group = self.activeGroup() orelse return null;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        return pane_layout.paneAt(pane_layout.layout(&group.tree, rect, m, &buf), px, py);
+    }
+
+    /// pane `id` 를 활성으로. 그 pane 이 없거나 이미 활성이면 false 고 바뀌는 것이 없다.
+    pub fn setActivePane(self: *SessionCore, id: pane_layout.PaneId) bool {
+        const group = self.activeGroup() orelse return false;
+        if (id >= group.panes.len or group.panes[id] == null or group.active_pane == id) return false;
+        group.active_pane = id;
+        return true;
     }
 
     /// 모든 탭의 pane 격자를 `rect` · `m` 의 layout 에 맞춘다 — 창 크기 · 폰트가 바뀌었을 때,
@@ -1831,7 +1848,7 @@ test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 
     try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeTabByPtr(@intFromPtr(stranger)));
 }
 
-test "POSIX: #483 4a — 분할 · 포커스 · 크기 조절 · pane 닫기가 격자를 맞춘다" {
+test "POSIX: #483 4a·4b — 분할 · 포커스 · 클릭 pane · 크기 조절 · pane 닫기가 격자를 맞춘다" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
@@ -1888,6 +1905,16 @@ test "POSIX: #483 4a — 분할 · 포커스 · 크기 조절 · pane 닫기가 
     session.equalizeActive(rect, m);
     try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
     try std.testing.expectEqual(@as(u16, 77), right.terminal.cols);
+
+    // 클릭 포커스 (4b): 오른쪽 pane 의 픽셀 → id 1, 왼쪽 → 0, 분할선 (x = 1526 · 1527) 위는 null.
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, 1), session.paneIdAt(2000, 500, rect, m));
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, 0), session.paneIdAt(100, 500, rect, m));
+    try std.testing.expectEqual(@as(?pane_layout.PaneId, null), session.paneIdAt(1527, 500, rect, m));
+    try std.testing.expect(session.setActivePane(1));
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 1), group.active_pane);
+    try std.testing.expect(!session.setActivePane(1));
+    try std.testing.expect(!session.setActivePane(5));
+    try std.testing.expect(session.setActivePane(0));
 
     // 최소 크기 아래로 내려가는 분할은 거부 — 트리 · pane 수 그대로.
     const narrow: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 900, .h = 1000 };

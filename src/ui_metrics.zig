@@ -584,9 +584,14 @@ pub const TAB_SEPARATOR_W_PT: u32 = 1;
 /// 를 쓴다 (2026-08-26 결정 3). px 변환은 `linePx` (정수 · 최소 1) — 격자에 놓이는 실선이다.
 ///
 /// 격자 계산 (`pane_layout.Metrics.separator_w`) 에 들어가는 것은 이 띠 하나다. 활성 pane 의
-/// amber 강조는 pane 의 padding 안쪽에 그리므로 격자와 무관하고, 그 두께는 4단계 실기에서
-/// 정한다 (1 pt 로 시작 — 탭바 밑줄 `TAB_ACTIVE_UNDERLINE_PT` 의 2 pt 가 다른 후보).
+/// amber 강조는 pane 의 padding 안쪽에 그리므로 격자와 무관하다 — 두께는 아래 `PANE_FOCUS_LINE_PT`.
 pub const PANE_SEPARATOR_W_PT: u32 = 1;
+/// #483 4b — 활성 pane 을 알리는 amber 선 (`TAB_ACCENT_COLOR`) 의 두께 (logical pt). 활성 pane 의
+/// padding 안쪽 가장자리에, **다른 pane 과 맞닿는 변에만** 긋는다 (결정 3 · Windows Terminal 방식).
+/// 비활성 pane 은 dim 하지 않으므로 (2026-08-27 사용자 결정 — 다른 pane 도 또렷히 보는 것이
+/// 분할의 목적) 이 선이 유일한 표시다. 1 pt 로 시작한다 — 실기에서 약하면 탭바 밑줄
+/// `TAB_ACTIVE_UNDERLINE_PT` 와 같은 2 pt 로 올린다. px 변환은 `linePx`.
+pub const PANE_FOCUS_LINE_PT: u32 = 1;
 /// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
 /// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
 pub const MENU_INDICATOR_ICON_PT: u32 = 14;
