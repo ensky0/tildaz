@@ -167,6 +167,40 @@ pub const option_instance_out_of_range_format =
 pub const option_error_fallback_msg =
     "tildaz: invalid command line.\nRun \"tildaz --help\" to see the available options.";
 
+/// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 로 요청한 격자를
+/// 끝까지 지킬 수 없을 때의 거부 문구. **다이얼로그가 아니라 stderr + exit(2)** 로
+/// 낸다: `-size` 는 `--help` 에 싣지 않는 측정 전용 옵션이라 호출처가 사람이 아니라
+/// 스크립트인 경우가 많고, 모달을 띄우면 그 스크립트가 그 자리에서 멈춘다 (AGENTS.md
+/// 의 "config 를 만들려고 그냥 띄우면 …" 함정과 같은 종류다).
+///
+/// 필요한 크기를 함께 적는 이유 — 사용자가 격자를 얼마나 줄여야 하는지 바로 보인다.
+/// 크기에 탭바가 포함돼 있다는 것도 밝힌다. 안 그러면 "창이 이만큼 큰데 왜 안 되지"
+/// 로 읽힌다.
+pub const size_does_not_fit_format =
+    "tildaz: \"-size {d}x{d}\" does not fit this screen.\n" ++
+    "It needs a {d}x{d} px window (tab bar included) but the work area is {d}x{d} px.\n" ++
+    "The requested grid is kept exactly, so a window that cannot hold it would push the bottom row off screen.\n" ++
+    "Use a smaller grid.";
+
+/// #506 — layer-shell 경로를 타지 않는 Wayland 데스크톱에서 `-size` 를 거부하는 문구.
+/// 그곳은 창 크기를 compositor 가 정해서 요청 격자와 창이 어긋난 채로 돌아가고, 그 사실이
+/// 겉으로 드러나지 않는다 — 측정값이 조용히 틀린다.
+///
+/// **두 가지 경우를 한 문구로 덮는다.** (1) compositor 가 `zwlr_layer_shell_v1` 을 아예
+/// 안 내주는 GNOME · Cinnamon, (2) 내주지만 **우리가 일부러 안 쓰는** sway — sway 는
+/// `on_demand` layer surface 에 map 시 키보드 포커스를 주지 않아 xdg_toplevel 경로로
+/// 보낸다 ([#454](https://github.com/ensky0/tildaz/issues/454)). 그래서 "compositor 가
+/// 지원하지 않는다" 가 아니라 "여기서는 그 경로를 쓰지 않는다" 로 적는다.
+pub const size_needs_layer_shell_msg =
+    "tildaz: \"-size\" cannot be used on this desktop.\n" ++
+    "It sizes the window through the wlr-layer-shell protocol, which TildaZ does not use here, " ++
+    "so the window size is up to the compositor and would not match the requested grid.\n" ++
+    "Run the measurement on KDE Plasma, Hyprland, or COSMIC.";
+
+/// 위 두 문구의 bufPrint 가 실패할 때 (값이 버퍼를 넘길 때) 쓴다.
+pub const size_error_fallback_msg =
+    "tildaz: \"-size\" cannot be honored on this screen.";
+
 /// run/launcher 오류를 세 platform에서 같은 사용자 문구로 변환한다.
 pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
     return switch (err) {

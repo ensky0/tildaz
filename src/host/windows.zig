@@ -22,7 +22,6 @@ const windows_pty = @import("../terminal/windows/pty.zig");
 const themes = @import("../themes.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
-const ui_metrics = @import("../ui_metrics.zig");
 const version = @import("../version.zig");
 
 const WCHAR = u16;
@@ -249,25 +248,20 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     //
     // #382 — `-size COLSxROWS` 는 퍼센트를 무시하고 셀 개수로 창을 만든다. 이 시점에
     // `window.init` 이 이미 셀 크기를 확정했으므로 (위 로그의 `cell=WxH`) 바로 환산할
-    // 수 있다. 셀 절반을 여유로 더하는 이유는 `percentForPixels` 주석 참고.
+    // 수 있다.
+    //
+    // #506 — 환산은 `App.gridWindowPercent` 가 한다. 창 크기를 여기서 한 번 정하고 마는
+    // 것이 아니라 **탭 수가 1↔2 로 바뀔 때마다** 다시 정해야 해서 (탭바가 세로 공간을
+    // 먹거나 돌려준다) 계산이 App 에 있어야 두 시점이 같은 값을 쓴다.
     var want_w_pct = config.width_percent;
     var want_h_pct = config.height_percent;
-    if (opts.grid) |want| {
-        const cell_w: i64 = @intCast(app.window.cell_width_px);
-        const cell_h: i64 = @intCast(app.window.cell_height_px);
-        const vp = ui_metrics.viewportForGrid(
-            want.cols,
-            want.rows,
-            app.TERMINAL_PADDING,
-            app.SCROLLBAR_W,
-            0, // 측정은 탭 1 개 — 탭바가 없다 (`tabBarHeightPx` 는 count < 2 에서 0).
-            cell_w,
-            cell_h,
-        );
-        if (app.window.percentForPixels(vp.w + @divTrunc(cell_w, 2), vp.h + @divTrunc(cell_h, 2))) |pct| {
-            want_w_pct = pct.w;
-            want_h_pct = pct.h;
-        }
+    app.grid = opts.grid;
+    // #506 — 요청 격자를 이 화면에서 끝까지 지킬 수 있는지 **첫 탭 · PTY 를 만들기 전에**
+    // 확인한다. 못 지키면 여기서 실행이 끝난다.
+    app.guardRequestedGridFits();
+    if (app.gridWindowPercent()) |pct| {
+        want_w_pct = pct.w;
+        want_h_pct = pct.h;
     }
     app.window.setPosition(config.dock_position, want_w_pct, want_h_pct, config.offset_percent);
 

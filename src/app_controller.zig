@@ -26,6 +26,7 @@ const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const command_menu = @import("command_menu.zig");
 const shell_validate = @import("shell_validate.zig");
+const run_options = @import("run_options.zig");
 
 pub const App = struct {
     /// #451 — 진입점이 만든 `Io` · 환경변수 묶음. 릴리즈 노트가 지정한 두 길 중
@@ -38,6 +39,11 @@ pub const App = struct {
     /// 재검증용 (startup `validateOrFatal` 과 같은 값). host(`windows.zig`)가 set.
     shell: []const u8 = "",
     renderer: ?RendererBackend = null,
+    /// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size COLSxROWS` 요청.
+    /// host (`windows.zig`) 가 심는다. 창 크기를 boot 에서 한 번 정하고 마는 것이
+    /// 아니라 **탭 수가 1↔2 로 바뀔 때마다 다시 정해야** 해서 (탭바가 세로 공간을
+    /// 먹거나 돌려준다) App 이 요청을 들고 있어야 한다.
+    grid: ?run_options.Grid = null,
     /// #376 — 직전 tick 의 blink 위상. 이 값이 **바뀌는 프레임에만** 렌더 게이트를
     /// 연다. "화면에 blink 셀이 있다" 로 열면 매 tick(16ms) 그리게 되지만, 위상
     /// 전환은 1초에 두 번뿐이라 추가 렌더가 초당 2프레임이다.
@@ -139,16 +145,76 @@ pub const App = struct {
         self.window.closeAfterShellExit();
     }
 
+    /// #506 — `-size` 가 요청한 격자를 담는 창 크기를 **지금 탭바 높이 기준으로** 환산한다.
+    ///
+    /// 창 크기 경로가 퍼센트 기반이라 (`Window.percentForPixels` 주석) 픽셀을 퍼센트로
+    /// 바꿔 넣는다. 예전에는 boot 에서 탭바를 `0` 으로 두고 한 번만 환산해서, 탭을 만들면
+    /// 탭바가 먹은 만큼 격자가 조용히 줄었다 — 요청한 셀 수로 재는 측정이 그 순간부터
+    /// 다른 격자를 재고 있었다.
+    pub fn gridWindowPercent(self: *App) ?Window.SizePercent {
+        const want = self.grid orelse return null;
+        const cell_w: i64 = @intCast(self.window.cell_width_px);
+        const cell_h: i64 = @intCast(self.window.cell_height_px);
+        const vp = ui_metrics.viewportForGrid(
+            want.cols,
+            want.rows,
+            self.TERMINAL_PADDING,
+            self.SCROLLBAR_W,
+            self.effectiveTabBarHeight(),
+            cell_w,
+            cell_h,
+        );
+        // 셀 절반을 여유로 더하는 이유는 `percentForPixels` 주석 참고.
+        return self.window.percentForPixels(vp.w + @divTrunc(cell_w, 2), vp.h + @divTrunc(cell_h, 2));
+    }
+
+    /// #506 — `-size` 요청을 이 화면에서 지킬 수 있는지. Linux · macOS 의 같은 이름 함수와
+    /// 같은 규칙이다 — **탭바를 포함해 재고**, 못 지키면 실행하지 않는다. 탭바를 미리 넣는
+    /// 이유는 `ui_metrics.gridFitsScreen` 주석에 있다.
+    ///
+    /// **boot 에서 한 번만 부른다.** 실행 중에 다른 모니터로 옮겼다고 이미 돌고 있는
+    /// 터미널을 죽이는 것은 이 가드의 일이 아니다.
+    pub fn guardRequestedGridFits(self: *App) void {
+        const want = self.grid orelse return;
+        const area = self.window.workAreaSize() orelse return;
+        const fit = ui_metrics.gridFitsScreen(
+            want.cols,
+            want.rows,
+            self.TERMINAL_PADDING,
+            self.SCROLLBAR_W,
+            // **탭 수와 무관한** 탭바 높이 — 이 시점엔 탭이 없어 `effectiveTabBarHeight`
+            // 가 0 이지만, 사용자는 언제든 탭을 둘로 만든다.
+            self.TAB_BAR_HEIGHT,
+            @intCast(self.window.cell_width_px),
+            @intCast(self.window.cell_height_px),
+            area.w,
+            area.h,
+        );
+        if (fit.fits) return;
+        run_options.exitSizeDoesNotFit(want, fit.needed_w, fit.needed_h, area.w, area.h);
+    }
+
+    /// #506 — 탭 수가 1↔2 로 바뀌었을 때의 geometry 재동기화.
+    ///
+    /// 평소에는 창 크기가 그대로이므로 격자만 다시 계산하면 된다 (#127). `-size` 는
+    /// 반대다 — **격자가 기준**이라 탭바가 생긴 만큼 창을 키워야 요청 격자가 유지된다.
+    /// 창을 다시 잡으면 `WM_SIZE` 로 격자가 따라오지만, 창 크기가 안 바뀌는 경우
+    /// (`-size` 없음) 도 있으므로 격자 동기화는 항상 한다.
+    fn syncGeometryAfterTabCountChange(self: *App) void {
+        if (self.gridWindowPercent()) |pct| {
+            self.window.setPosition(self.window.dock, pct.w, pct.h, self.window.offset_percent);
+        }
+        const grid = self.getTerminalGridSize();
+        self.session.resizeAll(grid.cols, grid.rows);
+    }
+
     pub fn createTab(self: *App) !void {
         const before: usize = self.session.count();
         const grid = self.getTerminalGridSize();
         try self.session.createTab(grid.cols, grid.rows);
         // 1 → 2 전환에서 탭바가 새로 나타나며 cell 영역이 줄어든다 (#127).
         // 새 grid 로 모든 탭 동기화. 다른 count 변화는 그대로.
-        if (before == 1) {
-            const new_grid = self.getTerminalGridSize();
-            self.session.resizeAll(new_grid.cols, new_grid.rows);
-        }
+        if (before == 1) self.syncGeometryAfterTabCountChange();
         self.invalidateRenderer();
     }
 
@@ -161,10 +227,7 @@ pub const App = struct {
     /// invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
     fn closeTab(self: *App, index: usize) void {
         if (tab_actions.closeIndex(&self.host, index) == .changed) {
-            if (self.session.count() == 1) {
-                const grid = self.getTerminalGridSize();
-                self.session.resizeAll(grid.cols, grid.rows);
-            }
+            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
         }
     }
 
@@ -562,10 +625,7 @@ pub const App = struct {
         // 마지막 탭 → terminate (`window.closeAfterShellExit`), 그 외 → override
         // clear + invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
         if (tab_actions.closeByPtr(&self.host, tab_ptr) == .changed) {
-            if (self.session.count() == 1) {
-                const grid = self.getTerminalGridSize();
-                self.session.resizeAll(grid.cols, grid.rows);
-            }
+            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
         }
     }
 
@@ -581,10 +641,7 @@ pub const App = struct {
         // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
         // grid resize (2 → 1 전환에서 탭바 사라짐, #127).
         if (tab_actions.closeActive(&self.host) == .changed) {
-            if (self.session.count() == 1) {
-                const grid = self.getTerminalGridSize();
-                self.session.resizeAll(grid.cols, grid.rows);
-            }
+            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
         }
     }
 
