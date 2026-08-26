@@ -531,12 +531,10 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 - **`extended` 를 함께 비교해요.** `0xE0` prefix 가 없으면 control pad 와 numpad 가 같은 하위 바이트를 써서 섞여요 (`physical_key.zig` 헤더).
 
 **⚠️ keymap 재전송을 잴 때 `xkb_config` 를 원자적으로 쓰지 않으면 없는 버그를 만들어요.**
-2026-08-26 [#513](https://github.com/ensky0/tildaz/issues/513) 조사에서 실제로 그랬어요 —
-`cat > xkb_config` (truncate 후 write) 로 layout 을 바꿨더니, **cosmic-comp 이 빈 파일을 읽고
-기본값 `us` keymap 을 client 에 한 번 밀어넣었어요.** 그걸 "compositor 가 중간에 US 를 끼워
-보낸다" 는 quirk 로 3 회차 내내 믿었는데, `mv` 로 원자적으로 쓰자 **깨끗이 사라졌어요** (4/4 →
-0/2). 같은 세션에서 나온 "핫플러그 때 낡은 keymap 을 보낸다" 도 그 오염된 조건에서만 1/4 회
-나왔고, 원자적 쓰기로는 2 회 더 시도해도 재현되지 않았어요.
+`cat > xkb_config` 는 **truncate 후 write** 라, cosmic-comp 이 그 사이의 빈 파일을 읽고 기본값
+`us` keymap 을 client 에 밀어넣어요. 그러면 "compositor 가 layout 전환 중에 US 를 끼워 보낸다"
+는 없는 quirk 가 보여요 — [#513](https://github.com/ensky0/tildaz/issues/513) 조사에서 실제로
+그것을 compositor 버그로 믿고 문서에까지 적었어요.
 
 ```sh
 tmp=$XKB.tmp; cat > "$tmp" <<EOF … EOF; mv -f "$tmp" "$XKB"    # ✅ rename 은 원자적
@@ -558,18 +556,14 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
   `layouts=[…]` 는 둘 다 `Korean` 이에요.
 - `/dev/uinput` 은 ACL 이 있으면 sudo 없이 열려요 (`getfacl /dev/uinput`).
 
-**측정으로 확인된 두 compositor 의 차이** (2026-08-26 · 노트북 i5-1240P · CachyOS, 위의 원자적
-쓰기 조건):
+**compositor 별로 keymap 을 언제 다시 보내는지는 회차마다 결과가 흔들려서 이 문서에 표로
+적지 않아요.** 그건 durable 한 사양이 아니라 진행 중인 작업 기록이에요 — 회차별 조건과 결과는
+[#513](https://github.com/ensky0/tildaz/issues/513) 에 있고, 거기서 읽어요. 이 문서에는 **재는
+법과 함정**만 둬요 (위 원자적 쓰기 · `xkbcli` 대조군 · `size` 병기).
 
-| | cosmic-comp 1.0.0 | KWin 6.x |
-|---|---|---|
-| 여러 layout 을 켰을 때 | **미측정** (한 번에 하나만 켜고 쟀어요) | **하나의 keymap 에 group 으로** 담아요 (`layouts=[English (US), French]`) |
-| config 의 layout 을 바꿀 때 | keymap 을 **재전송**해요 | 미측정 (D-Bus group 전환만 쟀어요) |
-| 활성 group 전환 | 미측정 | **재전송 없음** — `wl_keyboard.modifiers` 의 group 만 바뀌어요. hotkey 는 D-Bus 통지 (`drainKdeLayoutChange`) 로 따라가요 |
-| 키보드 핫플러그 | 이벤트 **없음** (2 회) | 이벤트 **없음** (1 회) |
-
-빈 칸은 **재지 않았다는 뜻이에요** — 채우기 전에 추측으로 메우지 말아요. 이 절이 한 번
-그렇게 틀렸어요.
+한 가지만 확정된 사실로 적어 둬요 — **cosmic-comp 의 핫플러그 keymap 되돌림은 간헐적이에요.**
+그래서 "N 회 안 나왔다" 로 없다고 결론내지 말고, 재현 절차를 남에게 줄 때도 간헐적이라는 것을
+함께 적어요.
 
 **실측 완료** (2026-08-25):
 
