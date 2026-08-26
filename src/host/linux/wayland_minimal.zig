@@ -9020,6 +9020,27 @@ const Client = struct {
         return self.runConfirmDialog(.confirm, title, message);
     }
 
+    /// [#521](https://github.com/ensky0/tildaz/issues/521) — 다이얼로그 펌프가 `SIGTERM` 을
+    /// 삼키지 않게 하는 공통 판정.
+    ///
+    /// 아래 펌프들은 사용자가 버튼을 누를 때까지 돈다. **기다리는 것 자체는 의도다** —
+    /// 안내를 읽지 않고 사라지면 안 된다. 문제는 그 사이 세션 로그아웃 · 재부팅이 보낸
+    /// `SIGTERM` 이다. 핸들러는 플래그만 세우는데 (`signal_exit`) 펌프가 그것을 보지 않으면
+    /// **신호가 무시된다** — 기본 동작 (즉시 종료) 을 없앤 셈이라 고치기 전보다 나쁘고,
+    /// `signal_exit.zig` 의 주석이 정확히 이 함정을 경고한다. main loop 는 이미 보고 있었지만
+    /// 펌프가 도는 동안에는 main loop 가 돌지 않는다.
+    ///
+    /// `running` 을 함께 내려서 **바깥 loop 도 같이 빠져나오게** 한다. 그 전이가 한 번뿐이라
+    /// 펌프가 매 바퀴 불러도 로그는 한 줄만 남는다.
+    fn signalExitRequested(self: *Client) bool {
+        if (!signal_exit.requested()) return false;
+        if (self.running) {
+            self.running = false;
+            log.appendLine("exit", "SIGTERM received while a dialog pump was running — leaving the pump", .{});
+        }
+        return true;
+    }
+
     fn runConfirmDialog(self: *Client, kind: DialogOverlay.Kind, title: []const u8, message: []const u8) bool {
         // Confirm dialog 띄움. 실패 시 안전 default Cancel.
         std.debug.assert(kind == .confirm);
@@ -9033,6 +9054,12 @@ const Client = struct {
         // 의 그것과 일치 (dispatch / drain dismiss / drain exited tabs / dbus /
         // key repeat / redraw).
         while (self.running and self.pending_confirm_result == null) {
+            // #521 — 신호가 오면 안전 default (Cancel) 로 빠진다. main loop 의 기존 검사가
+            // 뒤이어 평소의 종료 경로를 태운다.
+            if (self.signalExitRequested()) {
+                self.pending_confirm_result = false;
+                break;
+            }
             self.pollAndDispatch(frame_poll_ms) catch |err| {
                 log.appendLine("dialog", "confirm inner pump pollAndDispatch failed: {s} — break + Cancel", .{@errorName(err)});
                 self.pending_confirm_result = false;
@@ -9073,6 +9100,10 @@ const Client = struct {
         // dialog.kind 가 .none 이 되면(= dismiss 처리 완료) 종료. running=false(외부
         // 종료 신호)면 무한 대기 방지로 함께 탈출.
         while (self.running and self.dialog.kind != .none) {
+            // #521 — 신호가 오면 안내를 접고 빠진다. 세 호출처 모두 이 함수 직후가
+            // `std.process.exit(1)` 이라 그대로 종료된다. 그 시점엔 세션이 아직 없어서
+            // (`ensureSessionGrid` 는 더 뒤) `deinit` 을 건너뛰어도 거둘 PTY 자식이 없다.
+            if (self.signalExitRequested()) break;
             self.pollAndDispatch(frame_poll_ms) catch |err| {
                 log.appendLine("dialog", "fatal dialog pump pollAndDispatch failed: {s} — break", .{@errorName(err)});
                 break;
@@ -9091,6 +9122,11 @@ const Client = struct {
         // 이전엔 key repeat / PTY drain / redraw 를 생략해 캡처 dialog 동안
         // 배경 터미널이 정지했다 (Windows GetMessageW / macOS runModal 은 계속 그림).
         while (self.running and self.pending_prompt_result == null) {
+            // #521 — 신호가 오면 취소로 빠진다 (`accepted = false` → 호출처가 `null` 을 받는다).
+            if (self.signalExitRequested()) {
+                self.pending_prompt_result = false;
+                break;
+            }
             self.pollAndDispatch(frame_poll_ms) catch {
                 self.pending_prompt_result = false;
                 break;
@@ -9143,6 +9179,10 @@ const Client = struct {
 
         var timer: Timer = .start(self.rt);
         while (self.running and !self.mapped and timer.read() < 5 * std.time.ns_per_s) {
+            // #521 — 여기는 5 초 상한이 있어 신호를 영원히 삼키지는 않지만, 로그아웃을
+            // 최대 5 초 늦출 이유가 없다. 빠져나가면 아래 `!self.mapped` 가 걸려 새 instance
+            // prompt 를 접는다 — `running` 이 이미 false 라 곧 종료 경로로 간다.
+            if (self.signalExitRequested()) break;
             try self.pollAndDispatch(frame_poll_ms);
             self.drainPendingDialogDismiss();
             self.drainExitedTabs();
