@@ -517,6 +517,28 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 - **injected 입력을 걸러내지 않아요** (`LLKHF_INJECTED`). `RegisterHotKey` 가 합성 입력에도 반응하므로 (실측) 맞춰요. 덕분에 `SendInput` 으로 핫키 검증을 자동화할 수 있어요.
 - **`extended` 를 함께 비교해요.** `0xE0` prefix 가 없으면 control pad 와 numpad 가 같은 하위 바이트를 써서 섞여요 (`physical_key.zig` 헤더).
 
+**글자로 받는 데스크톱은 keymap 을 *어떻게* 받느냐가 또 갈려요 — 위 표의 두 번째 축이에요**
+(2026-08-26 실측, [#513](https://github.com/ensky0/tildaz/issues/513) · 노트북 i5-1240P · CachyOS).
+위 표에서 KDE · COSMIC 만 *글자* 를 받는데, 그 글자를 정하는 근거인 `wl_keyboard.keymap` 을
+compositor 가 주는 방식이 서로 달라요.
+
+| | cosmic-comp 1.0.0 | KWin 6.x |
+|---|---|---|
+| keymap 구성 | **layout 하나당 keymap 하나** | **모든 layout 을 group 으로 담은 keymap 하나** |
+| layout 전환 시 | keymap 재전송 (+ 중간에 `English (US)` 가 한 번 끼어들어요) | **재전송 없음** — group 전환만 (`wl_keyboard.modifiers`) |
+| 키보드 핫플러그 | **낡은 keymap 을 보내요** (#513) | 아무것도 안 보내요 |
+
+- **cosmic-comp 의 핫플러그 버그는 이 구조 차이에서 나와요.** KWin 은 keymap 을 애초에 다시
+  보내지 않으니 *"어느 keymap 을 보낼까"* 라는 판단 자체가 없어요. KDE 는 layout 전환을 keymap
+  이 아니라 **D-Bus 통지** (`drainKdeLayoutChange`) 로 받아서 재전송 없이도 hotkey 가 따라가요.
+- **핫플러그 재현은 장치를 꽂는 것만으로 안 돼요 — 그 장치로 키를 한 번 보내야 해요.** 20 초를
+  꽂아 둬도 조용했고 (2 회), `Shift` 를 보내자 그제서야 왔어요. `/dev/uinput` 은 ACL 이 있으면
+  sudo 없이 열려요 (`getfacl /dev/uinput`).
+- **판정은 layout *이름* 이 아니라 `size` 로 해요.** 이름이 같아도 keymap 이 다를 수 있어요 —
+  options 만 달라도 크기가 달라져요 (`kr` + korean options `35707` vs `kr` 단독 `35566`). 실제로
+  이름만 봤으면 "정상" 으로 읽었을 회차였어요. 앱 로그의
+  `[wayland] keyboard keymap loaded size=… layouts=[…]` 가 그래서 둘을 함께 남겨요.
+
 **실측 완료** (2026-08-25):
 
 | 환경 | 결과 | 기기 |
@@ -544,7 +566,7 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 - **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
 - **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
-**KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). 추가한 뒤에는 D-Bus 로 전환해요.
+**KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
 
 ```sh
 gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
