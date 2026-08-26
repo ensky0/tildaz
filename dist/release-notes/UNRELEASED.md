@@ -19,21 +19,8 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-- Instance numbers now stop at **9** (ten instances, `F1`–`F10`). A `config_N.toml` or
-  `tildaz.instanceN.desktop` numbered 10 or above is no longer recognised: that
-  instance disappears from the list, and its desktop entry is not cleaned up. Renumber
-  it below 10 if you still want it. ([#510](https://github.com/ensky0/tildaz/issues/510))
-- A newly created config picks its hotkey from its instance number — `F1` for instance
-  0, `F2` for 1, and so on. Existing configs are untouched.
-  ([#510](https://github.com/ensky0/tildaz/issues/510))
-- TildaZ now **stops with a dialog** when it cannot claim its global hotkey, on all
-  three platforms. It used to do that only on Windows; macOS and Linux carried on with
-  a hotkey that never fired. On macOS this includes the first run before Input
-  Monitoring and Accessibility are granted.
-  ([#510](https://github.com/ensky0/tildaz/issues/510))
+_(empty — folded into `v0.9.0.md`)_
 
 ## Body candidates
 
-- Error dialogs name the config file again. They used to print `(unknown)` where the
-  path belongs, on every platform, which left nothing to act on.
-  ([#519](https://github.com/ensky0/tildaz/issues/519))
+_(empty)_
