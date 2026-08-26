@@ -1406,6 +1406,9 @@ const Client = struct {
     pointer_id: u32 = 0,
     seat_capabilities: u32 = 0,
     keyboard: xkb.Keyboard = .{},
+    /// #494 — Compose 표를 올리는 시도는 한 번이다 (첫 keymap 뒤). 실패해도 다시 하지 않는다 —
+    /// locale 과 Compose 파일은 프로세스 수명 동안 바뀌지 않는다.
+    compose_setup_done: bool = false,
     pointer_x_px: i32 = -1,
     pointer_y_px: i32 = -1,
     pointer_inside: bool = false,
@@ -5752,6 +5755,39 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
+    /// #494 — Compose 표를 한 번 올린다. dead key (`^` `¨` `´` `` ` `` …) 는 keymap 만으로는 글자가
+    /// 되지 않고 (`xkb_state_key_get_utf8` 이 빈 문자열), 다음 키와의 조합은 locale 의 Compose
+    /// 파일이 정한다. GTK · Qt 가 같은 표를 쓴다.
+    ///
+    /// locale 은 libxkbcommon 규약대로 `LC_ALL` → `LC_CTYPE` → `LANG` 순으로 읽고, 다 비어 있으면
+    /// `C` 다 — 그러면 `setComposeLocale` 안에서 `en_US.UTF-8` 로 떨어진다. 결과는 로그 한 줄로
+    /// 남긴다: dead key 가 조합되지 않는다는 신고가 오면 이 줄이 첫 갈림길이다.
+    fn ensureCompose(self: *Client) void {
+        if (self.compose_setup_done) return;
+        self.compose_setup_done = true;
+        var locale_buf: [128]u8 = undefined;
+        const locale = self.composeLocale(&locale_buf);
+        switch (self.keyboard.setComposeLocale(locale)) {
+            .ready => log.appendLineVerbose("wayland", "compose table loaded locale={s}", .{locale}),
+            .fallback_locale => log.appendLine("wayland", "compose table for locale={s} not found -- using en_US.UTF-8", .{locale}),
+            .unavailable => log.appendLine("wayland", "compose table unavailable locale={s} -- dead keys will not combine", .{locale}),
+            .no_symbols => log.appendLine("wayland", "libxkbcommon has no compose symbols -- dead keys will not combine", .{}),
+        }
+    }
+
+    /// `LC_ALL` → `LC_CTYPE` → `LANG` 중 첫 비어 있지 않은 값을 NUL 종단으로 `buf` 에 담는다.
+    /// 없으면 `"C"`. 버퍼를 넘는 값은 건너뛴다 — locale 이름은 길어도 수십 바이트다.
+    fn composeLocale(self: *Client, buf: []u8) [:0]const u8 {
+        for ([_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" }) |key| {
+            const value = self.rt.environ.getPosix(key) orelse continue;
+            if (value.len == 0 or value.len >= buf.len) continue;
+            @memcpy(buf[0..value.len], value);
+            buf[value.len] = 0;
+            return buf[0..value.len :0];
+        }
+        return "C";
+    }
+
     fn handleKeyboardKeymap(self: *Client, payload: []const u8) !void {
         if (payload.len < 8) return error.WaylandBadMessage;
         const format = readU32(payload[0..4]);
@@ -5777,6 +5813,9 @@ const Client = struct {
         defer posix.munmap(memory);
 
         try self.keyboard.setKeymap(self.allocator, memory);
+        // #494 — dead key 조합 (Compose). `xkb_context` 가 첫 keymap 에서 생기므로 여기서 올린다.
+        // 두 번째 keymap 부터는 아무 일도 안 한다 — 표는 layout 이 아니라 locale 의 것이다.
+        self.ensureCompose();
         // #513 — **받은 keymap 이 어느 layout 인지 남긴다.** COSMIC 에서 키보드를 꽂으면
         // 위치 표기 hotkey 가 직전 layout 의 글자로 재등록되는데, 로그만 봐서는
         // *compositor 가 옛 keymap 을 보낸 것*인지 *우리가 잘못 읽은 것*인지 구분할 수
@@ -5833,6 +5872,14 @@ const Client = struct {
     /// 자신에게 보관 (matchClipboardSerial 같은 path 에서 사용).
     fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
         self.last_serial = serial;
+
+        // #494 — compose 를 거치지 않고 끝난 키 (다이얼로그 · 메뉴 · 단축키 · nav 키 · Ctrl/Alt
+        // 조합 · IME preedit 중) 가 끼면 조합 중이던 dead key 를 버린다. `^` 를 누른 뒤 Enter 나
+        // Ctrl+C 를 쳤으면 조합 의도는 끝난 것이고, 그 뒤 `e` 에서 `ê` 가 튀어나오면 더 놀랍다.
+        // modifier 키 자체 (Shift 를 누르는 것) 는 `composeFeed` 가 IGNORED 로 받아 상태를 지키므로
+        // `^` → Shift+`e` → `Ê` 는 그대로 된다.
+        var fed_compose = false;
+        defer if (!fed_compose) self.keyboard.composeReset();
 
         // #203 Phase C — dialog 활성 시 모든 키 dialog 로 라우팅 (Enter / Esc /
         // Tab 만 의미). modal — 다른 키 swallow. preedit / 단축키 모두
@@ -5942,7 +5989,34 @@ const Client = struct {
             }
         }
 
+        // #494 — dead key 조합 (Compose). `^` (`dead_circumflex`) 는 아래 `utf8()` 이 빈 문자열이라
+        // 지금까지는 아무것도 보내지 않고 끝났다 — 그래서 AZERTY 에서 `^` 를 칠 수 없었고, 독일어 ·
+        // 스페인어 자판은 backtick 을 아예 낼 수 없었다. 여기서 keysym 을 Compose 상태 기계에 먹여
+        // `^`+`e` → `ê`, `^`+space → `^`, `^`+`^` → `^` 를 만든다.
+        //
+        // **글자가 될 키만 지나간다.** 단축키 · 다이얼로그 · 메뉴 · scrollback · nav 키는 위에서 이미
+        // 돌아갔다. 남은 둘은 여기서 가른다:
+        //   - **IME 가 preedit 을 들고 있으면 IME 가 주인이다.** compose 를 건너뛴다 (위 defer 가
+        //     상태를 비운다). IME 가 키를 가로채는 세션에서는 이 함수까지 키가 오지 않으므로 둘이
+        //     동시에 조합할 일은 원래 없고, 이 조건은 preedit 이 있는 채로 키가 온 경계를 막는다.
+        //   - **Ctrl / Alt 가 눌린 키는 compose 를 거치지 않는다.** `^` 다음 `Ctrl+C` 를 feed 하면
+        //     `c` 가 시퀀스를 깨며 (`CANCELLED`) `\x03` 까지 삼킨다. GTK 도 modifier 가 붙은 키는
+        //     compose 에 넣지 않는다. AltGr 은 `Mod5` 라 여기에 걸리지 않는다 — AltGr 로 내는 dead
+        //     key (fr 의 `dead_grave` 등) 도 조합된다.
         var buf: [64]u8 = undefined;
+        if (sym_opt) |sym| {
+            if (self.preedit_text.items.len == 0 and !ctrl and !alt) {
+                fed_compose = true;
+                switch (self.keyboard.composeFeed(sym, &buf)) {
+                    .passthrough => {},
+                    .swallow => return,
+                    .composed => |text| {
+                        self.queueInput(text);
+                        return;
+                    },
+                }
+            }
+        }
         const bytes = self.keyboard.utf8(xkb_key, &buf);
         if (bytes.len > 0) self.queueInput(bytes);
     }

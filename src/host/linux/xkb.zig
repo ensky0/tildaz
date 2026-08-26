@@ -11,10 +11,24 @@ const log = @import("../../log.zig");
 const xkb_context = opaque {};
 const xkb_keymap = opaque {};
 const xkb_state = opaque {};
+const xkb_compose_table = opaque {};
+const xkb_compose_state = opaque {};
 
 const XKB_CONTEXT_NO_FLAGS: c_uint = 0;
 const XKB_KEYMAP_FORMAT_TEXT_V1: c_uint = 1;
 const XKB_KEYMAP_COMPILE_NO_FLAGS: c_uint = 0;
+
+// #494 — libxkbcommon Compose (`xkbcommon-compose.h`). 값은 헤더의 enum 순서 그대로다.
+const XKB_COMPOSE_COMPILE_NO_FLAGS: c_uint = 0;
+const XKB_COMPOSE_STATE_NO_FLAGS: c_uint = 0;
+/// `enum xkb_compose_status`
+const XKB_COMPOSE_NOTHING: c_int = 0;
+const XKB_COMPOSE_COMPOSING: c_int = 1;
+const XKB_COMPOSE_COMPOSED: c_int = 2;
+const XKB_COMPOSE_CANCELLED: c_int = 3;
+/// `enum xkb_compose_feed_result`
+const XKB_COMPOSE_FEED_IGNORED: c_int = 0;
+const XKB_COMPOSE_FEED_ACCEPTED: c_int = 1;
 
 const XkbContextNew = *const fn (flags: c_uint) callconv(.c) ?*xkb_context;
 const XkbContextUnref = *const fn (context: ?*xkb_context) callconv(.c) void;
@@ -90,6 +104,28 @@ const XkbKeysymGetName = *const fn (
     size: usize,
 ) callconv(.c) c_int;
 
+// #494 — Compose. dead key (`dead_circumflex` 0xfe52 등) 는 `xkb_state_key_get_utf8` 이 빈
+// 문자열을 내고, 다음 키와의 조합 (`^`+`e` → `ê`, `^`+space → `^`) 은 이 상태 기계가 한다 —
+// GTK · Qt 가 쓰는 것과 같은 경로다. **여덟 개는 optional 이다.** 없으면 compose 만 꺼지고
+// 키보드는 지금처럼 동작한다 (#496 1-a 의 `KeymapScan` 과 같은 이유 — 오래된 libxkbcommon
+// 에서 키보드가 통째로 죽을 일이 아니다).
+const XkbComposeTableNewFromLocale = *const fn (
+    context: *xkb_context,
+    locale: [*:0]const u8,
+    flags: c_uint,
+) callconv(.c) ?*xkb_compose_table;
+const XkbComposeTableUnref = *const fn (table: ?*xkb_compose_table) callconv(.c) void;
+const XkbComposeStateNew = *const fn (table: *xkb_compose_table, flags: c_uint) callconv(.c) ?*xkb_compose_state;
+const XkbComposeStateUnref = *const fn (state: ?*xkb_compose_state) callconv(.c) void;
+const XkbComposeStateFeed = *const fn (state: *xkb_compose_state, keysym: c_uint) callconv(.c) c_int;
+const XkbComposeStateReset = *const fn (state: *xkb_compose_state) callconv(.c) void;
+const XkbComposeStateGetStatus = *const fn (state: *xkb_compose_state) callconv(.c) c_int;
+const XkbComposeStateGetUtf8 = *const fn (
+    state: *xkb_compose_state,
+    buffer: [*]u8,
+    size: usize,
+) callconv(.c) c_int;
+
 // libxkbcommon `enum xkb_state_component`. MODS_EFFECTIVE = (1 << 3).
 // 처음에 (1 << 7) = LAYOUT_EFFECTIVE 로 잘못 적어 mod_name_is_active 가
 // modifier component 를 안 보고 항상 0 반환 → 단축키 분기 fail (1차 시연 발견).
@@ -112,6 +148,8 @@ const Api = struct {
     keymap_scan: ?KeymapScan = null,
     // #513 — optional. 진단 로그 전용이라 없으면 그 줄에서 layout 이름만 빠진다.
     layout_names: ?LayoutNames = null,
+    // #494 — optional. 없으면 dead key 조합만 꺼진다 (`Keyboard.composeFeed` 가 passthrough).
+    compose: ?ComposeApi = null,
 
     fn load() !Api {
         const handle = std.c.dlopen("libxkbcommon.so.0", .{ .LAZY = true }) orelse return error.XkbLibraryMissing;
@@ -131,6 +169,7 @@ const Api = struct {
             .state_mod_name_is_active = lookup(handle, XkbStateModNameIsActive, "xkb_state_mod_name_is_active") orelse return error.XkbSymbolMissing,
             .keymap_scan = KeymapScan.load(handle),
             .layout_names = LayoutNames.load(handle),
+            .compose = ComposeApi.load(handle),
         };
     }
 
@@ -185,6 +224,32 @@ const LayoutNames = struct {
     }
 };
 
+/// #494 — Compose 상태 기계 심볼 묶음. **all-or-nothing** — `feed` 는 있는데 `get_utf8` 이
+/// 없으면 조합은 되는데 결과를 못 꺼내 글자가 사라지므로, 하나라도 없으면 통째로 끈다.
+const ComposeApi = struct {
+    table_new_from_locale: XkbComposeTableNewFromLocale,
+    table_unref: XkbComposeTableUnref,
+    state_new: XkbComposeStateNew,
+    state_unref: XkbComposeStateUnref,
+    state_feed: XkbComposeStateFeed,
+    state_reset: XkbComposeStateReset,
+    state_get_status: XkbComposeStateGetStatus,
+    state_get_utf8: XkbComposeStateGetUtf8,
+
+    fn load(handle: *anyopaque) ?ComposeApi {
+        return .{
+            .table_new_from_locale = lookup(handle, XkbComposeTableNewFromLocale, "xkb_compose_table_new_from_locale") orelse return null,
+            .table_unref = lookup(handle, XkbComposeTableUnref, "xkb_compose_table_unref") orelse return null,
+            .state_new = lookup(handle, XkbComposeStateNew, "xkb_compose_state_new") orelse return null,
+            .state_unref = lookup(handle, XkbComposeStateUnref, "xkb_compose_state_unref") orelse return null,
+            .state_feed = lookup(handle, XkbComposeStateFeed, "xkb_compose_state_feed") orelse return null,
+            .state_reset = lookup(handle, XkbComposeStateReset, "xkb_compose_state_reset") orelse return null,
+            .state_get_status = lookup(handle, XkbComposeStateGetStatus, "xkb_compose_state_get_status") orelse return null,
+            .state_get_utf8 = lookup(handle, XkbComposeStateGetUtf8, "xkb_compose_state_get_utf8") orelse return null,
+        };
+    }
+};
+
 fn lookup(handle: *anyopaque, comptime T: type, name: [*:0]const u8) ?T {
     const symbol = std.c.dlsym(handle, name) orelse return null;
     return @ptrCast(@alignCast(symbol));
@@ -202,9 +267,14 @@ pub const Keyboard = struct {
     context: ?*xkb_context = null,
     keymap: ?*xkb_keymap = null,
     state: ?*xkb_state = null,
+    /// #494 — Compose. `setComposeLocale` 이 만든다. **keymap 이 바뀌어도 그대로 둔다** —
+    /// 표는 layout 이 아니라 locale 의 것이고, 조합 중 상태가 layout 전환에 끊길 이유도 없다.
+    compose_table: ?*xkb_compose_table = null,
+    compose_state: ?*xkb_compose_state = null,
 
     pub fn deinit(self: *Keyboard) void {
         self.clearKeymap();
+        self.clearCompose();
         if (self.api) |*api| {
             if (self.context) |context| {
                 api.context_unref(context);
@@ -433,6 +503,117 @@ pub const Keyboard = struct {
         return buf[0..wanted];
     }
 
+    /// #494 — `setComposeLocale` 의 결과. 호출자가 로그 한 줄로 남긴다.
+    pub const ComposeSetup = enum {
+        /// 요청한 locale 의 Compose 표가 올라갔다 (이미 올라가 있던 경우도 포함).
+        ready,
+        /// 요청한 locale 에는 표가 없어 `en_US.UTF-8` 로 올라갔다.
+        fallback_locale,
+        /// 둘 다 실패 — dead key 는 지금처럼 조합되지 않는다.
+        unavailable,
+        /// libxkbcommon 이 compose 심볼을 내주지 않거나 아직 context 가 없다.
+        no_symbols,
+    };
+
+    /// #494 — 이 locale 의 Compose 표를 올린다. 호출 시점은 **첫 keymap 이 온 뒤**다 —
+    /// `xkb_context` 가 그때 생긴다. 이미 올라가 있으면 다시 만들지 않는다.
+    ///
+    /// `locale` 이 가리키는 Compose 파일이 없으면 (`C` · compose.dir 에 없는 locale) `en_US.UTF-8`
+    /// 로 한 번 더 시도한다. X11 의 `compose.dir` 에서 거의 모든 UTF-8 locale 이 그 파일을
+    /// 가리킨다. libxkbcommon 1.12+ 도 fallback 을 하지만 **C 라이브러리가 아는 locale 에만**
+    /// 이다 — 실측 (lima VM · 1.13.1) 에서 설치되지 않은 `xx_XX.UTF-8` 은 `XKB-679` 에러와 함께
+    /// `NULL` 을 냈고, 이 재시도가 있어야 조합이 살았다.
+    pub fn setComposeLocale(self: *Keyboard, locale: [:0]const u8) ComposeSetup {
+        const api = if (self.api) |*a| a else return .no_symbols;
+        const compose = api.compose orelse return .no_symbols;
+        const context = self.context orelse return .no_symbols;
+        if (self.compose_state != null) return .ready;
+
+        var setup: ComposeSetup = .ready;
+        var table = compose.table_new_from_locale(context, locale.ptr, XKB_COMPOSE_COMPILE_NO_FLAGS);
+        if (table == null) {
+            table = compose.table_new_from_locale(context, "en_US.UTF-8", XKB_COMPOSE_COMPILE_NO_FLAGS);
+            setup = .fallback_locale;
+        }
+        const table_ptr = table orelse return .unavailable;
+        const state = compose.state_new(table_ptr, XKB_COMPOSE_STATE_NO_FLAGS) orelse {
+            compose.table_unref(table_ptr);
+            return .unavailable;
+        };
+        self.compose_table = table_ptr;
+        self.compose_state = state;
+        return setup;
+    }
+
+    /// #494 — `composeFeed` 의 결과.
+    pub const ComposeResult = union(enum) {
+        /// compose 가 없거나 이 keysym 이 시퀀스와 무관하다 — 호출자가 기존 utf8 경로로 간다.
+        passthrough,
+        /// 조합 중 (`COMPOSING`) 이거나 조합이 깨졌다 (`CANCELLED`) — 아무것도 보내지 않는다.
+        swallow,
+        /// 조합이 끝났다 — 이 바이트를 보낸다. `buf` 안을 가리킨다.
+        composed: []const u8,
+    };
+
+    /// #494 — 눌린 키의 keysym 을 Compose 상태 기계에 먹이고 무엇을 할지 돌려준다.
+    /// 호출자는 **글자가 될 키만** 넘긴다 — 단축키 · nav 키 · Ctrl/Alt 조합은 넘기지 않는다
+    /// (`wayland_minimal.zig` `processKeyEvent` 의 주석).
+    pub fn composeFeed(self: *Keyboard, keysym: u32, buf: []u8) ComposeResult {
+        const api = if (self.api) |*a| a else return .passthrough;
+        const compose = api.compose orelse return .passthrough;
+        const state = self.compose_state orelse return .passthrough;
+        const fed = compose.state_feed(state, @intCast(keysym));
+        const status = compose.state_get_status(state);
+        switch (composeDecision(fed, status)) {
+            .passthrough => return .passthrough,
+            .swallow => return .swallow,
+            .composed => {
+                const n = compose.state_get_utf8(state, buf.ptr, buf.len);
+                if (n <= 0) return .swallow;
+                const len: usize = @intCast(n);
+                // 버퍼가 모자라면 (libxkbcommon 은 필요한 길이를 돌려준다) 잘린 글자를 보내는
+                // 대신 버린다. 64 바이트면 Compose 표의 어떤 결과도 담긴다.
+                if (len >= buf.len) return .swallow;
+                return .{ .composed = buf[0..len] };
+            },
+        }
+    }
+
+    /// #494 — 조합 중이던 것을 버린다. compose 를 거치지 않은 키 (단축키 · Enter · Ctrl 조합 ·
+    /// IME preedit 중의 키) 가 끼면 호출자가 부른다 — 그 뒤에 예상 못 한 `ê` 가 튀어나오지 않게.
+    pub fn composeReset(self: *Keyboard) void {
+        const api = if (self.api) |*a| a else return;
+        const compose = api.compose orelse return;
+        const state = self.compose_state orelse return;
+        compose.state_reset(state);
+    }
+
+    pub const ComposeDecision = enum { passthrough, swallow, composed };
+
+    /// #494 — feed 결과와 상태를 동작으로 옮기는 표. 순수 함수라 libxkbcommon 없이 테스트한다.
+    ///
+    /// | feed | status | 동작 | 뜻 |
+    /// |---|---|---|---|
+    /// | IGNORED | (무엇이든) | passthrough | modifier 키 같은 무시 keysym — 상태가 안 바뀌었다 |
+    /// | ACCEPTED | NOTHING | passthrough | 시퀀스 시작이 아니다 — 보통 글자, 기존 utf8 경로 |
+    /// | ACCEPTED | COMPOSING | swallow | 시퀀스 진행 중 (`^` 를 누른 직후) |
+    /// | ACCEPTED | COMPOSED | composed | 끝났다 — `get_utf8` 결과를 보낸다 |
+    /// | ACCEPTED | CANCELLED | swallow | 이어지지 않는 키 (`^` 다음 `x`) — X11 · xterm 관례대로 둘 다 버린다 |
+    ///
+    /// `CANCELLED` 에서 GTK 만 `^x` 처럼 둘 다 내는데, 그건 Compose 표 밖의 별도 규칙이라
+    /// 넣지 않는다. 다음 feed 는 헤더 문서대로 `NOTHING` 과 같이 새 시퀀스 판정을 시작한다.
+    fn composeDecision(fed: c_int, status: c_int) ComposeDecision {
+        if (fed == XKB_COMPOSE_FEED_IGNORED) return .passthrough;
+        return switch (status) {
+            XKB_COMPOSE_NOTHING => .passthrough,
+            XKB_COMPOSE_COMPOSING => .swallow,
+            XKB_COMPOSE_COMPOSED => .composed,
+            XKB_COMPOSE_CANCELLED => .swallow,
+            // 모르는 상태값 — 헤더에 없는 값이 오면 글자를 삼키는 쪽보다 보내는 쪽이 낫다.
+            else => .passthrough,
+        };
+    }
+
     pub fn ctrlActive(self: *Keyboard) bool {
         return self.modActive("Control");
     }
@@ -477,7 +658,51 @@ pub const Keyboard = struct {
             }
         }
     }
+
+    fn clearCompose(self: *Keyboard) void {
+        const api = if (self.api) |*a| a else return;
+        const compose = api.compose orelse return;
+        if (self.compose_state) |state| {
+            compose.state_unref(state);
+            self.compose_state = null;
+        }
+        if (self.compose_table) |table| {
+            compose.table_unref(table);
+            self.compose_table = null;
+        }
+    }
 };
+
+test "#494 composeDecision — feed 결과 × 상태 → 동작 표" {
+    const D = Keyboard.ComposeDecision;
+    // modifier 키처럼 무시된 keysym 은 상태를 안 바꿨으니 그대로 지나간다 — 상태값과 무관하다.
+    try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_IGNORED, XKB_COMPOSE_NOTHING));
+    try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_IGNORED, XKB_COMPOSE_COMPOSING));
+    // 보통 글자 — 시퀀스 시작이 아니다.
+    try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_NOTHING));
+    // `^` 를 누른 직후 — 아무것도 보내지 않는다. 지금까지 dead key 가 조용했던 것과 겉보기가
+    // 같지만 이유가 다르다 (조합을 기다리는 중).
+    try std.testing.expectEqual(D.swallow, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_COMPOSING));
+    // `^` 다음 `e` — 결과 (`ê`) 를 보낸다.
+    try std.testing.expectEqual(D.composed, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_COMPOSED));
+    // `^` 다음 `x` — 이어지는 시퀀스가 없다. 둘 다 버린다 (X11 · xterm 관례).
+    try std.testing.expectEqual(D.swallow, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_CANCELLED));
+    // 헤더에 없는 상태값 — 삼키지 않는다.
+    try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, 99));
+}
+
+test "#494 compose 가 없으면 전부 passthrough — 키보드는 지금처럼 동작한다" {
+    // libxkbcommon 이 없거나 (이 테스트 환경) compose 심볼이 없으면 `composeFeed` 는 항상
+    // passthrough 라 호출자가 기존 `utf8()` 경로를 탄다. 삼키면 글자가 사라진다.
+    var kb: Keyboard = .{};
+    defer kb.deinit();
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(Keyboard.ComposeResult.passthrough, kb.composeFeed(0xfe52, &buf));
+    try std.testing.expectEqual(Keyboard.ComposeSetup.no_symbols, kb.setComposeLocale("fr_FR.UTF-8"));
+    // reset 도 아무 일 없이 돌아온다.
+    kb.composeReset();
+    try std.testing.expectEqual(@as(?*xkb_compose_state, null), kb.compose_state);
+}
 
 test "#496 1-a canProduceKeysym 은 활성 group 만 본다 — 기본 group 은 0" {
     // 이 결함을 두 번 내지 않기 위한 못이다. keymap 이 없으면 판정 자체가 불가라
