@@ -592,6 +592,9 @@ pub const PANE_SEPARATOR_W_PT: u32 = 1;
 /// 분할의 목적) 이 선이 유일한 표시다. 1 pt 로 시작한다 — 실기에서 약하면 탭바 밑줄
 /// `TAB_ACTIVE_UNDERLINE_PT` 와 같은 2 pt 로 올린다. px 변환은 `linePx`.
 pub const PANE_FOCUS_LINE_PT: u32 = 1;
+/// #483 4c — 분할선을 마우스로 잡는 영역의 반폭 (logical pt). 그리는 선은 `PANE_SEPARATOR_W_PT` 1 pt
+/// 지만 잡는 영역은 양쪽으로 이만큼 넓다 (확정 설계 축 2 "그리는 건 1px, 잡는 건 ±4px").
+pub const PANE_SEPARATOR_HIT_SLOP_PT: u32 = 4;
 /// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
 /// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
 pub const MENU_INDICATOR_ICON_PT: u32 = 14;

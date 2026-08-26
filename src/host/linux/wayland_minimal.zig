@@ -198,6 +198,10 @@ const wp_cursor_shape_device_v1_request_set_shape: u16 = 1;
 // 스프레드시트 셀 선택 + 모양이 나오던 회귀 — 9 (`text`) 가 정답.
 const wp_cursor_shape_v1_default: u32 = 1;
 const wp_cursor_shape_v1_text: u32 = 9;
+/// #483 4c — 분할선 위 리사이즈 커서. wp-cursor-shape-v1 enum 의 `col_resize` 30 · `row_resize` 31
+/// (GTK paned 손잡이와 같은 뜻 — 열 · 행 크기 조절).
+const wp_cursor_shape_v1_col_resize: u32 = 30;
+const wp_cursor_shape_v1_row_resize: u32 = 31;
 
 // wp_viewporter (stable v1) — fractional scaling 환경의 logical / physical 분리.
 // https://wayland.app/protocols/viewporter
@@ -1533,6 +1537,10 @@ const Client = struct {
     /// + 탭 area 가장자리 auto-scroll, button release 에서 `finish` →
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
+    /// #483 4c — 분할선 드래그. 누른 분할선의 노드 · 축과 지금 포인터의 분할 축 좌표. **놓을 때만**
+    /// 트리에 적용한다 (확정 설계 축 2 — 드래그 중 PTY resize 폭풍 방지, Konsole 방식). 드래그 중엔
+    /// `frameInputs` 가 스냅된 자리의 amber 고스트를 그린다.
+    sep_drag: ?SepDrag = null,
 
     fn init(rt: Runtime, allocator: std.mem.Allocator, cfg: *const config_mod.Config, opts: run_options.RunOptions) !Client {
         const path = try waylandSocketPath(rt, allocator);
@@ -2237,7 +2245,7 @@ const Client = struct {
         const shape = cursorShapeForSurface(
             self.last_pointer_enter_surface_id,
             self.surface_id,
-            self.pointerInCellArea(),
+            self.pointerRegion(),
         );
         if (shape == self.last_cursor_shape) return; // 캐시 hit — spam 회피
         // spec: serial = pointer enter event serial (latest 권장). keyboard /
@@ -3358,8 +3366,29 @@ const Client = struct {
     fn activeLayout(self: *const Client, buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect) []pane_layout.PaneRect {
         const sess = if (self.session) |*s| s else return buf[0..0];
         if (sess.active_tab >= sess.tabs.items.len) return buf[0..0];
-        const group = sess.tabs.items[sess.active_tab];
-        return pane_layout.layout(&group.tree, self.paneArea(), self.paneMetrics(), buf);
+        return sess.tabs.items[sess.active_tab].layout(self.paneArea(), self.paneMetrics(), buf);
+    }
+
+    /// #483 4c — 활성 탭의 회색 분할선 목록 (최대화 중이면 없다). 결과는 `buf` 안을 가리킨다.
+    fn activeSeparators(self: *const Client, buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator) []pane_layout.Separator {
+        const sess = if (self.session) |*s| s else return buf[0..0];
+        if (sess.active_tab >= sess.tabs.items.len) return buf[0..0];
+        return sess.tabs.items[sess.active_tab].separators(self.paneArea(), self.paneMetrics(), buf);
+    }
+
+    /// #483 4c — 포인터 아래의 분할선 (양쪽 `PANE_SEPARATOR_HIT_SLOP_PT` 까지). dialog · 메뉴가 떠 있으면 null.
+    fn separatorUnderPointer(self: *const Client) ?pane_layout.Separator {
+        if (self.dialog.active() or self.command_menu_open) return null;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+        const slop: i32 = ui_metrics.scaledPx(i32, ui_metrics.PANE_SEPARATOR_HIT_SLOP_PT, self.renderer.scale);
+        return pane_layout.separatorAt(self.activeSeparators(&buf), self.pointer_x_px, self.pointer_y_px, slop);
+    }
+
+    /// #483 4c — 커서 모양의 근거. 드래그 중이면 그 축의 리사이즈 커서를 유지한다 (포인터가 선을 벗어나도).
+    fn pointerRegion(self: *const Client) PointerRegion {
+        if (self.sep_drag) |d| return if (d.axis == .side_by_side) .separator_v else .separator_h;
+        if (self.separatorUnderPointer()) |s| return if (s.axis == .side_by_side) .separator_v else .separator_h;
+        return if (self.pointerInCellArea()) .cell else .other;
     }
 
     /// #483 4b — 활성 pane 의 배치 (영역 · 격자 · 격자 원점). 세션 · 탭이 없으면 null.
@@ -4654,8 +4683,20 @@ const Client = struct {
         const m = self.paneMetrics();
         const group = session.activeGroup().?;
         var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
-        const lay = pane_layout.layout(&group.tree, area, m, &rect_buf);
-        const seps = pane_layout.separators(&group.tree, area, m, sep_storage);
+        const lay = group.layout(area, m, &rect_buf);
+        const seps = group.separators(area, m, sep_storage);
+        // 4c — 드래그 중이면 트리 복사본에 놓아 보고 그 분할선 자리를 고스트로 (스냅 · 최소 크기 판정을
+        // 실제 놓기와 같은 함수가 한다). 놓을 수 없는 자리면 고스트 없음.
+        var ghost: ?pane_layout.Rect = null;
+        if (self.sep_drag) |d| {
+            var trial = group.tree;
+            if (trial.setSeparatorPx(d.node, d.px, area, m)) {
+                var gbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+                for (pane_layout.separators(&trial, area, m, &gbuf)) |s| {
+                    if (s.node == d.node) ghost = s.rect;
+                }
+            }
+        }
         var active_rect: ?pane_layout.Rect = null;
         for (lay, 0..) |pr, i| {
             const t = group.panes[pr.pane].?;
@@ -4682,6 +4723,7 @@ const Client = struct {
             .separators = seps,
             .pane_area = area,
             .active_pane_rect = active_rect,
+            .drag_ghost = ghost,
             .theme = self.config.theme orelse fallback_theme,
             .width = width,
             .height = height,
@@ -5543,6 +5585,10 @@ const Client = struct {
         if (!session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
         leaving.interaction.cancelPointerModes();
         self.sel_autoscroll_dir = 0;
+        // 4c — 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
+        self.ensureSessionGrid() catch |err| {
+            log.appendLine("pane", "ensureSessionGrid after focus failed: {s}", .{@errorName(err)});
+        };
         log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), session.activeGroup().?.active_pane });
         self.needs_redraw = true;
     }
@@ -5559,6 +5605,37 @@ const Client = struct {
         const session = if (self.session) |*s| s else return;
         if (session.activeGroup() == null) return;
         session.equalizeActive(self.paneArea(), self.paneMetrics());
+        self.needs_redraw = true;
+    }
+
+    /// #483 4c — `+` 클릭. Alt 를 누르고 있으면 새 탭이 아니라 활성 pane 분할 (Windows Terminal 의 Alt+클릭
+    /// 선례). 방향은 활성 pane 의 모양대로 — 넓으면 오른쪽, 높으면 아래 (WT 의 `auto`).
+    fn handlePlusClick(self: *Client) void {
+        if (!self.keyboard.altActive()) return self.handleNewTab();
+        const pr = self.activePaneRect() orelse return;
+        self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
+    }
+
+    /// #483 4c — 활성 pane 최대화 토글 (`Ctrl+Shift+Z`). 켜면 그 pane 이 탭 영역 전체를 쓰고 다른 pane 은
+    /// 그리지 않는다 (셸은 계속 돈다). 격자는 `ensureSessionGrid` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
+    fn handleZoomPane(self: *Client) void {
+        const session = if (self.session) |*s| s else return;
+        self.commitPendingInput();
+        if (!session.toggleZoomActive()) return;
+        self.ensureSessionGrid() catch |err| {
+            log.appendLine("pane", "ensureSessionGrid after zoom failed: {s}", .{@errorName(err)});
+        };
+        log.appendLine("pane", "zoom {s} — active pane {}", .{ if (session.activeGroup().?.zoomed != null) "on" else "off", session.activeGroup().?.active_pane });
+        self.needs_redraw = true;
+    }
+
+    /// #483 4c — 분할선 드래그를 놓았다: 여기서 한 번만 트리에 적용하고 격자를 맞춘다 (PTY resize 한 번).
+    /// 최소 크기 아래 자리면 아무 일도 없다 — 고스트도 그 자리에는 안 그려졌다.
+    fn finishSeparatorDrag(self: *Client, d: SepDrag) void {
+        const session = if (self.session) |*s| s else return;
+        if (session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) {
+            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, if (d.axis == .side_by_side) "x" else "y", d.px });
+        }
         self.needs_redraw = true;
     }
 
@@ -5654,7 +5731,7 @@ const Client = struct {
             },
             // #329 — MAX_TABS 도달 시 비활성 `+` 클릭은 완전 noop (dialog
             // 없음 — 비활성 overflow 화살표와 같은 관례).
-            .plus => if (layout.plus_enabled) self.handleNewTab(),
+            .plus => if (layout.plus_enabled) self.handlePlusClick(),
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
                 self.commitPendingInput();
@@ -6202,6 +6279,7 @@ const Client = struct {
             .focus_pane => self.handleFocusPane(direction orelse return),
             .resize_pane => self.handleResizePane(direction orelse return),
             .equalize_panes => self.handleEqualizePanes(),
+            .zoom_pane => self.handleZoomPane(),
         }
     }
 
@@ -6212,6 +6290,9 @@ const Client = struct {
                 log.appendLine("command-menu", "toggle failed: {s}", .{@errorName(err)});
             },
             .new_tab => self.handleNewTab(),
+            // #483 4c — 메뉴의 분할 항목 (마우스 경로).
+            .split_right => self.handleSplit(.right),
+            .split_down => self.handleSplit(.down),
             .close_active_tab => self.handleCloseTab(),
             .copy_selection => self.copyActiveSelection(),
             .paste => self.requestPaste(),
@@ -6444,6 +6525,12 @@ const Client = struct {
             self.handleTabDragMotion();
             return;
         }
+        // #483 4c — 분할선 드래그 중: 좌표만 기억하고 고스트를 다시 그린다. 트리는 놓을 때.
+        if (self.sep_drag) |*d| {
+            d.px = if (d.axis == .side_by_side) self.pointer_x_px else self.pointer_y_px;
+            self.needs_redraw = true;
+            return;
+        }
 
         const tab = self.activeTabOrNull() orelse return;
         // 스크롤바 drag 중 — selection 검사보다 먼저. drag 가 cell 영역 밖으로
@@ -6608,7 +6695,7 @@ const Client = struct {
                     switch (self.singleControlHit(self.pointer_x_px, self.pointer_y_px)) {
                         .plus => {
                             tab.interaction.cancelPointerModes();
-                            self.handleNewTab();
+                            self.handlePlusClick();
                             return;
                         },
                         .close => {
@@ -6632,6 +6719,13 @@ const Client = struct {
                 // 보다 *우선* 검사 — tab bar 안에서 selection drag 안 시작.
                 if (self.pointer_y_px >= 0 and self.pointer_y_px < self.effectiveTabBarHeightPx()) {
                     self.handleTabBarClick(self.pointer_x_px, self.pointer_y_px);
+                    return;
+                }
+                // #483 4c — 분할선 (±slop) 누름 = 드래그 시작. pane 안 판정으로 내려가지 않는다.
+                if (self.separatorUnderPointer()) |s| {
+                    self.commitPendingInput();
+                    self.sep_drag = .{ .node = s.node, .axis = s.axis, .px = if (s.axis == .side_by_side) self.pointer_x_px else self.pointer_y_px };
+                    self.needs_redraw = true;
                     return;
                 }
                 // #483 4b — 다른 pane 을 눌렀으면 먼저 그 pane 으로 포커스를 옮기고, 그 pane 기준으로
@@ -6689,6 +6783,12 @@ const Client = struct {
             wl_pointer_button_state_released => {
                 // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
                 self.sel_autoscroll_dir = 0;
+                // #483 4c — 분할선 드래그 끝.
+                if (self.sep_drag) |d| {
+                    self.sep_drag = null;
+                    self.finishSeparatorDrag(d);
+                    return;
+                }
                 // L12-γ-3 — drag 활성이면 reorder 처리. `dragging=true`
                 // (= move 5px threshold 넘김) 였으면 `finish` 가 ReorderRequest
                 // 반환 → `session.reorderTabs`. single-click 이면 finish 가 null
@@ -9792,30 +9892,48 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
 /// Surface-local pointer 좌표는 서로 비교할 수 없으므로, terminal text cursor는
 /// main surface 위에서만 선택한다. Dialog surface는 같은 좌표가 terminal cell
 /// 범위와 겹쳐도 기본 arrow를 유지한다.
-fn cursorShapeForSurface(focused_surface_id: u32, main_surface_id: u32, in_cell: bool) u32 {
-    if (focused_surface_id != 0 and
-        focused_surface_id == main_surface_id and
-        in_cell) return wp_cursor_shape_v1_text;
-    return wp_cursor_shape_v1_default;
+/// 포인터가 main surface 의 어디에 있는가 — 커서 모양의 근거. #483 4c 로 분할선 둘이 늘었다.
+const PointerRegion = enum { other, cell, separator_v, separator_h };
+
+/// #483 4c — 분할선 드래그 상태 (`Client.sep_drag`).
+const SepDrag = struct {
+    node: u8,
+    axis: pane_layout.Axis,
+    /// 분할 축의 포인터 좌표 (세로 분할선이면 x, 가로면 y).
+    px: i32,
+};
+
+fn cursorShapeForSurface(focused_surface_id: u32, main_surface_id: u32, region: PointerRegion) u32 {
+    if (focused_surface_id == 0 or focused_surface_id != main_surface_id) return wp_cursor_shape_v1_default;
+    return switch (region) {
+        .cell => wp_cursor_shape_v1_text,
+        .separator_v => wp_cursor_shape_v1_col_resize,
+        .separator_h => wp_cursor_shape_v1_row_resize,
+        .other => wp_cursor_shape_v1_default,
+    };
 }
 
 test "#314 dialog surface keeps arrow cursor while main text areas use I-beam" {
     try std.testing.expectEqual(
         wp_cursor_shape_v1_default,
-        cursorShapeForSurface(200, 100, true),
+        cursorShapeForSurface(200, 100, .cell),
     );
     try std.testing.expectEqual(
         wp_cursor_shape_v1_text,
-        cursorShapeForSurface(100, 100, true),
+        cursorShapeForSurface(100, 100, .cell),
     );
     try std.testing.expectEqual(
         wp_cursor_shape_v1_default,
-        cursorShapeForSurface(100, 100, false),
+        cursorShapeForSurface(100, 100, .other),
     );
     try std.testing.expectEqual(
         wp_cursor_shape_v1_default,
-        cursorShapeForSurface(0, 0, true),
+        cursorShapeForSurface(0, 0, .cell),
     );
+    // #483 4c — 분할선 위는 리사이즈 커서, 다른 surface 위에서는 여전히 기본.
+    try std.testing.expectEqual(wp_cursor_shape_v1_col_resize, cursorShapeForSurface(100, 100, .separator_v));
+    try std.testing.expectEqual(wp_cursor_shape_v1_row_resize, cursorShapeForSurface(100, 100, .separator_h));
+    try std.testing.expectEqual(wp_cursor_shape_v1_default, cursorShapeForSurface(200, 100, .separator_v));
 }
 
 /// paste 인입으로 받아들일 mime. 셋 중 하나만 광고돼도 paste 가능. 셋 다

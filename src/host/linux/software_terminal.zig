@@ -286,6 +286,8 @@ pub const FrameInputs = struct {
     pane_area: pane_layout.Rect,
     /// #483 4b — pane 이 둘 이상일 때 활성 pane 의 영역. 하나면 null — 알릴 것이 없다.
     active_pane_rect: ?pane_layout.Rect,
+    /// #483 4c — 분할선 드래그 중 고스트 (놓으면 분할선이 갈 자리, 셀 경계 스냅). 드래그 중이 아니면 null.
+    drag_ghost: ?pane_layout.Rect,
     theme: *const themes.Theme,
     width: i32,
     height: i32,
@@ -770,6 +772,8 @@ pub const Renderer = struct {
         if (r.x + r.w < a.x + a.w) self.layer.overlay.append(allocator, .{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
         if (r.y > a.y) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = r.w, .h = t, .color = amber }) catch {};
         if (r.y + r.h < a.y + a.h) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t, .color = amber }) catch {};
+        // 4c — 드래그 고스트는 amber 로, 분할선이 갈 자리에 (셀 위에 겹칠 수 있다 — 드래그 중에만).
+        if (in.drag_ghost) |g| self.layer.overlay.append(allocator, .{ .x = g.x, .y = g.y, .w = g.w, .h = g.h, .color = amber }) catch {};
     }
 
     /// #362 — 한 줄에서 실제로 볼 필요가 있는 칸의 개수.

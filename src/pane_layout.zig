@@ -114,6 +114,9 @@ pub const PaneRect = struct {
 pub const Separator = struct {
     rect: Rect,
     axis: Axis,
+    /// 이 분할선을 가진 분할 노드 — `Tree.setSeparatorPx` 의 인자 (4c 드래그). 트리 내부 index 라
+    /// 트리가 바뀌면 (분할 · 닫기) 무효다 — 드래그 한 번 안에서만 쓴다.
+    node: u8,
 };
 
 const NodeIndex = u8;
@@ -249,6 +252,27 @@ pub const Tree = struct {
 
         const saved = self.*;
         sp.ratio = @as(f32, @floatFromInt(new_first)) / @as(f32, @floatFromInt(g.avail));
+        if (!self.allPanesAtLeastMin(rect, m)) {
+            self.* = saved;
+            return false;
+        }
+        return true;
+    }
+
+    /// 4c 드래그 — 분할 노드 `node` (`Separator.node`) 의 분할선을 분할 축 좌표 `px` 에 놓는다. 셀 경계
+    /// 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다. 최소 크기 아래로
+    /// 내려가는 pane 이 생기면 false 고 트리는 그대로다.
+    pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) bool {
+        if (node >= MAX_NODES or !self.alive[node]) return false;
+        if (self.nodes[node] != .split) return false;
+        const node_rect = self.rectOf(rect, m, node) orelse return false;
+        const sp = &self.nodes[node].split;
+        const g = splitGeometry(node_rect, m, sp.*);
+        if (g.avail <= 0) return false;
+        const origin = if (sp.axis == .side_by_side) node_rect.x else node_rect.y;
+        const first = std.math.clamp(px - origin, 0, g.avail);
+        const saved = self.*;
+        sp.ratio = @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(g.avail));
         if (!self.allPanesAtLeastMin(rect, m)) {
             self.* = saved;
             return false;
@@ -465,7 +489,7 @@ fn separatorsNode(tree: *const Tree, idx: NodeIndex, rect: Rect, m: Metrics, out
         .leaf => {},
         .split => |s| {
             const c = childRects(rect, s, splitGeometry(rect, m, s));
-            out[n.*] = .{ .rect = c.sep, .axis = s.axis };
+            out[n.*] = .{ .rect = c.sep, .axis = s.axis, .node = idx };
             n.* += 1;
             separatorsNode(tree, s.first, c.first, m, out, n);
             separatorsNode(tree, s.second, c.second, m, out, n);
@@ -489,6 +513,20 @@ fn rectContains(r: Rect, px: i32, py: i32) bool {
 pub fn paneAt(panes: []const PaneRect, px: i32, py: i32) ?PaneId {
     for (panes) |pr| {
         if (rectContains(pr.rect, px, py)) return pr.pane;
+    }
+    return null;
+}
+
+/// 4c 드래그 — 픽셀이 어느 분할선 위인가. 그리는 선은 1 pt 지만 잡는 영역은 양쪽으로 `slop` px 넓다
+/// (확정 설계 축 2 "히트 영역은 그리는 것보다 넓게"). 분할선의 길이 방향으로는 정확히 선 위여야 한다.
+pub fn separatorAt(seps: []const Separator, px: i32, py: i32, slop: i32) ?Separator {
+    for (seps) |s| {
+        const r = s.rect;
+        const on = switch (s.axis) {
+            .side_by_side => px >= r.x - slop and px < r.x + r.w + slop and py >= r.y and py < r.y + r.h,
+            .stacked => py >= r.y - slop and py < r.y + r.h + slop and px >= r.x and px < r.x + r.w,
+        };
+        if (on) return s;
     }
     return null;
 }
@@ -789,6 +827,33 @@ test "#483 close — 형제가 부모 자리로 올라오고 포커스는 맞닿
     var s = Tree.single(9);
     try std.testing.expectError(error.LastPane, s.close(9));
     try std.testing.expectError(error.UnknownPane, base.close(42));
+}
+
+test "#483 4c — 분할선 드래그: setSeparatorPx 는 셀 경계에 스냅하고 최소 크기를 지키며, separatorAt 은 ±slop 으로 잡는다" {
+    const m: Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+    var tree = Tree.single(0);
+    try tree.split(0, .right, 1, rect, m);
+    var sbuf: [MAX_PANES_PER_TAB]Separator = undefined;
+    const seps = separators(&tree, rect, m, &sbuf);
+    try std.testing.expectEqual(@as(usize, 1), seps.len);
+    try std.testing.expectEqual(@as(i32, 1526), seps[0].rect.x); // 78 열 × 19 + 44
+    // ±4 px 안은 잡히고, 선의 길이 방향 (y) 은 정확히 선 위여야 한다.
+    try std.testing.expect(separatorAt(seps, 1522, 500, 4) != null);
+    try std.testing.expect(separatorAt(seps, 1531, 500, 4) != null);
+    try std.testing.expect(separatorAt(seps, 1532, 500, 4) == null);
+    try std.testing.expect(separatorAt(seps, 1527, 1000, 4) == null);
+    // x = 1000 에 놓으면 앞 pane 은 round((1000 − 44) / 19) = 50 열 → 분할선 x = 994.
+    try std.testing.expect(tree.setSeparatorPx(seps[0].node, 1000, rect, m));
+    var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    try std.testing.expectEqual(@as(u16, 50), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    try std.testing.expectEqual(@as(i32, 994), separators(&tree, rect, m, &sbuf)[0].rect.x);
+    // 최소 크기 (20 열) 아래로 내려가는 자리는 거부하고 트리는 그대로.
+    try std.testing.expect(!tree.setSeparatorPx(seps[0].node, 100, rect, m));
+    try std.testing.expectEqual(@as(u16, 50), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    // leaf 노드 · 죽은 노드는 거부.
+    try std.testing.expect(!tree.setSeparatorPx(1, 1000, rect, m));
+    try std.testing.expect(!tree.setSeparatorPx(MAX_NODES - 1, 1000, rect, m));
 }
 
 test "#483 equalize — 비율을 양쪽 leaf 수에 비례시킨다" {
