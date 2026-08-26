@@ -78,15 +78,11 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 종료는 **`q` 또는 `Ctrl+C`** — 프로브가 mode 를 끄고 나가요. `q` 는 마우스 보고에
 나오지 않는 글자라 종료 키로 안전해요. (`exit` 를 치면 셸이 닫혀 앱까지 같이 닫혀요.)
 
-**탭바 hover 를 확인할 때만 `-size` 를 빼고 띄워요.** 탭바는 탭 2개부터 그려지니
-`Ctrl+Shift+T` 로 탭을 하나 더 만들어야 하는데, `-size` 로 격자를 고정한 창에서 탭을
-만들면 맨 아래 행이 창 밖으로 밀려요 ([#506](https://github.com/ensky0/tildaz/issues/506)
-— 마우스와 무관한 검증 전용 경로의 제약이에요). `-size` 없이 띄우면 격자가 탭바 높이를
-반영해 다시 계산되므로 문제가 없어요.
-
-```sh
-./zig-out/bin/tildaz --instance 1 &        # -size 없이 (탭바 테스트용)
-```
+**탭바 hover 는 `-size` 로 띄운 창에서도 확인해요.** 탭바는 탭 2개부터 그려지니
+`Ctrl+Shift+T` 로 탭을 하나 더 만들면 되는데, 그때 **창이 탭바 높이만큼 아래로 커지고
+요청한 격자는 그대로 유지돼요** ([#506](https://github.com/ensky0/tildaz/issues/506)).
+탭을 닫으면 창이 원래 크기로 돌아와요. 예전에는 격자만 고정되고 창은 그대로여서 맨 아래
+행이 창 밖으로 밀렸는데, 지금은 그렇지 않아요.
 
 ## A. 공통 시나리오 (세 platform)
 

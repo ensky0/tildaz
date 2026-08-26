@@ -1189,7 +1189,12 @@ pub const Window = struct {
     /// 호출자는 **여유를 더한 픽셀**을 넘겨야 한다. `viewportForGrid` 는 요청한 격자가
     /// 나오는 *가장 작은* 크기를 내는데, 퍼센트 환산에서 1 px 이라도 줄면 격자가 한 칸
     /// 줄어든다. 셀 크기의 절반을 더하면 내림이 흡수한다.
-    pub fn percentForPixels(self: *Window, w_px: i64, h_px: i64) ?struct { w: f32, h: f32 } {
+    /// #506 — `percentForPixels` 의 결과 타입에 이름을 준다. 익명 struct 는 선언 자리마다
+    /// 다른 타입이라, 이 값을 그대로 돌려주는 `App.gridWindowPercent` 가 같은 모양을 다시
+    /// 적으면 타입이 안 맞는다.
+    pub const SizePercent = struct { w: f32, h: f32 };
+
+    pub fn percentForPixels(self: *Window, w_px: i64, h_px: i64) ?SizePercent {
         const mi = self.monitorInfoFor(.cursor) orelse return null;
         const sw: i64 = mi.rcWork.right - mi.rcWork.left;
         const sh: i64 = mi.rcWork.bottom - mi.rcWork.top;
@@ -1198,6 +1203,17 @@ pub const Window = struct {
             .w = @min(100.0, @as(f32, @floatFromInt(w_px)) / @as(f32, @floatFromInt(sw)) * 100.0),
             .h = @min(100.0, @as(f32, @floatFromInt(h_px)) / @as(f32, @floatFromInt(sh)) * 100.0),
         };
+    }
+
+    /// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size` 요청이 이 화면에
+    /// 들어가는지 판정할 때 쓰는 작업 영역 크기 (physical px). `percentForPixels` 와
+    /// **같은 모니터** (커서가 있는 화면) 를 봐야 판정과 실제 창이 어긋나지 않는다.
+    pub fn workAreaSize(self: *const Window) ?struct { w: i64, h: i64 } {
+        const mi = self.monitorInfoFor(.cursor) orelse return null;
+        const w: i64 = mi.rcWork.right - mi.rcWork.left;
+        const h: i64 = mi.rcWork.bottom - mi.rcWork.top;
+        if (w <= 0 or h <= 0) return null;
+        return .{ .w = w, .h = h };
     }
 
     fn applyDockedRect(

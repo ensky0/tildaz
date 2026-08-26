@@ -3089,7 +3089,7 @@ fn handleCloseActiveTab() void {
     // closeActive helper 가 마지막 탭 → terminate, 그 외 → override clear +
     // invalidate. mac 의 사후 처리는 .changed 일 때 syncTerminalGeometry 만 —
     // 2 → 1 전환에서 탭바 사라져 cell 영역 늘어나는 케이스 대응 (#127).
-    if (tab_actions.closeActive(&g_host) == .changed) syncTerminalGeometry();
+    if (tab_actions.closeActive(&g_host) == .changed) syncGeometryAfterTabCountChange();
 }
 
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
@@ -3103,7 +3103,7 @@ fn handleNewTab() void {
         log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
         return;
     };
-    syncTerminalGeometry();
+    syncGeometryAfterTabCountChange();
     g_tab_scroll_user_override = false;
 }
 
@@ -3592,6 +3592,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 맞추고 layer / drawable / bounds 를 새 크기로 되돌린다. 아래 `terminalGrid` 가 그
     // 창에서 격자를 다시 계산하므로, 요청한 셀 수가 그대로 나오는지 그 값으로 확인된다.
     if (g_run_opts.grid != null) {
+        // #506 — 요청 격자를 이 화면에서 끝까지 지킬 수 있는지 **첫 탭 · PTY 를 만들기
+        // 전에** 확인한다. 못 지키면 여기서 실행이 끝난다.
+        guardRequestedGridFits();
         repositionWindow();
         cv_bounds = get_rect(content_view, objc.sel("bounds"));
         set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
@@ -3793,7 +3796,7 @@ fn drainExitedTabs() bool {
 
     // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
     if (any_changed) {
-        syncTerminalGeometry();
+        syncGeometryAfterTabCountChange();
         g_needs_render = true; // #255 Phase2 — 탭 닫힘 후 새 레이아웃 렌더 (idle 재pause 전).
     }
     return false;
@@ -4216,8 +4219,25 @@ fn screenForCursor() objc.id {
     return mainScreen(NSScreen, objc.sel("mainScreen"));
 }
 
-fn repositionWindow() void {
-    const screen = screenForCursor() orelse return;
+/// [#506](https://github.com/ensky0/tildaz/issues/506) — `repositionWindow` 와
+/// `guardRequestedGridFits` 가 **같은 화면 기준**을 쓰도록 뽑은 계산. 두 곳이 각자 dock
+/// 판정을 하면 기준이 갈려 "판정은 통과했는데 창이 안 맞는" 상태가 생긴다 (AGENTS.md 의
+/// single definition).
+const ScreenArea = struct {
+    /// visibleFrame 의 x / width — 좌·우 dock 은 visibleFrame 이 이미 빼 준다.
+    sx: f64,
+    sw: f64,
+    /// 메뉴바는 항상 빼고 dock 은 보일 때만 뺀 세로 영역.
+    usable_min_y: f64,
+    usable_max_y: f64,
+    usable_height: f64,
+    /// fullscreen 모드가 그대로 쓰는 원본 rect.
+    frame: NSRect,
+    visible: NSRect,
+};
+
+fn screenUsableArea() ?ScreenArea {
+    const screen = screenForCursor() orelse return null;
 
     // arm64 macOS 의 NSRect 반환은 일반 레지스터 ABI — stret variant 불필요.
     const getRectSel = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
@@ -4232,12 +4252,81 @@ fn repositionWindow() void {
     // 사용 가능한 세로 영역 — 메뉴바는 항상 빼고, Dock 은 보일 때만 빼기.
     const usable_max_y = visible.origin.y + visible.size.height; // = frame.maxY - menubarH
     const usable_min_y = if (dock_visible_at_bottom) visible.origin.y else frame.origin.y;
-    const usable_height = usable_max_y - usable_min_y;
 
-    // 가로는 visibleFrame 그대로 — 좌/우 dock 의 경우 visibleFrame.width 가
-    // 자동으로 줄어 있음.
-    const sw = visible.size.width;
-    const sx = visible.origin.x;
+    return .{
+        // 가로는 visibleFrame 그대로 — 좌/우 dock 의 경우 visibleFrame.width 가
+        // 자동으로 줄어 있음.
+        .sx = visible.origin.x,
+        .sw = visible.size.width,
+        .usable_min_y = usable_min_y,
+        .usable_max_y = usable_max_y,
+        .usable_height = usable_max_y - usable_min_y,
+        .frame = frame,
+        .visible = visible,
+    };
+}
+
+/// #506 — `-size` 요청을 이 화면에서 지킬 수 있는지. Linux 의 같은 이름 함수와 같은
+/// 규칙이다 — **탭바를 포함해 재고**, 못 지키면 실행하지 않는다. 탭바를 미리 넣는 이유는
+/// `ui_metrics.gridFitsScreen` 주석에 있다.
+///
+/// **boot 에서 한 번만 부른다.** 실행 중에 다른 모니터로 옮겼다고 이미 돌고 있는 터미널을
+/// 죽이는 것은 이 가드의 일이 아니다 — 막으려는 것은 *처음부터 성립하지 않는 측정* 이다.
+fn guardRequestedGridFits() void {
+    const want = g_run_opts.grid orelse return;
+    if (g_renderer == null) return;
+    const r = &g_renderer.?;
+    const area = screenUsableArea() orelse return;
+
+    const backing = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const scale = backing(g_window, objc.sel("backingScaleFactor"));
+    const scale_f: f32 = @floatCast(scale);
+    // 화면은 pt, viewport 는 physical px 이다 — `repositionWindow` 가 창 크기를 정할 때
+    // 쓰는 것과 같은 scale 로 맞춰야 판정과 실제 창이 어긋나지 않는다.
+    const screen_w_px: i64 = @intFromFloat(@floor(area.sw * scale));
+    const screen_h_px: i64 = @intFromFloat(@floor(area.usable_height * scale));
+
+    const fit = ui_metrics.gridFitsScreen(
+        want.cols,
+        want.rows,
+        ui_metrics.scaledPx(i64, TERMINAL_PADDING_PT, scale_f),
+        ui_metrics.scaledPx(i64, ui_metrics.SCROLLBAR_W_PT, scale_f),
+        // **탭 수와 무관한** 탭바 높이 — 이 시점엔 탭이 아직 없어서 `tabBarHeightPx` 는
+        // 0 을 내지만, 사용자는 언제든 탭을 둘로 만든다.
+        ui_metrics.tabBarHeightPx(scale_f),
+        r.font.cell_width_px,
+        r.font.cell_height_px,
+        screen_w_px,
+        screen_h_px,
+    );
+    if (fit.fits) return;
+    run_options.exitSizeDoesNotFit(want, fit.needed_w, fit.needed_h, screen_w_px, screen_h_px);
+}
+
+/// #506 — 탭 수가 1↔2 로 바뀌었을 때의 geometry 재동기화.
+///
+/// 평소에는 창 크기가 그대로이므로 격자만 다시 계산하면 된다. `-size` 는 반대다 —
+/// **격자가 기준**이라 탭바가 생긴 만큼 창을 키워야 요청 격자가 유지되므로, 창 위치 ·
+/// 크기부터 다시 잡는 전체 경로 (`syncGeometryAfterScreenChange`) 를 탄다. 그 함수가
+/// `repositionWindow` → layer / drawable → renderer viewport → 모든 탭 resize 를 한 번에
+/// 한다.
+fn syncGeometryAfterTabCountChange() void {
+    if (g_run_opts.grid != null) {
+        syncGeometryAfterScreenChange();
+        return;
+    }
+    syncTerminalGeometry();
+}
+
+fn repositionWindow() void {
+    const area = screenUsableArea() orelse return;
+    const visible = area.visible;
+    const frame = area.frame;
+    const usable_max_y = area.usable_max_y;
+    const usable_min_y = area.usable_min_y;
+    const usable_height = area.usable_height;
+    const sw = area.sw;
+    const sx = area.sx;
 
     const width_percent: f64 = @floatCast(g_config.width_percent);
     const height_percent: f64 = @floatCast(g_config.height_percent);
