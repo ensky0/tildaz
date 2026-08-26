@@ -13,10 +13,14 @@ is not US QWERTY.
 | Fullscreen (cover taskbar/dock) | Alt+Enter | Cmd+Enter | Alt+Enter |
 | Fullscreen (keep taskbar/dock visible) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
-| Close active tab | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
+| Close active pane (the tab, when it is the last pane) | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
 | Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
 | Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
+| Split pane — new pane to the left / right / above / below *(Linux; see [Split panes](#split-panes))* | Ctrl+Shift+←/→/↑/↓ | Ctrl+Cmd+←/→/↑/↓ | Ctrl+Shift+←/→/↑/↓ |
+| Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
+| Move the split next to the active pane by one cell | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
+| Make all panes of the tab the same size | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -291,6 +295,33 @@ program doesn't flicker the tab. To set a title yourself, use your shell —
 e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline tab renaming was removed in
 [#341](https://github.com/ensky0/tildaz/issues/341).)
 
+## Split panes
+
+A tab can hold up to 16 panes (`pane_layout.MAX_PANES_PER_TAB`, independent of the
+32-tab limit), each a full terminal with its own shell. Splitting puts the new pane on
+the side you name: Ctrl+Shift+→ opens a new shell to the right of the active pane and
+gives it half of the space (the split falls on a cell boundary of the left pane; the
+leftover pixels go to the right one). Focus follows the arrow keys with Alt (Cmd on
+macOS): the pane that is geometrically next in that direction takes the keyboard,
+measured from the cursor's row or column, so in a three-pane layout you land on the
+neighbour the cursor is actually facing. Shift+Alt+arrows move the split line touching
+the active pane by one cell; Shift+Alt+0 makes every pane in the tab the same size
+(a split between one pane and two stacked panes becomes 1/3 : 2/3, like tmux's
+`select-layout even-*`).
+
+The active pane is marked by an amber line along the edges it shares with other panes
+(never along the window edge); inactive panes are not dimmed, so all of them stay
+readable. Clicking a pane focuses it and starts a selection there in one click;
+right-clicking an *inactive* pane only focuses it and does not paste. Ctrl+Shift+W
+closes the active pane — the neighbour that shared the split takes its place — and
+closes the tab when the pane is the last one; a shell exiting inside a pane does the
+same. A split that would leave any pane smaller than 20×5 cells is refused with a
+dialog, as is the 17th pane.
+
+**Status:** Linux only so far ([#483](https://github.com/ensky0/tildaz/issues/483)).
+The macOS and Windows rows above are already the defaults in `[keys]`, but the actions
+do nothing there until the next step lands.
+
 ## Tab limit
 
 `session_core.MAX_TABS = 32` on all platforms. The `+` button hides automatically at 32 tabs and reappears when one closes. Triggering new-tab via Cmd+T / Ctrl+Shift+T while at the limit shows a "Tab limit reached" dialog so the constraint isn't silently ignored when the visual cue is offscreen.
@@ -302,6 +333,7 @@ e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline 
 | Drag-select text | Auto-copy on release |
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
 | Mouse wheel | Scroll viewport |
-| Right-click | Paste from clipboard |
+| Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
+| Click an inactive pane | Focus that pane and start selecting there |
 | Click `…` | Open the command menu and shortcut hints |
 | Scrollbar click / drag | Jump or follow viewport |
