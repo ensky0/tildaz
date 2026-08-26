@@ -677,7 +677,10 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 마우스 | 좌클릭 = 그 pane 포커스 + 그 자리에서 선택 시작 (한 클릭) · **비활성 pane 우클릭 = 포커스만, 붙여넣기 X** · scrollbar hit-test · 휠 · Shift+PgUp/PgDn 은 활성 pane 기준 · 분할선 위 클릭은 무시 (드래그는 4c) | 5단계 | 5단계 | `focusPaneUnderPointer` · `pointerInActiveScrollbarColumn` | ⬜ | ⬜ | ✅ |
 | 격자 | 창 · 탭바 · 폰트가 바뀌면 모든 탭의 pane 을 layout 결과로 resize (`SessionCore.applyLayouts`, 같은 격자면 건너뜀). `-size` 측정 인스턴스는 pane 하나에 요청 격자 그대로 (#382) | `resizeAll` (5단계에서 교체) | 동일 | `ensureSessionGrid` → `applyLayouts` | ⬜ | ⬜ | ✅ |
 | IME · 컨트롤 스트립 | preedit inline 표시 · IME 커서 rect · mouse reporting 좌표는 활성 pane 의 격자 원점 기준 (`terminal_interaction.ReportGeometry.grid_x/grid_y`). 단일 탭 컨트롤 스트립 (#329) 의 scrollbar inset 은 오른쪽 위 pane 만 | 원점 = `pad` · `tab_bar_h + pad` (pane 하나) | 동일 | `frameInputs` · `activeGridOrigin` | ✅ | ✅ | ✅ |
-| 미구현 | `…` 메뉴 항목 · `+` Alt+클릭 · 분할선 드래그 · 최대화 토글 (4c) · 비활성 pane 스크롤바 조작 · pane 별 출력 드레인 우선순위 (6단계) | | | | ⬜ | ⬜ | ⬜ |
+| 최대화 (zoom) | `zoom_pane` 토글 — 켜면 활성 pane 하나가 탭 영역 전체 (`TabGroup.zoomed`, `layout` 이 `leafRect` 하나를 돌려준다), 다른 pane 은 그리지 않되 셸은 계속 돈다. 분할 · 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (tmux zoom 규칙), 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다. 표시는 따로 없다 (분할선 · amber 가 사라지는 것으로 안다) | 5단계 | 5단계 | `ctrl+shift+z` → `SessionCore.toggleZoomActive` | ⬜ | ⬜ | ✅ |
+| 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 아래 자리는 고스트도 없고 놓아도 무시. 커서는 분할선 위에서 `col_resize` / `row_resize` | 5단계 | 5단계 | `sep_drag` · `finishSeparatorDrag` | ⬜ | ⬜ | ✅ |
+| 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_*`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | 항목은 뜨나 no-op (5단계) | 동일 | `executeCommandMenu` · `handlePlusClick` | ⬜ | ⬜ | ✅ |
+| 미구현 (6단계) | 비활성 pane 스크롤바 조작 · pane 별 출력 드레인 우선순위 · IME 세부 | | | | ⬜ | ⬜ | ⬜ |
 
 ---
 
