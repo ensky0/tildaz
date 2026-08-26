@@ -808,6 +808,29 @@ emoji picker 는 **OS 제공 도구를 그대로 쓴다** — tildaz 는 picker 
 | tildaz 안 동작 | ✅ OS 가 focused 앱에 직접 입력 | ✅ cursor 에 anchored 된 popover — focus loss 자동 dismiss / `Esc` 닫힘 / emoji 클릭 즉시 입력 (2026-07-13 macOS 26.5.2 + v0.6.1 실기 시연) | emoji 입력은 paste (`Ctrl+Shift+V` / 우클릭) 또는 `echo` / `printf` 로 |
 | 참고 | | 과거 "floating panel + no auto-dismiss" quirk 기록 (2026-05-06, [bc9aa0b](https://github.com/ensky0/tildaz/commit/bc9aa0b) 시점) 은 현재 환경에서 재현 안 됨 — 원인 미확정 (후보: #166/#190 의 NSTextInputClient 표면 확장 또는 macOS 업데이트). Esc dismiss 보강 코드 (`isEmojiPickerOpen()`) 는 무해해서 유지. | *미실측 (DE / 버전 따라 다를 수 있음)*: KDE Plasma `Meta+.` 는 클립보드 복사 방식, GNOME `Ctrl+.` 은 IBus 경유 GTK 앱 전용이라 tildaz (비-GTK Wayland client) 안에서 미동작 |
 
+### 5.3 Dead key 조합 — Linux 는 앱이 Compose 로 한다 ([#494](https://github.com/ensky0/tildaz/issues/494))
+
+dead key (`^` `¨` `´` `` ` `` `~` — 프랑스어 · 독일어 · 스페인어 · 이탈리아어 등 대부분의 유럽 layout) 는 키 하나로 글자가 되지 않고 **다음 키와 조합**된다 (`^`+`e` → `ê`, `^`+space → `^`). 세 platform 이 같은 결과를 내야 하고, 다른 것은 **누가 조합하는가**뿐이다.
+
+| platform | 조합 주체 | 경로 |
+|---|---|---|
+| macOS | OS | `interpretKeyEvents:` — AppKit 텍스트 입력 시스템이 dead key 상태를 든다 |
+| Windows | OS | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
+| **Linux** | **tildaz** | libxkbcommon **Compose** (`xkb_compose_state_feed`) — [`xkb.zig`](src/host/linux/xkb.zig) `Keyboard.composeFeed`. #494 전에는 `xkb_state_key_get_utf8` 만 있어 dead key 가 **빈 문자열** = 아무것도 보내지 않았다 |
+
+Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496 과 같은 뿌리). 규칙:
+
+- **글자가 될 키만 compose 를 거친다.** 단축키 · 다이얼로그 · 메뉴 · scrollback · nav 키 (`terminalSequenceForKeysym`) 는 그 앞에서 끝난다.
+- **Ctrl / Alt 가 눌린 키는 거치지 않는다** (GTK 와 같다). `^` 다음 `Ctrl+C` 는 `\x03` 이 그대로 나간다. AltGr (`Mod5`) 은 해당 없음 — AltGr 로 내는 dead key 도 조합된다.
+- **IME preedit 이 있으면 IME 가 주인** — compose 를 건너뛴다.
+- **compose 를 거치지 않은 키가 끼면 조합을 버린다** (`composeReset`). `^` → Enter → `e` 는 `\r` `e` 다. modifier 키 자체 (Shift 를 누르는 것) 는 libxkbcommon 이 IGNORED 로 받아 상태를 지킨다 — `^` → Shift+`e` → `Ê`.
+- 상태별 동작: `NOTHING` → 기존 utf8 경로 · `COMPOSING` → 아무것도 안 보냄 · `COMPOSED` → 결과 바이트 · `CANCELLED` (`^` 다음 `x`) → **둘 다 버림**. X11 · xterm 관례다 — GTK 만 `^x` 를 내는데 Compose 표 밖의 별도 규칙이라 채택하지 않았다.
+- key repeat 은 press 와 같은 경로라 `^` 를 누르고 있으면 `<dead_circumflex><dead_circumflex>` → `^` 가 두 번마다 하나 — X 앱과 같다.
+- **locale** 은 `LC_ALL` → `LC_CTYPE` → `LANG` (libxkbcommon 규약). 그 표가 없으면 `en_US.UTF-8` 로 한 번 더 시도한다 — X11 `compose.dir` 이 거의 모든 UTF-8 locale 을 그 파일로 보낸다. libxkbcommon 1.12+ 의 자체 fallback 은 C 라이브러리가 아는 locale 에만 적용된다 (실측 1.13.1: 미설치 `xx_XX.UTF-8` 은 `XKB-679` 에러 + `NULL` — 우리 재시도가 있어야 조합이 살았다). 둘 다 없으면 (Compose 파일 미설치 — Debian 계열 `libx11-data`) 로그 한 줄 (`compose table unavailable`) 을 남기고 종전처럼 동작한다. 사용자 `~/.XCompose` · `$XDG_CONFIG_HOME/XCompose` 도 libxkbcommon 이 읽는다.
+- Compose 심볼 8 개는 **optional** (`ComposeApi`, all-or-nothing) — 없으면 조합만 꺼지고 키보드는 그대로다.
+
+검증 상태 (2026-08-26): lima VM (Ubuntu aarch64 · libxkbcommon 1.13.1 · headless sway · `wtype` keysym 주입) 에서 위 규칙 전부 통과 — 조합 8 종, `^` 뒤 Enter · Ctrl+C 가 삼켜지지 않음, 없는 locale 의 `en_US.UTF-8` fallback (#494 댓글에 바이트 기록). **실기 (COSMIC · KDE, 실제 AZERTY 자판, fcitx5 공존) 는 확인 필요.**
+
 ---
 
 ## 6. 다이얼로그
