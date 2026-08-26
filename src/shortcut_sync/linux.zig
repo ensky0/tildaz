@@ -737,12 +737,19 @@ fn rewriteCosmicPositionEntry(
     defer output.deinit(allocator);
     try renderCosmicPositionRon(&output, allocator, content, exe, index, key_name, modifiers);
 
+    // #513 — **안 쓴 경우에도 남긴다.** 예전엔 `writeFileIfChanged` 가 false 면 아무
+    // 로그도 없어서, 로그만 보면 "이미 맞아서 안 씀" 과 "이 경로를 아예 안 탐" 이
+    // 구분되지 않았다. keymap 재전송을 쫓을 때 특히 걸린다.
     if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
         if (key_name) |name| {
             log.appendLine("cosmic", "position hotkey entry written key={s}", .{name});
         } else {
             log.appendLine("cosmic", "position hotkey entry withdrawn", .{});
         }
+    } else if (key_name) |name| {
+        log.appendLine("cosmic", "position hotkey entry already current key={s}", .{name});
+    } else {
+        log.appendLine("cosmic", "position hotkey entry already absent", .{});
     }
 }
 
