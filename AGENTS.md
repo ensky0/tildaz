@@ -530,27 +530,46 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 - **injected 입력을 걸러내지 않아요** (`LLKHF_INJECTED`). `RegisterHotKey` 가 합성 입력에도 반응하므로 (실측) 맞춰요. 덕분에 `SendInput` 으로 핫키 검증을 자동화할 수 있어요.
 - **`extended` 를 함께 비교해요.** `0xE0` prefix 가 없으면 control pad 와 numpad 가 같은 하위 바이트를 써서 섞여요 (`physical_key.zig` 헤더).
 
-**글자로 받는 데스크톱은 keymap 을 *어떻게* 받느냐가 또 갈려요 — 위 표의 두 번째 축이에요**
-(2026-08-26 실측, [#513](https://github.com/ensky0/tildaz/issues/513) · 노트북 i5-1240P · CachyOS).
-위 표에서 KDE · COSMIC 만 *글자* 를 받는데, 그 글자를 정하는 근거인 `wl_keyboard.keymap` 을
-compositor 가 주는 방식이 서로 달라요.
+**⚠️ keymap 재전송을 잴 때 `xkb_config` 를 원자적으로 쓰지 않으면 없는 버그를 만들어요.**
+2026-08-26 [#513](https://github.com/ensky0/tildaz/issues/513) 조사에서 실제로 그랬어요 —
+`cat > xkb_config` (truncate 후 write) 로 layout 을 바꿨더니, **cosmic-comp 이 빈 파일을 읽고
+기본값 `us` keymap 을 client 에 한 번 밀어넣었어요.** 그걸 "compositor 가 중간에 US 를 끼워
+보낸다" 는 quirk 로 3 회차 내내 믿었는데, `mv` 로 원자적으로 쓰자 **깨끗이 사라졌어요** (4/4 →
+0/2). 같은 세션에서 나온 "핫플러그 때 낡은 keymap 을 보낸다" 도 그 오염된 조건에서만 1/4 회
+나왔고, 원자적 쓰기로는 2 회 더 시도해도 재현되지 않았어요.
+
+```sh
+tmp=$XKB.tmp; cat > "$tmp" <<EOF … EOF; mv -f "$tmp" "$XKB"    # ✅ rename 은 원자적
+cat > "$XKB" <<EOF … EOF                                        # ❌ truncate 순간을 읽혀요
+```
+
+**대조군은 `xkbcli` 로 둬요 — 커스텀 client 를 짤 필요가 없어요.** libxkbcommon 이 주는
+도구라 우리 앱과 무관한 제3자 관측이에요.
+
+```sh
+xkbcli interactive-wayland --verbose        # 받은 keymap 마다 `Compiling xkb_symbols "<이름>"`
+xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl_keyboard 값보다 1 작음 — 종료 NUL)
+```
+
+- `--verbose` 의 symbols 이름이 **options 까지 담아요** (`pc_kr_inet(evdev)_group(alt_shift_toggle)_kr(ralt_hangul)_…`
+  vs `pc_kr_inet(evdev)`). 그래서 크기 비교 없이도 어느 config 의 keymap 인지 갈려요.
+- **판정은 layout *이름* 만으로 하지 않아요.** 앱 로그가 `size` 를 함께 남기는 이유예요 —
+  options 만 달라도 크기가 달라지는데 (`kr` + korean options `35707` vs `kr` 단독 `35566`)
+  `layouts=[…]` 는 둘 다 `Korean` 이에요.
+- `/dev/uinput` 은 ACL 이 있으면 sudo 없이 열려요 (`getfacl /dev/uinput`).
+
+**측정으로 확인된 두 compositor 의 차이** (2026-08-26 · 노트북 i5-1240P · CachyOS, 위의 원자적
+쓰기 조건):
 
 | | cosmic-comp 1.0.0 | KWin 6.x |
 |---|---|---|
-| keymap 구성 | **layout 하나당 keymap 하나** | **모든 layout 을 group 으로 담은 keymap 하나** |
-| layout 전환 시 | keymap 재전송 (+ 중간에 `English (US)` 가 한 번 끼어들어요) | **재전송 없음** — group 전환만 (`wl_keyboard.modifiers`) |
-| 키보드 핫플러그 | **낡은 keymap 을 보내요** (#513) | 아무것도 안 보내요 |
+| 여러 layout 을 켰을 때 | **미측정** (한 번에 하나만 켜고 쟀어요) | **하나의 keymap 에 group 으로** 담아요 (`layouts=[English (US), French]`) |
+| config 의 layout 을 바꿀 때 | keymap 을 **재전송**해요 | 미측정 (D-Bus group 전환만 쟀어요) |
+| 활성 group 전환 | 미측정 | **재전송 없음** — `wl_keyboard.modifiers` 의 group 만 바뀌어요. hotkey 는 D-Bus 통지 (`drainKdeLayoutChange`) 로 따라가요 |
+| 키보드 핫플러그 | 이벤트 **없음** (2 회) | 이벤트 **없음** (1 회) |
 
-- **cosmic-comp 의 핫플러그 버그는 이 구조 차이에서 나와요.** KWin 은 keymap 을 애초에 다시
-  보내지 않으니 *"어느 keymap 을 보낼까"* 라는 판단 자체가 없어요. KDE 는 layout 전환을 keymap
-  이 아니라 **D-Bus 통지** (`drainKdeLayoutChange`) 로 받아서 재전송 없이도 hotkey 가 따라가요.
-- **핫플러그 재현은 장치를 꽂는 것만으로 안 돼요 — 그 장치로 키를 한 번 보내야 해요.** 20 초를
-  꽂아 둬도 조용했고 (2 회), `Shift` 를 보내자 그제서야 왔어요. `/dev/uinput` 은 ACL 이 있으면
-  sudo 없이 열려요 (`getfacl /dev/uinput`).
-- **판정은 layout *이름* 이 아니라 `size` 로 해요.** 이름이 같아도 keymap 이 다를 수 있어요 —
-  options 만 달라도 크기가 달라져요 (`kr` + korean options `35707` vs `kr` 단독 `35566`). 실제로
-  이름만 봤으면 "정상" 으로 읽었을 회차였어요. 앱 로그의
-  `[wayland] keyboard keymap loaded size=… layouts=[…]` 가 그래서 둘을 함께 남겨요.
+빈 칸은 **재지 않았다는 뜻이에요** — 채우기 전에 추측으로 메우지 말아요. 이 절이 한 번
+그렇게 틀렸어요.
 
 **실측 완료** (2026-08-25):
 
