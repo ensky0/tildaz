@@ -647,9 +647,6 @@ pub const macos_permission_required_format =
     \\Current status:
     \\  Input Monitoring : {s}
     \\  Accessibility    : {s}
-    \\
-    \\(Developer note: ad-hoc signed builds get a new identity on each
-    \\rebuild, so permissions must be re-granted after every rebuild.)
 ;
 pub const macos_permission_required_fallback_msg = "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
 pub const permission_status_granted = "GRANTED";
