@@ -55,7 +55,7 @@ pub var readloop: Counter = .{}; // ReadFile from ConPTY pipe
 pub var push: Counter = .{}; // ring.push — extra = yield spins (full)
 pub var drain: Counter = .{}; // drainOutput — ns covers whole loop, bytes = popped
 pub var parse: Counter = .{}; // stream.nextSlice alone
-pub var render: Counter = .{}; // renderTerminal excluding Present
+pub var render: Counter = .{}; // 첫 drawPane 부터 endFrame 의 Present 직전까지 (프레임당 한 번)
 pub var shape: Counter = .{}; // grapheme cluster shaping — subset of render, extra = chain miss
 pub var present: Counter = .{}; // swap_chain.Present
 pub var onrender: Counter = .{}; // onRender total — extra = skip_swap count

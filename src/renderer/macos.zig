@@ -28,6 +28,7 @@ const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
 const cell_color = @import("cell_color.zig");
 const cell_decoration = @import("cell_decoration.zig");
+const pane_draw = @import("pane_draw.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_chrome = @import("../tab_chrome.zig");
 const ui_rect = @import("../ui_rect.zig");
@@ -215,8 +216,8 @@ const shader_source =
 /// — renderer struct 변환 cast block 사라짐.
 pub const TabBarLayout = tab_layout.Layout;
 
-/// renderTabBar 가 받은 인자를 renderTerminal 까지 전달. tabs 는 z-order 상
-/// terminal 위에 그려져야 하므로 실제 encode 는 renderTerminal 끝에서.
+/// renderTabBar 가 받은 인자를 endFrame 까지 전달. tabs 는 z-order 상
+/// terminal 위에 그려져야 하므로 실제 encode 는 endFrame 에서.
 const PendingTabs = struct {
     titles: []const []const u8,
     active: usize,
@@ -283,12 +284,13 @@ pub const MetalRenderer = struct {
     text_needed: u32 = 0,
 
     // Frame in progress — renderTabBar 가 begin (drawable + cmd_buf + encoder
-    // 생성 + clear), renderTerminal 이 end (encode + present + commit).
+    // 생성 + clear), drawPane 이 pane 마다 encode, endFrame 이 end (탭바 encode +
+    // present + commit).
     // Windows 의 self.rtv 패턴과 같은 의도. null = frame 진행 중 아님.
     current_drawable: objc.id = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
-    /// renderTabBar 가 받은 args 보관. renderTerminal 끝에서 z-order 상 terminal
+    /// renderTabBar 가 받은 args 보관. endFrame 에서 z-order 상 terminal
     /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
     pending_tabs: ?PendingTabs = null,
@@ -313,6 +315,10 @@ pub const MetalRenderer = struct {
     /// 추가로 그린다. "blink 셀이 있다" 만으로 게이트를 열면 매 vsync 그리게 돼
     /// #255 의 절전 이득이 사라진다.
     saw_blink_cell: bool = false,
+    /// #483 2단계 ② — 이 프레임에 `drawPane` 이 불린 횟수. `renderTabBar` 가 0 으로 되돌리고, 첫
+    /// pane 이 `saw_blink_cell` 을 리셋하며 `render_t0` 를 찍는다.
+    panes_drawn: u32 = 0,
+    render_t0: @TypeOf(perf.now()) = undefined,
 
     // #253 — 다른 scale 모니터로 이동 시 cell 재측정(applyScale)에 필요한 init
     // 파라미터 보관. font_families 슬라이스/문자열은 host 가 process lifetime 으로
@@ -515,12 +521,12 @@ pub const MetalRenderer = struct {
     }
 
     /// Frame begin — drawable + cmd_buf + encoder 생성, clear color 설정. 받은
-    /// tab args 는 self.pending_tabs 에 보관, 실제 encode 는 `renderTerminal` 끝에
+    /// tab args 는 self.pending_tabs 에 보관, 실제 encode 는 `endFrame` 에서
     /// (terminal 위에 그려지도록). Windows D3d11Renderer.renderTabBar 의 setupFrame
     /// + clear 패턴과 같은 의도 — host 가 두 fn 사이의 frame lifecycle 을 신경
     /// 쓰지 않게.
     ///
-    /// host 는 *항상* renderTabBar → renderTerminal 순서로 호출. tab_titles.len <
+    /// host 는 *항상* renderTabBar → drawPane (pane 마다) → endFrame 순서로 호출. tab_titles.len <
     /// 2 면 단일 탭이라 탭바 자체는 안 그림 (#127) 단 frame begin 은 동일.
     pub fn renderTabBar(
         self: *MetalRenderer,
@@ -543,6 +549,8 @@ pub const MetalRenderer = struct {
         /// #268 2b — hover 중인 컨트롤 버튼 (.none = 없음). 강조 배경 박스.
         tab_hover: tab_layout.Area,
     ) void {
+        // #483 2단계 ② — 프레임 시작. 이 프레임의 pane 수를 0 으로.
+        self.panes_drawn = 0;
         const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
         const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
         if (drawable == null) {
@@ -607,32 +615,21 @@ pub const MetalRenderer = struct {
         };
     }
 
-    /// Frame end — terminal encode → pending tabs encode → endEncoding + present
-    /// + commit. `renderTabBar` 가 drawable 획득에 실패했으면 (`current_encoder`
-    /// 가 null) no-op (frame skip).
-    pub fn renderTerminal(
-        self: *MetalRenderer,
-        terminal: *ghostty.Terminal,
-        /// #483 2단계 ① — `terminal` 의 `Tab.render_state`. 렌더러는 state 를 갖지 않는다.
-        state: *ghostty.RenderState,
-        cell_w: i32,
-        cell_h: i32,
-        y_offset: i32,
-        scrollbar_y_offset: i32,
-        padding: i32,
-        preedit_utf8: []const u8,
-        menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
-        /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
-        /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
-        /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
-        blink_faint: bool,
-    ) void {
+    /// #483 2단계 ② — pane 하나를 그린다 (셀 · 커서 · preedit · scrollbar 를 `pane.rect` 안에).
+    /// 프레임 시작은 `renderTabBar`, 끝 (탭바 · 스트립 · 메뉴 · endEncoding · present) 은 `endFrame`.
+    /// `renderTabBar` 가 drawable 획득에 실패했으면 (`current_encoder` 가 null) no-op (frame skip).
+    pub fn drawPane(self: *MetalRenderer, pane: pane_draw.PaneDraw) void {
         const encoder = self.current_encoder;
         if (encoder == null) return;
 
-        // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등.
-        const render_t0 = perf.now();
+        if (self.panes_drawn == 0) {
+            // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등. 첫 pane 의
+            // 시작이 이전 `renderTerminal` 의 시작과 같은 자리다.
+            self.render_t0 = perf.now();
+            // #376 — blink 셀 존재 판정은 프레임 단위다. 첫 pane 이 지우고 pane 들이 OR 로 모은다.
+            self.saw_blink_cell = false;
+        }
+        self.panes_drawn += 1;
         self.updateConstants();
 
         if (self.atlas.dirty) {
@@ -644,7 +641,14 @@ pub const MetalRenderer = struct {
         // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
         self.uploadTabAtlasIfDirty();
 
-        self.renderTerminalContent(encoder, terminal, state, cell_w, cell_h, y_offset, scrollbar_y_offset, padding, preedit_utf8, blink_faint);
+        self.renderTerminalContent(encoder, pane);
+    }
+
+    /// #483 2단계 ② — 프레임 끝: 보류한 탭바 (또는 단일 탭 스트립) · command menu → endEncoding →
+    /// present + commit. `drawPane` 이 0 번이어도 프레임은 끝낸다.
+    pub fn endFrame(self: *MetalRenderer, menu_ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+        const encoder = self.current_encoder;
+        if (encoder == null) return;
 
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
@@ -656,7 +660,10 @@ pub const MetalRenderer = struct {
         if (menu_ui.open) self.drawCommandMenu(encoder, menu_ui, toggle_hotkey);
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
-        perf.addTimed(&perf.render, render_t0);
+        // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
+        // 프레임에 한 번 잰다 (`addTimed` 가 호출 수도 세므로 pane 마다 재면 지표가 갈린다).
+        if (self.panes_drawn > 0) perf.addTimed(&perf.render, self.render_t0);
+        self.panes_drawn = 0;
 
         // #255 Phase 2 — 표시 확정 전이면 presented handler 부착(present *전*에 등록).
         // 표시 확정되면 더는 안 닮 — host 가 idle 시 frameWasPresented() 로 pause 판단.
@@ -682,20 +689,14 @@ pub const MetalRenderer = struct {
         self.pending_tabs = null;
     }
 
-    fn renderTerminalContent(
-        self: *MetalRenderer,
-        encoder: objc.id,
-        terminal: *ghostty.Terminal,
-        state: *ghostty.RenderState,
-        cell_w: i32,
-        cell_h: i32,
-        y_offset: i32,
-        scrollbar_y_offset: i32,
-        padding: i32,
-        preedit_utf8: []const u8,
-        /// `renderTerminal` 이 받은 프레임 단위 blink 위상 (#376).
-        blink_faint: bool,
-    ) void {
+    fn renderTerminalContent(self: *MetalRenderer, encoder: objc.id, pane: pane_draw.PaneDraw) void {
+        const terminal = pane.terminal;
+        const state = pane.state;
+        const cell_w: i32 = pane.cell_w;
+        const cell_h: i32 = pane.cell_h;
+        const padding: i32 = pane.pad;
+        const preedit_utf8 = pane.preedit_utf8;
+        const blink_faint = pane.blink_faint;
         state.update(self.alloc, terminal) catch return;
 
         const rows = state.rows;
@@ -711,8 +712,10 @@ pub const MetalRenderer = struct {
         // 위치. 좌/우 padding 은 글자에 딱 붙는데 위쪽만 (ascent − cap_height)
         // 만큼 추가 여백이 생겨 비대칭. 모든 row 의 fy 를 위로 그만큼 shift
         // 해서 첫 행 글자 visible top 이 정확히 padding 위치에 오게.
-        const y_off: f32 = @as(f32, @floatFromInt(y_offset + padding)) - self.font.top_pad_px;
-        const x_pad: f32 = @floatFromInt(padding);
+        // #483 2단계 ② — 격자 원점은 pane 기준. `rect` 가 탭바를 뺀 영역이라 pane 하나면 이전의
+        // `padding` / `tab_bar_h + padding` 과 같은 값이다 (1단계 `leafRect` 의 `grid_x` / `grid_y`).
+        const y_off: f32 = @as(f32, @floatFromInt(pane.rect.y + padding)) - self.font.top_pad_px;
+        const x_pad: f32 = @floatFromInt(pane.rect.x + padding);
 
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
@@ -726,8 +729,6 @@ pub const MetalRenderer = struct {
         var bg_count: u32 = 0;
         var text_buf: [MAX_CELLS]TextInstance = undefined;
         var text_count: u32 = 0;
-
-        self.saw_blink_cell = false;
 
         // --- Background pass ---
         for (0..rows) |y| {
@@ -1142,17 +1143,21 @@ pub const MetalRenderer = struct {
         // #259 — drag hit-test (`host/macos.scrollbarHit`) 와 같은 입력. track_top 은
         // 셀 영역 윗변(`y_offset + padding`) — 텍스트 baseline 용 `y_off`(top_pad_px
         // 보정 포함) 와 달라 scrollbar 는 별도로 둔다.
+        // #483 2단계 ② — track 은 pane 기준이다. `thumbRect` 의 viewport 인자에 pane 의 오른쪽 · 아래
+        // **가장자리**를, track_top 에 `rect.y + scrollbar_top_inset` 을 넘기면 같은 식이 pane
+        // 좌표계에서 성립한다 (pane 하나면 이전 인자와 값이 같다). 폭 · thumb 최소 높이는 host 가
+        // 이전과 같은 `scaledPxF` 값을 f32 로 넘긴다.
         const sb = terminal.screens.active.pages.scrollbar();
         if (scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
-            @floatFromInt(self.vp_width),
-            @floatFromInt(self.vp_height),
-            @floatFromInt(scrollbar_y_offset),
+            @floatFromInt(pane.rect.x + pane.rect.w),
+            @floatFromInt(pane.rect.y + pane.rect.h),
+            @floatFromInt(pane.rect.y + pane.scrollbar_top_inset),
             @floatFromInt(padding),
-            ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, self.scale),
-            ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, self.scale),
+            pane.scrollbar_min_thumb_h,
+            pane.scrollbar_w,
             .{ colors.background.r, colors.background.g, colors.background.b },
         )) |r| {
             const scrollbar_inst = [1]BgInstance{bgFromChrome(r)};
@@ -1514,7 +1519,7 @@ pub const MetalRenderer = struct {
             // 여기서 uploadTabAtlasIfDirty 를 부르면 안 된다 — 같은 encoder 의
             // insert/upload/sample 은 정적 첫 frame 에서 icon 이 투명하게 남고
             // (실기 확정), dirty 를 지워 host 의 tabAtlasDirty() 후속-frame
-            // 요청까지 꺼진다. 새 항목은 renderTerminal 시작의 2-frame upload
+            // 요청까지 꺼진다. 새 항목은 drawPane 시작의 2-frame upload
             // 가 다음 frame 에 반영한다 (main glyph atlas 와 같은 정책).
             self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
         }

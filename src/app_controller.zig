@@ -569,20 +569,29 @@ pub const App = struct {
                     self.tab_hover,
                 );
                 if (self.activeTabPtr()) |tab| {
-                    r.renderTerminal(
-                        &tab.terminal,
-                        &tab.render_state,
-                        window.cell_width_px,
-                        window.cell_height_px,
-                        size.w,
-                        size.h,
-                        tab_bar_h,
-                        self.scrollbarTopInset(),
-                        self.TERMINAL_PADDING,
-                        self.SCROLLBAR_W,
-                        self.SCROLLBAR_MIN_THUMB_H,
+                    // #483 2단계 ② — 활성 탭 하나를 pane 으로 그린다. rect 는 탭바를 뺀 영역이라
+                    // 격자 원점 · scrollbar track 이 이전 인자와 같은 값이다. 4단계에서는
+                    // `pane_layout.layout()` 의 pane 마다 `drawPane` 을 부른다.
+                    r.drawPane(.{
+                        .terminal = &tab.terminal,
+                        .state = &tab.render_state,
+                        .rect = .{ .x = 0, .y = tab_bar_h, .w = size.w, .h = size.h - tab_bar_h },
+                        .cell_w = window.cell_width_px,
+                        .cell_h = window.cell_height_px,
+                        .pad = self.TERMINAL_PADDING,
+                        .scrollbar_w = @floatFromInt(self.SCROLLBAR_W),
+                        .scrollbar_min_thumb_h = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
+                        // 단일 탭이면 컨트롤 스트립 아래로 track 을 내린다 (#329). 탭바가 있으면 0.
+                        .scrollbar_top_inset = self.scrollbarTopInset() - tab_bar_h,
                         // IME 자모는 cursor 옆 inline overlay (#164).
-                        self.window.imePreeditSlice(),
+                        .preedit_utf8 = self.window.imePreeditSlice(),
+                        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
+                        // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+                        .blink_faint = blink_phase_now,
+                    });
+                    r.endFrame(
+                        size.w,
+                        tab_bar_h,
                         self.tabBarLayout(),
                         self.tab_hover,
                         .{
@@ -593,9 +602,6 @@ pub const App = struct {
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
-                        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
-                        // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
-                        blink_phase_now,
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
