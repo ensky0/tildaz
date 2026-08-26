@@ -579,6 +579,14 @@ pub const TAB_ACTIVE_UNDERLINE_PT: u32 = 2;
 /// (2026-07-27 사용자 결정) 세로선 전용이 됐다. 이름이 남으면 없는 요소를
 /// 가리키게 되므로 함께 정리.
 pub const TAB_SEPARATOR_W_PT: u32 = 1;
+/// [#483](https://github.com/ensky0/tildaz/issues/483) — pane 사이 회색 분할선 띠의 두께
+/// (logical pt). 탭 구분선 `TAB_SEPARATOR_W_PT` 와 같은 1 pt 이고 색도 `TAB_SEPARATOR_COLOR`
+/// 를 쓴다 (2026-08-26 결정 3). px 변환은 `linePx` (정수 · 최소 1) — 격자에 놓이는 실선이다.
+///
+/// 격자 계산 (`pane_layout.Metrics.separator_w`) 에 들어가는 것은 이 띠 하나다. 활성 pane 의
+/// amber 강조는 pane 의 padding 안쪽에 그리므로 격자와 무관하고, 그 두께는 4단계 실기에서
+/// 정한다 (1 pt 로 시작 — 탭바 밑줄 `TAB_ACTIVE_UNDERLINE_PT` 의 2 pt 가 다른 후보).
+pub const PANE_SEPARATOR_W_PT: u32 = 1;
 /// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
 /// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
 pub const MENU_INDICATOR_ICON_PT: u32 = 14;
