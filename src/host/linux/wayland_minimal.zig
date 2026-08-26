@@ -7285,6 +7285,26 @@ const Client = struct {
             onKGlobalAccelPressed,
             self,
         ) catch |err| {
+            // #510 — **인수 거절은 실패가 아니라 사용자의 선택이다.** 일반 경로로 흘리면
+            // 본문에 `KGlobalAccelTakeoverDeclined` 라는 내부 이름이 찍히고 (실측), 무엇을
+            // 해야 하는지도 안 보인다. 상대 이름을 아는 `claimKey` 가 남겨 둔 값을 써서
+            // "누가 쥐고 있으니 거기서 풀거나 다른 조합을 골라라" 로 바꾼다.
+            if (err == error.KGlobalAccelTakeoverDeclined) {
+                if (kglobalaccel.lastConflictOwner()) |owner| {
+                    self.recordHotkeyClaimFailure(
+                        messages.hotkey_owner_kglobalaccel,
+                        messages.hotkey_reason_takeover_declined_format,
+                        .{owner},
+                    );
+                } else {
+                    self.recordHotkeyClaimFailure(
+                        messages.hotkey_owner_kglobalaccel,
+                        "{s}",
+                        .{messages.hotkey_reason_takeover_declined_msg},
+                    );
+                }
+                return;
+            }
             self.recordHotkeyClaimFailure(
                 messages.hotkey_owner_kglobalaccel,
                 messages.hotkey_reason_backend_failed_format,

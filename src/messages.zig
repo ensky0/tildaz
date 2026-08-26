@@ -529,8 +529,7 @@ pub const linux_hotkey_failed_format =
     \\
     \\{s}
     \\
-    \\A drop-down terminal you cannot summon is no terminal at all, so TildaZ stops
-    \\here instead of starting into a window you have no way to reach.
+    \\A drop-down terminal you cannot summon is no terminal at all, so TildaZ stops here instead of starting into a window you have no way to reach.
     \\
     \\Pick a free combination in the config, then start TildaZ again:
     \\{s}
@@ -554,6 +553,14 @@ pub const hotkey_reason_taken_unnamed_msg =
     "That combination is already bound to another action on this desktop.";
 pub const hotkey_reason_grab_refused_msg =
     "The desktop refused the grab. Another application or the desktop itself holds the combination.";
+/// #510 — 인수를 **사용자가 거절한** 경우. 이것을 `hotkey_reason_backend_failed_format` 으로
+/// 흘리면 본문에 `KGlobalAccelTakeoverDeclined` 라는 내부 에러 이름이 그대로 찍힌다 (실측).
+/// 게다가 그것은 "등록이 실패했다" 가 아니라 **사용자가 고른 결과**라 서술 자체가 틀렸다.
+pub const hotkey_reason_takeover_declined_format =
+    "You chose to keep the existing binding, so {s} still owns that combination and TildaZ has none. Free it in your desktop's shortcut settings if you want TildaZ to have it.";
+pub const hotkey_reason_takeover_declined_msg =
+    "You chose to keep the existing binding, so TildaZ has no hotkey to open with.";
+
 pub const hotkey_reason_backend_failed_format =
     "Registration failed: {s}.";
 
