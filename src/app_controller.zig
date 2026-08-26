@@ -129,9 +129,10 @@ pub const App = struct {
         @memcpy(self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len], hint[0..self.toggle_hotkey_hint_len]);
     }
 
-    fn winHostInvalidate(host: *tab_actions.Host) void {
-        const self: *App = @ptrCast(@alignCast(host.user_data.?));
-        self.invalidateRenderer();
+    fn winHostInvalidate(_: *tab_actions.Host) void {
+        // #483 2단계 ① — 이전에는 렌더러의 공유 `render_state` 를 초기화했다. 스냅숏이
+        // 탭의 것이 되어 초기화할 것이 없고, 다음 프레임은 `wndProc` 이 메시지마다 여는
+        // `needs_render` 가 그린다 (macOS 와 같은 no-op).
     }
 
     fn winHostClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
@@ -215,11 +216,6 @@ pub const App = struct {
         // 1 → 2 전환에서 탭바가 새로 나타나며 cell 영역이 줄어든다 (#127).
         // 새 grid 로 모든 탭 동기화. 다른 count 변화는 그대로.
         if (before == 1) self.syncGeometryAfterTabCountChange();
-        self.invalidateRenderer();
-    }
-
-    fn invalidateRenderer(self: *App) void {
-        if (self.renderer) |*r| r.invalidate();
     }
 
     /// 인덱스 기반 close — 탭바 close 버튼 마우스 클릭 path. helper 가 마지막
@@ -319,7 +315,6 @@ pub const App = struct {
         if (tab_layout.scrollByArrow(inputs, layout, dir)) |sx| {
             self.tab_scroll_x = @trunc(sx);
             self.tab_scroll_user_override = true;
-            self.invalidateRenderer();
         }
     }
 
@@ -576,6 +571,7 @@ pub const App = struct {
                 if (self.activeTabPtr()) |tab| {
                     r.renderTerminal(
                         &tab.terminal,
+                        &tab.render_state,
                         window.cell_width_px,
                         window.cell_height_px,
                         size.w,
@@ -654,9 +650,7 @@ pub const App = struct {
     }
 
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
-        if (self.session.scrollActive(event, self.getTerminalGridSize().rows)) {
-            self.invalidateRenderer();
-        }
+        _ = self.session.scrollActive(event, self.getTerminalGridSize().rows);
     }
 
     /// 현재 활성 탭의 scrollbar `Hit` (track geometry + thumb geometry). 스크롤백이
@@ -695,7 +689,6 @@ pub const App = struct {
         const delta = @as(isize, @intCast(target_row)) - @as(isize, @intCast(h.offset));
         if (delta != 0) {
             tab.terminal.scrollViewport(.{ .delta = delta });
-            self.invalidateRenderer();
         }
     }
 
@@ -736,7 +729,6 @@ pub const App = struct {
         self.command_menu_focus = null;
         self.command_menu_first = 0;
         self.command_menu_wheel_accum = 0;
-        self.invalidateRenderer();
     }
 
     fn commandMenuHit(self: *const App, mouse_x: c_int, mouse_y: c_int) ?command_menu.Command {
@@ -764,7 +756,6 @@ pub const App = struct {
                         focused,
                     );
                 }
-                self.invalidateRenderer();
             },
             .close => self.closeCommandMenu(),
             .activate => |command| self.executeCommandMenu(command),
@@ -804,7 +795,6 @@ pub const App = struct {
             },
             .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt),
         }
-        self.invalidateRenderer();
     }
 
     /// #268/#329 — 탭바 컨트롤 버튼 hover 갱신.
@@ -820,7 +810,6 @@ pub const App = struct {
                 // 옛 focus 위치에서 출발한다 (사용자 시연 발견).
                 if (menu_hover) |h| self.command_menu_focus = h;
                 self.tab_hover = .none;
-                self.invalidateRenderer();
             }
             return;
         }
@@ -838,7 +827,6 @@ pub const App = struct {
         };
         if (new_hover != self.tab_hover) {
             self.tab_hover = new_hover;
-            self.invalidateRenderer();
         }
     }
 
@@ -877,7 +865,6 @@ pub const App = struct {
                 if (!self.resolveRunAction(.open_command_menu)) return;
                 self.command_menu_open = !self.command_menu_open;
                 self.command_menu_hover = null;
-                self.invalidateRenderer();
                 return;
             },
             .none => return,
@@ -900,7 +887,6 @@ pub const App = struct {
         if (!self.resolveRunAction(.switch_tab)) return;
         if (self.session.setActiveTab(tab_index)) {
             self.tab_scroll_user_override = false;
-            self.invalidateRenderer();
         }
     }
 
@@ -939,7 +925,6 @@ pub const App = struct {
             if (self.session.reorderTabs(request.from, request.to) catch false) {
                 // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동.
                 self.tab_scroll_user_override = false;
-                self.invalidateRenderer();
             }
         }
     }
@@ -1344,7 +1329,6 @@ pub const App = struct {
                     const py_pt = @as(f32, @floatFromInt(mouse.y)) / self.dpi_scale;
                     if (command_menu.hitScrollIndicator(menu_view, px_pt, py_pt)) |dir| {
                         self.command_menu_first = command_menu.scrollStep(menu_view, dir == .down);
-                        self.invalidateRenderer();
                         return true;
                     }
                     const hit = self.commandMenuHit(mouse.x, mouse.y);
@@ -1515,7 +1499,6 @@ pub const App = struct {
                                 const next = command_menu.scrollStep(self.commandMenuView(), down);
                                 if (next == self.command_menu_first) break;
                                 self.command_menu_first = next;
-                                self.invalidateRenderer();
                                 steps += if (down) @as(i32, 1) else -1;
                             }
                         },

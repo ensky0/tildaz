@@ -201,7 +201,6 @@ pub const D3d11Renderer = struct {
     /// 값과 위상 전환을 **함께** 봐서, blink 이 실제로 보일 때만 초당 2프레임을
     /// 추가로 그린다. "blink 셀이 있다" 만으로 게이트를 열면 매 tick 그리게 된다.
     saw_blink_cell: bool = false,
-    render_state: ghostty.RenderState = .empty,
     /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
     /// renderTerminal cell cursor 그리면서
     /// 갱신. App 가 IME composition 활성 시 ImmSetCompositionWindow(CFS_POINT)
@@ -943,7 +942,6 @@ pub const D3d11Renderer = struct {
     }
 
     pub fn deinit(self: *D3d11Renderer) void {
-        self.render_state.deinit(self.alloc);
         _ = self.cb.Release();
         _ = self.text_buffer.Release();
         _ = self.bg_buffer.Release();
@@ -986,12 +984,6 @@ pub const D3d11Renderer = struct {
         return WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
     }
 
-    pub fn invalidate(self: *D3d11Renderer) void {
-        self.render_state.rows = 0;
-        self.render_state.cols = 0;
-        self.render_state.viewport_pin = null;
-    }
-
     /// Rebuild the DirectWrite font context + glyph atlas at the window's
     /// current DPI. Called after `window.rebuildFontForDpi` has updated
     /// `cell_w` / `cell_h`, so the atlas rasterizes glyphs at the new
@@ -1030,10 +1022,6 @@ pub const D3d11Renderer = struct {
         self.tab_font = tab_resources.font;
         self.tab_atlas = tab_resources.atlas;
         self.pixels_per_dip = pixels_per_dip;
-
-        // Grid state was computed against the old cell metrics — force a
-        // full redraw so every cell re-rasterizes through the new atlas.
-        self.invalidate();
     }
 
     pub fn resize(self: *D3d11Renderer, width: u32, height: u32) void {
@@ -1346,6 +1334,8 @@ pub const D3d11Renderer = struct {
     pub fn renderTerminal(
         self: *D3d11Renderer,
         terminal: *ghostty.Terminal,
+        /// #483 2단계 ① — `terminal` 의 `Tab.render_state`. 렌더러는 state 를 갖지 않는다.
+        state: *ghostty.RenderState,
         cell_w: c_int,
         cell_h: c_int,
         vp_w: c_int,
@@ -1368,12 +1358,12 @@ pub const D3d11Renderer = struct {
         blink_faint: bool,
     ) void {
         const render_t0 = perf.now();
-        self.render_state.update(self.alloc, terminal) catch return;
+        state.update(self.alloc, terminal) catch return;
 
-        const rows = self.render_state.rows;
-        const cols = self.render_state.cols;
-        const colors = self.render_state.colors;
-        const row_slice = self.render_state.row_data.slice();
+        const rows = state.rows;
+        const cols = state.cols;
+        const colors = state.colors;
+        const row_slice = state.row_data.slice();
 
         const cw: f32 = @floatFromInt(cell_w);
         const ch: f32 = @floatFromInt(cell_h);
@@ -1781,8 +1771,8 @@ pub const D3d11Renderer = struct {
         // --- Cursor (#297 — 세로 막대 bar, 세 platform 공통) ---
         // 셀 좌측에 opaque bar. wide char 는 wide_tail 보정으로 글자 시작
         // cell 의 좌측에 위치. 폭은 `ui_metrics.CURSOR_BAR_W_PT` × DPI scale.
-        if (self.render_state.cursor.visible) {
-            if (self.render_state.cursor.viewport) |vp| {
+        if (state.cursor.visible) {
+            if (state.cursor.viewport) |vp| {
                 var cursor_x: f32 = @floatFromInt(vp.x);
                 const cursor_y: f32 = @floatFromInt(vp.y);
                 if (vp.wide_tail and vp.x > 0) cursor_x -= 1.0;
@@ -1808,8 +1798,8 @@ pub const D3d11Renderer = struct {
         // 배경 (mac `renderer/macos.zig` 의 pre_bg_color 동일) + glyph. wide
         // char (CJK) 는 2 cell 차지. 한글 / 일본어 / 중국어 / 베트남어 등 모든
         // IMM IME path. atlas 가 dirty 면 다음 frame 에 글자 표시 — 한 frame 늦음.
-        if (preedit_utf8.len > 0 and self.render_state.cursor.viewport != null) {
-            const vp = self.render_state.cursor.viewport.?;
+        if (preedit_utf8.len > 0 and state.cursor.viewport != null) {
+            const vp = state.cursor.viewport.?;
             var pre_col: f32 = @floatFromInt(vp.x);
             const pre_row: f32 = @floatFromInt(vp.y);
             const pre_y = pre_row * ch + y_off;

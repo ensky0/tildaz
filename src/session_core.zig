@@ -248,6 +248,16 @@ pub const Tab = struct {
     /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
     /// 탭의 interaction 을 event/render 시점에 참조한다.
     interaction: terminal_interaction.TerminalInteraction = .{},
+    /// [#483](https://github.com/ensky0/tildaz/issues/483) 2단계 ① — 이 터미널의 렌더
+    /// 스냅숏. 이전에는 렌더러가 하나를 들고 활성 탭마다 갈아 끼웠는데, pane 이 둘 이상
+    /// 보이면 그 하나가 프레임마다 pane 수만큼 전체 재구축을 하므로 (ghostty
+    /// `RenderState.update` 는 viewport pin 이 다르면 전부 다시 만든다) 탭이 갖는다.
+    ///
+    /// **보이지 않는 탭의 것은 비워 둔다** (`releaseRenderState`) — 한 state 가 4K 에서
+    /// 2~3 MB 라 32 탭을 다 들고 있으면 메모리가 지금의 30 배가 된다. 활성 탭이 바뀌는
+    /// 곳 (`releaseHiddenRenderStates`) 이 비우고, 다음에 보일 때 `update` 가 다시 채운다
+    /// — 이전 공유 state 가 탭 전환마다 전체 재구축하던 것과 같은 비용이다.
+    render_state: ghostty.RenderState = .empty,
     output_ring: RingBuffer = .{},
     /// #451 — `Io` 를 담아야 해서 기본값이 없다. `Tab.init` 이 `rt.io` 로 채운다.
     write_queue: WriteQueue,
@@ -354,8 +364,17 @@ pub const Tab = struct {
             t.join();
             tab.write_thread = null;
         }
+        tab.render_state.deinit(alloc);
         tab.terminal.deinit(alloc);
         alloc.destroy(tab);
+    }
+
+    /// #483 — 이 탭이 화면에서 사라졌다. 스냅숏 메모리를 돌려주고 `.empty` 로 되돌린다.
+    /// ghostty 의 pin 은 추적 pin 이 아니라 (render.zig: "NOT a tracked pin") 터미널과
+    /// 무관하게 언제든 버릴 수 있다. 다음 `update` 가 전체를 다시 만든다.
+    pub fn releaseRenderState(tab: *Tab, alloc: std.mem.Allocator) void {
+        tab.render_state.deinit(alloc);
+        tab.render_state = .empty;
     }
 
     pub fn queueWrite(tab: *Tab, data: []const u8) void {
@@ -930,6 +949,7 @@ pub const SessionCore = struct {
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
         try self.tabs.append(self.allocator, tab);
         self.active_tab = self.tabs.items.len - 1;
+        self.releaseHiddenRenderStates();
     }
 
     pub fn closeTab(self: *SessionCore, index: usize) CloseResult {
@@ -950,6 +970,7 @@ pub const SessionCore = struct {
 
         if (next_active) |active| {
             self.active_tab = active;
+            self.releaseHiddenRenderStates();
             return .changed;
         }
         self.active_tab = 0;
@@ -990,6 +1011,7 @@ pub const SessionCore = struct {
     pub fn setActiveTab(self: *SessionCore, index: usize) bool {
         if (index >= self.tabs.items.len or index == self.active_tab) return false;
         self.active_tab = index;
+        self.releaseHiddenRenderStates();
         return true;
     }
 
@@ -998,6 +1020,7 @@ pub const SessionCore = struct {
     pub fn activateNext(self: *SessionCore) bool {
         if (self.tabs.items.len <= 1) return false;
         self.active_tab = (self.active_tab + 1) % self.tabs.items.len;
+        self.releaseHiddenRenderStates();
         return true;
     }
 
@@ -1005,7 +1028,19 @@ pub const SessionCore = struct {
     pub fn activatePrev(self: *SessionCore) bool {
         if (self.tabs.items.len <= 1) return false;
         self.active_tab = if (self.active_tab == 0) self.tabs.items.len - 1 else self.active_tab - 1;
+        self.releaseHiddenRenderStates();
         return true;
+    }
+
+    /// #483 2단계 ① — 활성 탭이 아닌 탭의 렌더 스냅숏을 비운다 (`Tab.render_state` 주석).
+    /// 활성 탭이 바뀌는 모든 자리에서 부른다. 4단계에서 "보이는 것" 이 활성 탭의 pane
+    /// 전부로 넓어지면 여기만 바꾼다.
+    fn releaseHiddenRenderStates(self: *SessionCore) void {
+        for (self.tabs.items, 0..) |tab, i| {
+            if (i == self.active_tab) continue;
+            if (tab.render_state.row_data.len == 0 and tab.render_state.pending_styles.items.len == 0) continue;
+            tab.releaseRenderState(self.allocator);
+        }
     }
 
     pub fn reorderTabs(self: *SessionCore, from: usize, to: usize) !bool {

@@ -17,7 +17,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Host | No | `src/host/windows.zig`, `src/host/macos.zig`, `src/host/linux_wayland.zig` + `src/host/linux/wayland_minimal.zig` | OS startup, event loop, global hotkey, window lifecycle |
 | Instance coordinator | Yes with OS request adapters | `src/main.zig`, `src/instances.zig`, `src/new_instance.zig`, `src/instance_request/*` | Numbered config discovery, worker locks/spawn, two-stage instance creation |
 | Window controller | Mostly Windows | `src/window.zig`, `src/app_controller.zig`, `src/app_event.zig` | Win32 message dispatch and app-level event routing |
-| Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues |
+| Session core | Yes | `src/session_core.zig` | Tabs, active index, scrollback, VT draining, PTY queues, and each tab's ghostty `RenderState` snapshot (hidden tabs release theirs — [#483](https://github.com/ensky0/tildaz/issues/483) step 2) |
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig`, `src/pane_layout.zig` | Tab switching, close paths, drag, hit testing. `pane_layout.zig` holds the split-pane tree and per-pane grid geometry (hit test, neighbor search) as pure functions — landed under [#483](https://github.com/ensky0/tildaz/issues/483) step 1, not yet wired into any host |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
 | Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, TOML parse via `sam701/zig-toml`, current `config_N.toml` / `tildaz_N.log` paths |

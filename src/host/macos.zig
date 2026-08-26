@@ -1725,11 +1725,13 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
 fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
-    var r = &g_renderer.?;
-    try r.render_state.update(allocator, &tab.terminal);
-    const vp = r.render_state.cursor.viewport orelse return false;
+    const r = &g_renderer.?;
+    // #483 2단계 ① — 스냅숏은 탭의 것이다. 프레임 밖에서 갱신해도 다음 프레임의
+    // `update` 가 이어받는다 (dirty 가 소비된 상태라 증분).
+    try tab.render_state.update(allocator, &tab.terminal);
+    const vp = tab.render_state.cursor.viewport orelse return false;
 
-    const row_slice = r.render_state.row_data.slice();
+    const row_slice = tab.render_state.row_data.slice();
     const all_cells = row_slice.items(.cells);
     if (vp.y >= all_cells.len) return false;
     const cells = all_cells[vp.y].slice();
@@ -3970,6 +3972,7 @@ fn renderFrameTick() void {
     const hotkey_hint = config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey);
     g_renderer.?.renderTerminal(
         &tab.terminal,
+        &tab.render_state,
         cell_w_px,
         cell_h_px,
         tab_bar_px,
