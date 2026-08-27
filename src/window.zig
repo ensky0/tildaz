@@ -11,6 +11,7 @@ const dwrite_font = @import("font/windows/font.zig");
 const font_spec = @import("font/spec.zig");
 const config_mod = @import("config.zig");
 const physical_key = @import("physical_key.zig");
+const key_encode = @import("key_encode.zig");
 
 const BOOL = windows.BOOL;
 const DWORD = windows.DWORD;
@@ -324,6 +325,10 @@ extern "user32" fn OpenClipboard(HWND) callconv(.c) BOOL;
 extern "user32" fn CloseClipboard() callconv(.c) BOOL;
 extern "user32" fn GetClipboardData(UINT) callconv(.c) ?*anyopaque;
 extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
+// #533 — Alt 조합의 글자를 얻는다. `WM_SYSKEYDOWN` 에는 글자가 실려 오지 않아서
+// (`WM_SYSCHAR` 는 Alt 를 이미 먹은 뒤라 쓸 수 없다) 직접 번역한다.
+extern "user32" fn ToUnicodeEx(UINT, UINT, [*]const u8, [*]WCHAR, c_int, UINT, ?*anyopaque) callconv(.c) c_int;
+extern "user32" fn GetKeyboardLayout(DWORD) callconv(.c) ?*anyopaque;
 extern "user32" fn GetAsyncKeyState(c_int) callconv(.c) i16;
 extern "user32" fn SetCapture(HWND) callconv(.c) HWND;
 extern "user32" fn ReleaseCapture() callconv(.c) BOOL;
@@ -439,6 +444,10 @@ pub const Window = struct {
     userdata: ?*anyopaque = null,
     write_fn: ?*const fn ([]const u8, ?*anyopaque) void = null,
     app_event_fn: ?*const fn (app_event.Event, ?*anyopaque) bool = null,
+    /// #533 — 키 인코딩 옵션 (DEC mode · kitty flags). `window.zig` 는 `SessionCore` 를
+    /// 모르므로 `app_event_fn` 과 같은 콜백 패턴으로 받는다. 없으면 기본값이라 터미널이
+    /// 켠 mode 가 반영되지 않는다.
+    encode_options_fn: ?*const fn (?*anyopaque) key_encode.Options = null,
     /// #387 — 메시지 큐가 빈 순간에 밀린 PTY 출력을 한 번 더 파싱하는 host 콜백.
     /// 반환값은 "더 할 일이 있나" — 참이면 `messageLoop` 이 블록하지 않고 다시 돈다.
     /// `window.zig` 는 `SessionCore` 를 모르므로 `app_event_fn` 과 같은 콜백 패턴을 쓴다.
@@ -2132,46 +2141,15 @@ pub const Window = struct {
                     return 0;
                 }
 
-                // Only handle keys that do NOT generate WM_CHAR
-                if (self.write_fn) |write_fn| {
-                    const vk_up: WPARAM = 0x26;
-                    const vk_down: WPARAM = 0x28;
-                    const vk_left: WPARAM = 0x25;
-                    const vk_right: WPARAM = 0x27;
-                    const vk_home: WPARAM = 0x24;
-                    const vk_end: WPARAM = 0x23;
-                    const vk_delete: WPARAM = 0x2E;
-                    const vk_insert: WPARAM = 0x2D;
-
-                    switch (wParam) {
-                        vk_up => write_fn("\x1b[A", self.userdata),
-                        vk_down => write_fn("\x1b[B", self.userdata),
-                        vk_right => write_fn("\x1b[C", self.userdata),
-                        vk_left => write_fn("\x1b[D", self.userdata),
-                        vk_home => write_fn("\x1b[H", self.userdata),
-                        vk_end => write_fn("\x1b[F", self.userdata),
-                        vk_delete => write_fn("\x1b[3~", self.userdata),
-                        vk_insert => write_fn("\x1b[2~", self.userdata),
-                        vk_prior => write_fn("\x1b[5~", self.userdata),
-                        vk_next => write_fn("\x1b[6~", self.userdata),
-                        // #282 A7 — F1~F12 xterm sequence (htop/mc 등 TUI). macOS
-                        // keyCodeToEscape / Linux terminalSequenceForKeysym 와 동일.
-                        // Ctrl+Shift+F12(perf)는 위 Ctrl+Shift block 에서 이미 소비.
-                        // F10(0x79)은 Windows 가 메뉴 키로 WM_SYSKEYDOWN 을 보내므로
-                        // 여기 안 옴 — 그쪽 핸들러에서 처리.
-                        0x70 => write_fn("\x1bOP", self.userdata), // F1
-                        0x71 => write_fn("\x1bOQ", self.userdata), // F2
-                        0x72 => write_fn("\x1bOR", self.userdata), // F3
-                        0x73 => write_fn("\x1bOS", self.userdata), // F4
-                        0x74 => write_fn("\x1b[15~", self.userdata), // F5
-                        0x75 => write_fn("\x1b[17~", self.userdata), // F6
-                        0x76 => write_fn("\x1b[18~", self.userdata), // F7
-                        0x77 => write_fn("\x1b[19~", self.userdata), // F8
-                        0x78 => write_fn("\x1b[20~", self.userdata), // F9
-                        0x7A => write_fn("\x1b[23~", self.userdata), // F11
-                        0x7B => write_fn("\x1b[24~", self.userdata), // F12
-                        else => {},
-                    }
+                // #533 — 특수키를 인코더로 보낸다. 예전엔 modifier 를 싣지 않는 VK
+                // switch 라 `Shift+←` · `Alt+←` 가 아무것도 내지 않았다.
+                //
+                // **글자 키는 여기서 보내지 않는다** — Windows 는 그것을 `WM_CHAR` 로
+                // 따로 주므로 두 번 나간다. `isNavOrFunction` 이 그 경계다.
+                const kd_scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
+                const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
+                if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
+                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(lParam, "");
                 }
                 return 0;
             },
@@ -2325,6 +2303,28 @@ pub const Window = struct {
                 if (wParam == 0x79 and GetAsyncKeyState(VK_MENU) >= 0) {
                     if (self.write_fn) |write_fn| write_fn("\x1b[21~", self.userdata);
                     return 0;
+                }
+
+                // #533 — Alt 조합을 자식 프로세스로 보낸다. 예전엔 여기서 곧장
+                // `DefWindowProcW` 로 넘겨 아무것도 나가지 않았다 (신고 그대로 —
+                // zellij 의 `Alt+n` 이 안 먹는 이유).
+                //
+                // **`Alt+F4` 와 `Alt+Space` 는 OS 에 남긴다.** 창 닫기와 시스템 메뉴는
+                // Windows 사용자가 어느 앱에서나 기대하는 동작이라 우리가 먹으면 안 된다.
+                const sys_vk_space: WPARAM = 0x20;
+                const sys_vk_f4: WPARAM = 0x73;
+                if (wParam != sys_vk_space and wParam != sys_vk_f4) {
+                    const sys_scan: UINT = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
+                    var char_buf: [8]u8 = undefined;
+                    // `WM_SYSKEYDOWN` 에는 글자가 실려 오지 않으므로 직접 번역한다.
+                    // Ctrl · Alt 를 뺀 글자여야 인코더가 `ESC` 를 붙여 `^[n` 을 만든다.
+                    const text = winCharWithoutCtrlAlt(
+                        @intCast(wParam),
+                        sys_scan,
+                        GetKeyState(VK_SHIFT) < 0,
+                        &char_buf,
+                    );
+                    if (self.sendEncodedKeyWin(lParam, text)) return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
@@ -2834,6 +2834,75 @@ pub const Window = struct {
                 else => {},
             }
         }
+    }
+
+    /// #533 — `Ctrl` · `Alt` 를 뺀 채 이 키가 내는 글자. `Alt+n` → `n`,
+    /// `Shift+Alt+n` → `N`. 인코더가 그 앞에 `ESC` 를 붙인다.
+    ///
+    /// Shift 만 남기는 것은 macOS 의 `charactersByApplyingModifiers:` 와 같은 기준이다
+    /// — Shift 는 진짜로 글자를 바꾸는 modifier 이고, Ctrl · Alt 는 인코더가 센다.
+    /// codepoint 만 넘기면 Shift 가 반영되지 않아 `Shift+Alt+n` 이 `^[n` 이 된다 (실측).
+    fn winCharWithoutCtrlAlt(vk: UINT, scan: UINT, shift: bool, buf: []u8) []const u8 {
+        // 256 항목 키보드 상태. Shift 만 켜고 나머지는 눌리지 않은 것으로 둔다.
+        var state = [_]u8{0} ** 256;
+        if (shift) {
+            state[@intCast(VK_SHIFT)] = 0x80;
+        }
+
+        var wide: [8]WCHAR = undefined;
+        // `hkl` 은 반드시 명시한다 — `NULL` 은 `ToUnicodeEx` 에서 *활성* layout 이지만
+        // 같은 자리의 다른 API 와 뜻이 갈려 표가 섞인다 (#496 Windows 실측).
+        // `wFlags` bit 2 는 **키보드 상태를 바꾸지 않게** 한다 — 없으면 dead key 가
+        // 다음 글자를 오염시킨다 (프랑스 자판의 `^` 다음 글자가 `î` 가 된다).
+        const n = ToUnicodeEx(vk, scan, &state, &wide, wide.len, 0b100, GetKeyboardLayout(0));
+        if (n <= 0) return "";
+
+        const len = std.unicode.utf16LeToUtf8(buf, wide[0..@intCast(n)]) catch return "";
+        return buf[0..len];
+    }
+
+    /// #533 — 키 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다. 보낼 것이 없으면
+    /// `false` — 호출자가 기존 경로로 흘리거나 `DefWindowProcW` 에 넘긴다.
+    ///
+    /// `utf8` 은 이 키가 만든 글자다. Windows 는 그것을 `WM_CHAR` 로 따로 주므로 이
+    /// 경로는 대개 빈 문자열이고, 인코더가 `code` 와 `mods` 로 바이트를 만든다.
+    fn sendEncodedKeyWin(self: *Window, lParam: LPARAM, utf8: []const u8) bool {
+        const write_fn = self.write_fn orelse return false;
+
+        // scan code 는 lParam 16~23 비트, extended 는 24 비트. 둘을 함께 봐야
+        // control pad 와 numpad 가 섞이지 않는다 (`physical_key.zig` 헤더).
+        const scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
+        const extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
+
+        const shift = GetKeyState(VK_SHIFT) < 0;
+        const ctrl = GetKeyState(VK_CONTROL) < 0;
+        const alt = GetKeyState(VK_MENU) < 0;
+
+        var out_buf: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&out_buf);
+        key_encode.encode(&writer, .{
+            .code = physical_key.fromScanCode(scan, extended),
+            .mods = .{ .shift = shift, .ctrl = ctrl, .alt = alt },
+            // #533 정책 ③ — Windows 의 AltGr 은 `Ctrl+Alt` 로 도착하고, 그 조합이 글자를
+            // 만들면 `WM_CHAR` 가 그 글자를 따로 보낸다. 이 경로는 글자를 만들지 않는
+            // 키를 다루므로 소비된 modifier 가 없다.
+            .consumed_mods = .{},
+            .utf8 = utf8,
+            // kitty keyboard protocol 이 쓰는 값. release 보고와 함께 후속으로 채운다.
+            .unshifted_codepoint = 0,
+        }, self.keyEncodeOptions()) catch return false;
+
+        const bytes = writer.buffered();
+        if (bytes.len == 0) return false;
+        // Ctrl+C 의 큐 우회는 `App.onKeyInput` 이 판정한다 (macOS · Linux 와 달리 이
+        // host 는 write 통로가 하나다).
+        write_fn(bytes, self.userdata);
+        return true;
+    }
+
+    fn keyEncodeOptions(self: *Window) key_encode.Options {
+        const f = self.encode_options_fn orelse return .{};
+        return f(self.userdata);
     }
 
     fn pasteClipboard(self: *Window, write_fn: *const fn ([]const u8, ?*anyopaque) void) void {
