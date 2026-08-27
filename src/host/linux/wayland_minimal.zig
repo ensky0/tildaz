@@ -712,6 +712,9 @@ fn classifyInput(
     /// fallback 없이 라벨 · 위치만 본다.
     fallbacks: []const ?config_mod.PhysicalCode,
     sym: u32,
+    /// #483 6단계 — 같은 키의 level-0 keysym (Shift 없이 내는 값). Shift 를 적은 binding 이 이것으로도 맞는다
+    /// (US 의 `Shift+Alt+0` 은 `parenright` 로 도착). 모르면 0.
+    unshifted: u32,
     code: ?config_mod.PhysicalCode,
     ctrl: bool,
     shift: bool,
@@ -733,6 +736,7 @@ fn classifyInput(
     if (super) modifiers |= config_mod.Hotkey.MOD_SUPER;
     const hotkey: config_mod.Hotkey = .{
         .keysym = config_mod.normalizeLinuxKeysym(sym),
+        .unshifted = if (shift) unshifted else 0,
         .modifiers = modifiers,
     };
     const action = config_mod.lookupActionWithFallback(bindings, fallbacks, hotkey, code) orelse return null;
@@ -753,6 +757,19 @@ fn testDefaultBindings(buf: []config_mod.KeyBinding) []const config_mod.KeyBindi
     return buf[0..n];
 }
 
+test "#483 6단계 — classifyInput: Shift 를 적은 binding 은 level-0 keysym 으로도 맞는다 (US Shift+Alt+0 = parenright)" {
+    const T = std.testing;
+    var buf: [config_mod.MAX_KEY_BINDINGS]config_mod.KeyBinding = undefined;
+    const b = testDefaultBindings(&buf);
+    const A = config_mod.ActionInput;
+    // parenright (0x29) + level-0 `0` + Shift+Alt → equalize_panes.
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .equalize_panes } }), classifyInput(b, &.{}, 0x29, '0', null, false, true, true, false));
+    // level-0 를 모르면 (0) 예전처럼 안 맞는다.
+    try T.expectEqual(@as(?A, null), classifyInput(b, &.{}, 0x29, 0, null, false, true, true, false));
+    // 넓어지지 않는다: exclam + level-0 `1` + Shift+Alt 는 `alt+1` (Shift 없는 binding) 에 걸리지 않는다.
+    try T.expectEqual(@as(?A, null), classifyInput(b, &.{}, 0x21, '1', null, false, true, true, false));
+}
+
 test "#296 · #493 3-c classifyInput — native xkb → config binding → 공통 Input" {
     const T = std.testing;
     var buf: [config_mod.MAX_KEY_BINDINGS]config_mod.KeyBinding = undefined;
@@ -763,7 +780,7 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
     // 기본 binding 이 전부 라벨이기 때문이다 (위치 매칭은 config.zig 쪽 test).
     const C = struct {
         fn f(bindings: []const config_mod.KeyBinding, sym: u32, ctrl: bool, shift: bool, alt: bool) ?A {
-            return classifyInput(bindings, &.{}, sym, null, ctrl, shift, alt, false);
+            return classifyInput(bindings, &.{}, sym, 0, null, ctrl, shift, alt, false);
         }
     }.f;
 
@@ -853,14 +870,14 @@ test "#496 위치로 적은 binding 이 라벨과 무관하게 잡힌다 (Linux)
     const b = buf[0..2];
 
     // 라벨 binding 은 키릴 keysym 을 못 잡는다 — 이것이 #496 의 버그 자체다.
-    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, .key_w, true, true, false, false));
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, 0, .key_w, true, true, false, false));
     // 위치 binding 은 잡는다. 라벨이 무엇이든 자리가 맞으면 된다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
-        classifyInput(b, &.{}, cyrillic_tse, .key_t, true, true, false, false),
+        classifyInput(b, &.{}, cyrillic_tse, 0, .key_t, true, true, false, false),
     );
     // 자리를 모르는 event (표에 없는 키) 는 위치 binding 을 발동시키지 않는다.
-    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, null, true, true, false, false));
+    try T.expectEqual(@as(?config_mod.ActionInput, null), classifyInput(b, &.{}, cyrillic_tse, 0, null, true, true, false, false));
 }
 
 test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡는다" {
@@ -876,7 +893,7 @@ test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡�
     // fallback 이 **없으면** 오늘의 버그 그대로다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, null),
-        classifyInput(b, &.{}, cyrillic_tse, .key_w, true, true, false, false),
+        classifyInput(b, &.{}, cyrillic_tse, 0, .key_w, true, true, false, false),
     );
 
     // `close_tab` 의 라벨 `w` 가 이 layout 으로 닿지 않는다고 판정된 상태.
@@ -884,7 +901,7 @@ test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡�
     const fallbacks = [_]?config_mod.PhysicalCode{ .key_w, null };
     try T.expectEqual(
         @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .close_tab } }),
-        classifyInput(b, &fallbacks, cyrillic_tse, .key_w, true, true, false, false),
+        classifyInput(b, &fallbacks, cyrillic_tse, 0, .key_w, true, true, false, false),
     );
 
     // **fallback 이 있는 binding 만 대상이다.** `KeyT` 자리를 눌러도 `new_tab` 의
@@ -892,22 +909,21 @@ test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡�
     // 생기지 않게 하는 장치다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, null),
-        classifyInput(b, &fallbacks, cyrillic_tse, .key_t, true, true, false, false),
+        classifyInput(b, &fallbacks, cyrillic_tse, 0, .key_t, true, true, false, false),
     );
 
     // modifier 는 여전히 엄격하다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, null),
-        classifyInput(b, &fallbacks, cyrillic_tse, .key_w, true, false, false, false),
+        classifyInput(b, &fallbacks, cyrillic_tse, 0, .key_w, true, false, false, false),
     );
 
     // **라벨이 먼저다.** 라벨로 잡히는 event 는 fallback 이 있어도 라벨 결과를 낸다.
     try T.expectEqual(
         @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
-        classifyInput(b, &fallbacks, xkb_key_t_lower, .key_w, true, true, false, false),
+        classifyInput(b, &fallbacks, xkb_key_t_lower, 0, .key_w, true, true, false, false),
     );
 }
-
 
 fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
     return switch (sym) {
@@ -6257,7 +6273,9 @@ const Client = struct {
             const super = self.keyboard.superActive();
             const bindings = self.config.key_bindings[0..self.config.key_binding_count];
             const fallbacks = self.binding_fallbacks[0..self.config.key_binding_count];
-            if (classifyInput(bindings, fallbacks, sym, code, ctrl, shift, alt, super)) |classified| {
+            // #483 6단계 — Shift 를 누른 채면 level-0 keysym 도 넘긴다 (`shift+alt+0` 이 US 에서 `parenright` 로 와도 맞게).
+            const unshifted: u32 = if (shift) (self.keyboard.keysymAtEvdev(@intCast(key)) orelse 0) else 0;
+            if (classifyInput(bindings, fallbacks, sym, unshifted, code, ctrl, shift, alt, super)) |classified| {
                 // #333 — paste 는 우클릭 / command menu 와 공통 semantic helper(requestPaste)
                 // 로 정책을 정확히 한 번 적용한다. generic resolve/switch 보다 먼저 분기해
                 // 이중 commit 을 막는다.

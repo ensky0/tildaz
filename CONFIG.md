@@ -363,6 +363,13 @@ arrives as Alt+Shift+the `&1` key. Without this exception, switching tabs by
 index would be dead on those layouts. It applies to digits only: `Shift+Alt+F4`
 still does not trigger a binding on `Alt+F4`.
 
+**Bindings that include Shift match the unshifted key.** `Shift+Alt+0` means
+"the `0` key with Shift held". On a US layout that key produces `)` while Shift
+is down, so the binding also matches the character the same key produces without
+Shift — `Shift+Alt+0`, `Shift+Cmd+0`, `Shift+Cmd+[` work on every layout. The
+reverse never happens: a binding without Shift (`Alt+1`) does not fire on
+Alt+Shift+1, apart from the digit rule above.
+
 #### Two things are not in `[keys]`
 
 **Scrolling.** `Shift+PgUp` / `Shift+PgDn` scroll the scrollback, and scrolling

@@ -441,6 +441,14 @@ AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac 의 Safari (Co
   자리다. **Shift 비트는 건드리지 않는다** — 값만 되돌리므로 `ctrl+shift+c` 와 `ctrl+c` 는 여전히
   다른 조합이다. 숫자는 일부러 제외한다: `exclam` → `1` 로 되돌리면 QWERTY 에서 `Alt+Shift+1` 이
   탭 전환이 되어 동작이 넓어진다.
+- **Shift 를 적은 binding 은 무시프트 값으로도 맞는다** ([#483](https://github.com/ensky0/tildaz/issues/483)
+  6단계, 2026-08-27 — `Hotkey.unshifted`). 위 되돌림은 `{` `}` `~` 와 대문자만 다뤄 `shift+alt+0` (US 에서
+  `parenright`) 이 Linux 실제 키보드에서, `⇧⌘0` · `⇧⌘[` 이 macOS 에서 (`charactersByApplyingModifiers:` 가
+  Shift 를 반영해 `)` `{`) 죽어 있었다. 이벤트 쪽이 같은 키의 Shift 없는 값 (Linux 는 xkb level 0,
+  macOS 는 Shift 를 뺀 라벨) 을 함께 넘기고, `lookupAction` 은 **binding 에 Shift 가 적혀 있고 수식키가
+  정확히 같을 때만** (숫자 예외 없이) 그 값과 비교한다. 그래서 #493 이 거부한 넓어짐은 없다 — US 의
+  `Alt+Shift+1` (`!`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다. AZERTY 는 `⇧+à` 가 `0` 을 내 라벨이 바로
+  맞으므로 이 규칙이 개입하지 않는다. Windows 는 VK 가 Shift 무관이라 해당 없음.
 - **인덱스 점프는 숫자 binding 에서 Shift 를 무시한다** (`isDigitBinding`). AZERTY (fr) 등은
   숫자열에 Shift 가 필요해 keysym / VK `1`~`9` 가 **항상 Shift 와 함께** 도착한다. 확대가 아니라
   현행 유지다 — 3-c 이전의 세 host 가 모두 Shift 를 보지 않았다 (Windows
