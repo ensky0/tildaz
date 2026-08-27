@@ -391,21 +391,35 @@ pub const Tree = struct {
         }
     }
 
-    /// 균등 분배 — 모든 분할의 비율을 양쪽 leaf 수에 비례시킨다. 형제의 leaf 가 1 : 2 면
-    /// 1/3 : 2/3 이 되어 leaf 마다 같은 넓이를 갖는다. (분할마다 반씩으로 하는 다른 정의도
-    /// 있다 — 4단계 실기에서 이 결과가 어색하면 그때 바꾼다.)
+    /// 균등 — **같은 축으로 이어진 분할선은 한 줄로 보고, 그 줄의 칸 수로 나눈다** (2026-08-28 사용자 결정 ①).
+    /// "칸" 은 그 줄의 pane 하나 또는 **다른 축으로 갈린 묶음 하나**다 (`cellsAlong`). 그래서 A | B | C 는
+    /// ⅓ 씩, A | (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩 — 눈에 보이는 줄 · 칸
+    /// 그대로다. tmux · iTerm2 처럼 한 줄에 칸이 여럿인 (n-ary) 분할 모델의 "고르게 펴기" 와 같은 결과다.
+    ///
+    /// 거쳐 온 정의 둘: 4~6단계는 vim `Ctrl+W =` 식 **leaf 수 가중** (pane 마다 같은 넓이 — A | (B/C) 에서
+    /// A 가 ⅓ 로 줄어 어색), 그 뒤 하루는 **층별 반씩** (A | B | C 가 A ½ · B ¼ · C ¼ 라 "셋인데 균등이
+    /// 아니다"). 이 정의는 두 경우를 모두 사용자가 그린 대로 만든다.
     pub fn equalize(self: *Tree) void {
         for (&self.nodes, self.alive) |*n, alive| {
             if (!alive) continue;
             switch (n.*) {
                 .split => |*s| {
-                    const a: f32 = @floatFromInt(self.leafCount(s.first));
-                    const b: f32 = @floatFromInt(self.leafCount(s.second));
+                    const a: f32 = @floatFromInt(self.cellsAlong(s.first, s.axis));
+                    const b: f32 = @floatFromInt(self.cellsAlong(s.second, s.axis));
                     s.ratio = a / (a + b);
                 },
                 .leaf => {},
             }
         }
+    }
+
+    /// `idx` subtree 가 `axis` 방향의 한 줄에서 차지하는 칸 수 — leaf 1, 같은 축 split 은 양쪽 합, 다른 축
+    /// split 은 1 (그 묶음 안은 자기 축에서 따로 센다).
+    fn cellsAlong(self: *const Tree, idx: NodeIndex, axis: Axis) u32 {
+        return switch (self.nodes[idx]) {
+            .leaf => 1,
+            .split => |s| if (s.axis == axis) self.cellsAlong(s.first, axis) + self.cellsAlong(s.second, axis) else 1,
+        };
     }
 
     fn findLeaf(self: *const Tree, pane: PaneId) ?NodeIndex {
@@ -1099,20 +1113,45 @@ test "#483 6단계 — 창이 줄어 최소보다 작아진 pane 이 있어도: 
     try std.testing.expectError(error.TooSmall, tree.split(2, .right, 4, shrunk, m));
 }
 
-test "#483 equalize — 비율을 양쪽 leaf 수에 비례시킨다" {
+test "#483 equalize — 같은 축은 한 줄로 칸 셈 (2026-08-28 결정 ①): A | (B/C) 는 반씩, A | B | C 는 셋이 같게" {
     var tree = Tree.single(1);
     try tree.split(1, .right, 2, wide, mac2x);
-    try tree.split(2, .down, 3, wide, mac2x); // 1 | (2 / 3)
+    try tree.split(2, .down, 3, wide, mac2x); // 1 | (2 / 3) — 가로 줄의 칸은 [1, (2/3)] 둘
+    // 루트 선을 한쪽으로 몰아 두고 균등 → 루트 반씩, 안쪽 위아래 반씩.
+    try std.testing.expect(tree.resize(1, .right, 10, wide, mac2x));
     tree.equalize();
     var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
     const p = layout(&tree, wide, mac2x, &buf);
-    // root 1/3 → 3050 / 3 = 1016.7 → (1016.7 − 44) / 19 = 51.2 → 51 열, 1013 px.
-    try std.testing.expectEqual(@as(u16, 51), p[0].cols);
-    try std.testing.expectEqual(@as(i32, 1013), p[0].rect.w);
-    // 오른쪽 둘은 2037 px → 104 열, 위아래 반씩.
-    try std.testing.expectEqual(@as(u16, 104), p[1].cols);
-    try std.testing.expectEqual(@as(u16, 104), p[2].cols);
+    // root ½ → 3050 / 2 = 1525 → (1525 − 44) / 19 = 77.9 → 78 열, 1526 px (leaf 가중이었다면 51 열).
+    try std.testing.expectEqual(@as(u16, 78), p[0].cols);
+    try std.testing.expectEqual(@as(i32, 1526), p[0].rect.w);
+    try std.testing.expectEqual(@as(u16, 77), p[1].cols);
+    try std.testing.expectEqual(@as(u16, 77), p[2].cols);
     try std.testing.expectEqual(@as(i32, 1800), p[1].rect.h + 2 + p[2].rect.h);
+    try std.testing.expect(@abs(@as(i32, p[1].rect.h) - @as(i32, p[2].rect.h)) <= 39);
+
+    // 1 | (2 | 3) — 같은 축이 이어져 한 줄에 칸 셋 → ⅓ 씩 (층별 반씩이었다면 78 · 38 · 37).
+    var row = Tree.single(1);
+    try row.split(1, .right, 2, wide, mac2x);
+    try row.split(2, .right, 3, wide, mac2x);
+    row.equalize();
+    const r = layout(&row, wide, mac2x, &buf);
+    try std.testing.expectEqual(@as(u16, 51), find(r, 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 51), find(r, 2).?.cols);
+    try std.testing.expectEqual(@as(u16, 51), find(r, 3).?.cols);
+
+    // 1 | 2 | (3 / 4) — 줄의 칸은 [1, 2, (3/4)] 셋 → 폭 ⅓ 씩, 3 · 4 는 위아래 반씩.
+    var mixed = Tree.single(1);
+    try mixed.split(1, .right, 2, wide, mac2x);
+    try mixed.split(2, .right, 3, wide, mac2x);
+    try mixed.split(3, .down, 4, wide, mac2x);
+    mixed.equalize();
+    const x = layout(&mixed, wide, mac2x, &buf);
+    try std.testing.expectEqual(@as(u16, 51), find(x, 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 51), find(x, 2).?.cols);
+    try std.testing.expectEqual(@as(u16, 51), find(x, 3).?.cols);
+    try std.testing.expectEqual(@as(u16, 51), find(x, 4).?.cols);
+    try std.testing.expect(@abs(@as(i32, find(x, 3).?.rect.h) - @as(i32, find(x, 4).?.rect.h)) <= 39);
 
     // 좌우 하나면 그대로 반씩.
     var two = Tree.single(1);

@@ -21,7 +21,7 @@ is not US QWERTY.
 | Split the active pane with a horizontal line — new pane below | Ctrl+Shift+↓ | Option+Cmd+↓ | Ctrl+Shift+↓ |
 | Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
 | Move the split line next to the active pane by one cell (stops at the minimum pane size; only the panes touching that line change) | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
-| Make all panes of the tab the same size | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
+| Equalize the panes — every row or column of panes shares its space evenly | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
 | Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
@@ -339,9 +339,11 @@ the arrow keys with Alt (Cmd on macOS): the pane that is geometrically next in t
 direction takes the keyboard, measured from the cursor's row or column, so in a
 three-pane layout you land on the neighbour the cursor is actually facing.
 Shift+Alt+arrows (Shift+Cmd+arrows) move the split line touching the active pane by
-one cell; Shift+Alt+0 (Shift+Cmd+0) makes every pane in the tab the same size (a
-split between one pane and two stacked panes becomes 1/3 : 2/3, like tmux's
-`select-layout even-*`).
+one cell; Shift+Alt+0 (Shift+Cmd+0) equalizes the panes: panes that sit in one row
+(or one column) share it evenly, and a group that is split the other way counts as
+one of them — three panes side by side become thirds, a pane next to two stacked
+panes gets half of the width while the two stacked panes split the other half
+top and bottom (the way tmux and iTerm2 spread the cells of a row).
 
 The active pane is marked by a 1 pt amber line along the edges it shares with other
 panes. When only one of its edges touches another pane — the two halves of a

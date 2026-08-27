@@ -3273,7 +3273,7 @@ fn handleResizePane(dir: pane_layout.Direction) void {
     afterPaneLayoutChange();
 }
 
-/// 활성 탭의 pane 넓이를 고르게 (`Tree.equalize` — leaf 수 비례).
+/// 활성 탭의 분할선을 모두 가운데로 (`Tree.equalize` — 같은 축은 한 줄로 칸 셈).
 fn handleEqualizePanes() void {
     if (g_renderer == null or g_session.activeGroup() == null) return;
     g_session.equalizeActive(paneAreaMac(), paneMetricsMac());

@@ -5631,7 +5631,7 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
-    /// #483 4b — 활성 탭의 pane 넓이를 고르게 (`Tree.equalize` — leaf 수 비례).
+    /// #483 4b — 활성 탭의 분할선을 모두 가운데로 (`Tree.equalize` — 같은 축은 한 줄로 칸 셈).
     fn handleEqualizePanes(self: *Client) void {
         const session = if (self.session) |*s| s else return;
         if (session.activeGroup() == null) return;

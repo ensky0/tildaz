@@ -1183,7 +1183,8 @@ pub const SessionCore = struct {
     }
 
     /// 활성 탭의 분할 비율을 양쪽 leaf 수에 비례시켜 pane 마다 넓이가 같아지게 (확정 설계 §②
-    /// `equalize`, `pane_layout.Tree.equalize` — tmux `even-*` 와 같은 정의).
+    /// `equalize`, `pane_layout.Tree.equalize` — 같은 축의 분할은 한 줄로 보고 칸 수로 나눔, tmux · iTerm2 의 n-ary
+    /// 분할 "고르게" 와 같은 결과).
     pub fn equalizeActive(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
         const group = self.activeGroup() orelse return;
         _ = group.unzoom();
