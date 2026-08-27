@@ -680,7 +680,8 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 최대화 (zoom) | `zoom_pane` 토글 — 켜면 활성 pane 하나가 탭 영역 전체 (`TabGroup.zoomed`, `layout` 이 `leafRect` 하나를 돌려준다), 다른 pane 은 그리지 않되 셸은 계속 돈다. 분할 · 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (tmux zoom 규칙), 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다. 표시는 따로 없다 (분할선 · amber 가 사라지는 것으로 안다) | `ctrl+shift+z` → `App.handleZoomPane` | `shift+cmd+z` → `handleZoomPane` | `ctrl+shift+z` → `SessionCore.toggleZoomActive` | 🔶 | ✅ | ✅ |
 | 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 아래 자리는 고스트도 없고 놓아도 무시. 커서는 분할선 위에서 `col_resize` / `row_resize` | `App.sep_drag` · `finishSeparatorDrag`, 커서는 `WM_SETCURSOR` 의 `IDC_SIZEWE` / `IDC_SIZENS` (`CursorRegion.separator_*`) | `g_sep_drag` · `finishSeparatorDrag`, 커서는 `resetCursorRects` 의 `resizeLeftRight/UpDownCursor` | `sep_drag` · `finishSeparatorDrag` | 🔶 | ✅ | ✅ |
 | 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_*`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | 🔶 | ✅ | ✅ |
-| 미구현 (6단계) | 비활성 pane 스크롤바 조작 · pane 별 출력 드레인 우선순위 · IME 세부 | | | | ⬜ | ⬜ | ⬜ |
+| 출력 드레인 | 예산 4 ms 하나를 보이는 pane 이 나눠 씀 — 활성 pane 먼저, pane 사이에도 예산 검사 (§13.3.1, 실측 표) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 비활성 pane 스크롤바 | 클릭 = 그 pane 포커스 뒤 그 pane 의 scrollbar 로 (좌클릭 경로가 포커스를 먼저 옮긴다) | 동일 | 동일 | 동일 | 🔶 | ✅ | ✅ |
 
 ---
 
@@ -1675,6 +1676,36 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 **예산은 사양 A 가 있을 때만 줄일 수 있다.** 사양 A 를 끈 구조에서 8 → 4 ms 를 하면 duty 가 프레임
 상한에 붙어 처리량이 반토막난다 (Windows ② 60 Hz 실측: 29.3~30.2 → 15.1~15.2 MiB/s, ×0.50). 즉 예산은
 사양 A 아래에서 **응답성 손잡이**, 사양 A 없이는 **처리량 손잡이**다.
+
+### 13.3.1 pane 수 축 — 예산은 하나, 보이는 pane 이 나눠 쓴다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27)
+
+화면 분할로 "활성/비활성" 2 분법이 "보임/안 보임" 이 됐다. `drainFrame` 은 **활성 pane 을 먼저**, 그다음 보이는
+pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산을 검사**한다 — 검사 없이 N 청크를 돌면 최악 점유가
+`예산 + N 청크` 로 pane 수에 비례해 커진다. 예산 자체는 **4 ms 하나**다 — 보이는 pane 이 몇이든 UI 스레드가 한
+번에 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다. "pane 마다 1 ms" 나
+"pane 수 × 4 ms" 는 택하지 않았다 — 전자는 처리량을 pane 수로 나누고 (사양 A 가 있어 어차피 프레임 사이에 더
+드레인한다), 후자는 최악 입력 지연을 pane 수에 비례해 늘린다.
+
+**실측** (`zig build stress -- throughput --layer frame --panes N`, pane 마다 producer 하나 · 32 MiB, macOS Apple
+Silicon, 4 ms 예산). 하네스는 pane 을 가장 큰 pane 부터 모양대로 갈라 균등 배치한다 (`--panes`, `--cols/--rows` 는
+pane 들의 합).
+
+| pane | 격자 (합) | 모사 fps | 합계 처리량 | 드레인 1 회 최장 | 예산 초과 프레임 | producer 종료 퍼짐 |
+|---|---|---|---|---|---|---|
+| 1 | 120×40 | 120 | 135~149 MiB/s | 1.45~1.88 ms | 0 | — |
+| 2 | 120×40 | 120 | 230~235 | 4.07 | 7 / 43 | 0 ms (같은 프레임) |
+| 4 | 120×40 | 120 | 207~214 | 4.07 | 25 / 81 | 0 ms |
+| 4 | 120×40 | 60 | 194~195 | 4.08 | 39 / 44 | 0 ms |
+| 8 | 240×80 | 120 | 130 | 3.89 | 0 / 247 | 16 ms (2 프레임) |
+| 8 | 240×80 | 60 | 129 | 4.10 | 17 / 126 | 16 ms |
+| 16 | 240×80 | 120 | 114 | 4.04 | 3 / 556 | 109 ms |
+| 16 | 240×80 | 60 | 114 | 4.09 | 47 / 279 | 66 ms |
+
+읽는 법 — **드레인 1 회 최장 점유가 pane 수와 무관하게 4.0~4.1 ms** 다 (pane 사이 검사를 넣기 전 4 pane 은
+4.20~4.30 이었다). 합계 처리량은 2~4 pane 에서 producer 가 늘어 오르고 8 · 16 에서는 producer 가 CPU 를 나눠 내려간다
+(pane 하나의 몫이 아니라 합계다). "예산 초과 프레임" 은 4 ms 를 넘긴 프레임 수 — 초과 폭은 청크 하나 (≤ 0.1 ms) 다.
+producer 종료 퍼짐은 pane 간 공정성이다 — 16 pane 도 한 자릿수 프레임 안에 함께 끝난다. `frame` 층은 프레임마다
+한 번만 드레인해 (사양 A 없음) 앱의 하한이다.
 
 ### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
 
