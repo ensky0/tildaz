@@ -19,10 +19,8 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-_(empty — folded into `v0.9.0.md`)_
+_(empty — folded into `v0.9.1.md`)_
 
 ## Body candidates
 
-- Dead keys combine on Linux — `^` then `e` gives `ê`, the pending `^` is shown at
-  the cursor while it waits, and German and Spanish layouts can type a backtick.
-  ([#494](https://github.com/ensky0/tildaz/issues/494), [#530](https://github.com/ensky0/tildaz/issues/530))
+_(empty — folded into `v0.9.1.md`)_
