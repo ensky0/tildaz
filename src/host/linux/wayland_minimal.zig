@@ -28,6 +28,7 @@ const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
 const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
+const key_encode = @import("../../key_encode.zig");
 const software_terminal = @import("software_terminal.zig");
 const run_options = @import("../../run_options.zig");
 const dialog_layout = @import("dialog_layout.zig");
@@ -898,60 +899,6 @@ test "#496 1-a 라틴 fallback — 라벨이 닿지 않을 때만 자리로 잡�
         @as(?config_mod.ActionInput, .{ .input = .{ .shortcut = .new_tab } }),
         classifyInput(b, &fallbacks, xkb_key_t_lower, .key_w, true, true, false, false),
     );
-}
-
-
-fn terminalSequenceForKeysym(sym: u32) ?[]const u8 {
-    return switch (sym) {
-        xkb_key_return => "\r",
-        xkb_key_escape => "\x1b",
-        xkb_key_backspace => "\x7f",
-        xkb_key_tab => "\t",
-        xkb_key_iso_left_tab => "\x1b[Z",
-        xkb_key_up => "\x1b[A",
-        xkb_key_down => "\x1b[B",
-        xkb_key_right => "\x1b[C",
-        xkb_key_left => "\x1b[D",
-        xkb_key_home => "\x1b[H",
-        xkb_key_end => "\x1b[F",
-        xkb_key_insert => "\x1b[2~",
-        xkb_key_delete => "\x1b[3~",
-        xkb_key_page_up => "\x1b[5~",
-        xkb_key_page_down => "\x1b[6~",
-        // #282 A7 — F1~F12 xterm sequence (htop/mc 등 TUI). macOS keyCodeToEscape 와 동일.
-        xkb_key_f1 => "\x1bOP",
-        xkb_key_f2 => "\x1bOQ",
-        xkb_key_f3 => "\x1bOR",
-        xkb_key_f4 => "\x1bOS",
-        xkb_key_f5 => "\x1b[15~",
-        xkb_key_f6 => "\x1b[17~",
-        xkb_key_f7 => "\x1b[18~",
-        xkb_key_f8 => "\x1b[19~",
-        xkb_key_f9 => "\x1b[20~",
-        xkb_key_f10 => "\x1b[21~",
-        xkb_key_f11 => "\x1b[23~",
-        xkb_key_f12 => "\x1b[24~",
-        else => null,
-    };
-}
-
-test "terminalSequenceForKeysym: F1~F12 xterm sequence (#282 A7)" {
-    const T = std.testing;
-    try T.expectEqualStrings("\x1bOP", terminalSequenceForKeysym(xkb_key_f1).?);
-    try T.expectEqualStrings("\x1bOQ", terminalSequenceForKeysym(xkb_key_f2).?);
-    try T.expectEqualStrings("\x1bOR", terminalSequenceForKeysym(xkb_key_f3).?);
-    try T.expectEqualStrings("\x1bOS", terminalSequenceForKeysym(xkb_key_f4).?);
-    try T.expectEqualStrings("\x1b[15~", terminalSequenceForKeysym(xkb_key_f5).?);
-    try T.expectEqualStrings("\x1b[17~", terminalSequenceForKeysym(xkb_key_f6).?);
-    try T.expectEqualStrings("\x1b[18~", terminalSequenceForKeysym(xkb_key_f7).?);
-    try T.expectEqualStrings("\x1b[19~", terminalSequenceForKeysym(xkb_key_f8).?);
-    try T.expectEqualStrings("\x1b[20~", terminalSequenceForKeysym(xkb_key_f9).?);
-    try T.expectEqualStrings("\x1b[21~", terminalSequenceForKeysym(xkb_key_f10).?);
-    try T.expectEqualStrings("\x1b[23~", terminalSequenceForKeysym(xkb_key_f11).?);
-    try T.expectEqualStrings("\x1b[24~", terminalSequenceForKeysym(xkb_key_f12).?);
-    // nav 키는 기존대로 유지 (회귀 없음)
-    try T.expectEqualStrings("\x1b[2~", terminalSequenceForKeysym(xkb_key_insert).?);
-    try T.expectEqualStrings("\x1b[3~", terminalSequenceForKeysym(xkb_key_delete).?);
 }
 
 fn createMemfd(name: [*:0]const u8) !posix.fd_t {
@@ -6027,10 +5974,6 @@ const Client = struct {
                 }
                 return;
             }
-            if (terminalSequenceForKeysym(sym)) |seq| {
-                self.queueInput(seq);
-                return;
-            }
         }
 
         // #494 — dead key 조합 (Compose). `^` (`dead_circumflex`) 는 아래 `utf8()` 이 빈 문자열이라
@@ -6064,6 +6007,9 @@ const Client = struct {
                         self.dropComposePreview();
                         return;
                     },
+                    // #533 — 조합 결과만 인코더를 거치지 않는다. 이 경로는 위에서
+                    // `!ctrl and !alt` 일 때만 들어오므로 실어 보낼 modifier 가 없고,
+                    // 결과는 조합이 만든 글자 그대로다 (#494 에서 검증된 동작).
                     .composed => |text| {
                         self.dropComposePreview();
                         self.queueInput(text);
@@ -6072,8 +6018,51 @@ const Client = struct {
                 }
             }
         }
-        const bytes = self.keyboard.utf8(xkb_key, &buf);
+        // #533 — 여기서 PTY 로 나가는 바이트가 정해진다. 예전엔 `utf8()` 결과를 그대로
+        // 보냈고 (그래서 Alt 가 사라졌다) 그 위에 `terminalSequenceForKeysym` 이 특수키를
+        // 따로 적고 있었다. 이제 둘 다 인코더 한 곳으로 모은다 — modifier 가 실린다.
+        self.sendEncodedKey(key, xkb_key, self.keyboard.utf8(xkb_key, &buf));
+    }
+
+    /// #533 — 키 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다.
+    ///
+    /// `key` 는 wl_keyboard 가 준 raw evdev keycode, `xkb_key` 는 거기에 8 을 더한 xkb 값이다
+    /// (둘 다 필요하다 — 물리 위치는 evdev 로, xkb 조회는 xkb 값으로 한다).
+    fn sendEncodedKey(self: *Client, key: u32, xkb_key: u32, utf8: []const u8) void {
+        const consumed = self.keyboard.consumedMods(xkb_key);
+        var out_buf: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&out_buf);
+        key_encode.encode(&writer, .{
+            .code = physical_key.fromEvdev(key),
+            .mods = .{
+                .shift = self.keyboard.shiftActive(),
+                .ctrl = self.keyboard.ctrlActive(),
+                .alt = self.keyboard.altActive(),
+                .super = self.keyboard.superActive(),
+            },
+            // #533 정책 ③ — AltGr 처럼 이미 문자를 낸 조합에 ESC 가 붙지 않게 한다.
+            .consumed_mods = .{
+                .shift = consumed.shift,
+                .ctrl = consumed.ctrl,
+                .alt = consumed.alt,
+                .super = consumed.super,
+            },
+            .utf8 = utf8,
+            // kitty keyboard protocol 이 쓰는 값이다. 그 protocol 의 key release 보고와
+            // 함께 후속으로 채운다 (#533 코멘트의 결정).
+            .unshifted_codepoint = 0,
+        }, self.keyEncodeOptions()) catch return;
+        const bytes = writer.buffered();
         if (bytes.len > 0) self.queueInput(bytes);
+    }
+
+    /// #533 — 인코딩 옵션. 여덟 개 중 일곱 개는 터미널 상태가 정하고
+    /// (`alt_esc_prefix` 같은 DEC mode · kitty flags), 나머지 하나 `macos_option_as_alt`
+    /// 는 macOS 전용이라 이 host 에서는 기본값 그대로다.
+    fn keyEncodeOptions(self: *Client) key_encode.Options {
+        const session = if (self.session) |*s| s else return .{};
+        const tab = session.activeTab() orelse return .{};
+        return key_encode.Options.fromTerminal(&tab.terminal);
     }
 
     /// #296 — resolve 가 run_action 으로 판정한 전역 단축키 실행. pending
