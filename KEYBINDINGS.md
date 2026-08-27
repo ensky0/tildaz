@@ -52,6 +52,17 @@ Everything in the table above except the scrollback row can be rebound in
 the scrollback is fixed, because it is scrolling rather than a shortcut: the same
 action as the mouse wheel, which is also not rebindable.
 
+## Keys we do not take
+
+Anything TildaZ does not bind is passed to the program running inside it, encoded the way
+xterm does it. `Alt+n` reaches zellij, tmux and emacs; `Shift+Left` and `Alt+Left` arrive as
+`CSI 1;2D` and `CSI 1;3D`. Applications that turn on the kitty keyboard protocol get that
+encoding instead.
+
+On macOS the Option key types characters by default (`Option+a` → `å`), so `Option+n` does
+**not** act as Alt until you set `[input] macos_option_as_alt` in the config. Keys that produce
+no character are unaffected: `Option+Left` sends `CSI 1;3D` whatever that setting says.
+
 ## Keyboard layouts
 
 Every binding above can be changed in `[keys]` (see CONFIG.md). This section is
