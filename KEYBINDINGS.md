@@ -328,9 +328,8 @@ closes the tab when the pane is the last one; a shell exiting inside a pane does
 same. A split that would leave any pane smaller than 20×5 cells is refused with a
 dialog, as is the 17th pane.
 
-**Status:** Linux and macOS ([#483](https://github.com/ensky0/tildaz/issues/483)).
-The Windows column above is already the default in `[keys]`, but the actions do nothing
-there until the Windows host is wired.
+**Status:** implemented on all three platforms ([#483](https://github.com/ensky0/tildaz/issues/483));
+Linux and macOS are verified, the Windows build is awaiting hands-on verification.
 
 ## Tab limit
 
