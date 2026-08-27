@@ -3429,7 +3429,14 @@ fn tildazScrollWheel(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.
 
     // delta 부호: 양수 deltaY (위로) → scrollback 위쪽 (older) = delta 음수
     // (ghostty `scrollViewport(.{.delta = -N})` 가 위쪽).
-    tab.terminal.scrollViewport(.{ .delta = -lines });
+    // #483 6단계 결정 B — 휠은 **포인터 아래 pane** 을 스크롤하고 포커스는 바꾸지 않는다. 분할선 위나 pane
+    // 밖이면 활성 pane.
+    const target = blk: {
+        if (g_renderer == null) break :blk tab;
+        const px = eventToWindowPx(self_view, event);
+        break :blk g_session.paneTabAt(@intFromFloat(@floor(px.x)), @intFromFloat(@floor(px.y)), paneAreaMac(), paneMetricsMac()) orelse tab;
+    };
+    target.terminal.scrollViewport(.{ .delta = -lines });
 }
 
 fn registerTildazViewClass() !objc.Class {

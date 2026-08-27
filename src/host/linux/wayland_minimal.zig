@@ -6926,13 +6926,12 @@ const Client = struct {
         if (self.routeWheelLinux(wheel_i16)) return;
 
         if (self.session) |*session| {
-            // SessionCore.scrollActive 의 visible_rows 인자 — page scroll 계산용.
-            // wheel 자체는 i16 만 보지만 같은 인터페이스라 함께 전달.
-            // #483 4b — 활성 pane 의 행 수 (pane 마다 다르다). pane 하나일 때 창 높이에서 계산한
-            // 이전 값과 같다.
-            const visible_rows: u16 = @max(1, (session.activeTab() orelse return).terminal.rows);
-            const did = session.scrollActive(.{ .wheel = .{ .delta = wheel_i16 } }, visible_rows);
-            if (did) self.requestRedraw();
+            // #483 6단계 결정 B — 휠은 **포인터 아래 pane** 을 스크롤하고 포커스는 바꾸지 않는다. 분할선 위나
+            // pane 밖이면 활성 pane. 행 수는 그 pane 의 것 (같은 인터페이스라 함께 전달 — wheel 은 i16 만 본다).
+            const target = session.paneTabAt(self.pointer_x_px, self.pointer_y_px, self.paneArea(), self.paneMetrics()) orelse
+                session.activeTab() orelse return;
+            session_core.SessionCore.scrollTab(target, .{ .wheel = .{ .delta = wheel_i16 } }, @max(1, target.terminal.rows));
+            self.requestRedraw();
         }
     }
 
