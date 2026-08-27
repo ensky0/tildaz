@@ -34,4 +34,7 @@ pub const PaneDraw = struct {
     preedit_utf8: []const u8,
     /// #376 — 프레임 단위 blink 위상. host 의 게이트가 구한 값을 그대로 내린다.
     blink_faint: bool,
+    /// #483 5단계 — 키보드가 가는 pane 인가. 렌더러가 pane 마다 달라야 하는 부수 효과 (Windows 의 IME 조합
+    /// 창 위치 `last_cursor_px`) 를 활성 pane 에만 적용하는 데 쓴다. 그리기 자체는 이 값을 보지 않는다.
+    is_active: bool,
 };

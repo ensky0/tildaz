@@ -5,6 +5,7 @@ const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
 const windows_input_adapter = @import("windows_input_adapter.zig");
 const session_core = @import("session_core.zig");
+const pane_layout = @import("pane_layout.zig");
 const SessionCore = session_core.SessionCore;
 const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
@@ -27,6 +28,10 @@ const messages = @import("messages.zig");
 const command_menu = @import("command_menu.zig");
 const shell_validate = @import("shell_validate.zig");
 const run_options = @import("run_options.zig");
+
+/// #483 5단계 — 분할선 드래그 상태 (Linux `Client.sep_drag` 상당). 놓을 때만 트리에 적용한다 — 드래그
+/// 중엔 프레임이 트리 복사본에 놓아 본 자리에 amber 고스트를 그린다.
+const SepDrag = struct { node: u8, axis: pane_layout.Axis, px: c_int };
 
 pub const App = struct {
     /// #451 — 진입점이 만든 `Io` · 환경변수 묶음. 릴리즈 노트가 지정한 두 길 중
@@ -84,6 +89,7 @@ pub const App = struct {
     /// 터치패드는 이벤트당 `WHEEL_DELTA` 미만이 와서 (#334 와 같은 문제) 누적
     /// 없이는 한 notch 도 안 나간다. 나머지는 보존한다.
     report_wheel_accum: i32 = 0,
+    sep_drag: ?SepDrag = null,
     toggle_hotkey_hint: [64]u8 = [_]u8{0} ** 64,
     toggle_hotkey_hint_len: usize = 0,
     /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
@@ -205,8 +211,18 @@ pub const App = struct {
         if (self.gridWindowPercent()) |pct| {
             self.window.setPosition(self.window.dock, pct.w, pct.h, self.window.offset_percent);
         }
-        const grid = self.getTerminalGridSize();
-        self.session.resizeAll(grid.cols, grid.rows);
+        self.syncPaneGrids();
+    }
+
+    /// #483 5단계 — 모든 탭의 pane 격자를 layout 에 맞춘다 (`applyLayouts`, 같은 격자면 건너뜀). `-size` 측정
+    /// 인스턴스는 창 안 단축키가 없어 분할이 없으므로 pane 하나에 요청 격자 그대로 (#382 — 이전의 `resizeAll`).
+    fn syncPaneGrids(self: *App) void {
+        if (self.grid != null) {
+            const grid = self.getTerminalGridSize();
+            self.session.resizeAll(grid.cols, grid.rows);
+            return;
+        }
+        self.session.applyLayouts(self.paneArea(), self.paneMetrics());
     }
 
     pub fn createTab(self: *App) !void {
@@ -223,7 +239,9 @@ pub const App = struct {
     /// invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
     fn closeTab(self: *App, index: usize) void {
         if (tab_actions.closeIndex(&self.host, index) == .changed) {
-            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
+            // #483 — pane 이 닫혀도 (탭 수 그대로) 남은 pane 이 자리를 이어받으므로 격자를 맞춘다; 2 → 1 탭
+            // 전환 (#127) 도 같은 경로다 (`applyLayouts` 는 같은 격자면 건너뛴다).
+            self.syncGeometryAfterTabCountChange();
         }
     }
 
@@ -255,13 +273,180 @@ pub const App = struct {
         }
         // 탭바 영역 — 버튼 성격 영역이라 arrow.
         if (y < tab_bar_h) return .other;
-        const size = self.window.getClientSize();
-        if (x >= size.w - self.SCROLLBAR_W) return .other; // 스크롤바
+        // #483 5단계 — 분할선 위 (±slop) 는 리사이즈 커서, pane 의 셀 영역 (padding · scrollbar 자리 안쪽) 은
+        // I-beam. pane 하나면 이전의 창 기준 판정과 같다.
+        if (self.separatorAt(x, y)) |s| return if (s.axis == .side_by_side) .separator_v else .separator_h;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        const lay = self.activeLayout(&buf);
+        const id = pane_layout.paneAt(lay, x, y) orelse return .other;
+        const pr = pane_layout.find(lay, id) orelse return .other;
         const pad = self.TERMINAL_PADDING;
-        if (x < pad or y < tab_bar_h + pad) return .other; // 좌측 / 상단 padding
-        if (y >= size.h - pad) return .other; // 하단 padding
-        if (x >= size.w - pad - self.SCROLLBAR_W) return .other; // 우측 padding (스크롤바 옆)
+        if (x < pr.grid_x or y < pr.grid_y) return .other; // 좌측 / 상단 padding
+        if (y >= pr.rect.y + pr.rect.h - pad) return .other; // 하단 padding
+        if (x >= pr.rect.x + pr.rect.w - pad - self.SCROLLBAR_W) return .other; // 우측 padding · 스크롤바
         return .cell;
+    }
+
+    // ── #483 5단계 — pane 기하 helper (Linux `Client.paneMetrics` … · macOS `paneMetricsMac` … 상당) ──
+
+    fn paneMetrics(self: *const App) pane_layout.Metrics {
+        return .{
+            .cell_w = self.window.cell_width_px,
+            .cell_h = self.window.cell_height_px,
+            .pad = self.TERMINAL_PADDING,
+            .scrollbar_w = self.SCROLLBAR_W,
+            .separator_w = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_SEPARATOR_W_PT, self.dpi_scale)),
+        };
+    }
+
+    /// 탭바를 뺀 터미널 영역 (`pane_layout.layout` 의 `rect`).
+    fn paneArea(self: *const App) pane_layout.Rect {
+        const size = self.window.getClientSize();
+        const tab_bar_h = self.effectiveTabBarHeight();
+        return .{ .x = 0, .y = tab_bar_h, .w = size.w, .h = size.h - tab_bar_h };
+    }
+
+    /// 활성 탭의 pane 배치 (최대화 반영, `TabGroup.layout`). 창 · 탭이 없으면 빈 slice.
+    fn activeLayout(self: *const App, buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect) []pane_layout.PaneRect {
+        if (self.window.hwnd == null) return buf[0..0];
+        const sess = &self.session;
+        if (sess.active_tab >= sess.tabs.items.len) return buf[0..0];
+        return sess.tabs.items[sess.active_tab].layout(self.paneArea(), self.paneMetrics(), buf);
+    }
+
+    fn activePaneRect(self: *const App) ?pane_layout.PaneRect {
+        const sess = &self.session;
+        if (sess.active_tab >= sess.tabs.items.len) return null;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        return pane_layout.find(self.activeLayout(&buf), sess.tabs.items[sess.active_tab].active_pane);
+    }
+
+    /// 활성 pane 의 첫 셀 좌상 px. pane 이 없으면 pane 하나일 때의 값 (`pad` · `tab_bar_h + pad`).
+    fn activeGridOrigin(self: *const App) struct { x: c_int, y: c_int } {
+        if (self.activePaneRect()) |pr| return .{ .x = pr.grid_x, .y = pr.grid_y };
+        return .{ .x = self.TERMINAL_PADDING, .y = self.effectiveTabBarHeight() + self.TERMINAL_PADDING };
+    }
+
+    /// 활성 pane 의 격자 (터미널의 cols/rows). 탭이 없으면 창 격자.
+    fn activeGrid(self: *const App) struct { cols: u16, rows: u16 } {
+        if (self.session.tabs.items.len > self.session.active_tab) {
+            const t = self.session.tabs.items[self.session.active_tab].activeTab();
+            return .{ .cols = @max(1, t.terminal.cols), .rows = @max(1, t.terminal.rows) };
+        }
+        const g = self.getTerminalGridSize();
+        return .{ .cols = g.cols, .rows = g.rows };
+    }
+
+    /// pane 의 scrollbar track inset — 단일 탭 컨트롤 스트립 (#329) 은 오른쪽 위에 얹히므로 그 모서리를 가진
+    /// pane 만 (pane 하나면 이전의 `scrollbarTopInset − tab_bar_h`).
+    fn paneScrollbarTopInset(self: *const App, rect: pane_layout.Rect, area: pane_layout.Rect) c_int {
+        const inset = self.scrollbarTopInset() - self.effectiveTabBarHeight();
+        if (inset <= 0) return 0;
+        return if (rect.y == area.y and rect.x + rect.w == area.x + area.w) inset else 0;
+    }
+
+    /// 포인터 아래의 분할선 (양쪽 `PANE_SEPARATOR_HIT_SLOP_PT`). 메뉴가 떠 있으면 null.
+    fn separatorAt(self: *const App, x: c_int, y: c_int) ?pane_layout.Separator {
+        if (self.window.hwnd == null or self.command_menu_open) return null;
+        const sess = &self.session;
+        if (sess.active_tab >= sess.tabs.items.len) return null;
+        var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+        const seps = sess.tabs.items[sess.active_tab].separators(self.paneArea(), self.paneMetrics(), &buf);
+        const slop = ui_metrics.scaledPx(c_int, ui_metrics.PANE_SEPARATOR_HIT_SLOP_PT, self.dpi_scale);
+        return pane_layout.separatorAt(seps, x, y, slop);
+    }
+
+    /// 포인터가 활성 pane 의 scrollbar 자리 (오른쪽 `SCROLLBAR_W`, pane 높이 전체) 안인가. pane 하나면 이전의
+    /// `x >= client_w − SCROLLBAR_W` 와 같다.
+    fn inActiveScrollbarColumn(self: *const App, x: c_int, y: c_int) bool {
+        const pr = self.activePaneRect() orelse return false;
+        return x >= pr.rect.x + pr.rect.w - self.SCROLLBAR_W and x < pr.rect.x + pr.rect.w and y >= pr.rect.y and y < pr.rect.y + pr.rect.h;
+    }
+
+    /// 포인터 아래 pane 이 활성 pane 이 아니면 그 pane 으로 포커스를 옮기고 true (Linux · macOS 와 같은 규칙).
+    fn focusPaneUnderPointer(self: *App, x: c_int, y: c_int) bool {
+        const group = self.session.activeGroup() orelse return false;
+        const id = self.session.paneIdAt(x, y, self.paneArea(), self.paneMetrics()) orelse return false;
+        if (id == group.active_pane) return false;
+        group.activeTab().interaction.cancelPointerModes();
+        self.window.setAutoScroll(false);
+        _ = self.session.setActivePane(id);
+        log.appendLine("pane", "focus by click — active pane {}", .{id});
+        return true;
+    }
+
+    /// 활성 pane 을 `dir` 쪽으로 가른다. 거부 (`TooSmall` · `TooManyPanes`) 는 탭 한도와 같은 dialog.
+    fn handleSplit(self: *App, dir: pane_layout.Direction) void {
+        if (self.window.hwnd == null) return;
+        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
+        self.session.splitActive(dir, self.paneArea(), self.paneMetrics()) catch |err| switch (err) {
+            error.TooSmall => {
+                var buf: [160]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
+                    messages.pane_too_small_format;
+                dialog.showInfo(self.rt, messages.pane_too_small_title, msg);
+                return;
+            },
+            error.TooManyPanes => {
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
+                    messages.pane_limit_format;
+                dialog.showInfo(self.rt, messages.pane_limit_title, msg);
+                return;
+            },
+            error.NoActiveTab => return,
+            else => {
+                log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+                return;
+            },
+        };
+        const group = self.session.activeGroup().?;
+        log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), self.session.active_tab, group.paneCount(), group.active_pane });
+    }
+
+    fn handleFocusPane(self: *App, dir: pane_layout.Direction) void {
+        const leaving = self.activeTabPtr() orelse return;
+        if (!self.session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
+        leaving.interaction.cancelPointerModes();
+        self.window.setAutoScroll(false);
+        // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
+        self.syncPaneGrids();
+        log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), self.session.activeGroup().?.active_pane });
+    }
+
+    fn handleResizePane(self: *App, dir: pane_layout.Direction) void {
+        _ = self.session.resizeActivePane(dir, 1, self.paneArea(), self.paneMetrics());
+    }
+
+    fn handleEqualizePanes(self: *App) void {
+        if (self.session.activeGroup() == null) return;
+        self.session.equalizeActive(self.paneArea(), self.paneMetrics());
+    }
+
+    /// `Ctrl+Shift+Z` — 활성 pane 최대화 토글. 격자는 `syncPaneGrids` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
+    fn handleZoomPane(self: *App) void {
+        if (!self.session.toggleZoomActive()) return;
+        self.syncPaneGrids();
+        log.appendLine("pane", "zoom {s} — active pane {}", .{ if (self.session.activeGroup().?.zoomed != null) "on" else "off", self.session.activeGroup().?.active_pane });
+    }
+
+    /// `+` 클릭 — Alt 를 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례). 방향은
+    /// pane 모양대로 — 넓으면 오른쪽, 높으면 아래.
+    fn handlePlusClick(self: *App) void {
+        if (!self.window.isAltDown()) {
+            if (self.resolveRunAction(.new_tab)) self.handleNewTab();
+            return;
+        }
+        if (!self.resolveRunAction(.split)) return;
+        const pr = self.activePaneRect() orelse return;
+        self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
+    }
+
+    /// 분할선 드래그를 놓았다 — 여기서 한 번만 트리에 적용 + 격자 (PTY resize 한 번, 확정 설계 축 2).
+    fn finishSeparatorDrag(self: *App, d: SepDrag) void {
+        if (self.session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) {
+            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, if (d.axis == .side_by_side) "x" else "y", d.px });
+        }
     }
 
     fn tabBarTotalWidth(self: *const App) c_int {
@@ -402,8 +587,7 @@ pub const App = struct {
             const size = self.window.getClientSize();
             r.resize(@intCast(@max(1, size.w)), @intCast(@max(1, size.h)));
         }
-        const grid = self.getTerminalGridSize();
-        self.session.resizeAll(grid.cols, grid.rows);
+        self.syncPaneGrids();
     }
 
     /// Recompute DPI-dependent UI constants (tab bar / close button / padding /
@@ -570,27 +754,52 @@ pub const App = struct {
                     self.tabBarLayout(),
                     self.tab_hover,
                 );
-                if (self.activeTabPtr()) |tab| {
-                    // #483 2단계 ② — 활성 탭 하나를 pane 으로 그린다. rect 는 탭바를 뺀 영역이라
-                    // 격자 원점 · scrollbar track 이 이전 인자와 같은 값이다. 4단계에서는
-                    // `pane_layout.layout()` 의 pane 마다 `drawPane` 을 부른다.
-                    r.drawPane(.{
-                        .terminal = &tab.terminal,
-                        .state = &tab.render_state,
-                        .rect = .{ .x = 0, .y = tab_bar_h, .w = size.w, .h = size.h - tab_bar_h },
-                        .cell_w = window.cell_width_px,
-                        .cell_h = window.cell_height_px,
-                        .pad = self.TERMINAL_PADDING,
-                        .scrollbar_w = @floatFromInt(self.SCROLLBAR_W),
-                        .scrollbar_min_thumb_h = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
-                        // 단일 탭이면 컨트롤 스트립 아래로 track 을 내린다 (#329). 탭바가 있으면 0.
-                        .scrollbar_top_inset = self.scrollbarTopInset() - tab_bar_h,
-                        // IME 자모는 cursor 옆 inline overlay (#164).
-                        .preedit_utf8 = self.window.imePreeditSlice(),
-                        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
-                        // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
-                        .blink_faint = blink_phase_now,
-                    });
+                if (self.session.activeGroup()) |group| {
+                    // #483 5단계 — 활성 탭의 pane 마다 `drawPane` (`TabGroup.layout` 순서 — 최대화면 하나).
+                    // rect 는 탭바를 뺀 영역을 트리로 나눈 것 (pane 하나면 2단계와 같은 값).
+                    const area = self.paneArea();
+                    const m = self.paneMetrics();
+                    var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+                    const lay = group.layout(area, m, &rect_buf);
+                    var active_rect: ?pane_layout.Rect = null;
+                    for (lay) |pr| {
+                        const t = group.panes[pr.pane].?;
+                        const is_active = pr.pane == group.active_pane;
+                        if (is_active and lay.len > 1) active_rect = pr.rect;
+                        r.drawPane(.{
+                            .terminal = &t.terminal,
+                            .state = &t.render_state,
+                            .rect = pr.rect,
+                            .cell_w = window.cell_width_px,
+                            .cell_h = window.cell_height_px,
+                            .pad = self.TERMINAL_PADDING,
+                            .scrollbar_w = @floatFromInt(self.SCROLLBAR_W),
+                            .scrollbar_min_thumb_h = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
+                            // 단일 탭의 컨트롤 스트립 (#329) 아래로 track 을 내린다 — 오른쪽 위 pane 만.
+                            .scrollbar_top_inset = self.paneScrollbarTopInset(pr.rect, area),
+                            // IME 자모는 키보드가 가는 pane (활성) 의 cursor 옆에만 (#164).
+                            .preedit_utf8 = if (is_active) self.window.imePreeditSlice() else &.{},
+                            // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
+                            // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+                            .blink_faint = blink_phase_now,
+                            .is_active = is_active,
+                        });
+                    }
+                    // 분할선 · amber · 드래그 고스트 (Linux · macOS 와 같은 규칙). 고스트는 트리 복사본에
+                    // 놓아 본 자리 — 스냅 · 최소 크기 판정을 실제 놓기와 같은 함수가 한다.
+                    var sep_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+                    const seps = group.separators(area, m, &sep_buf);
+                    var ghost: ?pane_layout.Rect = null;
+                    if (self.sep_drag) |d| {
+                        var trial = group.tree;
+                        if (trial.setSeparatorPx(d.node, d.px, area, m)) {
+                            var gbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+                            for (pane_layout.separators(&trial, area, m, &gbuf)) |s| {
+                                if (s.node == d.node) ghost = s.rect;
+                            }
+                        }
+                    }
+                    r.drawPaneChrome(seps, area, active_rect, ghost);
                     r.endFrame(
                         size.w,
                         tab_bar_h,
@@ -629,7 +838,9 @@ pub const App = struct {
         // 마지막 탭 → terminate (`window.closeAfterShellExit`), 그 외 → override
         // clear + invalidate. .changed 일 때만 grid resize (#127, 2 → 1 전환).
         if (tab_actions.closeByPtr(&self.host, tab_ptr) == .changed) {
-            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
+            // #483 — pane 이 닫혀도 (탭 수 그대로) 남은 pane 이 자리를 이어받으므로 격자를 맞춘다; 2 → 1 탭
+            // 전환 (#127) 도 같은 경로다 (`applyLayouts` 는 같은 격자면 건너뛴다).
+            self.syncGeometryAfterTabCountChange();
         }
     }
 
@@ -645,7 +856,9 @@ pub const App = struct {
         // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
         // grid resize (2 → 1 전환에서 탭바 사라짐, #127).
         if (tab_actions.closeActive(&self.host) == .changed) {
-            if (self.session.count() == 1) self.syncGeometryAfterTabCountChange();
+            // #483 — pane 이 닫혀도 (탭 수 그대로) 남은 pane 이 자리를 이어받으므로 격자를 맞춘다; 2 → 1 탭
+            // 전환 (#127) 도 같은 경로다 (`applyLayouts` 는 같은 격자면 건너뛴다).
+            self.syncGeometryAfterTabCountChange();
         }
     }
 
@@ -658,7 +871,8 @@ pub const App = struct {
     }
 
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
-        _ = self.session.scrollActive(event, self.getTerminalGridSize().rows);
+        // #483 5단계 — 한 페이지 = 활성 pane 의 행 수.
+        _ = self.session.scrollActive(event, self.activeGrid().rows);
     }
 
     /// 현재 활성 탭의 scrollbar `Hit` (track geometry + thumb geometry). 스크롤백이
@@ -668,14 +882,14 @@ pub const App = struct {
         const tab = self.activeTabPtr() orelse return null;
         if (self.window.hwnd == null) return null;
         const sb = tab.terminal.screens.active.pages.scrollbar();
-        const client_h = self.window.getClientSize().h;
-        const tbh = self.scrollbarTopInset();
+        // #483 5단계 — track 은 활성 pane 기준 (렌더러 `thumbRect` 인자와 같은 값 — pane 하나면 이전과 같다).
+        const pr = self.activePaneRect() orelse return null;
         return scrollbar.hit(
             sb.total,
             sb.len,
             sb.offset,
-            @floatFromInt(client_h),
-            @floatFromInt(tbh),
+            @floatFromInt(pr.rect.y + pr.rect.h),
+            @floatFromInt(pr.rect.y + self.paneScrollbarTopInset(pr.rect, self.paneArea())),
             @floatFromInt(self.TERMINAL_PADDING),
             @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
         );
@@ -785,8 +999,9 @@ pub const App = struct {
         switch (command) {
             .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
             .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
-            // #483 4c — 분할 메뉴 항목. 배선은 5단계 (Linux 먼저).
-            .split_right, .split_down => {},
+            // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
+            .split_right => if (self.resolveRunAction(.split)) self.handleSplit(.right),
+            .split_down => if (self.resolveRunAction(.split)) self.handleSplit(.down),
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),
@@ -863,7 +1078,8 @@ pub const App = struct {
                 // #329 — MAX_TABS 도달 시 비활성 `+` 클릭은 완전 noop (dialog
                 // 없음 — 비활성 overflow 화살표와 같은 관례).
                 if (!layout.plus_enabled) return;
-                if (self.resolveRunAction(.new_tab)) self.handleNewTab();
+                // #483 5단계 — Alt+클릭이면 분할 (`handlePlusClick` 이 가른다).
+                self.handlePlusClick();
                 return;
             },
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
@@ -962,7 +1178,9 @@ pub const App = struct {
         mouse_y: c_int,
         any_button: bool,
     ) mouse_report.Event {
-        const grid = self.getTerminalGridSize();
+        // #483 5단계 — 격자 원점 · 격자는 활성 pane 의 것.
+        const origin = self.activeGridOrigin();
+        const grid = self.activeGrid();
         return terminal_interaction.reportEvent(
             action,
             button,
@@ -975,8 +1193,8 @@ pub const App = struct {
                 .cols = grid.cols,
                 .rows = grid.rows,
                 // #483 — 격자 원점. Windows 는 pane 하나 (5단계 전) 라 `pad` · `tab_bar_h + pad`.
-                .grid_x = @intCast(self.TERMINAL_PADDING),
-                .grid_y = @as(i32, @intCast(self.effectiveTabBarHeight())) + @as(i32, @intCast(self.TERMINAL_PADDING)),
+                .grid_x = @intCast(origin.x),
+                .grid_y = @intCast(origin.y),
             },
             any_button,
         );
@@ -1063,9 +1281,11 @@ pub const App = struct {
     fn mouseToCell(self: *const App, mouse_x: c_int, mouse_y: c_int) terminal_interaction.Cell {
         const cw = self.window.cell_width_px;
         const ch = self.window.cell_height_px;
-        const grid = self.getTerminalGridSize();
-        const term_x = mouse_x - self.TERMINAL_PADDING;
-        const term_y = mouse_y - self.effectiveTabBarHeight() - self.TERMINAL_PADDING;
+        // #483 5단계 — 활성 pane 의 격자 원점 · 격자 (pane 하나면 `pad` · `tab_bar_h + pad`).
+        const origin = self.activeGridOrigin();
+        const grid = self.activeGrid();
+        const term_x = mouse_x - origin.x;
+        const term_y = mouse_y - origin.y;
         const col: u16 = if (cw > 0 and term_x >= 0) @intCast(@min(@divTrunc(term_x, cw), @as(c_int, grid.cols) - 1)) else 0;
         const row: u16 = if (ch > 0 and term_y >= 0) @intCast(@min(@divTrunc(term_y, ch), @as(c_int, grid.rows) - 1)) else 0;
         return .{ .col = col, .row = row };
@@ -1087,10 +1307,10 @@ pub const App = struct {
         // 경계 밖에 멈춰 둬도 연속되도록 window 의 auto-scroll 타이머를 on/off
         // (타이머가 마지막 mouse_move 를 재전송 → 이 함수 재진입). raw_row 는
         // @divFloor 로 음수(위 경계) 판정.
-        const tbh = self.effectiveTabBarHeight();
         const ch: i32 = @intCast(self.window.cell_height_px);
-        const term_y: i32 = @intCast(mouse_y - tbh - self.TERMINAL_PADDING);
-        const grid = self.getTerminalGridSize();
+        // #483 5단계 — 활성 pane 의 격자 원점 · 격자.
+        const term_y: i32 = @intCast(mouse_y - self.activeGridOrigin().y);
+        const grid = self.activeGrid();
         const raw_row: i32 = if (ch > 0) @divFloor(term_y, ch) else 0;
         const dir = terminal_interaction.edgeScrollDir(raw_row, grid.rows);
         if (dir < 0) {
@@ -1150,6 +1370,11 @@ pub const App = struct {
             .copy_selection => .copy_selection,
             .toggle_visibility => .toggle_visibility,
             .fullscreen => .fullscreen,
+            .split => .split,
+            .focus_pane => .focus_pane,
+            .resize_pane => .resize_pane,
+            .equalize_panes => .equalize_panes,
+            .zoom_pane => .zoom_pane,
         };
     }
 
@@ -1224,7 +1449,7 @@ pub const App = struct {
                 if (disposition.target == .pty) self.session.interruptActive("\x03");
                 return true;
             },
-            .mouse_right_down => {
+            .mouse_right_down => |mouse| {
                 // #329 — 열린 menu 는 모든 pointer button 보다 우선. 우클릭은
                 // 메뉴만 닫고 paste 하지 않는다 (SPEC §5.3). false 면 window 가
                 // 기존 즉시 paste (#119).
@@ -1232,6 +1457,9 @@ pub const App = struct {
                     self.closeCommandMenu();
                     return true;
                 }
+                // #483 5단계 — 비활성 pane 우클릭은 포커스만 옮기고 붙여넣지 않는다 (확정 설계 축 3). true 면
+                // window 가 붙여넣기를 건너뛴다.
+                if (self.focusPaneUnderPointer(mouse.x, mouse.y)) return true;
                 return false;
             },
             .focus_lost => {
@@ -1316,6 +1544,27 @@ pub const App = struct {
                         self.window.toggleFullscreenMode(if (workarea) .workarea else .monitor);
                         return true;
                     },
+                    // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c · macOS 와 같은 배선).
+                    .split => |dir| {
+                        self.handleSplit(dir);
+                        return true;
+                    },
+                    .focus_pane => |dir| {
+                        self.handleFocusPane(dir);
+                        return true;
+                    },
+                    .resize_pane => |dir| {
+                        self.handleResizePane(dir);
+                        return true;
+                    },
+                    .equalize_panes => {
+                        self.handleEqualizePanes();
+                        return true;
+                    },
+                    .zoom_pane => {
+                        self.handleZoomPane();
+                        return true;
+                    },
                 }
             },
             .mouse_down => |mouse| {
@@ -1359,8 +1608,17 @@ pub const App = struct {
                     }
                     return true;
                 }
-                const client_w = self.window.getClientSize().w;
-                if (mouse.x >= client_w - self.SCROLLBAR_W) {
+                // #483 5단계 — 분할선 (±slop) 누름 = 드래그 시작 (pane 판정보다 먼저 — Linux · macOS 와 같은 순서).
+                if (self.separatorAt(mouse.x, mouse.y)) |s| {
+                    if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
+                    self.tab_drag.reset();
+                    self.sep_drag = .{ .node = s.node, .axis = s.axis, .px = if (s.axis == .side_by_side) mouse.x else mouse.y };
+                    return true;
+                }
+                // 다른 pane 을 눌렀으면 먼저 그 pane 으로 포커스 하고, 그 pane 기준으로 아래 scrollbar · 셀 판정을
+                // 이어 간다 (포커스 이동과 선택 시작이 한 클릭).
+                _ = self.focusPaneUnderPointer(mouse.x, mouse.y);
+                if (self.inActiveScrollbarColumn(mouse.x, mouse.y)) {
                     if (self.activeTabPtr()) |tab| {
                         tab.interaction.scrollbar.begin(self.scrollbarGrabAt(mouse.y));
                         tab.interaction.selection.cancel();
@@ -1404,6 +1662,13 @@ pub const App = struct {
                 return true;
             },
             .mouse_move => |mouse| {
+                // #483 5단계 — 분할선 드래그 중: 좌표만 기억 (고스트는 프레임이 그린다). 트리는 놓을 때.
+                if (self.sep_drag) |*d| {
+                    if (mouse.left_button) {
+                        d.px = if (d.axis == .side_by_side) mouse.x else mouse.y;
+                        return true;
+                    }
+                }
                 if (mouse.left_button) {
                     const tab_opt = self.activeTabPtr();
                     if (tab_opt != null and tab_opt.?.interaction.scrollbar.active) {
@@ -1470,6 +1735,12 @@ pub const App = struct {
                 }
                 // #245 — 어떤 release 든 drag-select auto-scroll 타이머 정지.
                 self.window.setAutoScroll(false);
+                // #483 5단계 — 분할선 드래그 끝: 여기서 한 번만 트리에 적용.
+                if (self.sep_drag) |d| {
+                    self.sep_drag = null;
+                    self.finishSeparatorDrag(d);
+                    return true;
+                }
                 if (self.activeTabPtr()) |tab| {
                     if (tab.interaction.scrollbar.active) {
                         tab.interaction.scrollbar.end();

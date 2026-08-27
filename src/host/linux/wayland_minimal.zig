@@ -4716,6 +4716,7 @@ const Client = struct {
                 // IME 조합 글자는 키보드가 가는 pane (활성) 에만.
                 .preedit_utf8 = if (is_active) self.renderer.preedit_text else "",
                 .blink_faint = self.last_blink_phase,
+                .is_active = is_active,
             };
         }
         return .{
