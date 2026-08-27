@@ -30,7 +30,8 @@ pub const PaneDraw = struct {
     /// 스트립이 터미널 위에 얹히므로 (#329) 그 높이, 탭바가 있으면 0. host 가
     /// `scrollbarTopInset − tab_bar_h` 로 계산한다.
     scrollbar_top_inset: i32,
-    /// IME 조합 중 글자 — cursor 뒤 inline 표시. 빈 slice 면 표시 안 함.
+    /// IME 조합 중 글자 — cursor 뒤 inline 표시. 빈 slice 면 표시 안 함. Linux 는 IME preedit 이 없을 때 dead key
+    /// 조합 중 표시 (#530 `compose_preview`) 를 같은 자리에 넣는다 — 어느 쪽이든 활성 pane 에만.
     preedit_utf8: []const u8,
     /// #376 — 프레임 단위 blink 위상. host 의 게이트가 구한 값을 그대로 내린다.
     blink_faint: bool,

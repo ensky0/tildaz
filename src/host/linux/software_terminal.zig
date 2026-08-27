@@ -385,6 +385,12 @@ pub const Renderer = struct {
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
+    /// #530 — 조합 중인 dead key 표시 (`^` · `^´` …). `preedit_text` 와 같은 모양으로 그리되
+    /// **저장소가 다르다** — 그쪽은 IME 가 commit 할 텍스트라 host 의 PTY · 정책 경로가 함께
+    /// 보지만, 이것은 화면 표시만이다. 둘이 동시에 있으면 IME (`preedit_text`) 가 우선이다.
+    /// #483 — 렌더러는 이 값을 직접 읽지 않는다: host 의 `frameInputs` 가 활성 pane 의 `PaneDraw.preedit_utf8`
+    /// 에 얹는다 (IME preedit 이 있으면 그것, 없으면 이것).
+    compose_preview: []const u8 = "",
     /// #203 Phase C — drawDialogContent 가 그린 OK / Cancel 버튼 좌표 (dialog
     /// surface-local physical pixel). host (handlePointerButton) 가 hit-test 에
     /// 사용. dialog 안 떠 있으면 `w == 0`. mac/win modal 정책 (본문 click 은
@@ -1292,6 +1298,10 @@ pub const Renderer = struct {
     /// 안 띄움". macOS / Windows 와 동등 색 (`renderer/macos.zig:686`,
     /// `renderer/windows.zig:1144`). PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가
     /// commit_string 으로 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
+    ///
+    /// #530 — dead key 조합 중 표시 (`compose_preview`) 도 같은 자리 · 같은 모양이다. IME preedit
+    /// 이 있으면 그것이 우선이고, 없을 때만 compose 표시를 그린다. #483 — 둘 중 무엇을 그릴지는 host 의
+    /// `frameInputs` 가 **활성 pane** 의 `preedit_utf8` 에 얹어 정한다 (다른 pane 은 빈 slice).
     fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, pane: pane_draw.PaneDraw) void {
         const state = pane.state;
         if (pane.preedit_utf8.len == 0) return;
