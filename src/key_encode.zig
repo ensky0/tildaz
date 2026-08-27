@@ -64,6 +64,35 @@ pub const Event = struct {
     repeat: bool = false,
 };
 
+/// #533 — **글자를 만들지 않는 키**인가 (화살표 · nav · F-key).
+///
+/// host 가 "이 키는 IME 를 거치지 않고 바로 인코더로 보내도 된다" 를 판정하는 데 쓴다.
+/// macOS 가 특히 그렇다 — 문자 키를 이 경로로 보내면 `interpretKeyEvents:` 를 건너뛰어
+/// 한글 조합이 깨진다. 그래서 집합을 좁게 유지한다.
+///
+/// **Enter · Tab · Escape · Backspace 는 일부러 뺐다.** macOS 는 그것들을 IME 의
+/// `doCommandBySelector:` 로 받고 있고, 그 경로를 건드리는 것은 이 변경의 범위가 아니다.
+pub fn isNavOrFunction(code: physical_key.PhysicalCode) bool {
+    return switch (code) {
+        .arrow_up,
+        .arrow_down,
+        .arrow_left,
+        .arrow_right,
+        .home,
+        .end,
+        .page_up,
+        .page_down,
+        .insert,
+        .delete,
+        .f1, .f2, .f3, .f4, .f5, .f6,
+        .f7, .f8, .f9, .f10, .f11, .f12,
+        .f13, .f14, .f15, .f16, .f17, .f18,
+        .f19, .f20, .f21, .f22, .f23, .f24,
+        => true,
+        else => false,
+    };
+}
+
 /// #533 — `utf8` 로 넘겨도 되는 텍스트만 골라 준다.
 ///
 /// **제어문자를 넘기면 안 된다.** xkb 는 `Ctrl+C` 에 대해 `utf8 = "\x03"` 을 주는데
@@ -347,4 +376,21 @@ test "Enter · Tab 은 code 로 나가고 utf8 이 있어도 겹치지 않는다
     try testing.expectEqualStrings("\t", try encodeToBuf(&b2, .{ .code = .tab, .utf8 = "\t" }, .{}));
     var b3: [16]u8 = undefined;
     try testing.expectEqualStrings("\x1b", try encodeToBuf(&b3, .{ .code = .escape, .utf8 = "\x1b" }, .{}));
+}
+
+test "isNavOrFunction — 글자 키와 IME 가 맡는 키는 빠진다" {
+    try testing.expect(isNavOrFunction(.arrow_left));
+    try testing.expect(isNavOrFunction(.page_up));
+    try testing.expect(isNavOrFunction(.f5));
+    try testing.expect(isNavOrFunction(.delete));
+
+    // 글자 키 — 이것이 true 가 되면 macOS 에서 IME 를 건너뛰어 한글이 깨진다.
+    try testing.expect(!isNavOrFunction(.key_a));
+    try testing.expect(!isNavOrFunction(.digit1));
+    try testing.expect(!isNavOrFunction(.space));
+    // IME 의 doCommandBySelector 가 맡고 있는 키들.
+    try testing.expect(!isNavOrFunction(.enter));
+    try testing.expect(!isNavOrFunction(.tab));
+    try testing.expect(!isNavOrFunction(.escape));
+    try testing.expect(!isNavOrFunction(.backspace));
 }

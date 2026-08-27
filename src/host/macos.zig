@@ -24,6 +24,7 @@ const config = @import("../config.zig");
 const physical_key = @import("../physical_key.zig");
 const ghostty = @import("ghostty-vt");
 const mouse_report = @import("../mouse_report.zig");
+const key_encode = @import("../key_encode.zig");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
 // macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
@@ -822,39 +823,57 @@ fn tildazPerformKeyEquivalent(_: objc.id, _: objc.SEL, event: objc.id) callconv(
 const NSEventTypeKeyDown: c_long = 10;
 const NSUTF8StringEncoding: usize = 4;
 
-/// macOS hardware keyCode 별 xterm-compatible escape sequence. macOS 의
-/// NSEvent.characters 는 화살표 / F-key 를 NSFunctionKey private codepoint
-/// (U+F700~) 으로 보내는데 bash / vim / less 등은 표준 xterm escape sequence
-/// 만 인식하므로 keyCode 직접 매핑이 필요.
-fn keyCodeToEscape(keycode: c_ushort) ?[]const u8 {
-    return switch (keycode) {
-        // 화살표
-        126 => "\x1b[A", // up
-        125 => "\x1b[B", // down
-        124 => "\x1b[C", // right
-        123 => "\x1b[D", // left
-        // 네비게이션
-        115 => "\x1b[H", // home
-        119 => "\x1b[F", // end
-        116 => "\x1b[5~", // pgup
-        121 => "\x1b[6~", // pgdn
-        117 => "\x1b[3~", // forward delete
-        114 => "\x1b[2~", // insert/help (외장 PC 키보드 — Apple 키보드엔 없음, #282 A7 parity)
-        // F-keys
-        122 => "\x1bOP", // F1 (CGEventTap 이 가로채니 사실 도달 안 함)
-        120 => "\x1bOQ", // F2
-        99 => "\x1bOR", // F3
-        118 => "\x1bOS", // F4
-        96 => "\x1b[15~", // F5
-        97 => "\x1b[17~", // F6
-        98 => "\x1b[18~", // F7
-        100 => "\x1b[19~", // F8
-        101 => "\x1b[20~", // F9
-        109 => "\x1b[21~", // F10
-        103 => "\x1b[23~", // F11
-        111 => "\x1b[24~", // F12
-        else => null,
-    };
+/// #533 — NSEvent 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다. 보낼 것이
+/// 없으면 (modifier 키 등) 아무것도 하지 않고 `false` 를 준다.
+///
+/// `utf8` 은 이 키가 만든 문자다 — 특수키 경로는 빈 문자열을 준다. 제어문자는
+/// `key_encode` 가 걸러 내므로 (`textForEncoding`) 호출부가 신경 쓰지 않아도 된다.
+fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
+    if (event == null) return false;
+    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+    const flags = get_flags(event, objc.sel("modifierFlags"));
+    const keycode = get_keycode(event, objc.sel("keyCode"));
+
+    const shift = (flags & (1 << 17)) != 0;
+    const ctrl = (flags & (1 << 18)) != 0;
+    const option = (flags & (1 << 19)) != 0;
+    const cmd = (flags & (1 << 20)) != 0;
+
+    var out_buf: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&out_buf);
+    key_encode.encode(&writer, .{
+        .code = physical_key.fromMacKeyCode(keycode),
+        .mods = .{ .shift = shift, .ctrl = ctrl, .alt = option, .super = cmd },
+        // #533 — macOS 는 "문자를 만드는 데 쓴 modifier" 를 정확히 알려 주는 API 가
+        // 없다. ghostty 도 몇 년째 같은 휴리스틱을 쓴다 — ctrl 과 cmd 는 문자 번역에
+        // 기여하지 않고, 나머지(shift · option)는 기여했다고 본다.
+        .consumed_mods = .{ .shift = shift, .alt = option },
+        .utf8 = utf8,
+        // kitty keyboard protocol 이 쓰는 값이다. release 보고와 함께 후속으로 채운다.
+        .unshifted_codepoint = 0,
+    }, keyEncodeOptionsMac()) catch return false;
+
+    const bytes = writer.buffered();
+    if (bytes.len == 0) return false;
+    // #282 A8 — Ctrl+C(ETX) 만 write queue 를 우회해 즉시 보낸다. 대량 paste 로 큐가
+    // 차 있으면 SIGINT 가 뒤에 밀려 "Ctrl+C 가 안 먹는다" 로 보인다.
+    if (bytes.len == 1 and bytes[0] == 0x03) {
+        tab.interruptWrite(bytes);
+        // #242 — Ctrl+C 도 사용자 입력이라 맨 아래로 (^C 와 새 prompt 가 보이게).
+        tab.terminal.scrollViewport(.{ .bottom = {} });
+    } else {
+        writeUserInput(tab, bytes);
+    }
+    return true;
+}
+
+/// #533 — 인코딩 옵션. 일곱 개는 터미널 상태가 정하고, `macos_option_as_alt` 만
+/// 앱이 정한다. 그 config 는 3b 에서 붙인다 — 지금은 기본값(`.false`, Option 을
+/// 문자로 둔다)이라 이 host 의 동작이 달라지지 않는다.
+fn keyEncodeOptionsMac() key_encode.Options {
+    const tab = g_session.activeTab() orelse return .{};
+    return key_encode.Options.fromTerminal(&tab.terminal);
 }
 
 fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
@@ -1285,14 +1304,19 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 // Ctrl+C (SIGINT) 만 큐 우회 + 큐 reset — paste 등으로 가득찬
                 // write_queue 뒤에 enqueue 되면 셸이 SIGINT 늦게 받아 "Ctrl+C
                 // 안 먹힌다" 로 보임.
-                if (ctrl_c) {
-                    tab.interruptWrite(cstr[0..len]);
-                    // #242 — Ctrl+C 도 사용자 입력 → 맨 아래로(^C/새 prompt 보이게).
-                    // interruptWrite 는 즉시 SIGINT 경로라 writeUserInput(queue) 대신
-                    // scroll 만 별도.
-                    tab.terminal.scrollViewport(.{ .bottom = {} });
-                } else {
-                    writeUserInput(tab, cstr[0..len]);
+                // #533 — 인코더가 code + mods 로 제어문자를 만든다. `characters` 를
+                // 그대로 넘겨도 `textForEncoding` 이 제어문자를 걸러 내므로 이중으로
+                // 나가지 않는다. Ctrl+C 의 큐 우회도 인코더 결과를 보고 판정한다.
+                if (!sendEncodedKeyMac(tab, event, cstr[0..len])) {
+                    // 인코더가 낼 것이 없으면 예전 경로 그대로 — 우리가 모르는 keycode 의
+                    // Ctrl 조합이 조용히 사라지지 않게 한다.
+                    if (ctrl_c) {
+                        tab.interruptWrite(cstr[0..len]);
+                        // #242 — Ctrl+C 도 사용자 입력 → 맨 아래로(^C/새 prompt 보이게).
+                        tab.terminal.scrollViewport(.{ .bottom = {} });
+                    } else {
+                        writeUserInput(tab, cstr[0..len]);
+                    }
                 }
                 return;
             }
@@ -1330,9 +1354,12 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             }
         }
 
-        if (keyCodeToEscape(keycode)) |esc| {
-            writeUserInput(tab, esc);
-            return;
+        // #533 — 특수키를 인코더로 보낸다. 예전엔 modifier 를 싣지 않는 고정 표
+        // (`keyCodeToEscape`) 라 Shift+← · Alt+← 가 아무것도 내지 않았다. 다루는 키
+        // 집합은 그대로다 — `isNavOrFunction` 이 글자 키를 걸러, 문자 입력이
+        // `interpretKeyEvents:` 를 건너뛰어 한글 조합이 깨지는 일을 막는다.
+        if (physical_key.fromMacKeyCode(keycode)) |code| {
+            if (key_encode.isNavOrFunction(code) and sendEncodedKeyMac(tab, event, "")) return;
         }
     }
 
@@ -1343,14 +1370,16 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (g_marked_len > 0) {
         const get_keycode2 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
         const keycode2 = get_keycode2(event, objc.sel("keyCode"));
-        if (keyCodeToEscape(keycode2)) |esc| {
-            if (g_hanja_candidate_active) {
-                interpretSingleKeyEvent(self_view, event);
+        if (physical_key.fromMacKeyCode(keycode2)) |code| {
+            if (key_encode.isNavOrFunction(code)) {
+                if (g_hanja_candidate_active) {
+                    interpretSingleKeyEvent(self_view, event);
+                    return;
+                }
+                commitPreeditToPty(self_view);
+                _ = sendEncodedKeyMac(tab, event, "");
                 return;
             }
-            commitPreeditToPty(self_view);
-            writeUserInput(tab, esc);
-            return;
         }
     }
 
