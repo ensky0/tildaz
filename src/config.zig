@@ -449,6 +449,10 @@ test "configured hotkey display is derived from the parsed native value" {
 /// DE별 backend가 이 `keysym + modifiers`를 KGlobalAccel의 Qt key 또는 GTK/XKB
 /// accelerator 문자열로 변환한다.
 const LinuxHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). 이벤트 쪽에만 채우고 binding 쪽은 0.
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`).
     keysym: u32 = 0xffbe,
     /// modifier 비트마스크. Win 패턴 동등 — `MOD_*` 비트. `keysymToAccelerator`
@@ -1126,6 +1130,10 @@ test "hotkey 파싱 — OS 코드 값 매핑 (#294 G1)" {
 }
 
 const WindowsHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). Windows 는 VK 가 Shift 무관이라 늘 0 (세 타입이 같은 필드를 가져야 `lookupAction` 이 한 코드로 컴파일된다).
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
 
@@ -1236,6 +1244,10 @@ const windows_single_char_lookup = blk: {
 };
 
 const MacHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). 이벤트 쪽에만 채우고 binding 쪽은 0.
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     /// `kVK_*` (Carbon Events.h). 우리는 macOS Tahoe + Carbon 못 써 직접 매핑.
     keycode: u32 = 0x7A, // kVK_F1
     /// CGEventFlags (`kCGEventFlagMask*`). u64 — bit 16..23 사용.
@@ -2229,13 +2241,22 @@ pub fn lookupActionWithFallback(
     return null;
 }
 
+/// #483 6단계 — **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다.** `shift+alt+0` 은 "Shift 를 누른 채
+/// `0` 키" 라는 뜻인데, 라벨은 Shift 가 반영된 글자라 US 에서는 `)` (Linux keysym `parenright` · macOS
+/// `charactersByApplyingModifiers:`) 가 도착해 `0` 과 영영 만나지 못했다 — `⇧⌘0` 균등 · `⇧⌘[` 이전 탭이 macOS 에서,
+/// `shift+alt+0` 이 Linux 실제 키보드에서 죽어 있던 원인 (2026-08-27 실기). AZERTY 는 `⇧+à` 가 `0` 을 내므로 라벨이
+/// 바로 맞고, 이 규칙은 그때 아무 일도 하지 않는다. 두 조건으로 좁혀 #493 이 거부한 "동작 넓어짐" 은 없다:
+/// binding 에 Shift 가 **적혀 있고**, 수식키가 **정확히** 같을 때만 (숫자 예외 없이). 그래서 US 의 `Alt+Shift+1`
+/// (`!`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다. Windows 는 VK 가 Shift 무관이라 `unshifted` 가 늘 0 이다.
 pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?PhysicalCode) ?KeyAction {
     std.debug.assert(hotkey.code == null);
     for (bindings) |b| {
-        const mods_match = b.hotkey.modifiers == hotkey.modifiers or
+        const exact_mods = b.hotkey.modifiers == hotkey.modifiers;
+        const mods_match = exact_mods or
             (isDigitBinding(b.hotkey) and
                 b.hotkey.modifiers == (hotkey.modifiers & ~@as(@TypeOf(hotkey.modifiers), Hotkey.MOD_SHIFT)));
         if (!mods_match) continue;
+        const try_unshifted = exact_mods and hotkey.unshifted != 0 and (b.hotkey.modifiers & Hotkey.MOD_SHIFT) != 0;
         if (b.hotkey.code) |want| {
             // 위치 binding — 자리가 일치해야 한다. 라벨 쪽 값 (keysym / vkey /
             // keycode) 은 보지 않는다.
@@ -2259,16 +2280,64 @@ pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?Physica
             // 는 위치라서, 라벨과 위치를 같은 칸에 넣을 수 없다.
             if (b.hotkey.label != 0) {
                 if (hotkey.label != 0 and hotkey.label == b.hotkey.label) return b.action;
+                if (try_unshifted and hotkey.unshifted == b.hotkey.label) return b.action;
             } else if (hotkey.keycode == b.hotkey.keycode) {
                 return b.action;
             }
             continue;
         }
-        if (b.hotkey.code == null and hotkey.code == null and modifiersAside(b.hotkey) == modifiersAside(hotkey)) {
-            return b.action;
+        if (b.hotkey.code == null and hotkey.code == null) {
+            if (modifiersAside(b.hotkey) == modifiersAside(hotkey)) return b.action;
+            if (try_unshifted and modifiersAside(b.hotkey) == hotkey.unshifted) return b.action;
         }
     }
     return null;
+}
+
+test "#483 6단계 — Shift 를 적은 binding 은 무시프트 값으로도 맞는다 (⇧⌘0 · ⇧⌘[ · shift+alt+0), Shift 없는 binding 은 넓어지지 않는다" {
+    var buf: [8]KeyBinding = undefined;
+    var n: usize = 0;
+    const add = struct {
+        fn f(b: []KeyBinding, count: *usize, text: []const u8, action: KeyAction) !void {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            b[count.*] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            count.* += 1;
+        }
+    }.f;
+    if (is_macos) {
+        try add(&buf, &n, "shift+cmd+0", .equalize_panes);
+        try add(&buf, &n, "shift+cmd+[", .prev_tab);
+        try add(&buf, &n, "cmd+1", .switch_tab1);
+        const bindings = buf[0..n];
+        const sc: u64 = Hotkey.MOD_SHIFT | Hotkey.MOD_SUPER;
+        // US: ⇧⌘0 은 라벨 `)` 로 도착 — 무시프트 `0` 으로 맞는다.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 29, .label = ')', .unshifted = '0', .modifiers = sc }, null).?);
+        // US: ⇧⌘[ 은 `{` — 무시프트 `[`.
+        try std.testing.expectEqual(KeyAction.prev_tab, lookupAction(bindings, .{ .keycode = 33, .label = '{', .unshifted = '[', .modifiers = sc }, null).?);
+        // AZERTY: ⇧+à 가 `0` 을 내므로 라벨이 바로 맞는다 (unshifted 는 비-ASCII 라 0).
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 29, .label = '0', .unshifted = 0, .modifiers = sc }, null).?);
+        // 넓어지지 않는다: US 의 ⇧⌘1 (`!`, 무시프트 `1`) 은 Shift 없는 `cmd+1` 에 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 18, .label = '!', .unshifted = '1', .modifiers = sc }, null) == null);
+        // Shift 없이 누른 ⌘0 은 `shift+cmd+0` 에 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 29, .label = '0', .unshifted = '0', .modifiers = Hotkey.MOD_SUPER }, null) == null);
+    } else if (is_windows) {
+        try add(&buf, &n, "shift+alt+0", .equalize_panes);
+        const bindings = buf[0..n];
+        // VK 는 Shift 무관 — 예전부터 맞았고 unshifted 는 0.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .vkey = '0', .modifiers = Hotkey.MOD_SHIFT | Hotkey.MOD_ALT }, null).?);
+    } else {
+        try add(&buf, &n, "shift+alt+0", .equalize_panes);
+        try add(&buf, &n, "alt+1", .switch_tab1);
+        const bindings = buf[0..n];
+        const sa: u32 = Hotkey.MOD_SHIFT | Hotkey.MOD_ALT;
+        // US: Shift+Alt+0 은 keysym `parenright` (0x29) — 무시프트 `0`.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keysym = 0x29, .unshifted = '0', .modifiers = sa }, null).?);
+        // 넓어지지 않는다: Alt+Shift+1 (`exclam`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다 (#493 결정 유지).
+        try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x21, .unshifted = '1', .modifiers = sa }, null) == null);
+    }
 }
 
 /// modifier 를 뺀 라벨 쪽 키 값. `std.meta.eql` 로 통째로 비교하면 Shift 예외를

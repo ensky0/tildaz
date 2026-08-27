@@ -1010,7 +1010,13 @@ fn macLookupAction(view: objc.id, event: objc.id, kc: c_ushort, flags: c_ulong) 
     return config.lookupActionWithFallback(
         g_config.key_bindings[0..g_config.key_binding_count],
         g_binding_fallbacks[0..g_config.key_binding_count],
-        .{ .keycode = kc, .modifiers = modifiers, .label = macEventLabel(event, flags, kc) },
+        .{
+            .keycode = kc,
+            .modifiers = modifiers,
+            .label = macEventLabel(event, flags, kc),
+            // #483 6단계 — Shift 를 누른 채면 Shift 없는 라벨도 (US 의 `⇧0` = `)` 가 `0` 과 만나게).
+            .unshifted = if ((flags & ns_shift) != 0) macEventLabel(event, 0, kc) else 0,
+        },
         physical_key.fromMacKeyCode(kc),
     );
 }
@@ -3210,7 +3216,6 @@ fn scrollbarScrollToY(mouse_y_px: f32) void {
     }
 }
 
-
 /// #483 5단계 — pane 배치가 바뀐 뒤의 공통 마무리: 커서 rect (I-beam · 리사이즈 커서 자리) 갱신 + 렌더.
 fn afterPaneLayoutChange() void {
     invalidateCursorRects();
@@ -3272,6 +3277,7 @@ fn handleResizePane(dir: pane_layout.Direction) void {
 fn handleEqualizePanes() void {
     if (g_renderer == null or g_session.activeGroup() == null) return;
     g_session.equalizeActive(paneAreaMac(), paneMetricsMac());
+    log.appendLine("pane", "equalize — {} panes", .{g_session.activeGroup().?.tree.count()});
     afterPaneLayoutChange();
 }
 
@@ -4284,7 +4290,6 @@ fn renderFrameTick() void {
     // 없애면 처음 보는 문자(`"`,`(`,`N` 등)가 빈칸으로 남는다. atlas 가 아직 dirty 면
     // 한 frame 더 요청해 업로드+재draw 시킨다(빈칸은 1 frame, Phase 1 과 동일).
     if (g_renderer.?.atlas.dirty or g_renderer.?.tabAtlasDirty()) g_needs_render = true;
-
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화.
