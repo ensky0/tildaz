@@ -19,8 +19,8 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-_(empty — folded into `v0.9.0.md`)_
+_(empty — folded into `v0.9.1.md`)_
 
 ## Body candidates
 
-_(empty)_
+_(empty — folded into `v0.9.1.md`)_
