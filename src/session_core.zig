@@ -1548,14 +1548,27 @@ pub const SessionCore = struct {
         while (active.title_clock.read() - started_ns < DRAIN_FRAME_BUDGET_NS) {
             // #483 3단계 — "활성 탭" 은 활성 그룹의 pane 전부다 (보이는 것은 모두 지연 민감).
             // leaf 하나면 이전의 활성 탭 한 chunk 와 같다.
-            var drained_visible = false;
+            //
+            // #483 6단계 — 키보드가 가는 활성 pane 을 먼저, 그다음 나머지 보이는 pane 을 화면 순서로. pane
+            // 사이에서도 예산을 검사한다 — 검사 없이 N 청크를 돌면 최악 점유가 `예산 + N 청크` 로 pane 수에
+            // 비례해 커진다 (측정: 4 pane 에서 4.3 ms 로 1 pane 의 4.0~4.4 와 같았지만 16 pane 은 보장이 없다).
+            // 예산 자체 (4 ms) 는 pane 수와 무관하게 하나다 — 보이는 pane 이 몇이든 UI 스레드가 한 번에
+            // 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다 (측정: 2 · 4 pane
+            // 의 producer 가 같은 프레임에 끝났다).
+            var drained_visible = active.drainOutputChunk();
+            var over_budget = false;
             for (group.panes) |p| {
                 const tab = p orelse continue;
+                if (tab == active) continue;
+                if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) {
+                    over_budget = true;
+                    break;
+                }
                 drained_visible = tab.drainOutputChunk() or drained_visible;
             }
             result.active_output = result.active_output or drained_visible;
 
-            if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
+            if (over_budget or active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
             const drained_inactive = self.drainNextInactiveChunk();
             if (!drained_visible and !drained_inactive) break;
         }
