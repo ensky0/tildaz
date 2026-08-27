@@ -19,8 +19,24 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-_(empty — folded into `v0.9.1.md`)_
+- **`config_N.toml` gains an `[input]` section.** The schema is strict in both
+  directions, so a config written by an older version stops the app with
+  `missing required key "macos_option_as_alt"`. Add the section by hand, or move the
+  file aside and let TildaZ write a fresh one:
+
+  ```toml
+  [input]
+  macos_option_as_alt = "none"   # none | both | left | right
+  ```
+
+  The key is present on all three platforms so one config file stays portable, but it
+  only does something on macOS. ([#533](https://github.com/ensky0/tildaz/issues/533))
 
 ## Body candidates
 
-_(empty — folded into `v0.9.1.md`)_
+- Alt combinations now reach the program running inside TildaZ, so `Alt+n` in zellij,
+  tmux and emacs works. Arrow and function keys carry their modifiers too
+  (`Shift+Left`, `Alt+Left`). ([#533](https://github.com/ensky0/tildaz/issues/533))
+- On macOS, `[input] macos_option_as_alt` chooses whether Option types characters
+  (`option+a` → `å`, the default) or acts as Alt.
+  ([#533](https://github.com/ensky0/tildaz/issues/533))
