@@ -29,6 +29,7 @@ const command_menu = @import("../command_menu.zig");
 const block_element = @import("block_element.zig");
 const cell_color = @import("cell_color.zig");
 const pane_draw = @import("pane_draw.zig");
+const pane_layout = @import("../pane_layout.zig");
 const font_constants = @import("../font/constants.zig");
 const cell_decoration = @import("cell_decoration.zig");
 const box_drawing = @import("../box_drawing.zig");
@@ -82,6 +83,11 @@ const BgInstance = extern struct {
 /// shape 라 옮기기만 한다 (`shade` 는 기본값 0 = solid fill).
 fn bgFromChrome(r: tab_chrome.Rect) BgInstance {
     return .{ .pos = .{ r.x, r.y }, .size = .{ r.w, r.h }, .color = r.color };
+}
+
+/// #483 5단계 — 정수 px 사각형 (분할선 · amber 선 · 드래그 고스트) → 배경 인스턴스.
+fn rectInstance(r: pane_layout.Rect, color: [4]f32) BgInstance {
+    return .{ .pos = .{ @floatFromInt(r.x), @floatFromInt(r.y) }, .size = .{ @floatFromInt(r.w), @floatFromInt(r.h) }, .color = color };
 }
 
 const TextInstance = extern struct {
@@ -1787,8 +1793,11 @@ pub const D3d11Renderer = struct {
                     .color = cursor_color,
                 }};
                 self.drawBgInstances(&cursor_inst);
-                self.last_cursor_px_x = @trunc(cx0);
-                self.last_cursor_px_y = @trunc(cy0);
+                // #483 5단계 — IME 조합 창 위치는 키보드가 가는 (활성) pane 의 커서만.
+                if (pane.is_active) {
+                    self.last_cursor_px_x = @trunc(cx0);
+                    self.last_cursor_px_y = @trunc(cy0);
+                }
             }
         }
 
@@ -1886,6 +1895,44 @@ pub const D3d11Renderer = struct {
 
     /// #483 2단계 ② — 프레임 끝: 단일 탭 컨트롤 스트립 · command menu · Present. `renderTabBar`
     /// 로 시작한 프레임은 `drawPane` 이 몇 번 불렸든 (0 번 포함) 이것으로 끝낸다.
+    /// #483 5단계 — pane 사이 회색 분할선 · 활성 pane 의 amber 선 · 드래그 고스트 (Linux
+    /// `software_terminal.collectPaneChrome` · macOS `drawPaneChrome` 과 같은 규칙). `drawPane` 들 뒤,
+    /// `endFrame` 앞에 한 번.
+    pub fn drawPaneChrome(self: *D3d11Renderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect) void {
+        var buf: [pane_layout.MAX_PANES_PER_TAB + 5]BgInstance = undefined;
+        var n: usize = 0;
+        for (seps) |s| {
+            if (n >= buf.len) break;
+            buf[n] = rectInstance(s.rect, self.chrome.separator);
+            n += 1;
+        }
+        const amber = ui_metrics.TAB_ACCENT_COLOR;
+        if (active) |r| {
+            const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.pixels_per_dip));
+            if (r.x > area.x) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = t, .h = r.h }, amber);
+                n += 1;
+            }
+            if (r.x + r.w < area.x + area.w) {
+                buf[n] = rectInstance(.{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h }, amber);
+                n += 1;
+            }
+            if (r.y > area.y) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = r.w, .h = t }, amber);
+                n += 1;
+            }
+            if (r.y + r.h < area.y + area.h) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, amber);
+                n += 1;
+            }
+        }
+        if (ghost) |g| {
+            buf[n] = rectInstance(g, amber);
+            n += 1;
+        }
+        self.drawBgInstances(buf[0..n]);
+    }
+
     pub fn endFrame(
         self: *D3d11Renderer,
         vp_w: c_int,
