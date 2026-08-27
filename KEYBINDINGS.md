@@ -365,8 +365,12 @@ Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the act
 pane instead of opening a tab (to the right if the pane is wider than it is tall,
 otherwise below). Ctrl+Shift+W closes the active pane — the neighbour that shared
 the split takes its place — and closes the tab when the pane is the last one; a
-shell exiting inside a pane does the same. A split that would leave any pane
-smaller than 20×5 cells is refused with a dialog, as is the 17th pane.
+shell exiting inside a pane does the same. A split whose two halves would be
+smaller than 20 columns × 5 rows is refused with a dialog, as is the 17th pane.
+Panes can still end up smaller than that when the window shrinks — the drop-down
+takes the size of the screen it opens on and the panes keep their shares — and
+from then on the lines next to such a pane only move in the direction that makes
+it larger; the other panes split and resize as usual.
 
 **Status:** implemented on all three platforms ([#483](https://github.com/ensky0/tildaz/issues/483));
 Linux and macOS are verified, the Windows build is awaiting hands-on verification.

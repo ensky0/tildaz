@@ -73,7 +73,7 @@ pub const pane_limit_title = "Pane limit reached";
 pub const pane_limit_format = "This tab already has {d} panes. Close one to split again.";
 /// 결과 pane 이 `pane_layout.MIN_PANE_COLS × MIN_PANE_ROWS` 아래로 내려갈 때. {d}x{d} 는 그 최소.
 pub const pane_too_small_title = "Not enough room to split";
-pub const pane_too_small_format = "Each pane needs at least {d}x{d} cells. Enlarge the window or close a pane first.";
+pub const pane_too_small_format = "Each pane needs at least {d} columns × {d} rows. Enlarge the window or close a pane first.";
 
 /// Linux KDE — 우리 config 의 hotkey 가 *다른 KDE 컴포넌트* (kwin / plasmashell
 /// 등) 의 단축키와 충돌 시 사용자 확인 (#207). OK = 충돌 컴포넌트에서 해당 키만

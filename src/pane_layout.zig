@@ -167,9 +167,12 @@ pub const Tree = struct {
     }
 
     /// `target` 을 `dir` 쪽으로 갈라 새 pane `new_pane` 을 그쪽에 놓는다 (비율 반씩).
-    /// 결과 격자가 `MIN_PANE_COLS × MIN_PANE_ROWS` 아래로 내려가는 pane 이 하나라도 생기면
-    /// 트리를 바꾸지 않고 `TooSmall`. 개수 상한은 `TooManyPanes` — host 가 두 거부를 다른
-    /// 문구로 안내할 수 있게 구분한다. `rect` 는 **탭바를 뺀** 터미널 영역이다.
+    /// 갈라진 **두 조각** 이 `MIN_PANE_COLS × MIN_PANE_ROWS` 아래면 트리를 바꾸지 않고 `TooSmall` —
+    /// 다른 pane 은 보지 않는다. 창이 줄어 (drop-down 이 작은 모니터로 가면 비율은 그대로) 이미 최소
+    /// 아래인 pane 이 있어도, 자리가 있는 pane 은 갈라져야 한다 (2026-08-27 macOS 실기 — 예전엔 탭
+    /// 전체를 검사해 A 를 위아래로 가르는데 옆의 B · C 가 17 열이라 거부됐다). 개수 상한은
+    /// `TooManyPanes` — host 가 두 거부를 다른 문구로 안내할 수 있게 구분한다. `rect` 는 **탭바를 뺀**
+    /// 터미널 영역이다.
     pub fn split(self: *Tree, target: PaneId, dir: Direction, new_pane: PaneId, rect: Rect, m: Metrics) SplitError!void {
         if (self.pane_count >= MAX_PANES_PER_TAB) return error.TooManyPanes;
         if (self.contains(new_pane)) return error.DuplicatePane;
@@ -192,9 +195,13 @@ pub const Tree = struct {
         } };
         self.pane_count += 1;
 
-        if (!self.allPanesAtLeastMin(rect, m)) {
-            self.* = saved;
-            return error.TooSmall;
+        var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+        for (layout(self, rect, m, &buf)) |pr| {
+            if (pr.pane != target and pr.pane != new_pane) continue;
+            if (pr.cols < MIN_PANE_COLS or pr.rows < MIN_PANE_ROWS) {
+                self.* = saved;
+                return error.TooSmall;
+            }
         }
     }
 
@@ -266,6 +273,11 @@ pub const Tree = struct {
     ///
     /// 셀 경계 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다. 바뀐 것이 없으면
     /// (이미 한계 · 같은 셀) false.
+    ///
+    /// 창이 줄어 **이미 최소 아래인 pane** 이 있으면 (drop-down 이 작은 모니터로 옮겨 가도 비율은 그대로다):
+    /// 그 pane 의 한계는 지금 크기라 더 줄지는 않되 **키울 수는 있고**, 뒤의 검사도 "새로 최소 아래로 떨어지는
+    /// pane 이 없다" (`noPaneNewlyBelowMin`) 다 — 탭 전체 ≥ 최소를 요구하면 작아진 pane 을 키우는 것까지 막힌다
+    /// (2026-08-27 macOS 실기에서 `⇧⌘←` 가 아무 반응 없던 원인).
     pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) bool {
         if (node >= MAX_NODES or !self.alive[node]) return false;
         if (self.nodes[node] != .split) return false;
@@ -294,9 +306,24 @@ pub const Tree = struct {
         self.nodes[node].split.ratio = ratioOf(new_first, g.avail);
         self.keepFarFixed(sp.first, sp.axis, m, c.first, .second, new_first);
         self.keepFarFixed(sp.second, sp.axis, m, c.second, .first, g.avail - new_first);
-        if (!self.allPanesAtLeastMin(rect, m)) {
+        if (!self.noPaneNewlyBelowMin(&saved, rect, m)) {
             self.* = saved;
             return false;
+        }
+        return true;
+    }
+
+    /// 바뀐 뒤 어느 pane 도 **새로** 최소 아래로 떨어지지 않았는가 — 이미 작았던 pane (창이 줄어서) 은 그대로거나
+    /// 커지면 된다. `before` 는 바꾸기 전 트리.
+    fn noPaneNewlyBelowMin(self: *const Tree, before: *const Tree, rect: Rect, m: Metrics) bool {
+        var b_buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+        var a_buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+        const b = layout(before, rect, m, &b_buf);
+        for (layout(self, rect, m, &a_buf)) |pr| {
+            const old = find(b, pr.pane) orelse return false;
+            const cols_ok = pr.cols >= MIN_PANE_COLS or pr.cols >= old.cols;
+            const rows_ok = pr.rows >= MIN_PANE_ROWS or pr.rows >= old.rows;
+            if (!cols_ok or !rows_ok) return false;
         }
         return true;
     }
@@ -305,11 +332,12 @@ pub const Tree = struct {
     const LineSide = enum { first, second };
 
     /// `idx` subtree 가 `axis` 방향으로 가질 수 있는 최소 길이 — 단, **선에서 먼 칸은 지금 크기 그대로** 두고
-    /// (붙은 칸만 줄어들므로). leaf 는 `leafMinExtent`, 같은 축의 분할은 먼 자식의 현재 px + 분할선 + 붙은
-    /// 자식의 재귀값, 다른 축의 분할은 두 자식 (둘 다 선에 붙어 있다) 중 큰 것.
+    /// (붙은 칸만 줄어들므로). leaf 는 `leafMinExtent` — 단 이미 그보다 작은 leaf (창이 줄어서) 는 **지금 크기**
+    /// (더 줄지만 않게). 같은 축의 분할은 먼 자식의 현재 px + 분할선 + 붙은 자식의 재귀값, 다른 축의 분할은 두
+    /// 자식 (둘 다 선에 붙어 있다) 중 큰 것.
     fn minExtentKeepFar(self: *const Tree, idx: NodeIndex, axis: Axis, m: Metrics, rect: Rect, line: LineSide) i32 {
         return switch (self.nodes[idx]) {
-            .leaf => leafMinExtent(axis, m),
+            .leaf => @min(leafMinExtent(axis, m), if (axis == .side_by_side) rect.w else rect.h),
             .split => |s| blk: {
                 const g = splitGeometry(rect, m, s);
                 const c = childRects(rect, s, g);
@@ -454,14 +482,6 @@ pub const Tree = struct {
                     self.rectOfNode(s.second, c.second, m, target);
             },
         };
-    }
-
-    fn allPanesAtLeastMin(self: *const Tree, rect: Rect, m: Metrics) bool {
-        var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
-        for (layout(self, rect, m, &buf)) |pr| {
-            if (pr.cols < MIN_PANE_COLS or pr.rows < MIN_PANE_ROWS) return false;
-        }
-        return true;
     }
 };
 
@@ -1041,6 +1061,42 @@ test "#483 6단계 — focusEdges: 안쪽 변 하나면 3 면, 둘 이상이면 
     try std.testing.expectEqual(FE{ .left = true, .right = true, .top = true, .bottom = true }, focusEdges(area, area, true));
     // pane 하나 (최대화 아님) — 안쪽 변 0 이면 아무것도 없다.
     try std.testing.expectEqual(FE{ .left = false, .right = false, .top = false, .bottom = false }, focusEdges(area, area, false));
+}
+
+test "#483 6단계 — 창이 줄어 최소보다 작아진 pane 이 있어도: 자리가 있는 pane 은 갈라지고, 작은 pane 은 키울 수만 있다" {
+    const m = mac2x;
+    const roomy: Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+    var tree = Tree.single(0);
+    try tree.split(0, .right, 1, roomy, m); // A | B
+    try tree.split(1, .right, 2, roomy, m); // A | (B | C) — 넓을 때는 78 / 38 / 37 열로 정당
+    // 화면이 반으로 줌 (drop-down 이 작은 모니터로) — 비율은 그대로라 B · C 가 20 열 미만 (18 / 17, 2026-08-27 실기와 같다).
+    const shrunk: Rect = .{ .x = 0, .y = 0, .w = 1512, .h = 1000 };
+    var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    const b_cols = find(layout(&tree, shrunk, m, &buf), 1).?.cols;
+    const c_cols = find(layout(&tree, shrunk, m, &buf), 2).?.cols;
+    try std.testing.expectEqual(@as(u16, 18), b_cols);
+    try std.testing.expectEqual(@as(u16, 17), c_cols);
+    // ① A (25 행) 는 위아래로 갈 자리가 있다 — 예전엔 옆의 B · C 때문에 TooSmall 이었다.
+    try tree.split(0, .down, 3, shrunk, m);
+    try std.testing.expectEqual(@as(usize, 4), tree.count());
+    // ② B 활성에서 왼쪽으로 2 셀 (A|B 선을 왼쪽으로) — B 가 커진다 (예전엔 전체 검사에 걸려 아무 반응 없음). C 는 그대로.
+    try std.testing.expect(tree.resize(1, .left, 2, shrunk, m));
+    try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, shrunk, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(c_cols, find(layout(&tree, shrunk, m, &buf), 2).?.cols);
+    // ③ 반대로 줄이기 — A|B 선을 오른쪽으로: B 의 한계가 지금 크기라 그 자리에서 멈춤 = 변화 없음.
+    var sbuf: [MAX_PANES_PER_TAB]Separator = undefined;
+    var root_x: i32 = -1;
+    for (separators(&tree, shrunk, m, &sbuf)) |s| if (s.node == 0) {
+        root_x = s.rect.x;
+    };
+    try std.testing.expect(root_x > 0);
+    try std.testing.expect(!tree.setSeparatorPx(0, root_x + 19, shrunk, m));
+    // B|C 선을 오른쪽으로 (C 를 더 줄이기) 도 거부 — C 는 이미 최소 아래.
+    try std.testing.expect(!tree.resize(1, .right, 1, shrunk, m));
+    try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, shrunk, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(c_cols, find(layout(&tree, shrunk, m, &buf), 2).?.cols);
+    // ④ 작은 pane 자체를 가르는 것은 여전히 TooSmall (두 조각이 20 열 미만).
+    try std.testing.expectError(error.TooSmall, tree.split(2, .right, 4, shrunk, m));
 }
 
 test "#483 equalize — 비율을 양쪽 leaf 수에 비례시킨다" {
