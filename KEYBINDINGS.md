@@ -341,7 +341,7 @@ Linux and macOS are verified, the Windows build is awaiting hands-on verificatio
 |--------|---------------|
 | Drag-select text | Auto-copy on release |
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
-| Mouse wheel | Scroll viewport |
+| Mouse wheel | Scroll the pane under the pointer (focus stays where it is; page keys scroll the active pane) |
 | Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
 | Click an inactive pane | Focus that pane and start selecting there |
 | Drag the line between two panes | Move the split (amber ghost while dragging, applied on release) |
