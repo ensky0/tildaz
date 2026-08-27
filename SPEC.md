@@ -1010,7 +1010,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 > schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은 별도 fatal — `font_validate.showFamilyMustBeStringFatal` / `showGlyphFallbackMustBeListFatal`.
 
 > **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
-> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지).
+> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지). [#483](https://github.com/ensky0/tildaz/issues/483) (2026-08-27) — 새 버전이 키를 더하면 (예: `[keys]` 의 pane 액션) 이전 파일이 여기서 걸리는데, 기본값으로 조용히 채우지 않고 **strict 를 유지**한다. 대신 메시지가 할 일을 알려 준다: 파일을 옮겨 두고 (지우지 말고) 다시 띄워 기본 파일을 새로 만들고, 바꿔 둔 값을 다시 옮겨 적는다. 세 platform 같은 문구 (`messages.config_missing_key_format`).
 > - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 예외는 없다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할 이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다).
 > - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
 > - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigToml(allocator, shell_resolved)` 결과와 user config 를 비교.
