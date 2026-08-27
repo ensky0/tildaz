@@ -823,6 +823,45 @@ fn tildazPerformKeyEquivalent(_: objc.id, _: objc.SEL, event: objc.id) callconv(
 const NSEventTypeKeyDown: c_long = 10;
 const NSUTF8StringEncoding: usize = 4;
 
+/// #533 — 이 이벤트에서 `Option` 이 Alt(Meta) 로 취급되는가.
+///
+/// 좌우 판정은 device-dependent 비트를 본다 (`IOLLEvent.h` 의 `NX_DEVICEL/RALTKEYMASK`).
+/// `NSEventModifierFlagOption` 만으로는 어느 쪽인지 알 수 없다.
+fn optionActsAsAlt(flags: c_ulong) bool {
+    const NX_DEVICELALTKEYMASK: c_ulong = 0x000020;
+    const NX_DEVICERALTKEYMASK: c_ulong = 0x000040;
+    return switch (g_config.macos_option_as_alt) {
+        .none => false,
+        .both => true,
+        .left => (flags & NX_DEVICELALTKEYMASK) != 0,
+        .right => (flags & NX_DEVICERALTKEYMASK) != 0,
+    };
+}
+
+/// #533 — `Option` 을 뺀 채 이 키가 내는 글자. Option 을 Alt 로 쓸 때 `ESC` 뒤에 붙일
+/// 글자다 (`Option+a` → `a`, `Shift+Option+a` → `A`).
+///
+/// Shift 는 남긴다 — 그것은 진짜로 글자를 바꾸는 modifier 다.
+fn macCharsWithoutOption(event: objc.id, flags: c_ulong, kc: c_ushort, buf: []u8) []const u8 {
+    // ⚠️ `charactersByApplyingModifiers:` 에 modifier keycode 를 넘기면 nil 이 아니라
+    // `abort()` 다 (#496 실측). `macEventLabel` 과 같은 이유로 먼저 거른다.
+    if (kc >= 0x36 and kc <= 0x3F) return "";
+
+    const NSEventModifierFlagShiftLocal: c_ulong = 1 << 17;
+    const apply = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) objc.id);
+    const text = apply(event, objc.sel("charactersByApplyingModifiers:"), flags & NSEventModifierFlagShiftLocal);
+    if (text == null) return "";
+
+    const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
+    const len = get_len(text, objc.sel("lengthOfBytesUsingEncoding:"), NSUTF8StringEncoding);
+    if (len == 0 or len > buf.len) return "";
+
+    const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
+    const cstr = get_utf8(text, objc.sel("UTF8String"));
+    @memcpy(buf[0..len], cstr[0..len]);
+    return buf[0..len];
+}
+
 /// #533 — NSEvent 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다. 보낼 것이
 /// 없으면 (modifier 키 등) 아무것도 하지 않고 `false` 를 준다.
 ///
@@ -839,6 +878,7 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
     const ctrl = (flags & (1 << 18)) != 0;
     const option = (flags & (1 << 19)) != 0;
     const cmd = (flags & (1 << 20)) != 0;
+    const option_as_alt = optionActsAsAlt(flags);
 
     var out_buf: [64]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&out_buf);
@@ -848,11 +888,15 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
         // #533 — macOS 는 "문자를 만드는 데 쓴 modifier" 를 정확히 알려 주는 API 가
         // 없다. ghostty 도 몇 년째 같은 휴리스틱을 쓴다 — ctrl 과 cmd 는 문자 번역에
         // 기여하지 않고, 나머지(shift · option)는 기여했다고 본다.
-        .consumed_mods = .{ .shift = shift, .alt = option },
+        //
+        // 단 Option 을 Alt 로 쓰기로 했으면 그 키는 글자를 만드는 데 쓰이지 **않았다** —
+        // 호출부가 Option 을 뺀 글자를 넘기기 때문이다. consumed 로 두면 인코더가
+        // ESC 를 빼 버려 `Alt+a` 가 그냥 `a` 가 된다.
+        .consumed_mods = .{ .shift = shift, .alt = option and !option_as_alt },
         .utf8 = utf8,
         // kitty keyboard protocol 이 쓰는 값이다. release 보고와 함께 후속으로 채운다.
         .unshifted_codepoint = 0,
-    }, keyEncodeOptionsMac()) catch return false;
+    }, keyEncodeOptionsMac(option_as_alt)) catch return false;
 
     const bytes = writer.buffered();
     if (bytes.len == 0) return false;
@@ -869,11 +913,16 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
 }
 
 /// #533 — 인코딩 옵션. 일곱 개는 터미널 상태가 정하고, `macos_option_as_alt` 만
-/// 앱이 정한다. 그 config 는 3b 에서 붙인다 — 지금은 기본값(`.false`, Option 을
-/// 문자로 둔다)이라 이 host 의 동작이 달라지지 않는다.
-fn keyEncodeOptionsMac() key_encode.Options {
+/// 앱이 정한다 (`[input] macos_option_as_alt`).
+///
+/// 좌우 갈래(`left` · `right`)는 호출부가 이미 이 이벤트에 대해 판정했으므로 여기서는
+/// 참/거짓으로 좁혀 넘긴다 — 인코더가 좌우를 다시 보려면 `mods.sides` 를 채워야 하는데,
+/// 판정이 두 곳에 있으면 갈라진다.
+fn keyEncodeOptionsMac(option_as_alt: bool) key_encode.Options {
     const tab = g_session.activeTab() orelse return .{};
-    return key_encode.Options.fromTerminal(&tab.terminal);
+    var opts = key_encode.Options.fromTerminal(&tab.terminal);
+    opts.macos_option_as_alt = if (option_as_alt) .true else .false;
+    return opts;
 }
 
 fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
@@ -1360,6 +1409,19 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // `interpretKeyEvents:` 를 건너뛰어 한글 조합이 깨지는 일을 막는다.
         if (physical_key.fromMacKeyCode(keycode)) |code| {
             if (key_encode.isNavOrFunction(code) and sendEncodedKeyMac(tab, event, "")) return;
+        }
+
+        // #533 — `[input] macos_option_as_alt` 가 Option 을 Alt 로 쓰라고 하면 **글자
+        // 키도** 인코더로 보낸다. 그러지 않으면 `interpretKeyEvents:` 가 OS 가 만든
+        // 글자(`Option+a` → `å`)를 주고, 우리가 정한 "Option 은 Alt" 가 무시된다.
+        //
+        // 넘기는 글자는 Option 을 뺀 것이다 (`a`). 인코더가 그 앞에 ESC 를 붙인다.
+        // IME 가 조합 중이면 (`g_marked_len > 0`) 이 블록에 들어오지 않으므로 한글
+        // 조합은 건드리지 않는다.
+        if (option and optionActsAsAlt(flags)) {
+            var option_chars: [16]u8 = undefined;
+            const plain = macCharsWithoutOption(event, flags, keycode, &option_chars);
+            if (sendEncodedKeyMac(tab, event, plain)) return;
         }
     }
 
