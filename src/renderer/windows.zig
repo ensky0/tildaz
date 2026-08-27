@@ -1898,7 +1898,7 @@ pub const D3d11Renderer = struct {
     /// #483 5단계 — pane 사이 회색 분할선 · 활성 pane 의 amber 선 · 드래그 고스트 (Linux
     /// `software_terminal.collectPaneChrome` · macOS `drawPaneChrome` 과 같은 규칙). `drawPane` 들 뒤,
     /// `endFrame` 앞에 한 번.
-    pub fn drawPaneChrome(self: *D3d11Renderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect) void {
+    pub fn drawPaneChrome(self: *D3d11Renderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect, zoomed: bool) void {
         var buf: [pane_layout.MAX_PANES_PER_TAB + 5]BgInstance = undefined;
         var n: usize = 0;
         for (seps) |s| {
@@ -1907,21 +1907,23 @@ pub const D3d11Renderer = struct {
             n += 1;
         }
         const amber = ui_metrics.TAB_ACCENT_COLOR;
+        // 어느 변인가는 `pane_layout.focusEdges` 규칙 하나로 (안쪽 변 · 안쪽 하나면 3 면 · 최대화면 4 면).
         if (active) |r| {
+            const e = pane_layout.focusEdges(r, area, zoomed);
             const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.pixels_per_dip));
-            if (r.x > area.x) {
+            if (e.left) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = t, .h = r.h }, amber);
                 n += 1;
             }
-            if (r.x + r.w < area.x + area.w) {
+            if (e.right) {
                 buf[n] = rectInstance(.{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h }, amber);
                 n += 1;
             }
-            if (r.y > area.y) {
+            if (e.top) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = r.w, .h = t }, amber);
                 n += 1;
             }
-            if (r.y + r.h < area.y + area.h) {
+            if (e.bottom) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, amber);
                 n += 1;
             }

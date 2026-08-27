@@ -284,8 +284,11 @@ pub const FrameInputs = struct {
     /// #483 4b — 탭바를 뺀 터미널 영역. 활성 pane 의 어느 변이 창 가장자리인지 (amber 를 긋지
     /// 않는 변) 판정에 쓴다.
     pane_area: pane_layout.Rect,
-    /// #483 4b — pane 이 둘 이상일 때 활성 pane 의 영역. 하나면 null — 알릴 것이 없다.
+    /// #483 4b — pane 이 둘 이상일 때 (또는 최대화 중) 활성 pane 의 영역. 하나면 null — 알릴 것이 없다.
     active_pane_rect: ?pane_layout.Rect,
+    /// #483 6단계 — 최대화 중인가. 그러면 활성 pane 의 **네 변** 에 amber (창 가장자리 변 포함) — 분할선 · amber 가
+    /// 사라지는 것만으로는 "분할 없는 탭" 과 구분이 안 됐다. 어느 변을 칠하는지는 `pane_layout.focusEdges` 참조.
+    zoomed: bool,
     /// #483 4c — 분할선 드래그 중 고스트 (놓으면 분할선이 갈 자리, 셀 경계 스냅). 드래그 중이 아니면 null.
     drag_ghost: ?pane_layout.Rect,
     theme: *const themes.Theme,
@@ -774,10 +777,12 @@ pub const Renderer = struct {
         const a = in.pane_area;
         const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.scale));
         const amber = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
-        if (r.x > a.x) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
-        if (r.x + r.w < a.x + a.w) self.layer.overlay.append(allocator, .{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
-        if (r.y > a.y) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = r.w, .h = t, .color = amber }) catch {};
-        if (r.y + r.h < a.y + a.h) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t, .color = amber }) catch {};
+        // 어느 변인가는 `pane_layout.focusEdges` 규칙 하나로 (안쪽 변 · 안쪽 하나면 3 면 · 최대화면 4 면).
+        const e = pane_layout.focusEdges(r, a, in.zoomed);
+        if (e.left) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (e.right) self.layer.overlay.append(allocator, .{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (e.top) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = r.w, .h = t, .color = amber }) catch {};
+        if (e.bottom) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t, .color = amber }) catch {};
         // 4c — 드래그 고스트는 amber 로, 분할선이 갈 자리에 (셀 위에 겹칠 수 있다 — 드래그 중에만).
         if (in.drag_ghost) |g| self.layer.overlay.append(allocator, .{ .x = g.x, .y = g.y, .w = g.w, .h = g.h, .color = amber }) catch {};
     }
@@ -2055,7 +2060,7 @@ pub const Renderer = struct {
     /// 차이가 없다** — 같은 글리프를 어차피 그릴 때 채운다. 레이아웃 경로가
     /// `*const Renderer` 인 것을 유지하려고 여기서만 벗긴다.
     fn dialogFontAdvance(ctx: *const anyopaque, cp: u21) i32 {
-        const font_ctx: *font.Context = @constCast(@ptrCast(@alignCast(ctx)));
+        const font_ctx: *font.Context = @ptrCast(@alignCast(@constCast(ctx)));
         return @intCast(font_ctx.glyph(cp, .regular).advance);
     }
 

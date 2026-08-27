@@ -2016,8 +2016,10 @@ test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대�
     try std.testing.expect(session.setSeparatorPx(seps[0].node, 1000, rect, m));
     try std.testing.expectEqual(@as(u16, 50), left.terminal.cols);
     try expectGridMatchesLayout(group, rect, m);
-    try std.testing.expect(!session.setSeparatorPx(seps[0].node, 100, rect, m));
-    try std.testing.expectEqual(@as(u16, 50), left.terminal.cols);
+    // 최소 크기 아래 자리는 한계에서 멈춘다 (clamp) — 앞 pane 20 열.
+    try std.testing.expect(session.setSeparatorPx(seps[0].node, 100, rect, m));
+    try std.testing.expectEqual(@as(u16, 20), left.terminal.cols);
+    try expectGridMatchesLayout(group, rect, m);
     session.equalizeActive(rect, m);
     try std.testing.expectEqual(@as(u16, 78), left.terminal.cols);
 

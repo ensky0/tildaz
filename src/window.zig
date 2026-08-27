@@ -2849,7 +2849,7 @@ pub const Window = struct {
             // 마우스가 진입점이다.
             .toggle_visibility, .open_command_menu, .open_shortcuts => return,
             // #483 4a — 분할 액션. `app_event.Shortcut` 매핑과 배선은 5단계 (Linux 4b 먼저).
-            // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
+            // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화. 방향은 액션 이름에서 왔다 (`split_vertical` → `.right`).
             .split => .{ .split = mapped.direction orelse return },
             .focus_pane => .{ .focus_pane = mapped.direction orelse return },
             .resize_pane => .{ .resize_pane = mapped.direction orelse return },
