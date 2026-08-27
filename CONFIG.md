@@ -38,6 +38,8 @@ read exactly as written, and nothing rewrites its `hotkey`.
 
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
+> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version fails to load with `missing required key …`. The message tells you what to do: move the file aside (add `.bak` to its name), start TildaZ to get a fresh default file, then copy back the values you had changed. TildaZ never edits your file for you.
+>
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
 >
 > Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.

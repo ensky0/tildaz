@@ -475,7 +475,13 @@ pub const config_font_chain_too_long_format = "Configuration: font.family + glyp
 pub const config_font_chain_too_long_fallback_msg = "Configuration: font chain too long";
 pub const config_type_mismatch_format = "Configuration: type mismatch at \"{s}\" — expected {s}, got {s}.";
 pub const config_type_mismatch_fallback_msg = "Configuration: type mismatch";
-pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.";
+/// #483 (2026-08-27 사용자 결정) — 새 버전이 키를 더하면 이전 파일이 여기서 걸린다 (strict schema 는 유지,
+/// 파일에 자동으로 써 넣지 않는다). 사용자가 할 일을 한 문단으로: 파일을 **옮겨 두고** (지우지 말고) 다시 띄우면
+/// 기본 파일이 새로 생기니, 바꿔 둔 값을 다시 옮겨 적으라. 세 platform 이 같은 문구다.
+pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.\n\n" ++
+    "This file was written by an older version and lacks keys the current version needs. " ++
+    "Move the file aside (for example add .bak to its name) and start TildaZ again -- " ++
+    "a fresh default file will be created. Then copy back any values you had changed.";
 pub const config_missing_key_fallback_msg = "Configuration: missing key";
 pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
 pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
