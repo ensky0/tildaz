@@ -654,7 +654,7 @@ pub const MetalRenderer = struct {
     /// `software_terminal.collectPaneChrome` 과 같은 규칙: 회색은 `chrome.separator`, amber 는
     /// `TAB_ACCENT_COLOR` 를 활성 pane 의 padding 안쪽 · 다른 pane 과 맞닿는 변에만). `drawPane` 들 뒤,
     /// `endFrame` 앞에 한 번. 셀 위에 겹치지 않는 자리라 순서는 무관하고 고스트만 드래그 중 셀 위에 얹힌다.
-    pub fn drawPaneChrome(self: *MetalRenderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect) void {
+    pub fn drawPaneChrome(self: *MetalRenderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect, zoomed: bool) void {
         const encoder = self.current_encoder;
         if (encoder == null) return;
         // 분할선 ≤ MAX−1, amber 변 ≤ 4, 고스트 1.
@@ -666,21 +666,23 @@ pub const MetalRenderer = struct {
             n += 1;
         }
         const amber = ui_metrics.TAB_ACCENT_COLOR;
+        // 어느 변인가는 `pane_layout.focusEdges` 규칙 하나로 (안쪽 변 · 안쪽 하나면 3 면 · 최대화면 4 면).
         if (active) |r| {
+            const e = pane_layout.focusEdges(r, area, zoomed);
             const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.scale));
-            if (r.x > area.x) {
+            if (e.left) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = t, .h = r.h }, amber);
                 n += 1;
             }
-            if (r.x + r.w < area.x + area.w) {
+            if (e.right) {
                 buf[n] = rectInstance(.{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h }, amber);
                 n += 1;
             }
-            if (r.y > area.y) {
+            if (e.top) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = r.w, .h = t }, amber);
                 n += 1;
             }
-            if (r.y + r.h < area.y + area.h) {
+            if (e.bottom) {
                 buf[n] = rectInstance(.{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, amber);
                 n += 1;
             }

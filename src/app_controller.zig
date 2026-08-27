@@ -765,7 +765,8 @@ pub const App = struct {
                     for (lay) |pr| {
                         const t = group.panes[pr.pane].?;
                         const is_active = pr.pane == group.active_pane;
-                        if (is_active and lay.len > 1) active_rect = pr.rect;
+                        // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
+                        if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
                         r.drawPane(.{
                             .terminal = &t.terminal,
                             .state = &t.render_state,
@@ -799,7 +800,7 @@ pub const App = struct {
                             }
                         }
                     }
-                    r.drawPaneChrome(seps, area, active_rect, ghost);
+                    r.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
                     r.endFrame(
                         size.w,
                         tab_bar_h,
@@ -1006,8 +1007,8 @@ pub const App = struct {
             .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
             .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
             // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-            .split_right => if (self.resolveRunAction(.split)) self.handleSplit(.right),
-            .split_down => if (self.resolveRunAction(.split)) self.handleSplit(.down),
+            .split_vertical => if (self.resolveRunAction(.split)) self.handleSplit(.right),
+            .split_horizontal => if (self.resolveRunAction(.split)) self.handleSplit(.down),
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),

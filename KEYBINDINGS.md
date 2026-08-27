@@ -17,9 +17,10 @@ is not US QWERTY.
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
 | Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
 | Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
-| Split pane — new pane to the left / right / above / below *(Linux; see [Split panes](#split-panes))* | Ctrl+Shift+←/→/↑/↓ | Ctrl+Cmd+←/→/↑/↓ | Ctrl+Shift+←/→/↑/↓ |
+| Split the active pane with a vertical line — new pane to the right *(see [Split panes](#split-panes))* | Ctrl+Shift+→ | Option+Cmd+→ | Ctrl+Shift+→ |
+| Split the active pane with a horizontal line — new pane below | Ctrl+Shift+↓ | Option+Cmd+↓ | Ctrl+Shift+↓ |
 | Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
-| Move the split next to the active pane by one cell | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
+| Move the split line next to the active pane by one cell (stops at the minimum pane size; only the panes touching that line change) | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
 | Make all panes of the tab the same size | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
 | Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
@@ -297,8 +298,8 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
 - `+` opens a tab. At the 32-tab limit it stays in place, turns gray, and
   ignores clicks. Alt+click splits the active pane instead (see
   [Split panes](#split-panes)).
-- `…` opens the command menu. It lists the common tab, split-pane (*Split Right* /
-  *Split Down*), clipboard, fullscreen, config, shortcut-reference, and About actions
+- `…` opens the command menu. It lists the common tab, split-pane (*Split Vertical* /
+  *Split Horizontal*), clipboard, fullscreen, config, shortcut-reference, and About actions
   together with their shortcuts.
   Its first item toggles TildaZ and shows the current instance's configured
   global hotkey rather than assuming F1.
@@ -328,32 +329,44 @@ e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline 
 ## Split panes
 
 A tab can hold up to 16 panes (`pane_layout.MAX_PANES_PER_TAB`, independent of the
-32-tab limit), each a full terminal with its own shell. Splitting puts the new pane on
-the side you name: Ctrl+Shift+→ opens a new shell to the right of the active pane and
-gives it half of the space (the split falls on a cell boundary of the left pane; the
-leftover pixels go to the right one). Focus follows the arrow keys with Alt (Cmd on
-macOS): the pane that is geometrically next in that direction takes the keyboard,
-measured from the cursor's row or column, so in a three-pane layout you land on the
-neighbour the cursor is actually facing. Shift+Alt+arrows move the split line touching
-the active pane by one cell; Shift+Alt+0 makes every pane in the tab the same size
-(a split between one pane and two stacked panes becomes 1/3 : 2/3, like tmux's
+32-tab limit), each a full terminal with its own shell. There are two ways to split:
+Ctrl+Shift+→ (Option+Cmd+→ on macOS) draws a vertical line through the active pane
+and opens a new shell to its right; Ctrl+Shift+↓ (Option+Cmd+↓) draws a horizontal
+line and opens the new shell below. The new pane gets half of the space (the split
+falls on a cell boundary of the first pane; the leftover pixels go to the new one)
+and takes the keyboard, as in tmux, iTerm2, Windows Terminal, and vim. Focus follows
+the arrow keys with Alt (Cmd on macOS): the pane that is geometrically next in that
+direction takes the keyboard, measured from the cursor's row or column, so in a
+three-pane layout you land on the neighbour the cursor is actually facing.
+Shift+Alt+arrows (Shift+Cmd+arrows) move the split line touching the active pane by
+one cell; Shift+Alt+0 (Shift+Cmd+0) makes every pane in the tab the same size (a
+split between one pane and two stacked panes becomes 1/3 : 2/3, like tmux's
 `select-layout even-*`).
 
-The active pane is marked by an amber line along the edges it shares with other panes
-(never along the window edge); inactive panes are not dimmed, so all of them stay
-readable. Ctrl+Shift+Z zooms the active pane to the whole tab (the other panes keep
-running but are not drawn); pressing it again, or splitting, moving focus, or
-resizing, restores the layout. Clicking a pane focuses it and starts a selection
-there in one click; right-clicking an *inactive* pane only focuses it and does not
-paste. Dragging the gray line between two panes moves the split: while you drag, an
-amber ghost shows where the line will land (snapped to a cell boundary), and the
-panes are resized once, when you release. The `…` menu has *Split Right* and *Split
-Down*, and Alt+clicking the `+` button splits the active pane instead of opening a
-tab (to the right if the pane is wider than it is tall, otherwise below). Ctrl+Shift+W
-closes the active pane — the neighbour that shared the split takes its place — and
-closes the tab when the pane is the last one; a shell exiting inside a pane does the
-same. A split that would leave any pane smaller than 20×5 cells is refused with a
-dialog, as is the 17th pane.
+The active pane is marked by a 1 pt amber line along the edges it shares with other
+panes. When only one of its edges touches another pane — the two halves of a
+half-and-half split, or the end panes of a row — the two window edges next to that
+line are painted too, so the mark becomes a bracket hugging the active pane and you
+can tell which side of the gray line is active. Panes with two or more shared edges
+show just those edges; the mark never runs along all four edges unless the pane is
+zoomed. Inactive panes are not dimmed, so all of them stay readable. Ctrl+Shift+Z
+(Shift+Cmd+Z) zooms the active pane to the whole tab: the other panes keep running
+but are not drawn, and an amber frame along all four edges of the tab area shows
+that you are looking at a zoomed pane. Pressing it again, or splitting, moving
+focus, or resizing, restores the layout. Clicking a pane focuses it and starts a
+selection there in one click; right-clicking an *inactive* pane only focuses it and
+does not paste. Dragging the gray line between two panes moves the split: while you
+drag, an amber ghost shows where the line will land (snapped to a cell boundary),
+and the panes are resized once, when you release. Only the panes touching the line
+change size — panes further away, and the lines between them, stay where they were —
+and the line stops where a pane would fall below 20×5 cells instead of refusing the
+drag; the one-cell keyboard resize follows the same rules. The `…` menu has *Split
+Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the active
+pane instead of opening a tab (to the right if the pane is wider than it is tall,
+otherwise below). Ctrl+Shift+W closes the active pane — the neighbour that shared
+the split takes its place — and closes the tab when the pane is the last one; a
+shell exiting inside a pane does the same. A split that would leave any pane
+smaller than 20×5 cells is refused with a dialog, as is the 17th pane.
 
 **Status:** implemented on all three platforms ([#483](https://github.com/ensky0/tildaz/issues/483));
 Linux and macOS are verified, the Windows build is awaiting hands-on verification.
@@ -371,6 +384,6 @@ Linux and macOS are verified, the Windows build is awaiting hands-on verificatio
 | Mouse wheel | Scroll the pane under the pointer (focus stays where it is; page keys scroll the active pane) |
 | Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
 | Click an inactive pane | Focus that pane and start selecting there |
-| Drag the line between two panes | Move the split (amber ghost while dragging, applied on release) |
+| Drag the line between two panes | Move the split (amber ghost while dragging, applied on release; only the panes touching the line change, and the line stops at the minimum pane size) |
 | Click `…` | Open the command menu and shortcut hints |
 | Scrollbar click / drag | Jump or follow viewport |

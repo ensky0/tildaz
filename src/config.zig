@@ -316,28 +316,27 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
 /// 실제 key-code 매핑을 검증하는 별도 작업이다.
 fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
-        .{ .name = "f1", .key = .f1 },            .{ .name = "f2", .key = .f2 },
-        .{ .name = "f3", .key = .f3 },            .{ .name = "f4", .key = .f4 },
-        .{ .name = "f5", .key = .f5 },            .{ .name = "f6", .key = .f6 },
-        .{ .name = "f7", .key = .f7 },            .{ .name = "f8", .key = .f8 },
-        .{ .name = "f9", .key = .f9 },            .{ .name = "f10", .key = .f10 },
-        .{ .name = "f11", .key = .f11 },          .{ .name = "f12", .key = .f12 },
-        .{ .name = "space", .key = .space },      .{ .name = "grave", .key = .grave },
-        .{ .name = "backquote", .key = .grave },  .{ .name = "tab", .key = .tab },
-        .{ .name = "escape", .key = .escape },    .{ .name = "esc", .key = .escape },
-        .{ .name = "return", .key = .@"return" }, .{ .name = "enter", .key = .@"return" },
+        .{ .name = "f1", .key = .f1 },                    .{ .name = "f2", .key = .f2 },
+        .{ .name = "f3", .key = .f3 },                    .{ .name = "f4", .key = .f4 },
+        .{ .name = "f5", .key = .f5 },                    .{ .name = "f6", .key = .f6 },
+        .{ .name = "f7", .key = .f7 },                    .{ .name = "f8", .key = .f8 },
+        .{ .name = "f9", .key = .f9 },                    .{ .name = "f10", .key = .f10 },
+        .{ .name = "f11", .key = .f11 },                  .{ .name = "f12", .key = .f12 },
+        .{ .name = "space", .key = .space },              .{ .name = "grave", .key = .grave },
+        .{ .name = "backquote", .key = .grave },          .{ .name = "tab", .key = .tab },
+        .{ .name = "escape", .key = .escape },            .{ .name = "esc", .key = .escape },
+        .{ .name = "return", .key = .@"return" },         .{ .name = "enter", .key = .@"return" },
         // #493 — `[keys]` 의 기본 bindings 가 쓴다 (scroll_page_up / prev_tab 등).
         // 어느 layout 에나 있는 단일 물리 키라 layout 종속 문제가 없다 (#482).
-        .{ .name = "pageup", .key = .page_up },   .{ .name = "pgup", .key = .page_up },
-        .{ .name = "pagedown", .key = .page_down }, .{ .name = "pgdn", .key = .page_down },
+        .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
+        .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
         // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
         // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
-        .{ .name = "left", .key = .arrow_left },  .{ .name = "right", .key = .arrow_right },
-        .{ .name = "up", .key = .arrow_up },      .{ .name = "down", .key = .arrow_down },
+        .{ .name = "left", .key = .arrow_left },          .{ .name = "right", .key = .arrow_right },
+        .{ .name = "up", .key = .arrow_up },              .{ .name = "down", .key = .arrow_down },
         // #493 — 기본 bindings 의 `prev_tab` / `next_tab` 이 쓴다. 세 platform 의 키
         // 값이 이미 기존 매처에 있어 추측이 아니다 (아래 각 map 의 주석 참고).
-        .{ .name = "bracketleft", .key = .bracket_left },
-        .{ .name = "bracketright", .key = .bracket_right },
+        .{ .name = "bracketleft", .key = .bracket_left }, .{ .name = "bracketright", .key = .bracket_right },
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
@@ -886,24 +885,20 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
 
     const pairs = [_]struct { named: HotkeyNamedKey, code: PhysicalCode }{
-        .{ .named = .f1, .code = .f1 },       .{ .named = .f2, .code = .f2 },
-        .{ .named = .f3, .code = .f3 },       .{ .named = .f4, .code = .f4 },
-        .{ .named = .f5, .code = .f5 },       .{ .named = .f6, .code = .f6 },
-        .{ .named = .f7, .code = .f7 },       .{ .named = .f8, .code = .f8 },
-        .{ .named = .f9, .code = .f9 },       .{ .named = .f10, .code = .f10 },
-        .{ .named = .f11, .code = .f11 },     .{ .named = .f12, .code = .f12 },
-        .{ .named = .space, .code = .space }, .{ .named = .tab, .code = .tab },
+        .{ .named = .f1, .code = .f1 },                       .{ .named = .f2, .code = .f2 },
+        .{ .named = .f3, .code = .f3 },                       .{ .named = .f4, .code = .f4 },
+        .{ .named = .f5, .code = .f5 },                       .{ .named = .f6, .code = .f6 },
+        .{ .named = .f7, .code = .f7 },                       .{ .named = .f8, .code = .f8 },
+        .{ .named = .f9, .code = .f9 },                       .{ .named = .f10, .code = .f10 },
+        .{ .named = .f11, .code = .f11 },                     .{ .named = .f12, .code = .f12 },
+        .{ .named = .space, .code = .space },                 .{ .named = .tab, .code = .tab },
         .{ .named = .escape, .code = .escape },
         // 라벨은 `return`, W3C 이름은 `Enter` 다 — 같은 키다.
-        .{ .named = .@"return", .code = .enter },
-        .{ .named = .grave, .code = .backquote },
-        .{ .named = .page_up, .code = .page_up },
-        .{ .named = .page_down, .code = .page_down },
-        .{ .named = .arrow_left, .code = .arrow_left },
-        .{ .named = .arrow_right, .code = .arrow_right },
-        .{ .named = .arrow_up, .code = .arrow_up },
-        .{ .named = .arrow_down, .code = .arrow_down },
-        .{ .named = .bracket_left, .code = .bracket_left },
+                      .{ .named = .@"return", .code = .enter },
+        .{ .named = .grave, .code = .backquote },             .{ .named = .page_up, .code = .page_up },
+        .{ .named = .page_down, .code = .page_down },         .{ .named = .arrow_left, .code = .arrow_left },
+        .{ .named = .arrow_right, .code = .arrow_right },     .{ .named = .arrow_up, .code = .arrow_up },
+        .{ .named = .arrow_down, .code = .arrow_down },       .{ .named = .bracket_left, .code = .bracket_left },
         .{ .named = .bracket_right, .code = .bracket_right },
     };
     for (pairs) |pair| {
@@ -1005,8 +1000,8 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 37 개 (#483 의 pane 14 개 포함) + prev_tab / next_tab 이 2 개씩 = 39.
-    try std.testing.expectEqual(@as(usize, 39), count);
+    // 액션 35 개 (#483 의 pane 12 개 포함) + prev_tab / next_tab 이 2 개씩 = 37.
+    try std.testing.expectEqual(@as(usize, 37), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1815,12 +1810,11 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .open_config => &.{"shift+cmd+p"},
         .open_log => &.{"shift+cmd+l"},
         .dump_perf => &.{"shift+cmd+f12"},
-        // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. iTerm2 의 `Cmd+D` 는
-        // 글자 키라 layout 종속이어서 (#482) 쓰지 않는다.
-        .split_left => &.{"ctrl+cmd+left"},
-        .split_right => &.{"ctrl+cmd+right"},
-        .split_up => &.{"ctrl+cmd+up"},
-        .split_down => &.{"ctrl+cmd+down"},
+        // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
+        // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
+        // 글자라 안 쓴다. `alt+cmd+방향키` 는 시스템 기본에 없다.
+        .split_vertical => &.{"alt+cmd+right"},
+        .split_horizontal => &.{"alt+cmd+down"},
         .focus_pane_left => &.{"cmd+left"},
         .focus_pane_right => &.{"cmd+right"},
         .focus_pane_up => &.{"cmd+up"},
@@ -1866,10 +1860,8 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
         // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
         // 않으므로 피했다.
-        .split_left => &.{"ctrl+shift+left"},
-        .split_right => &.{"ctrl+shift+right"},
-        .split_up => &.{"ctrl+shift+up"},
-        .split_down => &.{"ctrl+shift+down"},
+        .split_vertical => &.{"ctrl+shift+right"},
+        .split_horizontal => &.{"ctrl+shift+down"},
         .focus_pane_left => &.{"alt+left"},
         .focus_pane_right => &.{"alt+right"},
         .focus_pane_up => &.{"alt+up"},
@@ -1926,7 +1918,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
-        .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane } },
+        .{ .title = "Panes", .actions = &.{ .split_vertical, .split_horizontal, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane } },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -1979,10 +1971,12 @@ pub const KeyAction = enum {
     dump_perf,
     // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
     // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
-    split_left,
-    split_right,
-    split_up,
-    split_down,
+    /// 2026-08-27 결정 — 분할은 둘: `split_vertical` 은 세로 분할선 (좌우, 새 pane **오른쪽**),
+    /// `split_horizontal` 은 가로 분할선 (위아래, 새 pane **아래**) — iTerm2 · Windows Terminal 의 낱말 뜻과
+    /// 같다 (tmux · WezTerm 은 반대). 포커스는 새 pane 으로 (tmux · iTerm2 · WT · Ghostty · vim 모두 그렇다).
+    /// 왼쪽 · 위로 가르는 액션은 어느 터미널에도 기본에 없어 뺐다.
+    split_vertical,
+    split_horizontal,
     focus_pane_left,
     focus_pane_right,
     focus_pane_up,
@@ -2127,10 +2121,8 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
-        .split_left => .{ .input = .{ .shortcut = .split }, .direction = .left },
-        .split_right => .{ .input = .{ .shortcut = .split }, .direction = .right },
-        .split_up => .{ .input = .{ .shortcut = .split }, .direction = .up },
-        .split_down => .{ .input = .{ .shortcut = .split }, .direction = .down },
+        .split_vertical => .{ .input = .{ .shortcut = .split }, .direction = .right },
+        .split_horizontal => .{ .input = .{ .shortcut = .split }, .direction = .down },
         .focus_pane_left => .{ .input = .{ .shortcut = .focus_pane }, .direction = .left },
         .focus_pane_right => .{ .input = .{ .shortcut = .focus_pane }, .direction = .right },
         .focus_pane_up => .{ .input = .{ .shortcut = .focus_pane }, .direction = .up },
@@ -3218,7 +3210,7 @@ test "default config TOML uses the common terminal font defaults" {
     // "부르는 법 → 안에서 도는 것 → 언제 뜨는가 → 어떻게 보이는가 → 한계" 의 의도가
     // 사라진다. TOML 은 파싱이 순서와 무관하므로 파싱 결과로는 잡히지 않는다.
     const order = [_][]const u8{
-        "hotkey", "shell", "auto_start", "hidden_start", "theme", "max_scroll_lines",
+        "hotkey",   "shell",  "auto_start", "hidden_start", "theme", "max_scroll_lines",
         "[window]", "[font]",
     };
     var at: usize = 0;

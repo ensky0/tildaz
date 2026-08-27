@@ -241,17 +241,59 @@ pub const Tree = struct {
         const split_idx = self.ancestorSplit(at, axis, dir.towardSecond()) orelse
             self.ancestorSplit(at, axis, !dir.towardSecond()) orelse return false;
         const node_rect = self.rectOf(rect, m, split_idx) orelse return false;
-        const sp = &self.nodes[split_idx].split;
-        const g = splitGeometry(node_rect, m, sp.*);
+        const sp = self.nodes[split_idx].split;
+        const g = splitGeometry(node_rect, m, sp);
         if (g.avail <= 0) return false;
 
-        const cell = if (axis == .side_by_side) m.cell_w else m.cell_h;
+        const along = axis == .side_by_side;
+        const cell = if (along) m.cell_w else m.cell_h;
         const step = cells * cell;
-        const new_first = g.first_px + (if (dir.towardSecond()) step else -step);
-        if (new_first < 0 or new_first > g.avail) return false;
+        const origin = if (along) node_rect.x else node_rect.y;
+        // 드래그와 같은 경로 — clamp 와 "붙은 칸만" 규칙을 함께 얻는다.
+        return self.setSeparatorPx(split_idx, origin + g.first_px + (if (dir.towardSecond()) step else -step), rect, m);
+    }
 
+    /// 분할 노드 `node` (`Separator.node`) 의 분할선을 분할 축 좌표 `px` 에 놓는다 — 드래그 (4c) 와 키 1셀
+    /// 조절 (`resize`) 이 같은 경로다. 2026-08-27 사용자 결정 둘:
+    ///
+    /// - **clamp** — 최소 크기 (`MIN_PANE_*`) 에 닿으면 거부하지 않고 **그 한계에서 멈춘다** (tmux · Windows
+    ///   Terminal 방식). 예전엔 어느 pane 이라도 최소 아래로 가면 드래그 전체를 거부해 (고스트도 안 그려져)
+    ///   "끌다가 취소됨" 으로 보였다.
+    /// - **선에 붙은 칸만 변한다** — 선 너머 subtree 가 같은 축으로 또 갈려 있으면, 예전엔 비율이 그대로라
+    ///   안쪽 분할선까지 비례해 밀렸다. 이제 안쪽 같은-축 분할의 비율을 다시 놓아 **먼 칸은 px 그대로**, 선에
+    ///   붙은 칸이 변화를 흡수한다 (`keepFarFixed`). 다른 축의 분할 (위아래로 쌓인 칸) 은 둘 다 선의 이웃이라
+    ///   같이 변하는 것이 맞다. 한계도 같은 규칙으로 잰다 (`minExtentKeepFar` — 먼 칸은 지금 크기 그대로).
+    ///
+    /// 셀 경계 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다. 바뀐 것이 없으면
+    /// (이미 한계 · 같은 셀) false.
+    pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) bool {
+        if (node >= MAX_NODES or !self.alive[node]) return false;
+        if (self.nodes[node] != .split) return false;
+        const node_rect = self.rectOf(rect, m, node) orelse return false;
+        const sp = self.nodes[node].split;
+        const g = splitGeometry(node_rect, m, sp);
+        if (g.avail <= 0) return false;
+        const c = childRects(node_rect, sp, g);
+        const along = sp.axis == .side_by_side;
+        const origin = if (along) node_rect.x else node_rect.y;
+        const cell = if (along) m.cell_w else m.cell_h;
+        // 한계 — 선에 붙은 칸들만 줄어드니 먼 칸은 지금 크기 그대로 두고 셈.
+        const min_first = self.minExtentKeepFar(sp.first, sp.axis, m, c.first, .second);
+        const min_second = self.minExtentKeepFar(sp.second, sp.axis, m, c.second, .first);
+        const max_first = g.avail - min_second;
+        if (min_first > max_first) return false; // 이미 더 못 줄이는 배치
+        const target = std.math.clamp(px - origin, min_first, max_first);
+        // 스냅 뒤의 실제 위치 — 한계를 넘게 반올림됐으면 한 셀 안쪽으로.
+        var trial = sp;
+        trial.ratio = ratioOf(target, g.avail);
+        var new_first = splitGeometry(node_rect, m, trial).first_px;
+        if (new_first < min_first) new_first += cell;
+        if (new_first > max_first) new_first -= cell;
+        if (new_first == g.first_px or new_first < 0 or new_first > g.avail) return false;
         const saved = self.*;
-        sp.ratio = @as(f32, @floatFromInt(new_first)) / @as(f32, @floatFromInt(g.avail));
+        self.nodes[node].split.ratio = ratioOf(new_first, g.avail);
+        self.keepFarFixed(sp.first, sp.axis, m, c.first, .second, new_first);
+        self.keepFarFixed(sp.second, sp.axis, m, c.second, .first, g.avail - new_first);
         if (!self.allPanesAtLeastMin(rect, m)) {
             self.* = saved;
             return false;
@@ -259,25 +301,66 @@ pub const Tree = struct {
         return true;
     }
 
-    /// 4c 드래그 — 분할 노드 `node` (`Separator.node`) 의 분할선을 분할 축 좌표 `px` 에 놓는다. 셀 경계
-    /// 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다. 최소 크기 아래로
-    /// 내려가는 pane 이 생기면 false 고 트리는 그대로다.
-    pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) bool {
-        if (node >= MAX_NODES or !self.alive[node]) return false;
-        if (self.nodes[node] != .split) return false;
-        const node_rect = self.rectOf(rect, m, node) orelse return false;
-        const sp = &self.nodes[node].split;
-        const g = splitGeometry(node_rect, m, sp.*);
-        if (g.avail <= 0) return false;
-        const origin = if (sp.axis == .side_by_side) node_rect.x else node_rect.y;
-        const first = std.math.clamp(px - origin, 0, g.avail);
-        const saved = self.*;
-        sp.ratio = @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(g.avail));
-        if (!self.allPanesAtLeastMin(rect, m)) {
-            self.* = saved;
-            return false;
+    /// 움직이는 선이 이 subtree 의 어느 끝에 있는가 — `first` 끝 (선이 앞) 또는 `second` 끝 (선이 뒤).
+    const LineSide = enum { first, second };
+
+    /// `idx` subtree 가 `axis` 방향으로 가질 수 있는 최소 길이 — 단, **선에서 먼 칸은 지금 크기 그대로** 두고
+    /// (붙은 칸만 줄어들므로). leaf 는 `leafMinExtent`, 같은 축의 분할은 먼 자식의 현재 px + 분할선 + 붙은
+    /// 자식의 재귀값, 다른 축의 분할은 두 자식 (둘 다 선에 붙어 있다) 중 큰 것.
+    fn minExtentKeepFar(self: *const Tree, idx: NodeIndex, axis: Axis, m: Metrics, rect: Rect, line: LineSide) i32 {
+        return switch (self.nodes[idx]) {
+            .leaf => leafMinExtent(axis, m),
+            .split => |s| blk: {
+                const g = splitGeometry(rect, m, s);
+                const c = childRects(rect, s, g);
+                if (s.axis != axis) break :blk @max(
+                    self.minExtentKeepFar(s.first, axis, m, c.first, line),
+                    self.minExtentKeepFar(s.second, axis, m, c.second, line),
+                );
+                break :blk switch (line) {
+                    .second => g.first_px + g.sep_px + self.minExtentKeepFar(s.second, axis, m, c.second, .second),
+                    .first => self.minExtentKeepFar(s.first, axis, m, c.first, .first) + g.sep_px + g.second_px,
+                };
+            },
+        };
+    }
+
+    /// `idx` subtree 의 `axis` 길이가 `new_extent` 로 바뀔 때, 선에서 먼 칸의 px 는 그대로 두고 붙은 칸이 변화를
+    /// 흡수하도록 안쪽 같은-축 분할의 비율을 다시 놓는다. `rect` 는 바뀌기 전 영역 (현재 px 를 읽는 데 쓴다).
+    fn keepFarFixed(self: *Tree, idx: NodeIndex, axis: Axis, m: Metrics, rect: Rect, line: LineSide, new_extent: i32) void {
+        switch (self.nodes[idx]) {
+            .leaf => {},
+            .split => |s| {
+                const g = splitGeometry(rect, m, s);
+                const c = childRects(rect, s, g);
+                if (s.axis != axis) {
+                    // 다른 축 — 두 자식 모두 이 축 길이가 같이 바뀐다 (둘 다 선의 이웃).
+                    self.keepFarFixed(s.first, axis, m, c.first, line, new_extent);
+                    self.keepFarFixed(s.second, axis, m, c.second, line, new_extent);
+                    return;
+                }
+                const new_avail = new_extent - g.sep_px;
+                if (new_avail <= 0) return;
+                var new_rect = rect;
+                if (axis == .side_by_side) new_rect.w = new_extent else new_rect.h = new_extent;
+                switch (line) {
+                    .second => {
+                        // first 가 먼 칸 — px 그대로. second 가 흡수.
+                        const first_px = @min(g.first_px, new_avail);
+                        self.nodes[idx].split.ratio = ratioOf(first_px, new_avail);
+                        const g2 = splitGeometry(new_rect, m, self.nodes[idx].split);
+                        self.keepFarFixed(s.second, axis, m, c.second, .second, new_avail - g2.first_px);
+                    },
+                    .first => {
+                        // second 가 먼 칸 — px 그대로. first 가 흡수.
+                        const first_px = @max(0, new_avail - g.second_px);
+                        self.nodes[idx].split.ratio = ratioOf(first_px, new_avail);
+                        const g2 = splitGeometry(new_rect, m, self.nodes[idx].split);
+                        self.keepFarFixed(s.first, axis, m, c.first, .first, g2.first_px);
+                    },
+                }
+            },
         }
-        return true;
     }
 
     /// 균등 분배 — 모든 분할의 비율을 양쪽 leaf 수에 비례시킨다. 형제의 leaf 가 1 : 2 면
@@ -555,6 +638,50 @@ fn span(r: Rect, dir: Direction) Span {
         .side_by_side => .{ .along_lo = r.x, .along_hi = r.x + r.w, .cross_lo = r.y, .cross_hi = r.y + r.h },
         .stacked => .{ .along_lo = r.y, .along_hi = r.y + r.h, .cross_lo = r.x, .cross_hi = r.x + r.w },
     };
+}
+
+/// #483 6단계 — 활성 pane 의 어느 변에 amber 를 그리는가 (2026-08-27 사용자 규칙).
+///
+/// - 분할선에 닿은 **안쪽 변** 은 항상.
+/// - 안쪽 변이 **하나뿐** 인 pane (= 바깥과 3 면 닿음: 반 분할의 양쪽, 한 줄의 양 끝) 은 그 변에 직각으로 붙은
+///   바깥 두 변도 → 총 3 면 (⊐ 모양). 안쪽 변 하나만으로는 회색 분할선 어느 쪽인지 1 pt 로 읽히지 않았다.
+///   안쪽 변이 둘 이상이면 (ㄴ · ‖) 길이와 모양으로 이미 읽히니 그대로.
+/// - 최대화 중이면 네 변 모두 — 일반 pane 은 최대 3 면이라 4 면 틀은 최대화 하나뿐이다.
+/// - pane 하나 (안쪽 변 0) 는 아무것도 없다 — host 가 그때 `active_pane_rect` 를 안 넘긴다.
+pub const FocusEdges = struct { left: bool, right: bool, top: bool, bottom: bool };
+
+pub fn focusEdges(r: Rect, area: Rect, zoomed: bool) FocusEdges {
+    if (zoomed) return .{ .left = true, .right = true, .top = true, .bottom = true };
+    var e: FocusEdges = .{
+        .left = r.x > area.x,
+        .right = r.x + r.w < area.x + area.w,
+        .top = r.y > area.y,
+        .bottom = r.y + r.h < area.y + area.h,
+    };
+    const inner: u8 = @as(u8, @intFromBool(e.left)) + @as(u8, @intFromBool(e.right)) +
+        @as(u8, @intFromBool(e.top)) + @as(u8, @intFromBool(e.bottom));
+    if (inner == 1) {
+        if (e.left or e.right) {
+            e.top = true;
+            e.bottom = true;
+        } else {
+            e.left = true;
+            e.right = true;
+        }
+    }
+    return e;
+}
+
+/// leaf 하나가 `axis` 방향으로 가질 수 있는 최소 길이 — `MIN_PANE_*` 셀 + 양쪽 padding (+ 좌우면 scrollbar 자리).
+fn leafMinExtent(axis: Axis, m: Metrics) i32 {
+    return switch (axis) {
+        .side_by_side => 2 * m.pad + m.scrollbar_w + @as(i32, MIN_PANE_COLS) * m.cell_w,
+        .stacked => 2 * m.pad + @as(i32, MIN_PANE_ROWS) * m.cell_h,
+    };
+}
+
+fn ratioOf(first: i32, avail: i32) f32 {
+    return @as(f32, @floatFromInt(first)) / @as(f32, @floatFromInt(avail));
 }
 
 /// 교차 축 좌표 `ray` 가 구간 안이면 0, 밖이면 가장 가까운 끝 픽셀까지의 거리.
@@ -848,12 +975,72 @@ test "#483 4c — 분할선 드래그: setSeparatorPx 는 셀 경계에 스냅�
     var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
     try std.testing.expectEqual(@as(u16, 50), find(layout(&tree, rect, m, &buf), 0).?.cols);
     try std.testing.expectEqual(@as(i32, 994), separators(&tree, rect, m, &sbuf)[0].rect.x);
-    // 최소 크기 (20 열) 아래로 내려가는 자리는 거부하고 트리는 그대로.
-    try std.testing.expect(!tree.setSeparatorPx(seps[0].node, 100, rect, m));
-    try std.testing.expectEqual(@as(u16, 50), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    // 최소 크기 (20 열) 아래 자리는 거부하지 않고 **한계에서 멈춘다** (clamp, 2026-08-27 결정) — 앞 pane 20 열.
+    try std.testing.expect(tree.setSeparatorPx(seps[0].node, 100, rect, m));
+    try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    // 이미 한계면 바뀐 것이 없어 false.
+    try std.testing.expect(!tree.setSeparatorPx(seps[0].node, 50, rect, m));
     // leaf 노드 · 죽은 노드는 거부.
     try std.testing.expect(!tree.setSeparatorPx(1, 1000, rect, m));
     try std.testing.expect(!tree.setSeparatorPx(MAX_NODES - 1, 1000, rect, m));
+}
+
+test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할의 먼 칸은 px 그대로, 한계도 먼 칸을 고정한 채 잰다" {
+    const m: Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+    // A | (B | C) — 0 을 오른쪽으로 갈라 1, 1 을 다시 오른쪽으로 갈라 2.
+    var tree = Tree.single(0);
+    try tree.split(0, .right, 1, rect, m);
+    try tree.split(1, .right, 2, rect, m);
+    var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    var sbuf: [MAX_PANES_PER_TAB]Separator = undefined;
+    try std.testing.expectEqual(@as(u16, 78), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    try std.testing.expectEqual(@as(u16, 38), find(layout(&tree, rect, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
+    // A|B 선 (루트) 을 5 셀 오른쪽으로: A +5, **B −5, C 그대로** (예전엔 B · C 가 비례해 같이 줄었다).
+    const root_sep = separators(&tree, rect, m, &sbuf)[0];
+    try std.testing.expectEqual(@as(i32, 1526), root_sep.rect.x);
+    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 1526 + 5 * 19, rect, m));
+    try std.testing.expectEqual(@as(u16, 83), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    try std.testing.expectEqual(@as(u16, 33), find(layout(&tree, rect, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
+    // 키 1 셀 조절도 같은 경로 — A 를 오른쪽으로 1 셀: A 84, B 32, C 37.
+    try std.testing.expect(tree.resize(0, .right, 1, rect, m));
+    try std.testing.expectEqual(@as(u16, 84), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    try std.testing.expectEqual(@as(u16, 32), find(layout(&tree, rect, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
+    // 한계 — 멀리 끌어도 B 는 최소 20 열에서 멈추고 C 는 37 그대로: A = 158 − 20 − 37 … 셀 경계로 96.
+    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 3000, rect, m));
+    try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, rect, m, &buf), 1).?.cols);
+    try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
+    try std.testing.expectEqual(@as(u16, 96), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    // 반대쪽 — B|C 선을 왼쪽으로 끌면 B 만 줄고 A 는 그대로 (A 는 이 선의 subtree 밖).
+    tree.equalize();
+    const inner = separators(&tree, rect, m, &sbuf)[1];
+    const a_before = find(layout(&tree, rect, m, &buf), 0).?.cols;
+    try std.testing.expect(tree.setSeparatorPx(inner.node, inner.rect.x - 3 * 19, rect, m));
+    try std.testing.expectEqual(a_before, find(layout(&tree, rect, m, &buf), 0).?.cols);
+}
+
+test "#483 6단계 — focusEdges: 안쪽 변 하나면 3 면, 둘 이상이면 안쪽만, 최대화면 4 면" {
+    const area: Rect = .{ .x = 0, .y = 0, .w = 300, .h = 200 };
+    const FE = FocusEdges;
+    // A | B 의 A — 안쪽 변은 오른쪽 하나 → 오른쪽 + 위 + 아래 (⊐), 왼쪽 창 가장자리는 비움.
+    try std.testing.expectEqual(FE{ .left = false, .right = true, .top = true, .bottom = true }, focusEdges(.{ .x = 0, .y = 0, .w = 150, .h = 200 }, area, false));
+    // A | B 의 B — 왼쪽 + 위 + 아래 (⊏).
+    try std.testing.expectEqual(FE{ .left = true, .right = false, .top = true, .bottom = true }, focusEdges(.{ .x = 152, .y = 0, .w = 148, .h = 200 }, area, false));
+    // A / B 의 A — 아래 하나 → 아래 + 왼쪽 + 오른쪽 (⊔).
+    try std.testing.expectEqual(FE{ .left = true, .right = true, .top = false, .bottom = true }, focusEdges(.{ .x = 0, .y = 0, .w = 300, .h = 100 }, area, false));
+    // A | B | C 의 B — 안쪽 변 둘 (좌 · 우) → 그 둘만 (‖).
+    try std.testing.expectEqual(FE{ .left = true, .right = true, .top = false, .bottom = false }, focusEdges(.{ .x = 100, .y = 0, .w = 100, .h = 200 }, area, false));
+    // 2×2 의 왼쪽 위 — 안쪽 변 둘 (우 · 아래) → 그 둘만 (ㄴ).
+    try std.testing.expectEqual(FE{ .left = false, .right = true, .top = false, .bottom = true }, focusEdges(.{ .x = 0, .y = 0, .w = 150, .h = 100 }, area, false));
+    // A | (B / C / D) 의 C — 안쪽 변 셋 → 그 셋.
+    try std.testing.expectEqual(FE{ .left = true, .right = false, .top = true, .bottom = true }, focusEdges(.{ .x = 152, .y = 70, .w = 148, .h = 60 }, area, false));
+    // 최대화 — 영역 전체를 차지해도 (안쪽 변 0) 네 변.
+    try std.testing.expectEqual(FE{ .left = true, .right = true, .top = true, .bottom = true }, focusEdges(area, area, true));
+    // pane 하나 (최대화 아님) — 안쪽 변 0 이면 아무것도 없다.
+    try std.testing.expectEqual(FE{ .left = false, .right = false, .top = false, .bottom = false }, focusEdges(area, area, false));
 }
 
 test "#483 equalize — 비율을 양쪽 leaf 수에 비례시킨다" {

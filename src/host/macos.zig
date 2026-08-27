@@ -2644,8 +2644,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .toggle_visibility => toggleWindow(),
         .new_tab => handleNewTab(),
         // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-        .split_right => handleSplit(.right),
-        .split_down => handleSplit(.down),
+        .split_vertical => handleSplit(.right),
+        .split_horizontal => handleSplit(.down),
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
@@ -4230,7 +4230,8 @@ fn renderFrameTick() void {
     for (lay) |pr| {
         const t = group.panes[pr.pane].?;
         const is_active = pr.pane == group.active_pane;
-        if (is_active and lay.len > 1) active_rect = pr.rect;
+        // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
+        if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
         g_renderer.?.drawPane(.{
             .terminal = &t.terminal,
             .state = &t.render_state,
@@ -4264,7 +4265,7 @@ fn renderFrameTick() void {
             }
         }
     }
-    g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost);
+    g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
     g_renderer.?.endFrame(
         .{
             .open = g_command_menu_open,
