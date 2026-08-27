@@ -29,6 +29,7 @@ const box_drawing = @import("../box_drawing.zig");
 const cell_color = @import("cell_color.zig");
 const cell_decoration = @import("cell_decoration.zig");
 const pane_draw = @import("pane_draw.zig");
+const pane_layout = @import("../pane_layout.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_chrome = @import("../tab_chrome.zig");
 const ui_rect = @import("../ui_rect.zig");
@@ -106,6 +107,11 @@ const BgInstance = extern struct {
 /// shape 라 옮기기만 한다 (`shade` / `_pad` 는 기본값).
 fn bgFromChrome(r: tab_chrome.Rect) BgInstance {
     return .{ .pos = .{ r.x, r.y }, .size = .{ r.w, r.h }, .color = r.color };
+}
+
+/// #483 5단계 — 정수 px 사각형 (분할선 · amber 선 · 드래그 고스트) → 배경 인스턴스.
+fn rectInstance(r: pane_layout.Rect, color: [4]f32) BgInstance {
+    return .{ .pos = .{ @floatFromInt(r.x), @floatFromInt(r.y) }, .size = .{ @floatFromInt(r.w), @floatFromInt(r.h) }, .color = color };
 }
 
 const TextInstance = extern struct {
@@ -642,6 +648,48 @@ pub const MetalRenderer = struct {
         self.uploadTabAtlasIfDirty();
 
         self.renderTerminalContent(encoder, pane);
+    }
+
+    /// #483 5단계 — pane 사이 회색 분할선 · 활성 pane 의 amber 선 · 드래그 고스트 (Linux
+    /// `software_terminal.collectPaneChrome` 과 같은 규칙: 회색은 `chrome.separator`, amber 는
+    /// `TAB_ACCENT_COLOR` 를 활성 pane 의 padding 안쪽 · 다른 pane 과 맞닿는 변에만). `drawPane` 들 뒤,
+    /// `endFrame` 앞에 한 번. 셀 위에 겹치지 않는 자리라 순서는 무관하고 고스트만 드래그 중 셀 위에 얹힌다.
+    pub fn drawPaneChrome(self: *MetalRenderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect) void {
+        const encoder = self.current_encoder;
+        if (encoder == null) return;
+        // 분할선 ≤ MAX−1, amber 변 ≤ 4, 고스트 1.
+        var buf: [pane_layout.MAX_PANES_PER_TAB + 5]BgInstance = undefined;
+        var n: usize = 0;
+        for (seps) |s| {
+            if (n >= buf.len) break;
+            buf[n] = rectInstance(s.rect, self.chrome.separator);
+            n += 1;
+        }
+        const amber = ui_metrics.TAB_ACCENT_COLOR;
+        if (active) |r| {
+            const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.scale));
+            if (r.x > area.x) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = t, .h = r.h }, amber);
+                n += 1;
+            }
+            if (r.x + r.w < area.x + area.w) {
+                buf[n] = rectInstance(.{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h }, amber);
+                n += 1;
+            }
+            if (r.y > area.y) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y, .w = r.w, .h = t }, amber);
+                n += 1;
+            }
+            if (r.y + r.h < area.y + area.h) {
+                buf[n] = rectInstance(.{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t }, amber);
+                n += 1;
+            }
+        }
+        if (ghost) |g| {
+            buf[n] = rectInstance(g, amber);
+            n += 1;
+        }
+        self.drawBgInstances(encoder, buf[0..n]);
     }
 
     /// #483 2단계 ② — 프레임 끝: 보류한 탭바 (또는 단일 탭 스트립) · command menu → endEncoding →
