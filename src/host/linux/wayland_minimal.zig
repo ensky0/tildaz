@@ -6028,8 +6028,38 @@ const Client = struct {
     ///
     /// `key` 는 wl_keyboard 가 준 raw evdev keycode, `xkb_key` 는 거기에 8 을 더한 xkb 값이다
     /// (둘 다 필요하다 — 물리 위치는 evdev 로, xkb 조회는 xkb 값으로 한다).
-    fn sendEncodedKey(self: *Client, key: u32, xkb_key: u32, utf8: []const u8) void {
+    fn sendEncodedKey(self: *Client, key: u32, xkb_key: u32, utf8_in: []const u8) void {
         const consumed = self.keyboard.consumedMods(xkb_key);
+
+        // #533 — **제어문자는 Ctrl 을 뺀 글자로 바꿔서 넘긴다.** xkb 의 `utf8()` 은 Ctrl
+        // 을 적용해 `Ctrl+A` 에 `"\x01"` 을 주는데, 그것을 그대로 넘기면 인코더가
+        // "글자에 ctrl 이 붙었다" 로 보고 CSI u 로 감싸고 (`\x1b[3;5u`), 비워서 넘기면
+        // **물리 키의 US 글자**로 제어문자를 만든다 — AZERTY 의 `A`(물리 `Q` 자리) 가
+        // `\x11` XOFF 가 되어 화면이 멈추고, Dvorak 의 `Ctrl+C` 는 SIGINT 를 잃는다.
+        //
+        // keysym 은 배열을 반영하면서 Ctrl 은 적용하지 않으므로 (AZERTY 의 A 키 →
+        // keysym `a`) 그 글자를 쓴다. ghostty macOS 의
+        // `characters(byApplyingModifiers: mods − control)` 와 같은 뜻이다.
+        var ctrl_free_buf: [8]u8 = undefined;
+        var utf8 = utf8_in;
+        if (utf8.len == 1 and (utf8[0] < 0x20 or utf8[0] == 0x7f)) {
+            utf8 = "";
+            if (self.keyboard.oneSym(xkb_key)) |sym| {
+                if (self.keyboard.keysymToUtf32(sym)) |cp| {
+                    const n = std.unicode.utf8Encode(cp, &ctrl_free_buf) catch 0;
+                    if (n > 0) utf8 = ctrl_free_buf[0..n];
+                }
+            }
+        }
+
+        // #533 — 수식키를 다 뺀 글자. kitty keyboard protocol 이 항목의 `code` 로 쓰며,
+        // **0 이면 그 프로토콜에서 Ctrl · Alt 조합이 통째로 사라진다** (항목이 안 생기고
+        // utf8 도 없어 바이트 0 개). press 에도 필요한 값이라 release 보고와 함께 미룰 수
+        // 없다. `keysymAtEvdev` 가 level 0 (수식키 없음) 을 준다.
+        const unshifted: u21 = blk: {
+            const sym = self.keyboard.keysymAtEvdev(@intCast(key)) orelse break :blk 0;
+            break :blk self.keyboard.keysymToUtf32(sym) orelse 0;
+        };
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
         key_encode.encode(&writer, .{
@@ -6048,9 +6078,7 @@ const Client = struct {
                 .super = consumed.super,
             },
             .utf8 = utf8,
-            // kitty keyboard protocol 이 쓰는 값이다. 그 protocol 의 key release 보고와
-            // 함께 후속으로 채운다 (#533 코멘트의 결정).
-            .unshifted_codepoint = 0,
+            .unshifted_codepoint = unshifted,
         }, self.keyEncodeOptions()) catch return;
         const bytes = writer.buffered();
         if (bytes.len > 0) self.queueInput(bytes);

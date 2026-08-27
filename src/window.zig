@@ -2149,7 +2149,7 @@ pub const Window = struct {
                 const kd_scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
                 const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
-                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(lParam, "");
+                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "");
                 }
                 return 0;
             },
@@ -2324,7 +2324,7 @@ pub const Window = struct {
                         GetKeyState(VK_SHIFT) < 0,
                         &char_buf,
                     );
-                    if (self.sendEncodedKeyWin(lParam, text)) return 0;
+                    if (self.sendEncodedKeyWin(@intCast(wParam), lParam, text)) return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
@@ -2866,17 +2866,26 @@ pub const Window = struct {
     ///
     /// `utf8` 은 이 키가 만든 글자다. Windows 는 그것을 `WM_CHAR` 로 따로 주므로 이
     /// 경로는 대개 빈 문자열이고, 인코더가 `code` 와 `mods` 로 바이트를 만든다.
-    fn sendEncodedKeyWin(self: *Window, lParam: LPARAM, utf8: []const u8) bool {
+    fn sendEncodedKeyWin(self: *Window, vk: UINT, lParam: LPARAM, utf8: []const u8) bool {
         const write_fn = self.write_fn orelse return false;
 
         // scan code 는 lParam 16~23 비트, extended 는 24 비트. 둘을 함께 봐야
         // control pad 와 numpad 가 섞이지 않는다 (`physical_key.zig` 헤더).
-        const scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
+        const scan: UINT = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
         const extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
 
         const shift = GetKeyState(VK_SHIFT) < 0;
         const ctrl = GetKeyState(VK_CONTROL) < 0;
         const alt = GetKeyState(VK_MENU) < 0;
+
+        // #533 — 수식키를 다 뺀 글자의 첫 코드포인트. kitty keyboard protocol 의 항목
+        // `code` 이고, 0 이면 그 프로토콜에서 Ctrl · Alt 조합이 통째로 사라진다.
+        var unshifted_buf: [8]u8 = undefined;
+        const unshifted_text = winCharWithoutCtrlAlt(vk, scan, false, &unshifted_buf);
+        const unshifted: u21 = if (unshifted_text.len == 0) 0 else blk: {
+            var it = std.unicode.Utf8Iterator{ .bytes = unshifted_text, .i = 0 };
+            break :blk it.nextCodepoint() orelse 0;
+        };
 
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
@@ -2888,8 +2897,7 @@ pub const Window = struct {
             // 키를 다루므로 소비된 modifier 가 없다.
             .consumed_mods = .{},
             .utf8 = utf8,
-            // kitty keyboard protocol 이 쓰는 값. release 보고와 함께 후속으로 채운다.
-            .unshifted_codepoint = 0,
+            .unshifted_codepoint = unshifted,
         }, self.keyEncodeOptions()) catch return false;
 
         const bytes = writer.buffered();
