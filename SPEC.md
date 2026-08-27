@@ -545,13 +545,51 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 | 한 페이지 아래 | Shift+PgDn | Shift+PgDn | Shift+PgDn — 동상 (`.page = .down`) | ✅ | ✅ | ✅ |
 | 화면 reset (활성 탭) | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R — `session.resetActive()` = `terminal.fullReset()` + `\\x0c` (Ctrl+L) 송신 ([#214](https://github.com/ensky0/tildaz/issues/214)) | ✅ | ✅ | ✅ |
 
-### 2.6 Ctrl+key PTY 전달 (control char)
+### 2.6 수식키 PTY 전달 (Ctrl · Alt · CSI modifier)
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | Ctrl+C → SIGINT (\\x03) | `WM_KEYDOWN` → 공통 입력 정책 → `interruptActive`; TranslateMessage가 만든 짝꿍 `WM_CHAR`는 consume해 ETX 정확히 1회 | NSEvent.characters 직접 PTY write | xkb modifier check + utf8 fallback ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
 | Ctrl+A ~ Ctrl+Z 일반 control | 동일 | 동일 (Ctrl+] tag jump, Ctrl+W vim window 등) | 동일 (xkb ctrl modifier compose) | ✅ | ✅ | ✅ |
 | 한글 IME 조합 중 Ctrl+C | `ImmNotifyIME(CPS_CANCEL)` + preedit overlay 비움 + \\x03 직송; queued `WM_CHAR` consume — discard와 ETX 각각 정확히 1회 | `discardMarkedText` + preedit overlay 비움 + \\x03 직송 — shell 의 "입력 라인 버리기" 의도와 일관 | text-input-v3 reset + preedit_buf 비움 + \\x03 ([5f55caa](https://github.com/ensky0/tildaz/commit/5f55caa), L10-γ) | ✅ | ✅ | ✅ |
+
+#### Alt(Meta) · 화살표/기능키의 modifier ([#533](https://github.com/ensky0/tildaz/issues/533))
+
+**tildaz 가 소비하지 않은 키 입력은 전부 표준 인코딩으로 자식 프로세스에 전달한다.**
+세 host 가 native 이벤트를 `key_encode.Event` 로 담아 주면 ghostty 의 `input.encodeKey`
+하나가 바이트를 만든다 — 인코딩 표를 우리가 갖지 않는다. 그 전에는 host 마다 escape
+sequence 를 직접 적고 있었고 (Linux `terminalSequenceForKeysym` · macOS `keyCodeToEscape` ·
+Windows `window.zig` 의 VK switch) 네 곳 어디도 modifier 를 싣지 않아, `Alt+a` 가 `a` 로
+나가고 `Shift+←` 는 아무것도 나가지 않았다.
+
+| 입력 | 나가는 것 |
+|---|---|
+| `Alt` + 글자 | `ESC` + 글자 (xterm meta prefix). `Alt+a` → `\x1b a` |
+| 화살표 · 기능키 + modifier | xterm CSI modifier. `Alt+←` → `\x1b[1;3D`, `Shift+F5` → `\x1b[15;2~` |
+| AltGr 처럼 **이미 글자를 만든 조합** | 그 글자를 그대로. 프랑스 자판 `AltGr+2` → `~` (`ESC` 를 붙이지 않는다) |
+| 앱이 kitty keyboard protocol 을 켠 경우 | 그 프로토콜의 인코딩. `Ctrl+C` → `\x1b[99;5u` |
+
+**tildaz 단축키가 먼저다.** `Alt+1`~`Alt+9` · `Alt+Enter` 는 우리가 먹는다. 자식에게
+넘기려면 `[keys]` 에서 그 바인딩을 비운다. Windows 의 `Alt+F4`(창 닫기) 와
+`Alt+Space`(시스템 메뉴) 는 OS 에 남긴다 — 어느 앱에서나 기대되는 동작이라 우리가
+가로채지 않는다.
+
+**host 가 인코더에 넘기는 값의 계약** — 이 둘이 어긋나면 조용히 다른 바이트가 나간다.
+
+| 필드 | 규칙 | 어기면 |
+|---|---|---|
+| `utf8` | 이 키가 만든 글자. **제어문자면 Ctrl 을 뺀 글자로 바꿔서** 넘긴다 (`Ctrl+A` → `"a"`) | 그대로 넘기면 CSI u 로 감싸이고, 비우면 인코더가 **물리 키의 US 글자**로 제어문자를 만든다 — AZERTY 의 `Ctrl+A` 가 `\x11` XOFF, Dvorak 의 `Ctrl+C` 가 SIGINT 상실 |
+| `unshifted_codepoint` | 수식키를 다 뺀 글자의 코드포인트 | `0` 이면 kitty 모드에서 항목이 안 생겨 `Ctrl+C` 가 바이트 0 개, `Alt+n` 이 `ESC` 없이 `n` |
+
+얻는 방법은 platform 마다 다르다 — Linux 는 keysym (`oneSym` · `keysymAtEvdev`), macOS 는
+`charactersByApplyingModifiers:` 를 Ctrl 뺀 flags 와 `0` 으로, Windows 는 `ToUnicodeEx` 를
+수식키 없이. macOS 의 `consumed_mods` 는 정확한 API 가 없어 ghostty 와 같은 휴리스틱을
+쓴다 (ctrl · cmd 는 글자 번역에 기여하지 않고 나머지는 기여했다고 본다).
+
+**macOS 의 `Option` 만 갈림길이 있다** — 그 platform 은 OS 가 `Option+a` 를 `å` 로 만들어
+주므로 한 키 조합이 두 뜻을 갖는다. `[input] macos_option_as_alt` 가 고르고 기본은 `none`
+(macOS 표준대로 글자). 글자를 만들지 않는 키는 그 설정과 무관하게 alt 가 실린다
+(`Option+←` → `\x1b[1;3D`). Linux · Windows 에는 이 갈림이 없어 Alt 는 언제나 Meta 다.
 
 ### 2.7 Key repeat (길게 누름 반복)
 
