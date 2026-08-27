@@ -53,10 +53,21 @@ pub const Event = struct {
     /// `utf8` 이 비어 있으면 의미 없는 값이다.
     consumed_mods: Mods = .{},
 
-    /// 이 키가 만든 문자. 없으면 빈 문자열.
+    /// 이 키가 만든 글자. 없으면 빈 문자열.
+    ///
+    /// **제어문자를 넣지 않는다.** OS 는 `Ctrl+A` 에 `"\x01"` 을 주지만, 인코더가 기대하는
+    /// 것은 **Ctrl 을 뺀 글자** (`"a"`) 다. 제어문자를 그대로 넣으면 "글자에 ctrl 이
+    /// 붙었다" 로 보고 CSI u 로 감싸고, 비워서 넣으면 인코더가 **물리 키의 US 글자**로
+    /// 제어문자를 만든다 — AZERTY 의 `Ctrl+A`(물리 `Q` 자리) 가 `\x11` XOFF 가 되고
+    /// Dvorak 의 `Ctrl+C` 는 SIGINT 를 잃는다. 세 host 가 각자 그 변환을 한다
+    /// (Linux 는 keysym, macOS · Windows 는 Ctrl 을 뺀 재번역).
     utf8: []const u8 = "",
 
-    /// shift 를 떼었을 때의 코드포인트 (`Shift+a` 면 `'a'`). kitty protocol 이 쓴다.
+    /// 수식키를 다 뗀 글자의 코드포인트 (`Shift+a` 면 `'a'`).
+    ///
+    /// **kitty keyboard protocol 에서 press 마다 필요하다.** 그 프로토콜은 글자 키의
+    /// 항목을 이 값으로 만들기 때문에, 0 이면 항목이 생기지 않아 `Ctrl+C` 가 바이트 0 개가
+    /// 되고 `Alt+n` 이 `ESC` 없이 `n` 으로 나간다.
     unshifted_codepoint: u21 = 0,
 
     /// 길게 눌러 반복 중인가. 뗌(release) 은 아직 보내지 않는다 — kitty protocol 의
@@ -93,20 +104,6 @@ pub fn isNavOrFunction(code: physical_key.PhysicalCode) bool {
     };
 }
 
-/// #533 — `utf8` 로 넘겨도 되는 텍스트만 골라 준다.
-///
-/// **제어문자를 넘기면 안 된다.** xkb 는 `Ctrl+C` 에 대해 `utf8 = "\x03"` 을 주는데
-/// (Win32 의 `WM_CHAR` 도 같다), 그것을 그대로 넘기면 인코더가 "일반 문자에 ctrl 이
-/// 붙었다" 로 보고 CSI u 로 감싼다 — 실측으로 `\x1b[3;5u` 가 나왔다. 그러면 셸이
-/// SIGINT 를 받지 못한다.
-///
-/// 제어문자는 `code` 와 `mods` 만 주면 인코더가 알아서 만든다 (실측: `\x03`). 그래서
-/// 여기서 걸러 낸다. 멀티바이트 UTF-8 은 첫 바이트가 0x20 이상이라 걸리지 않는다.
-pub fn textForEncoding(utf8: []const u8) []const u8 {
-    if (utf8.len == 1 and (utf8[0] < 0x20 or utf8[0] == 0x7f)) return "";
-    return utf8;
-}
-
 /// `event` 를 `writer` 에 인코딩한다. 출력이 없는 키도 있다 (modifier 키 등) —
 /// 호출부가 쓰인 바이트 수를 보고 판단한다.
 pub fn encode(
@@ -119,7 +116,7 @@ pub fn encode(
         .key = toGhosttyKey(event.code),
         .mods = event.mods,
         .consumed_mods = event.consumed_mods,
-        .utf8 = textForEncoding(event.utf8),
+        .utf8 = event.utf8,
         .unshifted_codepoint = event.unshifted_codepoint,
     }, opts);
 }
@@ -343,31 +340,6 @@ test "ISO_Left_Tab (Shift+Tab) 은 CSI Z 다 — Linux 만 갖고 있던 매핑"
     try testing.expectEqualStrings("\x1b[Z", out);
 }
 
-test "제어문자 utf8 은 인코더에 넘기지 않는다 — Ctrl+C 가 CSI u 로 새지 않게" {
-    // xkb 가 Ctrl+C 에 주는 값을 그대로 재현한다. 걸러 내지 않으면 \x1b[3;5u 가 나온다.
-    var buf: [16]u8 = undefined;
-    const out = try encodeToBuf(&buf, .{
-        .code = .key_c,
-        .mods = .{ .ctrl = true },
-        .utf8 = "\x03",
-        .unshifted_codepoint = 'c',
-    }, .{});
-    try testing.expectEqualStrings("\x03", out);
-}
-
-test "textForEncoding — 제어문자만 걸러 내고 보통 글자는 그대로" {
-    try testing.expectEqualStrings("", textForEncoding("\x03"));
-    try testing.expectEqualStrings("", textForEncoding("\x1b"));
-    try testing.expectEqualStrings("", textForEncoding("\x7f"));
-    try testing.expectEqualStrings("", textForEncoding("\r"));
-    try testing.expectEqualStrings("a", textForEncoding("a"));
-    try testing.expectEqualStrings(" ", textForEncoding(" "));
-    try testing.expectEqualStrings("~", textForEncoding("~"));
-    // 한글 · emoji 같은 멀티바이트는 첫 바이트가 0x20 이상이라 그대로 지나간다.
-    try testing.expectEqualStrings("가", textForEncoding("가"));
-    try testing.expectEqualStrings("é", textForEncoding("é"));
-}
-
 test "Enter · Tab 은 code 로 나가고 utf8 이 있어도 겹치지 않는다" {
     // xkb 는 Enter 에 code 와 utf8("\r") 을 함께 준다. 둘 다 넘겨도 한 번만 나가야 한다.
     var b1: [16]u8 = undefined;
@@ -393,4 +365,61 @@ test "isNavOrFunction — 글자 키와 IME 가 맡는 키는 빠진다" {
     try testing.expect(!isNavOrFunction(.tab));
     try testing.expect(!isNavOrFunction(.escape));
     try testing.expect(!isNavOrFunction(.backspace));
+}
+
+test "① 배열이 다른 자판에서 Ctrl+글자 — AZERTY" {
+    // AZERTY 의 `A` 는 물리적으로 US 의 `Q` 자리다. `utf8` 을 비워서 넘기면 인코더가
+    // 물리 키의 US 글자(`q`)로 제어문자를 만들어 `\x11`(XOFF, 화면 멈춤)이 나간다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_q,
+        .mods = .{ .ctrl = true },
+        .utf8 = "a",
+        .unshifted_codepoint = 'a',
+    }, .{});
+    try testing.expectEqualStrings("\x01", out);
+}
+
+test "① 배열이 다른 자판에서 Ctrl+글자 — Dvorak" {
+    // Dvorak 의 `C` 는 물리적으로 US 의 `I` 자리다. 비우면 `\x09`(Tab) 가 나가 SIGINT 가 안 간다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_i,
+        .mods = .{ .ctrl = true },
+        .utf8 = "c",
+        .unshifted_codepoint = 'c',
+    }, .{});
+    try testing.expectEqualStrings("\x03", out);
+}
+
+test "② kitty keyboard protocol — Ctrl+C" {
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_c,
+        .mods = .{ .ctrl = true },
+        .utf8 = "c",
+        .unshifted_codepoint = 'c',
+    }, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("\x1b[99;5u", out);
+}
+
+test "② kitty keyboard protocol — Alt+n" {
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_n,
+        .mods = .{ .alt = true },
+        .utf8 = "n",
+        .unshifted_codepoint = 'n',
+    }, .{ .kitty_flags = .{ .disambiguate = true }, .macos_option_as_alt = .true });
+    try testing.expectEqualStrings("\x1b[110;3u", out);
+}
+
+test "② kitty keyboard protocol — 수식키 없는 글자는 그대로" {
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_a,
+        .utf8 = "a",
+        .unshifted_codepoint = 'a',
+    }, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("a", out);
 }

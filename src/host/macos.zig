@@ -843,13 +843,19 @@ fn optionActsAsAlt(flags: c_ulong) bool {
 ///
 /// Shift 는 남긴다 — 그것은 진짜로 글자를 바꾸는 modifier 다.
 fn macCharsWithoutOption(event: objc.id, flags: c_ulong, kc: c_ushort, buf: []u8) []const u8 {
-    // ⚠️ `charactersByApplyingModifiers:` 에 modifier keycode 를 넘기면 nil 이 아니라
-    // `abort()` 다 (#496 실측). `macEventLabel` 과 같은 이유로 먼저 거른다.
+    const NSEventModifierFlagShiftLocal: c_ulong = 1 << 17;
+    return macCharsApplying(event, flags & NSEventModifierFlagShiftLocal, kc, buf);
+}
+
+/// #533 — 이 키를 `mods` 만 적용해 번역한 글자. 지금 layout 으로 해석된다.
+///
+/// ⚠️ `charactersByApplyingModifiers:` 에 modifier keycode 를 넘기면 nil 이 아니라
+/// `abort()` 다 (#496 실측). `macEventLabel` 과 같은 이유로 먼저 거른다.
+fn macCharsApplying(event: objc.id, mods: c_ulong, kc: c_ushort, buf: []u8) []const u8 {
     if (kc >= 0x36 and kc <= 0x3F) return "";
 
-    const NSEventModifierFlagShiftLocal: c_ulong = 1 << 17;
     const apply = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) objc.id);
-    const text = apply(event, objc.sel("charactersByApplyingModifiers:"), flags & NSEventModifierFlagShiftLocal);
+    const text = apply(event, objc.sel("charactersByApplyingModifiers:"), mods);
     if (text == null) return "";
 
     const get_len = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) usize);
@@ -860,6 +866,13 @@ fn macCharsWithoutOption(event: objc.id, flags: c_ulong, kc: c_ushort, buf: []u8
     const cstr = get_utf8(text, objc.sel("UTF8String"));
     @memcpy(buf[0..len], cstr[0..len]);
     return buf[0..len];
+}
+
+/// #533 — UTF-8 조각의 첫 코드포인트. 없으면 0.
+fn firstCodepoint(text: []const u8) u21 {
+    if (text.len == 0) return 0;
+    var it = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    return it.nextCodepoint() orelse 0;
 }
 
 /// #533 — NSEvent 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다. 보낼 것이
@@ -880,6 +893,23 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
     const cmd = (flags & (1 << 20)) != 0;
     const option_as_alt = optionActsAsAlt(flags);
 
+    // #533 — **제어문자는 Ctrl 을 뺀 글자로 바꿔서 넘긴다.** `NSEvent.characters` 는
+    // Ctrl 을 적용해 `Ctrl+A` 에 `"\x01"` 을 주는데, 그대로 넘기면 인코더가 CSI u 로
+    // 감싸고 비워서 넘기면 **물리 키의 US 글자**로 제어문자를 만든다 — French 자판의
+    // `Ctrl+A`(물리 `Q` 자리) 가 `\x11` XOFF 가 된다. ghostty 의 계약(`NSEvent+
+    // Extension.swift` 의 `characters(byApplyingModifiers: mods − control)`) 을 따른다.
+    var ctrl_free_buf: [16]u8 = undefined;
+    var text = utf8;
+    if (text.len == 1 and (text[0] < 0x20 or text[0] == 0x7f)) {
+        const NSEventModifierFlagControlLocal: c_ulong = 1 << 18;
+        text = macCharsApplying(event, flags & ~NSEventModifierFlagControlLocal, keycode, &ctrl_free_buf);
+    }
+
+    // #533 — 수식키를 다 뺀 글자. kitty keyboard protocol 의 항목 `code` 이고, 0 이면
+    // 그 프로토콜에서 Ctrl · Alt 조합이 통째로 사라진다 (항목도 utf8 도 없어 바이트 0 개).
+    var unshifted_buf: [16]u8 = undefined;
+    const unshifted = firstCodepoint(macCharsApplying(event, 0, keycode, &unshifted_buf));
+
     var out_buf: [64]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&out_buf);
     key_encode.encode(&writer, .{
@@ -893,9 +923,8 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
         // 호출부가 Option 을 뺀 글자를 넘기기 때문이다. consumed 로 두면 인코더가
         // ESC 를 빼 버려 `Alt+a` 가 그냥 `a` 가 된다.
         .consumed_mods = .{ .shift = shift, .alt = option and !option_as_alt },
-        .utf8 = utf8,
-        // kitty keyboard protocol 이 쓰는 값이다. release 보고와 함께 후속으로 채운다.
-        .unshifted_codepoint = 0,
+        .utf8 = text,
+        .unshifted_codepoint = unshifted,
     }, keyEncodeOptionsMac(option_as_alt)) catch return false;
 
     const bytes = writer.buffered();
