@@ -545,13 +545,17 @@ pub const Keyboard = struct {
         return setup;
     }
 
-    /// #494 — `composeFeed` 의 결과.
+    /// #494 — `composeFeed` 의 결과. #530 — `composing` 과 `cancelled` 를 가른다 (둘 다 PTY 로는
+    /// 아무것도 안 가지만 화면 표시는 반대다 — 전자는 그리고 후자는 지운다).
     pub const ComposeResult = union(enum) {
-        /// compose 가 없거나 이 keysym 이 시퀀스와 무관하다 — 호출자가 기존 utf8 경로로 간다.
+        /// compose 가 없거나 이 keysym 이 시퀀스와 무관하다 (modifier 키 포함) — 호출자가 기존
+        /// utf8 경로로 간다. 조합 중 표시가 있었다면 그대로 둔다 — modifier 키는 상태를 안 바꾼다.
         passthrough,
-        /// 조합 중 (`COMPOSING`) 이거나 조합이 깨졌다 (`CANCELLED`) — 아무것도 보내지 않는다.
-        swallow,
-        /// 조합이 끝났다 — 이 바이트를 보낸다. `buf` 안을 가리킨다.
+        /// 조합 중 (`COMPOSING`) — 아무것도 보내지 않고, 이 keysym 을 화면 표시에 덧붙인다.
+        composing,
+        /// 조합이 깨졌다 (`CANCELLED`) — 아무것도 보내지 않고 표시를 지운다.
+        cancelled,
+        /// 조합이 끝났다 — 표시를 지우고 이 바이트를 보낸다. `buf` 안을 가리킨다.
         composed: []const u8,
     };
 
@@ -566,14 +570,15 @@ pub const Keyboard = struct {
         const status = compose.state_get_status(state);
         switch (composeDecision(fed, status)) {
             .passthrough => return .passthrough,
-            .swallow => return .swallow,
+            .composing => return .composing,
+            .cancelled => return .cancelled,
             .composed => {
                 const n = compose.state_get_utf8(state, buf.ptr, buf.len);
-                if (n <= 0) return .swallow;
+                if (n <= 0) return .cancelled;
                 const len: usize = @intCast(n);
                 // 버퍼가 모자라면 (libxkbcommon 은 필요한 길이를 돌려준다) 잘린 글자를 보내는
                 // 대신 버린다. 64 바이트면 Compose 표의 어떤 결과도 담긴다.
-                if (len >= buf.len) return .swallow;
+                if (len >= buf.len) return .cancelled;
                 return .{ .composed = buf[0..len] };
             },
         }
@@ -588,7 +593,7 @@ pub const Keyboard = struct {
         compose.state_reset(state);
     }
 
-    pub const ComposeDecision = enum { passthrough, swallow, composed };
+    pub const ComposeDecision = enum { passthrough, composing, cancelled, composed };
 
     /// #494 — feed 결과와 상태를 동작으로 옮기는 표. 순수 함수라 libxkbcommon 없이 테스트한다.
     ///
@@ -596,9 +601,9 @@ pub const Keyboard = struct {
     /// |---|---|---|---|
     /// | IGNORED | (무엇이든) | passthrough | modifier 키 같은 무시 keysym — 상태가 안 바뀌었다 |
     /// | ACCEPTED | NOTHING | passthrough | 시퀀스 시작이 아니다 — 보통 글자, 기존 utf8 경로 |
-    /// | ACCEPTED | COMPOSING | swallow | 시퀀스 진행 중 (`^` 를 누른 직후) |
-    /// | ACCEPTED | COMPOSED | composed | 끝났다 — `get_utf8` 결과를 보낸다 |
-    /// | ACCEPTED | CANCELLED | swallow | 이어지지 않는 키 (`^` 다음 `x`) — X11 · xterm 관례대로 둘 다 버린다 |
+    /// | ACCEPTED | COMPOSING | composing | 시퀀스 진행 중 (`^` 를 누른 직후) — 화면 표시에 덧붙인다 (#530) |
+    /// | ACCEPTED | COMPOSED | composed | 끝났다 — 표시를 지우고 `get_utf8` 결과를 보낸다 |
+    /// | ACCEPTED | CANCELLED | cancelled | 이어지지 않는 키 (`^` 다음 `x`) — X11 · xterm 관례대로 둘 다 버리고 표시를 지운다 |
     ///
     /// `CANCELLED` 에서 GTK 만 `^x` 처럼 둘 다 내는데, 그건 Compose 표 밖의 별도 규칙이라
     /// 넣지 않는다. 다음 feed 는 헤더 문서대로 `NOTHING` 과 같이 새 시퀀스 판정을 시작한다.
@@ -606,11 +611,46 @@ pub const Keyboard = struct {
         if (fed == XKB_COMPOSE_FEED_IGNORED) return .passthrough;
         return switch (status) {
             XKB_COMPOSE_NOTHING => .passthrough,
-            XKB_COMPOSE_COMPOSING => .swallow,
+            XKB_COMPOSE_COMPOSING => .composing,
             XKB_COMPOSE_COMPOSED => .composed,
-            XKB_COMPOSE_CANCELLED => .swallow,
+            XKB_COMPOSE_CANCELLED => .cancelled,
             // 모르는 상태값 — 헤더에 없는 값이 오면 글자를 삼키는 쪽보다 보내는 쪽이 낫다.
             else => .passthrough,
+        };
+    }
+
+    /// #530 — 조합 중인 dead key 를 화면에 보여 줄 문자. dead keysym 은 유니코드가 없어서
+    /// (`xkb_keysym_to_utf32` 가 0) 표시용 표가 필요하다. **GTK 의 표를 그대로 따른다**
+    /// (`gtkimcontextsimple.c` `append_dead_key`) — 같은 데스크톱의 GTK · Qt 앱이 보여 주는
+    /// 것과 같아야 한다. macOS 는 `ˆ` (U+02C6) 계열을 쓰지만 platform native 가 우선이다.
+    ///
+    /// GTK 가 spacing 대응이 없어 NBSP + 결합 문자로 근사하는 항목 (`abovedot` · `belowdot` ·
+    /// `horn` · `stroke` …) 은 **null** — 우리 셀 렌더는 결합 문자 (폭 0) 를 그리지 않아 빈 칸만
+    /// 남는다. 조합 자체는 그대로 된다. `Multi_key` 도 null (GTK 도 표시하지 않는다).
+    pub fn deadKeyPreview(keysym: u32) ?u21 {
+        return switch (keysym) {
+            0xfe50 => 0x60, // dead_grave → `
+            0xfe51 => 0xb4, // dead_acute → ´
+            0xfe52 => 0x5e, // dead_circumflex → ^
+            0xfe53 => 0x7e, // dead_tilde (= dead_perispomeni) → ~
+            0xfe54 => 0xaf, // dead_macron → ¯
+            0xfe55 => 0x2d8, // dead_breve → ˘
+            0xfe57 => 0xa8, // dead_diaeresis → ¨
+            0xfe58 => 0x2da, // dead_abovering → ˚
+            0xfe59 => 0x2dd, // dead_doubleacute → ˝
+            0xfe5a => 0x2c7, // dead_caron → ˇ
+            0xfe5b => 0xb8, // dead_cedilla → ¸
+            0xfe5c => 0x2db, // dead_ogonek → ˛
+            0xfe5d => 0x37a, // dead_iota → ͺ
+            0xfe61 => 0x2c0, // dead_hook → ˀ
+            0xfe64 => 0x2bc, // dead_abovecomma (= dead_psili) → ʼ
+            0xfe67 => 0x2f3, // dead_belowring → ˳
+            0xfe68 => 0x2cd, // dead_belowmacron → ˍ
+            0xfe8d => 0x621, // dead_hamza → ء
+            0xfe90 => 0x5f, // dead_lowline → _
+            0xfe91 => 0x2c8, // dead_aboveverticalline → ˈ
+            0xfe92 => 0x2cc, // dead_belowverticalline → ˌ
+            else => null,
         };
     }
 
@@ -680,13 +720,12 @@ test "#494 composeDecision — feed 결과 × 상태 → 동작 표" {
     try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_IGNORED, XKB_COMPOSE_COMPOSING));
     // 보통 글자 — 시퀀스 시작이 아니다.
     try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_NOTHING));
-    // `^` 를 누른 직후 — 아무것도 보내지 않는다. 지금까지 dead key 가 조용했던 것과 겉보기가
-    // 같지만 이유가 다르다 (조합을 기다리는 중).
-    try std.testing.expectEqual(D.swallow, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_COMPOSING));
+    // `^` 를 누른 직후 — 아무것도 보내지 않고 화면에 `^` 를 보여 준다 (#530).
+    try std.testing.expectEqual(D.composing, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_COMPOSING));
     // `^` 다음 `e` — 결과 (`ê`) 를 보낸다.
     try std.testing.expectEqual(D.composed, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_COMPOSED));
-    // `^` 다음 `x` — 이어지는 시퀀스가 없다. 둘 다 버린다 (X11 · xterm 관례).
-    try std.testing.expectEqual(D.swallow, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_CANCELLED));
+    // `^` 다음 `x` — 이어지는 시퀀스가 없다. 둘 다 버리고 표시도 지운다 (X11 · xterm 관례).
+    try std.testing.expectEqual(D.cancelled, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, XKB_COMPOSE_CANCELLED));
     // 헤더에 없는 상태값 — 삼키지 않는다.
     try std.testing.expectEqual(D.passthrough, Keyboard.composeDecision(XKB_COMPOSE_FEED_ACCEPTED, 99));
 }
@@ -702,6 +741,21 @@ test "#494 compose 가 없으면 전부 passthrough — 키보드는 지금처�
     // reset 도 아무 일 없이 돌아온다.
     kb.composeReset();
     try std.testing.expectEqual(@as(?*xkb_compose_state, null), kb.compose_state);
+}
+
+test "#530 deadKeyPreview — GTK 표의 spacing 항목만, 나머지는 null" {
+    // 프랑스어 · 독일어 · 스페인어 자판의 흔한 dead key 는 전부 표시가 있다.
+    try std.testing.expectEqual(@as(?u21, '^'), Keyboard.deadKeyPreview(0xfe52)); // dead_circumflex
+    try std.testing.expectEqual(@as(?u21, 0xa8), Keyboard.deadKeyPreview(0xfe57)); // dead_diaeresis
+    try std.testing.expectEqual(@as(?u21, '`'), Keyboard.deadKeyPreview(0xfe50)); // dead_grave
+    try std.testing.expectEqual(@as(?u21, 0xb4), Keyboard.deadKeyPreview(0xfe51)); // dead_acute
+    try std.testing.expectEqual(@as(?u21, '~'), Keyboard.deadKeyPreview(0xfe53)); // dead_tilde
+    // GTK 가 NBSP + 결합 문자로 근사하는 항목은 표시하지 않는다 — 결합 문자는 셀에 안 그려진다.
+    try std.testing.expectEqual(@as(?u21, null), Keyboard.deadKeyPreview(0xfe56)); // dead_abovedot
+    try std.testing.expectEqual(@as(?u21, null), Keyboard.deadKeyPreview(0xfe60)); // dead_belowdot
+    // dead key 가 아닌 것 — Multi_key · 보통 글자.
+    try std.testing.expectEqual(@as(?u21, null), Keyboard.deadKeyPreview(0xff20));
+    try std.testing.expectEqual(@as(?u21, null), Keyboard.deadKeyPreview('e'));
 }
 
 test "#496 1-a canProduceKeysym 은 활성 group 만 본다 — 기본 group 은 0" {

@@ -373,6 +373,10 @@ pub const Renderer = struct {
     /// `done` batch 적용 시점에 갱신한다. 빈 slice = 조합 중 아님. storage 는
     /// host 가 소유 — Renderer 는 view 만 빌린다 (paint 호출 동안 valid 보장).
     preedit_text: []const u8 = "",
+    /// #530 — 조합 중인 dead key 표시 (`^` · `^´` …). `preedit_text` 와 같은 모양으로 그리되
+    /// **저장소가 다르다** — 그쪽은 IME 가 commit 할 텍스트라 host 의 PTY · 정책 경로가 함께
+    /// 보지만, 이것은 화면 표시만이다. 둘이 동시에 있으면 IME (`preedit_text`) 가 우선이다.
+    compose_preview: []const u8 = "",
     /// #203 Phase C — drawDialogContent 가 그린 OK / Cancel 버튼 좌표 (dialog
     /// surface-local physical pixel). host (handlePointerButton) 가 hit-test 에
     /// 사용. dialog 안 떠 있으면 `w == 0`. mac/win modal 정책 (본문 click 은
@@ -1243,8 +1247,12 @@ pub const Renderer = struct {
     /// 안 띄움". macOS / Windows 와 동등 색 (`renderer/macos.zig:686`,
     /// `renderer/windows.zig:1144`). PTY 에는 들어가지 않고 화면 표시만 — fcitx5 가
     /// commit_string 으로 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
+    ///
+    /// #530 — dead key 조합 중 표시 (`compose_preview`) 도 같은 자리 · 같은 모양이다. IME preedit
+    /// 이 있으면 그것이 우선이고, 없을 때만 compose 표시를 그린다.
     fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        if (self.preedit_text.len == 0) return;
+        const text = if (self.preedit_text.len > 0) self.preedit_text else self.compose_preview;
+        if (text.len == 0) return;
         const vp = self.render_state.cursor.viewport orelse return;
 
         // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
@@ -1259,7 +1267,7 @@ pub const Renderer = struct {
         const pre_y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
 
         var col: i32 = @intCast(vp.x);
-        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = self.preedit_text, .i = 0 };
+        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
         while (utf8_iter.nextCodepoint()) |cp| {
             const w_cells: i32 = @intCast(display_width.codepointWidth(cp));
             if (w_cells <= 0) continue;
