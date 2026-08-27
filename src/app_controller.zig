@@ -871,8 +871,14 @@ pub const App = struct {
     }
 
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
-        // #483 5단계 — 한 페이지 = 활성 pane 의 행 수.
-        _ = self.session.scrollActive(event, self.activeGrid().rows);
+        // #483 6단계 결정 B — 휠은 **포인터 아래 pane** 을 스크롤하고 포커스는 바꾸지 않는다 (분할선 위나 pane
+        // 밖이면 활성 pane). 페이지 키는 키라 활성 pane. 행 수는 그 pane 의 것.
+        const under: ?*SessionTab = switch (event) {
+            .wheel => |w| self.session.paneTabAt(w.x, w.y, self.paneArea(), self.paneMetrics()),
+            .page => null,
+        };
+        const target = under orelse self.session.activeTab() orelse return;
+        session_core.SessionCore.scrollTab(target, event, @max(1, target.terminal.rows));
     }
 
     /// 현재 활성 탭의 scrollbar `Hit` (track geometry + thumb geometry). 스크롤백이

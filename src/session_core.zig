@@ -1445,6 +1445,21 @@ pub const SessionCore = struct {
 
     pub fn scrollActive(self: *SessionCore, event: app_event.ScrollEvent, visible_rows: u16) bool {
         const tab = self.activeTab() orelse return false;
+        scrollTab(tab, event, visible_rows);
+        return true;
+    }
+
+    /// #483 6단계 — 픽셀 아래의 pane (`Tab`). 분할선 위 · 영역 밖 · 탭 없음이면 null. 휠의 대상이다 — 결정 B:
+    /// **포인터 아래 pane 을 스크롤하고 포커스는 바꾸지 않는다** (키보드 pane 은 그대로, 눈으로 보는 pane 을 넘긴다).
+    /// 페이지 키 (Shift+PgUp/PgDn) 는 키라 `scrollActive` 로 활성 pane 을 간다.
+    pub fn paneTabAt(self: *SessionCore, px: i32, py: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) ?*Tab {
+        const group = self.activeGroup() orelse return null;
+        const id = self.paneIdAt(px, py, rect, m) orelse return null;
+        return group.panes[id];
+    }
+
+    /// `tab` 의 viewport 를 스크롤한다. `visible_rows` 는 그 pane 의 행 수 (페이지 단위).
+    pub fn scrollTab(tab: *Tab, event: app_event.ScrollEvent, visible_rows: u16) void {
         // ghostty `scrollViewport(.delta = -X)` = older (scrollback up), `+X` = newer.
         // wheel: 사용자 의도 = wheel 위로 (양수 raw) → older. 그래서 공용 `-delta`
         //   로 반전 → scrollViewport(-X) = older.
@@ -1462,7 +1477,6 @@ pub const SessionCore = struct {
             .wheel => |raw| @divTrunc(@as(isize, raw.delta), 40),
         };
         tab.terminal.scrollViewport(.{ .delta = -delta });
-        return true;
     }
 
     pub fn resetActive(self: *SessionCore) bool {
@@ -2016,6 +2030,10 @@ test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대�
     try std.testing.expect(!session.setActivePane(1));
     try std.testing.expect(!session.setActivePane(5));
     try std.testing.expect(session.setActivePane(0));
+    // 휠 대상 (6단계 결정 B): 포인터 아래 pane 의 Tab, 분할선 위는 null — 활성 pane 은 그대로.
+    try std.testing.expectEqual(@as(?*Tab, right), session.paneTabAt(2000, 500, rect, m));
+    try std.testing.expectEqual(@as(?*Tab, null), session.paneTabAt(1527, 500, rect, m));
+    try std.testing.expectEqual(@as(pane_layout.PaneId, 0), group.active_pane);
 
     // 최소 크기 아래로 내려가는 분할은 거부 — 트리 · pane 수 그대로.
     const narrow: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 900, .h = 1000 };
