@@ -343,7 +343,10 @@ one cell; Shift+Alt+0 (Shift+Cmd+0) equalizes the panes: panes that sit in one r
 (or one column) share it evenly, and a group that is split the other way counts as
 one of them — three panes side by side become thirds, a pane next to two stacked
 panes gets half of the width while the two stacked panes split the other half
-top and bottom (the way tmux and iTerm2 spread the cells of a row).
+top and bottom (the way tmux and iTerm2 spread the cells of a row). The space is
+shared in whole rows and columns of text, so two columns holding the same number
+of panes line up with each other and the panes inside one column differ by at most
+one row.
 
 The active pane is marked by a 1 pt amber line along the edges it shares with other
 panes. When only one of its edges touches another pane — the two halves of a

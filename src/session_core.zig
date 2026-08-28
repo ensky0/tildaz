@@ -1188,7 +1188,7 @@ pub const SessionCore = struct {
     pub fn equalizeActive(self: *SessionCore, rect: pane_layout.Rect, m: pane_layout.Metrics) void {
         const group = self.activeGroup() orelse return;
         _ = group.unzoom();
-        group.tree.equalize();
+        group.tree.equalize(rect, m);
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         self.applyGroupLayout(group, group.layout(rect, m, &buf));
     }

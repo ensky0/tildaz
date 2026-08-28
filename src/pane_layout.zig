@@ -259,7 +259,7 @@ pub const Tree = struct {
             self.ancestorSplit(at, axis, !dir.towardSecond()) orelse return false;
         const node_rect = self.rectOf(rect, m, split_idx) orelse return false;
         const sp = self.nodes[split_idx].split;
-        const g = splitGeometry(node_rect, m, sp);
+        const g = splitGeometry(self, node_rect, m, sp);
         if (g.avail <= 0) return false;
 
         const along = axis == .side_by_side;
@@ -293,7 +293,7 @@ pub const Tree = struct {
         if (self.nodes[node] != .split) return false;
         const node_rect = self.rectOf(rect, m, node) orelse return false;
         const sp = self.nodes[node].split;
-        const g = splitGeometry(node_rect, m, sp);
+        const g = splitGeometry(self, node_rect, m, sp);
         if (g.avail <= 0) return false;
         const c = childRects(node_rect, sp, g);
         const along = sp.axis == .side_by_side;
@@ -308,7 +308,7 @@ pub const Tree = struct {
         // 스냅 뒤의 실제 위치 — 한계를 넘게 반올림됐으면 한 셀 안쪽으로.
         var trial = sp;
         trial.ratio = ratioOf(target, g.avail);
-        var new_first = splitGeometry(node_rect, m, trial).first_px;
+        var new_first = splitGeometry(self, node_rect, m, trial).first_px;
         if (new_first < min_first) new_first += cell;
         if (new_first > max_first) new_first -= cell;
         if (new_first == g.first_px or new_first < 0 or new_first > g.avail) return false;
@@ -349,7 +349,7 @@ pub const Tree = struct {
         return switch (self.nodes[idx]) {
             .leaf => @min(leafMinExtent(axis, m), if (axis == .side_by_side) rect.w else rect.h),
             .split => |s| blk: {
-                const g = splitGeometry(rect, m, s);
+                const g = splitGeometry(self, rect, m, s);
                 const c = childRects(rect, s, g);
                 if (s.axis != axis) break :blk @max(
                     self.minExtentKeepFar(s.first, axis, m, c.first, line),
@@ -369,7 +369,7 @@ pub const Tree = struct {
         switch (self.nodes[idx]) {
             .leaf => {},
             .split => |s| {
-                const g = splitGeometry(rect, m, s);
+                const g = splitGeometry(self, rect, m, s);
                 const c = childRects(rect, s, g);
                 if (s.axis != axis) {
                     // 다른 축 — 두 자식 모두 이 축 길이가 같이 바뀐다 (둘 다 선의 이웃).
@@ -386,14 +386,14 @@ pub const Tree = struct {
                         // first 가 먼 칸 — px 그대로. second 가 흡수.
                         const first_px = @min(g.first_px, new_avail);
                         self.nodes[idx].split.ratio = ratioOf(first_px, new_avail);
-                        const g2 = splitGeometry(new_rect, m, self.nodes[idx].split);
+                        const g2 = splitGeometry(self, new_rect, m, self.nodes[idx].split);
                         self.keepFarFixed(s.second, axis, m, c.second, .second, new_avail - g2.first_px);
                     },
                     .first => {
                         // second 가 먼 칸 — px 그대로. first 가 흡수.
                         const first_px = @max(0, new_avail - g.second_px);
                         self.nodes[idx].split.ratio = ratioOf(first_px, new_avail);
-                        const g2 = splitGeometry(new_rect, m, self.nodes[idx].split);
+                        const g2 = splitGeometry(self, new_rect, m, self.nodes[idx].split);
                         self.keepFarFixed(s.first, axis, m, c.first, .first, g2.first_px);
                     },
                 }
@@ -401,30 +401,75 @@ pub const Tree = struct {
         }
     }
 
-    /// 균등 — **같은 축으로 이어진 분할선은 한 줄로 보고, 그 줄의 칸 수로 나눈다** (2026-08-28 사용자 결정 ①).
-    /// "칸" 은 그 줄의 pane 하나 또는 **다른 축으로 갈린 묶음 하나**다 (`cellsAlong`). 그래서 A | B | C 는
-    /// ⅓ 씩, A | (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩 — 눈에 보이는 줄 · 칸
-    /// 그대로다. tmux · iTerm2 처럼 한 줄에 칸이 여럿인 (n-ary) 분할 모델의 "고르게 펴기" 와 같은 결과다.
+    /// 균등 — **같은 축으로 이어진 분할은 한 줄로 보고, 그 줄을 칸 수로 고르게 나눈다** (2026-08-28
+    /// 사용자 결정 ①). "칸" 은 그 줄의 pane 하나 또는 **다른 축으로 갈린 묶음 하나**다 (`cellsAlong`).
+    /// A | B | C 는 ⅓ 씩, A | (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩이다.
     ///
-    /// 거쳐 온 정의 둘: 4~6단계는 vim `Ctrl+W =` 식 **leaf 수 가중** (pane 마다 같은 넓이 — A | (B/C) 에서
-    /// A 가 ⅓ 로 줄어 어색), 그 뒤 하루는 **층별 반씩** (A | B | C 가 A ½ · B ¼ · C ¼ 라 "셋인데 균등이
-    /// 아니다"). 이 정의는 두 경우를 모두 사용자가 그린 대로 만든다.
-    pub fn equalize(self: *Tree) void {
-        for (&self.nodes, self.alive) |*n, alive| {
-            if (!alive) continue;
-            switch (n.*) {
-                .split => |*s| {
-                    const a: f32 = @floatFromInt(self.cellsAlong(s.first, s.axis));
-                    const b: f32 = @floatFromInt(self.cellsAlong(s.second, s.axis));
-                    s.ratio = a / (a + b);
-                },
-                .leaf => {},
-            }
+    /// **비율이 아니라 행 · 열 수로 나눈다.** 줄이 담을 수 있는 총 셀 수를 세어 칸마다 똑같이 주고
+    /// (나머지는 앞 칸부터 한 셀씩), 그 크기가 나오도록 각 분할선의 비율을 놓는다. 예전에는 비율
+    /// (`칸 수 / 전체`) 만 정하고 픽셀은 `splitGeometry` 가 그때그때 반올림했는데, 반올림이 트리
+    /// 중첩을 따라 위에서부터 일어나 **같은 4 칸이라도 만든 순서가 다르면 결과가 달랐다** — 2026-08-28
+    /// 실기에서 두 열의 가로선이 최대 26 px (⅔ 칸) 어긋났고 한 열 안에서도 높이가 466 · 505 로 벌어졌다.
+    /// 이제 길이와 칸 수가 같은 두 줄은 항상 같은 자리에 선이 생기고, 한 줄 안의 칸은 최대 한 셀 차이다.
+    ///
+    /// `rect` · `m` 이 필요한 이유가 이것이다 (셀 크기를 알아야 행 · 열을 셀 수 있다).
+    pub fn equalize(self: *Tree, rect: Rect, m: Metrics) void {
+        if (self.root == NO_NODE) return;
+        self.equalizeNode(self.root, rect, m);
+    }
+
+    /// `idx` 가 시작하는 줄 하나를 고르게 나눈다. 줄의 칸이 다른 축의 묶음이면 그 안에서 다시 부른다.
+    fn equalizeNode(self: *Tree, idx: NodeIndex, rect: Rect, m: Metrics) void {
+        const axis = switch (self.nodes[idx]) {
+            .leaf => return,
+            .split => |s| s.axis,
+        };
+        const along = axis == .side_by_side;
+        const extent = if (along) rect.w else rect.h;
+        const cell = if (along) m.cell_w else m.cell_h;
+        const leaf_overhead = if (along) 2 * m.pad + m.scrollbar_w else 2 * m.pad;
+        const n: i32 = @intCast(self.cellsAlong(idx, axis));
+        if (n <= 0) return;
+        // 칸마다 같은 셀 수 — 남는 셀은 앞 칸부터 하나씩. 남는 px 는 마지막 칸이 흡수한다 (결정 2).
+        const usable = extent - (n - 1) * m.separator_w - n * leaf_overhead;
+        const total_cells: i32 = if (cell > 0 and usable > 0) @divFloor(usable, cell) else 0;
+        const base = @divFloor(total_cells, n);
+        const rem = total_cells - base * n;
+        var sizes: [MAX_PANES_PER_TAB]i32 = undefined;
+        var i: i32 = 0;
+        while (i < n) : (i += 1) {
+            const cells = base + (if (i < rem) @as(i32, 1) else 0);
+            sizes[@intCast(i)] = leaf_overhead + cells * cell;
+        }
+        _ = self.applyRun(idx, rect, m, axis, sizes[0..@intCast(n)], 0);
+    }
+
+    /// 줄의 칸 크기를 `sizes` 대로 놓는다 (`start` = 이 subtree 가 맡은 첫 칸). 반환값은 쓴 칸 수.
+    fn applyRun(self: *Tree, idx: NodeIndex, rect: Rect, m: Metrics, axis: Axis, sizes: []const i32, start: usize) usize {
+        switch (self.nodes[idx]) {
+            .leaf => return 1,
+            .split => |s| {
+                // 다른 축의 묶음 = 이 줄의 칸 하나. 그 안은 새 줄이라 다시 나눈다.
+                if (s.axis != axis) {
+                    self.equalizeNode(idx, rect, m);
+                    return 1;
+                }
+                const k: usize = @intCast(self.cellsAlong(s.first, axis));
+                var target: i32 = @as(i32, @intCast(k - 1)) * m.separator_w;
+                for (sizes[start .. start + k]) |sz| target += sz;
+                const along = axis == .side_by_side;
+                const extent = if (along) rect.w else rect.h;
+                const avail = extent - m.separator_w;
+                if (avail > 0) self.nodes[idx].split.ratio = ratioOf(target, avail);
+                const now = self.nodes[idx].split;
+                const c = childRects(rect, now, splitGeometry(self, rect, m, now));
+                const used_first = self.applyRun(s.first, c.first, m, axis, sizes, start);
+                const used_second = self.applyRun(s.second, c.second, m, axis, sizes, start + used_first);
+                return used_first + used_second;
+            },
         }
     }
 
-    /// `idx` subtree 가 `axis` 방향의 한 줄에서 차지하는 칸 수 — leaf 1, 같은 축 split 은 양쪽 합, 다른 축
-    /// split 은 1 (그 묶음 안은 자기 축에서 따로 센다).
     fn cellsAlong(self: *const Tree, idx: NodeIndex, axis: Axis) u32 {
         return switch (self.nodes[idx]) {
             .leaf => 1,
@@ -501,7 +546,7 @@ pub const Tree = struct {
         return switch (self.nodes[idx]) {
             .leaf => null,
             .split => |s| blk: {
-                const c = childRects(rect, s, splitGeometry(rect, m, s));
+                const c = childRects(rect, s, splitGeometry(self, rect, m, s));
                 break :blk self.rectOfNode(s.first, c.first, m, target) orelse
                     self.rectOfNode(s.second, c.second, m, target);
             },
@@ -517,19 +562,27 @@ const SplitGeometry = struct {
     avail: i32,
 };
 
-/// 결정 2 — 분할선 위치. `first` 의 길이를 *leaf 로 봤을 때의 셀 경계* (`overhead + n·cell`)
-/// 중 `ratio` 지점에 가장 가까운 곳으로 잡고 나머지를 `second` 에 준다. 가장 가까운 경계
+/// 결정 2 — 분할선 위치. `first` 의 길이를 **셀 경계** (`overhead + n·cell`) 중 `ratio` 지점에 가장
+/// 가까운 곳으로 잡고 나머지를 `second` 에 준다.
+///
+/// `overhead` 는 `first` 가 **같은 축으로 몇 칸을 품고 있는지** 를 센다 (`cellsAlong` — 칸마다 자기
+/// padding · scrollbar 자리가 있고 사이에 분할선이 하나씩). 칸이 하나면 leaf 의 고정 길이 그대로다.
+/// 2026-08-28 실기에서 이것이 걸렸다: 같은 "4 칸" 이라도 만든 순서 (트리 중첩) 가 다르면 격자가
+/// 달라져 열끼리 분할선이 최대 ⅔ 칸 어긋났다. 칸 수를 세면 두 격자가 셀 배수만큼만 떨어져 겹친다. 가장 가까운 경계
 /// (반올림) 인 이유: 비율이 가리키는 px 에서 가장 덜 어긋나서, 드래그로 놓은 자리가 그대로
 /// 남는다. 내림과의 차이는 홀수 셀 하나가 앞 · 뒤 어느 쪽에 가는가뿐이다 — 결정 댓글의 숫자
 /// 예는 내림으로 적어 77 | 78 이고 이 구현은 78 | 77 인데, 앞 pane 셀 정렬 · 총 열 최대 ·
 /// 뒤 pane 흡수는 둘이 같다.
-fn splitGeometry(rect: Rect, m: Metrics, s: Split) SplitGeometry {
+fn splitGeometry(tree: *const Tree, rect: Rect, m: Metrics, s: Split) SplitGeometry {
     const along = s.axis == .side_by_side;
     const extent = if (along) rect.w else rect.h;
     const cell = if (along) m.cell_w else m.cell_h;
-    // leaf 하나의 고정 길이 — 좌우는 양쪽 padding + scrollbar 자리, 상하는 양쪽 padding.
-    const overhead = if (along) 2 * m.pad + m.scrollbar_w else 2 * m.pad;
     const sep = std.math.clamp(m.separator_w, 0, @max(extent, 0));
+    // pane 하나의 고정 길이 — 좌우는 양쪽 padding + scrollbar 자리, 상하는 양쪽 padding.
+    const leaf_overhead = if (along) 2 * m.pad + m.scrollbar_w else 2 * m.pad;
+    // `first` 가 같은 축으로 품은 칸 수만큼 곱하고 그 사이 분할선도 더한다.
+    const first_cells: i32 = @intCast(tree.cellsAlong(s.first, s.axis));
+    const overhead = first_cells * leaf_overhead + (first_cells - 1) * sep;
     const avail = extent - sep;
     if (avail <= 0) return .{ .first_px = 0, .sep_px = sep, .second_px = 0, .avail = 0 };
 
@@ -597,7 +650,7 @@ fn layoutNode(tree: *const Tree, idx: NodeIndex, rect: Rect, m: Metrics, out: []
             n.* += 1;
         },
         .split => |s| {
-            const c = childRects(rect, s, splitGeometry(rect, m, s));
+            const c = childRects(rect, s, splitGeometry(tree, rect, m, s));
             layoutNode(tree, s.first, c.first, m, out, n);
             layoutNode(tree, s.second, c.second, m, out, n);
         },
@@ -615,7 +668,7 @@ fn separatorsNode(tree: *const Tree, idx: NodeIndex, rect: Rect, m: Metrics, out
     switch (tree.nodes[idx]) {
         .leaf => {},
         .split => |s| {
-            const c = childRects(rect, s, splitGeometry(rect, m, s));
+            const c = childRects(rect, s, splitGeometry(tree, rect, m, s));
             out[n.*] = .{ .rect = c.sep, .axis = s.axis, .node = idx };
             n.* += 1;
             separatorsNode(tree, s.first, c.first, m, out, n);
@@ -877,7 +930,7 @@ test "#483 결정 2 — 상하 분할의 고정 높이는 2·pad 뿐이다 (scro
     try std.testing.expectEqual(@as(i32, 56 + 882 + 2 + 12), p[1].grid_y);
 }
 
-test "#483 결정 2 — 같은 축 중첩: 바깥은 앞 자식을 leaf 로 본 셀 경계, 안쪽은 자기 rect 에서 내림" {
+test "#483 결정 2 — 같은 축 중첩: 격자는 앞 자식이 품은 칸 수를 센다 (2026-08-28 개정)" {
     var tree = Tree.single(1);
     try tree.split(1, .right, 2, wide, mac2x); // 1 | 2
     try tree.split(1, .right, 3, wide, mac2x); // (1 | 3) | 2
@@ -888,19 +941,20 @@ test "#483 결정 2 — 같은 축 중첩: 바깥은 앞 자식을 leaf 로 본 
     try std.testing.expectEqual(@as(PaneId, 3), p[1].pane);
     try std.testing.expectEqual(@as(PaneId, 2), p[2].pane);
 
-    // 바깥 분할선은 앞 subtree 를 leaf 로 본 경계 1526 — 위 테스트와 같은 자리.
-    try std.testing.expectEqual(@as(i32, 1526), p[0].rect.w + 2 + p[1].rect.w);
-    try std.testing.expectEqual(@as(i32, 1528), p[2].rect.x);
+    // 바깥 분할선 — 앞 subtree 가 **두 칸** 이므로 격자가 `2·44 + 2 + n·19` 다: 절반 1525 에 가장 가까운
+    // 1534 (= 90 + 76·19). 예전엔 앞을 leaf 로 봐서 1526 이었고, 그러면 안쪽 두 칸이 38 · 37 열로 갈라지며
+    // 11 px 이 남았다 (2026-08-28 개정 — 균등이 열끼리 어긋나던 원인).
+    try std.testing.expectEqual(@as(i32, 1534), p[0].rect.w + 2 + p[1].rect.w);
+    try std.testing.expectEqual(@as(i32, 1536), p[2].rect.x);
     try std.testing.expectEqual(@as(u16, 77), p[2].cols);
 
-    // 안쪽 — avail 1524 · 절반 762 → (762 − 44) / 19 = 37.8 → 38 → 1 은 766 px (남는 0),
-    // 3 은 758 px → 37 열, 남는 11 px 은 3 안에서 (C 처럼) 흡수된다.
+    // 안쪽 — avail 1532 · 절반 766 → (766 − 44) / 19 = 38.0 → 두 칸이 **정확히 38 열씩**, 남는 px 0.
     try std.testing.expectEqual(@as(i32, 766), p[0].rect.w);
     try std.testing.expectEqual(@as(u16, 38), p[0].cols);
     try std.testing.expectEqual(@as(i32, 768), p[1].rect.x);
-    try std.testing.expectEqual(@as(i32, 758), p[1].rect.w);
-    try std.testing.expectEqual(@as(u16, 37), p[1].cols);
-    try std.testing.expectEqual(@as(i32, 11), p[1].rect.w - 44 - 37 * 19);
+    try std.testing.expectEqual(@as(i32, 766), p[1].rect.w);
+    try std.testing.expectEqual(@as(u16, 38), p[1].cols);
+    try std.testing.expectEqual(@as(i32, 0), p[1].rect.w - 44 - 38 * 19);
 }
 
 test "#483 6단계 — split 최소 검사는 가르는 축만 본다: 19 열이어도 위아래로는 갈린다" {
@@ -1082,7 +1136,7 @@ test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할�
     try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
     try std.testing.expectEqual(@as(u16, 96), find(layout(&tree, rect, m, &buf), 0).?.cols);
     // 반대쪽 — B|C 선을 왼쪽으로 끌면 B 만 줄고 A 는 그대로 (A 는 이 선의 subtree 밖).
-    tree.equalize();
+    tree.equalize(rect, m);
     const inner = separators(&tree, rect, m, &sbuf)[1];
     const a_before = find(layout(&tree, rect, m, &buf), 0).?.cols;
     try std.testing.expect(tree.setSeparatorPx(inner.node, inner.rect.x - 3 * 19, rect, m));
@@ -1152,7 +1206,7 @@ test "#483 equalize — 같은 축은 한 줄로 칸 셈 (2026-08-28 결정 ①)
     try tree.split(2, .down, 3, wide, mac2x); // 1 | (2 / 3) — 가로 줄의 칸은 [1, (2/3)] 둘
     // 루트 선을 한쪽으로 몰아 두고 균등 → 루트 반씩, 안쪽 위아래 반씩.
     try std.testing.expect(tree.resize(1, .right, 10, wide, mac2x));
-    tree.equalize();
+    tree.equalize(wide, mac2x);
     var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
     const p = layout(&tree, wide, mac2x, &buf);
     // root ½ → 3050 / 2 = 1525 → (1525 − 44) / 19 = 77.9 → 78 열, 1526 px (leaf 가중이었다면 51 열).
@@ -1167,7 +1221,7 @@ test "#483 equalize — 같은 축은 한 줄로 칸 셈 (2026-08-28 결정 ①)
     var row = Tree.single(1);
     try row.split(1, .right, 2, wide, mac2x);
     try row.split(2, .right, 3, wide, mac2x);
-    row.equalize();
+    row.equalize(wide, mac2x);
     const r = layout(&row, wide, mac2x, &buf);
     try std.testing.expectEqual(@as(u16, 51), find(r, 1).?.cols);
     try std.testing.expectEqual(@as(u16, 51), find(r, 2).?.cols);
@@ -1178,7 +1232,7 @@ test "#483 equalize — 같은 축은 한 줄로 칸 셈 (2026-08-28 결정 ①)
     try mixed.split(1, .right, 2, wide, mac2x);
     try mixed.split(2, .right, 3, wide, mac2x);
     try mixed.split(3, .down, 4, wide, mac2x);
-    mixed.equalize();
+    mixed.equalize(wide, mac2x);
     const x = layout(&mixed, wide, mac2x, &buf);
     try std.testing.expectEqual(@as(u16, 51), find(x, 1).?.cols);
     try std.testing.expectEqual(@as(u16, 51), find(x, 2).?.cols);
@@ -1189,10 +1243,57 @@ test "#483 equalize — 같은 축은 한 줄로 칸 셈 (2026-08-28 결정 ①)
     // 좌우 하나면 그대로 반씩.
     var two = Tree.single(1);
     try two.split(1, .right, 2, wide, mac2x);
-    two.equalize();
+    two.equalize(wide, mac2x);
     const q = layout(&two, wide, mac2x, &buf);
     try std.testing.expectEqual(@as(u16, 78), q[0].cols);
     try std.testing.expectEqual(@as(u16, 77), q[1].cols);
+}
+
+test "#483 6단계 — 균등은 만든 순서와 무관하게 같은 자리에 선을 놓는다 (열끼리 맞물림)" {
+    // 왼쪽 열은 아래로 계속 갈라 만든 4 칸 (오른쪽으로 기운 트리), 오른쪽 열은 중간에 위쪽 칸을 다시
+    // 갈라 만든 4 칸 (모양이 다른 트리). 2026-08-28 실기에서 이 둘의 가로선이 어긋났다.
+    var tree = Tree.single(0);
+    try tree.split(0, .right, 1, wide, mac2x);
+    try tree.split(0, .down, 2, wide, mac2x);
+    try tree.split(2, .down, 3, wide, mac2x);
+    try tree.split(3, .down, 4, wide, mac2x); // 왼쪽: 0/(2/(3/4))
+    try tree.split(1, .down, 5, wide, mac2x);
+    try tree.split(5, .down, 6, wide, mac2x);
+    try tree.split(1, .down, 7, wide, mac2x); // 오른쪽: (1/7)/(5/6)
+    tree.equalize(wide, mac2x);
+
+    var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    const p = layout(&tree, wide, mac2x, &buf);
+    var left: [4]PaneRect = undefined;
+    var right: [4]PaneRect = undefined;
+    var li: usize = 0;
+    var ri: usize = 0;
+    for (p) |pr| {
+        if (pr.rect.x == 0) {
+            left[li] = pr;
+            li += 1;
+        } else {
+            right[ri] = pr;
+            ri += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), li);
+    try std.testing.expectEqual(@as(usize, 4), ri);
+    const byY = struct {
+        fn f(_: void, a: PaneRect, b: PaneRect) bool {
+            return a.rect.y < b.rect.y;
+        }
+    }.f;
+    std.mem.sort(PaneRect, &left, {}, byY);
+    std.mem.sort(PaneRect, &right, {}, byY);
+    for (left, right) |l, r| {
+        try std.testing.expectEqual(l.rect.y, r.rect.y);
+        try std.testing.expectEqual(l.rect.h, r.rect.h);
+        try std.testing.expectEqual(l.rows, r.rows);
+    }
+    // 한 줄 안에서도 고르다 — 네 칸의 행 수가 최대 1 차이.
+    try std.testing.expect(left[0].rows - left[3].rows <= 1);
+    try std.testing.expect(left[3].rows > 0);
 }
 
 test "#483 resize — 1 셀 옮기면 양쪽 열이 정확히 1 씩 바뀌고, 창 가장자리 변이면 반대쪽 분할선이 움직인다" {
