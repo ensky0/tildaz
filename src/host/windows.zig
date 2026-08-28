@@ -143,6 +143,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     app.window.resize_fn = App.onResize;
     app.window.font_change_fn = App.onFontChange;
     app.window.app_event_fn = App.onAppEvent;
+    app.window.encode_options_fn = App.keyEncodeOptions;
     // #387 — 메시지 큐가 빈 순간의 추가 드레인 (사양 A). `messageLoop` 주석 참고.
     app.window.idle_drain_fn = App.onIdleDrain;
     app.window.quit_request_fn = App.onQuitRequest;
