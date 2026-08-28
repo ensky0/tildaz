@@ -569,6 +569,14 @@ Windows `window.zig` 의 VK switch) 네 곳 어디도 modifier 를 싣지 않아
 | AltGr 처럼 **이미 글자를 만든 조합** | 그 글자를 그대로. 프랑스 자판 `AltGr+2` → `~` (`ESC` 를 붙이지 않는다) |
 | 앱이 kitty keyboard protocol 을 켠 경우 | 그 프로토콜의 인코딩. `Ctrl+C` → `\x1b[99;5u` |
 
+**IME 조합 중의 `Ctrl+C` 는 예외다 — kitty 여부와 무관하게 조합을 버리고 `\x03` 을 보낸다.**
+인터럽트는 "지금 치던 줄을 버린다" 는 뜻이라 조합 중이던 음절도 함께 버리는 것이 셸의 의도와
+맞고, macOS 도 같다 (`discardMarkedText` 뒤 `\x03` 직송). 조합 중이라도 **다른** 조합은 음절을
+먼저 확정하고 그 키를 인코더로 보낸다 (`Ctrl+A` → `한` + `\x1b[97;5u`) — "IME 가 모르는 키는
+commit 후 전달" 규칙 그대로다. Windows 에서 이 예외를 빼면 `Ctrl+C` 의 판정 주체가 사라져
+보류된 음절이 인터럽트 **뒤에** PTY 로 샌다 (`03 ed 95 9c` — [#533](https://github.com/ensky0/tildaz/issues/533)
+Windows 실측).
+
 **tildaz 단축키가 먼저다.** `Alt+1`~`Alt+9` · `Alt+Enter` 는 우리가 먹는다. 자식에게
 넘기려면 `[keys]` 에서 그 바인딩을 비운다. Windows 의 `Alt+F4`(창 닫기) 와
 `Alt+Space`(시스템 메뉴) 는 OS 에 남긴다 — 어느 앱에서나 기대되는 동작이라 우리가
