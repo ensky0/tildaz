@@ -9,8 +9,14 @@
 //! 추가하면 컴파일 에러로 드러나게 한다.
 //!
 //! 판정 규칙은 ghostty 참조 구현 (`src/input/mouse_encode.zig` — `shouldReport` /
-//! `buttonCode`) 과 xterm `ctlseqs` 를 그대로 따른다. 그 인코더는 `ghostty-vt` 모듈
-//! 밖 (`src/input/`) 이고 `renderer/size.zig` 에 의존해 import 할 수 없다.
+//! `buttonCode`) 과 xterm `ctlseqs` 를 그대로 따른다.
+//!
+//! **그 인코더를 직접 부르지 못하는 이유** (#533 에서 서술을 바로잡음): `ghostty-vt` 는
+//! `encodeMouse` 를 **노출한다**. 막는 것은 모듈 경계가 아니라 인자 타입이다 —
+//! `mouse_encode.Options` 가 `size: renderer_size.Size` 를 기본값 없는 필수 필드로
+//! 요구하는데 그 타입은 노출되지 않아 값을 만들 수 없다. 키 인코더 (`key_encode.zig`)
+//! 는 renderer 를 전혀 참조하지 않아 그 제약이 없고, 그래서 #533 은 upstream 인코더를
+//! 그대로 쓴다. upstream 이 `Size` 를 노출하면 이 모듈도 갈아탈 수 있다.
 
 const std = @import("std");
 
