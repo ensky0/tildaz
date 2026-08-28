@@ -167,12 +167,18 @@ pub const Tree = struct {
     }
 
     /// `target` 을 `dir` 쪽으로 갈라 새 pane `new_pane` 을 그쪽에 놓는다 (비율 반씩).
-    /// 갈라진 **두 조각** 이 `MIN_PANE_COLS × MIN_PANE_ROWS` 아래면 트리를 바꾸지 않고 `TooSmall` —
-    /// 다른 pane 은 보지 않는다. 창이 줄어 (drop-down 이 작은 모니터로 가면 비율은 그대로) 이미 최소
-    /// 아래인 pane 이 있어도, 자리가 있는 pane 은 갈라져야 한다 (2026-08-27 macOS 실기 — 예전엔 탭
-    /// 전체를 검사해 A 를 위아래로 가르는데 옆의 B · C 가 17 열이라 거부됐다). 개수 상한은
-    /// `TooManyPanes` — host 가 두 거부를 다른 문구로 안내할 수 있게 구분한다. `rect` 는 **탭바를 뺀**
-    /// 터미널 영역이다.
+    ///
+    /// 최소 크기 검사는 **가르는 축만** 본다 (2026-08-28 사용자 결정): 좌우로 가르면 두 조각의 `cols` 가
+    /// `MIN_PANE_COLS` 이상인지, 위아래로 가르면 `rows` 가 `MIN_PANE_ROWS` 이상인지. **반대 축은 이 분할이
+    /// 건드리지 않으므로 볼 이유가 없다** — 창이 줄어 이미 19 열이 된 pane 을 위아래로 가르는 것이 "20 열
+    /// 미만" 으로 거부되던 것이 macOS 실기에서 걸렸다 (폭은 그대로 19 열인데도).
+    ///
+    /// 보는 것은 갈라지는 **두 조각뿐**이다 — 창이 줄면 (drop-down 이 작은 모니터로 가면 비율은 그대로)
+    /// 다른 pane 이 이미 최소 아래일 수 있고, 그래도 자리가 있는 pane 은 갈라져야 한다 (2026-08-27 실기 —
+    /// 예전엔 탭 전체를 검사해 옆의 B · C 가 17 열이라 A 의 위아래 분할이 거부됐다).
+    ///
+    /// 개수 상한은 `TooManyPanes` — host 가 두 거부를 다른 문구로 안내할 수 있게 구분한다. `rect` 는
+    /// **탭바를 뺀** 터미널 영역이다.
     pub fn split(self: *Tree, target: PaneId, dir: Direction, new_pane: PaneId, rect: Rect, m: Metrics) SplitError!void {
         if (self.pane_count >= MAX_PANES_PER_TAB) return error.TooManyPanes;
         if (self.contains(new_pane)) return error.DuplicatePane;
@@ -198,7 +204,11 @@ pub const Tree = struct {
         var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
         for (layout(self, rect, m, &buf)) |pr| {
             if (pr.pane != target and pr.pane != new_pane) continue;
-            if (pr.cols < MIN_PANE_COLS or pr.rows < MIN_PANE_ROWS) {
+            const too_small = switch (dir.axis()) {
+                .side_by_side => pr.cols < MIN_PANE_COLS,
+                .stacked => pr.rows < MIN_PANE_ROWS,
+            };
+            if (too_small) {
                 self.* = saved;
                 return error.TooSmall;
             }
@@ -891,6 +901,29 @@ test "#483 결정 2 — 같은 축 중첩: 바깥은 앞 자식을 leaf 로 본 
     try std.testing.expectEqual(@as(i32, 758), p[1].rect.w);
     try std.testing.expectEqual(@as(u16, 37), p[1].cols);
     try std.testing.expectEqual(@as(i32, 11), p[1].rect.w - 44 - 37 * 19);
+}
+
+test "#483 6단계 — split 최소 검사는 가르는 축만 본다: 19 열이어도 위아래로는 갈린다" {
+    const m = mac2x;
+    // 폭이 19 열밖에 안 되는 영역 — 창이 줄어 20 열 아래로 내려간 pane 과 같은 상태. 높이는 넉넉히 40 행.
+    const narrow: Rect = .{ .x = 0, .y = 0, .w = 44 + 19 * 19, .h = 24 + 40 * 39 };
+    var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    var tree = Tree.single(0);
+    try std.testing.expectEqual(@as(u16, 19), layout(&tree, narrow, m, &buf)[0].cols);
+    // 좌우 분할은 그대로 거부 — 이 분할이 폭을 반으로 가르니 열을 봐야 한다.
+    try std.testing.expectError(error.TooSmall, tree.split(0, .right, 1, narrow, m));
+    try std.testing.expectEqual(@as(usize, 1), tree.count());
+    // 위아래 분할은 폭을 건드리지 않으므로 허용 — 예전엔 열 검사에 걸려 거부됐다 (2026-08-28 실기).
+    try tree.split(0, .down, 1, narrow, m);
+    const p = layout(&tree, narrow, m, &buf);
+    try std.testing.expectEqual(@as(u16, 19), find(p, 0).?.cols);
+    try std.testing.expectEqual(@as(u16, 19), find(p, 1).?.cols);
+    try std.testing.expect(find(p, 0).?.rows >= MIN_PANE_ROWS);
+    try std.testing.expect(find(p, 1).?.rows >= MIN_PANE_ROWS);
+    // 행 검사는 살아 있다 — 9 행이면 위아래로 못 가른다.
+    var short_tree = Tree.single(0);
+    const short: Rect = .{ .x = 0, .y = 0, .w = 44 + 19 * 19, .h = 24 + 9 * 39 };
+    try std.testing.expectError(error.TooSmall, short_tree.split(0, .down, 1, short, m));
 }
 
 test "#483 split 거부 — 최소 크기 미달과 개수 초과를 구분하고, 거부되면 트리는 그대로다" {

@@ -31,15 +31,35 @@ pub fn clampCell(col: i32, row: i32, cols: u16, rows: u16) Cell {
 pub const SelectionState = struct {
     active: bool = false,
     start_pin: ?ghostty.PageList.Pin = null,
+    /// #483 6단계 — 누른 셀. 여기서 **벗어나기 전까지는 선택을 만들지 않는다** (`armed`).
+    start_cell: Cell = .{ .col = 0, .row = 0 },
+    /// 누른 셀을 한 번이라도 벗어났는가. 켜지면 계속 켜져 있다.
+    armed: bool = false,
 
     pub fn begin(self: *SelectionState, screen: *ghostty.Screen, cell: Cell) void {
         self.active = true;
+        self.armed = false;
+        self.start_cell = cell;
         screen.clearSelection();
         self.start_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } });
     }
 
+    /// #483 6단계 — 이 자리로 선택을 늘려도 되는가 (2026-08-28 macOS 실기).
+    ///
+    /// **트랙패드 클릭의 1 px 떨림에도 `update` 가 불려** 한 칸 선택이 만들어졌고, 놓을 때 자동 복사까지
+    /// 돼서 pane 마다 흰 자국이 남고 클립보드가 한 글자로 덮였다 (사용자가 pane 셋을 클릭해 포커스만
+    /// 옮겼는데 세 칸에 자국). 그래서 **누른 셀을 벗어나야** 선택을 시작한다. 셀 기준이라 배율 · DPI 와
+    /// 무관하고, 한 번 벗어나면 유지되므로 이웃 칸으로 갔다 돌아오는 **한 칸 선택은 그대로 된다**.
+    fn arm(self: *SelectionState, cell: Cell) bool {
+        if (self.armed) return true;
+        if (cell.col == self.start_cell.col and cell.row == self.start_cell.row) return false;
+        self.armed = true;
+        return true;
+    }
+
     pub fn update(self: *SelectionState, screen: *ghostty.Screen, cell: Cell) void {
         if (!self.active) return;
+        if (!self.arm(cell)) return;
         const start = self.start_pin orelse return;
         const end = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
         const selection = ghostty.Selection.init(start, end, false);
@@ -50,12 +70,14 @@ pub const SelectionState = struct {
         if (!self.active) return false;
         self.active = false;
         self.start_pin = null;
+        self.armed = false;
         return true;
     }
 
     pub fn cancel(self: *SelectionState) void {
         self.active = false;
         self.start_pin = null;
+        self.armed = false;
     }
 };
 
@@ -284,6 +306,26 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
 }
 
 const word_boundaries = [_]u21{ ' ', '\t', '"', '`', '|', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>' };
+
+test "#483 6단계 — 클릭 떨림은 선택을 만들지 않는다 (누른 셀을 벗어나야 시작)" {
+    var selection = SelectionState{ .active = true, .start_cell = .{ .col = 5, .row = 3 } };
+    // 같은 셀 안에서의 미세 이동 — 아직 선택 아님.
+    try std.testing.expect(!selection.arm(.{ .col = 5, .row = 3 }));
+    try std.testing.expect(!selection.armed);
+    // 이웃 셀로 나가면 시작.
+    try std.testing.expect(selection.arm(.{ .col = 6, .row = 3 }));
+    try std.testing.expect(selection.armed);
+    // 돌아와도 유지 — 한 칸 선택은 그대로 된다.
+    try std.testing.expect(selection.arm(.{ .col = 5, .row = 3 }));
+    // 세로로만 움직여도 시작한다.
+    var vertical = SelectionState{ .active = true, .start_cell = .{ .col = 5, .row = 3 } };
+    try std.testing.expect(vertical.arm(.{ .col = 5, .row = 4 }));
+    // finish · cancel 은 문턱을 다시 채운다 (다음 클릭이 또 걸러지게).
+    _ = selection.finish();
+    try std.testing.expect(!selection.armed);
+    vertical.cancel();
+    try std.testing.expect(!vertical.armed);
+}
 
 test "selection finish and cancel clear active state" {
     var selection = SelectionState{ .active = true };

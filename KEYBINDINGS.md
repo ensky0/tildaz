@@ -367,8 +367,11 @@ Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the act
 pane instead of opening a tab (to the right if the pane is wider than it is tall,
 otherwise below). Ctrl+Shift+W closes the active pane — the neighbour that shared
 the split takes its place — and closes the tab when the pane is the last one; a
-shell exiting inside a pane does the same. A split whose two halves would be
-smaller than 20 columns × 5 rows is refused with a dialog, as is the 17th pane.
+shell exiting inside a pane does the same. A split is refused with a dialog when
+the two halves would be too small along the direction it divides — narrower than
+20 columns for a vertical split, shorter than 5 rows for a horizontal one — as is
+the 17th pane. The other direction is not checked, because the split does not
+change it.
 Panes can still end up smaller than that when the window shrinks — the drop-down
 takes the size of the screen it opens on and the panes keep their shares — and
 from then on the lines next to such a pane only move in the direction that makes
@@ -385,7 +388,7 @@ Linux and macOS are verified, the Windows build is awaiting hands-on verificatio
 
 | Action | All platforms |
 |--------|---------------|
-| Drag-select text | Auto-copy on release |
+| Drag-select text | Auto-copy on release. A plain click selects nothing — the pointer has to leave the cell it was pressed in before a selection starts |
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
 | Mouse wheel | Scroll the pane under the pointer (focus stays where it is; page keys scroll the active pane) |
 | Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
