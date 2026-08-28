@@ -2969,6 +2969,17 @@ pub const Window = struct {
             break :blk it.nextCodepoint() orelse 0;
         };
 
+        // #533 후속 — 비라틴 배열 (러시아어 등) 에서 Alt 조합에 붙일 ASCII. 그 배열은 글자 키가
+        // Cyrillic 을 내므로 인코더가 `ESC` 를 붙일 1 바이트를 못 찾아 그 글자가 그냥 나간다 —
+        // `Alt+n` (zellij · tmux) 이 안 닿는다. 물리 키의 US 글자로 되짚는다 (macOS · Linux 와 같은 수).
+        var text = utf8;
+        var us_buf: [1]u8 = undefined;
+        if (alt and (text.len != 1 or text[0] > 0x7f)) {
+            if (key_encode.usAscii(physical_key.fromScanCode(scan, extended))) |c| {
+                us_buf[0] = if (shift and c >= 'a' and c <= 'z') c - 32 else c;
+                text = us_buf[0..1];
+            }
+        }
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
         key_encode.encode(&writer, .{
@@ -2978,7 +2989,7 @@ pub const Window = struct {
             // 만들면 `WM_CHAR` 가 그 글자를 따로 보낸다. 이 경로는 글자를 만들지 않는
             // 키를 다루므로 소비된 modifier 가 없다.
             .consumed_mods = .{},
-            .utf8 = utf8,
+            .utf8 = text,
             .unshifted_codepoint = unshifted,
         }, self.keyEncodeOptions()) catch return false;
 
