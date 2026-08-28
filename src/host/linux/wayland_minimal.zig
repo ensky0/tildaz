@@ -6367,6 +6367,18 @@ const Client = struct {
             const sym = self.keyboard.keysymAtEvdev(@intCast(key)) orelse break :blk 0;
             break :blk self.keyboard.keysymToUtf32(sym) orelse 0;
         };
+        // #533 후속 — **비라틴 배열에서 Alt 조합에 붙일 ASCII.** 러시아어 · 그리스어 배열은 글자 키가
+        // Cyrillic 을 내므로 (`Alt+ф`) 인코더가 `ESC` 를 붙일 1 바이트를 못 찾아 그 글자가 그냥 나간다 —
+        // `Alt+n` (zellij · tmux) 이 안 닿는다. 물리 키의 US 글자로 되짚는다. **AltGr 로 만든 글자는
+        // 건드리지 않는다** (`consumed.alt` — 프랑스 자판의 `AltGr+2` → `~`).
+        const alt_down = self.keyboard.altActive();
+        var us_buf: [1]u8 = undefined;
+        if (alt_down and !consumed.alt and (utf8.len != 1 or utf8[0] > 0x7f)) {
+            if (key_encode.usAscii(physical_key.fromEvdev(key))) |c| {
+                us_buf[0] = if (self.keyboard.shiftActive() and c >= 'a' and c <= 'z') c - 32 else c;
+                utf8 = us_buf[0..1];
+            }
+        }
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
         key_encode.encode(&writer, .{

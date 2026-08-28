@@ -1529,7 +1529,17 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // 조합은 건드리지 않는다.
         if (option and optionActsAsAlt(flags)) {
             var option_chars: [16]u8 = undefined;
-            const plain = macCharsWithoutOption(event, flags, keycode, &option_chars);
+            var plain = macCharsWithoutOption(event, flags, keycode, &option_chars);
+            // #533 후속 — 입력원이 곧 배열인 macOS 에서 한글 2벌식 · 러시아어를 쓰면 이 글자가 자모다
+            // (`ㅁ`). 그대로 넘기면 인코더가 ESC 를 붙일 ASCII 를 못 찾아 자모가 그냥 나가서
+            // `Alt+n` (zellij) 이 안 닿는다. 물리 키의 US 글자로 되짚는다 (2026-08-29 실기).
+            var us: [1]u8 = undefined;
+            if (plain.len != 1 or plain[0] > 0x7f) {
+                if (key_encode.usAscii(physical_key.fromMacKeyCode(keycode))) |c| {
+                    us[0] = if (shift and c >= 'a' and c <= 'z') c - 32 else c;
+                    plain = us[0..1];
+                }
+            }
             if (sendEncodedKeyMac(tab, event, plain)) return;
         }
     }

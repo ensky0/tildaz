@@ -607,6 +607,19 @@ Windows 실측).
 (macOS 표준대로 글자). 글자를 만들지 않는 키는 그 설정과 무관하게 alt 가 실린다
 (`Option+←` → `\x1b[1;3D`). Linux · Windows 에는 이 갈림이 없어 Alt 는 언제나 Meta 다.
 
+**비라틴 배열 · 입력원에서는 물리 키의 US 글자로 되짚는다** ([#483](https://github.com/ensky0/tildaz/issues/483)
+브랜치에서 #533 후속으로, 2026-08-29 실기). Alt 앞에 붙일 `ESC` 뒤의 글자를 인코더는 **1 바이트 utf8
+이나 ASCII `unshifted_codepoint`** 에서만 찾는데, 러시아어 · 그리스어 **배열** (Linux · Windows) 과
+한글 · 러시아어 **입력원** (macOS 는 입력원이 곧 배열) 에서는 그 글자가 ASCII 가 아니다. 되짚지
+않으면 `Alt+n` 이 `ESC n` 이 아니라 `н` · `ㅜ` 로 나가 zellij · tmux · emacs 의 Alt 조합이 죽는다.
+그래서 **Alt 가 눌렸는데 그 배열의 글자가 1 바이트 ASCII 가 아니면** `key_encode.usAscii` (ghostty
+`input.Key.codepoint()` — 물리 키의 US 글자) 로 바꿔 넘긴다 (Shift 면 대문자). ghostty 의 `ctrlSeq`
+가 Cyrillic 자판에 쓰는 되짚기와 같은 수이고, **AltGr 로 만든 글자는 건드리지 않는다** (Linux 는
+`consumed.alt` 를 함께 본다 — 프랑스 자판 `AltGr+2` → `~`). 실기: macOS 한글 2벌식 + `both` 에서
+`^[a` · `^[n`, Linux 러시아어 배열에서 `n` 은 `т` 그대로이고 `Alt+n` 은 `^[n`. **kitty keyboard 는
+손대지 않는다** — 그 규격은 주 키 코드가 배열의 코드포인트이고 US 기준 키는 `report_alternates`
+를 요청한 앱에만 alternate 로 준다 (실측: `^[[12618;5u`, 플래그 5 면 `^[[12618::99;5u`).
+
 ### 2.7 Key repeat (길게 누름 반복)
 
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
