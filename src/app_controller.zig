@@ -1298,11 +1298,18 @@ pub const App = struct {
         return .{ .col = col, .row = row };
     }
 
+    /// #483 6단계 — 마우스 좌표를 선택 문턱 판정용 px 로.
+    fn mousePx(mouse_x: c_int, mouse_y: c_int) terminal_interaction.Px {
+        return .{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
+    }
+
     fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
-        tab.interaction.selection.begin(screen, cell);
+        // #483 6단계 — 선택 시작 문턱 (물리 px). DPI 배율 · 셀 크기가 바뀌면 따라 바뀐다.
+        const slop = ui_metrics.selectionDragSlopPx(@floatFromInt(self.window.cell_width_px), self.dpi_scale);
+        tab.interaction.selection.begin(screen, cell, mousePx(mouse_x, mouse_y), slop);
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
@@ -1329,7 +1336,7 @@ pub const App = struct {
 
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
-        tab.interaction.selection.update(screen, cell);
+        tab.interaction.selection.update(screen, cell, mousePx(mouse_x, mouse_y));
     }
 
     fn finishTerminalSelection(self: *App) void {

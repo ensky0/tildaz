@@ -388,7 +388,7 @@ Linux and macOS are verified, the Windows build is awaiting hands-on verificatio
 
 | Action | All platforms |
 |--------|---------------|
-| Drag-select text | Auto-copy on release. A plain click selects nothing — the pointer has to leave the cell it was pressed in before a selection starts |
+| Drag-select text | Auto-copy on release. A plain click selects nothing — the pointer has to move about 4 pt (or into another cell) before a selection starts, so a shaky click no longer selects a character and overwrites the clipboard |
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
 | Mouse wheel | Scroll the pane under the pointer (focus stays where it is; page keys scroll the active pane) |
 | Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |

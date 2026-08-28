@@ -6709,7 +6709,7 @@ const Client = struct {
         // #245 — 경계 밖이어도 null 대신 clamp 된 cell 로 선택 연장 + 위/아래 경계면
         // auto-scroll 방향 arm. pixelToCell(클릭용, 범위 밖 null)과 분리.
         const sc = self.selectionCellAndDir(tab);
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, self.pointerPx());
         const prev_dir = self.sel_autoscroll_dir;
         self.sel_autoscroll_dir = sc.dir;
         // 0→nonzero 전환이면 즉시 첫 tick (다음 run loop iteration 에서 스크롤 시작).
@@ -6928,7 +6928,7 @@ const Client = struct {
                     return;
                 }
 
-                tab.interaction.selection.begin(tab.terminal.screens.active, cell);
+                tab.interaction.selection.begin(tab.terminal.screens.active, cell, self.pointerPx(), self.selectionSlop());
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
@@ -7487,6 +7487,15 @@ const Client = struct {
     /// 방향으로 한 step 스크롤 + 마지막 포인터 위치(clamp cell)로 selection.update
     /// → 포인터를 멈춰 둬도 scrollback 까지 선택이 따라 연장된다. key repeat tick 과
     /// 같은 timestamp-gate 패턴.
+    /// #483 6단계 — 지금 포인터 자리 (물리 px) · 선택 시작 문턱. 배율 · 셀 크기가 바뀌면 따라 바뀐다.
+    fn pointerPx(self: *Client) terminal_interaction.Px {
+        return .{ .x = @floatFromInt(self.pointer_x_px), .y = @floatFromInt(self.pointer_y_px) };
+    }
+
+    fn selectionSlop(self: *Client) f32 {
+        return ui_metrics.selectionDragSlopPx(@floatFromInt(self.renderer.cellWidth()), self.renderer.scale);
+    }
+
     fn maybeAutoScrollSelection(self: *Client) void {
         if (self.sel_autoscroll_dir == 0) return;
         const tab = self.activeTabOrNull() orelse {
@@ -7504,7 +7513,7 @@ const Client = struct {
         tab.terminal.scrollViewport(.{ .delta = delta });
         // 스크롤 뒤 가장자리 cell 로 선택 end 재계산 — 새로 보이는 scrollback 행을 가리킴.
         const sc = self.selectionCellAndDir(tab);
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, self.pointerPx());
         self.requestRedraw();
         self.sel_autoscroll_next_ms = now + sel_autoscroll_interval_ms;
     }

@@ -2551,7 +2551,7 @@ fn maybeAutoScrollSelectionMac() bool {
     const step: isize = 3;
     tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
     if (cellAndDirFromPx(g_last_drag_x, g_last_drag_y)) |sc| {
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, .{ .x = g_last_drag_x, .y = g_last_drag_y });
     }
     g_sel_autoscroll_next_ms = now + 40;
     return true;
@@ -2978,7 +2978,14 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         tab.interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
         return;
     }
-    tab.interaction.selection.begin(tab.terminal.screens.active, cell);
+    const down_px = eventToWindowPx(self_view, event);
+    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac());
+}
+
+/// #483 6단계 — 선택 시작 문턱 (물리 px). 배율 · 셀 크기가 바뀌면 따라 바뀐다.
+fn selectionSlopMac() f32 {
+    const r = g_renderer orelse return 0;
+    return ui_metrics.selectionDragSlopPx(@floatFromInt(r.font.cell_width_px), r.scale);
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
@@ -3041,7 +3048,7 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     g_last_drag_x = xy.x;
     g_last_drag_y = xy.y;
     if (cellAndDirFromPx(xy.x, xy.y)) |sc| {
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, .{ .x = xy.x, .y = xy.y });
         const prev = g_sel_autoscroll_dir;
         g_sel_autoscroll_dir = sc.dir;
         if (sc.dir != 0 and prev == 0) g_sel_autoscroll_next_ms = 0;

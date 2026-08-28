@@ -595,6 +595,19 @@ pub const PANE_FOCUS_LINE_PT: u32 = 1;
 /// #483 4c — 분할선을 마우스로 잡는 영역의 반폭 (logical pt). 그리는 선은 `PANE_SEPARATOR_W_PT` 1 pt
 /// 지만 잡는 영역은 양쪽으로 이만큼 넓다 (확정 설계 축 2 "그리는 건 1px, 잡는 건 ±4px").
 pub const PANE_SEPARATOR_HIT_SLOP_PT: u32 = 4;
+/// #483 6단계 — 드래그로 **선택을 시작하는 문턱** (logical pt). 이만큼 움직이기 전에는 선택을
+/// 만들지 않는다 — 트랙패드 클릭의 1~3 px 떨림이 한 칸 선택 + 자동 복사를 만들어 pane 마다 흰
+/// 자국이 남고 클립보드가 한 글자로 덮이던 것을 막는다 (2026-08-28 macOS 실기). Windows 의 드래그
+/// 판정 기본값 (`SM_CXDRAG` 4 px @96 dpi) 과 같은 수준이다.
+pub const SELECTION_DRAG_SLOP_PT: u32 = 4;
+
+/// 위 문턱의 물리 px. **반 칸을 넘지 않는다** — 아주 작은 폰트에서는 셀 폭이 문턱에 가까워져,
+/// 그대로 두면 칸 안에서 한 칸을 선택할 방법이 없어지기 때문이다. 셀도 배율을 따라 커지므로
+/// 보통 크기에서는 4 pt 쪽이 이긴다 (기본 폰트 15 → 셀 폭 19 px @2x, 문턱 8 px).
+pub fn selectionDragSlopPx(cell_w_px: f32, scale: f32) f32 {
+    return @min(scaledPxF(SELECTION_DRAG_SLOP_PT, scale), cell_w_px * 0.5);
+}
+
 /// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
 /// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
 pub const MENU_INDICATOR_ICON_PT: u32 = 14;
