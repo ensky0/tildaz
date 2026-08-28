@@ -2085,10 +2085,24 @@ pub const Window = struct {
                 // 그렇게 동작했고 Windows 만 legacy 였다 (#533 Windows 실기에서 드러남).
                 const kitty_active = self.keyEncodeOptions().kitty_flags.int() != 0;
 
+                // IME 가 아직 정리되지 않은 상태. preedit 뿐 아니라 **보류된 result**
+                // 도 본다 — `imeStoreDeferredResult` 가 보류분을 `preedit_buf` 에
+                // 복사하므로 보통은 둘이 같이 서지만, 결과가 그 버퍼(256B)보다 길면
+                // `preedit_len` 이 안 서서 preedit 만 보면 놓친다.
+                const ime_pending = self.imePreeditSlice().len != 0 or self.ime_deferred_result != null;
+
                 // Ctrl+C는 WM_CHAR(ETX)보다 먼저 공통 입력 정책으로 보낸다.
                 // terminal preedit는 IMM cancel, 그 외에는 ETX를 한 번
                 // 전송한다. TranslateMessage가 queue할 짝꿍 WM_CHAR는 swallow.
-                if (!kitty_active and wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
+                //
+                // **kitty 여도 IME 가 걸려 있으면 이 경로로 온다** (#533 Windows 실기).
+                // `Ctrl+C` 는 `imeKeyDownUsesDeferredPolicy` 대상이라 핸들러 상단에서
+                // 조합을 확정하지 않고 판정을 미루는데, 그 판정을 하는 유일한 자리가
+                // 여기다. kitty 라고 통째로 비켜서면 판정 주체가 사라져 `WM_CHAR` 가
+                // `\x03` 을 먼저 내보내고 보류된 음절이 `WM_KEYUP` 의 flush 로 뒤늦게
+                // PTY 에 샌다 (`03 ed 95 9c` — 실측). 아래 kitty `Ctrl`+글자 블록이
+                // 이미 "조합 중이면 손대지 않는다" 로 서 있으므로 그것과 같은 원칙이다.
+                if ((!kitty_active or ime_pending) and wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
                     if (self.dispatchAppEvent(.{ .interrupt = {} })) {
                         self.swallow_next_wm_char = true;
                         return 0;
