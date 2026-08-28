@@ -419,8 +419,9 @@ pub const App = struct {
     }
 
     fn handleEqualizePanes(self: *App) void {
-        if (self.session.activeGroup() == null) return;
+        const group = self.session.activeGroup() orelse return;
         self.session.equalizeActive(self.paneArea(), self.paneMetrics());
+        log.appendLine("pane", "equalize — {} panes", .{group.tree.count()});
     }
 
     /// `Ctrl+Shift+Z` — 활성 pane 최대화 토글. 격자는 `syncPaneGrids` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).

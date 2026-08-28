@@ -5631,11 +5631,12 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
-    /// #483 4b — 활성 탭의 분할선을 모두 가운데로 (`Tree.equalize` — 같은 축은 한 줄로 칸 셈).
+    /// #483 4b — 활성 탭의 한 줄씩을 고르게 (`Tree.equalize` — 같은 축은 한 줄로 보고 행 · 열 수로 나눔).
     fn handleEqualizePanes(self: *Client) void {
         const session = if (self.session) |*s| s else return;
-        if (session.activeGroup() == null) return;
+        const group = session.activeGroup() orelse return;
         session.equalizeActive(self.paneArea(), self.paneMetrics());
+        log.appendLine("pane", "equalize — {} panes", .{group.tree.count()});
         self.needs_redraw = true;
     }
 
