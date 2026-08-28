@@ -67,6 +67,22 @@ const XkbStateModNameIsActive = *const fn (
 // 키보드를 꽂으면 위치 표기 hotkey 가 직전 layout 의 글자로 재등록되는데, 로그만으로는
 // *compositor 가 옛 keymap 을 보낸 것*인지 *우리가 잘못 읽은 것*인지 구분할 수 없었다
 // ([#513](https://github.com/ensky0/tildaz/issues/513)).
+// #533 — `utf8` 을 만드는 데 쓰인 modifier (`xkb_mod_mask_t`). AltGr 처럼 이미 문자를
+// 낸 조합에 ESC 를 붙이지 않으려면 이 정보가 필요하다.
+const XkbStateKeyGetConsumedMods2 = *const fn (
+    state: *xkb_state,
+    key: c_uint,
+    mode: c_uint,
+) callconv(.c) u32;
+// mask 의 비트가 어느 modifier 인지 알려면 index 가 필요하다 (`Shift` · `Control` · …).
+const XkbKeymapModGetIndex = *const fn (keymap: *xkb_keymap, name: [*:0]const u8) callconv(.c) c_uint;
+
+// `enum xkb_consumed_mode`. GTK 모드를 쓴다 — ghostty 의 GTK apprt 가 gdk 를 거쳐 쓰는
+// 것과 같은 판정이라 두 구현의 결과가 어긋나지 않는다.
+const XKB_CONSUMED_MODE_GTK: c_uint = 1;
+/// `XKB_MOD_INVALID` — 그 이름의 modifier 가 keymap 에 없다.
+const XKB_MOD_INVALID: c_uint = 0xffff_ffff;
+
 const XkbKeymapNumLayouts = *const fn (keymap: *xkb_keymap) callconv(.c) c_uint;
 const XkbKeymapLayoutGetName = *const fn (keymap: *xkb_keymap, layout: c_uint) callconv(.c) ?[*:0]const u8;
 
@@ -150,6 +166,8 @@ const Api = struct {
     layout_names: ?LayoutNames = null,
     // #494 — optional. 없으면 dead key 조합만 꺼진다 (`Keyboard.composeFeed` 가 passthrough).
     compose: ?ComposeApi = null,
+    // #533 — optional. 없으면 consumed modifier 판정만 꺼진다.
+    consumed: ?ConsumedApi = null,
 
     fn load() !Api {
         const handle = std.c.dlopen("libxkbcommon.so.0", .{ .LAZY = true }) orelse return error.XkbLibraryMissing;
@@ -170,6 +188,7 @@ const Api = struct {
             .keymap_scan = KeymapScan.load(handle),
             .layout_names = LayoutNames.load(handle),
             .compose = ComposeApi.load(handle),
+            .consumed = ConsumedApi.load(handle),
         };
     }
 
@@ -226,6 +245,21 @@ const LayoutNames = struct {
 
 /// #494 — Compose 상태 기계 심볼 묶음. **all-or-nothing** — `feed` 는 있는데 `get_utf8` 이
 /// 없으면 조합은 되는데 결과를 못 꺼내 글자가 사라지므로, 하나라도 없으면 통째로 끈다.
+/// #533 — consumed modifier 조회. **둘이 함께 있어야 의미가 있다** — 조회 함수만 있고
+/// index 를 못 구하면 mask 를 해석할 수 없다. 없으면 판정이 통째로 꺼지고, 그때는 문자를
+/// 만든 조합에도 ESC 가 붙을 수 있다 (libxkbcommon 0.4.0 이전 — 실질적으로 없는 환경).
+const ConsumedApi = struct {
+    key_get_consumed_mods2: XkbStateKeyGetConsumedMods2,
+    mod_get_index: XkbKeymapModGetIndex,
+
+    fn load(handle: *anyopaque) ?ConsumedApi {
+        return .{
+            .key_get_consumed_mods2 = lookup(handle, XkbStateKeyGetConsumedMods2, "xkb_state_key_get_consumed_mods2") orelse return null,
+            .mod_get_index = lookup(handle, XkbKeymapModGetIndex, "xkb_keymap_mod_get_index") orelse return null,
+        };
+    }
+};
+
 const ComposeApi = struct {
     table_new_from_locale: XkbComposeTableNewFromLocale,
     table_unref: XkbComposeTableUnref,
@@ -271,6 +305,27 @@ pub const Keyboard = struct {
     /// 표는 layout 이 아니라 locale 의 것이고, 조합 중 상태가 layout 전환에 끊길 이유도 없다.
     compose_table: ?*xkb_compose_table = null,
     compose_state: ?*xkb_compose_state = null,
+    /// #533 — consumed mask 를 해석할 modifier index. keymap 마다 다르므로
+    /// `setKeymap` 에서 다시 구한다.
+    mod_index: ModIndex = .{},
+
+    /// #533 — keymap 안에서 각 modifier 가 몇 번째 비트인가. `XKB_MOD_INVALID` 는
+    /// 그 이름이 이 keymap 에 없다는 뜻이라 판정에서 빠진다.
+    pub const ModIndex = struct {
+        shift: c_uint = XKB_MOD_INVALID,
+        ctrl: c_uint = XKB_MOD_INVALID,
+        alt: c_uint = XKB_MOD_INVALID,
+        super: c_uint = XKB_MOD_INVALID,
+    };
+
+    /// #533 — 이 키가 문자를 만드는 데 **쓴** modifier. 여기 표시된 것은 인코더가
+    /// 다시 세지 않는다 (AltGr 로 낸 `~` 앞에 ESC 가 붙지 않는 이유).
+    pub const ConsumedMods = struct {
+        shift: bool = false,
+        ctrl: bool = false,
+        alt: bool = false,
+        super: bool = false,
+    };
 
     pub fn deinit(self: *Keyboard) void {
         self.clearKeymap();
@@ -310,6 +365,13 @@ pub const Keyboard = struct {
         self.clearKeymap();
         self.keymap = keymap;
         self.state = state;
+        self.mod_index = if (api.consumed) |consumed| .{
+            .shift = consumed.mod_get_index(keymap, "Shift"),
+            .ctrl = consumed.mod_get_index(keymap, "Control"),
+            // `altActive` 와 같은 이름을 쓴다 — xkb 의 Alt 는 `Mod1`, Super 는 `Mod4` 다.
+            .alt = consumed.mod_get_index(keymap, "Mod1"),
+            .super = consumed.mod_get_index(keymap, "Mod4"),
+        } else .{};
     }
 
     pub fn updateMask(
@@ -672,6 +734,29 @@ pub const Keyboard = struct {
         return self.modActive("Mod4");
     }
 
+    /// #533 — 이 키가 문자를 만드는 데 쓴 modifier. 조회 심볼이 없거나 keymap 이
+    /// 아직 없으면 전부 `false` 다 — 그때는 인코더가 modifier 를 그대로 세므로,
+    /// 판정이 없는 쪽이 아니라 **보수적으로 틀리는** 쪽임을 알고 쓴다.
+    pub fn consumedMods(self: *Keyboard, key: u32) ConsumedMods {
+        const api = if (self.api) |*api| api else return .{};
+        const consumed = api.consumed orelse return .{};
+        const state = self.state orelse return .{};
+        const mask = consumed.key_get_consumed_mods2(state, @intCast(key), XKB_CONSUMED_MODE_GTK);
+        return .{
+            .shift = maskHasMod(mask, self.mod_index.shift),
+            .ctrl = maskHasMod(mask, self.mod_index.ctrl),
+            .alt = maskHasMod(mask, self.mod_index.alt),
+            .super = maskHasMod(mask, self.mod_index.super),
+        };
+    }
+
+    fn maskHasMod(mask: u32, index: c_uint) bool {
+        // `XKB_MOD_INVALID` 뿐 아니라 32 이상도 걸러야 한다 — mask 가 u32 라
+        // 그대로 shift 하면 정의되지 않은 동작이다.
+        if (index >= 32) return false;
+        return (mask & (@as(u32, 1) << @intCast(index))) != 0;
+    }
+
     fn modActive(self: *Keyboard, comptime name: [:0]const u8) bool {
         const api = if (self.api) |*api| api else return false;
         const state = self.state orelse return false;
@@ -697,6 +782,7 @@ pub const Keyboard = struct {
                 self.keymap = null;
             }
         }
+        self.mod_index = .{};
     }
 
     fn clearCompose(self: *Keyboard) void {

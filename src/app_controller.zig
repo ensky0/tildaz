@@ -1,6 +1,7 @@
 const std = @import("std");
 const Runtime = @import("runtime.zig").Runtime;
 const ghostty = @import("ghostty-vt");
+const key_encode = @import("key_encode.zig");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
 const windows_input_adapter = @import("windows_input_adapter.zig");
@@ -566,6 +567,15 @@ pub const App = struct {
     }
 
     // --- Window callbacks (userdata = *App) ---
+
+    /// #533 — 키 인코딩 옵션. 터미널이 켠 DEC mode (cursor keys · keypad · DECBKM ·
+    /// alt_esc_prefix) 와 kitty flags 를 인코더에 넘긴다. `window.zig` 는 `SessionCore`
+    /// 를 모르므로 콜백으로 받아 간다.
+    pub fn keyEncodeOptions(userdata: ?*anyopaque) key_encode.Options {
+        const self: *App = @ptrCast(@alignCast(userdata.?));
+        const tab = self.session.activeTab() orelse return .{};
+        return key_encode.Options.fromTerminal(&tab.terminal);
+    }
 
     pub fn onKeyInput(data: []const u8, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));

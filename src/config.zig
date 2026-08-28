@@ -41,6 +41,42 @@ const is_macos = builtin.os.tag == .macos;
 
 // --- DockPosition (cross-platform) ---
 
+/// #533 — macOS 의 `Option` 을 Alt(Meta) 로 볼 것인가.
+///
+/// **macOS 에만 의미가 있다.** 그 platform 에서는 `Option` 이 OS 수준에서 문자를
+/// 만들기 때문이다 (ABC 자판 `Option+a` → `å`, French `Option+e` → `ê`). 그래서 한
+/// 키 조합이 두 뜻을 갖고, 둘 중 하나만 고를 수 있다 — 문자를 보내거나 `ESC a` 를
+/// 보내거나. Linux · Windows 에는 그 갈림이 없다 (`Alt+a` 가 만드는 문자가 없어
+/// 언제나 Meta 다).
+///
+/// **그런데도 세 platform 의 config 에 모두 둔다.** dotfiles 로 같은 파일을 여러 OS
+/// 에서 쓰는 사람이 있고, 스키마 검증이 양방향이라 (모르는 키도 빠진 키도 fatal)
+/// 한쪽에만 두면 파일이 호환되지 않는다. 이름에 `macos_` 를 박아 두어 다른 두
+/// platform 에서 무엇인지 바로 보이게 했다 (Ghostty · kitty 도 같은 이름이다).
+pub const MacOptionAsAlt = enum {
+    /// Option 은 문자를 만든다 (macOS 표준). 기본값.
+    none,
+    /// 양쪽 Option 을 Alt 로.
+    both,
+    /// 왼쪽만 Alt — 오른쪽은 특수문자 입력용으로 남긴다.
+    left,
+    /// 오른쪽만 Alt.
+    right,
+
+    pub fn fromString(s: []const u8) ?MacOptionAsAlt {
+        const map = [_]struct { name: []const u8, val: MacOptionAsAlt }{
+            .{ .name = "none", .val = .none },
+            .{ .name = "both", .val = .both },
+            .{ .name = "left", .val = .left },
+            .{ .name = "right", .val = .right },
+        };
+        for (map) |m| {
+            if (std.mem.eql(u8, s, m.name)) return m.val;
+        }
+        return null;
+    }
+};
+
 pub const DockPosition = enum {
     top,
     bottom,
@@ -1487,6 +1523,9 @@ pub const Defaults = struct {
     /// cell width *ratio* — 측정된 advance 에 곱해 글자 사이 padding 조절.
     /// 1.0 = 폰트 그대로, 1.1 = 10% 더 넓음. 세 platform 공통.
     pub const cell_width_ratio: f32 = 1.0;
+    /// #533 — macOS 표준을 기본으로 둔다. Option 으로 특수문자를 쓰던 사용자가
+    /// 업그레이드로 그것을 잃지 않게 한다. Linux · Windows 에서는 읽히지 않는다.
+    pub const macos_option_as_alt: []const u8 = "none";
     pub const theme: []const u8 = "Tilda";
     pub const auto_start: bool = true;
     pub const hidden_start: bool = false;
@@ -1685,6 +1724,22 @@ pub fn defaultConfigToml(
         \\cell_width_ratio  = {d:.1}
         \\line_height_ratio = {d:.1}
         \\
+        \\[input]
+        \\# macOS only. On Linux and Windows this key is read but not used --
+        \\# there Alt is always Meta, because Alt+a produces no character.
+        \\#
+        \\# macOS is different: the OS itself turns Option+a into a character
+        \\# (ABC types "a-ring", French types "e-circumflex"). One key press,
+        \\# two meanings -- so you pick one.
+        \\#
+        \\#   none    Option types characters. The macOS default.
+        \\#   both    Both Option keys act as Alt, so Option+n reaches zellij,
+        \\#           tmux and emacs. You lose the characters above.
+        \\#   left    Only the left Option acts as Alt. The right one keeps
+        \\#           typing characters.
+        \\#   right   The mirror of "left".
+        \\macos_option_as_alt = "{s}"
+        \\
     , .{
         hotkey,
         shell_resolved,
@@ -1702,6 +1757,7 @@ pub fn defaultConfigToml(
         Defaults.font_size_point,
         Defaults.cell_width_ratio,
         Defaults.line_height_ratio,
+        Defaults.macos_option_as_alt,
     });
     defer allocator.free(head);
 
@@ -1734,6 +1790,7 @@ pub fn schemaReferenceToml(allocator: std.mem.Allocator) ![]const u8 {
 // `Defaults` 의 string / float 값을 Config struct 가 보관하는 native type 으로
 // 변환 (DockPosition enum / Hotkey struct / Theme pointer / alpha u8).
 const default_dock_position: DockPosition = DockPosition.fromString(Defaults.dock_position) orelse unreachable;
+const default_macos_option_as_alt: MacOptionAsAlt = MacOptionAsAlt.fromString(Defaults.macos_option_as_alt) orelse unreachable;
 /// JSON 은 percent (0..100, f32), 메모리는 alpha (0..255 u8). `100.0` percent → `255` alpha.
 const default_opacity_alpha: u8 = @round(Defaults.opacity_percent * 255.0 / 100.0);
 const default_theme: ?*const themes.Theme = themes.findTheme(Defaults.theme);
@@ -2406,6 +2463,9 @@ pub const Config = struct {
     /// Linux 에서 그때는 Wayland backend 가 없어 다이얼로그가 stderr / log 로만
     /// 가기 때문이다 — 데스크톱 아이콘으로 띄운 사용자에게는 보이지 않는다.
     load_notice: ?[]const u8 = null,
+    /// #533 — macOS 의 Option 을 Alt 로 볼지. 다른 두 platform 에서는 값이 읽히지만
+    /// 쓰이지 않는다 (`MacOptionAsAlt` 의 주석 참고).
+    macos_option_as_alt: MacOptionAsAlt = default_macos_option_as_alt,
     dock_position: DockPosition = default_dock_position,
     /// 화면 가로 점유율 percent (1..100, f32). 실수 허용 — 세밀 조정용.
     width_percent: f32 = Defaults.width_percent,
@@ -2622,6 +2682,24 @@ pub const Config = struct {
         defer default_parsed.deinit();
         const default_root: toml.Value = .{ .table = &default_parsed.value };
         validateStructure(rt, root, default_root, "(top-level)", config_path);
+
+        // #533 — input section. macOS 만 값을 쓰지만 세 platform 이 같은 파일을
+        // 읽을 수 있어야 해서 어디서든 파싱한다 (`MacOptionAsAlt` 주석 참고).
+        if (root.table.get("input")) |iv| {
+            if (iv.table.get("macos_option_as_alt")) |v| {
+                if (MacOptionAsAlt.fromString(v.string)) |mode| {
+                    config.macos_option_as_alt = mode;
+                } else {
+                    var buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(
+                        &buf,
+                        messages.config_macos_option_as_alt_invalid_format,
+                        .{v.string},
+                    ) catch messages.config_macos_option_as_alt_invalid_fallback_msg;
+                    showConfigFatalMsg(rt, config_path, msg);
+                }
+            }
+        }
 
         // window section
         if (root.table.get("window")) |wv| {
