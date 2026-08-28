@@ -2079,10 +2079,16 @@ pub const Window = struct {
                 {
                     if (!self.imeDispatchDeferredResult()) return 0;
                 }
+                // #533 — 앱이 kitty keyboard protocol 을 켰는지. 켜져 있으면 `Ctrl`+글자를
+                // 제어문자가 아니라 `CSI u` 로 보내야 하고 (`Ctrl+C` → `CSI 99;5u`), 그때는
+                // 인터럽트도 **앱이 스스로** 처리한다. Linux · macOS 는 인코더를 타므로 이미
+                // 그렇게 동작했고 Windows 만 legacy 였다 (#533 Windows 실기에서 드러남).
+                const kitty_active = self.keyEncodeOptions().kitty_flags.int() != 0;
+
                 // Ctrl+C는 WM_CHAR(ETX)보다 먼저 공통 입력 정책으로 보낸다.
                 // terminal preedit는 IMM cancel, 그 외에는 ETX를 한 번
                 // 전송한다. TranslateMessage가 queue할 짝꿍 WM_CHAR는 swallow.
-                if (wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
+                if (!kitty_active and wParam == 0x43 and GetKeyState(VK_CONTROL) < 0 and GetKeyState(VK_SHIFT) >= 0) {
                     if (self.dispatchAppEvent(.{ .interrupt = {} })) {
                         self.swallow_next_wm_char = true;
                         return 0;
@@ -2150,6 +2156,32 @@ pub const Window = struct {
                 const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
                     if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "");
+                }
+
+                // #533 — kitty protocol 이 켜져 있을 때만 `Ctrl`+글자도 인코더로 보낸다.
+                // 평소에는 `WM_CHAR` 가 배열이 반영된 제어문자를 주므로 손대지 않는다 (그
+                // 경로가 AZERTY 의 `Ctrl+A` 를 `^A` 로 정확히 낸다 — 실기 확인). kitty 에서는
+                // 제어문자가 아니라 `CSI u` 여야 해서 여기서 가로챈다.
+                //
+                // **단축키 다음이다** — `Ctrl+Shift+T` 같은 binding 은 위 `lookupKeyAction` 이
+                // 이미 가져갔다. IME 가 조합 중이면 건드리지 않는다 (한글 조합이 깨진다).
+                if (kitty_active and
+                    GetKeyState(VK_CONTROL) < 0 and
+                    self.imePreeditSlice().len == 0)
+                {
+                    var ctrl_chars: [8]u8 = undefined;
+                    const ctrl_text = winCharWithoutCtrlAlt(
+                        @intCast(wParam),
+                        kd_scan,
+                        GetKeyState(VK_SHIFT) < 0,
+                        &ctrl_chars,
+                    );
+                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text)) {
+                        // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR`(제어문자) 를 삼킨다 —
+                        // 그러지 않으면 `CSI u` 와 `\x03` 이 둘 다 나간다.
+                        self.swallow_next_wm_char = true;
+                        return 0;
+                    }
                 }
                 return 0;
             },
@@ -2309,8 +2341,15 @@ pub const Window = struct {
                 // `DefWindowProcW` 로 넘겨 아무것도 나가지 않았다 (신고 그대로 —
                 // zellij 의 `Alt+n` 이 안 먹는 이유).
                 //
-                // **`Alt+F4` 와 `Alt+Space` 는 OS 에 남긴다.** 창 닫기와 시스템 메뉴는
-                // Windows 사용자가 어느 앱에서나 기대하는 동작이라 우리가 먹으면 안 된다.
+                // **`Alt+Space` 는 OS 에 남긴다.** 시스템 메뉴는 Windows 사용자가 어느
+                // 앱에서나 기대하는 동작이라 우리가 먹으면 안 된다. (다만 이 창은
+                // `WS_POPUP` 이라 `WS_SYSMENU` 가 없어 실제로는 메뉴가 뜨지 않는다 —
+                // 우리가 가로채지 않는다는 것만 지킨다. 실측: PTY 로 나가는 바이트 0 개.)
+                //
+                // **`Alt+F4` 는 이 가드까지 오지 않는다.** 위 `lookupKeyAction` 이 먼저 돌고
+                // 기본 config 의 `quit = ["alt+f4"]` 가 거기서 잡아 `WM_CLOSE` → 종료 확인
+                // 대화상자로 간다. 사용자가 보는 결과는 같지만 경로가 다르므로, 그 binding 을
+                // 지운 사용자를 위해 가드는 남겨 둔다.
                 const sys_vk_space: WPARAM = 0x20;
                 const sys_vk_f4: WPARAM = 0x73;
                 if (wParam != sys_vk_space and wParam != sys_vk_f4) {
