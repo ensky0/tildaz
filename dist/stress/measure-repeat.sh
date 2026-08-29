@@ -20,7 +20,7 @@
 #
 # **Windows 도 이 파일로 돈다 — `measure-repeat.ps1` 은 없어졌다** (#381). 처음엔 PowerShell
 # 판을 따로 뒀지만 (Git Bash 를 요구하지 않으려고) **두 벌이 실제로 갈렸다**: `parse 비중`
-# 계산식이 표마다 달랐고 (#395, [65b1564](https://github.com/ensky0/tildaz/commit/65b1564))
+# 계산식이 표마다 달랐고 (#395, [7d3ab4e](https://github.com/ensky0/tildaz/commit/7d3ab4e))
 # 워크로드 목록 · 로그 파싱 정규식이 양쪽에 중복이었다. `compare-terminals.sh` 가 이미 Git
 # Bash 를 요구하고 그건 Git for Windows 에 항상 들어 있어서, 한 벌로 합치는 값이 더 크다.
 #

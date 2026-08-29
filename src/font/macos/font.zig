@@ -555,7 +555,7 @@ pub const CoreTextFontContext = struct {
         perf.addTimed(&perf.shape, t0);
         // **여기서 miss 를 세지 않는다.** 런이 실패하면 호출자가 그 셀들을 개별 경로로 다시
         // 도는데, 거기서 `resolveGrapheme` 이 같은 실패를 또 센다 — 한 실패가 두 번 잡혀
-        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 7766496). 런 실패는 정상적인
+        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 12222ef). 런 실패는 정상적인
         // fallback 이지 shaping 실패가 아니다.
         return n;
     }
@@ -794,7 +794,7 @@ pub const CoreTextFontContext = struct {
     /// (`MAX_KEY_CPS` = 8) 을 넘으면 담지 않고 **그 자리에서 값을 해제**한다 (소유권을 받았다고
     /// 보기 때문이다). 그때도 `owned = false` 로 바꿔 주면 caller 가 이미 죽은 폰트를 쓴다.
     /// 그래서 담을 수 있는지 **먼저 판정**하고, 못 담으면 원래 소유권 그대로 돌려준다
-    /// (Windows 에서 실제로 걸린 함정이다, c307cdf).
+    /// (Windows 에서 실제로 걸린 함정이다, 1c1a5d1).
     fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (self.cluster_cache.get(cps)) |cached| {
             const c = cached orelse return null; // negative hit — CTLine 을 다시 헛 만들지 않는다

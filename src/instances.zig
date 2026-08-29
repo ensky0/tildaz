@@ -8,7 +8,7 @@ const Runtime = runtime.Runtime;
 /// 허용하는 config index 의 최대값 — **0 … 9 = 인스턴스 10 개**
 /// ([#510](https://github.com/ensky0/tildaz/issues/510)).
 ///
-/// 예전 값 `999` 는 다중 인스턴스 최초 커밋 `2f3511a` (#267) 에서 주석도 근거도 없이
+/// 예전 값 `999` 는 다중 인스턴스 최초 커밋 `9d5e355` (#267) 에서 주석도 근거도 없이
 /// 들어왔다. 파일명 3자리 파싱 가드로 읽히고 제품 상한을 고민한 흔적이 없었다.
 ///
 /// **`9` 는 제품 결정이다 — 동시에 쓸 인스턴스 10 개.** `config.Defaults.hotkeyFor` 가
@@ -53,7 +53,7 @@ pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
 pub const stress_window_title = window_title_prefix ++ "stress";
 
 /// 현재 역할의 창 타이틀. **Windows 와 Linux 가 같은 함수를 쓴다** — 두 host 가 각자
-/// `switch (identity)` 를 두면 한쪽만 고쳐지고, 그것이 e5c7857 에서 실제로 일어났다
+/// `switch (identity)` 를 두면 한쪽만 고쳐지고, 그것이 cb9a1e1 에서 실제로 일어났다
 /// (Windows 만 분리되고 Linux 의 `createXdgToplevel` 이 worker 타이틀을 계속 보냈다).
 pub fn windowTitleForCurrentRole(buf: []u8) ![]const u8 {
     const instance_context = @import("instance_context.zig");

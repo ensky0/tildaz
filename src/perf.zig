@@ -335,7 +335,7 @@ pub fn dumpOnExit(rt: Runtime) void {
     // 무할당 조회 (`getPosix` / `getWindows`) 를 쓴다 — `rt.envAlloc` (= `Environ.getAlloc`)
     // 은 조회 한 번에 `createMap` 으로 **환경 전체를 할당**해서, 처음에 여기 있던 256 B
     // `FixedBufferAllocator` 로는 항상 `OutOfMemory` → 라벨이 영영 fallback 이었다
-    // (#451 재검토에서 실측. `envHas` 를 `containsConstant` 로 고친 a0ad160 과 같은 패턴).
+    // (#451 재검토에서 실측. `envHas` 를 `containsConstant` 로 고친 96b2a9e 과 같은 패턴).
     // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
     var label_buf: [256]u8 = undefined;
     const label: []const u8 = if (builtin.os.tag == .windows) blk: {

@@ -1183,7 +1183,7 @@ pub const DWriteFontContext = struct {
         perf.addTimed(&perf.shape, t0);
         // **여기서 miss 를 세지 않는다.** 런이 실패하면 호출자가 그 셀들을 개별 경로로 다시
         // 도는데, 거기서 `resolveGrapheme` 이 같은 실패를 또 센다 — 한 실패가 두 번 잡혀
-        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 7766496). 런 실패는 정상적인
+        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 12222ef). 런 실패는 정상적인
         // fallback 이지 shaping 실패가 아니다.
         return n;
     }

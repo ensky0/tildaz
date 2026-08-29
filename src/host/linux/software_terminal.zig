@@ -2092,7 +2092,7 @@ pub const Renderer = struct {
     }
 
     /// drawDialogContent helper — UTF-8 line 을 codepoint 별 glyph draw.
-    /// 48038081 의 `drawDialogTextLine` 재이식. cell-aligned 라 ligature /
+    /// b88bd90c 의 `drawDialogTextLine` 재이식. cell-aligned 라 ligature /
     /// cluster shape 안 필요.
     fn drawDialogTextLine(
         self: *Renderer,

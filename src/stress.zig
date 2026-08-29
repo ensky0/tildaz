@@ -864,7 +864,7 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 ///   이전 주석은 여기서 `null` 을 돌려주며 *"ConPTY 가 시퀀스를 끼워 넣어 계산할 수 없다"*
 ///   고 했고 근거로 `cjk` +25.6 % · `readloop` 6,922 회를 들었는데, **그 측정은 producer 의
 ///   콘솔 출력 코드페이지가 UTF-8 이 아니던 때의 것**이다 (한국어 Windows 는 CP949 →
-///   non-ASCII 가 재인코딩되며 부풀고 조각이 잘게 쪼개졌다). `944957a` 로 고친 뒤 재측정하니
+///   non-ASCII 가 재인코딩되며 부풀고 조각이 잘게 쪼개졌다). `d6471e0` 로 고친 뒤 재측정하니
 ///   `cjk` +1.41 % · `readloop` 595 회로, `plain` +1.25 % · `ansi` +0.98 % 와 같은 수준이다.
 ///   ASCII 는 코드페이지에 불변이라 그때도 `plain` · `ansi` 만 정상이던 것이 이 설명과 맞는다.
 fn expectedPtyBytes(opts: Options) ?u64 {

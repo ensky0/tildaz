@@ -10,7 +10,7 @@ const std = @import("std");
 /// 문제는 그 index 에서 config 말고도 이름이 파생된다는 것이다 — 창 타이틀, Wayland
 /// app_id, 로그 파일. 그 이름들이 worker 와 같으면 worker 를 찾는 쪽 (Windows 의
 /// `FindWindowW`, GNOME · Cinnamon extension) 이 측정 창을 집고, 로그도 사용자 세션과
-/// 섞여 진단이 어려워진다. e5c7857 이 Windows 창 타이틀 하나만 분리했다가 Linux 두 곳이
+/// 섞여 진단이 어려워진다. cb9a1e1 이 Windows 창 타이틀 하나만 분리했다가 Linux 두 곳이
 /// 남은 것이 그 증거다.
 ///
 /// 그래서 "무엇인가" 를 index 옆에 따로 둔다. 이름을 만드는 함수는 index 가 아니라 이

@@ -725,7 +725,7 @@ pub const D3d11Renderer = struct {
         // 창의 Alt+Enter 를 자체 hook 으로 감지해 exclusive fullscreen 전환을
         // 시도한다 (WndProc 가 메시지를 소비해도 무관). tildaz 는 Alt+Enter 를
         // 자체 fullscreen 토글로 쓰므로 이중 처리 — layered+BitBlt 시절엔
-        // 전환이 조용히 실패해 숨어 있다가, flip-model 활성화(7ef7302) 후
+        // 전환이 조용히 실패해 숨어 있다가, flip-model 활성화(910738e) 후
         // 실제 발동해 화면 하단이 검게 덮이는 실기 증상으로 드러남 (창 rect
         // 는 정상인데 taskbar 영역만 검정 + 클릭은 통과 — DXGI FS 전환의
         // 전형). NO_WINDOW_CHANGES 로 감시 자체를 끈다. (composition swap

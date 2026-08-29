@@ -350,7 +350,7 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 통과**했어요 ([#397](https://github.com/ensky0/tildaz/issues/397)). 봐야 할 것은 읽은 양과 **소화한**
 양의 차이예요.
 
-세 platform 실측이에요 (`HOLD` 없이, 고침은 [a131250](https://github.com/ensky0/tildaz/commit/a131250)).
+세 platform 실측이에요 (`HOLD` 없이, 고침은 [4a99cfd](https://github.com/ensky0/tildaz/commit/4a99cfd)).
 
 | platform · 머신 | 고침 전 손실 | 고침 후 |
 |---|---|---|
@@ -546,7 +546,7 @@ Intel i5-1240P · `--repeat 5` · 배경 정리).
 > ⚠️ **예전 문서의 "`cjk` 만 +25.6 %, ConPTY 가 wide char 에서 시퀀스를 끼워 넣는다" 는 틀렸어요.**
 > 그 측정은 **producer 의 콘솔 출력 코드페이지가 UTF-8 이 아니던 때**의 것이에요 (한국어 Windows
 > 는 CP949 → non-ASCII 가 재인코딩되며 부풀고 조각이 잘게 쪼개져 `readloop` 이 6,922 회까지
-> 뛰었어요). [`944957a`](https://github.com/ensky0/tildaz/commit/944957a) 로 고친 뒤 재측정하니
+> 뛰었어요). [`d6471e0`](https://github.com/ensky0/tildaz/commit/d6471e0) 로 고친 뒤 재측정하니
 > `cjk` +1.41 % · `readloop` 595 회예요. ASCII 는 코드페이지에 불변이라 그때도 `plain` · `ansi` 만
 > 정상이던 것이 이 설명과 맞아요.
 
@@ -1158,7 +1158,7 @@ Linux 에는 그 게이트가 없어요 — 메인 루프가 iteration
 (배율 100 %) · D3D `render_path=hardware` 였어요. (`hygiene_status` 는 같은 패널을 `refresh=59Hz`
 로 보고해요 — Windows API 두 곳의 반올림 차이이고 결론에 영향이 없어요.)
 
-**대조군은 `git stash` 가 아니라 부모 커밋 (`ed0a167`) 을 detach 해서 빌드했어요** — 이 세션에서는
+**대조군은 `git stash` 가 아니라 부모 커밋 (`ed1a19e`) 을 detach 해서 빌드했어요** — 이 세션에서는
 fix 가 이미 커밋돼 있어 stash 로는 빠지지 않거든요. 나머지는 macOS 회차와 같아요 (같은 세션 ·
 같은 빌드 옵션 · `hygiene_begin`).
 
@@ -1767,7 +1767,7 @@ CP949). 스크립트가 만드는 `capture.ps1` 은 UTF-8 이라 한글 주석�
 `run_terminal_win` 은 `run_terminal` 을 **서브셸** `( … )` 안에서 불러요 (환경변수를 이 실행에만
 걸려고요). 그래서 그 안에서 올린 셸 변수는 밖에 안 남아요 — alacritty · wezterm · wt 의 회차가
 요약 집계에서 통째로 빠져 **다섯 대상이 전부 `!` 인데 "2 회차가 안 찍혔어요"** 로 나왔어요
-(212ec07 에서 표시를 넷으로 나눌 때부터 있던 버그예요). 지금은 회차마다 결과를 파일에 한 줄씩
+(3d0c4d4 에서 표시를 넷으로 나눌 때부터 있던 버그예요). 지금은 회차마다 결과를 파일에 한 줄씩
 적고 끝에서 세요.
 
 ### Windows 에서 돌리기

@@ -17,7 +17,7 @@
 # 부트스트랩 1 회 실패 — **이미 지나갔다. 지금은 해당 없다.**
 #
 # 서명 기록 파일 (signatures/version1/cla.json) 이 없는 상태의 첫 회차는 action 이
-# 그 파일을 만들어 커밋하고 (e6851ca) 그 회차 자체는 실패한다 — allowlist 에 있는
+# 그 파일을 만들어 커밋하고 (474ce37) 그 회차 자체는 실패한다 — allowlist 에 있는
 # 사용자여도 "Committers of pull request N have to sign the CLA" 로 죽는다. PR #487
 # 에서 실제로 겪었다 (첫 회차 FAILURE → 재실행 success).
 #
