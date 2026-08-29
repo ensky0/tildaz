@@ -1040,9 +1040,9 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 36 개 (#483 의 pane 12 개 + #544 의 `close_pane` 포함) + prev_tab / next_tab 이
-    // 2 개씩 = 38.
-    try std.testing.expectEqual(@as(usize, 38), count);
+    // 액션 38 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
+    // `split_left` · `split_up` 포함) + prev_tab / next_tab 이 2 개씩 = 40.
+    try std.testing.expectEqual(@as(usize, 40), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1883,8 +1883,10 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
         // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
         // 글자라 안 쓴다. `alt+cmd+방향키` 는 시스템 기본에 없다.
-        .split_vertical => &.{"alt+cmd+right"},
-        .split_horizontal => &.{"alt+cmd+down"},
+        .split_left => &.{"alt+cmd+left"},
+        .split_right => &.{"alt+cmd+right"},
+        .split_up => &.{"alt+cmd+up"},
+        .split_down => &.{"alt+cmd+down"},
         .focus_pane_left => &.{"cmd+left"},
         .focus_pane_right => &.{"cmd+right"},
         .focus_pane_up => &.{"cmd+up"},
@@ -1934,8 +1936,10 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
         // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
         // 않으므로 피했다.
-        .split_vertical => &.{"ctrl+shift+right"},
-        .split_horizontal => &.{"ctrl+shift+down"},
+        .split_left => &.{"ctrl+shift+left"},
+        .split_right => &.{"ctrl+shift+right"},
+        .split_up => &.{"ctrl+shift+up"},
+        .split_down => &.{"ctrl+shift+down"},
         .focus_pane_left => &.{"alt+left"},
         .focus_pane_right => &.{"alt+right"},
         .focus_pane_up => &.{"alt+up"},
@@ -1995,7 +1999,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
-        .{ .title = "Panes", .actions = &.{ .split_vertical, .split_horizontal, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane, .close_pane } },
+        .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane, .close_pane } },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -2048,12 +2052,32 @@ pub const KeyAction = enum {
     dump_perf,
     // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
     // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
-    /// 2026-08-27 결정 — 분할은 둘: `split_vertical` 은 세로 분할선 (좌우, 새 pane **오른쪽**),
-    /// `split_horizontal` 은 가로 분할선 (위아래, 새 pane **아래**) — iTerm2 · Windows Terminal 의 낱말 뜻과
-    /// 같다 (tmux · WezTerm 은 반대). 포커스는 새 pane 으로 (tmux · iTerm2 · WT · Ghostty · vim 모두 그렇다).
-    /// 왼쪽 · 위로 가르는 액션은 어느 터미널에도 기본에 없어 뺐다.
-    split_vertical,
-    split_horizontal,
+    /// 2026-08-27 결정 — 활성 pane 을 반씩 가르고 포커스는 새 pane 으로 간다
+    /// (tmux · iTerm2 · Windows Terminal · Ghostty · vim 모두 그렇다).
+    ///
+    /// 2026-08-29 결정 ① — `split_left` · `split_up` 을 더해 네 방향을 다 연다. 처음에는 "왼쪽 · 위로
+    /// 가르는 액션은 어느 터미널에도 기본에 없다" 를 이유로 뺐고 그 사실은 지금도 맞지만 (ghostty 는
+    /// `SplitDirection` 에 `left` · `up` 이 있어도 기본 바인딩은 `right` · `down` 뿐이다), 셋을 근거로
+    /// 뒤집었다. (1) `[keys]` 는 양방향 strict 라 **액션을 더하는 것 자체가 기존 config 의 부팅을
+    /// 막는다** — v0.9.3 이 이미 그 대가를 치르므로 지금 넣으면 추가 비용이 0 이고, 나중에 넣으면 같은
+    /// 기능 영역으로 두 번째 강제 초기화가 된다. (2) 바로 아래 `defaultBindings` 가 "수식키가 동사,
+    /// 방향키가 방향" 인데 focus · resize 는 화살표 넷, split 만 둘이라 `Ctrl+Shift+←` 가 조용히 아무
+    /// 일도 하지 않았다. (3) `Ctrl+Shift+→` · `↓` 를 이미 PTY 에서 가져갔으므로 `←` · `↑` 은 새로운
+    /// 종류의 손해가 아니다.
+    ///
+    /// 왼쪽 · 위는 오른쪽 · 아래와 *모양*이 같고 **새 pane (포커스가 가는 쪽) 이 분할 노드의 first 냐
+    /// second 냐**만 다르다 — `pane_layout.Direction.towardSecond()` 가 그 한 줄이다.
+    ///
+    /// 2026-08-29 결정 ② — 이름을 방향으로 바꾼다 (`split_vertical` → `split_right`,
+    /// `split_horizontal` → `split_down`). `vertical` / `horizontal` 은 **tmux 와 iTerm2 가 정반대 뜻으로**
+    /// 쓰는 낱말이라 (앞의 결정 주석이 그것을 적어 두고 있었다) 어느 쪽을 따르든 절반은 헷갈린다.
+    /// 방향 이름은 그 모호함이 없고, `focus_pane_*` · `resize_pane_*` 와 낱말이 같아진다. 순서도 그
+    /// 셋과 같은 `left · right · up · down` 으로 맞춘다. 릴리즈된 버전에 옛 이름이 없어 (v0.9.3 은 아직
+    /// 태그 전) 이 개명은 사용자 config 에 영향이 없다.
+    split_left,
+    split_right,
+    split_up,
+    split_down,
     focus_pane_left,
     focus_pane_right,
     focus_pane_up,
@@ -2203,8 +2227,10 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
-        .split_vertical => .{ .input = .{ .shortcut = .split }, .direction = .right },
-        .split_horizontal => .{ .input = .{ .shortcut = .split }, .direction = .down },
+        .split_left => .{ .input = .{ .shortcut = .split }, .direction = .left },
+        .split_right => .{ .input = .{ .shortcut = .split }, .direction = .right },
+        .split_up => .{ .input = .{ .shortcut = .split }, .direction = .up },
+        .split_down => .{ .input = .{ .shortcut = .split }, .direction = .down },
         .focus_pane_left => .{ .input = .{ .shortcut = .focus_pane }, .direction = .left },
         .focus_pane_right => .{ .input = .{ .shortcut = .focus_pane }, .direction = .right },
         .focus_pane_up => .{ .input = .{ .shortcut = .focus_pane }, .direction = .up },

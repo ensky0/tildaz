@@ -6579,7 +6579,7 @@ const Client = struct {
             // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
             // 진입점 (마우스 · 전역 핫키) 이 처리한다.
             .toggle_visibility, .open_command_menu, .open_shortcuts => {},
-            // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_vertical` → `.right`).
+            // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
             .split => self.handleSplit(direction orelse return),
             .focus_pane => self.handleFocusPane(direction orelse return),
             .resize_pane => self.handleResizePane(direction orelse return),
@@ -6598,8 +6598,8 @@ const Client = struct {
             },
             .new_tab => self.handleNewTab(),
             // #483 4c — 메뉴의 분할 항목 (마우스 경로).
-            .split_vertical => self.handleSplit(.right),
-            .split_horizontal => self.handleSplit(.down),
+            .split_right => self.handleSplit(.right),
+            .split_down => self.handleSplit(.down),
             .close_active_tab => self.handleCloseTab(),
             .copy_selection => self.copyActiveSelection(),
             .paste => self.requestPaste(),
