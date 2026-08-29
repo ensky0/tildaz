@@ -830,10 +830,14 @@ freetype · harfbuzz 를 전부 `dlopen` 하고 나머지 import 는 순수 모�
 
 ```sh
 cp <scratchpad>/probe.zig src/probe.zig          # 상대 import 가 맞아야 해서 src/ 아래에 둬요
-zig run src/probe.zig -lc -O ReleaseSafe          # Debug 는 이 머신에서 .sframe 링커 에러
+zig run src/probe.zig -lc -O ReleaseSafe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
 rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 clean 확인
 ```
 
+- **`-O ReleaseSafe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
+  타겟에 LLVM/LLD 를 강제하니 `zig build` · `zig build test` 는 Debug 로도 링크돼요. `zig run` 은
+  그 강제 밖이라 self-hosted 링커가 GCC16 의 `crt1.o:.sframe` 에서 죽어요 ([#232](https://github.com/ensky0/tildaz/issues/232)).
+  upstream 픽스는 Zig 0.17.0 에 실려요 — 그때 이 한 줄도 같이 없어져요.
 - chain 은 **실기 config 와 같게** 만들어요 — `Context.init(alloc, &.{"DejaVu Sans Mono",
   "Noto Sans CJK KR", "Noto Color Emoji"}, 20, 1.0, 1.1)`. 기본값 (`config.zig` 의 `Defaults`) 과
   같은 값이에요.
@@ -1127,7 +1131,7 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 - Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
-- 단위 테스트: `zig build test` (이 머신에서 debug `.sframe` 링커 에러 나면 `-Doptimize=ReleaseSafe`).
+- 단위 테스트: `zig build test`.
 - 순수 모듈만 빠르게: `zig test src/<module>.zig` (ghostty 의존성 없는 모듈 한정, 예: `src/scrollbar.zig`).
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
