@@ -16,10 +16,10 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.8.0 — Text finally looks the way your shell asked for it.**
-> Underlines, strikethrough, overline, blink, and real italic and bold faces
-> now render, a new tab opens in the active tab's directory, and emoji- and
-> CJK-heavy output draws far faster.
+> **v0.9.3 — Tabs can be split into panes.**
+> Split a tab left/right or top/bottom, move the focus and the split line with
+> the keyboard, zoom one pane to the whole tab, or drag the line between two
+> panes. Every pane runs its own shell.
 
 ## Who is TildaZ for?
 
@@ -42,7 +42,7 @@ you do not.
 - **Familiar config everywhere.** Config paths differ by platform, but the schema, themes, hotkey, font, shell, opacity, and geometry settings stay familiar.
 - **Wayland coverage that matters.** KDE Plasma, GNOME, Cinnamon, COSMIC, Hyprland, and sway all get a real drop-down and global hotkey path.
 - **Native where it counts.** No Electron, no GTK or Qt runtime dependency — direct Wayland on Linux, GPU rendering on all three, and the fast `libghostty-vt` core.
-- **Pretty TUIs, serious text.** Tabs, themes, true color, ligatures, color emoji, full CJK, procedural box-drawing, smooth shaded blocks, and inline IME for Korean / Japanese / Chinese.
+- **Pretty TUIs, serious text.** Tabs, split panes, themes, true color, ligatures, color emoji, full CJK, procedural box-drawing, smooth shaded blocks, and inline IME for Korean / Japanese / Chinese.
 - **Personal, not nosy.** No telemetry, no analytics, no auto-update phone-home — only local config and logs.
 
 ## See it render
