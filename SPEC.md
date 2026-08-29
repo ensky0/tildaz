@@ -625,7 +625,7 @@ Windows 실측).
 
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 영어/숫자/기호 길게 누름 → 반복 입력 | OS default | `ApplePressAndHoldEnabled = false` 우리 앱 도메인에 등록 — 안 등록하면 system 이 accent picker (à á â) 띄우려 repeat 막음 | client-side timer (compositor `wl_keyboard.repeat_info` 의 rate / delay 따름, [5455d54](https://github.com/ensky0/tildaz/commit/5455d54), L12-γ-5). focus 떠날 때 / key release 시 즉시 disarm | ✅ | ✅ | ✅ |
+| 영어/숫자/기호 길게 누름 → 반복 입력 | OS default | `ApplePressAndHoldEnabled = false` 우리 앱 도메인에 등록 — 안 등록하면 system 이 accent picker (à á â) 띄우려 repeat 막음 | client-side timer (compositor `wl_keyboard.repeat_info` 의 rate / delay 따름, [5455d54](https://github.com/ensky0/tildaz/commit/5455d54), L12-γ-5). focus 떠날 때 / key release 시 즉시 disarm. 반복을 내보내기 전에 입력 큐를 한 번 비워, 오래 걸린 핸들러 (pane 마다 500 ms 유예가 쌓이는 탭 닫기 등) 동안 도착한 release 를 먼저 반영한다 — 그래서 *이미 뗀 키* 로 반복이 나가지 않는다 ([#546](https://github.com/ensky0/tildaz/issues/546)) | ✅ | ✅ | ✅ |
 | 한글 자모 길게 누름 → 반복 입력 | (해당 없음) | IME 경로라 PressAndHold 영향 없음 (자동) | `wl_keyboard.key` 가 IME 로 라우팅됨 — fcitx5 / ibus 자체 key repeat 동작 (compositor `repeat_info` 가 IME 측에 적용). 사용자 일상 사용 OK 확인 (Cinnamon Wayland + fcitx5-hangul, KDE Plasma 6 + KWin). | — | ✅ | ✅ |
 
 ### 2.8 전체화면 토글 (윈도우 단위)

@@ -6214,6 +6214,12 @@ const Client = struct {
             self.key_repeat_next_ms = self.rt.nowMs() + @as(i64, self.key_repeat_delay_ms);
         } else if (state == 0 and self.key_repeat_keycode == key) {
             // released — same key disarm.
+            //
+            // #546 — 이 disarm 이 `maybeRepeatKey` 의 스테일 발동 방어의 전제다. 그 함수가
+            // 발동 전에 큐를 비우는 목적이 *여기서* disarm 이 걸리게 하는 것이라서,
+            // #538 이 release 를 `processKeyEvent` 로 흘리려고 아래 조기 반환을 없앨 때도
+            // 이 disarm 은 그 자리에 그대로 남아야 한다. 옮기거나 순서를 바꾸면 `Ctrl+Shift+W`
+            // 한 번에 탭 둘이 닫히는 증상이 조용히 되돌아온다.
             self.key_repeat_keycode = 0;
         }
         if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
@@ -6223,13 +6229,61 @@ const Client = struct {
     /// L12-γ-5 — main loop 의 매 iteration 에서 repeat timer 검사. timer 가
     /// arm 되어 있고 (`key_repeat_keycode != 0`) 현재 시간이 next_ms 넘으면
     /// `processKeyEvent` 를 simulated `repeated` state 로 재호출.
+    ///
+    /// #546 — 발동 전에 소켓 큐를 한 번 비운다. 반복을 내보내는 근거는 *키가 아직
+    /// 눌려 있다* 는 것인데, 그 근거는 우리가 마지막으로 읽은 이벤트까지만 유효하다.
+    /// 오래 걸린 핸들러 (탭을 닫으면 pane 마다 `Pty.deinit` 의 500 ms 유예가 직렬로
+    /// 쌓인다 — `terminal/posix/pty.zig`) 동안 도착한 release 는 아직 큐에 있어서,
+    /// 그대로 발동하면 **이미 뗀 키로** 반복이 한 번 더 나간다. `Ctrl+Shift+W` 한 번이
+    /// 탭 둘을 닫은 것이 그 결과였다 (2 pane 탭 = 약 1 초 블록 > KDE 기본 반복 지연
+    /// 600 ms). 큐를 먼저 비우면 `handleKeyboardKey` 의 disarm 이 걸려 발동이 취소된다.
+    ///
+    /// 문턱 상수를 두지 않은 이유는 블록 시간이 pane 수 · 자식 프로그램에 따라 달라서
+    /// 어떤 값도 근거가 없기 때문이다. 대신 *사실을 다시 읽어* 판단한다.
+    ///
+    /// 비용은 타이머가 만료된 순간에만 든다 (평소에는 위 두 early return 에서 끝난다).
+    /// 재진입 안전 — 이 함수의 호출처 셋 (main loop · confirm pump · prompt pump) 이
+    /// 모두 `pollAndDispatch` 가 *반환한 뒤* 라, #213 의 `dispatchBuffered` 중첩이 아니다.
     fn maybeRepeatKey(self: *Client) !void {
         if (self.key_repeat_keycode == 0) return;
         if (self.key_repeat_rate_hz <= 0) return;
+        if (self.rt.nowMs() < self.key_repeat_next_ms) return;
+
+        // 밀린 입력을 먼저 반영한다. 오류는 삼킨다 — 이 드레인은 발동 여부를 가리기 위한
+        // 기회적 확인이고, 진짜 dispatch 경로는 루프 자신의 `pollAndDispatch` 라서 연결이
+        // 끊겼으면 다음 iteration 이 같은 오류를 제대로 올린다.
+        self.drainInputBeforeRepeat() catch {};
+
+        if (self.key_repeat_keycode == 0) return; // release 가 disarm 했다
+        if (self.key_repeat_rate_hz <= 0) return; // repeat_info 가 그 사이에 바뀌었다
+        // 드레인이 앱을 끝냈으면 (마지막 탭이 닫혔다 등) 단축키를 한 번 더 태우지 않는다.
+        if (!self.running or self.shell_exited.load(.acquire)) return;
+
         const now = self.rt.nowMs();
-        if (now < self.key_repeat_next_ms) return;
+        if (now < self.key_repeat_next_ms) return; // 새 press 가 arm 을 다시 잡았다
         try self.processKeyEvent(self.last_serial, self.key_repeat_keycode);
         self.key_repeat_next_ms = now + @divTrunc(1000, @as(i64, self.key_repeat_rate_hz));
+    }
+
+    /// #546 — 반복 발동 전에 wayland 입력을 논블로킹으로 한 번 비운다.
+    ///
+    /// `pollAndDispatch(0)` 을 쓰지 않는 이유는 그 함수가 buffer 에 partial message 가
+    /// 남아 있으면 **소켓을 아예 읽지 않고** 돌아오기 때문이다 (`input_len > 0` early
+    /// return). 이 자리가 봐야 하는 것은 *블록 동안 새로 도착한* release 라서 그 경로로는
+    /// 부족하다. `readAndDispatch` 는 받은 바이트를 `input_len` 뒤에 이어 붙이므로
+    /// partial message 도 이 호출로 완성된다.
+    ///
+    /// `readAndDispatch` 는 EAGAIN 을 `n == 0` 으로 받아 `WaylandConnectionClosed` 로
+    /// 올리므로, **poll 로 읽을 것이 있음을 확인한 뒤에만** 부른다.
+    fn drainInputBeforeRepeat(self: *Client) !void {
+        if (self.input_len > 0) try self.dispatchBuffered();
+        var fds = [_]posix.pollfd{.{
+            .fd = self.wayland_fd,
+            .events = posix.POLL.IN,
+            .revents = 0,
+        }};
+        if (try posix.poll(&fds, 0) == 0) return;
+        if ((fds[0].revents & posix.POLL.IN) != 0) try self.readAndDispatch();
     }
 
     /// L12-γ-5 — keyboard.key 의 실제 처리 (byte parsing 분리 후). pressed /
