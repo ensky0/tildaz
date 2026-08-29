@@ -773,22 +773,29 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo 👋🏻👋🏼👋🏽👋🏾👋🏿 && echo 👨‍👩‍👧👨‍👨‍👦‍👦 && echo ABCDEFG abcdefg 0123456789 && echo 한글 ABC 가나다라마바사 && echo ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏ && echo ▐░▒▓▔▕ && echo.
 ```
 
-# 측정 인스턴스 (`-e`) 에는 창 안 단축키가 없어요
+# `config_N.toml` 이 없는 실행에는 창 안 단축키가 하나도 없어요
 
-`-e <셸경로>` 로 띄운 측정 인스턴스는 **`Ctrl+Shift+T` · `Ctrl+Shift+W` · `Cmd+T` 같은 창 안
-단축키가 하나도 안 먹어요.** 세 platform 공통이고, 버그가 아니라 두 규칙이 맞물린 결과예요.
+**조건은 `-e` 가 아니라 "그 회차가 뜰 때 config 파일이 없었다" 예요.** `Ctrl+Shift+T` ·
+`Ctrl+Shift+W` · `Cmd+T` 같은 창 안 단축키가 **0 개**인 채로 돌아요. 세 platform 공통이고,
+버그가 아니라 두 규칙이 맞물린 결과예요.
 
-- 측정 인스턴스는 **일부러 config 를 만들지 않아요** ([#382](https://github.com/ensky0/tildaz/issues/382)
-  — *"측정이 사용자 설정을 만드는 주체가 되면 안 된다"*). `config.zig` 의 `Config.load` 주석에
-  적혀 있어요.
-- 그런데 **config 파일이 없는 경로가 `[keys]` 를 채우지 않아요.** `Config.load` 는 파일이 없으면
+- **config 파일이 없는 경로가 `[keys]` 를 채우지 않아요.** `Config.load` 는 파일이 없으면
   `defaultOwned` 로 가는데 그 함수가 `key_bindings` · `key_binding_count` 를 건드리지 않아서
   `Config{}` 의 기본값 `key_binding_count = 0` 이 그대로 남아요. 바인딩을 채우는 것은 `parse`
   안의 루프뿐이고, 그 안의 `defaultBindings(action)` fallback 도 **파일을 파싱하는 경로에만**
   있어요.
+- **측정 인스턴스 (`-e`) 가 대표 사례일 뿐이에요.** 그쪽은 *일부러* config 를 만들지 않아서
+  ([#382](https://github.com/ensky0/tildaz/issues/382) — *"측정이 사용자 설정을 만드는 주체가 되면
+  안 된다"*, `config.zig` 의 `Config.load` 주석) 매번 걸려요.
 
-그래서 그 기계에 `config_N.toml` 이 **없으면** 단축키가 0 개인 채로 돌아요. 있으면 정상이에요 —
-`-e` 가 config 를 *읽는* 것은 막지 않아요.
+**⚠️ `-e` 없이 새 인스턴스를 처음 띄우는 회차도 그대로 걸려요.** 앱이 파일을 *만들기는* 하지만
+**그 회차의 메모리 config 는 이미 빈 채**예요. 그래서 **한 번 띄웠다 내리고 다시 띄우면** 그때부터
+정상이에요. 2026-08-29 [#483](https://github.com/ensky0/tildaz/issues/483) macOS 회차에서 이것으로
+걸렸어요 — `⌘T` 조차 안 먹는데 문자 키 (`h` → `ㅗ`) 는 정상이라 포커스 문제도 아니어서 한참 갈랐어요.
+그 전까지 이 절의 제목이 `-e` 로 좁혀져 있어서 해당 없다고 읽혔던 것이 원인이에요.
+
+**그래서 단축키를 쓰는 검증은 config 를 먼저 만들어 두고 시작해요** (아래 `# 실행 환경` 의 `--instance 9`
+절차). 파일이 있으면 `-e` 여도 정상이에요 — `-e` 가 config 를 *읽는* 것은 막지 않아요.
 
 **합성 입력 문제로 오진하기 쉬워요.** 2026-08-26 [#506](https://github.com/ensky0/tildaz/issues/506)
 Windows 검증에서 VK-only · VK+scancode · scancode-only 세 방식으로 `SendInput` 을 보내도
@@ -877,7 +884,7 @@ tildaz --instance 1 -e <zig-out/bin/render-test> -size 88x33 &
   그래서 출력할 내용을 담은 **스크립트 파일**을 만들어 넘겨요. 스크립트 끝에 `sleep` 을 둬야
   창이 남아요 (`-e` 로 띄운 프로세스가 끝나면 앱도 끝나요).
 - **`--instance 1` 을 써요.** 평소 쓰는 daily 인스턴스 (`--instance 0`) 를 건드리지 않아요.
-- **단축키는 안 먹어요** — 위 `# 측정 인스턴스 (-e) 에는 창 안 단축키가 없어요` 절. 탭을
+- **단축키는 안 먹어요** — 위 `# config_N.toml 이 없는 실행에는 창 안 단축키가 하나도 없어요` 절. 탭을
   만들거나 닫아야 하면 컨트롤 스트립의 `+` / `×` 를 클릭해요.
 - 입력은 **`printf` 로 UTF-8 byte 를 직접** 내요 — 편집기 · 클립보드가 cluster 를 정규화해
   버리는 것을 피해요.
