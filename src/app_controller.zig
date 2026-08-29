@@ -866,6 +866,14 @@ pub const App = struct {
         self.createTab() catch {};
     }
 
+    /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (마지막이면 탭, 마지막 탭이면
+    /// `window.closeAfterShellExit`). 사후 처리는 `handleCloseActiveTab` 과 같다.
+    pub fn handleClosePane(self: *App) void {
+        if (tab_actions.closeActivePane(&self.host) == .changed) {
+            self.syncGeometryAfterTabCountChange();
+        }
+    }
+
     pub fn handleCloseActiveTab(self: *App) void {
         // closeActive helper 가 마지막 탭 → terminate (`window.closeAfterShellExit`),
         // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
@@ -1403,6 +1411,7 @@ pub const App = struct {
             .resize_pane => .resize_pane,
             .equalize_panes => .equalize_panes,
             .zoom_pane => .zoom_pane,
+            .close_pane => .close_pane,
         };
     }
 
@@ -1591,6 +1600,11 @@ pub const App = struct {
                     },
                     .zoom_pane => {
                         self.handleZoomPane();
+                        return true;
+                    },
+                    // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).
+                    .close_pane => {
+                        self.handleClosePane();
                         return true;
                     },
                 }
