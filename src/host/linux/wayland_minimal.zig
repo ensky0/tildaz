@@ -1420,7 +1420,8 @@ const Client = struct {
     pending_commit: std.ArrayList(u8) = .empty,
     preedit_text: std.ArrayList(u8) = .empty,
     // L10-γ — 마지막으로 server 에 알린 cursor rect (pixel, surface-relative).
-    // paint 끝마다 비교해 변경 시만 set_cursor_rectangle + commit 보내 spam 회피.
+    // #535 — `redraw` 가 paint 를 마친 뒤 비교해 변경 시만 set_cursor_rectangle +
+    // commit 보내 spam 회피 (그리기 경로마다가 아니라 프레임마다 한 번).
     last_cursor_rect_x: i32 = -1,
     last_cursor_rect_y: i32 = -1,
     last_cursor_rect_w: i32 = 0,
@@ -3579,6 +3580,20 @@ const Client = struct {
             perf.addTimed(&perf.onrender, onrender_t0);
             if (!painted_frame) perf.incExtra(&perf.onrender);
         }
+        // #535 — IME cursor rectangle 은 **paint 를 마친 뒤 여기서 한 번** 보낸다.
+        // 예전엔 `paintBuffer` 안에 있었는데, #277 이 GL 분기를 `paintIntoBuffer` 에
+        // 만들면서 그 분기가 `paintBuffer` 를 지나치게 됐다. 기본 경로 (`gpu-gl`) 에서만
+        // rect 가 `enableTextInput` 때 보낸 값 (활성 pane 의 격자 원점) 에 멈춰, 한자
+        // 후보창이 cursor 를 안 따라왔다. 경로가 또 갈려도 프레임 부수 효과가 떨어지지
+        // 않도록 세 경로 (GL · dma-buf CPU 매핑 · shm) 의 공통 상위에 둔다.
+        //
+        // **paint 뒤여야 한다.** rect 가 읽는 `render_state.cursor.viewport` 를 채우는
+        // 것이 paint 자신이라 (`buildGlFrame` · `paint` 의 `state.update`), 앞에 두면
+        // 한 프레임 낡은 자리를 보낸다. `painted_frame` 게이트 — 그리지 못한 frame 은
+        // 보낼 새 값이 없다. error 는 main loop 를 멈추지 않게 swallow.
+        defer {
+            if (painted_frame) self.updateCursorRectangle() catch {};
+        }
         // L9-γ hide / show — layer-shell spec 의 re-map sequence 준수:
         // 1. hide path 가 `surface_hidden=true` set → 어떤 attach 도 skip.
         // 2. show path 가 `surface_hidden=false` + `configured=false` + commit
@@ -4737,10 +4752,6 @@ const Client = struct {
                 var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
                 const in = self.frameInputs(session, width, height, &titles_storage, &hotkey_hint_buf, &pane_storage, &sep_storage);
                 self.renderer.paint(self.allocator, memory, stride, in);
-                // L10-γ — cursor 위치가 변했으면 server 에 알린다. fcitx5
-                // popover (한자 후보, 확장 candidate window 등) 가 우리 cursor
-                // 근처에 정렬되도록. error 는 main loop 멈추지 않게 swallow.
-                self.updateCursorRectangle() catch {};
                 return;
             }
         }

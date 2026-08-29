@@ -38,3 +38,6 @@ Internal changes belong in neither.
 - Alt combinations now reach the program on non-Latin keyboard layouts too — `Alt+n` sends
   `ESC n` on a Russian layout or a Korean input source instead of the layout's own letter.
   ([#483](https://github.com/ensky0/tildaz/issues/483))
+- On Linux, the IME candidate window for Hanja, Kanji and Hanzi follows the terminal cursor
+  again on the default GPU render path, instead of staying pinned to the corner of the pane.
+  ([#535](https://github.com/ensky0/tildaz/issues/535))
