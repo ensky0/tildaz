@@ -51,7 +51,7 @@ platforms.
 
 ## Quit confirmation
 
-Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count, plus the pane count in parentheses when any tab is split (a single tab can hold up to 16 panes, so the tab count alone does not say how many shells close). Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
 
 Everything in the table above except the scrollback row can be rebound in
 `config_N.toml` — see the `[keys]` section in [CONFIG.md](CONFIG.md). Scrolling

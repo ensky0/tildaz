@@ -61,6 +61,13 @@ pub const shortcut_open_config_macos = "Shift+Cmd+P";
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
 pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
+/// #483 — 탭 하나가 pane 을 여럿 담을 수 있게 되면서 (`pane_layout.MAX_PANES_PER_TAB` = 16)
+/// 위 문구만으로는 **사라지는 셸 수를 알 수 없다** (1 탭 · 16 pane 도 "1 open tab" 이었다 —
+/// 2026-08-29 Windows 실기). 분할이 있을 때만 이 문구를 쓰고, pane 수 = 탭 수 (아무 탭도 안
+/// 갈라짐) 면 위 문구를 그대로 써서 분할을 안 쓰는 사용자에게 낯선 낱말을 안 보인다.
+/// pane 수가 탭 수보다 크면 pane 은 반드시 둘 이상이라 복수형 처리가 필요 없다.
+pub const quit_confirm_panes_format = "This will close {d} open tab{s} ({d} panes).";
+
 /// 새 탭 한도 도달 시 (`session_core.MAX_TABS`). `+` 버튼은 비활성 색 + noop
 /// (#329 — 회색이 곧 피드백) 이지만 단축키 (Cmd+T / Ctrl+Shift+T) 는 시각
 /// 피드백이 없어 이 dialog 로 안내. {d} 는 한도 (현재 32).

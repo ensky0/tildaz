@@ -280,7 +280,7 @@ fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
     const n = g_session.count();
     if (n == 0) return NSTerminateNow;
     var msg_buf: [256]u8 = undefined;
-    const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return NSTerminateNow;
+    const msg = dialog.quitConfirmMessage(&msg_buf, n, g_session.totalPaneCount()) orelse return NSTerminateNow;
     return if (dialog.showConfirm(g_rt, messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
 }
 
@@ -3454,8 +3454,11 @@ fn focusPaneUnderPointer(x: f32, y: f32) bool {
 /// 분할선 드래그를 놓았다 — 여기서 한 번만 트리에 적용 + 격자 (PTY resize 한 번, 확정 설계 축 2).
 fn finishSeparatorDrag(d: SepDrag) void {
     if (g_renderer == null) return;
-    if (g_session.setSeparatorPx(d.node, d.px, paneAreaMac(), paneMetricsMac())) {
-        log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, if (d.axis == .side_by_side) "x" else "y", d.px });
+    const axis = if (d.axis == .side_by_side) "x" else "y";
+    if (g_session.setSeparatorPx(d.node, d.px, paneAreaMac(), paneMetricsMac())) |placed| {
+        log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+    } else {
+        log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
     }
     afterPaneLayoutChange();
 }
@@ -4401,7 +4404,7 @@ fn renderFrameTick() void {
     var ghost: ?pane_layout.Rect = null;
     if (g_sep_drag) |d| {
         var trial = group.tree;
-        if (trial.setSeparatorPx(d.node, d.px, area, m)) {
+        if (trial.setSeparatorPx(d.node, d.px, area, m) != null) {
             var gbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
             for (pane_layout.separators(&trial, area, m, &gbuf)) |s| {
                 if (s.node == d.node) ghost = s.rect;

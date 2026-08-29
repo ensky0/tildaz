@@ -62,18 +62,33 @@ const impl = switch (builtin.os.tag) {
 /// #282 G8 — 종료 확인 메시지 조립. 탭 수 복수형 계산 + `quit_confirm_format`
 /// 조립을 host 별 복제 대신 한 곳에 (n==0 skip 은 호출처 정책이라 여기 안 둠).
 /// 반환 null = bufPrint 실패 → 호출처가 안전 종료로 판단.
-pub fn quitConfirmMessage(buf: []u8, tab_count: usize) ?[]const u8 {
+///
+/// #483 — `pane_count` 가 `tab_count` 보다 크면 (= 어느 탭이 갈려 있으면) pane 수를 괄호로 덧붙인다.
+/// 같으면 예전 문구 그대로다 — 분할을 안 쓰는 사용자에게 낯선 낱말을 보이지 않기 위해서다.
+pub fn quitConfirmMessage(buf: []u8, tab_count: usize, pane_count: usize) ?[]const u8 {
     const plural: []const u8 = if (tab_count == 1) "" else "s";
+    if (pane_count > tab_count) {
+        return std.fmt.bufPrint(buf, messages.quit_confirm_panes_format, .{ tab_count, plural, pane_count }) catch null;
+    }
     return std.fmt.bufPrint(buf, messages.quit_confirm_format, .{ tab_count, plural }) catch null;
 }
 
 test "quit confirm message handles singular plural and small buffers" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("This will close 1 open tab.", quitConfirmMessage(&buf, 1).?);
-    try std.testing.expectEqualStrings("This will close 2 open tabs.", quitConfirmMessage(&buf, 2).?);
+    try std.testing.expectEqualStrings("This will close 1 open tab.", quitConfirmMessage(&buf, 1, 1).?);
+    try std.testing.expectEqualStrings("This will close 2 open tabs.", quitConfirmMessage(&buf, 2, 2).?);
 
     var too_small: [1]u8 = undefined;
-    try std.testing.expect(quitConfirmMessage(&too_small, 2) == null);
+    try std.testing.expect(quitConfirmMessage(&too_small, 2, 2) == null);
+}
+
+test "#483 quit confirm names the panes only when a tab is actually split" {
+    var buf: [64]u8 = undefined;
+    // 갈린 탭이 있으면 사라지는 셸 수를 괄호로 — 탭 수만 적으면 1 탭 · 16 pane 도 "1 open tab" 이었다.
+    try std.testing.expectEqualStrings("This will close 1 open tab (6 panes).", quitConfirmMessage(&buf, 1, 6).?);
+    try std.testing.expectEqualStrings("This will close 2 open tabs (5 panes).", quitConfirmMessage(&buf, 2, 5).?);
+    // 아무 탭도 안 갈렸으면 예전 문구 그대로.
+    try std.testing.expectEqualStrings("This will close 3 open tabs.", quitConfirmMessage(&buf, 3, 3).?);
 }
 
 pub fn showInfo(rt: Runtime, title: []const u8, message: []const u8) void {

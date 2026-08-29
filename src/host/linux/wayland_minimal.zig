@@ -4662,7 +4662,7 @@ const Client = struct {
         var ghost: ?pane_layout.Rect = null;
         if (self.sep_drag) |d| {
             var trial = group.tree;
-            if (trial.setSeparatorPx(d.node, d.px, area, m)) {
+            if (trial.setSeparatorPx(d.node, d.px, area, m) != null) {
                 var gbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
                 for (pane_layout.separators(&trial, area, m, &gbuf)) |s| {
                     if (s.node == d.node) ghost = s.rect;
@@ -5613,8 +5613,11 @@ const Client = struct {
     /// 최소 크기 아래 자리면 아무 일도 없다 — 고스트도 그 자리에는 안 그려졌다.
     fn finishSeparatorDrag(self: *Client, d: SepDrag) void {
         const session = if (self.session) |*s| s else return;
-        if (session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) {
-            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, if (d.axis == .side_by_side) "x" else "y", d.px });
+        const axis = if (d.axis == .side_by_side) "x" else "y";
+        if (session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) |placed| {
+            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+        } else {
+            log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
         }
         self.needs_redraw = true;
     }
@@ -8660,9 +8663,10 @@ const Client = struct {
             self.running = false;
             return;
         }
+        const panes: usize = if (self.session) |*session| session.totalPaneCount() else 0;
 
         var msg_buf: [256]u8 = undefined;
-        const msg = dialog_mod.quitConfirmMessage(&msg_buf, n) orelse {
+        const msg = dialog_mod.quitConfirmMessage(&msg_buf, n, panes) orelse {
             self.running = false;
             return;
         };
