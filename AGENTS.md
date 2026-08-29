@@ -310,6 +310,49 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 못 해요. 진짜로 method / type 자체가 OS 별로 다를 때만 그 부분을 분리해요. 적용 예:
 `config.zig` 의 `Defaults`.
 
+# 새 단축키 기본값 고르기 — 형식 규칙
+
+기본 바인딩을 새로 더할 때 형식을 즉흥적으로 고르지 않아요. 2026-08-29 [#544](https://github.com/ensky0/tildaz/issues/544) 에서 `close_pane` 을 더하며 **현재 기본값을 전수로 읽어 규칙을 뽑았어요** — 출처는 [`config.zig`](src/config.zig) 의 macOS · Linux/Windows 두 기본값 목록이에요. 이 절이 없어서 그때 `⌘D` · `⌘X` 를 놓고 논의가 처음부터 다시 돌았어요.
+
+## 글자 키 — platform 마다 대역이 다르다
+
+| | 대역 | 실제 글자 |
+|---|---|---|
+| **Linux · Windows** | `Ctrl+Shift+<글자>` **하나** | `C` `I` `L` `P` `R` `T` `V` `W` `Z` |
+| **macOS** | `⌘<글자>` = **OS 전역 표준만** | `T` (새 탭) · `W` (닫기) · `C` (복사) · `V` (붙여넣기) · `Q` (종료) |
+| | `⇧⌘<글자>` = **우리가 고른 글자 전부** | `I` (about) · `L` (log) · `P` (config) · `R` (reset) · `Z` (zoom) |
+
+- Linux · Windows 가 한 대역인 이유는 `Ctrl+<글자>` 가 **터미널의 제어문자**라서예요 (`Ctrl+C` = SIGINT). 그래서 앱 chrome 은 관례적으로 전부 `Ctrl+Shift+` 예요.
+- **macOS 는 두 대역을 섞지 않아요.** 자체로 고른 글자를 `⌘<글자>` 에 두면 그게 **유일한 예외**가 되고, 그 자리는 대개 OS 가 이미 쓰는 자리예요. 실측으로 *자체 선택 글자가 `⌘<글자>` 에 있는 경우는 0 건*이에요.
+
+## 글자가 아닌 키 — 일차 동작과 그 변형을 `Shift` 로 짝지운다
+
+| 동작 | macOS | Linux · Windows |
+|---|---|---|
+| 전체화면 / 작업영역 전체화면 | `⌘↵` / `⇧⌘↵` | `Alt+↵` / `Shift+Alt+↵` |
+| pane 포커스 / pane 크기 | `⌘←→↑↓` / `⇧⌘←→↑↓` | `Alt+←→↑↓` / `Shift+Alt+←→↑↓` |
+| 탭 전환 | `⌘1`–`⌘9` | `Alt+1`–`Alt+9` |
+| pane 균등 | `⇧⌘0` | `Shift+Alt+0` |
+| 분할 | `⌥⌘→` `⌥⌘↓` | `Ctrl+Shift+→` `Ctrl+Shift+↓` |
+
+- 분할이 `⌃⌘방향` 이 아닌 이유는 macOS 의 Mission Control (`⌃↑` `⌃↓`) 과 부딪혀서고, Linux 에서 `Ctrl+Alt+방향` 을 피한 이유는 GNOME 이 workspace 전환 · 이동에 쓰기 때문이에요 (둘 다 `config.zig` 주석에 근거가 있어요).
+- 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에는 **`PgUp` / `PgDn` 을 함께** 둬요 — AZERTY 에서 bracket 이 `AltGr+5` 라 못 눌러요 ([#482](https://github.com/ensky0/tildaz/issues/482)).
+
+## 글자를 고르는 세 기준
+
+1. **세 platform 이 같은 글자.** 지금 글자 바인딩 전부가 그래요 — 예외 0 건. 최대화는 세 platform 다 `Z`, 닫기는 다 `W` 예요. 글자를 platform 마다 다르게 두지 않아요.
+2. **선례에서 고르고, 뜻 없는 글자는 안 써요.** `Z` (최대화) 는 WezTerm `Ctrl+Shift+Z` 선례이고, `X` (pane 닫기 — [#544](https://github.com/ensky0/tildaz/issues/544) 에서 이 규칙으로 정한 것) 는 tmux `prefix + x` = kill pane 선례 + 앱의 `×` 글리프예요. `⌘D` 는 **"뜻이 없는 글자"** 로 기각했어요 (`config.zig` 의 #483 주석) — 게다가 iTerm2 · Terminal.app 이 `D` 를 **분할** 에 써서 *반대 동작*이 연상돼요.
+3. **OS 전역 표준 자리를 빼앗지 않아요.** 되돌릴 수 없는 동작에 근육기억이 걸리면 특히요 — `⌘X` (잘라내기) 를 pane 닫기로 쓰지 않은 이유예요.
+
+**고르기 전에 두 목록을 grep 해 충돌을 확인해요.** 네 조합이 다 비어 있는 것을 본 뒤에 정해요.
+
+```sh
+awk '/new_tab => &\.\{"cmd\+t"\}/,/^    \}/' src/config.zig            # macOS 기본값
+awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux · Windows 기본값
+```
+
+**액션을 더하면 config 스키마가 바뀌어요.** `[keys]` 는 strict 라 필수 키가 하나 늘고, 기존 `config_N.toml` 은 `missing required key "<액션>"` 으로 **부팅이 막혀요.** 그래서 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
+
 # 커밋 메시지
 
 `Co-Authored-By` 트레일러 (Claude / AI tool 등) 는 **절대 넣지 않아요**.
