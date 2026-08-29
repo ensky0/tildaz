@@ -13,7 +13,7 @@ is not US QWERTY.
 | Fullscreen (cover taskbar/dock) | Alt+Enter | Cmd+Enter | Alt+Enter |
 | Fullscreen (keep taskbar/dock visible) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
-| Close active pane (the tab, when it is the last pane) | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
+| Close active tab (every pane in it) | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
 | Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
 | Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
@@ -23,6 +23,7 @@ is not US QWERTY.
 | Move the split line next to the active pane by one cell (stops at the minimum pane size; only the panes touching that line change) | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
 | Equalize the panes — every row or column of panes shares its space evenly | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
 | Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
+| Close active pane (the tab, when it is the last pane) | Ctrl+Shift+X | Shift+Cmd+X | Ctrl+Shift+X |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -51,7 +52,7 @@ platforms.
 
 ## Quit confirmation
 
-Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count, plus the pane count in parentheses when any tab is split (a single tab can hold up to 16 panes, so the tab count alone does not say how many shells close). Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count, plus the pane count in parentheses when any tab is split (a single tab can hold up to 16 panes, so the tab count alone does not say how many shells close). Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent. Ctrl+Shift+X / Shift+Cmd+X on the last pane of the last tab is the same explicit intent and closes instantly too.
 
 Everything in the table above except the scrollback row can be rebound in
 `config_N.toml` — see the `[keys]` section in [CONFIG.md](CONFIG.md). Scrolling
@@ -115,6 +116,7 @@ a shortcut pinned to a spot regardless of layout:
 [keys]
 new_tab        = ["ctrl+shift+[KeyT]"]
 close_tab      = ["ctrl+shift+[KeyW]"]
+close_pane     = ["ctrl+shift+[KeyX]"]
 copy_selection = ["ctrl+shift+[KeyC]"]
 paste          = ["ctrl+shift+[KeyV]"]
 prev_tab       = ["ctrl+shift+[BracketLeft]", "ctrl+pageup"]
@@ -379,9 +381,12 @@ and the line stops where a pane would fall below 20×5 cells instead of refusing
 drag; the one-cell keyboard resize follows the same rules. The `…` menu has *Split
 Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the active
 pane instead of opening a tab (to the right if the pane is wider than it is tall,
-otherwise below). Ctrl+Shift+W closes the active pane — the neighbour that shared
-the split takes its place — and closes the tab when the pane is the last one; a
-shell exiting inside a pane does the same. A split is refused with a dialog when
+otherwise below). Ctrl+Shift+W closes the whole tab, every pane in it — the
+action, the `×` button and the `…` menu entry all mean the tab. To close a single
+pane, use Ctrl+Shift+X (Shift+Cmd+X on macOS): the neighbour that shared the split
+takes its place, and the tab closes when the pane is the last one. A shell exiting
+inside a pane does the same, so typing `exit` closes just that pane. There is no
+mouse control for closing a pane. A split is refused with a dialog when
 the two halves would be too small along the direction it divides — narrower than
 20 columns for a vertical split, shorter than 5 rows for a horizontal one — as is
 the 17th pane. The other direction is not checked, because the split does not

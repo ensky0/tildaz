@@ -5536,6 +5536,40 @@ const Client = struct {
         }
     }
 
+    /// #544 — 마우스 chrome 의 `×` 가 부르는 자리. **탭바의 `×` 와 단일 탭 컨트롤 스트립의 `×`
+    /// 가 같은 함수를 타게** 둔다 — 예전에는 전자가 `closeIndex(activeIndex())`, 후자가
+    /// `handleCloseTab` 이라 helper 가 갈렸고, #483 이 그 helper 하나만 pane 닫기로 바꾸는
+    /// 순간 **같은 버튼이 탭 수에 따라 다른 것을 닫았다.** `handleCloseTab` (단축키) 과 결과는
+    /// 같지만, 두 `×` 가 한 자리를 공유한다는 사실을 코드로 남기려고 따로 둔다.
+    fn closeActiveTabFromChrome(self: *Client) void {
+        if (self.session == null) return;
+        self.leaveShell();
+        var host = self.buildTabActionsHost();
+        const outcome = tab_actions.closeIndex(&host, self.session.?.activeIndex());
+        // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
+        if (outcome == .changed) {
+            self.ensureSessionGrid() catch |err| {
+                log.appendLine("tab", "ensureSessionGrid after close 'x' failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
+    /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (pane 이 마지막이면 탭, 마지막 탭이면 앱
+    /// 종료 — `tab_actions.closeActivePane` 이 정책을 든다). 셸에 `exit` 를 치는 것과 결과가
+    /// 같다 (`closeTabByPtr` 와 같은 규칙). `handleCloseTab` 은 탭 통째로다.
+    fn handleClosePane(self: *Client) void {
+        if (self.session == null) return;
+        self.leaveShell();
+        var host = self.buildTabActionsHost();
+        const outcome = tab_actions.closeActivePane(&host);
+        // 남은 pane 이 자리를 이어받으므로 격자를 맞춘다 (2 → 1 탭 전환도 같은 경로).
+        if (outcome == .changed) {
+            self.ensureSessionGrid() catch |err| {
+                log.appendLine("pane", "ensureSessionGrid after close pane failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
     /// #483 4b — 활성 pane 을 `dir` 쪽으로 가른다. 새 pane 은 새 셸이라 `handleNewTab` 과 같은 셸
     /// 존재 확인 (#248) 을 거친다. 거부 (`TooSmall` · `TooManyPanes`) 는 단축키에 시각 피드백이 없으므로
     /// 탭 한도와 같은 dialog 로 안내한다 (확정 설계 §② "거부 + 안내"). 격자는 `splitActive` 가 맞춘다.
@@ -5735,17 +5769,7 @@ const Client = struct {
             // 없음 — 비활성 overflow 화살표와 같은 관례).
             .plus => if (layout.plus_enabled) self.handlePlusClick(),
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
-            .close => {
-                self.leaveShell();
-                var host = self.buildTabActionsHost();
-                const outcome = tab_actions.closeIndex(&host, session.activeIndex());
-                // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
-                if (outcome == .changed) {
-                    self.ensureSessionGrid() catch |err| {
-                        log.appendLine("tab", "ensureSessionGrid after close 'x' failed: {s}", .{@errorName(err)});
-                    };
-                }
-            },
+            .close => self.closeActiveTabFromChrome(),
             .more => {
                 self.commitPendingInput();
                 self.command_menu_open = !self.command_menu_open;
@@ -6507,6 +6531,8 @@ const Client = struct {
             .resize_pane => self.handleResizePane(direction orelse return),
             .equalize_panes => self.handleEqualizePanes(),
             .zoom_pane => self.handleZoomPane(),
+            // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
+            .close_pane => self.handleClosePane(),
         }
     }
 
@@ -6927,7 +6953,9 @@ const Client = struct {
                         },
                         .close => {
                             tab.interaction.cancelPointerModes();
-                            self.handleCloseTab();
+                            // #544 — 탭바의 `×` 와 같은 자리를 탄다 (예전에는 `handleCloseTab` 을
+                            // 타서 #483 이후 이 경로만 pane 을 닫았다).
+                            self.closeActiveTabFromChrome();
                             return;
                         },
                         .more => {
