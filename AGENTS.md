@@ -599,13 +599,19 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 
 **GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
 
-**함정 열 — 앞의 넷은 스크립트가 이미 피하고, 뒤의 여섯은 손으로 잴 때 걸려요.**
+**함정 — 앞의 넷은 스크립트가 이미 피하고, 나머지는 손으로 잴 때 걸려요.**
 
 - **`XDG_CURRENT_DESKTOP` 이 비면 등록 경로를 통째로 건너뛰어요.** tty · ssh 셸에는 대개 없고, 그러면 로그가 `de=(unset)` 이 되며 아무 데도 등록하지 않아요 — "등록이 안 된다" 로 오해하기 쉬워요.
 - **config 를 만들려고 그냥 띄우면 기본값 `F1` 이 사용자의 instance 0 과 충돌해요.** 그 충돌 다이얼로그는 **모달이라 부팅을 막고** 로그가 빈 채로 남아요. `env -u XDG_CURRENT_DESKTOP` 으로 한 번 띄워 config 만 만든 뒤 hotkey 를 바꿔요. **`config_N.toml` 을 손으로 쓸 때는 `[keys]` 를 빼먹지 않아요** — 없으면 `missing required key "keys"` 로 같은 모달이 떠서 똑같이 부팅이 막혀요. `config_0.toml` 을 복사해 `hotkey` · `shell` · `auto_start` 만 바꾸는 게 안전해요.
 - **`pkill -f 'instance 9'` 는 자기 명령줄을 매치해 셸을 죽여요** (그 문자열이 명령에도 들어 있어서요). `pgrep -x tildaz` 로 좁히고 `/proc/PID/cmdline` 에서 인자를 확인해요. 검증용으로 붙인 이름표 문자열 (`tildaz-530` 같은 임시 경로 · 태그) 도 똑같이 걸려요 — [#530](https://github.com/ensky0/tildaz/issues/530) 정리 단계에서 `pkill -f "tildaz-530"` 으로 셸이 죽었어요. **`pgrep -af <이름표>` 도 자기 명령줄을 매치해요** (KDE 회차에서 걸렸어요). `pgrep -x` 로 PID 를 뽑아 `kill <pid>` 해요.
 - **layout 전환은 창을 띄우지 않고 해요.** Wayland 의 group 전환은 *포커스한 client* 에게만 가므로, 창을 띄우면 그 경로로 통과해 버려 D-Bus 통지 경로 (#496 1-c 의 ③) 가 검증되지 않아요.
 - **uinput 으로 가상 키보드를 새로 꽂으면 keymap 이 잠깐 바뀌어요.** cosmic-comp 실측에서 장치를 만든 직후 client 가 받은 keymap 이 `grave` → `twosuperior` 로 두 번 왔고, 그 사이에 키를 보내면 **발동하지 않아 거짓 실패**가 나요. 장치를 만든 뒤 **5 초쯤 두고** 눌러요 (`SETTLE`).
+- **⚠️ `ydotool mousemove -a` (절대좌표) 는 조용히 아무 일도 하지 않아요.** `ydotoold` 가 만드는 가상 장치는 `EV=7` (SYN · KEY · REL) 로 **`ABS` 축이 없어서** 절대좌표 이벤트가 그대로 버려져요 — 오류도 로그도 없고 `ydotool` 은 성공을 반환해요 (`/proc/bus/input/devices` 의 `B: EV=` 와 `capabilities/abs` 로 확인). 클릭이 안 먹는 것을 **좌표 계산 실수로 오인해** 시간을 씁니다. 상대 이동 (`ydotool mousemove` 기본) 과 키 (`ydotool key`) 는 정상이에요.
+
+    포인터를 특정 자리에 놓아야 하면 **절대좌표 장치를 따로 만들어요** — `ABS_X` · `ABS_Y` (0..32767) + `BTN_LEFT` + `INPUT_PROP_POINTER` 로, QEMU USB 태블릿과 같은 모양이에요. 그러면 libinput 이 그 범위를 output 전체에 선형 매핑해서 **화면 물리 px 과 1:1** 이 돼요 ([#536](https://github.com/ensky0/tildaz/issues/536) 실측 — 계산한 컨트롤 스트립 좌표와 캡처가 정확히 일치). 장치는 **한 번만 꽂고** FIFO 등으로 명령을 받아요 (명령마다 add/remove 하면 위 항목의 keymap 흔들림을 매번 겪어요).
+
+    - 상대 이동으로 버티려 하면 **포인터 가속에 왜곡돼요.** KDE 에서는 그 장치의 가속을 D-Bus 로 끌 수 있어요 (`org.kde.KWin.InputDevice` 의 `pointerAccelerationProfileFlat`) — 다만 그건 `kcminputrc` 에 `[Libinput][…][ydotoold virtual device]` 섹션으로 **남으니 끝나면 지워요.**
+    - **좌표는 클릭 전에 hover 로 검증해요.** 메뉴 항목은 `menu_hover_bg` 가 있어서 캡처 한 장으로 어느 줄에 닿았는지 확정돼요. 컨트롤 스트립 (`+` · `×` · `⋯`) 은 hover 가 캡처에 안 잡힐 수 있어, 커서를 포함해 찍고 (`spectacle -p`) 커서 끝 위치로 봐요.
 - **`fcitx5` 같은 text-input-v3 IME 가 떠 있으면 키가 앱의 xkb 경로로 오지 않아요.** IME 가 가로채 **자기 구현으로 조합한 뒤 commit** 하므로, 재고 있는 것이 앱 코드가 아니에요. **`fcitx5-remote -c` 로 영문 모드로 바꿔도 경로에서 빠지지 않아요** (fcitx5 에도 자체 Compose 가 있어요). 결과가 우연히 같아 보이는 케이스가 많아 눈치채기 어려워요 — [#494](https://github.com/ensky0/tildaz/issues/494) dead key 검증에서 이 때문에 세 케이스가 거짓 FAIL 로 나왔고, `pkill -x fcitx5` 뒤 전부 통과했어요 (끝나면 `setsid nohup fcitx5 -d &` 로 되돌려요). 판정은 앱 로그의 **`text_input preedit` · `text_input commit` 줄 개수**예요 — 케이스 구간에서 **0 이어야** 앱 자신의 경로를 잰 것이에요. IME 공존 자체를 보는 케이스는 반대로 띄운 채 재고, *조합 주체가 누구인지* 를 결과에 같이 적어요. **입력기에 따라 갈려요** — fcitx5 의 키보드 IM (`keyboard-us` · `keyboard-fr`) 은 fcitx5 가 조합하고, `hangul` 은 조합 중이던 한글을 확정한 뒤 **키를 앱으로 넘겨요** ([#530](https://github.com/ensky0/tildaz/issues/530) COSMIC · KDE 회차). 그 `text_input preedit/commit` 줄은 **`TILDAZ_VERBOSE=1` 게이트**라, verbose 없이 띄운 회차의 "0 줄" 은 IME 부재의 증거가 아니라 그냥 로그가 없는 거예요 — 조합 주체를 갈라야 하면 verbose 로 띄워요 (`dead-key-compose-check.sh` 는 켜 줘요). 그리고 **fcitx5 는 종료할 때 `~/.config/fcitx5/profile` 을 자기 메모리 상태로 덮어써요** — 켜진 채 파일을 고치고 나중에 내리면 편집이 되돌아가요. 순서는 내리기 → 고치기 → 띄우기, 복구도 같아요.
 - **`xkbcli interactive-wayland` 는 포커스를 훔치고 안 돌려줘요.** 그 자체가 Wayland client 라, 측정 중에 띄우면 tildaz 의 **layer-shell 표면으로 포커스가 돌아오지 않아** 이후 케이스가 전부 "바이트 없음" 이 돼요 (dead key 가 아니라 평범한 문자 키까지요). 받은 keymap 을 밖에서 확인하는 데는 좋은 도구지만 **tildaz 를 띄우기 전에만** 써요. 띄운 뒤에는 앱 로그의 `keyboard keymap loaded … layouts=[…]` 와 **인앱 가드 키**로 확인해요 — `KEY_Q` 는 fr 에서 `a`, us 에서 `q` 라 한 키로 layout 이 되돌아갔는지 케이스마다 갈려요. 이미 걸렸으면 `tildaz --toggle 9` 두 번으로 회복돼요. **`xkbcli dump-keymap-wayland` 는 안 훔쳐요** — 붙자마자 keymap 을 뱉고 끝나서 tildaz 를 띄운 채로도 안전해요 (KDE 회차 실측). 배열 관련 케이스는 **재기 전에 이걸로 그룹별 기대값을 먼저 뽑아 둬요** — `key <AE02>` 의 `symbols[2]` 가 `[eacute, 2, asciitilde, oneeighth]` 처럼 나오니, 무엇이 나와야 맞는지를 측정 전에 확정할 수 있어요. 기대값 없이 재면 결과를 보고 나서 해석하게 돼 거짓 판정이 섞여요 ([#483 KDE 회차](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149)).
 - **실기 전에 유휴 잠금을 막아요** — `systemd-inhibit --what=idle:sleep --mode=block sleep infinity &` 를 먼저 걸고, 끝나면 그 PID 를 `kill` 해요. "기기를 건드리지 말아 달라" 는 부탁이 세션을 유휴로 만들어 **KDE 잠금 화면이 떴고 주입한 키가 암호 입력란으로 들어갔어요** ([#530 KDE 회차](https://github.com/ensky0/tildaz/issues/530#issuecomment-5434640115)). layout 이 fr 인 채로 잠기면 사용자가 암호를 제대로 못 치니 해제 전에 `setLayout 0` 으로 되돌려요. 자동 잠금 설정 자체 (`kscreenlockerrc`) 는 건드리지 않아요.
@@ -614,6 +620,20 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 - **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
+
+**⚠️ 그런데 fcitx5 를 되살리면 그 배열이 사라져요.** fcitx5 가 뜰 때 자기 group 의 `Default Layout`
+(`~/.config/fcitx5/profile`, 한국어 사용자는 보통 `us`) 으로 **KDE 의 배열 목록을 덮어써요** —
+`kxkbrc` 의 `LayoutList=us,fr` 가 `LayoutList=us` 로 되고 `setLayout 1` 이 `false` 를 반환해요.
+그래서 "fcitx5 내림 → 배열 추가 → 측정 → fcitx5 되살림" 을 하면 **사용자가 GUI 로 추가한 배열이
+매번 날아가요.** 2026-08-29 [#536](https://github.com/ensky0/tildaz/issues/536) 실기에서 두 번
+재현됐고, 사용자가 두 번 다시 추가해야 했어요.
+
+- **되살리기 전에 미리 알려요.** 배열은 되돌릴 방법이 없어요 (`kxkbrc` 를 손으로 고쳐도 KWin 이
+  재시작 전까지 안 읽는다는 위 항목과 같은 이유예요).
+- 한 회차에서 **여러 케이스를 몰아서** 재고 fcitx5 는 마지막에 한 번만 되살려요. 회차마다
+  내렸다 올리면 그만큼 사용자가 다시 추가해야 해요.
+- `pkill -x fcitx5` 뒤에도 **세션이 다시 띄우는 경우가 있어요** (D-Bus 활성화 · autostart).
+  측정 직전에 `pgrep -x fcitx5` 로 다시 확인해요.
 
 ```sh
 gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
