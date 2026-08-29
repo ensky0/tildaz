@@ -49,6 +49,8 @@ pub const Shortcut = union(enum) {
     resize_pane: pane_layout.Direction,
     equalize_panes: void,
     zoom_pane: void,
+    /// #544 — 활성 pane 하나 닫기. `close_active_tab` 은 탭 통째로다.
+    close_pane: void,
 };
 
 pub const KeyInput = enum {

@@ -1130,9 +1130,13 @@ pub const SessionCore = struct {
     }
 
     /// 활성 pane 을 닫는다 — 그룹에 pane 이 둘 이상이면 그 pane 만 (형제가 자리를 이어받고
-    /// 포커스는 맞닿아 있던 pane 으로), 마지막 하나면 탭을 닫는다 (확정 설계 §② 의 `close`
-    /// 규칙 — `closeTabByPtr` 의 PTY 종료 경로와 같다). 남은 pane 의 격자는 host 가
-    /// `applyLayouts` 로 맞춘다 — 창 크기와 metrics 는 host 가 안다.
+    /// 포커스는 맞닿아 있던 pane 으로), 마지막 하나면 탭을 닫는다. `closeTabByPtr` 의 PTY
+    /// 종료 경로와 같은 규칙이라, 셸에 `exit` 를 치는 것과 결과가 같다. 남은 pane 의 격자는
+    /// host 가 `applyLayouts` 로 맞춘다 — 창 크기와 metrics 는 host 가 안다.
+    ///
+    /// #544 — 이것을 부르는 것은 액션 `close_pane` (`Ctrl+Shift+X` / `Shift+Cmd+X`) 뿐이다.
+    /// `close_tab` 과 마우스 `×` · `⋯` 메뉴는 `closeTab` 으로 **탭 통째로** 닫는다. #483 이
+    /// 잠깐 그 둘을 이 함수로 보냈는데, 액션 이름 · 라벨 · SPEC 이 모두 "탭" 이라 되돌렸다.
     pub fn closeActivePane(self: *SessionCore) CloseResult {
         const group = self.activeGroup() orelse return .none;
         if (group.paneCount() > 1 and group.closePane(self.allocator, group.active_pane)) return .changed;

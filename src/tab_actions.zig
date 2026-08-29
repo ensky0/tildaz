@@ -114,10 +114,23 @@ pub fn resetActive(host: *Host) void {
 /// invalidate. 활성 탭 없으면 null.
 pub const CloseOutcome = enum { changed, ended };
 
-/// 활성 pane 닫기 — #483 확정 설계 §②: pane 이 여럿이면 그 pane 만, 마지막 하나면 탭.
-/// 마지막 탭이면 host.terminate 호출 (앱 종료). 아니면 override clear + invalidate.
-/// 호출처는 .changed 분기에서 grid resize 등 platform 동작.
+/// 활성 **탭** 닫기 — 그 탭의 pane 을 전부 닫는다. 마지막 탭이면 host.terminate 호출
+/// (앱 종료). 아니면 override clear + invalidate. 호출처는 .changed 분기에서 grid
+/// resize 등 platform 동작.
+///
+/// #544 — #483 이 이것을 `closeActivePane` 으로 바꿨다가 되돌렸다. 액션 이름 (`close_tab`) ·
+/// 메뉴 라벨 (`"Close Active Tab"`) · SPEC 두 줄이 모두 "탭" 인데 동작만 pane 이어서, 같은
+/// helper 를 쓰던 마우스 `×` 까지 함께 pane 을 닫고 있었다. pane 하나를 닫는 것은 아래
+/// `closeActivePane` (액션 `close_pane`) 이 맡는다.
 pub fn closeActive(host: *Host) ?CloseOutcome {
+    if (host.session.activeTab() == null) return null;
+    return outcome(host, host.session.closeTab(host.session.active_tab));
+}
+
+/// 활성 **pane** 닫기 (#544 의 새 액션 `close_pane`) — 그룹에 pane 이 둘 이상이면 그 pane 만
+/// (형제가 자리를 이어받는다), 마지막 하나면 탭, 마지막 탭이면 앱 종료. PTY 종료 경로
+/// (`closeByPtr`) 와 같은 규칙이라, 셸에 `exit` 를 치는 것과 결과가 같다.
+pub fn closeActivePane(host: *Host) ?CloseOutcome {
     if (host.session.activeTab() == null) return null;
     return outcome(host, host.session.closeActivePane());
 }
@@ -136,8 +149,8 @@ pub fn closeIndex(host: *Host, idx: usize) ?CloseOutcome {
     return outcome(host, host.session.closeTab(idx));
 }
 
-/// closeActive / closeByPtr 공통 사후 처리 — close 의 source 만 다르고 마지막
-/// 탭 정책 / override clear / invalidate 동일.
+/// closeActive / closeActivePane / closeByPtr / closeIndex 공통 사후 처리 — close 의
+/// source 만 다르고 마지막 탭 정책 / override clear / invalidate 동일.
 fn outcome(host: *Host, result: session_core.SessionCore.CloseResult) ?CloseOutcome {
     return switch (result) {
         .none => null,
@@ -172,4 +185,131 @@ pub fn copyActiveSelection(host: *Host, alloc: std.mem.Allocator) void {
 /// wrap 은 거기서 처리.
 pub fn routePaste(host: *Host, bytes: []const u8) void {
     host.session.pasteToActive(bytes);
+}
+
+// ── 테스트 ──────────────────────────────────────────────────────────────────
+//
+// #544 — 닫기 정책을 여기서 고정한다. `closeActive` (탭 통째로) 와 `closeActivePane`
+// (pane 하나) 은 **세 host 가 공유**하므로, 이 테스트가 macOS · Windows 의 동작까지
+// 함께 지킨다 — 그 두 platform 은 실기 검증을 Linux 기기에서 할 수 없고, 이 helper 의
+// 의미가 뒤바뀐 것이 #544 의 원인이었다 (#483 이 `closeActive` 를 pane 닫기로 바꾸면서
+// 액션 이름 · 메뉴 라벨 · SPEC 과 어긋났고, 같은 helper 를 쓰던 마우스 `×` 까지 딸려갔다).
+
+fn testCloseHost(session: *SessionCore, override: *bool) Host {
+    const Cb = struct {
+        fn invalidate(_: *Host) void {}
+        fn clip(_: *Host, _: [:0]const u8) void {}
+        fn term(h: *Host) void {
+            const n: *usize = @ptrCast(@alignCast(h.user_data.?));
+            n.* += 1;
+        }
+    };
+    return .{
+        .session = session,
+        .override_ptr = override,
+        .invalidate = Cb.invalidate,
+        .clipboard_copy = Cb.clip,
+        .terminate = Cb.term,
+        .user_data = null,
+    };
+}
+
+test "POSIX: #544 — closeActive 는 탭 통째로, closeActivePane 은 pane 하나" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const pane_layout = @import("pane_layout.zig");
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+
+    var session = SessionCore.init(
+        .{ .io = std.testing.io, .environ = .empty },
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    var override = true;
+    var terminated: usize = 0;
+    var host = testCloseHost(&session, &override);
+    host.user_data = &terminated;
+
+    // `pane_layout` 테스트와 같은 metrics — 탭바를 뺀 3052×1000 px 영역.
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+
+    // 탭 둘 · 활성 탭 (index 1) 을 2 pane 으로 가른다.
+    try session.createTab(80, 24);
+    try session.createTab(80, 24);
+    try session.splitActive(.right, rect, m);
+    try std.testing.expectEqual(@as(usize, 2), session.count());
+    try std.testing.expectEqual(@as(usize, 2), session.activeGroup().?.paneCount());
+
+    // `closeActive` = 활성 탭 통째로. pane 둘이 함께 사라지고 탭 수가 줄며, 남은 탭은
+    // 손대지 않는다 (`Ctrl+Shift+W` · `Cmd+W` · `×` · `⋯` 메뉴가 모두 이 경로다).
+    try std.testing.expectEqual(@as(?CloseOutcome, .changed), closeActive(&host));
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    try std.testing.expectEqual(@as(usize, 1), session.activeGroup().?.paneCount());
+    try std.testing.expectEqual(@as(usize, 0), terminated);
+
+    // 남은 탭을 다시 2 pane 으로 → `closeActivePane` 은 **그 pane 만** 닫는다 (`close_pane`).
+    try session.splitActive(.right, rect, m);
+    try std.testing.expectEqual(@as(usize, 2), session.activeGroup().?.paneCount());
+    try std.testing.expectEqual(@as(?CloseOutcome, .changed), closeActivePane(&host));
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    try std.testing.expectEqual(@as(usize, 1), session.activeGroup().?.paneCount());
+    try std.testing.expectEqual(@as(usize, 0), terminated);
+
+    // 마지막 pane 이면 탭, 마지막 탭이면 앱 종료 — `terminate` 콜백이 정확히 한 번.
+    try std.testing.expectEqual(@as(?CloseOutcome, .ended), closeActivePane(&host));
+    try std.testing.expectEqual(@as(usize, 0), session.count());
+    try std.testing.expectEqual(@as(usize, 1), terminated);
+
+    // 탭이 없으면 둘 다 null (호출처가 사후 처리를 건너뛴다).
+    try std.testing.expectEqual(@as(?CloseOutcome, null), closeActive(&host));
+    try std.testing.expectEqual(@as(?CloseOutcome, null), closeActivePane(&host));
+}
+
+test "POSIX: #544 — 마지막 탭의 closeActive 는 pane 이 여럿이어도 앱을 종료한다" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const pane_layout = @import("pane_layout.zig");
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+
+    var session = SessionCore.init(
+        .{ .io = std.testing.io, .environ = .empty },
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    var override = true;
+    var terminated: usize = 0;
+    var host = testCloseHost(&session, &override);
+    host.user_data = &terminated;
+
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+
+    try session.createTab(80, 24);
+    try session.splitActive(.right, rect, m);
+    try session.splitActive(.down, rect, m);
+    try std.testing.expectEqual(@as(usize, 1), session.count());
+    try std.testing.expectEqual(@as(usize, 3), session.activeGroup().?.paneCount());
+
+    // 실기에서 본 것과 같다 — 1 탭 · 다중 pane 에서 `Ctrl+Shift+W` 는 앱을 끝낸다.
+    // (#544 전에는 pane 하나만 닫히고 앱이 살아 있었다.)
+    try std.testing.expectEqual(@as(?CloseOutcome, .ended), closeActive(&host));
+    try std.testing.expectEqual(@as(usize, 0), session.count());
+    try std.testing.expectEqual(@as(usize, 1), terminated);
 }
