@@ -2782,8 +2782,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .toggle_visibility => toggleWindow(),
         .new_tab => handleNewTab(),
         // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-        .split_vertical => handleSplit(.right),
-        .split_horizontal => handleSplit(.down),
+        .split_right => handleSplit(.right),
+        .split_down => handleSplit(.down),
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
