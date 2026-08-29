@@ -388,8 +388,9 @@ test "final compositor surface size recomputes wrapping without viewport margin"
 test "current Linux dialog messages fit the 640x480 logical minimum" {
     const themes = @import("../../themes.zig");
 
+    // #483 — 가장 긴 종료 확인은 pane 을 함께 적는 쪽이고, 최악은 상한끼리 (`MAX_TABS` 32 × `MAX_PANES_PER_TAB` 16).
     var quit_buf: [128]u8 = undefined;
-    const quit_msg = try std.fmt.bufPrint(&quit_buf, messages.quit_confirm_format, .{ 32, "s" });
+    const quit_msg = try std.fmt.bufPrint(&quit_buf, messages.quit_confirm_panes_format, .{ 32, "s", 32 * 16 });
 
     var tab_limit_buf: [128]u8 = undefined;
     const tab_limit_msg = try std.fmt.bufPrint(&tab_limit_buf, messages.tab_limit_format, .{32});

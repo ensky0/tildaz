@@ -267,7 +267,7 @@ pub const Tree = struct {
         const step = cells * cell;
         const origin = if (along) node_rect.x else node_rect.y;
         // 드래그와 같은 경로 — clamp 와 "붙은 칸만" 규칙을 함께 얻는다.
-        return self.setSeparatorPx(split_idx, origin + g.first_px + (if (dir.towardSecond()) step else -step), rect, m);
+        return self.setSeparatorPx(split_idx, origin + g.first_px + (if (dir.towardSecond()) step else -step), rect, m) != null;
     }
 
     /// 분할 노드 `node` (`Separator.node`) 의 분할선을 분할 축 좌표 `px` 에 놓는다 — 드래그 (4c) 와 키 1셀
@@ -281,20 +281,24 @@ pub const Tree = struct {
     ///   붙은 칸이 변화를 흡수한다 (`keepFarFixed`). 다른 축의 분할 (위아래로 쌓인 칸) 은 둘 다 선의 이웃이라
     ///   같이 변하는 것이 맞다. 한계도 같은 규칙으로 잰다 (`minExtentKeepFar` — 먼 칸은 지금 크기 그대로).
     ///
-    /// 셀 경계 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다. 바뀐 것이 없으면
-    /// (이미 한계 · 같은 셀) false.
+    /// 셀 경계 스냅은 `splitGeometry` 가 하므로 드래그 중 고스트와 놓은 결과가 같은 자리다.
+    ///
+    /// **돌려주는 것은 놓인 자리** (분할 축의 절대 px) 이고, 바뀐 것이 없으면 (이미 한계 · 같은 셀) `null` 이다.
+    /// 인자 `px` 가 아니라 이 값을 로그에 적는다 — clamp 와 스냅이 걸리면 둘이 크게 다르고, 그때 인자를 적으면
+    /// **로그가 화면과 어긋난다** (2026-08-29 Windows 실기: `x=30` 으로 끈 드래그가 최소 크기에 걸려 `x=202` 에
+    /// 놓였는데 로그는 `to x 30` 이었다).
     ///
     /// 창이 줄어 **이미 최소 아래인 pane** 이 있으면 (drop-down 이 작은 모니터로 옮겨 가도 비율은 그대로다):
     /// 그 pane 의 한계는 지금 크기라 더 줄지는 않되 **키울 수는 있고**, 뒤의 검사도 "새로 최소 아래로 떨어지는
     /// pane 이 없다" (`noPaneNewlyBelowMin`) 다 — 탭 전체 ≥ 최소를 요구하면 작아진 pane 을 키우는 것까지 막힌다
     /// (2026-08-27 macOS 실기에서 `⇧⌘←` 가 아무 반응 없던 원인).
-    pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) bool {
-        if (node >= MAX_NODES or !self.alive[node]) return false;
-        if (self.nodes[node] != .split) return false;
-        const node_rect = self.rectOf(rect, m, node) orelse return false;
+    pub fn setSeparatorPx(self: *Tree, node: u8, px: i32, rect: Rect, m: Metrics) ?i32 {
+        if (node >= MAX_NODES or !self.alive[node]) return null;
+        if (self.nodes[node] != .split) return null;
+        const node_rect = self.rectOf(rect, m, node) orelse return null;
         const sp = self.nodes[node].split;
         const g = splitGeometry(self, node_rect, m, sp);
-        if (g.avail <= 0) return false;
+        if (g.avail <= 0) return null;
         const c = childRects(node_rect, sp, g);
         const along = sp.axis == .side_by_side;
         const origin = if (along) node_rect.x else node_rect.y;
@@ -303,7 +307,7 @@ pub const Tree = struct {
         const min_first = self.minExtentKeepFar(sp.first, sp.axis, m, c.first, .second);
         const min_second = self.minExtentKeepFar(sp.second, sp.axis, m, c.second, .first);
         const max_first = g.avail - min_second;
-        if (min_first > max_first) return false; // 이미 더 못 줄이는 배치
+        if (min_first > max_first) return null; // 이미 더 못 줄이는 배치
         const target = std.math.clamp(px - origin, min_first, max_first);
         // 스냅 뒤의 실제 위치 — 한계를 넘게 반올림됐으면 한 셀 안쪽으로.
         var trial = sp;
@@ -311,16 +315,16 @@ pub const Tree = struct {
         var new_first = splitGeometry(self, node_rect, m, trial).first_px;
         if (new_first < min_first) new_first += cell;
         if (new_first > max_first) new_first -= cell;
-        if (new_first == g.first_px or new_first < 0 or new_first > g.avail) return false;
+        if (new_first == g.first_px or new_first < 0 or new_first > g.avail) return null;
         const saved = self.*;
         self.nodes[node].split.ratio = ratioOf(new_first, g.avail);
         self.keepFarFixed(sp.first, sp.axis, m, c.first, .second, new_first);
         self.keepFarFixed(sp.second, sp.axis, m, c.second, .first, g.avail - new_first);
         if (!self.noPaneNewlyBelowMin(&saved, rect, m)) {
             self.* = saved;
-            return false;
+            return null;
         }
-        return true;
+        return origin + new_first;
     }
 
     /// 바뀐 뒤 어느 pane 도 **새로** 최소 아래로 떨어지지 않았는가 — 이미 작았던 pane (창이 줄어서) 은 그대로거나
@@ -1092,18 +1096,21 @@ test "#483 4c — 분할선 드래그: setSeparatorPx 는 셀 경계에 스냅�
     try std.testing.expect(separatorAt(seps, 1532, 500, 4) == null);
     try std.testing.expect(separatorAt(seps, 1527, 1000, 4) == null);
     // x = 1000 에 놓으면 앞 pane 은 round((1000 − 44) / 19) = 50 열 → 분할선 x = 994.
-    try std.testing.expect(tree.setSeparatorPx(seps[0].node, 1000, rect, m));
+    // **돌려주는 값은 인자가 아니라 놓인 자리다** — 스냅으로 6 px 어긋난다 (로그가 이 값을 적는다).
+    try std.testing.expectEqual(@as(?i32, 994), tree.setSeparatorPx(seps[0].node, 1000, rect, m));
     var buf: [MAX_PANES_PER_TAB]PaneRect = undefined;
     try std.testing.expectEqual(@as(u16, 50), find(layout(&tree, rect, m, &buf), 0).?.cols);
     try std.testing.expectEqual(@as(i32, 994), separators(&tree, rect, m, &sbuf)[0].rect.x);
     // 최소 크기 (20 열) 아래 자리는 거부하지 않고 **한계에서 멈춘다** (clamp, 2026-08-27 결정) — 앞 pane 20 열.
-    try std.testing.expect(tree.setSeparatorPx(seps[0].node, 100, rect, m));
+    // 인자 (100) 와 놓인 자리 (20 × 19 + 44 = 424) 가 324 px 다르다 — clamp 를 로그가 그대로 적으면 화면과 어긋난다.
+    try std.testing.expectEqual(@as(?i32, 424), tree.setSeparatorPx(seps[0].node, 100, rect, m));
     try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, rect, m, &buf), 0).?.cols);
+    try std.testing.expectEqual(@as(i32, 424), separators(&tree, rect, m, &sbuf)[0].rect.x);
     // 이미 한계면 바뀐 것이 없어 false.
-    try std.testing.expect(!tree.setSeparatorPx(seps[0].node, 50, rect, m));
+    try std.testing.expect(tree.setSeparatorPx(seps[0].node, 50, rect, m) == null);
     // leaf 노드 · 죽은 노드는 거부.
-    try std.testing.expect(!tree.setSeparatorPx(1, 1000, rect, m));
-    try std.testing.expect(!tree.setSeparatorPx(MAX_NODES - 1, 1000, rect, m));
+    try std.testing.expect(tree.setSeparatorPx(1, 1000, rect, m) == null);
+    try std.testing.expect(tree.setSeparatorPx(MAX_NODES - 1, 1000, rect, m) == null);
 }
 
 test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할의 먼 칸은 px 그대로, 한계도 먼 칸을 고정한 채 잰다" {
@@ -1121,7 +1128,7 @@ test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할�
     // A|B 선 (루트) 을 5 셀 오른쪽으로: A +5, **B −5, C 그대로** (예전엔 B · C 가 비례해 같이 줄었다).
     const root_sep = separators(&tree, rect, m, &sbuf)[0];
     try std.testing.expectEqual(@as(i32, 1526), root_sep.rect.x);
-    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 1526 + 5 * 19, rect, m));
+    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 1526 + 5 * 19, rect, m) != null);
     try std.testing.expectEqual(@as(u16, 83), find(layout(&tree, rect, m, &buf), 0).?.cols);
     try std.testing.expectEqual(@as(u16, 33), find(layout(&tree, rect, m, &buf), 1).?.cols);
     try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
@@ -1131,7 +1138,7 @@ test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할�
     try std.testing.expectEqual(@as(u16, 32), find(layout(&tree, rect, m, &buf), 1).?.cols);
     try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
     // 한계 — 멀리 끌어도 B 는 최소 20 열에서 멈추고 C 는 37 그대로: A = 158 − 20 − 37 … 셀 경계로 96.
-    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 3000, rect, m));
+    try std.testing.expect(tree.setSeparatorPx(root_sep.node, 3000, rect, m) != null);
     try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, rect, m, &buf), 1).?.cols);
     try std.testing.expectEqual(@as(u16, 37), find(layout(&tree, rect, m, &buf), 2).?.cols);
     try std.testing.expectEqual(@as(u16, 96), find(layout(&tree, rect, m, &buf), 0).?.cols);
@@ -1139,7 +1146,7 @@ test "#483 6단계 — 선에 붙은 칸만 변한다: 안쪽 같은-축 분할�
     tree.equalize(rect, m);
     const inner = separators(&tree, rect, m, &sbuf)[1];
     const a_before = find(layout(&tree, rect, m, &buf), 0).?.cols;
-    try std.testing.expect(tree.setSeparatorPx(inner.node, inner.rect.x - 3 * 19, rect, m));
+    try std.testing.expect(tree.setSeparatorPx(inner.node, inner.rect.x - 3 * 19, rect, m) != null);
     try std.testing.expectEqual(a_before, find(layout(&tree, rect, m, &buf), 0).?.cols);
 }
 
@@ -1191,7 +1198,7 @@ test "#483 6단계 — 창이 줄어 최소보다 작아진 pane 이 있어도: 
         root_x = s.rect.x;
     };
     try std.testing.expect(root_x > 0);
-    try std.testing.expect(!tree.setSeparatorPx(0, root_x + 19, shrunk, m));
+    try std.testing.expect(tree.setSeparatorPx(0, root_x + 19, shrunk, m) == null);
     // B|C 선을 오른쪽으로 (C 를 더 줄이기) 도 거부 — C 는 이미 최소 아래.
     try std.testing.expect(!tree.resize(1, .right, 1, shrunk, m));
     try std.testing.expectEqual(@as(u16, 20), find(layout(&tree, shrunk, m, &buf), 1).?.cols);

@@ -1204,13 +1204,16 @@ pub const SessionCore = struct {
     }
 
     /// #483 4c — 분할선 드래그를 놓았을 때: 분할 노드 `node` (`Separator.node`) 의 분할선을 `px` 에
-    /// (`pane_layout.Tree.setSeparatorPx`) 놓고 그룹 격자를 한 번 맞춘다. 최소 크기 아래면 false.
-    pub fn setSeparatorPx(self: *SessionCore, node: u8, px: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) bool {
-        const group = self.activeGroup() orelse return false;
-        if (!group.tree.setSeparatorPx(node, px, rect, m)) return false;
+    /// (`pane_layout.Tree.setSeparatorPx`) 놓고 그룹 격자를 한 번 맞춘다.
+    ///
+    /// **놓인 자리** (clamp · 셀 스냅 뒤의 절대 px) 를 돌려주고, 바뀐 것이 없으면 `null` 이다. host 의 로그가
+    /// 인자가 아니라 이 값을 적는다 (`Tree.setSeparatorPx` 주석의 근거).
+    pub fn setSeparatorPx(self: *SessionCore, node: u8, px: i32, rect: pane_layout.Rect, m: pane_layout.Metrics) ?i32 {
+        const group = self.activeGroup() orelse return null;
+        const placed = group.tree.setSeparatorPx(node, px, rect, m) orelse return null;
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         self.applyGroupLayout(group, group.layout(rect, m, &buf));
-        return true;
+        return placed;
     }
 
     /// #483 4b — 픽셀 아래의 pane (`pane_layout.paneAt`, 마우스 클릭 포커스). 분할선 위 · 영역 밖 ·
@@ -1258,6 +1261,14 @@ pub const SessionCore = struct {
 
     pub fn count(self: *const SessionCore) usize {
         return self.tabs.items.len;
+    }
+
+    /// #483 — 모든 탭의 pane 을 합한 수 = 지금 살아 있는 셸 수. 종료 확인이 "몇 개가 사라지는가" 를
+    /// 정확히 적으려면 탭 수 (`count`) 로는 모자란다 — 탭 하나가 pane 을 16 개까지 담는다.
+    pub fn totalPaneCount(self: *const SessionCore) usize {
+        var n: usize = 0;
+        for (self.tabs.items) |group| n += group.paneCount();
+        return n;
     }
 
     pub fn activeIndex(self: *const SessionCore) usize {
@@ -2014,11 +2025,11 @@ test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대�
     var sbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
     const seps = group.separators(rect, m, &sbuf);
     try std.testing.expectEqual(@as(usize, 1), seps.len);
-    try std.testing.expect(session.setSeparatorPx(seps[0].node, 1000, rect, m));
+    try std.testing.expect(session.setSeparatorPx(seps[0].node, 1000, rect, m) != null);
     try std.testing.expectEqual(@as(u16, 50), left.terminal.cols);
     try expectGridMatchesLayout(group, rect, m);
     // 최소 크기 아래 자리는 한계에서 멈춘다 (clamp) — 앞 pane 20 열.
-    try std.testing.expect(session.setSeparatorPx(seps[0].node, 100, rect, m));
+    try std.testing.expect(session.setSeparatorPx(seps[0].node, 100, rect, m) != null);
     try std.testing.expectEqual(@as(u16, 20), left.terminal.cols);
     try expectGridMatchesLayout(group, rect, m);
     session.equalizeActive(rect, m);
