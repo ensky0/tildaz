@@ -1308,6 +1308,8 @@ fn runKeyAction(action: config.KeyAction) bool {
         .resize_pane => handleResizePane(mapped.direction orelse return false),
         .equalize_panes => handleEqualizePanes(),
         .zoom_pane => handleZoomPane(),
+        // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
+        .close_pane => handleClosePane(),
     }
     return true;
 }
@@ -3473,6 +3475,16 @@ fn handleCloseActiveTab() void {
     // invalidate. mac 의 사후 처리는 .changed 일 때 syncTerminalGeometry 만 —
     // 2 → 1 전환에서 탭바 사라져 cell 영역 늘어나는 케이스 대응 (#127).
     if (tab_actions.closeActive(&g_host) == .changed) {
+        syncGeometryAfterTabCountChange();
+        afterPaneLayoutChange();
+    }
+}
+
+/// #544 — `Shift+Cmd+X` (`close_pane`). 활성 pane 하나를 닫는다 — 마지막 pane 이면 탭,
+/// 마지막 탭이면 앱 종료 (`tab_actions.closeActivePane` 이 정책을 든다). 사후 처리는
+/// `handleCloseActiveTab` 과 같다. `Cmd+W` 는 탭 통째로다.
+fn handleClosePane() void {
+    if (tab_actions.closeActivePane(&g_host) == .changed) {
         syncGeometryAfterTabCountChange();
         afterPaneLayoutChange();
     }
