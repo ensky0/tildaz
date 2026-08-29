@@ -362,6 +362,14 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 모든 commit author 는 사람으로 통일해요. 도구 사용 사실은 코드 / 이슈 본문
 / 댓글 등 다른 곳에 충분히 남아 있어요.
 
+**두 겹으로 막아 둬요.** 규칙만으로는 계속 새어 들어왔어요.
+
+- **로컬 훅** — `dist/hooks/commit-msg` 가 커밋이 *만들어지기 전에* 거부해요.
+  저장소마다 한 번 켜요: `git config core.hooksPath dist/hooks`
+- **CI** — `.github/workflows/trailer-guard.yml` 이 PR 과 **main push 둘 다** 검사해요.
+  PR 만 보면 안 되는 이유는 이 저장소가 문서 변경을 main 에 직행시키기 때문이에요.
+  다만 Actions 는 push 를 *거부하지 못해요* — 빨간불로 알릴 뿐이라 로컬 훅이 1 차 방어예요.
+
 **amend 할지 새 커밋을 쌓을지** (2026-08-03 사용자 지시):
 
 - **amend** — 기존 커밋에 **문제가 있었거나**, **방향이 바뀌어 그 커밋의 코드 / 메시지가

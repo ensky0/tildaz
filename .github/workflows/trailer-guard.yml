@@ -1,0 +1,63 @@
+# 커밋 메시지 트레일러 금지 검사 (`AGENTS.md` 의 `# 커밋 메시지`).
+#
+# `pr-verify.yml` 에 넣지 않고 따로 둔 이유가 둘이다.
+#
+# 1. **그쪽은 `pull_request` 에만 돈다.** 이 저장소는 문서만 바뀌는 변경을 main 에
+#    직행시키므로 (`AGENTS.md` 의 `# 워크플로우`), PR 검사만으로는 그 경로가 통째로
+#    빈다. 실제로 그 경로로 들어온 적이 있다.
+# 2. **빠르다.** `pr-verify` 는 6 타깃 compile-only 라 3 분쯤 걸린다. 이 검사는 git
+#    로그 grep 하나라 몇 초다. 매 push 에 붙여도 부담이 없다.
+#
+# ⚠️ Actions 는 push 를 **거부하지 못한다** (그건 branch protection 이나 pre-receive
+# 훅 영역이다). 그래서 이 검사는 main 직행 push 를 *막지는* 못하고 빨간불로 알린다.
+# 커밋이 만들어지는 것 자체를 막는 것은 `dist/hooks/commit-msg` 의 몫이다.
+name: trailer-guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 검사 범위 결정
+        id: range
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "range=origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            BEFORE="${{ github.event.before }}"
+            if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]] \
+               || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              echo "range=${{ github.sha }} -1" >> "$GITHUB_OUTPUT"
+            else
+              echo "range=$BEFORE..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: 금지 트레일러 검사
+        shell: bash
+        run: |
+          set -euo pipefail
+          BAD=$(git log --format='%H%n%B%n--COMMIT--' ${{ steps.range.outputs.range }} \
+                | grep -inE '^[[:space:]]*(co-authored-by[[:space:]]*:|🤖?[[:space:]]*Generated with \[Claude)' || true)
+          if [[ -n "$BAD" ]]; then
+            echo "::error::금지된 커밋 트레일러가 있습니다 (AGENTS.md 의 '# 커밋 메시지')."
+            echo "$BAD"
+            echo ""
+            echo "고치는 법: git commit --amend  (또는 여러 개면 git rebase 로 메시지 수정)"
+            echo "미리 막으려면: git config core.hooksPath dist/hooks"
+            exit 1
+          fi
+          echo "금지 트레일러 없음."

@@ -1,0 +1,17 @@
+#!/bin/sh
+# 금지된 커밋 트레일러를 **만들어지기 전에** 막는다 (`AGENTS.md` 의 `# 커밋 메시지`).
+#
+# CI (`trailer-guard.yml`) 는 이미 만들어진 커밋을 빨간불로 알릴 뿐 push 를 거부하지
+# 못한다. 그래서 로컬에서 한 겹 더 막는다.
+#
+# 켜는 법 (저장소마다 한 번):
+#   git config core.hooksPath dist/hooks
+if grep -qiE '^[[:space:]]*(co-authored-by[[:space:]]*:|.?[[:space:]]*Generated with \[Claude)' "$1"; then
+    echo "커밋 거부: 금지된 트레일러가 메시지에 있습니다." >&2
+    echo "" >&2
+    grep -inE '^[[:space:]]*(co-authored-by[[:space:]]*:|.?[[:space:]]*Generated with \[Claude)' "$1" >&2
+    echo "" >&2
+    echo "이 저장소는 모든 commit author 를 사람으로 통일합니다 (AGENTS.md 의 '# 커밋 메시지')." >&2
+    echo "해당 줄을 지우고 다시 커밋하세요." >&2
+    exit 1
+fi
