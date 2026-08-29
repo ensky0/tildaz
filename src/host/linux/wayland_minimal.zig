@@ -5466,9 +5466,11 @@ const Client = struct {
     /// L12-β — Ctrl+Shift+T 새 탭. 32-tab cap 도달 시 dialog + skip.
     /// L12-γ-2 — macOS `commitPendingInput` 정책 — 단축키 진입 시 진행 중
     /// preedit 을 commit (보존).
+    /// #536 — 새 탭은 다른 셸이므로 조합 중인 dead key 는 버린다 (`leaveShell`). 단축키 · `+` 클릭 ·
+    /// `⋯` 메뉴가 모두 여기로 모인다.
     fn handleNewTab(self: *Client) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        self.leaveShell();
         var host = self.buildTabActionsHost();
         if (tab_actions.checkAtLimitAndDialog(self.rt, &host)) return;
         // #248 — shell 이 런타임에 사라졌으면 (패키지 업데이트 등) 조용히 죽는 대신 알림.
@@ -5519,9 +5521,10 @@ const Client = struct {
     /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
     /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
     /// L12-γ-2 — 단축키 진입 시 commitPendingInput.
+    /// #536 — pane 이 여럿이면 닫은 뒤 형제 pane 이 활성이 되어 셸이 바뀐다 → `leaveShell`.
     fn handleCloseTab(self: *Client) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        self.leaveShell();
         var host = self.buildTabActionsHost();
         const outcome = tab_actions.closeActive(&host);
         // #127 — 2 → 1 탭 전환 시 탭바 사라지면서 cell 영역 변함. `.changed`
@@ -5538,7 +5541,8 @@ const Client = struct {
     /// 탭 한도와 같은 dialog 로 안내한다 (확정 설계 §② "거부 + 안내"). 격자는 `splitActive` 가 맞춘다.
     fn handleSplit(self: *Client, dir: pane_layout.Direction) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        // #536 — 새 pane 은 다른 셸이므로 조합 중인 dead key 는 버린다.
+        self.leaveShell();
         if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
         self.session.?.splitActive(dir, self.paneArea(), self.paneMetrics()) catch |err| switch (err) {
             error.TooSmall => {
@@ -5571,7 +5575,9 @@ const Client = struct {
     fn handleFocusPane(self: *Client, dir: pane_layout.Direction) void {
         const session = if (self.session) |*s| s else return;
         const leaving = session.activeTab() orelse return;
-        self.commitPendingInput();
+        // #536 — 지금은 키보드 전용 경로라 `processKeyEvent` 의 defer 와 겹치지만, "활성 pane 을
+        // 바꾸는 handler 는 `leaveShell`" 규칙을 여기서도 지켜 마우스 진입점이 붙어도 안전하게 둔다.
+        self.leaveShell();
         if (!session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
         leaving.interaction.cancelPointerModes();
         self.sel_autoscroll_dir = 0;
@@ -5602,6 +5608,8 @@ const Client = struct {
     /// #483 4c — `+` 클릭. Alt 를 누르고 있으면 새 탭이 아니라 활성 pane 분할 (Windows Terminal 의 Alt+클릭
     /// 선례). 방향은 활성 pane 의 모양대로 — 넓으면 오른쪽, 높으면 아래 (WT 의 `auto`).
     fn handlePlusClick(self: *Client) void {
+        // #536 — 조합 버림은 `handleNewTab` · `handleSplit` 안에 있다 (여기서 먼저 부르면 활성 pane
+        // 을 못 찾아 아무 일도 안 하는 경우에도 조합이 사라진다).
         if (!self.keyboard.altActive()) return self.handleNewTab();
         const pr = self.activePaneRect() orelse return;
         self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
@@ -5641,7 +5649,7 @@ const Client = struct {
         const group = session.activeGroup() orelse return false;
         const id = session.paneIdAt(self.pointer_x_px, self.pointer_y_px, self.paneArea(), self.paneMetrics()) orelse return false;
         if (id == group.active_pane) return false;
-        self.commitPendingInput();
+        self.leaveShell();
         group.activeTab().interaction.cancelPointerModes();
         self.sel_autoscroll_dir = 0;
         _ = session.setActivePane(id);
@@ -5728,7 +5736,7 @@ const Client = struct {
             .plus => if (layout.plus_enabled) self.handlePlusClick(),
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
-                self.commitPendingInput();
+                self.leaveShell();
                 var host = self.buildTabActionsHost();
                 const outcome = tab_actions.closeIndex(&host, session.activeIndex());
                 // #127 — 2 → 1 전환 시 탭바 사라짐 → grid 재계산.
@@ -5752,6 +5760,7 @@ const Client = struct {
                     self.tab_scroll_x,
                     @intCast(session.count()),
                 ) orelse return;
+                self.leaveShell();
                 var host = self.buildTabActionsHost();
                 tab_actions.switchTab(&host, hit_index);
                 // L12-γ-3 — drag-begin. `world_x = (px - tab_area_x) + scroll_x`
@@ -5812,16 +5821,19 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
+    /// #536 — 활성 탭이 바뀌면 셸이 바뀐다 → `leaveShell`. 키보드 전용 경로라 `processKeyEvent` 의
+    /// defer 와 겹치지만, 불변식 ("활성 pane · 탭을 바꾸는 handler 는 `leaveShell`") 을 여기서도 지킨다.
     fn handleNextTab(self: *Client) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        self.leaveShell();
         var host = self.buildTabActionsHost();
         tab_actions.nextTab(&host);
     }
 
+    /// #536 — `handleNextTab` 과 같다.
     fn handlePrevTab(self: *Client) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        self.leaveShell();
         var host = self.buildTabActionsHost();
         tab_actions.prevTab(&host);
     }
@@ -5831,7 +5843,7 @@ const Client = struct {
     /// 반환하고 no-op.
     fn handleSwitchTab(self: *Client, idx: usize) void {
         if (self.session == null) return;
-        self.commitPendingInput();
+        self.leaveShell();
         var host = self.buildTabActionsHost();
         tab_actions.switchTab(&host, idx);
     }
@@ -6060,6 +6072,25 @@ const Client = struct {
     fn resetCompose(self: *Client) void {
         self.keyboard.composeReset();
         self.dropComposePreview();
+    }
+
+    /// #536 — **활성 셸을 떠날 때의 입력 정리.** IME preedit 은 확정하고 (`commitPendingInput`)
+    /// **조합 중인 dead key 는 버린다** (`resetCompose`). 규칙은 #530 이 창 포커스 이탈에 정한 것과
+    /// 같다 — IME 는 commit, dead key 는 버림 (GTK 동등).
+    ///
+    /// **활성 pane · 탭을 바꾸는 handler 는 예외 없이 이것을 부른다.** 예전에는 그 자리마다
+    /// `commitPendingInput` 만 있어서, `^` 를 띄운 채 옆 pane 을 클릭하면 조합 표시가 **따라가서 그
+    /// 셸에서 확정됐다** (`ê` 가 조합을 시작하지 않은 셸에 들어갔다 — KDE 실기). 키보드 경로는
+    /// `processKeyEvent` 의 `defer` 가 이미 버리고 있어 (#494 의 "Ctrl · Alt 조합은 compose 에 넣지
+    /// 않는다") 마우스 · 메뉴만 갈라져 있었다.
+    ///
+    /// 호출처를 handler 안에 두는 이유는 **진입점 수와 무관해지기 때문**이다. 새 탭 · 분할 · 닫기는
+    /// 단축키 · `+` 클릭 · `⋯` 메뉴 세 진입점에서 오는데, 진입점마다 부르면 하나가 빠진다 (첫 수정이
+    /// `⋯` 메뉴와 단일 탭 컨트롤 스트립의 `×` 를 그렇게 놓쳤다). 키보드 경로에서 defer 와 겹쳐 두 번
+    /// 도는 것은 무해하다 — `resetCompose` 는 idempotent 다.
+    fn leaveShell(self: *Client) void {
+        self.commitPendingInput();
+        self.resetCompose();
     }
 
     /// #494 — Compose 표를 한 번 올린다. dead key (`^` `¨` `´` `` ` `` …) 는 keymap 만으로는 글자가
