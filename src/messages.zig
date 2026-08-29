@@ -22,8 +22,8 @@ pub const quit_confirm_title = "Quit TildaZ?";
 pub const command_toggle_visibility = "Show / Hide TildaZ";
 pub const command_new_tab = "New Tab";
 /// #483 4c — `…` 메뉴의 분할 항목 둘 (확정 설계: 아이콘을 늘리지 않고 메뉴에 넣는다).
-pub const command_split_vertical = "Split Vertical";
-pub const command_split_horizontal = "Split Horizontal";
+pub const command_split_right = "Split Right";
+pub const command_split_down = "Split Down";
 pub const command_close_active_tab = "Close Active Tab";
 pub const command_copy_selection = "Copy Selection";
 pub const command_paste = "Paste";
@@ -37,10 +37,10 @@ pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/K
 pub const shortcut_new_tab = "Ctrl+Shift+T";
 pub const shortcut_new_tab_macos = "Cmd+T";
 /// #483 — 분할 항목 hint. 기존 hint 처럼 키 이름을 글자로 적는다 (`Enter` 와 같은 표기).
-pub const shortcut_split_vertical = "Ctrl+Shift+Right";
-pub const shortcut_split_vertical_macos = "Option+Cmd+Right";
-pub const shortcut_split_horizontal = "Ctrl+Shift+Down";
-pub const shortcut_split_horizontal_macos = "Option+Cmd+Down";
+pub const shortcut_split_right = "Ctrl+Shift+Right";
+pub const shortcut_split_right_macos = "Option+Cmd+Right";
+pub const shortcut_split_down = "Ctrl+Shift+Down";
+pub const shortcut_split_down_macos = "Option+Cmd+Down";
 pub const shortcut_close_tab = "Ctrl+Shift+W";
 pub const shortcut_close_tab_macos = "Cmd+W";
 pub const shortcut_copy = "Drag / Ctrl+Shift+C";
