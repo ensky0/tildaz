@@ -1029,8 +1029,8 @@ pub const App = struct {
             .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
             .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
             // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-            .split_vertical => if (self.resolveRunAction(.split)) self.handleSplit(.right),
-            .split_horizontal => if (self.resolveRunAction(.split)) self.handleSplit(.down),
+            .split_right => if (self.resolveRunAction(.split)) self.handleSplit(.right),
+            .split_down => if (self.resolveRunAction(.split)) self.handleSplit(.down),
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),

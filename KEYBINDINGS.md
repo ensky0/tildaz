@@ -17,8 +17,10 @@ is not US QWERTY.
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
 | Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
 | Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
-| Split the active pane with a vertical line — new pane to the right *(see [Split panes](#split-panes))* | Ctrl+Shift+→ | Option+Cmd+→ | Ctrl+Shift+→ |
-| Split the active pane with a horizontal line — new pane below | Ctrl+Shift+↓ | Option+Cmd+↓ | Ctrl+Shift+↓ |
+| Split the active pane — new pane to the left *(see [Split panes](#split-panes))* | Ctrl+Shift+← | Option+Cmd+← | Ctrl+Shift+← |
+| Split the active pane — new pane to the right | Ctrl+Shift+→ | Option+Cmd+→ | Ctrl+Shift+→ |
+| Split the active pane — new pane above | Ctrl+Shift+↑ | Option+Cmd+↑ | Ctrl+Shift+↑ |
+| Split the active pane — new pane below | Ctrl+Shift+↓ | Option+Cmd+↓ | Ctrl+Shift+↓ |
 | Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
 | Move the split line next to the active pane by one cell (stops at the minimum pane size; only the panes touching that line change) | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
 | Equalize the panes — every row or column of panes shares its space evenly | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
@@ -311,8 +313,8 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
 - `+` opens a tab. At the 32-tab limit it stays in place, turns gray, and
   ignores clicks. Alt+click splits the active pane instead (see
   [Split panes](#split-panes)).
-- `…` opens the command menu. It lists the common tab, split-pane (*Split Vertical* /
-  *Split Horizontal*), clipboard, fullscreen, config, shortcut-reference, and About actions
+- `…` opens the command menu. It lists the common tab, split-pane (*Split Right* /
+  *Split Down*), clipboard, fullscreen, config, shortcut-reference, and About actions
   together with their shortcuts.
   Its first item toggles TildaZ and shows the current instance's configured
   global hotkey rather than assuming F1.
@@ -342,10 +344,12 @@ e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline 
 ## Split panes
 
 A tab can hold up to 16 panes (`pane_layout.MAX_PANES_PER_TAB`, independent of the
-32-tab limit), each a full terminal with its own shell. There are two ways to split:
-Ctrl+Shift+→ (Option+Cmd+→ on macOS) draws a vertical line through the active pane
-and opens a new shell to its right; Ctrl+Shift+↓ (Option+Cmd+↓) draws a horizontal
-line and opens the new shell below. The new pane gets half of the space (the split
+32-tab limit), each a full terminal with its own shell. The arrow key picks the side
+the new shell lands on: Ctrl+Shift+→ (Option+Cmd+→ on macOS) draws a vertical line
+through the active pane and opens a new shell to its right, and Ctrl+Shift+↓
+(Option+Cmd+↓) draws a horizontal line and opens it below. Ctrl+Shift+← and
+Ctrl+Shift+↑ (Option+Cmd+←/↑) split the same way but put the new shell on the other
+side, so the pane you were working in slides right or down instead of staying put. The new pane gets half of the space (the split
 falls on a cell boundary of the first pane; the leftover pixels go to the new one)
 and takes the keyboard, as in tmux, iTerm2, Windows Terminal, and vim. Focus follows
 the arrow keys with Alt (Cmd on macOS): the pane that is geometrically next in that
@@ -379,7 +383,7 @@ and the panes are resized once, when you release. Only the panes touching the li
 change size — panes further away, and the lines between them, stay where they were —
 and the line stops where a pane would fall below 20×5 cells instead of refusing the
 drag; the one-cell keyboard resize follows the same rules. The `…` menu has *Split
-Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the active
+Vertical* and *Split Down*, and Alt+clicking the `+` button splits the active
 pane instead of opening a tab (to the right if the pane is wider than it is tall,
 otherwise below). Ctrl+Shift+W closes the whole tab, every pane in it — the
 action, the `×` button and the `…` menu entry all mean the tab. To close a single

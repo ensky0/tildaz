@@ -1475,3 +1475,61 @@ test "#483 Direction — 축과 second 쪽" {
     try std.testing.expectEqual(@as(usize, 16), MAX_PANES_PER_TAB);
     try std.testing.expectEqual(@as(usize, 31), MAX_NODES);
 }
+
+test "#483 2026-08-29 — 왼쪽 · 위 분할: 격자는 오른쪽 · 아래와 같고 새 pane 이 앞자리로 간다" {
+    const rect: Rect = .{ .x = 0, .y = 56, .w = 3024, .h = 1744 };
+
+    // 좌우 — `.right` 는 새 pane 이 second (오른쪽), `.left` 는 first (왼쪽).
+    var right_tree = Tree.single(1);
+    try right_tree.split(1, .right, 2, rect, mac2x);
+    var left_tree = Tree.single(1);
+    try left_tree.split(1, .left, 2, rect, mac2x);
+
+    var rbuf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    var lbuf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    const r = layout(&right_tree, rect, mac2x, &rbuf);
+    const l = layout(&left_tree, rect, mac2x, &lbuf);
+
+    try std.testing.expectEqual(@as(usize, 2), r.len);
+    try std.testing.expectEqual(@as(usize, 2), l.len);
+    // 자리를 차지하는 pane 만 뒤바뀐다 — 기존 pane 1 이 오른쪽으로 밀리고 새 pane 2 가 앞이다.
+    try std.testing.expectEqual(@as(PaneId, 1), r[0].pane);
+    try std.testing.expectEqual(@as(PaneId, 2), r[1].pane);
+    try std.testing.expectEqual(@as(PaneId, 2), l[0].pane);
+    try std.testing.expectEqual(@as(PaneId, 1), l[1].pane);
+    // 격자와 사각형은 두 방향이 완전히 같다.
+    inline for (0..2) |i| {
+        try std.testing.expectEqual(r[i].rect.x, l[i].rect.x);
+        try std.testing.expectEqual(r[i].rect.w, l[i].rect.w);
+        try std.testing.expectEqual(r[i].cols, l[i].cols);
+        try std.testing.expectEqual(r[i].rows, l[i].rows);
+    }
+
+    // 상하 — 같은 규칙.
+    var down_tree = Tree.single(1);
+    try down_tree.split(1, .down, 2, rect, mac2x);
+    var up_tree = Tree.single(1);
+    try up_tree.split(1, .up, 2, rect, mac2x);
+
+    var dbuf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    var ubuf: [MAX_PANES_PER_TAB]PaneRect = undefined;
+    const d = layout(&down_tree, rect, mac2x, &dbuf);
+    const u = layout(&up_tree, rect, mac2x, &ubuf);
+
+    try std.testing.expectEqual(@as(PaneId, 1), d[0].pane);
+    try std.testing.expectEqual(@as(PaneId, 2), d[1].pane);
+    try std.testing.expectEqual(@as(PaneId, 2), u[0].pane);
+    try std.testing.expectEqual(@as(PaneId, 1), u[1].pane);
+    inline for (0..2) |i| {
+        try std.testing.expectEqual(d[i].rect.y, u[i].rect.y);
+        try std.testing.expectEqual(d[i].rect.h, u[i].rect.h);
+        try std.testing.expectEqual(d[i].cols, u[i].cols);
+        try std.testing.expectEqual(d[i].rows, u[i].rows);
+    }
+
+    // 최소 크기 거부도 축만 본다 — 좁은 창에서 좌우는 거부되고 위아래는 갈린다 (`.left` · `.up` 도 같다).
+    const narrow: Rect = .{ .x = 0, .y = 0, .w = 500, .h = 1744 };
+    var t = Tree.single(1);
+    try std.testing.expectError(error.TooSmall, t.split(1, .left, 2, narrow, mac2x));
+    try t.split(1, .up, 2, narrow, mac2x);
+}
