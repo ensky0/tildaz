@@ -29,6 +29,9 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame 
 # 워크로드 바꾸기
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --workload cjk
 
+# 화면 분할 — 활성 탭을 N 개 pane 으로 갈라 pane 마다 producer 하나 (#483 6단계, 드레인 예산의 pane 수 축)
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --mb 32 --fps 120 --panes 4
+
 # scrollback 이 쌓이는 동안 속도가 유지되는지 (#278 ①)
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 ```

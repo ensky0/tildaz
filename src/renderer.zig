@@ -1,14 +1,14 @@
 //! Renderer dispatch — 호출처가 platform 별 그래픽스 API (D3D11 / Metal) 를
 //! 직접 다루지 않게.
 //!
-//! 양쪽 platform 모두 `deinit` / `resize` / `renderTabBar` / `renderTerminal`
+//! 양쪽 platform 모두 `deinit` / `resize` / `renderTabBar` / `drawPane` / `endFrame`
 //! 을 노출 — host 는 `RendererBackend.<fn>` 한 줄로 호출. `init` 시그니처는
 //! platform-specific 객체 (HWND vs CAMetalLayer + Metal device) 가 필요해 통일
 //! 하지 않음 — host 의 platform-specific init 호출은 그대로 (각 host 가 자기
 //! platform 의 backend type 만 알면 충분).
 //!
-//! 호출 순서: 항상 renderTabBar → renderTerminal. macOS 측 frame lifecycle
-//! (drawable 획득 → present → commit) 이 두 fn 사이에 stateful — Windows 의
+//! 호출 순서: 항상 renderTabBar → drawPane (보이는 pane 마다, #483) → endFrame.
+//! macOS 측 frame lifecycle (drawable 획득 → present → commit) 이 이 fn 들 사이에 stateful — Windows 의
 //! self.rtv / setupFrame 패턴과 같은 의도.
 
 const builtin = @import("builtin");

@@ -579,6 +579,35 @@ pub const TAB_ACTIVE_UNDERLINE_PT: u32 = 2;
 /// (2026-07-27 사용자 결정) 세로선 전용이 됐다. 이름이 남으면 없는 요소를
 /// 가리키게 되므로 함께 정리.
 pub const TAB_SEPARATOR_W_PT: u32 = 1;
+/// [#483](https://github.com/ensky0/tildaz/issues/483) — pane 사이 회색 분할선 띠의 두께
+/// (logical pt). 탭 구분선 `TAB_SEPARATOR_W_PT` 와 같은 1 pt 이고 색도 `TAB_SEPARATOR_COLOR`
+/// 를 쓴다 (2026-08-26 결정 3). px 변환은 `linePx` (정수 · 최소 1) — 격자에 놓이는 실선이다.
+///
+/// 격자 계산 (`pane_layout.Metrics.separator_w`) 에 들어가는 것은 이 띠 하나다. 활성 pane 의
+/// amber 강조는 pane 의 padding 안쪽에 그리므로 격자와 무관하다 — 두께는 아래 `PANE_FOCUS_LINE_PT`.
+pub const PANE_SEPARATOR_W_PT: u32 = 1;
+/// #483 4b — 활성 pane 을 알리는 amber 선 (`TAB_ACCENT_COLOR`) 의 두께 (logical pt). 활성 pane 의
+/// padding 안쪽 가장자리에, **다른 pane 과 맞닿는 변에만** 긋는다 (결정 3 · Windows Terminal 방식).
+/// 비활성 pane 은 dim 하지 않으므로 (2026-08-27 사용자 결정 — 다른 pane 도 또렷히 보는 것이
+/// 분할의 목적) 이 선이 유일한 표시다. 1 pt 로 시작한다 — 실기에서 약하면 탭바 밑줄
+/// `TAB_ACTIVE_UNDERLINE_PT` 와 같은 2 pt 로 올린다. px 변환은 `linePx`.
+pub const PANE_FOCUS_LINE_PT: u32 = 1;
+/// #483 4c — 분할선을 마우스로 잡는 영역의 반폭 (logical pt). 그리는 선은 `PANE_SEPARATOR_W_PT` 1 pt
+/// 지만 잡는 영역은 양쪽으로 이만큼 넓다 (확정 설계 축 2 "그리는 건 1px, 잡는 건 ±4px").
+pub const PANE_SEPARATOR_HIT_SLOP_PT: u32 = 4;
+/// #483 6단계 — 드래그로 **선택을 시작하는 문턱** (logical pt). 이만큼 움직이기 전에는 선택을
+/// 만들지 않는다 — 트랙패드 클릭의 1~3 px 떨림이 한 칸 선택 + 자동 복사를 만들어 pane 마다 흰
+/// 자국이 남고 클립보드가 한 글자로 덮이던 것을 막는다 (2026-08-28 macOS 실기). Windows 의 드래그
+/// 판정 기본값 (`SM_CXDRAG` 4 px @96 dpi) 과 같은 수준이다.
+pub const SELECTION_DRAG_SLOP_PT: u32 = 4;
+
+/// 위 문턱의 물리 px. **반 칸을 넘지 않는다** — 아주 작은 폰트에서는 셀 폭이 문턱에 가까워져,
+/// 그대로 두면 칸 안에서 한 칸을 선택할 방법이 없어지기 때문이다. 셀도 배율을 따라 커지므로
+/// 보통 크기에서는 4 pt 쪽이 이긴다 (기본 폰트 15 → 셀 폭 19 px @2x, 문턱 8 px).
+pub fn selectionDragSlopPx(cell_w_px: f32, scale: f32) f32 {
+    return @min(scaledPxF(SELECTION_DRAG_SLOP_PT, scale), cell_w_px * 0.5);
+}
+
 /// #334 — command menu 스크롤 표시 chevron 의 비트맵 한 변 (logical pt).
 /// 탭바 아이콘(10pt)보다 크게 — 메뉴 폭에 어울리는 납작한 꺾쇠.
 pub const MENU_INDICATOR_ICON_PT: u32 = 14;

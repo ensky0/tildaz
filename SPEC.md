@@ -441,6 +441,14 @@ AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac 의 Safari (Co
   자리다. **Shift 비트는 건드리지 않는다** — 값만 되돌리므로 `ctrl+shift+c` 와 `ctrl+c` 는 여전히
   다른 조합이다. 숫자는 일부러 제외한다: `exclam` → `1` 로 되돌리면 QWERTY 에서 `Alt+Shift+1` 이
   탭 전환이 되어 동작이 넓어진다.
+- **Shift 를 적은 binding 은 무시프트 값으로도 맞는다** ([#483](https://github.com/ensky0/tildaz/issues/483)
+  6단계, 2026-08-27 — `Hotkey.unshifted`). 위 되돌림은 `{` `}` `~` 와 대문자만 다뤄 `shift+alt+0` (US 에서
+  `parenright`) 이 Linux 실제 키보드에서, `⇧⌘0` · `⇧⌘[` 이 macOS 에서 (`charactersByApplyingModifiers:` 가
+  Shift 를 반영해 `)` `{`) 죽어 있었다. 이벤트 쪽이 같은 키의 Shift 없는 값 (Linux 는 xkb level 0,
+  macOS 는 Shift 를 뺀 라벨) 을 함께 넘기고, `lookupAction` 은 **binding 에 Shift 가 적혀 있고 수식키가
+  정확히 같을 때만** (숫자 예외 없이) 그 값과 비교한다. 그래서 #493 이 거부한 넓어짐은 없다 — US 의
+  `Alt+Shift+1` (`!`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다. AZERTY 는 `⇧+à` 가 `0` 을 내 라벨이 바로
+  맞으므로 이 규칙이 개입하지 않는다. Windows 는 VK 가 Shift 무관이라 해당 없음.
 - **인덱스 점프는 숫자 binding 에서 Shift 를 무시한다** (`isDigitBinding`). AZERTY (fr) 등은
   숫자열에 Shift 가 필요해 keysym / VK `1`~`9` 가 **항상 Shift 와 함께** 도착한다. 확대가 아니라
   현행 유지다 — 3-c 이전의 세 host 가 모두 Shift 를 보지 않았다 (Windows
@@ -599,6 +607,19 @@ Windows 실측).
 (macOS 표준대로 글자). 글자를 만들지 않는 키는 그 설정과 무관하게 alt 가 실린다
 (`Option+←` → `\x1b[1;3D`). Linux · Windows 에는 이 갈림이 없어 Alt 는 언제나 Meta 다.
 
+**비라틴 배열 · 입력원에서는 물리 키의 US 글자로 되짚는다** ([#483](https://github.com/ensky0/tildaz/issues/483)
+브랜치에서 #533 후속으로, 2026-08-29 실기). Alt 앞에 붙일 `ESC` 뒤의 글자를 인코더는 **1 바이트 utf8
+이나 ASCII `unshifted_codepoint`** 에서만 찾는데, 러시아어 · 그리스어 **배열** (Linux · Windows) 과
+한글 · 러시아어 **입력원** (macOS 는 입력원이 곧 배열) 에서는 그 글자가 ASCII 가 아니다. 되짚지
+않으면 `Alt+n` 이 `ESC n` 이 아니라 `н` · `ㅜ` 로 나가 zellij · tmux · emacs 의 Alt 조합이 죽는다.
+그래서 **Alt 가 눌렸는데 그 배열의 글자가 1 바이트 ASCII 가 아니면** `key_encode.usAscii` (ghostty
+`input.Key.codepoint()` — 물리 키의 US 글자) 로 바꿔 넘긴다 (Shift 면 대문자). ghostty 의 `ctrlSeq`
+가 Cyrillic 자판에 쓰는 되짚기와 같은 수이고, **AltGr 로 만든 글자는 건드리지 않는다** (Linux 는
+`consumed.alt` 를 함께 본다 — 프랑스 자판 `AltGr+2` → `~`). 실기: macOS 한글 2벌식 + `both` 에서
+`^[a` · `^[n`, Linux 러시아어 배열에서 `n` 은 `т` 그대로이고 `Alt+n` 은 `^[n`. **kitty keyboard 는
+손대지 않는다** — 그 규격은 주 키 코드가 배열의 코드포인트이고 US 기준 키는 `report_alternates`
+를 요청한 앱에만 alternate 로 준다 (실측: `^[[12618;5u`, 플래그 5 면 `^[[12618::99;5u`).
+
 ### 2.7 Key repeat (길게 누름 반복)
 
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -627,6 +648,7 @@ Windows 실측).
 | 더블클릭 word selection | cell 영역 | `mouse_double_click` → `selectWord` | 동일 (`tildazMouseDown` clickCount >= 2) | 동일 ([eea926d](https://github.com/ensky0/tildaz/commit/eea926d), L6.7 — 500ms 같은 cell 검사 후 `selectWord`) | ✅ | ✅ | ✅ |
 | 더블클릭 후 자동 copy | cell 영역 | `selectWordAt` 안에서 `copyToClipboard` | 동일 — `selectWord` 후 `handleCopy` | 동일 (Wayland `wl_data_source`) | ✅ | ✅ | ✅ |
 | selection finish 후 자동 copy | cell 영역 | `selection.finish()` → `copyToClipboard` | 동일 (`tildazMouseUp` 분기) | 동일 ([1bcdbc9](https://github.com/ensky0/tildaz/commit/1bcdbc9)) | ✅ | ✅ | ✅ |
+| 선택 시작 문턱 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-28 실기) | 누른 뒤 **문턱보다 많이 움직였거나 다른 칸으로 넘어가야** 선택이 시작된다 (`terminal_interaction.SelectionState.arm` — 세 platform 공통). 문턱은 `ui_metrics.SELECTION_DRAG_SLOP_PT` **4 pt** 을 배율로 옮긴 물리 px 이되 **반 칸을 넘지 않는다** (`selectionDragSlopPx`) — 그래야 아주 작은 폰트에서도 칸 안에서 글자 하나를 끌어 선택할 수 있다. 4 pt 은 Windows 의 드래그 판정 기본값 (`SM_CXDRAG` 4 px @96 dpi) 과 같은 수준. 한 번 넘으면 유지되어 (`armed`) 이웃 칸으로 갔다 돌아오는 한 칸 선택도 된다. 그 전에는 트랙패드 클릭의 1~3 px 떨림이 매번 한 칸 선택 + 자동 복사를 만들어, pane 을 클릭해 포커스만 옮겨도 흰 자국이 남고 클립보드가 한 글자로 덮였다 (사용자 캡처 — pane 셋 클릭에 자국 셋) | `App.startTerminalSelection` / `updateTerminalSelection` 이 마우스 px 를 넘긴다 | `tildazMouseDown` / `Dragged` (auto-scroll 은 `g_last_drag_*`) | `pointerPx()` · `selectionSlop()` | ✅ | ✅ | ✅ |
 | word selection 동작 사양 | cell 영역 | cross-platform 단일 모듈 ([terminal_interaction.zig:95](src/terminal_interaction.zig#L95)) | 동일 모듈 | 동일 모듈 (cross-platform `terminal_interaction`) | ✅ | ✅ | ✅ |
 | 우클릭 paste | 어디든. **mouse tracking 이 켜져 있어도 paste 를 유지하고 앱에 보내지 않는다** ([#502](https://github.com/ensky0/tildaz/issues/502) 2026-08-24 결정 — 매일 쓰는 동작이라 앱이 켰다고 빼앗지 않는다. 앱에 우클릭이 필요하면 별도 논의) | `WM_RBUTTONDOWN` → `pasteClipboard` | `tildazRightMouseDown` → `handlePaste` | `wl_pointer.button` BTN_RIGHT → `wl_data_offer.receive` ([dfcf9f4](https://github.com/ensky0/tildaz/commit/dfcf9f4)) | ✅ | ✅ | ✅ |
 | 휠 / 트랙패드 scroll | 셀 영역 | `WM_MOUSEWHEEL` → `scrollViewport` | `tildazScrollWheel` → 동일 | `wl_pointer.axis` → 동일 ([fc3b5bb](https://github.com/ensky0/tildaz/commit/fc3b5bb)) | ✅ | ✅ | ✅ |
@@ -707,6 +729,28 @@ Windows 실측).
 terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 클릭 / 상태 변경 단축키 / F1 hide / quit) 가 발생해도 동일 동작 = **commit** (자모를 PTY 로 flush — 사용자 입력 손실 회피). 예외 둘: **Ctrl+C** 는 discard (line abort, §5.1), **read-only 단축키(copy_selection / dump_perf)** 는 preedit 을 유지하되 자모 보존이 필요한 terminal preedit 은 flush 후 실행한다.
 
 (탭 inline rename 과 그 focus_loss commit 표는 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — 과거 표는 그 이슈와 git 이력 참조.)
+
+### 4.2 화면 분할 (pane) — [#483](https://github.com/ensky0/tildaz/issues/483)
+
+탭 하나 = pane 그룹 (`session_core.TabGroup`), pane = 터미널 하나 (`Tab`). 배치는 분할 트리 (`pane_layout.Tree`) 이고 격자 계산 · hit-test · 이웃 찾기는 순수 모듈 [`pane_layout.zig`](src/pane_layout.zig) 한 곳이다. 확정 설계는 이슈 첫 댓글, 단축키 표는 [KEYBINDINGS.md](KEYBINDINGS.md#split-panes). 2026-08-27 4단계에 Linux, 5단계에 macOS · Windows host 를 배선했다. **세 platform 모두 실기 손 확인을 마쳤다** — macOS (2026-08-28 · 08-29), Windows 11 (W1~W25, [실기 댓글](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459938906)), KDE Plasma 6.7 · 분수 배율 1.7× (L1~L20, [실기 댓글](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149)). 2026-08-27 6단계 마무리에서 사용자 결정으로 단축키 (분할 둘로 축소 · macOS `alt+cmd`) · 표시 (3 면 규칙 · 최대화 4 면) · 크기 조절 (clamp · 붙은 칸만) 을 바꿨다 — 그 뒤 바뀐 행 (균등 · 최소 크기 · 선택 문턱 · 비라틴 배열 Alt) 도 세 platform 실기에서 다시 확인했다.
+
+| 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|---|
+| 분할 | 둘뿐 (2026-08-27 결정): **`split_vertical`** = 세로 분할선, 새 pane **오른쪽** · **`split_horizontal`** = 가로 분할선, 새 pane **아래** (iTerm2 · Windows Terminal 의 낱말 뜻과 같다 — tmux · WezTerm 은 반대). 활성 pane 을 반씩 가르고 새 pane (새 셸, cwd 상속 규칙은 새 탭과 같다) 이 **활성** 이 된다 (tmux · iTerm2 · WT · Ghostty · vim 모두 새 pane 으로). 왼쪽 / 위 분할은 어느 터미널에도 기본에 없어 4a 의 `split_left` / `split_up` 은 뺐다. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | `ctrl+shift+right` / `ctrl+shift+down` → `app_event.Shortcut.split` → `App.handleSplit` | `alt+cmd+right` / `alt+cmd+down` → `handleSplit` — 4a 의 `ctrl+cmd+방향키` 는 `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 바꿨고, Apple Terminal · iTerm2 의 `⌘D` 는 글자에 뜻이 없어 안 쓴다 | `ctrl+shift+right` / `ctrl+shift+down` → `SessionCore.splitActive` | ✅ | ✅ | ✅ |
+| 상한 · 최소 크기 | 탭당 pane **16** (`MAX_PANES_PER_TAB`, 탭 32 와 독립 — 1단계 결정 1) · pane 최소 **20×5** 셀 (`MIN_PANE_COLS/ROWS`). 넘으면 트리를 바꾸지 않고 거부 + dialog (`messages.pane_limit_*` / `pane_too_small_*`) — 단축키에는 시각 피드백이 없어 탭 한도와 같은 방식 | `App.handleSplit` (같은 dialog) | `handleSplit` (같은 dialog) | `handleSplit` | ✅ | ✅ | ✅ |
+| 포커스 이동 | **기하 기반** 이웃 (`pane_layout.neighbor`) — 활성 pane 의 커서 행/열에서 그 방향으로 쏴 처음 만나는 pane (3 분할 이상에서 트리 형제가 아닌 화면상 이웃으로 간다). 창 가장자리면 무시. 떠나는 pane 의 진행 중 선택 · 드래그는 탭 전환과 같이 정리 | `alt+방향키` → `App.handleFocusPane` | `cmd+방향키` → `handleFocusPane` | `alt+방향키` → `SessionCore.focusPane` | ✅ | ✅ | ✅ |
+| 크기 조절 · 균등 | 활성 pane 에 닿은 분할선을 한 셀 옮김 (`Tree.resize` — 그쪽 변이 창 가장자리면 반대쪽 분할선). 드래그와 **같은 경로** (`Tree.setSeparatorPx`) 라 규칙도 같다 — 최소 크기에 닿으면 **거부하지 않고 거기서 멈추고** (clamp), **선에 붙은 칸만** 변한다 (아래 분할선 드래그 행, 2026-08-27 결정). 균등은 **같은 축으로 이어진 분할선을 한 줄로 보고 그 줄을 행 · 열 수로 고르게 나눈다** (`Tree.equalize(rect, m)` · `cellsAlong` — 칸 = pane 하나 또는 다른 축으로 갈린 묶음 하나). 비율이 아니라 **셀 수** 로 나누는 이유: 비율만 정하면 픽셀 위치를 `splitGeometry` 가 그때그때 반올림하는데 그 반올림이 트리 중첩을 따라 일어나 같은 4 칸이라도 만든 순서가 다르면 결과가 달랐다 (2026-08-28 실기 — 두 열의 가로선이 26 px 어긋나고 한 열 안 높이가 466 · 505 로 벌어짐). 같은 이유로 `splitGeometry` 의 셀 격자도 앞 자식이 품은 **칸 수** 를 센다 (결정 2 개정 — 중첩된 두 칸이 38 · 37 열 + 남는 11 px 대신 38 · 38 열로 떨어진다). A \| B \| C 는 ⅓ 씩, A \| (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩 — tmux · iTerm2 처럼 한 줄에 칸이 여럿인 (n-ary) 분할의 "고르게 펴기" 와 같은 결과 (tmux `even-*` 는 배치를 한 줄로 바꾸는 다른 것). 2026-08-28 결정 ① — 거쳐 온 둘: vim `Ctrl+W =` 식 leaf 수 가중은 A \| (B/C) 에서 A 가 ⅓ 로 줄어 어색했고, 층별 반씩은 A \| B \| C 가 A ½ · B ¼ · C ¼ 라 "셋인데 균등이 아니다" 였다. 메뉴에는 없다 (2026-08-27 — 쓰임이 드물어 단축키만) | `shift+alt+방향키` · `shift+alt+0` | `shift+cmd+방향키` · `shift+cmd+0` | `shift+alt+방향키` · `shift+alt+0` | ✅ | ✅ | ✅ |
+| 닫기 | `close_tab` = pane 이 여럿이면 **활성 pane 만** (형제가 자리를 이어받고 포커스는 맞닿아 있던 pane), 마지막이면 탭. pane 의 PTY 종료도 같은 규칙 (`closeTabByPtr`) | `tab_actions.closeActive` → `SessionCore.closeActivePane` (pane 하나라 동작은 이전과 같다) | 동일 | 동일 + `ensureSessionGrid` 로 남은 pane 격자 | ✅ | ✅ | ✅ |
+| 표시 | 회색 분할선 **1 pt** (`PANE_SEPARATOR_W_PT`, 색은 탭 구분선과 같은 `chrome.separator` — 테마 파생) + 활성 pane 의 padding 안쪽 amber **1 pt** (`PANE_FOCUS_LINE_PT`, `TAB_ACCENT_COLOR`). 어느 변인가는 순수 함수 `pane_layout.focusEdges` 하나가 정한다 (2026-08-27 사용자 규칙): ① 다른 pane 과 맞닿는 **안쪽 변** 은 항상 ② 안쪽 변이 **하나뿐** 인 pane (반 분할의 양쪽, 한 줄의 양 끝 — 바깥과 3 면 닿음) 은 그 변에 직각인 바깥 두 변도 → **3 면** (⊐ 모양). 안쪽 변 하나만으로는 회색 선 어느 쪽인지 1 pt 로 읽히지 않았다 (반 분할에서 두 pane 의 표시가 같은 선 하나) ③ 안쪽 변 둘 이상 (ㄴ · ‖) 은 길이 · 모양으로 읽히니 안쪽만 ④ 최대화면 **4 면** — 일반 pane 은 최대 3 면이라 4 면 틀 = 최대화. pane 하나면 없음. **비활성 pane dim 없음** (2026-08-27 사용자 결정 — 다른 pane 도 또렷히 보는 것이 분할의 목적). 비활성 pane 의 커서도 그대로 그린다 (`PaneDraw.is_active` 는 그리기에 안 씀) | `D3d11Renderer.drawPaneChrome` | `MetalRenderer.drawPaneChrome` | `software_terminal.collectPaneChrome` | ✅ | ✅ | ✅ |
+| 마우스 | 좌클릭 = 그 pane 포커스 + 그 자리에서 선택 시작 (한 클릭) · **비활성 pane 우클릭 = 포커스만, 붙여넣기 X** · scrollbar hit-test · Shift+PgUp/PgDn 은 활성 pane 기준 · **휠은 포인터 아래 pane 을 스크롤하고 포커스는 그대로** (6단계 결정 B, 2026-08-27 — `SessionCore.paneTabAt`; 분할선 위 · pane 밖이면 활성 pane; 마우스 reporting 의 휠은 활성 pane 기준 그대로. macOS 실기 확인 — 비활성 pane 위 휠에 그 pane 만 변하고 amber 는 그대로 (`CGEventCreateScrollWheelEvent` 도구); Linux · Windows 는 실기 대기) · 분할선 위 클릭은 무시 (드래그는 4c) | `App.focusPaneUnderPointer` · `inActiveScrollbarColumn` (우클릭은 좌표를 실은 `mouse_right_down`) | `focusPaneUnderPointer` · `inActiveScrollbarColumnMac` (우클릭은 `tildazRightMouseDown`) | `focusPaneUnderPointer` · `pointerInActiveScrollbarColumn` | ✅ | ✅ | ✅ |
+| 격자 | 창 · 탭바 · 폰트가 바뀌면 모든 탭의 pane 을 layout 결과로 resize (`SessionCore.applyLayouts`, 같은 격자면 건너뜀). `-size` 측정 인스턴스는 pane 하나에 요청 격자 그대로 (#382) | `App.syncPaneGrids` → `applyLayouts` (`-size` 는 `resizeAll`) | `syncTerminalGeometry` · `syncGeometryAfterScreenChange` → `applyLayouts` (`-size` 는 `resizeAll`) | `ensureSessionGrid` → `applyLayouts` | ✅ | ✅ | ✅ |
+| IME · 컨트롤 스트립 | preedit inline 표시 · IME 커서 rect · mouse reporting 좌표는 활성 pane 의 격자 원점 기준 (`terminal_interaction.ReportGeometry.grid_x/grid_y`). 단일 탭 컨트롤 스트립 (#329) 의 scrollbar inset 은 오른쪽 위 pane 만 | `App.activeGridOrigin` (`mouseToCell` · 선택 · mouse reporting); IME 조합 창 위치는 렌더러가 활성 pane (`PaneDraw.is_active`) 의 커서만 기록 | `renderFrameTick` · `activeGridOriginPx` (IME 스냅숏 · `imeFirstRect` 도 이 원점) | `frameInputs` · `activeGridOrigin` | ✅ | ✅ | ✅ |
+| 최대화 (zoom) | `zoom_pane` 토글 — 켜면 활성 pane 하나가 탭 영역 전체 (`TabGroup.zoomed`, `layout` 이 `leafRect` 하나를 돌려준다), 다른 pane 은 그리지 않되 셸은 계속 돈다. 분할 · 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (tmux zoom 규칙), 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다. 표시는 활성 pane **네 변** amber (2026-08-27 결정 A — 분할선 · amber 가 사라지는 것만으로는 분할 없는 탭과 구분이 안 됐다; 일반 pane 은 최대 3 면이라 4 면 틀은 최대화 하나뿐, 위 표시 행) | `ctrl+shift+z` → `App.handleZoomPane` | `shift+cmd+z` → `handleZoomPane` | `ctrl+shift+z` → `SessionCore.toggleZoomActive` | ✅ | ✅ | ✅ |
+| 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 (20×5 셀) 에 닿으면 **거기서 멈춘다** (clamp, 2026-08-27 결정 — 고스트가 한계에 서고 놓으면 거기까지만; 예전엔 드래그 전체를 거부해 "끌다가 취소됨" 으로 보였다). **선에 붙은 칸만 변한다** — 선 너머가 같은 축으로 또 갈려 있어도 먼 칸은 px 그대로 (`Tree.keepFarFixed` 가 안쪽 같은-축 분할의 비율을 다시 놓는다; 예전엔 비율이 그대로라 안쪽 분할선까지 비례해 밀렸다). 위아래로 쌓인 칸은 둘 다 선의 이웃이라 같이 변한다. 한계도 먼 칸을 고정한 채 잰다 (`Tree.minExtentKeepFar`). 커서는 분할선 위에서 `col_resize` / `row_resize` | `App.sep_drag` · `finishSeparatorDrag`, 커서는 `WM_SETCURSOR` 의 `IDC_SIZEWE` / `IDC_SIZENS` (`CursorRegion.separator_*`) | `g_sep_drag` · `finishSeparatorDrag`, 커서는 `resetCursorRects` 의 `resizeLeftRight/UpDownCursor` | `sep_drag` · `finishSeparatorDrag` | ✅ | ✅ | ✅ |
+| 최소 크기 20 열 × 5 행 | `MIN_PANE_COLS` / `MIN_PANE_ROWS` (열 × 행 — 터미널 `80x24` 표기 순서). **분할은 갈라지는 두 조각을, 가르는 축만** 검사한다 (2026-08-28 결정 — 좌우 분할은 `cols`, 위아래 분할은 `rows`. 반대 축은 이 분할이 건드리지 않는다: 창이 줄어 19 열이 된 pane 을 위아래로 가르는 것이 "20 열 미만" 으로 거부되던 것이 실기에서 걸렸다). 거부는 `TooSmall` → 대화상자 "Each pane needs at least 20 columns × 5 rows". 창이 줄면 (drop-down 은 커서가 있는 모니터 크기를 따르고 pane 은 비율 유지) pane 이 최소 아래로 **갈 수 있다** — 막지 않는다 (tmux 도 같다). 그 뒤 크기 조절 · 드래그는 그 pane 을 **더 줄이지만 않고** (한계 = 지금 크기, `minExtentKeepFar`), 뒤 검사는 "새로 최소 아래로 떨어지는 pane 이 없다" (`noPaneNewlyBelowMin`) 다. 2026-08-27 macOS 실기: 큰 모니터에서 가른 뒤 작은 모니터로 돌아오니 B · C 가 17 열이 됐고, 예전의 탭 전체 검사 (`allPanesAtLeastMin`, 삭제) 가 A 의 위아래 분할과 B 키우기까지 막았다 | 공통 `pane_layout` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 마우스 경로 | `…` 메뉴 *Split Vertical* / *Split Horizontal* (`command_menu.Command.split_vertical/horizontal`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | ✅ | ✅ | ✅ |
+| 출력 드레인 | 예산 4 ms 하나를 보이는 pane 이 나눠 씀 — 활성 pane 먼저, pane 사이에도 예산 검사 (§13.3.1, 실측 표) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 비활성 pane 스크롤바 | 클릭 = 그 pane 포커스 뒤 그 pane 의 scrollbar 로 (좌클릭 경로가 포커스를 먼저 옮긴다) | 동일 | 동일 | 동일 | ✅ | ✅ | ✅ |
 
 ---
 
@@ -1035,7 +1079,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 > schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은 별도 fatal — `font_validate.showFamilyMustBeStringFatal` / `showGlyphFallbackMustBeListFatal`.
 
 > **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
-> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지).
+> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지). [#483](https://github.com/ensky0/tildaz/issues/483) (2026-08-27) — 새 버전이 키를 더하면 (예: `[keys]` 의 pane 액션) 이전 파일이 여기서 걸리는데, 기본값으로 조용히 채우지 않고 **strict 를 유지**한다. 대신 메시지가 할 일을 알려 준다: 파일을 옮겨 두고 (지우지 말고) 다시 띄워 기본 파일을 새로 만들고, 바꿔 둔 값을 다시 옮겨 적는다. 세 platform 같은 문구 (`messages.config_missing_key_format`).
 > - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 예외는 없다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할 이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다).
 > - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
 > - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigToml(allocator, shell_resolved)` 결과와 user config 를 비교.
@@ -1733,6 +1777,36 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 **예산은 사양 A 가 있을 때만 줄일 수 있다.** 사양 A 를 끈 구조에서 8 → 4 ms 를 하면 duty 가 프레임
 상한에 붙어 처리량이 반토막난다 (Windows ② 60 Hz 실측: 29.3~30.2 → 15.1~15.2 MiB/s, ×0.50). 즉 예산은
 사양 A 아래에서 **응답성 손잡이**, 사양 A 없이는 **처리량 손잡이**다.
+
+### 13.3.1 pane 수 축 — 예산은 하나, 보이는 pane 이 나눠 쓴다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27)
+
+화면 분할로 "활성/비활성" 2 분법이 "보임/안 보임" 이 됐다. `drainFrame` 은 **활성 pane 을 먼저**, 그다음 보이는
+pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산을 검사**한다 — 검사 없이 N 청크를 돌면 최악 점유가
+`예산 + N 청크` 로 pane 수에 비례해 커진다. 예산 자체는 **4 ms 하나**다 — 보이는 pane 이 몇이든 UI 스레드가 한
+번에 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다. "pane 마다 1 ms" 나
+"pane 수 × 4 ms" 는 택하지 않았다 — 전자는 처리량을 pane 수로 나누고 (사양 A 가 있어 어차피 프레임 사이에 더
+드레인한다), 후자는 최악 입력 지연을 pane 수에 비례해 늘린다.
+
+**실측** (`zig build stress -- throughput --layer frame --panes N`, pane 마다 producer 하나 · 32 MiB, macOS Apple
+Silicon, 4 ms 예산). 하네스는 pane 을 가장 큰 pane 부터 모양대로 갈라 균등 배치한다 (`--panes` — 아래 표는 균등이 leaf 수 가중이던 때 (pane 마다 같은 넓이) 의 측정이고, 2026-08-28 "같은 축은 한 줄로 칸 셈" 으로 바뀐 뒤에는 모양에 따라 pane 크기가 같지 않을 수 있다; `--cols/--rows` 는
+pane 들의 합).
+
+| pane | 격자 (합) | 모사 fps | 합계 처리량 | 드레인 1 회 최장 | 예산 초과 프레임 | producer 종료 퍼짐 |
+|---|---|---|---|---|---|---|
+| 1 | 120×40 | 120 | 135~149 MiB/s | 1.45~1.88 ms | 0 | — |
+| 2 | 120×40 | 120 | 230~235 | 4.07 | 7 / 43 | 0 ms (같은 프레임) |
+| 4 | 120×40 | 120 | 207~214 | 4.07 | 25 / 81 | 0 ms |
+| 4 | 120×40 | 60 | 194~195 | 4.08 | 39 / 44 | 0 ms |
+| 8 | 240×80 | 120 | 130 | 3.89 | 0 / 247 | 16 ms (2 프레임) |
+| 8 | 240×80 | 60 | 129 | 4.10 | 17 / 126 | 16 ms |
+| 16 | 240×80 | 120 | 114 | 4.04 | 3 / 556 | 109 ms |
+| 16 | 240×80 | 60 | 114 | 4.09 | 47 / 279 | 66 ms |
+
+읽는 법 — **드레인 1 회 최장 점유가 pane 수와 무관하게 4.0~4.1 ms** 다 (pane 사이 검사를 넣기 전 4 pane 은
+4.20~4.30 이었다). 합계 처리량은 2~4 pane 에서 producer 가 늘어 오르고 8 · 16 에서는 producer 가 CPU 를 나눠 내려간다
+(pane 하나의 몫이 아니라 합계다). "예산 초과 프레임" 은 4 ms 를 넘긴 프레임 수 — 초과 폭은 청크 하나 (≤ 0.1 ms) 다.
+producer 종료 퍼짐은 pane 간 공정성이다 — 16 pane 도 한 자릿수 프레임 안에 함께 끝난다. `frame` 층은 프레임마다
+한 번만 드레인해 (사양 A 없음) 앱의 하한이다.
 
 ### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
 

@@ -38,6 +38,8 @@ read exactly as written, and nothing rewrites its `hotkey`.
 
 > **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
 >
+> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version fails to load with `missing required key …`. The message tells you what to do: move the file aside (add `.bak` to its name), start TildaZ to get a fresh default file, then copy back the values you had changed. TildaZ never edits your file for you.
+>
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
 >
 > Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.
@@ -315,7 +317,8 @@ the equivalent work.
 #### Accepted keys
 
 **By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
-`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `` ` `` (also
+`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
+`Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
 `Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
 Case does not matter. Anything else is an error at startup — including
 layout-specific characters such as `²` on French AZERTY.
@@ -369,6 +372,13 @@ French AZERTY, where the unshifted row is `&é"'(-è_çà` — `Alt+1` physicall
 arrives as Alt+Shift+the `&1` key. Without this exception, switching tabs by
 index would be dead on those layouts. It applies to digits only: `Shift+Alt+F4`
 still does not trigger a binding on `Alt+F4`.
+
+**Bindings that include Shift match the unshifted key.** `Shift+Alt+0` means
+"the `0` key with Shift held". On a US layout that key produces `)` while Shift
+is down, so the binding also matches the character the same key produces without
+Shift — `Shift+Alt+0`, `Shift+Cmd+0`, `Shift+Cmd+[` work on every layout. The
+reverse never happens: a binding without Shift (`Alt+1`) does not fire on
+Alt+Shift+1, apart from the digit rule above.
 
 #### Two things are not in `[keys]`
 

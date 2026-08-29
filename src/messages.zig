@@ -21,6 +21,9 @@ pub const quit_confirm_title = "Quit TildaZ?";
 
 pub const command_toggle_visibility = "Show / Hide TildaZ";
 pub const command_new_tab = "New Tab";
+/// #483 4c — `…` 메뉴의 분할 항목 둘 (확정 설계: 아이콘을 늘리지 않고 메뉴에 넣는다).
+pub const command_split_vertical = "Split Vertical";
+pub const command_split_horizontal = "Split Horizontal";
 pub const command_close_active_tab = "Close Active Tab";
 pub const command_copy_selection = "Copy Selection";
 pub const command_paste = "Paste";
@@ -33,6 +36,11 @@ pub const command_about = "About TildaZ";
 pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md";
 pub const shortcut_new_tab = "Ctrl+Shift+T";
 pub const shortcut_new_tab_macos = "Cmd+T";
+/// #483 — 분할 항목 hint. 기존 hint 처럼 키 이름을 글자로 적는다 (`Enter` 와 같은 표기).
+pub const shortcut_split_vertical = "Ctrl+Shift+Right";
+pub const shortcut_split_vertical_macos = "Option+Cmd+Right";
+pub const shortcut_split_horizontal = "Ctrl+Shift+Down";
+pub const shortcut_split_horizontal_macos = "Option+Cmd+Down";
 pub const shortcut_close_tab = "Ctrl+Shift+W";
 pub const shortcut_close_tab_macos = "Cmd+W";
 pub const shortcut_copy = "Drag / Ctrl+Shift+C";
@@ -53,11 +61,26 @@ pub const shortcut_open_config_macos = "Shift+Cmd+P";
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
 pub const quit_confirm_format = "This will close {d} open tab{s}.";
 
+/// #483 — 탭 하나가 pane 을 여럿 담을 수 있게 되면서 (`pane_layout.MAX_PANES_PER_TAB` = 16)
+/// 위 문구만으로는 **사라지는 셸 수를 알 수 없다** (1 탭 · 16 pane 도 "1 open tab" 이었다 —
+/// 2026-08-29 Windows 실기). 분할이 있을 때만 이 문구를 쓰고, pane 수 = 탭 수 (아무 탭도 안
+/// 갈라짐) 면 위 문구를 그대로 써서 분할을 안 쓰는 사용자에게 낯선 낱말을 안 보인다.
+/// pane 수가 탭 수보다 크면 pane 은 반드시 둘 이상이라 복수형 처리가 필요 없다.
+pub const quit_confirm_panes_format = "This will close {d} open tab{s} ({d} panes).";
+
 /// 새 탭 한도 도달 시 (`session_core.MAX_TABS`). `+` 버튼은 비활성 색 + noop
 /// (#329 — 회색이 곧 피드백) 이지만 단축키 (Cmd+T / Ctrl+Shift+T) 는 시각
 /// 피드백이 없어 이 dialog 로 안내. {d} 는 한도 (현재 32).
 pub const tab_limit_title = "Tab limit reached";
 pub const tab_limit_format = "Maximum {d} tabs are open. Close a tab to create a new one.";
+
+/// #483 — 분할 거부 안내. 단축키에는 시각 피드백이 없어 탭 한도와 같은 dialog 로 알린다
+/// (확정 설계 §② "거부 + 안내"). {d} 는 `pane_layout.MAX_PANES_PER_TAB` (16).
+pub const pane_limit_title = "Pane limit reached";
+pub const pane_limit_format = "This tab already has {d} panes. Close one to split again.";
+/// 결과 pane 이 `pane_layout.MIN_PANE_COLS × MIN_PANE_ROWS` 아래로 내려갈 때. {d}x{d} 는 그 최소.
+pub const pane_too_small_title = "Not enough room to split";
+pub const pane_too_small_format = "Each pane needs at least {d} columns × {d} rows. Enlarge the window or close a pane first.";
 
 /// Linux KDE — 우리 config 의 hotkey 가 *다른 KDE 컴포넌트* (kwin / plasmashell
 /// 등) 의 단축키와 충돌 시 사용자 확인 (#207). OK = 충돌 컴포넌트에서 해당 키만
@@ -461,7 +484,13 @@ pub const config_font_chain_too_long_format = "Configuration: font.family + glyp
 pub const config_font_chain_too_long_fallback_msg = "Configuration: font chain too long";
 pub const config_type_mismatch_format = "Configuration: type mismatch at \"{s}\" — expected {s}, got {s}.";
 pub const config_type_mismatch_fallback_msg = "Configuration: type mismatch";
-pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.";
+/// #483 (2026-08-27 사용자 결정) — 새 버전이 키를 더하면 이전 파일이 여기서 걸린다 (strict schema 는 유지,
+/// 파일에 자동으로 써 넣지 않는다). 사용자가 할 일을 한 문단으로: 파일을 **옮겨 두고** (지우지 말고) 다시 띄우면
+/// 기본 파일이 새로 생기니, 바꿔 둔 값을 다시 옮겨 적으라. 세 platform 이 같은 문구다.
+pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.\n\n" ++
+    "This file was written by an older version and lacks keys the current version needs. " ++
+    "Move the file aside (for example add .bak to its name) and start TildaZ again -- " ++
+    "a fresh default file will be created. Then copy back any values you had changed.";
 pub const config_missing_key_fallback_msg = "Configuration: missing key";
 pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
 pub const config_unknown_key_fallback_msg = "Configuration: unknown key";

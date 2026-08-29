@@ -19,8 +19,22 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-_(empty — folded into `v0.9.2.md`)_
+- **`config_N.toml` gains twelve `[keys]` actions for split panes.** The schema is strict
+  in both directions, so a file written by an older version stops the app with
+  `missing required key "focus_pane_left"` (or another of the twelve). Move the file
+  aside (add `.bak` to its name), start TildaZ to get a fresh default file, then copy
+  back the values you had changed. ([#483](https://github.com/ensky0/tildaz/issues/483))
 
 ## Body candidates
 
-_(empty — folded into `v0.9.2.md`)_
+- Tabs can be split into panes. `Ctrl+Shift+Right` / `Ctrl+Shift+Down` (`Option+Cmd` on
+  macOS) split the active pane, `Alt`/`Cmd`+arrows move the focus, `Shift+Alt`/`Shift+Cmd`
+  +arrows move the split line, `Shift+Alt+0` spreads the panes evenly, and `Ctrl+Shift+Z`
+  zooms one pane to the whole tab. Panes can also be dragged apart by the line between
+  them. ([#483](https://github.com/ensky0/tildaz/issues/483))
+- A plain click no longer starts a text selection: the pointer has to move about 4 pt (or
+  into another cell) first, so a shaky click cannot copy a single character over your
+  clipboard. ([#483](https://github.com/ensky0/tildaz/issues/483))
+- Alt combinations now reach the program on non-Latin keyboard layouts too — `Alt+n` sends
+  `ESC n` on a Russian layout or a Korean input source instead of the layout's own letter.
+  ([#483](https://github.com/ensky0/tildaz/issues/483))

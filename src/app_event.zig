@@ -1,3 +1,5 @@
+const pane_layout = @import("pane_layout.zig");
+
 pub const Event = union(enum) {
     text_input: u21,
     key_input: KeyInput,
@@ -16,7 +18,8 @@ pub const Event = union(enum) {
     /// 우클릭 pressed edge (#329). true 반환 = 소비 (열린 command menu 닫기).
     /// false 면 window 가 기존 즉시 paste 를 수행한다 — menu 가 pointer button
     /// 보다 우선하는 SPEC §5.3 라우팅용.
-    mouse_right_down: void,
+    /// #483 5단계 — 좌표를 싣는다: 비활성 pane 우클릭은 포커스만 (붙여넣기 X).
+    mouse_right_down: MouseEvent,
     /// 창이 focus 를 잃었다 (#390 — Windows `WM_ACTIVATEAPP` wParam=0). 창 *밖*
     /// 클릭은 OS 가 다른 창으로 라우팅해 pointer event 가 우리에게 오지 않으므로,
     /// 열린 command menu 를 닫는 훅은 focus 상실뿐이다. menu 상태가 `App` 에 있어
@@ -40,6 +43,12 @@ pub const Shortcut = union(enum) {
     toggle_visibility: void,
     /// false = monitor fullscreen, true = work-area fullscreen.
     fullscreen: bool,
+    /// #483 — 화면 분할. 방향은 액션 이름에서 왔다 (`config.ActionInput.direction`).
+    split: pane_layout.Direction,
+    focus_pane: pane_layout.Direction,
+    resize_pane: pane_layout.Direction,
+    equalize_panes: void,
+    zoom_pane: void,
 };
 
 pub const KeyInput = enum {

@@ -41,6 +41,9 @@ pub const HINT_GAP_PT: f32 = 16;
 pub const Command = enum {
     toggle_visibility,
     new_tab,
+    /// #483 4c — 활성 pane 분할. 마우스 경로 (우클릭은 붙여넣기라 컨텍스트 메뉴를 못 쓴다).
+    split_vertical,
+    split_horizontal,
     close_active_tab,
     copy_selection,
     paste,
@@ -54,6 +57,8 @@ pub const entries = [_]?Command{
     .toggle_visibility,
     null,
     .new_tab,
+    .split_vertical,
+    .split_horizontal,
     .close_active_tab,
     .copy_selection,
     .paste,
@@ -64,8 +69,12 @@ pub const entries = [_]?Command{
     .about,
 };
 
-/// 전체 content 높이 (padding 제외) — 항목 9 + 구분선 2.
-const CONTENT_HEIGHT_PT: f32 = ITEM_HEIGHT_PT * 9 + SEPARATOR_HEIGHT_PT * 2;
+/// 전체 content 높이 (padding 제외) — 항목과 구분선을 `entries` 에서 센다 (항목 11 + 구분선 2).
+const CONTENT_HEIGHT_PT: f32 = blk: {
+    var h: f32 = 0;
+    for (entries) |entry| h += entryHeight(entry);
+    break :blk h;
+};
 pub const HEIGHT_PT: f32 = PADDING_PT * 2 + CONTENT_HEIGHT_PT;
 
 fn entryHeight(entry: ?Command) f32 {
@@ -76,6 +85,8 @@ pub fn label(command: Command) []const u8 {
     return switch (command) {
         .toggle_visibility => messages.command_toggle_visibility,
         .new_tab => messages.command_new_tab,
+        .split_vertical => messages.command_split_vertical,
+        .split_horizontal => messages.command_split_horizontal,
         .close_active_tab => messages.command_close_active_tab,
         .copy_selection => messages.command_copy_selection,
         .paste => messages.command_paste,
@@ -93,6 +104,8 @@ pub fn shortcut(command: Command, macos: bool, toggle_hotkey: []const u8, fullsc
     return switch (command) {
         .toggle_visibility => toggle_hotkey,
         .new_tab => if (macos) messages.shortcut_new_tab_macos else messages.shortcut_new_tab,
+        .split_vertical => if (macos) messages.shortcut_split_vertical_macos else messages.shortcut_split_vertical,
+        .split_horizontal => if (macos) messages.shortcut_split_horizontal_macos else messages.shortcut_split_horizontal,
         .close_active_tab => if (macos) messages.shortcut_close_tab_macos else messages.shortcut_close_tab,
         .copy_selection => if (macos) messages.shortcut_copy_macos else messages.shortcut_copy,
         .paste => if (macos) messages.shortcut_paste_macos else messages.shortcut_paste,
@@ -407,15 +420,18 @@ test "command menu order and hit rectangles include separator gap" {
     try std.testing.expect(!v.can_scroll_up and !v.can_scroll_down and !v.clipped);
     try std.testing.expect(hitScrollIndicator(v, 490, 30) == null); // 잘림 없음 = 표시 행 없음
     // 항목 y (ITEM=22, SEP=9, PAD=6, top=28): toggle [34,56) / sep [56,65) /
-    // new [65,87) / close [87,109) / copy [109,131) / paste [131,153) /
-    // fs [153,175) / config [175,197) / sep [197,206) / ks [206,228) / about [228,250).
+    // new [65,87) / split_vertical [87,109) / split_horizontal [109,131) / close [131,153) /
+    // copy [153,175) / paste [175,197) / fs [197,219) / config [219,241) / sep [241,250) /
+    // ks [250,272) / about [272,294).
     try std.testing.expectEqual(Command.toggle_visibility, hit(v, 490, 40).?);
     try std.testing.expect(hit(v, 490, 60) == null); // first separator
     try std.testing.expectEqual(Command.new_tab, hit(v, 490, 70).?);
-    try std.testing.expectEqual(Command.open_config, hit(v, 490, 180).?);
-    try std.testing.expect(hit(v, 490, 200) == null); // second separator
-    try std.testing.expectEqual(Command.keyboard_shortcuts, hit(v, 490, 210).?);
-    try std.testing.expectEqual(Command.about, hit(v, 490, 240).?);
+    try std.testing.expectEqual(Command.split_vertical, hit(v, 490, 90).?);
+    try std.testing.expectEqual(Command.split_horizontal, hit(v, 490, 120).?);
+    try std.testing.expectEqual(Command.open_config, hit(v, 490, 230).?);
+    try std.testing.expect(hit(v, 490, 245) == null); // second separator
+    try std.testing.expectEqual(Command.keyboard_shortcuts, hit(v, 490, 255).?);
+    try std.testing.expectEqual(Command.about, hit(v, 490, 280).?);
     try std.testing.expect(hit(v, 470, 40) == null); // 메뉴 왼쪽 밖
 }
 
@@ -426,8 +442,8 @@ test "narrow viewport clamps menu to the left edge" {
 }
 
 test "#329 short viewport quantizes to whole entries and scrolls to reach the tail" {
-    // avail_full = 200-28-8-12 = 152 < content 216 → clipped, avail = 152-28 = 124.
-    // toggle(22)+sep(9)+new(22)+close(22)+copy(22)+paste(22) = 119 ≤ 124 → 6 entry.
+    // avail_full = 200-28-8-12 = 152 < content 260 → clipped, avail = 152-28 = 124.
+    // toggle(22)+sep(9)+new(22)+split_vertical(22)+split_horizontal(22)+close(22) = 119 ≤ 124 → 6 entry.
     const v = view(800, 200, 28, 0);
     try std.testing.expect(v.clipped);
     try std.testing.expectEqual(@as(usize, 6), v.count);
@@ -490,7 +506,7 @@ test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구
     const palette = chrome_palette.derive(.{ 0, 0, 0 }, true);
     var buf: [MAX_RECTS]ui_rect.Rect = undefined;
 
-    // 잘림 없는 뷰 (viewport 800x600, 탭바 28) — entry 11개 전부 보이고 구분선 2개.
+    // 잘림 없는 뷰 (viewport 800x600, 탭바 28) — entry 13개 전부 보이고 구분선 2개.
     const v = view(800, 600, 28, 0);
     const with_hover = rects(&buf, v, .{ .open = true, .hover = .new_tab }, 1.0, &palette);
     try std.testing.expectEqual(@as(usize, 4), with_hover.len); // bg + 강조 + 구분선 2
@@ -515,11 +531,11 @@ test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구
     try std.testing.expectEqual(@as(f32, 304), with_hover[2].w);
     try std.testing.expectEqual(@as(f32, 1), with_hover[2].h);
     try std.testing.expectEqual(palette.separator, with_hover[2].color);
-    // 첫 구분선 [56,65) 의 중앙 = 60.5, 두 번째 [197,206) 의 중앙 = 201.5 →
-    // #357 로 **정수 격자에 맞춰** 61 / 202 로 나온다. 소수 `.5` 를 그대로 두면
+    // 첫 구분선 [56,65) 의 중앙 = 60.5, 두 번째 [241,250) 의 중앙 = 245.5 →
+    // #357 로 **정수 격자에 맞춰** 61 / 246 로 나온다. 소수 `.5` 를 그대로 두면
     // Linux(`@round` → 61) 와 GPU(`[60.5,61.5)` → 60) 가 갈렸다 (Windows 실측).
     try std.testing.expectEqual(@as(f32, 61), with_hover[2].y);
-    try std.testing.expectEqual(@as(f32, 202), with_hover[3].y);
+    try std.testing.expectEqual(@as(f32, 246), with_hover[3].y);
 
     // hover 도 focus 도 없으면 강조 rect 를 만들지 않는다.
     const plain = rects(&buf, v, .{ .open = true }, 1.0, &palette);
