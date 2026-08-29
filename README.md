@@ -17,9 +17,9 @@ you do not.
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
 > **v0.9.3 — Tabs can be split into panes.**
-> Split a tab left/right or top/bottom, move the focus and the split line with
-> the keyboard, zoom one pane to the whole tab, or drag the line between two
-> panes. Every pane runs its own shell.
+> An arrow key picks the side the new shell lands on — left, right, above or
+> below. Move the focus and the split line with the keyboard, zoom one pane to
+> the whole tab, or drag the line between two panes. Every pane runs its own shell.
 
 ## Who is TildaZ for?
 
