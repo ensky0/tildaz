@@ -3368,6 +3368,9 @@ fn handleSplit(dir: pane_layout.Direction) void {
     if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
     g_session.splitActive(dir, paneAreaMac(), paneMetricsMac()) catch |err| switch (err) {
         error.TooSmall => {
+            // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
+            // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
+            log.appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ @tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS });
             var buf: [160]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                 messages.pane_too_small_format;
@@ -3375,6 +3378,7 @@ fn handleSplit(dir: pane_layout.Direction) void {
             return;
         },
         error.TooManyPanes => {
+            log.appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ @tagName(dir), pane_layout.MAX_PANES_PER_TAB });
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                 messages.pane_limit_format;
