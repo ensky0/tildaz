@@ -114,11 +114,12 @@ pub fn resetActive(host: *Host) void {
 /// invalidate. 활성 탭 없으면 null.
 pub const CloseOutcome = enum { changed, ended };
 
-/// 활성 탭 닫기. 마지막 탭이면 host.terminate 호출 (앱 종료). 아니면 override
-/// clear + invalidate. 호출처는 .changed 분기에서 grid resize 등 platform 동작.
+/// 활성 pane 닫기 — #483 확정 설계 §②: pane 이 여럿이면 그 pane 만, 마지막 하나면 탭.
+/// 마지막 탭이면 host.terminate 호출 (앱 종료). 아니면 override clear + invalidate.
+/// 호출처는 .changed 분기에서 grid resize 등 platform 동작.
 pub fn closeActive(host: *Host) ?CloseOutcome {
     if (host.session.activeTab() == null) return null;
-    return outcome(host, host.session.closeTab(host.session.active_tab));
+    return outcome(host, host.session.closeActivePane());
 }
 
 /// PTY exit (자식 shell 종료) → host 의 deferred drain 이 호출. 정책 동일 —

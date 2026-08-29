@@ -28,18 +28,54 @@ pub fn clampCell(col: i32, row: i32, cols: u16, rows: u16) Cell {
     };
 }
 
+/// #483 6단계 — 포인터 위치 (물리 px). 선택 시작 문턱 판정에만 쓴다.
+pub const Px = struct { x: f32, y: f32 };
+
 pub const SelectionState = struct {
     active: bool = false,
     start_pin: ?ghostty.PageList.Pin = null,
+    /// #483 6단계 — 누른 셀 · 누른 자리 · 문턱. 셋 다 `arm` 이 쓴다.
+    start_cell: Cell = .{ .col = 0, .row = 0 },
+    start_px: Px = .{ .x = 0, .y = 0 },
+    /// 물리 px 문턱 — host 가 `ui_metrics.selectionDragSlopPx(cell_w_px, scale)` 로 만들어 준다.
+    slop_px: f32 = 0,
+    /// 문턱을 한 번이라도 넘었는가. 켜지면 계속 켜져 있다.
+    armed: bool = false,
 
-    pub fn begin(self: *SelectionState, screen: *ghostty.Screen, cell: Cell) void {
+    pub fn begin(self: *SelectionState, screen: *ghostty.Screen, cell: Cell, px: Px, slop_px: f32) void {
         self.active = true;
+        self.armed = false;
+        self.start_cell = cell;
+        self.start_px = px;
+        self.slop_px = slop_px;
         screen.clearSelection();
         self.start_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } });
     }
 
-    pub fn update(self: *SelectionState, screen: *ghostty.Screen, cell: Cell) void {
+    /// #483 6단계 — 이 자리로 선택을 늘려도 되는가 (2026-08-28 macOS 실기).
+    ///
+    /// **트랙패드 클릭의 1~3 px 떨림에도 `update` 가 불려** 한 칸 선택이 만들어졌고, 놓을 때 자동 복사까지
+    /// 돼서 pane 마다 흰 자국이 남고 클립보드가 한 글자로 덮였다 (사용자가 pane 셋을 클릭해 포커스만
+    /// 옮겼는데 세 칸에 자국). 그래서 둘 중 하나가 되기 전에는 선택을 만들지 않는다:
+    ///
+    /// - 누른 자리에서 **문턱 (`slop_px`) 보다 많이** 움직였다 — 같은 칸 안이어도 된다. 그래야 글자 하나를
+    ///   그 자리에서 끌어 선택할 수 있다 (문턱은 `ui_metrics.selectionDragSlopPx` 가 반 칸을 넘지 않게 잡는다).
+    /// - **다른 칸으로 넘어갔다** — 문턱보다 작게 움직였어도 칸이 바뀌었으면 선택이다.
+    ///
+    /// 한 번 켜지면 유지되므로 (`armed`) 이웃 칸으로 갔다 돌아오는 한 칸 선택도 그대로 된다.
+    fn arm(self: *SelectionState, cell: Cell, px: Px) bool {
+        if (self.armed) return true;
+        const moved = @abs(px.x - self.start_px.x) > self.slop_px or
+            @abs(px.y - self.start_px.y) > self.slop_px;
+        const same_cell = cell.col == self.start_cell.col and cell.row == self.start_cell.row;
+        if (!moved and same_cell) return false;
+        self.armed = true;
+        return true;
+    }
+
+    pub fn update(self: *SelectionState, screen: *ghostty.Screen, cell: Cell, px: Px) void {
         if (!self.active) return;
+        if (!self.arm(cell, px)) return;
         const start = self.start_pin orelse return;
         const end = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } }) orelse return;
         const selection = ghostty.Selection.init(start, end, false);
@@ -50,12 +86,14 @@ pub const SelectionState = struct {
         if (!self.active) return false;
         self.active = false;
         self.start_pin = null;
+        self.armed = false;
         return true;
     }
 
     pub fn cancel(self: *SelectionState) void {
         self.active = false;
         self.start_pin = null;
+        self.armed = false;
     }
 };
 
@@ -139,10 +177,10 @@ pub const ReportGeometry = struct {
     cell_h: i32,
     cols: u16,
     rows: u16,
-    /// `TERMINAL_PADDING` 상당.
-    pad: i32,
-    /// 탭바 높이 (단일 탭에서 0 일 수 있다).
-    tab_bar_h: i32,
+    /// 첫 셀의 좌상 px. #483 — pane 이 창의 왼쪽 위에 있지 않을 수 있어 `pad` · `tab_bar_h` 가
+    /// 아니라 격자 원점을 받는다 (pane 하나면 `pad` · `tab_bar_h + pad` 와 같은 값).
+    grid_x: i32,
+    grid_y: i32,
 };
 
 /// pointer 픽셀 좌표를 인코더 입력으로. cell 은 grid 안으로 clamp 하지만
@@ -157,8 +195,8 @@ pub fn reportEvent(
     geom: ReportGeometry,
     any_button_pressed: bool,
 ) mouse_report.Event {
-    const term_x = x - geom.pad;
-    const term_y = y - geom.tab_bar_h - geom.pad;
+    const term_x = x - geom.grid_x;
+    const term_y = y - geom.grid_y;
     const cols: i32 = @intCast(geom.cols);
     const rows: i32 = @intCast(geom.rows);
     const col: u32 = if (geom.cell_w > 0 and term_x >= 0)
@@ -284,6 +322,46 @@ pub fn selectWord(screen: *ghostty.Screen, cell: Cell) bool {
 }
 
 const word_boundaries = [_]u21{ ' ', '\t', '"', '`', '|', ':', ';', '(', ')', '[', ']', '{', '}', '<', '>' };
+
+test "#483 6단계 — 클릭 떨림은 선택을 만들지 않는다 (문턱 · 칸 넘기 중 하나)" {
+    const at = struct {
+        fn s(col: u16, row: u16, x: f32, y: f32) SelectionState {
+            return .{
+                .active = true,
+                .start_cell = .{ .col = col, .row = row },
+                .start_px = .{ .x = x, .y = y },
+                .slop_px = 8, // 4 pt @2x — 셀 폭 19 px 의 절반보다 작다.
+            };
+        }
+    }.s;
+
+    // ① 같은 칸 안 · 문턱 이하 (트랙패드 떨림 3 px) — 선택 아님.
+    var jitter = at(5, 3, 100, 200);
+    try std.testing.expect(!jitter.arm(.{ .col = 5, .row = 3 }, .{ .x = 103, .y = 201 }));
+    try std.testing.expect(!jitter.armed);
+
+    // ② 같은 칸 안이어도 문턱을 넘으면 시작 — 글자 하나를 그 자리에서 끌어 선택할 수 있다.
+    var in_cell = at(5, 3, 100, 200);
+    try std.testing.expect(in_cell.arm(.{ .col = 5, .row = 3 }, .{ .x = 109, .y = 200 }));
+    try std.testing.expect(in_cell.armed);
+
+    // ③ 문턱보다 작게 움직였어도 칸이 바뀌면 시작 (셀 경계 바로 옆을 눌렀을 때).
+    var crossed = at(5, 3, 100, 200);
+    try std.testing.expect(crossed.arm(.{ .col = 6, .row = 3 }, .{ .x = 102, .y = 200 }));
+
+    // ④ 세로 이동도 같다.
+    var vertical = at(5, 3, 100, 200);
+    try std.testing.expect(vertical.arm(.{ .col = 5, .row = 3 }, .{ .x = 100, .y = 212 }));
+
+    // ⑤ 한 번 켜지면 돌아와도 유지 — 이웃 칸으로 갔다 온 한 칸 선택.
+    try std.testing.expect(crossed.arm(.{ .col = 5, .row = 3 }, .{ .x = 100, .y = 200 }));
+
+    // ⑥ finish · cancel 은 문턱을 다시 채운다 (다음 클릭이 또 걸러지게).
+    _ = crossed.finish();
+    try std.testing.expect(!crossed.armed);
+    in_cell.cancel();
+    try std.testing.expect(!in_cell.armed);
+}
 
 test "selection finish and cancel clear active state" {
     var selection = SelectionState{ .active = true };

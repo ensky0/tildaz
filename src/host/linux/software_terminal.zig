@@ -14,6 +14,8 @@ const freetype = @import("../../font/linux/freetype.zig");
 const block_element = @import("../../renderer/block_element.zig");
 const cell_color = @import("../../renderer/cell_color.zig");
 const cell_decoration = @import("../../renderer/cell_decoration.zig");
+const pane_draw = @import("../../renderer/pane_draw.zig");
+const pane_layout = @import("../../pane_layout.zig");
 const box_drawing = @import("../../box_drawing.zig");
 const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
@@ -274,7 +276,21 @@ pub const FrameLayer = struct {
 /// #277 S2-5 — 한 프레임의 입력. `paint` (CPU) 와 `buildGlFrame` (GL) 이 **같은
 /// 값을 받는다** — 입력이 갈리면 목록을 공유해도 소용이 없다.
 pub const FrameInputs = struct {
-    terminal: *ghostty.Terminal,
+    /// #483 — 이 프레임에 그릴 pane 들 (활성 탭의 `pane_layout.layout` 순서). 각 pane 의 `state` 는
+    /// `paint` / `buildGlFrame` 이 갱신하고, 첫 pane 의 배경색이 표면 전체의 배경이다.
+    panes: []const pane_draw.PaneDraw,
+    /// #483 4b — pane 사이 회색 분할선 (`pane_layout.separators`). pane 하나면 빈 slice.
+    separators: []const pane_layout.Separator,
+    /// #483 4b — 탭바를 뺀 터미널 영역. 활성 pane 의 어느 변이 창 가장자리인지 (amber 를 긋지
+    /// 않는 변) 판정에 쓴다.
+    pane_area: pane_layout.Rect,
+    /// #483 4b — pane 이 둘 이상일 때 (또는 최대화 중) 활성 pane 의 영역. 하나면 null — 알릴 것이 없다.
+    active_pane_rect: ?pane_layout.Rect,
+    /// #483 6단계 — 최대화 중인가. 그러면 활성 pane 의 **네 변** 에 amber (창 가장자리 변 포함) — 분할선 · amber 가
+    /// 사라지는 것만으로는 "분할 없는 탭" 과 구분이 안 됐다. 어느 변을 칠하는지는 `pane_layout.focusEdges` 참조.
+    zoomed: bool,
+    /// #483 4c — 분할선 드래그 중 고스트 (놓으면 분할선이 갈 자리, 셀 경계 스냅). 드래그 중이 아니면 null.
+    drag_ghost: ?pane_layout.Rect,
     theme: *const themes.Theme,
     width: i32,
     height: i32,
@@ -330,7 +346,6 @@ pub var acc_frames: u64 = 0;
 pub var acc_cells_ns: u64 = 0;
 
 pub const Renderer = struct {
-    render_state: ghostty.RenderState = .empty,
     /// #277 S2-3/S2-4/S2-5 — 프레임마다 재사용하는 그리기 목록. `collectFrame` 이
     /// 채우고 CPU · GL 이 소비한다.
     layer: FrameLayer = .{},
@@ -376,6 +391,8 @@ pub const Renderer = struct {
     /// #530 — 조합 중인 dead key 표시 (`^` · `^´` …). `preedit_text` 와 같은 모양으로 그리되
     /// **저장소가 다르다** — 그쪽은 IME 가 commit 할 텍스트라 host 의 PTY · 정책 경로가 함께
     /// 보지만, 이것은 화면 표시만이다. 둘이 동시에 있으면 IME (`preedit_text`) 가 우선이다.
+    /// #483 — 렌더러는 이 값을 직접 읽지 않는다: host 의 `frameInputs` 가 활성 pane 의 `PaneDraw.preedit_utf8`
+    /// 에 얹는다 (IME preedit 이 있으면 그것, 없으면 이것).
     compose_preview: []const u8 = "",
     /// #203 Phase C — drawDialogContent 가 그린 OK / Cancel 버튼 좌표 (dialog
     /// surface-local physical pixel). host (handlePointerButton) 가 hit-test 에
@@ -447,7 +464,6 @@ pub const Renderer = struct {
         const chrome_bg = chrome_theme.background;
 
         return .{
-            .render_state = .empty,
             .font_ctx = terminal_ctx,
             .tab_font_ctx = tab_ctx,
             .font_chain = chain,
@@ -463,7 +479,6 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer, allocator: std.mem.Allocator) void {
         self.layer.deinit(allocator);
-        self.render_state.deinit(allocator);
         self.releaseDialogFonts();
         self.tab_font_ctx.deinit();
         self.font_ctx.deinit();
@@ -673,18 +688,18 @@ pub const Renderer = struct {
         return @intCast(self.font_ctx.cell_height_px);
     }
 
-    /// #277 S2-3 — GL 경로용 프레임 준비. `render_state` 를 갱신하고 터미널 레이어
+    /// #277 S2-3 — GL 경로용 프레임 준비. `in.panes` 의 각 `state` (탭의 `RenderState`) 를 갱신하고 터미널 레이어
     /// 목록을 만들어 돌려준다. 표면 배경색도 함께 준다 (GL 은 `glClear` 로 칠한다).
     ///
     /// CPU 경로의 `paint` 과 **같은 `collectTerminalLayer` 를 쓴다** — 그게 두 경로가
     /// 갈리지 않는 이유다. chrome (탭바 · 단일 탭 컨트롤 · command menu) 은 아직
     /// 여기 없다.
     ///
-    /// render_state 갱신이 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
+    /// 어느 pane 의 `state` 갱신이라도 실패하면 배경색과 빈 목록을 돌려준다 — 그 프레임은 빈
     /// 화면이지만 CPU 경로의 같은 실패 처리와 동일하다 (`fill` 후 return).
     pub fn buildGlFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) GlFrame {
         const t_start = if (timing_enabled) timingNowNs() else 0;
-        self.render_state.update(allocator, in.terminal) catch {
+        for (in.panes) |p| p.state.update(allocator, p.terminal) catch {
             self.layer.clear();
             return .{ .background = in.theme.background, .layer = &self.layer };
         };
@@ -697,7 +712,13 @@ pub const Renderer = struct {
             acc_frames += 1;
         };
         self.collectFrame(allocator, in);
-        return .{ .background = self.render_state.colors.background, .layer = &self.layer };
+        return .{ .background = frameBackground(in), .layer = &self.layer };
+    }
+
+    /// #483 2단계 ② — 표면 전체를 채우는 배경. 첫 pane (활성 탭) 의 현재 배경 (OSC 11 반영) 이고,
+    /// pane 이 없으면 theme 배경이다. 4단계에서 pane 마다 배경이 갈릴 수 있으면 다시 본다.
+    fn frameBackground(in: FrameInputs) ghostty.color.RGB {
+        return if (in.panes.len > 0) in.panes[0].state.colors.background else in.theme.background;
     }
 
     /// 그릴 세션이 없는 프레임용 — 목록을 비우고 그 자리를 돌려준다. 배경만 칠하는
@@ -717,7 +738,7 @@ pub const Renderer = struct {
     ///
     /// 목록의 순서는 `TerminalLayer` 주석 참고 (macOS · Windows 와 같은 계층 순서).
     ///
-    /// `render_state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
+    /// `in.panes` 의 `state` 가 최신이어야 한다 (호출 전에 `update` 됨을 전제).
     /// 할당 실패는 조용히 무시한다 — 그 프레임의 일부가 빠질 뿐이고, 다음 프레임에
     /// 다시 시도한다. 여기서 화면 전체를 포기하는 것보다 낫다.
     pub fn collectFrame(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
@@ -725,14 +746,45 @@ pub const Renderer = struct {
 
         const tab_bar_h = self.tabBarHeightPx(in.tab_titles.len);
         self.collectTabBar(allocator, in, tab_bar_h);
-        const t_cells = if (timing_enabled) timingNowNs() else 0;
-        self.collectCells(allocator, tab_bar_h, in.blink_faint);
-        if (timing_enabled) acc_cells_ns += @intCast(timingNowNs() - t_cells);
-        self.collectCursor(allocator, tab_bar_h);
-        self.collectScrollbar(allocator, in);
-        self.collectPreedit(allocator, tab_bar_h);
+        // #376 — blink 셀 존재 판정은 프레임 단위다. 여기서 지우고 pane 들이 OR 로 모은다.
+        self.saw_blink_cell = false;
+        // #483 2단계 ② — pane 마다 셀 · 커서 · scrollbar · preedit. 순서는 이전과 같다.
+        for (in.panes) |pane| {
+            const t_cells = if (timing_enabled) timingNowNs() else 0;
+            self.collectCells(allocator, pane);
+            if (timing_enabled) acc_cells_ns += @intCast(timingNowNs() - t_cells);
+            self.collectCursor(allocator, pane);
+            self.collectScrollbar(allocator, pane);
+            self.collectPreedit(allocator, pane);
+        }
+        self.collectPaneChrome(allocator, in);
         self.collectSingleTabControls(allocator, in);
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
+    }
+
+    /// #483 4b — pane 사이 회색 분할선과 활성 pane 의 amber 선. 회색은 탭 구분선과 같은 팔레트 값
+    /// (`chrome.separator`, 테마 파생), amber 는 `TAB_ACCENT_COLOR` (브랜드 색, 파생 안 함). amber 는
+    /// 활성 pane 의 padding 안쪽 가장자리에 `PANE_FOCUS_LINE_PT` 두께로, **다른 pane 과 맞닿는
+    /// 변에만** — 창 가장자리 변은 긋지 않는다 (결정 3). 비활성 pane 은 dim 하지 않는다 (2026-08-27
+    /// 사용자 결정). 둘 다 셀 위에 겹치지 않으므로 (분할선 · padding 자리) scrollbar 와 같은 overlay
+    /// 목록에 둔다.
+    fn collectPaneChrome(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
+        const sep_color = rgbFromMetrics(self.chrome.separator);
+        for (in.separators) |s| {
+            self.layer.overlay.append(allocator, .{ .x = s.rect.x, .y = s.rect.y, .w = s.rect.w, .h = s.rect.h, .color = sep_color }) catch {};
+        }
+        const r = in.active_pane_rect orelse return;
+        const a = in.pane_area;
+        const t: i32 = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_FOCUS_LINE_PT, self.scale));
+        const amber = rgbFromMetrics(ui_metrics.TAB_ACCENT_COLOR);
+        // 어느 변인가는 `pane_layout.focusEdges` 규칙 하나로 (안쪽 변 · 안쪽 하나면 3 면 · 최대화면 4 면).
+        const e = pane_layout.focusEdges(r, a, in.zoomed);
+        if (e.left) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (e.right) self.layer.overlay.append(allocator, .{ .x = r.x + r.w - t, .y = r.y, .w = t, .h = r.h, .color = amber }) catch {};
+        if (e.top) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y, .w = r.w, .h = t, .color = amber }) catch {};
+        if (e.bottom) self.layer.overlay.append(allocator, .{ .x = r.x, .y = r.y + r.h - t, .w = r.w, .h = t, .color = amber }) catch {};
+        // 4c — 드래그 고스트는 amber 로, 분할선이 갈 자리에 (셀 위에 겹칠 수 있다 — 드래그 중에만).
+        if (in.drag_ghost) |g| self.layer.overlay.append(allocator, .{ .x = g.x, .y = g.y, .w = g.w, .h = g.h, .color = amber }) catch {};
     }
 
     /// #362 — 한 줄에서 실제로 볼 필요가 있는 칸의 개수.
@@ -769,21 +821,19 @@ pub const Renderer = struct {
     /// 텍스트가 각자 전체 셀을 돌아 4K 에서 프레임마다 95,824 번 방문했다. 셀 방문
     /// 자체가 수집 비용의 대부분이라 (셀당 작업을 셋이나 꺼도 8% 밖에 안 줄었다)
     /// 한 번만 도는 것이 곧 성능이다 (#362).
-    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32, blink_faint: bool) void {
-        const colors = self.render_state.colors;
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
+    fn collectCells(self: *Renderer, allocator: std.mem.Allocator, pane: pane_draw.PaneDraw) void {
+        const state = pane.state;
+        const blink_faint = pane.blink_faint;
+        const colors = state.colors;
+        const cw = pane.cell_w;
+        const ch = pane.cell_h;
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
-        const pad = self.paddingPx();
-        const rows = self.render_state.rows;
-        const cols = self.render_state.cols;
-        const row_slice = self.render_state.row_data.slice();
+        const pad = pane.pad;
+        const rows = state.rows;
+        const cols = state.cols;
+        const row_slice = state.row_data.slice();
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
-
-        // #376 — blink 위상은 **프레임 단위** 값이다 (셀마다 다르지 않다). 한 번
-        // 구해서 모든 셀이 같은 값을 쓰게 해야 한 화면 안에서 위상이 갈리지 않는다.
-        self.saw_blink_cell = false;
 
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
@@ -812,8 +862,10 @@ pub const Renderer = struct {
                 const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const cell_x: i32 = pad + @as(i32, @intCast(x)) * cw;
-                const cell_y: i32 = tab_bar_h + pad + @as(i32, @intCast(y)) * ch;
+                // #483 2단계 ② — 격자 원점은 pane 기준 (`rect` 는 탭바를 뺀 영역). pane 하나면 이전의
+                // `pad` / `tab_bar_h + pad` 와 같은 값이다.
+                const cell_x: i32 = pane.rect.x + pad + @as(i32, @intCast(x)) * cw;
+                const cell_y: i32 = pane.rect.y + pad + @as(i32, @intCast(y)) * ch;
                 const cell_w: i32 = if (raw.wide == .wide) cw * 2 else cw;
 
                 // 셀 배경 — 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지
@@ -1194,40 +1246,44 @@ pub const Renderer = struct {
     /// Cursor (#297 — 세로 막대 bar, 세 platform 공통). 셀 좌측에 opaque bar.
     /// wide char 는 wide_tail 보정으로 글자 시작 cell 의 좌측에 위치. 폭은
     /// `ui_metrics.CURSOR_BAR_W_PT` × scale (Windows/macOS 와 동일 식).
-    fn collectCursor(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        if (!self.render_state.cursor.visible) return;
-        const vp = self.render_state.cursor.viewport orelse return;
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
-        const pad = self.paddingPx();
-        var cx: i32 = pad + @as(i32, @intCast(vp.x)) * cw;
+    fn collectCursor(self: *Renderer, allocator: std.mem.Allocator, pane: pane_draw.PaneDraw) void {
+        const state = pane.state;
+        if (!state.cursor.visible) return;
+        const vp = state.cursor.viewport orelse return;
+        const cw = pane.cell_w;
+        const ch = pane.cell_h;
+        const pad = pane.pad;
+        var cx: i32 = pane.rect.x + pad + @as(i32, @intCast(vp.x)) * cw;
         if (vp.wide_tail and vp.x > 0) cx -= cw;
         self.layer.overlay.append(allocator, .{
             .x = cx,
-            .y = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch,
+            .y = pane.rect.y + pad + @as(i32, @intCast(vp.y)) * ch,
             .w = @trunc(ui_metrics.cursorBarWidthPx(self.scale)),
             .h = ch,
-            .color = self.render_state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
+            .color = state.colors.cursor orelse .{ .r = 180, .g = 180, .b = 180 },
         }) catch {};
     }
 
     /// #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
     /// 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
     /// #259 — drag hit-test (`wayland_minimal.scrollbarHit`) 와 같은 입력.
-    fn collectScrollbar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
-        const colors = self.render_state.colors;
-        const scrollbar_top: i32 = if (in.tab_titles.len > 0) self.chromeHeightPx() else 0;
-        const sb = in.terminal.screens.active.pages.scrollbar();
+    fn collectScrollbar(self: *Renderer, allocator: std.mem.Allocator, pane: pane_draw.PaneDraw) void {
+        const colors = pane.state.colors;
+        // #483 2단계 ② — track 은 pane 기준이다. `thumbRect` 의 viewport 인자에 pane 의 오른쪽 · 아래
+        // **가장자리**를, track_top 에 `rect.y + scrollbar_top_inset` 을 넘기면 같은 식이 pane
+        // 좌표계에서 성립한다 (pane 하나면 이전 인자와 값이 같다 — inset 은 host 가 `chromeHeightPx
+        // − tab_bar_h` 로 만든다).
+        const sb = pane.terminal.screens.active.pages.scrollbar();
         const r = scrollbar.thumbRect(
             sb.total,
             sb.len,
             sb.offset,
-            @floatFromInt(in.width),
-            @floatFromInt(in.height),
-            @floatFromInt(scrollbar_top),
-            @floatFromInt(self.paddingPx()),
-            @floatFromInt(self.scrollbarMinThumbHPx()),
-            @floatFromInt(self.scrollbarWPx()),
+            @floatFromInt(pane.rect.x + pane.rect.w),
+            @floatFromInt(pane.rect.y + pane.rect.h),
+            @floatFromInt(pane.rect.y + pane.scrollbar_top_inset),
+            @floatFromInt(pane.pad),
+            pane.scrollbar_min_thumb_h,
+            pane.scrollbar_w,
             .{ colors.background.r, colors.background.g, colors.background.b },
         ) orelse return;
         // 정수 격자 스냅과 색 변환은 chrome 그리기와 같은 규칙을 쓴다 (#357).
@@ -1249,31 +1305,32 @@ pub const Renderer = struct {
     /// commit_string 으로 음절 완성 보내주면 그때 PTY 송신 + preedit 클리어.
     ///
     /// #530 — dead key 조합 중 표시 (`compose_preview`) 도 같은 자리 · 같은 모양이다. IME preedit
-    /// 이 있으면 그것이 우선이고, 없을 때만 compose 표시를 그린다.
-    fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, tab_bar_h: i32) void {
-        const text = if (self.preedit_text.len > 0) self.preedit_text else self.compose_preview;
-        if (text.len == 0) return;
-        const vp = self.render_state.cursor.viewport orelse return;
+    /// 이 있으면 그것이 우선이고, 없을 때만 compose 표시를 그린다. #483 — 둘 중 무엇을 그릴지는 host 의
+    /// `frameInputs` 가 **활성 pane** 의 `preedit_utf8` 에 얹어 정한다 (다른 pane 은 빈 slice).
+    fn collectPreedit(self: *Renderer, allocator: std.mem.Allocator, pane: pane_draw.PaneDraw) void {
+        const state = pane.state;
+        if (pane.preedit_utf8.len == 0) return;
+        const vp = state.cursor.viewport orelse return;
 
         // 보라색 배경 — macOS Metal `pre_bg_color = .{0.25, 0.25, 0.5, 1}` 와
         // 동일 색. 8-bit RGB 환산 64 / 64 / 128.
         const preedit_bg = ghostty.color.RGB{ .r = 64, .g = 64, .b = 128 };
-        const cw = self.cellWidth();
-        const ch = self.cellHeight();
+        const cw = pane.cell_w;
+        const ch = pane.cell_h;
         const ascent: i32 = @intCast(self.font_ctx.ascent_px);
-        const pad = self.paddingPx();
-        const cols = self.render_state.cols;
-        const fg = self.render_state.colors.foreground;
-        const pre_y: i32 = tab_bar_h + pad + @as(i32, @intCast(vp.y)) * ch;
+        const pad = pane.pad;
+        const cols = state.cols;
+        const fg = state.colors.foreground;
+        const pre_y: i32 = pane.rect.y + pad + @as(i32, @intCast(vp.y)) * ch;
 
         var col: i32 = @intCast(vp.x);
-        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        var utf8_iter = std.unicode.Utf8Iterator{ .bytes = pane.preedit_utf8, .i = 0 };
         while (utf8_iter.nextCodepoint()) |cp| {
             const w_cells: i32 = @intCast(display_width.codepointWidth(cp));
             if (w_cells <= 0) continue;
             if (col + w_cells > @as(i32, @intCast(cols))) break;
 
-            const cell_x: i32 = pad + col * cw;
+            const cell_x: i32 = pane.rect.x + pad + col * cw;
             const cell_w: i32 = w_cells * cw;
             self.layer.preedit_bg.append(allocator, .{
                 .x = cell_x,
@@ -1601,12 +1658,12 @@ pub const Renderer = struct {
     ) void {
         const width = in.width;
         const height = in.height;
-        self.render_state.update(allocator, in.terminal) catch {
+        for (in.panes) |p| p.state.update(allocator, p.terminal) catch {
             fill(memory, width, height, stride, in.theme.background);
             return;
         };
 
-        fill(memory, width, height, stride, self.render_state.colors.background);
+        fill(memory, width, height, stride, frameBackground(in));
 
         // #277 S2-4/S2-5 — **목록은 GL 경로와 같은 수집기가 만들고 여기서는 그리기만
         // 한다.** 순서는 `FrameLayer` 가 정의하고 두 경로가 그대로 따른다.
@@ -2003,7 +2060,7 @@ pub const Renderer = struct {
     /// 차이가 없다** — 같은 글리프를 어차피 그릴 때 채운다. 레이아웃 경로가
     /// `*const Renderer` 인 것을 유지하려고 여기서만 벗긴다.
     fn dialogFontAdvance(ctx: *const anyopaque, cp: u21) i32 {
-        const font_ctx: *font.Context = @constCast(@ptrCast(@alignCast(ctx)));
+        const font_ctx: *font.Context = @ptrCast(@alignCast(@constCast(ctx)));
         return @intCast(font_ctx.glyph(cp, .regular).advance);
     }
 

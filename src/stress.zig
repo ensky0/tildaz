@@ -41,6 +41,7 @@ const config = @import("config.zig");
 const instance_context = @import("instance_context.zig");
 const perf = @import("perf.zig");
 const session_core = @import("session_core.zig");
+const pane_layout = @import("pane_layout.zig");
 const terminal = @import("terminal.zig");
 const workload = @import("stress/workload.zig");
 const runtime = @import("runtime.zig");
@@ -409,6 +410,9 @@ const Options = struct {
     /// `scrollback` 명령이 출력을 몇 구간으로 나눠 볼지. 구간마다 처리 속도를 따로
     /// 재서 뒤로 갈수록 느려지는지 본다.
     segments: u32 = 8,
+    /// #483 6단계 — `frame` 층에서 활성 탭을 N 개 pane 으로 갈라 pane 마다 producer 하나 (드레인 예산
+    /// 재검토 측정). 1 이면 이전과 같다.
+    panes: u32 = 1,
 };
 
 fn parseArgs(args: []const []const u8) !Options {
@@ -446,6 +450,9 @@ fn parseArgs(args: []const []const u8) !Options {
         } else if (std.mem.eql(u8, key, "--segments")) {
             opts.segments = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
             if (opts.segments == 0 or opts.segments > max_segments) return error.Usage;
+        } else if (std.mem.eql(u8, key, "--panes")) {
+            opts.panes = std.fmt.parseInt(u32, value, 10) catch return error.Usage;
+            if (opts.panes == 0 or opts.panes > pane_layout.MAX_PANES_PER_TAB) return error.Usage;
         } else {
             return error.Usage;
         }
@@ -475,6 +482,7 @@ fn printUsage(rt: Runtime) !void {
         \\  --scrollback scrollback lines      (default: config default)
         \\  --fps        frame layer only      (default: 60)
         \\  --segments   scrollback only       (default: 8)
+        \\  --panes      frame layer only      (default: 1; 2..16 = split panes, #483)
         \\
         \\Grid size changes the parser's line-wrapping work, so always report it
         \\together with the numbers.
@@ -514,6 +522,11 @@ const FrameSplit = struct {
     frames: u64,
     /// 프레임 예산 (`DRAIN_FRAME_BUDGET_NS`) 을 넘긴 프레임 수. 리포트가 값을 함께 찍는다.
     over_budget: u64,
+    /// #483 6단계 — pane 수 · pane 별 producer 종료 시각 (프레임 단위, timer 절대값) · 드레인 1 회 최장 점유.
+    panes: u32 = 1,
+    finished: u32 = 0,
+    finish_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    max_drain_ns: u64 = 0,
 };
 
 const Counters = struct {
@@ -595,11 +608,15 @@ fn runParser(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
 const ExitState = struct {
     exited: std.atomic.Value(bool) = .init(false),
+    /// #483 6단계 — pane 마다 producer 가 하나라 마지막 pane 이 끝날 때 `exited`.
+    exited_count: std.atomic.Value(u32) = .init(0),
+    total: u32 = 1,
 };
 
 fn onTabExit(_: usize, userdata: ?*anyopaque) void {
     const state: *ExitState = @ptrCast(@alignCast(userdata.?));
-    state.exited.store(true, .release);
+    const n = state.exited_count.fetchAdd(1, .acq_rel) + 1;
+    if (n >= state.total) state.exited.store(true, .release);
 }
 
 /// producer 를 PTY 자식으로 띄운 세션. `pty` 와 `frame` 층이 같은 준비 과정을 쓴다.
@@ -644,7 +661,31 @@ const ProducerSession = struct {
         errdefer self.core.deinit();
 
         // 여기서 자식이 뜨고 곧바로 쓰기 시작한다 — 호출자는 바로 비우기 시작해야 한다.
+        self.state.total = opts.panes;
         try self.core.createTab(opts.cols, opts.rows);
+        // #483 6단계 — `--panes N`: 활성 탭을 N 개 pane 으로 갈라 pane 마다 producer 하나. 합성 metrics
+        // (셀 9×19 · pad 6 · scrollbar 10 · 분할선 1) 로 영역을 cols×rows 격자 하나 크기로 잡으므로 pane 들의
+        // 격자를 합치면 대략 pane 하나일 때와 같다 — 파서 일은 비슷하고 pane 수만 축이 된다. 균등 배치.
+        if (opts.panes > 1) {
+            const m: pane_layout.Metrics = .{ .cell_w = 9, .cell_h = 19, .pad = 6, .scrollbar_w = 10, .separator_w = 1 };
+            const area: pane_layout.Rect = .{ .x = 0, .y = 0, .w = @as(i32, opts.cols) * 9 + 22, .h = @as(i32, opts.rows) * 19 + 12 };
+            var i: u32 = 1;
+            while (i < opts.panes) : (i += 1) {
+                // 가장 큰 pane 을 골라 그 모양대로 가른다 (넓으면 오른쪽, 높으면 아래 — `+` Alt+클릭의 auto).
+                // 활성 pane 만 계속 가르면 (사용자가 하듯) 깊은 트리가 되어 16 pane 에서 `TooSmall` 에 걸린다.
+                const group = self.core.activeGroup() orelse return error.NoTab;
+                var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+                var biggest: ?pane_layout.PaneRect = null;
+                for (group.layout(area, m, &buf)) |pr| {
+                    if (biggest == null or pr.rect.w * pr.rect.h > biggest.?.rect.w * biggest.?.rect.h) biggest = pr;
+                }
+                const pr = biggest orelse return error.NoTab;
+                _ = self.core.setActivePane(pr.pane);
+                try self.core.splitActive(if (pr.rect.w >= pr.rect.h) .right else .down, area, m);
+                // 분할마다 균등화 — 새 pane 만 계속 가르면 1/2 · 1/4 · 1/8 로 줄어 `TooSmall` 에 걸린다.
+                self.core.equalizeActive(area, m);
+            }
+        }
         return self;
     }
 
@@ -736,6 +777,9 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     var over_budget: u64 = 0;
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
+    var max_drain_ns: u64 = 0;
+    var finish_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var finished: u32 = 0;
 
     while (true) {
         const before_ns = timer.read();
@@ -744,6 +788,10 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
         frames += 1;
         if (after_ns - before_ns > frame_budget_ns) over_budget += 1;
+        max_drain_ns = @max(max_drain_ns, after_ns - before_ns);
+        // #483 6단계 — pane 별 producer 종료 시각 (이 프레임에서 처음 본 순간).
+        const exited_now = session.state.exited_count.load(.acquire);
+        while (finished < exited_now and finished < finish_ns.len) : (finished += 1) finish_ns[finished] = after_ns;
 
         if (had_output) {
             if (first_data_ns == null) first_data_ns = after_ns;
@@ -770,7 +818,7 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
     try report(rt, opts, .{
         .consumed = counters.drain[2],
-        .expected = expectedPtyBytes(opts),
+        .expected = if (expectedPtyBytes(opts)) |e| e * opts.panes else null,
         .elapsed_ns = last_data_ns - start_ns,
         .spawn_ns = start_ns,
         .counters = counters,
@@ -779,6 +827,10 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
             .fps_explicit = opts.fps_explicit,
             .frames = frames,
             .over_budget = over_budget,
+            .panes = opts.panes,
+            .finished = finished,
+            .finish_ns = finish_ns,
+            .max_drain_ns = max_drain_ns,
         },
     });
 }
@@ -1128,6 +1180,17 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
             split.over_budget,
             frame_budget_ns / std.time.ns_per_ms,
         });
+        w.print("  drain max   {d:.2} ms (한 번 호출의 최장 점유)\n", .{
+            @as(f64, @floatFromInt(split.max_drain_ns)) / std.time.ns_per_ms,
+        });
+        // #483 6단계 — pane 마다 producer 하나. 종료 시각의 퍼짐이 pane 간 공정성이다.
+        if (split.panes > 1) {
+            w.print("  panes       {d} (pane 마다 producer 하나, 합쳐 {d} MiB)\n", .{ split.panes, opts.bytes / (1024 * 1024) * split.panes });
+            const base = result.spawn_ns orelse 0;
+            for (split.finish_ns[0..split.finished], 0..) |t, i| {
+                w.print("  pane exit   #{d} at {d:.1} ms\n", .{ i + 1, @as(f64, @floatFromInt(t -| base)) / std.time.ns_per_ms });
+            }
+        }
         // 기본값을 그대로 쓰면 고주사율 화면에서 크게 어긋난다. 실측 (당시 예산 8 ms):
         // 120 Hz 화면을 60 으로 모사했더니 ansi 가 103 MiB/s 로 나왔는데 (예산 초과 86 %),
         // 120 으로 고치자 138 MiB/s · 초과 39 % 였다. 예산이 프레임 간격에서 차지하는 비율이

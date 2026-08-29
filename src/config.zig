@@ -26,6 +26,7 @@ const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
 const input_policy = @import("input_policy.zig");
+const pane_layout = @import("pane_layout.zig");
 /// #496 — host 가 key event 의 물리 위치를 넘길 때 쓴다 (`lookupAction` 의 3 번째
 /// 인자). config 표면의 타입이므로 여기서 다시 노출한다.
 pub const PhysicalCode = physical_key.PhysicalCode;
@@ -149,6 +150,12 @@ const HotkeyNamedKey = enum {
     @"return",
     page_up,
     page_down,
+    /// #483 — 방향키. 분할 pane 의 기본 bindings (`ctrl+shift+left` 등) 가 쓴다. 어느
+    /// layout 에나 있는 단일 물리 키라 라벨로 적어도 자리가 흔들리지 않는다 (#482).
+    arrow_left,
+    arrow_right,
+    arrow_up,
+    arrow_down,
     bracket_left,
     bracket_right,
 };
@@ -304,6 +311,10 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
                 .grave, .bracket_left, .bracket_right => true,
+                // #483 — 방향키는 글자를 내지 않지만 터미널에 escape sequence 를 보낸다 —
+                // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
+                // `else => true` 와 같은 취급이다.
+                .arrow_left, .arrow_right, .arrow_up, .arrow_down => true,
             },
             // #496 — 위치도 같은 기준이다. 그 *자리* 가 글자를 내는지로 본다: 어떤
             // layout 에서든 `KeyW` 자리는 글자를 내고 `F5` 자리는 내지 않는다.
@@ -341,24 +352,27 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
 /// 실제 key-code 매핑을 검증하는 별도 작업이다.
 fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
-        .{ .name = "f1", .key = .f1 },            .{ .name = "f2", .key = .f2 },
-        .{ .name = "f3", .key = .f3 },            .{ .name = "f4", .key = .f4 },
-        .{ .name = "f5", .key = .f5 },            .{ .name = "f6", .key = .f6 },
-        .{ .name = "f7", .key = .f7 },            .{ .name = "f8", .key = .f8 },
-        .{ .name = "f9", .key = .f9 },            .{ .name = "f10", .key = .f10 },
-        .{ .name = "f11", .key = .f11 },          .{ .name = "f12", .key = .f12 },
-        .{ .name = "space", .key = .space },      .{ .name = "grave", .key = .grave },
-        .{ .name = "backquote", .key = .grave },  .{ .name = "tab", .key = .tab },
-        .{ .name = "escape", .key = .escape },    .{ .name = "esc", .key = .escape },
-        .{ .name = "return", .key = .@"return" }, .{ .name = "enter", .key = .@"return" },
+        .{ .name = "f1", .key = .f1 },                    .{ .name = "f2", .key = .f2 },
+        .{ .name = "f3", .key = .f3 },                    .{ .name = "f4", .key = .f4 },
+        .{ .name = "f5", .key = .f5 },                    .{ .name = "f6", .key = .f6 },
+        .{ .name = "f7", .key = .f7 },                    .{ .name = "f8", .key = .f8 },
+        .{ .name = "f9", .key = .f9 },                    .{ .name = "f10", .key = .f10 },
+        .{ .name = "f11", .key = .f11 },                  .{ .name = "f12", .key = .f12 },
+        .{ .name = "space", .key = .space },              .{ .name = "grave", .key = .grave },
+        .{ .name = "backquote", .key = .grave },          .{ .name = "tab", .key = .tab },
+        .{ .name = "escape", .key = .escape },            .{ .name = "esc", .key = .escape },
+        .{ .name = "return", .key = .@"return" },         .{ .name = "enter", .key = .@"return" },
         // #493 — `[keys]` 의 기본 bindings 가 쓴다 (scroll_page_up / prev_tab 등).
         // 어느 layout 에나 있는 단일 물리 키라 layout 종속 문제가 없다 (#482).
-        .{ .name = "pageup", .key = .page_up },   .{ .name = "pgup", .key = .page_up },
-        .{ .name = "pagedown", .key = .page_down }, .{ .name = "pgdn", .key = .page_down },
+        .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
+        .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
+        // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
+        // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
+        .{ .name = "left", .key = .arrow_left },          .{ .name = "right", .key = .arrow_right },
+        .{ .name = "up", .key = .arrow_up },              .{ .name = "down", .key = .arrow_down },
         // #493 — 기본 bindings 의 `prev_tab` / `next_tab` 이 쓴다. 세 platform 의 키
         // 값이 이미 기존 매처에 있어 추측이 아니다 (아래 각 map 의 주석 참고).
-        .{ .name = "bracketleft", .key = .bracket_left },
-        .{ .name = "bracketright", .key = .bracket_right },
+        .{ .name = "bracketleft", .key = .bracket_left }, .{ .name = "bracketright", .key = .bracket_right },
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
@@ -471,6 +485,10 @@ test "configured hotkey display is derived from the parsed native value" {
 /// DE별 backend가 이 `keysym + modifiers`를 KGlobalAccel의 Qt key 또는 GTK/XKB
 /// accelerator 문자열로 변환한다.
 const LinuxHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). 이벤트 쪽에만 채우고 binding 쪽은 0.
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     /// keysym (xkb). `f1` = 0xffbe (xkbcommon `XKB_KEY_F1`).
     keysym: u32 = 0xffbe,
     /// modifier 비트마스크. Win 패턴 동등 — `MOD_*` 비트. `keysymToAccelerator`
@@ -539,6 +557,11 @@ const LinuxHotkey = struct {
                 .@"return" => 0xff0d,
                 .page_up => 0xff55,
                 .page_down => 0xff56,
+                // #483 — `wayland_minimal.xkb_key_left` / `..up` / `..right` / `..down` 과 같은 값.
+                .arrow_left => 0xff51,
+                .arrow_up => 0xff52,
+                .arrow_right => 0xff53,
+                .arrow_down => 0xff54,
                 // `wayland_minimal.xkb_key_bracketleft` / `..right` 와 같은 값.
                 .bracket_left => 0x5b,
                 .bracket_right => 0x5d,
@@ -902,20 +925,20 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
 
     const pairs = [_]struct { named: HotkeyNamedKey, code: PhysicalCode }{
-        .{ .named = .f1, .code = .f1 },       .{ .named = .f2, .code = .f2 },
-        .{ .named = .f3, .code = .f3 },       .{ .named = .f4, .code = .f4 },
-        .{ .named = .f5, .code = .f5 },       .{ .named = .f6, .code = .f6 },
-        .{ .named = .f7, .code = .f7 },       .{ .named = .f8, .code = .f8 },
-        .{ .named = .f9, .code = .f9 },       .{ .named = .f10, .code = .f10 },
-        .{ .named = .f11, .code = .f11 },     .{ .named = .f12, .code = .f12 },
-        .{ .named = .space, .code = .space }, .{ .named = .tab, .code = .tab },
+        .{ .named = .f1, .code = .f1 },                       .{ .named = .f2, .code = .f2 },
+        .{ .named = .f3, .code = .f3 },                       .{ .named = .f4, .code = .f4 },
+        .{ .named = .f5, .code = .f5 },                       .{ .named = .f6, .code = .f6 },
+        .{ .named = .f7, .code = .f7 },                       .{ .named = .f8, .code = .f8 },
+        .{ .named = .f9, .code = .f9 },                       .{ .named = .f10, .code = .f10 },
+        .{ .named = .f11, .code = .f11 },                     .{ .named = .f12, .code = .f12 },
+        .{ .named = .space, .code = .space },                 .{ .named = .tab, .code = .tab },
         .{ .named = .escape, .code = .escape },
         // 라벨은 `return`, W3C 이름은 `Enter` 다 — 같은 키다.
-        .{ .named = .@"return", .code = .enter },
-        .{ .named = .grave, .code = .backquote },
-        .{ .named = .page_up, .code = .page_up },
-        .{ .named = .page_down, .code = .page_down },
-        .{ .named = .bracket_left, .code = .bracket_left },
+                      .{ .named = .@"return", .code = .enter },
+        .{ .named = .grave, .code = .backquote },             .{ .named = .page_up, .code = .page_up },
+        .{ .named = .page_down, .code = .page_down },         .{ .named = .arrow_left, .code = .arrow_left },
+        .{ .named = .arrow_right, .code = .arrow_right },     .{ .named = .arrow_up, .code = .arrow_up },
+        .{ .named = .arrow_down, .code = .arrow_down },       .{ .named = .bracket_left, .code = .bracket_left },
         .{ .named = .bracket_right, .code = .bracket_right },
     };
     for (pairs) |pair| {
@@ -1017,8 +1040,8 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 23 개 + prev_tab / next_tab 이 2 개씩 = 25.
-    try std.testing.expectEqual(@as(usize, 25), count);
+    // 액션 35 개 (#483 의 pane 12 개 포함) + prev_tab / next_tab 이 2 개씩 = 37.
+    try std.testing.expectEqual(@as(usize, 37), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1143,6 +1166,10 @@ test "hotkey 파싱 — OS 코드 값 매핑 (#294 G1)" {
 }
 
 const WindowsHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). Windows 는 VK 가 Shift 무관이라 늘 0 (세 타입이 같은 필드를 가져야 `lookupAction` 이 한 코드로 컴파일된다).
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     vkey: u32 = 0x70, // VK_F1
     modifiers: u32 = 0,
 
@@ -1209,6 +1236,11 @@ const WindowsHotkey = struct {
                 // #493 — `VK_PRIOR` / `VK_NEXT`. #482 의 `wndProc` 이 쓰는 값과 같다.
                 .page_up => 0x21,
                 .page_down => 0x22,
+                // #483 — `VK_LEFT` / `VK_UP` / `VK_RIGHT` / `VK_DOWN`.
+                .arrow_left => 0x25,
+                .arrow_up => 0x26,
+                .arrow_right => 0x27,
+                .arrow_down => 0x28,
                 // `VK_OEM_4` / `VK_OEM_6`. `window.zig` 의 prev/next tab 이 쓰는 값.
                 .bracket_left => 0xDB,
                 .bracket_right => 0xDD,
@@ -1248,6 +1280,10 @@ const windows_single_char_lookup = blk: {
 };
 
 const MacHotkey = struct {
+    /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). 이벤트 쪽에만 채우고 binding 쪽은 0.
+    /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
+    /// US 에서 `⇧+0` 은 `)` 라 라벨 `0` 과 영영 만나지 못했다 (`lookupAction` 주석). 0 = 없음.
+    unshifted: u32 = 0,
     /// `kVK_*` (Carbon Events.h). 우리는 macOS Tahoe + Carbon 못 써 직접 매핑.
     keycode: u32 = 0x7A, // kVK_F1
     /// CGEventFlags (`kCGEventFlagMask*`). u64 — bit 16..23 사용.
@@ -1318,6 +1354,7 @@ const MacHotkey = struct {
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
+                .arrow_left, .arrow_right, .arrow_up, .arrow_down => 0,
             },
         };
     }
@@ -1355,6 +1392,12 @@ const MacHotkey = struct {
                 // 쓰는 값과 같다 (116 / 121 십진).
                 .page_up => 0x74,
                 .page_down => 0x79,
+                // #483 — `kVK_LeftArrow` 0x7B · `RightArrow` 0x7C · `DownArrow` 0x7D · `UpArrow`
+                // 0x7E. `physical_key.macKeyCode` 와 같은 값 — 위 named↔code 테스트가 맞춘다.
+                .arrow_left => 0x7B,
+                .arrow_right => 0x7C,
+                .arrow_down => 0x7D,
+                .arrow_up => 0x7E,
                 // `kVK_ANSI_LeftBracket` / `..RightBracket`. `host/macos.zig` 의
                 // prev/next tab 이 쓰는 값.
                 .bracket_left => 0x21,
@@ -1836,6 +1879,22 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .open_config => &.{"shift+cmd+p"},
         .open_log => &.{"shift+cmd+l"},
         .dump_perf => &.{"shift+cmd+f12"},
+        // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
+        // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
+        // 글자라 안 쓴다. `alt+cmd+방향키` 는 시스템 기본에 없다.
+        .split_vertical => &.{"alt+cmd+right"},
+        .split_horizontal => &.{"alt+cmd+down"},
+        .focus_pane_left => &.{"cmd+left"},
+        .focus_pane_right => &.{"cmd+right"},
+        .focus_pane_up => &.{"cmd+up"},
+        .focus_pane_down => &.{"cmd+down"},
+        .resize_pane_left => &.{"shift+cmd+left"},
+        .resize_pane_right => &.{"shift+cmd+right"},
+        .resize_pane_up => &.{"shift+cmd+up"},
+        .resize_pane_down => &.{"shift+cmd+down"},
+        .equalize_panes => &.{"shift+cmd+0"},
+        // 최대화의 Z 는 WezTerm (`Ctrl+Shift+Z`) 선례 — 세 platform 이 같은 글자.
+        .zoom_pane => &.{"shift+cmd+z"},
     };
 }
 
@@ -1867,6 +1926,21 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .open_config => &.{"ctrl+shift+p"},
         .open_log => &.{"ctrl+shift+l"},
         .dump_perf => &.{"ctrl+shift+f12"},
+        // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
+        // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
+        // 않으므로 피했다.
+        .split_vertical => &.{"ctrl+shift+right"},
+        .split_horizontal => &.{"ctrl+shift+down"},
+        .focus_pane_left => &.{"alt+left"},
+        .focus_pane_right => &.{"alt+right"},
+        .focus_pane_up => &.{"alt+up"},
+        .focus_pane_down => &.{"alt+down"},
+        .resize_pane_left => &.{"shift+alt+left"},
+        .resize_pane_right => &.{"shift+alt+right"},
+        .resize_pane_up => &.{"shift+alt+up"},
+        .resize_pane_down => &.{"shift+alt+down"},
+        .equalize_panes => &.{"shift+alt+0"},
+        .zoom_pane => &.{"ctrl+shift+z"},
     };
 }
 
@@ -1894,7 +1968,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         \\# KeyboardEvent.code values: https://www.w3.org/TR/uievents-code/
         \\#
         \\# Accepted labels: F1-F12, A-Z, 0-9, space, tab, escape, return,
-        \\#                  grave(`), pageup, pagedown, [, ]
+        \\#                  grave(`), pageup, pagedown, left, right, up, down, [, ]
         \\# Accepted positions: every key a keyboard can send -- letters, digits,
         \\#                  symbols, numpad, arrows, F13-F24. See CONFIG.md.
         \\#
@@ -1913,6 +1987,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     );
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
+        .{ .title = "Panes", .actions = &.{ .split_vertical, .split_horizontal, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane } },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -1963,6 +2038,24 @@ pub const KeyAction = enum {
     open_config,
     open_log,
     dump_perf,
+    // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
+    // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
+    /// 2026-08-27 결정 — 분할은 둘: `split_vertical` 은 세로 분할선 (좌우, 새 pane **오른쪽**),
+    /// `split_horizontal` 은 가로 분할선 (위아래, 새 pane **아래**) — iTerm2 · Windows Terminal 의 낱말 뜻과
+    /// 같다 (tmux · WezTerm 은 반대). 포커스는 새 pane 으로 (tmux · iTerm2 · WT · Ghostty · vim 모두 그렇다).
+    /// 왼쪽 · 위로 가르는 액션은 어느 터미널에도 기본에 없어 뺐다.
+    split_vertical,
+    split_horizontal,
+    focus_pane_left,
+    focus_pane_right,
+    focus_pane_up,
+    focus_pane_down,
+    resize_pane_left,
+    resize_pane_right,
+    resize_pane_up,
+    resize_pane_down,
+    equalize_panes,
+    zoom_pane,
 
     /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
     /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
@@ -2068,6 +2161,8 @@ pub const ActionInput = struct {
     input: input_policy.Input,
     /// `switch_tab` 일 때 0-based 탭 인덱스. 그 외에는 null.
     tab_index: ?usize = null,
+    /// #483 — `split` · `focus_pane` · `resize_pane` 일 때 방향. 그 외에는 null.
+    direction: ?pane_layout.Direction = null,
 };
 
 pub fn inputForAction(action: KeyAction) ActionInput {
@@ -2095,6 +2190,18 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
+        .split_vertical => .{ .input = .{ .shortcut = .split }, .direction = .right },
+        .split_horizontal => .{ .input = .{ .shortcut = .split }, .direction = .down },
+        .focus_pane_left => .{ .input = .{ .shortcut = .focus_pane }, .direction = .left },
+        .focus_pane_right => .{ .input = .{ .shortcut = .focus_pane }, .direction = .right },
+        .focus_pane_up => .{ .input = .{ .shortcut = .focus_pane }, .direction = .up },
+        .focus_pane_down => .{ .input = .{ .shortcut = .focus_pane }, .direction = .down },
+        .resize_pane_left => .{ .input = .{ .shortcut = .resize_pane }, .direction = .left },
+        .resize_pane_right => .{ .input = .{ .shortcut = .resize_pane }, .direction = .right },
+        .resize_pane_up => .{ .input = .{ .shortcut = .resize_pane }, .direction = .up },
+        .resize_pane_down => .{ .input = .{ .shortcut = .resize_pane }, .direction = .down },
+        .equalize_panes => .{ .input = .{ .shortcut = .equalize_panes } },
+        .zoom_pane => .{ .input = .{ .shortcut = .zoom_pane } },
     };
 }
 
@@ -2191,13 +2298,22 @@ pub fn lookupActionWithFallback(
     return null;
 }
 
+/// #483 6단계 — **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다.** `shift+alt+0` 은 "Shift 를 누른 채
+/// `0` 키" 라는 뜻인데, 라벨은 Shift 가 반영된 글자라 US 에서는 `)` (Linux keysym `parenright` · macOS
+/// `charactersByApplyingModifiers:`) 가 도착해 `0` 과 영영 만나지 못했다 — `⇧⌘0` 균등 · `⇧⌘[` 이전 탭이 macOS 에서,
+/// `shift+alt+0` 이 Linux 실제 키보드에서 죽어 있던 원인 (2026-08-27 실기). AZERTY 는 `⇧+à` 가 `0` 을 내므로 라벨이
+/// 바로 맞고, 이 규칙은 그때 아무 일도 하지 않는다. 두 조건으로 좁혀 #493 이 거부한 "동작 넓어짐" 은 없다:
+/// binding 에 Shift 가 **적혀 있고**, 수식키가 **정확히** 같을 때만 (숫자 예외 없이). 그래서 US 의 `Alt+Shift+1`
+/// (`!`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다. Windows 는 VK 가 Shift 무관이라 `unshifted` 가 늘 0 이다.
 pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?PhysicalCode) ?KeyAction {
     std.debug.assert(hotkey.code == null);
     for (bindings) |b| {
-        const mods_match = b.hotkey.modifiers == hotkey.modifiers or
+        const exact_mods = b.hotkey.modifiers == hotkey.modifiers;
+        const mods_match = exact_mods or
             (isDigitBinding(b.hotkey) and
                 b.hotkey.modifiers == (hotkey.modifiers & ~@as(@TypeOf(hotkey.modifiers), Hotkey.MOD_SHIFT)));
         if (!mods_match) continue;
+        const try_unshifted = exact_mods and hotkey.unshifted != 0 and (b.hotkey.modifiers & Hotkey.MOD_SHIFT) != 0;
         if (b.hotkey.code) |want| {
             // 위치 binding — 자리가 일치해야 한다. 라벨 쪽 값 (keysym / vkey /
             // keycode) 은 보지 않는다.
@@ -2221,16 +2337,64 @@ pub fn lookupAction(bindings: []const KeyBinding, hotkey: Hotkey, code: ?Physica
             // 는 위치라서, 라벨과 위치를 같은 칸에 넣을 수 없다.
             if (b.hotkey.label != 0) {
                 if (hotkey.label != 0 and hotkey.label == b.hotkey.label) return b.action;
+                if (try_unshifted and hotkey.unshifted == b.hotkey.label) return b.action;
             } else if (hotkey.keycode == b.hotkey.keycode) {
                 return b.action;
             }
             continue;
         }
-        if (b.hotkey.code == null and hotkey.code == null and modifiersAside(b.hotkey) == modifiersAside(hotkey)) {
-            return b.action;
+        if (b.hotkey.code == null and hotkey.code == null) {
+            if (modifiersAside(b.hotkey) == modifiersAside(hotkey)) return b.action;
+            if (try_unshifted and modifiersAside(b.hotkey) == hotkey.unshifted) return b.action;
         }
     }
     return null;
+}
+
+test "#483 6단계 — Shift 를 적은 binding 은 무시프트 값으로도 맞는다 (⇧⌘0 · ⇧⌘[ · shift+alt+0), Shift 없는 binding 은 넓어지지 않는다" {
+    var buf: [8]KeyBinding = undefined;
+    var n: usize = 0;
+    const add = struct {
+        fn f(b: []KeyBinding, count: *usize, text: []const u8, action: KeyAction) !void {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            b[count.*] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            count.* += 1;
+        }
+    }.f;
+    if (is_macos) {
+        try add(&buf, &n, "shift+cmd+0", .equalize_panes);
+        try add(&buf, &n, "shift+cmd+[", .prev_tab);
+        try add(&buf, &n, "cmd+1", .switch_tab1);
+        const bindings = buf[0..n];
+        const sc: u64 = Hotkey.MOD_SHIFT | Hotkey.MOD_SUPER;
+        // US: ⇧⌘0 은 라벨 `)` 로 도착 — 무시프트 `0` 으로 맞는다.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 29, .label = ')', .unshifted = '0', .modifiers = sc }, null).?);
+        // US: ⇧⌘[ 은 `{` — 무시프트 `[`.
+        try std.testing.expectEqual(KeyAction.prev_tab, lookupAction(bindings, .{ .keycode = 33, .label = '{', .unshifted = '[', .modifiers = sc }, null).?);
+        // AZERTY: ⇧+à 가 `0` 을 내므로 라벨이 바로 맞는다 (unshifted 는 비-ASCII 라 0).
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 29, .label = '0', .unshifted = 0, .modifiers = sc }, null).?);
+        // 넓어지지 않는다: US 의 ⇧⌘1 (`!`, 무시프트 `1`) 은 Shift 없는 `cmd+1` 에 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 18, .label = '!', .unshifted = '1', .modifiers = sc }, null) == null);
+        // Shift 없이 누른 ⌘0 은 `shift+cmd+0` 에 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 29, .label = '0', .unshifted = '0', .modifiers = Hotkey.MOD_SUPER }, null) == null);
+    } else if (is_windows) {
+        try add(&buf, &n, "shift+alt+0", .equalize_panes);
+        const bindings = buf[0..n];
+        // VK 는 Shift 무관 — 예전부터 맞았고 unshifted 는 0.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .vkey = '0', .modifiers = Hotkey.MOD_SHIFT | Hotkey.MOD_ALT }, null).?);
+    } else {
+        try add(&buf, &n, "shift+alt+0", .equalize_panes);
+        try add(&buf, &n, "alt+1", .switch_tab1);
+        const bindings = buf[0..n];
+        const sa: u32 = Hotkey.MOD_SHIFT | Hotkey.MOD_ALT;
+        // US: Shift+Alt+0 은 keysym `parenright` (0x29) — 무시프트 `0`.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keysym = 0x29, .unshifted = '0', .modifiers = sa }, null).?);
+        // 넓어지지 않는다: Alt+Shift+1 (`exclam`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다 (#493 결정 유지).
+        try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x21, .unshifted = '1', .modifiers = sa }, null) == null);
+    }
 }
 
 /// modifier 를 뺀 라벨 쪽 키 값. `std.meta.eql` 로 통째로 비교하면 Shift 예외를
@@ -3193,7 +3357,7 @@ test "default config TOML uses the common terminal font defaults" {
     // "부르는 법 → 안에서 도는 것 → 언제 뜨는가 → 어떻게 보이는가 → 한계" 의 의도가
     // 사라진다. TOML 은 파싱이 순서와 무관하므로 파싱 결과로는 잡히지 않는다.
     const order = [_][]const u8{
-        "hotkey", "shell", "auto_start", "hidden_start", "theme", "max_scroll_lines",
+        "hotkey",   "shell",  "auto_start", "hidden_start", "theme", "max_scroll_lines",
         "[window]", "[font]",
     };
     var at: usize = 0;

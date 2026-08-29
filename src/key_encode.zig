@@ -95,13 +95,47 @@ pub fn isNavOrFunction(code: physical_key.PhysicalCode) bool {
         .page_down,
         .insert,
         .delete,
-        .f1, .f2, .f3, .f4, .f5, .f6,
-        .f7, .f8, .f9, .f10, .f11, .f12,
-        .f13, .f14, .f15, .f16, .f17, .f18,
-        .f19, .f20, .f21, .f22, .f23, .f24,
+        .f1,
+        .f2,
+        .f3,
+        .f4,
+        .f5,
+        .f6,
+        .f7,
+        .f8,
+        .f9,
+        .f10,
+        .f11,
+        .f12,
+        .f13,
+        .f14,
+        .f15,
+        .f16,
+        .f17,
+        .f18,
+        .f19,
+        .f20,
+        .f21,
+        .f22,
+        .f23,
+        .f24,
         => true,
         else => false,
     };
+}
+
+/// #533 후속 ([#483](https://github.com/ensky0/tildaz/issues/483) 브랜치에서 고침) — 물리 키가 **US 배열
+/// 에서 내는 ASCII 글자**. macOS 는 입력원이 곧 배열이라 한글 2벌식 · 러시아어 입력원에서는
+/// `charactersByApplyingModifiers:0` 이 자모 (`ㅁ`) 를 준다. 그러면 `Option` 을 Alt 로 쓰기로 해도
+/// 인코더가 `ESC` 를 붙일 ASCII 를 못 찾아 (`legacyAltPrefix` 는 1 바이트 utf8 이나 ASCII
+/// `unshifted_codepoint` 만 본다) 자모가 그대로 나간다 — `Alt+n` (zellij · tmux) 이 안 닿는다.
+/// 그 되짚기를 여기서 준다 (ghostty 의 `ctrlSeq` 가 러시아어 자판에 쓰는 것과 같은 수 — 그쪽은
+/// `logical_key.codepoint()`).
+///
+/// 대문자 여부는 호출부가 정한다 (Shift 를 눌렀으면 그쪽에서 올린다).
+pub fn usAscii(code: ?physical_key.PhysicalCode) ?u8 {
+    const cp = toGhosttyKey(code).codepoint() orelse return null;
+    return std.math.cast(u8, cp);
 }
 
 /// `event` 를 `writer` 에 인코딩한다. 출력이 없는 키도 있다 (modifier 키 등) —
@@ -348,6 +382,17 @@ test "Enter · Tab 은 code 로 나가고 utf8 이 있어도 겹치지 않는다
     try testing.expectEqualStrings("\t", try encodeToBuf(&b2, .{ .code = .tab, .utf8 = "\t" }, .{}));
     var b3: [16]u8 = undefined;
     try testing.expectEqualStrings("\x1b", try encodeToBuf(&b3, .{ .code = .escape, .utf8 = "\x1b" }, .{}));
+}
+
+test "#533 후속 — usAscii: 물리 키의 US 글자 (비-ASCII 입력원에서 ESC 를 붙일 근거)" {
+    try testing.expectEqual(@as(?u8, 'a'), usAscii(.key_a));
+    try testing.expectEqual(@as(?u8, 'n'), usAscii(.key_n));
+    try testing.expectEqual(@as(?u8, '1'), usAscii(.digit1));
+    try testing.expectEqual(@as(?u8, '['), usAscii(.bracket_left));
+    // 글자가 없는 키 · 모르는 키는 null — 호출부가 예전 경로로 떨어진다.
+    try testing.expectEqual(@as(?u8, null), usAscii(.arrow_left));
+    try testing.expectEqual(@as(?u8, null), usAscii(.f5));
+    try testing.expectEqual(@as(?u8, null), usAscii(null));
 }
 
 test "isNavOrFunction — 글자 키와 IME 가 맡는 키는 빠진다" {

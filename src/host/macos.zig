@@ -38,6 +38,7 @@ const tab_layout = @import("../tab_layout.zig");
 const tab_actions = @import("../tab_actions.zig");
 const input_policy = @import("../input_policy.zig");
 const session_core = @import("../session_core.zig");
+const pane_layout = @import("../pane_layout.zig");
 const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
@@ -279,7 +280,7 @@ fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
     const n = g_session.count();
     if (n == 0) return NSTerminateNow;
     var msg_buf: [256]u8 = undefined;
-    const msg = dialog.quitConfirmMessage(&msg_buf, n) orelse return NSTerminateNow;
+    const msg = dialog.quitConfirmMessage(&msg_buf, n, g_session.totalPaneCount()) orelse return NSTerminateNow;
     return if (dialog.showConfirm(g_rt, messages.quit_confirm_title, msg)) NSTerminateNow else NSTerminateCancel;
 }
 
@@ -625,6 +626,85 @@ fn scrollbarTopInsetPx(scale: f32) i32 {
     return if (g_session.count() > 0) @intCast(ui_metrics.tabBarHeightPx(scale)) else 0;
 }
 
+/// #483 5단계 — pane 격자 계산 입력 (Linux `Client.paneMetrics` 상당). `terminalGrid` 와 같은 반올림
+/// (`scaledPx`) 에 분할선 두께를 더한 것.
+fn paneMetricsMac() pane_layout.Metrics {
+    const r = &g_renderer.?;
+    return .{
+        .cell_w = @intCast(r.font.cell_width_px),
+        .cell_h = @intCast(r.font.cell_height_px),
+        .pad = ui_metrics.scaledPx(i32, TERMINAL_PADDING_PT, r.scale),
+        .scrollbar_w = ui_metrics.scaledPx(i32, ui_metrics.SCROLLBAR_W_PT, r.scale),
+        .separator_w = @intFromFloat(ui_metrics.linePx(ui_metrics.PANE_SEPARATOR_W_PT, r.scale)),
+    };
+}
+
+/// #483 5단계 — 탭바를 뺀 터미널 영역 (`pane_layout.layout` 의 `rect`).
+fn paneAreaMac() pane_layout.Rect {
+    const r = &g_renderer.?;
+    const tab_bar = tabBarHeightPx(r.scale);
+    return .{ .x = 0, .y = tab_bar, .w = @intCast(r.vp_width), .h = @as(i32, @intCast(r.vp_height)) - tab_bar };
+}
+
+/// #483 5단계 — 활성 탭의 pane 배치 (최대화 반영, `TabGroup.layout`). renderer 나 탭이 없으면 빈 slice.
+fn activeLayoutMac(buf: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect) []pane_layout.PaneRect {
+    if (g_renderer == null) return buf[0..0];
+    const group = g_session.activeGroup() orelse return buf[0..0];
+    return group.layout(paneAreaMac(), paneMetricsMac(), buf);
+}
+
+/// 활성 pane 의 배치 (영역 · 격자 · 격자 원점). 없으면 null.
+fn activePaneRectMac() ?pane_layout.PaneRect {
+    if (g_renderer == null) return null;
+    const group = g_session.activeGroup() orelse return null;
+    var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+    return pane_layout.find(activeLayoutMac(&buf), group.active_pane);
+}
+
+/// 활성 pane 의 첫 셀 좌상 px (f32 — 이 host 의 hit-test 좌표가 f32 다). pane 이 없으면 pane 하나일
+/// 때의 값 (`pad` · `tab_bar_h + pad`).
+fn activeGridOriginPx() struct { x: f32, y: f32 } {
+    if (activePaneRectMac()) |pr| return .{ .x = @floatFromInt(pr.grid_x), .y = @floatFromInt(pr.grid_y) };
+    const scale: f32 = if (g_renderer) |r| r.scale else 1.0;
+    const pad: f32 = @floatFromInt(ui_metrics.scaledPx(i32, TERMINAL_PADDING_PT, scale));
+    return .{ .x = pad, .y = @as(f32, @floatFromInt(tabBarHeightPx(scale))) + pad };
+}
+
+/// #483 5단계 — pane 의 scrollbar track inset. 단일 탭 컨트롤 스트립 (#329) 은 오른쪽 위에 얹히므로
+/// 그 모서리를 가진 pane 만 (pane 하나면 이전의 `scrollbarTopInsetPx − tab_bar` 와 같은 값).
+fn paneScrollbarTopInsetMac(rect: pane_layout.Rect, area: pane_layout.Rect) i32 {
+    const scale = g_renderer.?.scale;
+    const inset = scrollbarTopInsetPx(scale) - tabBarHeightPx(scale);
+    if (inset <= 0) return 0;
+    return if (rect.y == area.y and rect.x + rect.w == area.x + area.w) inset else 0;
+}
+
+/// #483 5단계 — 분할선 드래그 상태 (Linux `Client.sep_drag` 상당). 놓을 때만 트리에 적용한다 — 드래그
+/// 중엔 `renderFrameTick` 이 트리 복사본에 놓아 본 자리에 amber 고스트를 그린다.
+const SepDrag = struct { node: u8, axis: pane_layout.Axis, px: i32 };
+var g_sep_drag: ?SepDrag = null;
+
+/// 포인터 아래의 분할선 (양쪽 `PANE_SEPARATOR_HIT_SLOP_PT`). 메뉴가 떠 있으면 null.
+fn separatorAtMac(x: f32, y: f32) ?pane_layout.Separator {
+    if (g_renderer == null or g_command_menu_open) return null;
+    const group = g_session.activeGroup() orelse return null;
+    var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+    const seps = group.separators(paneAreaMac(), paneMetricsMac(), &buf);
+    const slop = ui_metrics.scaledPx(i32, ui_metrics.PANE_SEPARATOR_HIT_SLOP_PT, g_renderer.?.scale);
+    return pane_layout.separatorAt(seps, @intFromFloat(@floor(x)), @intFromFloat(@floor(y)), slop);
+}
+
+/// 포인터가 활성 pane 의 scrollbar 자리 (오른쪽 `scrollbar_w`, pane 높이 전체) 안인가. pane 하나면
+/// 이전의 `x >= vp_w − sbw` 와 같다.
+fn inActiveScrollbarColumnMac(x: f32, y: f32) bool {
+    const pr = activePaneRectMac() orelse return false;
+    const sbw = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, g_renderer.?.scale);
+    const right: f32 = @floatFromInt(pr.rect.x + pr.rect.w);
+    const top: f32 = @floatFromInt(pr.rect.y);
+    const bottom: f32 = @floatFromInt(pr.rect.y + pr.rect.h);
+    return x >= right - sbw and x < right and y >= top and y < bottom;
+}
+
 /// 픽셀 단위 탭 너비 (DPI scale 적용). hit-test / drag / scroll 모두 같은 값.
 fn tabWidthPx() f32 {
     if (g_renderer == null) return 0;
@@ -721,21 +801,9 @@ fn syncTerminalGeometry() void {
     if (g_renderer == null) return;
     if (g_session.count() == 0) return;
 
-    const r = &g_renderer.?;
-    const grid = terminalGrid(r.vp_width, r.vp_height, r.scale);
-    const new_cols = grid.cols;
-    const new_rows = grid.rows;
-
-    for (g_session.tabs.items) |t| {
-        if (new_cols == t.terminal.cols and new_rows == t.terminal.rows) continue;
-        t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
-            log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
-            continue;
-        };
-        t.backend.resize(new_cols, new_rows) catch |err| {
-            log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
-        };
-    }
+    // #483 5단계 — pane 마다 격자가 다르다. 창 · 탭바 · metrics 로 layout 을 펴서 모든 탭의 pane 에 준다
+    // (`applyLayouts` 는 같은 격자면 건너뛴다). pane 하나면 `terminalGrid` 와 같은 값이다.
+    g_session.applyLayouts(paneAreaMac(), paneMetricsMac());
 }
 
 // NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
@@ -1039,7 +1107,13 @@ fn macLookupAction(view: objc.id, event: objc.id, kc: c_ushort, flags: c_ulong) 
     return config.lookupActionWithFallback(
         g_config.key_bindings[0..g_config.key_binding_count],
         g_binding_fallbacks[0..g_config.key_binding_count],
-        .{ .keycode = kc, .modifiers = modifiers, .label = macEventLabel(event, flags, kc) },
+        .{
+            .keycode = kc,
+            .modifiers = modifiers,
+            .label = macEventLabel(event, flags, kc),
+            // #483 6단계 — Shift 를 누른 채면 Shift 없는 라벨도 (US 의 `⇧0` = `)` 가 `0` 과 만나게).
+            .unshifted = if ((flags & ns_shift) != 0) macEventLabel(event, 0, kc) else 0,
+        },
         physical_key.fromMacKeyCode(kc),
     );
 }
@@ -1228,6 +1302,12 @@ fn runKeyAction(action: config.KeyAction) bool {
         // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
         .quit, .show_about, .open_config, .open_log => return false,
         .toggle_visibility, .open_command_menu, .open_shortcuts => return false,
+        // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c 와 같은 배선).
+        .split => handleSplit(mapped.direction orelse return false),
+        .focus_pane => handleFocusPane(mapped.direction orelse return false),
+        .resize_pane => handleResizePane(mapped.direction orelse return false),
+        .equalize_panes => handleEqualizePanes(),
+        .zoom_pane => handleZoomPane(),
     }
     return true;
 }
@@ -1449,7 +1529,17 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // 조합은 건드리지 않는다.
         if (option and optionActsAsAlt(flags)) {
             var option_chars: [16]u8 = undefined;
-            const plain = macCharsWithoutOption(event, flags, keycode, &option_chars);
+            var plain = macCharsWithoutOption(event, flags, keycode, &option_chars);
+            // #533 후속 — 입력원이 곧 배열인 macOS 에서 한글 2벌식 · 러시아어를 쓰면 이 글자가 자모다
+            // (`ㅁ`). 그대로 넘기면 인코더가 ESC 를 붙일 ASCII 를 못 찾아 자모가 그냥 나가서
+            // `Alt+n` (zellij) 이 안 닿는다. 물리 키의 US 글자로 되짚는다 (2026-08-29 실기).
+            var us: [1]u8 = undefined;
+            if (plain.len != 1 or plain[0] > 0x7f) {
+                if (key_encode.usAscii(physical_key.fromMacKeyCode(keycode))) |c| {
+                    us[0] = if (shift and c >= 'a' and c <= 'z') c - 32 else c;
+                    plain = us[0..1];
+                }
+            }
             if (sendEncodedKeyMac(tab, event, plain)) return;
         }
     }
@@ -1845,11 +1935,13 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
 fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
-    var r = &g_renderer.?;
-    try r.render_state.update(allocator, &tab.terminal);
-    const vp = r.render_state.cursor.viewport orelse return false;
+    const r = &g_renderer.?;
+    // #483 2단계 ① — 스냅숏은 탭의 것이다. 프레임 밖에서 갱신해도 다음 프레임의
+    // `update` 가 이어받는다 (dirty 가 소비된 상태라 증분).
+    try tab.render_state.update(allocator, &tab.terminal);
+    const vp = tab.render_state.cursor.viewport orelse return false;
 
-    const row_slice = r.render_state.row_data.slice();
+    const row_slice = tab.render_state.row_data.slice();
     const all_cells = row_slice.items(.cells);
     if (vp.y >= all_cells.len) return false;
     const cells = all_cells[vp.y].slice();
@@ -1858,9 +1950,10 @@ fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
 
     const cw: f32 = @floatFromInt(r.font.cell_width_px);
     const ch: f32 = @floatFromInt(r.font.cell_height_px);
-    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, r.scale);
-    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(r.scale));
-    const row_y = pad_px + tab_bar_px + @as(f32, @floatFromInt(vp.y)) * ch;
+    // #483 5단계 — 활성 pane 의 격자 원점 (pane 하나면 `pad` · `tab_bar_h + pad`).
+    const origin = activeGridOriginPx();
+    const grid_x: f32 = origin.x;
+    const row_y = origin.y + @as(f32, @floatFromInt(vp.y)) * ch;
     const cursor_col: usize = if (vp.wide_tail and vp.x > 0) vp.x - 1 else vp.x;
 
     var last_text_end: usize = 0;
@@ -1874,7 +1967,7 @@ fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
 
     snap.* = .{};
     try snap.initPositions(allocator, .{
-        .x = pad_px,
+        .x = grid_x,
         .y = row_y,
         .w = cw,
         .h = ch,
@@ -1887,13 +1980,13 @@ fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
         if (!selected_set and cursor_col <= x) {
             snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
             selected_set = true;
-            const insert_x = pad_px + @as(f32, @floatFromInt(cursor_col)) * cw;
+            const insert_x = grid_x + @as(f32, @floatFromInt(cursor_col)) * cw;
             _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, insert_x, row_y, cw, ch);
             pending_hanja_inserted = true;
         }
 
         const raw = raws[x];
-        const cell_x = pad_px + @as(f32, @floatFromInt(x)) * cw;
+        const cell_x = grid_x + @as(f32, @floatFromInt(x)) * cw;
         if (raw.hasText() and raw.wide != .spacer_tail and raw.wide != .spacer_head and raw.codepoint() != 0) {
             const width_cells: usize = if (raw.wide == .wide) 2 else 1;
             const start = ImeRectPx{ .x = cell_x, .y = row_y, .w = @as(f32, @floatFromInt(width_cells)) * cw, .h = ch };
@@ -1914,7 +2007,7 @@ fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
         snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
     }
     if (!pending_hanja_inserted) {
-        const insert_x = pad_px + @as(f32, @floatFromInt(cursor_col)) * cw;
+        const insert_x = grid_x + @as(f32, @floatFromInt(cursor_col)) * cw;
         _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, insert_x, row_y, cw, ch);
     }
     return true;
@@ -2301,24 +2394,19 @@ fn syncGeometryAfterScreenChange() void {
     // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만
     //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
     const grid = terminalGrid(vp_w_px, vp_h_px, @floatCast(scale_pt));
-    const new_cols = grid.cols;
-    const new_rows = grid.rows;
-
-    // 모든 탭의 terminal+pty 를 같이 resize 해야 해요 — 보이지 않는 탭의 grid
-    // 도 같은 cols/rows 로 유지 (탭 전환 시 화면 깨짐 방지).
-    const active_terminal = tab.terminal;
-    if (new_cols != active_terminal.cols or new_rows != active_terminal.rows) {
-        for (g_session.tabs.items) |t| {
-            t.terminal.resize(g_gpa.allocator(), .{ .cols = new_cols, .rows = new_rows }) catch |err| {
-                log.appendLine("geom", "terminal resize failed: {s}", .{@errorName(err)});
-                continue;
-            };
-            t.backend.resize(new_cols, new_rows) catch |err| {
-                log.appendLine("geom", "pty resize failed: {s}", .{@errorName(err)});
-            };
-        }
+    const before_cols = tab.terminal.cols;
+    const before_rows = tab.terminal.rows;
+    if (g_run_opts.grid != null) {
+        // #382 — 측정 격자는 창이 아니라 `-size` 가 정한다. 측정 인스턴스에는 창 안 단축키가 없어 분할이
+        // 없으므로 pane 하나에 그 격자를 그대로 준다.
+        if (grid.cols != before_cols or grid.rows != before_rows) g_session.resizeAll(grid.cols, grid.rows);
+    } else {
+        // #483 5단계 — pane 마다 격자가 다르다 (`applyLayouts`, 같은 격자면 건너뜀).
+        g_session.applyLayouts(paneAreaMac(), paneMetricsMac());
+    }
+    if (tab.terminal.cols != before_cols or tab.terminal.rows != before_rows) {
         log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
-            vp_w_px, vp_h_px, scale_pt, new_cols, new_rows,
+            vp_w_px, vp_h_px, scale_pt, tab.terminal.cols, tab.terminal.rows,
         });
     }
 }
@@ -2349,17 +2437,15 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
     const tab = g_session.activeTab() orelse return null;
 
     const xy = eventToWindowPx(self_view, event);
-    const scale = g_renderer.?.scale;
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale);
-    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
-    const cell_top_px = pad_px + tab_bar_px;
+    // #483 5단계 — 활성 pane 의 격자 원점 (pane 하나면 `pad` · `tab_bar_h + pad`).
+    const origin = activeGridOriginPx();
 
-    // 탭바 영역 + padding 안쪽만 cell. 밖이면 null (탭바 클릭은 별도 dispatch).
-    if (xy.x < pad_px or xy.y < cell_top_px) return null;
-    const x_in: f32 = xy.x - pad_px;
-    const y_in: f32 = xy.y - cell_top_px;
+    // 격자 원점 앞 (padding · 탭바) 은 cell 이 아니다 (탭바 클릭은 별도 dispatch).
+    if (xy.x < origin.x or xy.y < origin.y) return null;
+    const x_in: f32 = xy.x - origin.x;
+    const y_in: f32 = xy.y - origin.y;
 
     const col_f = x_in / @as(f32, @floatFromInt(cell_w_px));
     const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
@@ -2378,14 +2464,12 @@ fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
 fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, dir: i8 } {
     if (g_renderer == null) return null;
     const tab = g_session.activeTab() orelse return null;
-    const scale = g_renderer.?.scale;
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
-    const pad_px: f32 = ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale);
-    const tab_bar_px: f32 = @floatFromInt(tabBarHeightPx(scale));
-    const cell_top_px = pad_px + tab_bar_px;
-    const col_i: i32 = @floor((x - pad_px) / @as(f32, @floatFromInt(cell_w_px)));
-    const row_i: i32 = @floor((y - cell_top_px) / @as(f32, @floatFromInt(cell_h_px)));
+    // #483 5단계 — 활성 pane 의 격자 원점.
+    const origin = activeGridOriginPx();
+    const col_i: i32 = @floor((x - origin.x) / @as(f32, @floatFromInt(cell_w_px)));
+    const row_i: i32 = @floor((y - origin.y) / @as(f32, @floatFromInt(cell_h_px)));
     return .{
         .cell = terminal_interaction.clampCell(col_i, row_i, tab.terminal.cols, tab.terminal.rows),
         .dir = terminal_interaction.edgeScrollDir(row_i, tab.terminal.rows),
@@ -2398,14 +2482,15 @@ fn cellAndDirFromPx(x: f32, y: f32) ?struct { cell: terminal_interaction.Cell, d
 fn reportGeometryMac() ?terminal_interaction.ReportGeometry {
     if (g_renderer == null) return null;
     const tab = g_session.activeTab() orelse return null;
-    const scale = g_renderer.?.scale;
+    // #483 5단계 — 격자 원점은 활성 pane 의 것.
+    const pr = activePaneRectMac() orelse return null;
     return .{
         .cell_w = @intCast(g_renderer.?.font.cell_width_px),
         .cell_h = @intCast(g_renderer.?.font.cell_height_px),
         .cols = @intCast(tab.terminal.cols),
         .rows = @intCast(tab.terminal.rows),
-        .pad = @intFromFloat(ui_metrics.scaledPxF(TERMINAL_PADDING_PT, scale)),
-        .tab_bar_h = tabBarHeightPx(scale),
+        .grid_x = pr.grid_x,
+        .grid_y = pr.grid_y,
     };
 }
 
@@ -2596,7 +2681,7 @@ fn maybeAutoScrollSelectionMac() bool {
     const step: isize = 3;
     tab.terminal.scrollViewport(.{ .delta = if (g_sel_autoscroll_dir < 0) -step else step });
     if (cellAndDirFromPx(g_last_drag_x, g_last_drag_y)) |sc| {
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, .{ .x = g_last_drag_x, .y = g_last_drag_y });
     }
     g_sel_autoscroll_next_ms = now + 40;
     return true;
@@ -2694,6 +2779,9 @@ fn executeCommandMenu(command: command_menu.Command) void {
     switch (command) {
         .toggle_visibility => toggleWindow(),
         .new_tab => handleNewTab(),
+        // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
+        .split_vertical => handleSplit(.right),
+        .split_horizontal => handleSplit(.down),
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
@@ -2775,7 +2863,6 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
     // PT (logical points) — bounds 자체 PT 단위라 scale 곱 불필요.
     const pad: f64 = @floatFromInt(TERMINAL_PADDING_PT);
     const sbw: f64 = @floatFromInt(ui_metrics.SCROLLBAR_W_PT);
-    const tab_bar_h_pt: f64 = if (g_session.count() < 2) 0 else @floatFromInt(TAB_BAR_HEIGHT_PT);
 
     const NSCursor = objc.getClass("NSCursor");
     const get_ibeam = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
@@ -2784,15 +2871,45 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
     const arrow = get_ibeam(NSCursor, objc.sel("arrowCursor"));
     const add_rect = objc.objcSend(fn (objc.id, objc.SEL, NSRect, objc.id) callconv(.c) void);
 
-    // cell 영역 (Y-up): x=[pad, w-pad-sbw], y=[pad, h-tab_bar_h-pad].
-    const cell_w = w - 2.0 * pad - sbw;
-    const cell_h = h - tab_bar_h_pt - 2.0 * pad;
-    if (cell_w > 0 and cell_h > 0) {
-        const cell_rect = NSRect{
-            .origin = .{ .x = pad, .y = pad },
-            .size = .{ .width = cell_w, .height = cell_h },
-        };
-        add_rect(self_view, objc.sel("addCursorRect:cursor:"), cell_rect, ibeam);
+    // #483 5단계 — pane 마다 셀 영역 (Y-up flip): x=[rect.x+pad, rect.right−pad−sbw], y 는 pane 의 위·아래
+    // padding 안쪽. pane 하나면 이전의 `[pad, w−pad−sbw] × [pad, h−tab_bar_h−pad]` 와 같다. 분할선 위는
+    // 리사이즈 커서 (±slop) — 셀 rect 뒤에 얹어 우선한다.
+    if (g_renderer != null) {
+        const s: f64 = @floatCast(g_renderer.?.scale);
+        var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+        for (activeLayoutMac(&rect_buf)) |pr| {
+            const rx: f64 = @as(f64, @floatFromInt(pr.rect.x)) / s;
+            const ry: f64 = @as(f64, @floatFromInt(pr.rect.y)) / s;
+            const rw: f64 = @as(f64, @floatFromInt(pr.rect.w)) / s;
+            const rh: f64 = @as(f64, @floatFromInt(pr.rect.h)) / s;
+            const cell_w = rw - 2.0 * pad - sbw;
+            const cell_h = rh - 2.0 * pad;
+            if (cell_w <= 0 or cell_h <= 0) continue;
+            const cell_rect = NSRect{
+                .origin = .{ .x = rx + pad, .y = h - (ry + rh) + pad },
+                .size = .{ .width = cell_w, .height = cell_h },
+            };
+            add_rect(self_view, objc.sel("addCursorRect:cursor:"), cell_rect, ibeam);
+        }
+        const lr = get_ibeam(NSCursor, objc.sel("resizeLeftRightCursor"));
+        const ud = get_ibeam(NSCursor, objc.sel("resizeUpDownCursor"));
+        const slop: f64 = @floatFromInt(ui_metrics.PANE_SEPARATOR_HIT_SLOP_PT);
+        var sep_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+        if (g_session.activeGroup()) |group| {
+            for (group.separators(paneAreaMac(), paneMetricsMac(), &sep_buf)) |sp| {
+                const cursor = if (sp.axis == .side_by_side) lr else ud;
+                if (cursor == null) continue;
+                const sx: f64 = @as(f64, @floatFromInt(sp.rect.x)) / s;
+                const sy: f64 = @as(f64, @floatFromInt(sp.rect.y)) / s;
+                const sw: f64 = @as(f64, @floatFromInt(sp.rect.w)) / s;
+                const sh: f64 = @as(f64, @floatFromInt(sp.rect.h)) / s;
+                const sep_rect = if (sp.axis == .side_by_side)
+                    NSRect{ .origin = .{ .x = sx - slop, .y = h - (sy + sh) }, .size = .{ .width = sw + 2 * slop, .height = sh } }
+                else
+                    NSRect{ .origin = .{ .x = sx, .y = h - (sy + sh) - slop }, .size = .{ .width = sw, .height = sh + 2 * slop } };
+                add_rect(self_view, objc.sel("addCursorRect:cursor:"), sep_rect, cursor);
+            }
+        }
     }
 
     // 단일 탭 control strip과 열린 command menu는 terminal 위 overlay라 cell
@@ -2829,7 +2946,8 @@ fn invalidateCursorRects() void {
 fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2 — 마우스 → 렌더 (선택/탭/스크롤바 등).
     if (event == null) return;
-    const tab = g_session.activeTab() orelse return;
+    // #483 5단계 — 누름이 다른 pane 으로 포커스를 옮기면 아래에서 다시 잡는다.
+    var tab = g_session.activeTab() orelse return;
 
     // 어떤 클릭이든 진행 중 preedit / marked text 우선 commit — terminal
     // click 시 cell preedit 으로 옮겨가지 않게.
@@ -2858,7 +2976,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         switch (singleControlHit(xy.x, xy.y)) {
             .plus => {
                 tab.interaction.cancelPointerModes();
-                handleNewTab();
+                handlePlusClick(event);
                 return;
             },
             .close => {
@@ -2905,7 +3023,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             .plus => {
                 // #329 — MAX_TABS 도달 시 비활성 `+` 클릭은 완전 noop (dialog
                 // 없음 — 비활성 overflow 화살표와 같은 관례).
-                if (layout.plus_enabled) handleNewTab();
+                if (layout.plus_enabled) handlePlusClick(event);
                 return;
             },
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
@@ -2950,9 +3068,17 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     // (y ≥ tab_bar_h). cell selection 보다는 우선.
     if (g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
-        const sbw_px: f32 = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, g_renderer.?.scale);
-        const vp_w_f: f32 = @floatFromInt(g_renderer.?.vp_width);
-        if (xy.x >= vp_w_f - sbw_px) {
+        // #483 5단계 — 분할선 (±slop) 누름 = 드래그 시작 (pane 판정보다 먼저 — Linux 와 같은 순서).
+        if (separatorAtMac(xy.x, xy.y)) |s| {
+            tab.interaction.cancelPointerModes();
+            g_drag.reset();
+            g_sep_drag = .{ .node = s.node, .axis = s.axis, .px = @intFromFloat(@floor(if (s.axis == .side_by_side) xy.x else xy.y)) };
+            return;
+        }
+        // 다른 pane 을 눌렀으면 먼저 그 pane 으로 포커스 (preedit 은 위에서 확정했다) 하고, 그 pane 기준으로
+        // 아래 scrollbar · 셀 판정을 이어 간다 (포커스 이동과 선택 시작이 한 클릭).
+        if (focusPaneUnderPointer(xy.x, xy.y)) tab = g_session.activeTab() orelse return;
+        if (inActiveScrollbarColumnMac(xy.x, xy.y)) {
             // 새 scrollbar drag 시작 = 기존 selection drag 정리 (Windows
             // app_controller.zig 동등). selection.cancel 은 active flag
             // 만 리셋, screen 의 highlight 는 보존.
@@ -2982,13 +3108,27 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         tab.interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
         return;
     }
-    tab.interaction.selection.begin(tab.terminal.screens.active, cell);
+    const down_px = eventToWindowPx(self_view, event);
+    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac());
+}
+
+/// #483 6단계 — 선택 시작 문턱 (물리 px). 배율 · 셀 크기가 바뀌면 따라 바뀐다.
+fn selectionSlopMac() f32 {
+    const r = g_renderer orelse return 0;
+    return ui_metrics.selectionDragSlopPx(@floatFromInt(r.font.cell_width_px), r.scale);
 }
 
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
+
+    // #483 5단계 — 분할선 드래그 중: 좌표만 기억, 고스트는 프레임이 그린다. 트리는 놓을 때.
+    if (g_sep_drag) |*d| {
+        const xy = eventToWindowPx(self_view, event);
+        d.px = @intFromFloat(@floor(if (d.axis == .side_by_side) xy.x else xy.y));
+        return;
+    }
 
     // 스크롤바 drag (#123) — mouseDown 에서 begin 했으면 mouseDragged 마다
     // scrollToY 로 thumb 위치 동기화.
@@ -3038,7 +3178,7 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
     g_last_drag_x = xy.x;
     g_last_drag_y = xy.y;
     if (cellAndDirFromPx(xy.x, xy.y)) |sc| {
-        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell);
+        tab.interaction.selection.update(tab.terminal.screens.active, sc.cell, .{ .x = xy.x, .y = xy.y });
         const prev = g_sel_autoscroll_dir;
         g_sel_autoscroll_dir = sc.dir;
         if (sc.dir != 0 and prev == 0) g_sel_autoscroll_next_ms = 0;
@@ -3050,6 +3190,13 @@ fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const tab = g_session.activeTab() orelse return;
     // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
     g_sel_autoscroll_dir = 0;
+
+    // #483 5단계 — 분할선 드래그 끝: 여기서 한 번만 트리에 적용.
+    if (g_sep_drag) |d| {
+        g_sep_drag = null;
+        finishSeparatorDrag(d);
+        return;
+    }
 
     // 스크롤바 drag 종료 (#123).
     if (tab.interaction.scrollbar.active) {
@@ -3148,7 +3295,7 @@ fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
 
 /// 우클릭 paste (#119). cmd.exe console 표준 패턴 — Windows 의 WM_RBUTTONDOWN
 /// (변경 후) 와 동일.
-fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+fn tildazRightMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     // #329 — 열린 menu 는 pointer button 보다 우선: 우클릭은 메뉴만 닫고
     // paste 하지 않는다 (SPEC §5.3).
     if (g_command_menu_open) {
@@ -3157,6 +3304,11 @@ fn tildazRightMouseDown(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     }
     // #340 — Cmd+V 와 같은 pending 정책 적용 (조합 확정 후 payload — '하X').
     applyPasteInputPolicy();
+    // #483 5단계 — 비활성 pane 우클릭은 포커스만 옮기고 붙여넣지 않는다 (확정 설계 축 3).
+    if (event != null) {
+        const xy = eventToWindowPx(self_view, event);
+        if (focusPaneUnderPointer(xy.x, xy.y)) return;
+    }
     handlePaste();
 }
 
@@ -3167,13 +3319,15 @@ fn scrollbarHit() ?scrollbar.Hit {
     const tab = g_session.activeTab() orelse return null;
     if (g_renderer == null) return null;
     const r = &g_renderer.?;
+    // #483 5단계 — track 은 활성 pane 기준 (렌더러 `thumbRect` 인자와 같은 값 — pane 하나면 이전과 같다).
+    const pr = activePaneRectMac() orelse return null;
     const sb = tab.terminal.screens.active.pages.scrollbar();
     return scrollbar.hit(
         sb.total,
         sb.len,
         sb.offset,
-        @floatFromInt(r.vp_height),
-        @floatFromInt(scrollbarTopInsetPx(r.scale)),
+        @floatFromInt(pr.rect.y + pr.rect.h),
+        @floatFromInt(pr.rect.y + paneScrollbarTopInsetMac(pr.rect, paneAreaMac())),
         ui_metrics.scaledPxF(TERMINAL_PADDING_PT, r.scale),
         ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, r.scale),
     );
@@ -3199,6 +3353,115 @@ fn scrollbarScrollToY(mouse_y_px: f32) void {
     }
 }
 
+/// #483 5단계 — pane 배치가 바뀐 뒤의 공통 마무리: 커서 rect (I-beam · 리사이즈 커서 자리) 갱신 + 렌더.
+fn afterPaneLayoutChange() void {
+    invalidateCursorRects();
+    requestRender();
+}
+
+/// #483 5단계 — 활성 pane 을 `dir` 쪽으로 가른다 (Linux `handleSplit` 상당). 새 pane 은 새 셸이라 `handleNewTab`
+/// 과 같은 셸 존재 확인 (#248). 거부 (`TooSmall` · `TooManyPanes`) 는 탭 한도와 같은 dialog 로 안내.
+fn handleSplit(dir: pane_layout.Direction) void {
+    if (g_renderer == null) return;
+    if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
+    g_session.splitActive(dir, paneAreaMac(), paneMetricsMac()) catch |err| switch (err) {
+        error.TooSmall => {
+            var buf: [160]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
+                messages.pane_too_small_format;
+            dialog.showInfo(g_rt, messages.pane_too_small_title, msg);
+            return;
+        },
+        error.TooManyPanes => {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
+                messages.pane_limit_format;
+            dialog.showInfo(g_rt, messages.pane_limit_title, msg);
+            return;
+        },
+        error.NoActiveTab => return,
+        else => {
+            log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+            return;
+        },
+    };
+    const group = g_session.activeGroup().?;
+    log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), g_session.active_tab, group.paneCount(), group.active_pane });
+    afterPaneLayoutChange();
+}
+
+/// 포커스를 `dir` 쪽 이웃 pane 으로. 떠나는 pane 의 진행 중 pointer mode 는 탭 전환과 같이 정리한다.
+fn handleFocusPane(dir: pane_layout.Direction) void {
+    if (g_renderer == null) return;
+    const leaving = g_session.activeTab() orelse return;
+    if (!g_session.focusPane(dir, paneAreaMac(), paneMetricsMac())) return;
+    leaving.interaction.cancelPointerModes();
+    g_sel_autoscroll_dir = 0;
+    // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
+    syncTerminalGeometry();
+    log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), g_session.activeGroup().?.active_pane });
+    afterPaneLayoutChange();
+}
+
+/// 활성 pane 에 닿은 분할선을 `dir` 쪽으로 한 셀.
+fn handleResizePane(dir: pane_layout.Direction) void {
+    if (g_renderer == null) return;
+    if (!g_session.resizeActivePane(dir, 1, paneAreaMac(), paneMetricsMac())) return;
+    afterPaneLayoutChange();
+}
+
+/// 활성 탭의 분할선을 모두 가운데로 (`Tree.equalize` — 같은 축은 한 줄로 칸 셈).
+fn handleEqualizePanes() void {
+    if (g_renderer == null or g_session.activeGroup() == null) return;
+    g_session.equalizeActive(paneAreaMac(), paneMetricsMac());
+    log.appendLine("pane", "equalize — {} panes", .{g_session.activeGroup().?.tree.count()});
+    afterPaneLayoutChange();
+}
+
+/// `Shift+Cmd+Z` — 활성 pane 최대화 토글. 격자는 `syncTerminalGeometry` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
+fn handleZoomPane() void {
+    if (g_renderer == null) return;
+    if (!g_session.toggleZoomActive()) return;
+    syncTerminalGeometry();
+    log.appendLine("pane", "zoom {s} — active pane {}", .{ if (g_session.activeGroup().?.zoomed != null) "on" else "off", g_session.activeGroup().?.active_pane });
+    afterPaneLayoutChange();
+}
+
+/// `+` 클릭 — Option(Alt) 을 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례).
+/// 방향은 pane 모양대로 — 넓으면 오른쪽, 높으면 아래.
+fn handlePlusClick(event: objc.id) void {
+    if (!eventMouseMods(event).alt) return handleNewTab();
+    const pr = activePaneRectMac() orelse return;
+    handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
+}
+
+/// 포인터 아래 pane 이 활성 pane 이 아니면 그 pane 으로 포커스를 옮기고 true (Linux `focusPaneUnderPointer`).
+/// 호출처가 preedit 을 **먼저** 확정했다 (`tildazMouseDown` 첫 줄 · 우클릭의 `applyPasteInputPolicy`) —
+/// 순서가 바뀌면 자모가 새 pane 의 PTY 로 간다.
+fn focusPaneUnderPointer(x: f32, y: f32) bool {
+    if (g_renderer == null) return false;
+    const group = g_session.activeGroup() orelse return false;
+    const id = g_session.paneIdAt(@intFromFloat(@floor(x)), @intFromFloat(@floor(y)), paneAreaMac(), paneMetricsMac()) orelse return false;
+    if (id == group.active_pane) return false;
+    group.activeTab().interaction.cancelPointerModes();
+    g_sel_autoscroll_dir = 0;
+    _ = g_session.setActivePane(id);
+    log.appendLine("pane", "focus by click — active pane {}", .{id});
+    afterPaneLayoutChange();
+    return true;
+}
+
+/// 분할선 드래그를 놓았다 — 여기서 한 번만 트리에 적용 + 격자 (PTY resize 한 번, 확정 설계 축 2).
+fn finishSeparatorDrag(d: SepDrag) void {
+    if (g_renderer == null) return;
+    const axis = if (d.axis == .side_by_side) "x" else "y";
+    if (g_session.setSeparatorPx(d.node, d.px, paneAreaMac(), paneMetricsMac())) |placed| {
+        log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+    } else {
+        log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
+    }
+    afterPaneLayoutChange();
+}
 
 /// Cmd+W — 활성 탭을 즉시 정리. PTY 자식이 살아 있어도 deinit 의 SIGHUP +
 /// fd close 로 정상 hangup 후 종료. 마지막 탭이 닫혔는지는 다음 frame 의
@@ -3209,7 +3472,10 @@ fn handleCloseActiveTab() void {
     // closeActive helper 가 마지막 탭 → terminate, 그 외 → override clear +
     // invalidate. mac 의 사후 처리는 .changed 일 때 syncTerminalGeometry 만 —
     // 2 → 1 전환에서 탭바 사라져 cell 영역 늘어나는 케이스 대응 (#127).
-    if (tab_actions.closeActive(&g_host) == .changed) syncGeometryAfterTabCountChange();
+    if (tab_actions.closeActive(&g_host) == .changed) {
+        syncGeometryAfterTabCountChange();
+        afterPaneLayoutChange();
+    }
 }
 
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
@@ -3309,7 +3575,14 @@ fn tildazScrollWheel(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.
 
     // delta 부호: 양수 deltaY (위로) → scrollback 위쪽 (older) = delta 음수
     // (ghostty `scrollViewport(.{.delta = -N})` 가 위쪽).
-    tab.terminal.scrollViewport(.{ .delta = -lines });
+    // #483 6단계 결정 B — 휠은 **포인터 아래 pane** 을 스크롤하고 포커스는 바꾸지 않는다. 분할선 위나 pane
+    // 밖이면 활성 pane.
+    const target = blk: {
+        if (g_renderer == null) break :blk tab;
+        const px = eventToWindowPx(self_view, event);
+        break :blk g_session.paneTabAt(@intFromFloat(@floor(px.x)), @intFromFloat(@floor(px.y)), paneAreaMac(), paneMetricsMac()) orelse tab;
+    };
+    target.terminal.scrollViewport(.{ .delta = -lines });
 }
 
 fn registerTildazViewClass() !objc.Class {
@@ -3917,6 +4190,7 @@ fn drainExitedTabs() bool {
     // 2 → 1 전환 시 탭바 사라짐 → cell 영역 늘어남. 모든 탭 resize.
     if (any_changed) {
         syncGeometryAfterTabCountChange();
+        invalidateCursorRects();
         g_needs_render = true; // #255 Phase2 — 탭 닫힘 후 새 레이아웃 렌더 (idle 재pause 전).
     }
     return false;
@@ -4059,13 +4333,14 @@ fn renderFrameTick() void {
     const cell_w_px: i32 = @intCast(g_renderer.?.font.cell_width_px);
     const cell_h_px: i32 = @intCast(g_renderer.?.font.cell_height_px);
     const pad_px: i32 = ui_metrics.scaledPx(i32, TERMINAL_PADDING_PT, g_renderer.?.scale);
-    const tab_bar_px = tabBarHeightPx(g_renderer.?.scale);
 
     // 탭 제목 stack-allocated slice. 매 프레임 만들지만 alloc 없음. session_core
     // .MAX_TABS = 32 한도와 일치 (cross-platform 동등, Windows 도 [32]).
     var titles_buf: [session_core.MAX_TABS][]const u8 = undefined;
     const tab_count = @min(g_session.count(), titles_buf.len);
-    for (g_session.tabs.items[0..tab_count], 0..) |t, i| {
+    for (g_session.tabs.items[0..tab_count], 0..) |group, i| {
+        // #483 3단계 — 탭바 제목은 그 탭의 활성 pane 의 것.
+        const t = group.activeTab();
         titles_buf[i] = t.title[0..t.title_len];
     }
     const titles = titles_buf[0..tab_count];
@@ -4088,14 +4363,56 @@ fn renderFrameTick() void {
     );
     var hotkey_hint_buf: [64]u8 = undefined;
     const hotkey_hint = config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey);
-    g_renderer.?.renderTerminal(
-        &tab.terminal,
-        cell_w_px,
-        cell_h_px,
-        tab_bar_px,
-        scrollbarTopInsetPx(g_renderer.?.scale),
-        pad_px,
-        cell_preedit,
+    // #483 5단계 — 활성 탭의 pane 마다 `drawPane` (`TabGroup.layout` 순서 — 최대화면 하나). rect 는
+    // 탭바를 뺀 영역을 트리로 나눈 것 (pane 하나면 2단계와 같은 값). scrollbar 폭 · thumb 최소 높이는
+    // 이전과 같은 `scaledPxF` 값 (f32).
+    const r_scale = g_renderer.?.scale;
+    const group = g_session.activeGroup().?;
+    const area = paneAreaMac();
+    const m = paneMetricsMac();
+    var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
+    const lay = group.layout(area, m, &rect_buf);
+    var active_rect: ?pane_layout.Rect = null;
+    for (lay) |pr| {
+        const t = group.panes[pr.pane].?;
+        const is_active = pr.pane == group.active_pane;
+        // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
+        if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
+        g_renderer.?.drawPane(.{
+            .terminal = &t.terminal,
+            .state = &t.render_state,
+            .rect = pr.rect,
+            .cell_w = cell_w_px,
+            .cell_h = cell_h_px,
+            .pad = pad_px,
+            .scrollbar_w = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_W_PT, r_scale),
+            .scrollbar_min_thumb_h = ui_metrics.scaledPxF(ui_metrics.SCROLLBAR_MIN_THUMB_H_PT, r_scale),
+            // 단일 탭의 컨트롤 스트립 (#329) 아래로 track 을 내린다 — 오른쪽 위 pane 만.
+            .scrollbar_top_inset = paneScrollbarTopInsetMac(pr.rect, area),
+            // IME 조합 글자는 키보드가 가는 pane (활성) 에만.
+            .preedit_utf8 = if (is_active) cell_preedit else &.{},
+            .is_active = is_active,
+            // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
+            // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
+            .blink_faint = blink_phase_now,
+        });
+    }
+    // 분할선 · amber · 드래그 고스트 (Linux 와 같은 규칙). 고스트는 트리 복사본에 놓아 본 자리 —
+    // 스냅 · 최소 크기 판정을 실제 놓기와 같은 함수가 한다.
+    var sep_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+    const seps = group.separators(area, m, &sep_buf);
+    var ghost: ?pane_layout.Rect = null;
+    if (g_sep_drag) |d| {
+        var trial = group.tree;
+        if (trial.setSeparatorPx(d.node, d.px, area, m) != null) {
+            var gbuf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
+            for (pane_layout.separators(&trial, area, m, &gbuf)) |s| {
+                if (s.node == d.node) ghost = s.rect;
+            }
+        }
+    }
+    g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
+    g_renderer.?.endFrame(
         .{
             .open = g_command_menu_open,
             .hover = g_command_menu_hover,
@@ -4104,9 +4421,6 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
-        // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
-        // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
-        blink_phase_now,
     );
 
     // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →
@@ -4116,7 +4430,6 @@ fn renderFrameTick() void {
     // 없애면 처음 보는 문자(`"`,`(`,`N` 등)가 빈칸으로 남는다. atlas 가 아직 dirty 면
     // 한 frame 더 요청해 업로드+재draw 시킨다(빈칸은 1 frame, Phase 1 과 동일).
     if (g_renderer.?.atlas.dirty or g_renderer.?.tabAtlasDirty()) g_needs_render = true;
-
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화.

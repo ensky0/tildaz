@@ -147,6 +147,9 @@ const COLOR_WINDOW: c_int = 5;
 // 요구 제거.
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const IDC_IBEAM: ?*const anyopaque = @ptrFromInt(32513);
+// #483 — 분할선 리사이즈 커서 (winuser.h: IDC_SIZEWE 32644 · IDC_SIZENS 32645).
+const IDC_SIZEWE: ?*const anyopaque = @ptrFromInt(32644);
+const IDC_SIZENS: ?*const anyopaque = @ptrFromInt(32645);
 const GWL_USERDATA: c_int = -21;
 const TRANSPARENT: c_int = 1;
 /// DwmSetWindowAttribute 의 attribute id. Windows 에 "이 창은 transition 애니
@@ -419,7 +422,8 @@ pub const FullscreenMode = enum { none, monitor, workarea };
 pub const Window = struct {
     /// `WM_SETCURSOR` (#193) — client 영역 안의 위치별 cursor 분류. 결정은
     /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
-    pub const CursorRegion = enum { cell, other };
+    /// #483 5단계 — 분할선 위는 좌우 / 상하 리사이즈 커서 (`IDC_SIZEWE` / `IDC_SIZENS`).
+    pub const CursorRegion = enum { cell, other, separator_v, separator_h };
 
     /// #451 — `Io` · 환경변수 묶음. host 의 `run(rt, …)` 이 창을 만들 때 넣는다.
     rt: Runtime,
@@ -510,6 +514,8 @@ pub const Window = struct {
     /// `WM_SETCURSOR` 마다 LoadCursorW 호출 비용 피하려 init 에서 캐시 (#193).
     cursor_arrow: HCURSOR = null,
     cursor_ibeam: HCURSOR = null,
+    cursor_sizewe: HCURSOR = null,
+    cursor_sizens: HCURSOR = null,
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
 
@@ -644,6 +650,8 @@ pub const Window = struct {
         // LoadCursorW(null, IDC_*) 는 system shared resource — DestroyCursor 불필요.
         self.cursor_arrow = LoadCursorW(null, IDC_ARROW);
         self.cursor_ibeam = LoadCursorW(null, IDC_IBEAM);
+        self.cursor_sizewe = LoadCursorW(null, IDC_SIZEWE);
+        self.cursor_sizens = LoadCursorW(null, IDC_SIZENS);
 
         const wc = WNDCLASSEXW{
             .cbSize = @sizeOf(WNDCLASSEXW),
@@ -1680,6 +1688,12 @@ pub const Window = struct {
         return GetKeyState(VK_SHIFT) < 0;
     }
 
+    /// #483 5단계 — `+` Alt+클릭 판정. `mouseMods` 와 같은 `GetKeyState(VK_MENU)`.
+    pub fn isAltDown(self: *const Window) bool {
+        _ = self;
+        return GetKeyState(VK_MENU) < 0;
+    }
+
     /// Set a concrete fullscreen mode, or `.none` to restore the saved docked rect.
     pub fn setFullscreenMode(self: *Window, mode: FullscreenMode) void {
         const previous_mode = self.fullscreen_mode;
@@ -2444,6 +2458,8 @@ pub const Window = struct {
                             const handle: HCURSOR = switch (region) {
                                 .cell => self.cursor_ibeam,
                                 .other => self.cursor_arrow,
+                                .separator_v => self.cursor_sizewe,
+                                .separator_h => self.cursor_sizens,
                             };
                             _ = SetCursor(handle);
                             return 1; // TRUE — 우리가 처리 (DefWindowProcW 안 부름)
@@ -2516,7 +2532,13 @@ pub const Window = struct {
             WM_RBUTTONDOWN => {
                 // #329 — 열린 command menu 가 우클릭을 소비하면 (menu 닫기)
                 // paste 하지 않는다. 그 외에는 기존 즉시 paste 유지 (#119).
-                if (self.dispatchAppEvent(.mouse_right_down)) return 0;
+                // #483 5단계 — 좌표를 싣는다 (비활성 pane 우클릭 = 포커스만).
+                if (self.dispatchAppEvent(.{ .mouse_right_down = .{
+                    .x = getMouseX(lParam),
+                    .y = getMouseY(lParam),
+                    .button = .right,
+                    .mods = mouseMods(wParam),
+                } })) return 0;
                 if (self.write_fn) |write_fn| {
                     self.pasteClipboard(write_fn);
                 }
@@ -2879,6 +2901,13 @@ pub const Window = struct {
             // 이 host 의 키 경로가 내지 않는 것들 — toggle 은 전역 핫키가, menu 는
             // 마우스가 진입점이다.
             .toggle_visibility, .open_command_menu, .open_shortcuts => return,
+            // #483 4a — 분할 액션. `app_event.Shortcut` 매핑과 배선은 5단계 (Linux 4b 먼저).
+            // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화. 방향은 액션 이름에서 왔다 (`split_vertical` → `.right`).
+            .split => .{ .split = mapped.direction orelse return },
+            .focus_pane => .{ .focus_pane = mapped.direction orelse return },
+            .resize_pane => .{ .resize_pane = mapped.direction orelse return },
+            .equalize_panes => .equalize_panes,
+            .zoom_pane => .zoom_pane,
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).
@@ -2940,6 +2969,17 @@ pub const Window = struct {
             break :blk it.nextCodepoint() orelse 0;
         };
 
+        // #533 후속 — 비라틴 배열 (러시아어 등) 에서 Alt 조합에 붙일 ASCII. 그 배열은 글자 키가
+        // Cyrillic 을 내므로 인코더가 `ESC` 를 붙일 1 바이트를 못 찾아 그 글자가 그냥 나간다 —
+        // `Alt+n` (zellij · tmux) 이 안 닿는다. 물리 키의 US 글자로 되짚는다 (macOS · Linux 와 같은 수).
+        var text = utf8;
+        var us_buf: [1]u8 = undefined;
+        if (alt and (text.len != 1 or text[0] > 0x7f)) {
+            if (key_encode.usAscii(physical_key.fromScanCode(scan, extended))) |c| {
+                us_buf[0] = if (shift and c >= 'a' and c <= 'z') c - 32 else c;
+                text = us_buf[0..1];
+            }
+        }
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
         key_encode.encode(&writer, .{
@@ -2949,7 +2989,7 @@ pub const Window = struct {
             // 만들면 `WM_CHAR` 가 그 글자를 따로 보낸다. 이 경로는 글자를 만들지 않는
             // 키를 다루므로 소비된 modifier 가 없다.
             .consumed_mods = .{},
-            .utf8 = utf8,
+            .utf8 = text,
             .unshifted_codepoint = unshifted,
         }, self.keyEncodeOptions()) catch return false;
 

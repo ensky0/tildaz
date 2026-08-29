@@ -13,10 +13,16 @@ is not US QWERTY.
 | Fullscreen (cover taskbar/dock) | Alt+Enter | Cmd+Enter | Alt+Enter |
 | Fullscreen (keep taskbar/dock visible) | Shift+Alt+Enter | Shift+Cmd+Enter | Shift+Alt+Enter |
 | New tab | Ctrl+Shift+T | Cmd+T | Ctrl+Shift+T |
-| Close active tab | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
+| Close active pane (the tab, when it is the last pane) | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W |
 | Switch tab by index | Alt+1–9 | Cmd+1–9 | Alt+1–9 |
 | Previous tab | Ctrl+Shift+[ *or* Ctrl+PgUp | Shift+Cmd+[ *or* Cmd+PgUp | Ctrl+Shift+[ *or* Ctrl+PgUp |
 | Next tab | Ctrl+Shift+] *or* Ctrl+PgDn | Shift+Cmd+] *or* Cmd+PgDn | Ctrl+Shift+] *or* Ctrl+PgDn |
+| Split the active pane with a vertical line — new pane to the right *(see [Split panes](#split-panes))* | Ctrl+Shift+→ | Option+Cmd+→ | Ctrl+Shift+→ |
+| Split the active pane with a horizontal line — new pane below | Ctrl+Shift+↓ | Option+Cmd+↓ | Ctrl+Shift+↓ |
+| Focus the pane in a direction | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ | Alt+←/→/↑/↓ |
+| Move the split line next to the active pane by one cell (stops at the minimum pane size; only the panes touching that line change) | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ | Shift+Alt+←/→/↑/↓ |
+| Equalize the panes — every row or column of panes shares its space evenly | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
+| Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -45,7 +51,7 @@ platforms.
 
 ## Quit confirmation
 
-Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count. Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
+Alt+F4 (Linux and Windows) and Cmd+Q (macOS) show a confirmation dialog with the open tab count, plus the pane count in parentheses when any tab is split (a single tab can hold up to 16 panes, so the tab count alone does not say how many shells close). Enter confirms (Quit); Esc cancels. Closing the last tab via Cmd+W / Ctrl+Shift+W keeps its existing instant behavior — that path is an explicit "close this tab" intent.
 
 Everything in the table above except the scrollback row can be rebound in
 `config_N.toml` — see the `[keys]` section in [CONFIG.md](CONFIG.md). Scrolling
@@ -301,9 +307,11 @@ With multiple tabs the order is `[tabs][+][×][…]`; when tabs overflow, it bec
 - `<` / `>` scroll the visible tab strip and disable at the corresponding end.
 - `×` closes the active tab, matching Cmd+W / Ctrl+Shift+W.
 - `+` opens a tab. At the 32-tab limit it stays in place, turns gray, and
-  ignores clicks.
-- `…` opens the command menu. It lists the common tab, clipboard, fullscreen,
-  config, shortcut-reference, and About actions together with their shortcuts.
+  ignores clicks. Alt+click splits the active pane instead (see
+  [Split panes](#split-panes)).
+- `…` opens the command menu. It lists the common tab, split-pane (*Split Vertical* /
+  *Split Horizontal*), clipboard, fullscreen, config, shortcut-reference, and About actions
+  together with their shortcuts.
   Its first item toggles TildaZ and shows the current instance's configured
   global hotkey rather than assuming F1.
 - While the menu is open it captures the keyboard: `Esc` closes it,
@@ -329,6 +337,63 @@ program doesn't flicker the tab. To set a title yourself, use your shell —
 e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline tab renaming was removed in
 [#341](https://github.com/ensky0/tildaz/issues/341).)
 
+## Split panes
+
+A tab can hold up to 16 panes (`pane_layout.MAX_PANES_PER_TAB`, independent of the
+32-tab limit), each a full terminal with its own shell. There are two ways to split:
+Ctrl+Shift+→ (Option+Cmd+→ on macOS) draws a vertical line through the active pane
+and opens a new shell to its right; Ctrl+Shift+↓ (Option+Cmd+↓) draws a horizontal
+line and opens the new shell below. The new pane gets half of the space (the split
+falls on a cell boundary of the first pane; the leftover pixels go to the new one)
+and takes the keyboard, as in tmux, iTerm2, Windows Terminal, and vim. Focus follows
+the arrow keys with Alt (Cmd on macOS): the pane that is geometrically next in that
+direction takes the keyboard, measured from the cursor's row or column, so in a
+three-pane layout you land on the neighbour the cursor is actually facing.
+Shift+Alt+arrows (Shift+Cmd+arrows) move the split line touching the active pane by
+one cell; Shift+Alt+0 (Shift+Cmd+0) equalizes the panes: panes that sit in one row
+(or one column) share it evenly, and a group that is split the other way counts as
+one of them — three panes side by side become thirds, a pane next to two stacked
+panes gets half of the width while the two stacked panes split the other half
+top and bottom (the way tmux and iTerm2 spread the cells of a row). The space is
+shared in whole rows and columns of text, so two columns holding the same number
+of panes line up with each other and the panes inside one column differ by at most
+one row.
+
+The active pane is marked by a 1 pt amber line along the edges it shares with other
+panes. When only one of its edges touches another pane — the two halves of a
+half-and-half split, or the end panes of a row — the two window edges next to that
+line are painted too, so the mark becomes a bracket hugging the active pane and you
+can tell which side of the gray line is active. Panes with two or more shared edges
+show just those edges; the mark never runs along all four edges unless the pane is
+zoomed. Inactive panes are not dimmed, so all of them stay readable. Ctrl+Shift+Z
+(Shift+Cmd+Z) zooms the active pane to the whole tab: the other panes keep running
+but are not drawn, and an amber frame along all four edges of the tab area shows
+that you are looking at a zoomed pane. Pressing it again, or splitting, moving
+focus, or resizing, restores the layout. Clicking a pane focuses it and starts a
+selection there in one click; right-clicking an *inactive* pane only focuses it and
+does not paste. Dragging the gray line between two panes moves the split: while you
+drag, an amber ghost shows where the line will land (snapped to a cell boundary),
+and the panes are resized once, when you release. Only the panes touching the line
+change size — panes further away, and the lines between them, stay where they were —
+and the line stops where a pane would fall below 20×5 cells instead of refusing the
+drag; the one-cell keyboard resize follows the same rules. The `…` menu has *Split
+Vertical* and *Split Horizontal*, and Alt+clicking the `+` button splits the active
+pane instead of opening a tab (to the right if the pane is wider than it is tall,
+otherwise below). Ctrl+Shift+W closes the active pane — the neighbour that shared
+the split takes its place — and closes the tab when the pane is the last one; a
+shell exiting inside a pane does the same. A split is refused with a dialog when
+the two halves would be too small along the direction it divides — narrower than
+20 columns for a vertical split, shorter than 5 rows for a horizontal one — as is
+the 17th pane. The other direction is not checked, because the split does not
+change it.
+Panes can still end up smaller than that when the window shrinks — the drop-down
+takes the size of the screen it opens on and the panes keep their shares — and
+from then on the lines next to such a pane only move in the direction that makes
+it larger; the other panes split and resize as usual.
+
+**Status:** implemented on all three platforms ([#483](https://github.com/ensky0/tildaz/issues/483));
+Linux and macOS are verified, the Windows build is awaiting hands-on verification.
+
 ## Tab limit
 
 `session_core.MAX_TABS = 32` on all platforms. The `+` button hides automatically at 32 tabs and reappears when one closes. Triggering new-tab via Cmd+T / Ctrl+Shift+T while at the limit shows a "Tab limit reached" dialog so the constraint isn't silently ignored when the visual cue is offscreen.
@@ -337,9 +402,11 @@ e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline 
 
 | Action | All platforms |
 |--------|---------------|
-| Drag-select text | Auto-copy on release |
+| Drag-select text | Auto-copy on release. A plain click selects nothing — the pointer has to move about 4 pt (or into another cell) before a selection starts, so a shaky click no longer selects a character and overwrites the clipboard |
 | Double-click word | Word selection + auto-copy. Boundary chars: space / tab / `" \` \| : ; ( ) [ ] { } < >`. Wide chars (Hangul / CJK) treated as word body. |
-| Mouse wheel | Scroll viewport |
-| Right-click | Paste from clipboard |
+| Mouse wheel | Scroll the pane under the pointer (focus stays where it is; page keys scroll the active pane) |
+| Right-click | Paste from clipboard (on the active pane; an inactive pane is only focused) |
+| Click an inactive pane | Focus that pane and start selecting there |
+| Drag the line between two panes | Move the split (amber ghost while dragging, applied on release; only the panes touching the line change, and the line stops at the minimum pane size) |
 | Click `…` | Open the command menu and shortcut hints |
 | Scrollbar click / drag | Jump or follow viewport |
