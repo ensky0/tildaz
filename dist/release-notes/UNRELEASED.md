@@ -33,3 +33,7 @@ Internal changes belong in neither.
 - Linux: mouse input lands where you point at fractional display scales; it was biased
   by up to two pixels toward the top-left.
   ([#552](https://github.com/ensky0/tildaz/issues/552))
+- Powerline separators (U+E0B0-E0BF) are drawn by TildaZ itself, so prompts and status
+  bars that use them - zellij, starship, powerlevel10k - render on every platform even
+  without a Nerd Font installed. They used to show as replacement boxes.
+  ([#534](https://github.com/ensky0/tildaz/issues/534))

@@ -1567,10 +1567,11 @@ pub const D3d11Renderer = struct {
                     continue;
                 }
 
-                // Box-drawing (선/모서리/junction, U+2500–257F) — block element 과
-                // 같은 이유로 procedural 사각형 (#258). 폰트 글리프는 cell 에 안
-                // 맞아 셀 사이 갭. 대각선(╱╲╳)은 boxRects 가 null → 아래 글리프 path.
-                if (cp >= 0x2500 and cp <= 0x257F) {
+                // Box-drawing (선/모서리/junction) 과 powerline (#534) — block element
+                // 과 같은 이유로 procedural 사각형 (#258). 폰트 글리프는 cell 에 안
+                // 맞아 셀 사이 갭이 생기고, powerline 은 기본 폰트 묶음에 아예 없어
+                // 물음표로 나왔다. 대상 범위는 `box_drawing.handles` 하나다.
+                if (box_drawing.handles(cp)) {
                     const box_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, box_w, ch, &box_rects)) |bn| {

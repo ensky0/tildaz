@@ -9,8 +9,12 @@
 // 구멍이 안 생기게 한다. 인접 셀이 같은 thickness / 중앙 정렬을 쓰므로 선이
 // 셀 경계를 넘어 연속으로 이어진다.
 //
-// 대각선 ╱ ╲ ╳ (U+2571–2573) 는 axis-aligned 사각형으로 표현 못 해 null 반환
-// → renderer 가 폰트 글리프로 fallback.
+// 대각선 ╱ ╲ ╳ (U+2571–2573) 도 여기서 그린다 — axis-aligned 사각형으로는 안 되지만
+// 픽셀별 AA coverage (`Rect.cov`) 로 래스터한다. (이 주석은 "null 반환 → 폰트
+// fallback" 이라고 적혀 있었는데 아래 코드와 어긋난 채였다. #534 에서 바로잡음.)
+//
+// powerline (U+E0B0–E0BF) 도 같은 이유로 여기서 그린다 (#534) — Nerd Font 계열에만
+// 있는 PUA 대역이라 기본 폰트 묶음에 없으면 물음표 네모로 나왔다.
 //
 // Windows(d3d11) / macOS(Metal) / Linux(software) 세 renderer 가 공유. 좌표는
 // "셀 좌상단 기준 픽셀" — renderer 는 cell origin 에 더해 그대로 그린다.
@@ -82,6 +86,85 @@ pub fn boxRects(cp: u21, cw: f32, ch: f32, out: *[MAX_RECTS]Rect) ?usize {
                 if (bs) cov = @max(cov, lineCov(qx, qy, 0, 0, cw, ch, hw));
                 if (sl) cov = @max(cov, lineCov(qx, qy, 0, ch, cw, 0, hw));
                 pix(out, &n, px, py, cov);
+            }
+        }
+        return n;
+    }
+
+    // powerline (U+E0B0–E0BF) — #534. 두 갈래로 나눠 그린다.
+    //
+    //   * **선 계열** (꺾쇠 E0B1·E0B3, 대각선 E0B9·E0BB·E0BD·E0BF) — 위 대각선과 같은
+    //     픽셀별 AA. 선 주변만 emit 하므로 개수가 둘레에 비례한다.
+    //   * **면 계열** (채움 삼각형 · 반타원, 그리고 호 E0B5·E0B7) — 행마다 덮이는 x 구간을
+    //     구해 **속은 cov=1 사각형 하나**로, **가장자리만 AA 픽셀**로 낸다.
+    //
+    // 면을 픽셀별로 내면 안 되는 이유가 둘이다. (1) `MAX_RECTS` 를 넘는다 — 셀 20×40 이면
+    // 채움 면적만 ~400 픽셀이다. (2) 속 사각형이 AA 픽셀을 덮으면 **한 픽셀이 두 번**
+    // 그려진다. renderer 는 coverage 를 배경과 *미리* 합성하고 그것이 순차 blend 와 같다는
+    // 전제로 도는데 (`software_terminal.zig` 의 emit 주석), 겹치면 그 픽셀만 진해진다.
+    // 그래서 속 사각형은 AA 밴드 **앞에서 멈춘다.**
+    if (cp >= 0xE0B0 and cp <= 0xE0BF) {
+        const t = lightPx(cw);
+        if (isPowerlineLine(cp)) {
+            const hw = t / 2;
+            var py: f32 = 0;
+            while (py < ch) : (py += 1) {
+                var px: f32 = 0;
+                while (px < cw) : (px += 1) {
+                    pix(out, &n, px, py, powerlineLineCov(cp, px + 0.5, py + 0.5, cw, ch, hw));
+                }
+            }
+            return n;
+        }
+        const sub: f32 = 4; // 행당 세로 서브샘플. 가장자리가 가로에 가까울 때도 AA 가 성립한다.
+        var py: f32 = 0;
+        while (py < ch) : (py += 1) {
+            // 이 행에서 좌·우 가장자리가 쓸고 지나가는 범위를 먼저 잡는다.
+            var lmin: f32 = cw;
+            var lmax: f32 = 0;
+            var rmin: f32 = cw;
+            var rmax: f32 = 0;
+            var s: f32 = 0;
+            while (s < sub) : (s += 1) {
+                const sp = powerlineSpan(cp, py + (s + 0.5) / sub, cw, ch, t);
+                const l = @max(0, @min(cw, sp.l));
+                const r = @max(0, @min(cw, sp.r));
+                lmin = @min(lmin, l);
+                lmax = @max(lmax, l);
+                rmin = @min(rmin, r);
+                rmax = @max(rmax, r);
+            }
+            if (rmax <= lmin) continue; // 이 행은 비었다
+            const b0 = @max(0, @floor(lmin));
+            const b1 = @min(cw, @ceil(rmax));
+            const sl = @ceil(lmax);
+            const sr = @floor(rmin);
+            // 속과 밴드가 **겹치지 않게** 열 범위를 나눈다. 속이 없으면 밴드 하나로 합친다.
+            var ranges: [2][2]f32 = undefined;
+            var range_n: usize = 0;
+            if (sr > sl) {
+                push(out, &n, sl, py, sr - sl, 1);
+                ranges[0] = .{ b0, sl };
+                ranges[1] = .{ sr, b1 };
+                range_n = 2;
+            } else {
+                ranges[0] = .{ b0, b1 };
+                range_n = 1;
+            }
+            for (ranges[0..range_n]) |rg| {
+                var c: f32 = rg[0];
+                while (c < rg[1]) : (c += 1) {
+                    // 열 하나의 coverage = 서브행마다의 가로 겹침을 평균낸 값.
+                    var acc: f32 = 0;
+                    var s2: f32 = 0;
+                    while (s2 < sub) : (s2 += 1) {
+                        const sp = powerlineSpan(cp, py + (s2 + 0.5) / sub, cw, ch, t);
+                        const l = @max(0, @min(cw, sp.l));
+                        const r = @max(0, @min(cw, sp.r));
+                        acc += @max(0, @min(c + 1, r) - @max(c, l));
+                    }
+                    pix(out, &n, c, py, acc / sub);
+                }
             }
         }
         return n;
@@ -240,6 +323,86 @@ fn lightPx(w: f32) f32 {
     return @max(1, @round(w / 6));
 }
 
+// ── powerline (U+E0B0–E0BF) 기하 (#534) ────────────────────────────────────
+//
+// 모양은 추측하지 않고 `MesloLGS Nerd Font Mono` 를 크게 렌더해 잉크 범위 기준으로
+// 확정했다 (#534 코멘트에 표가 있다). 요약하면:
+//
+//   E0B0 · E0B2   꼭짓점이 세로 중앙인 채움 삼각형 (→ · ←)
+//   E0B1 · E0B3   그 꺾쇠 (선분 둘)
+//   E0B4 · E0B6   채움 반타원 — 반지름 (cw, ch/2), 평평한 쪽이 반대편
+//   E0B5 · E0B7   그 호 — 바깥 타원에서 안쪽 타원을 뺀 띠
+//   E0B8·E0BA·E0BC·E0BE  네 모서리 채움 삼각형
+//   E0B9·E0BB·E0BD·E0BF  그 빗변. 실측상 E0B9 ≡ E0BF, E0BB ≡ E0BD 로 방향이 같다
+
+/// 선으로 그리는 powerline 인가 (면이 아니라).
+fn isPowerlineLine(cp: u21) bool {
+    return switch (cp) {
+        0xE0B1, 0xE0B3, 0xE0B9, 0xE0BB, 0xE0BD, 0xE0BF => true,
+        else => false,
+    };
+}
+
+fn powerlineLineCov(cp: u21, qx: f32, qy: f32, cw: f32, ch: f32, hw: f32) f32 {
+    const hy = ch / 2;
+    return switch (cp) {
+        // 꺾쇠 — 두 선분이 세로 중앙에서 만난다. 무한직선 거리를 쓰면 ✕ 가 되므로 선분 거리다.
+        0xE0B1 => @max(segCov(qx, qy, 0, 0, cw, hy, hw), segCov(qx, qy, cw, hy, 0, ch, hw)),
+        0xE0B3 => @max(segCov(qx, qy, cw, 0, 0, hy, hw), segCov(qx, qy, 0, hy, cw, ch, hw)),
+        // 모서리 대각선 — 셀을 모서리에서 모서리로 가로지르므로 무한직선 거리로 충분하다
+        // (위 U+2571–2573 과 같은 이유). 인접 셀의 대각선과 그대로 이어진다.
+        0xE0B9, 0xE0BF => lineCov(qx, qy, 0, 0, cw, ch, hw),
+        0xE0BB, 0xE0BD => lineCov(qx, qy, cw, 0, 0, ch, hw),
+        else => 0,
+    };
+}
+
+/// 선분(무한직선이 아님)까지의 거리로 coverage. 꺾쇠처럼 반쪽만 있는 선에 필요하다.
+fn segCov(qx: f32, qy: f32, ax: f32, ay: f32, bx: f32, by: f32, hw: f32) f32 {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 0.0001) return 0;
+    const raw = ((qx - ax) * dx + (qy - ay) * dy) / len2;
+    const tt = @max(0, @min(1, raw));
+    const nx = qx - (ax + tt * dx);
+    const ny = qy - (ay + tt * dy);
+    return @max(0, @min(1, hw + 0.5 - @sqrt(nx * nx + ny * ny)));
+}
+
+/// 반지름 (a, b) 타원의 세로 y 에서의 가로 반폭. 중심은 (0, b).
+fn ellipseHalfW(y: f32, a: f32, b: f32) f32 {
+    if (a <= 0 or b <= 0) return 0;
+    const dy = (y - b) / b;
+    const q = 1 - dy * dy;
+    return if (q <= 0) 0 else a * @sqrt(q);
+}
+
+const Span = struct { l: f32, r: f32 };
+
+/// 면으로 그리는 powerline 글리프가 행 y 에서 덮는 x 구간. `l >= r` 이면 빈 행이다.
+/// `t` 는 호(E0B5 · E0B7)의 선 두께 — 바깥 타원에서 그만큼 줄인 안쪽 타원을 빼 띠를 만든다.
+fn powerlineSpan(cp: u21, y: f32, cw: f32, ch: f32, t: f32) Span {
+    const hy = ch / 2;
+    // 꼭짓점이 세로 중앙인 삼각형의 가로 폭.
+    const wedge = cw * (1 - @abs(y - hy) / hy);
+    const outer = ellipseHalfW(y, cw, hy);
+    const inner = ellipseHalfW(y, cw - t, hy - t);
+    return switch (cp) {
+        0xE0B0 => .{ .l = 0, .r = wedge },
+        0xE0B2 => .{ .l = cw - wedge, .r = cw },
+        0xE0B4 => .{ .l = 0, .r = outer },
+        0xE0B6 => .{ .l = cw - outer, .r = cw },
+        0xE0B5 => .{ .l = inner, .r = outer },
+        0xE0B7 => .{ .l = cw - outer, .r = cw - inner },
+        0xE0B8 => .{ .l = 0, .r = cw * (y / ch) }, // 좌하
+        0xE0BA => .{ .l = cw * (1 - y / ch), .r = cw }, // 우하
+        0xE0BC => .{ .l = 0, .r = cw * (1 - y / ch) }, // 좌상
+        0xE0BE => .{ .l = cw * (y / ch), .r = cw }, // 우상
+        else => .{ .l = 0, .r = 0 },
+    };
+}
+
 /// U+2500–U+257F 의 arm 분해 테이블. 대각선(2571–2573) 은 null.
 fn descFor(cp: u21) ?Desc {
     const L = W.light;
@@ -390,9 +553,23 @@ fn descFor(cp: u21) ?Desc {
     };
 }
 
-/// renderer 분기용 — cp 가 box-drawing 범위인지. 대각선 포함 전 범위 그린다.
+/// renderer 분기용 — `boxRects` 가 이 cp 를 그리는지. **세 renderer 가 이것을 부른다.**
+///
+/// 범위를 호출처에 인라인하지 않는다. 예전에는 세 renderer 가 `cp >= 0x2500 and
+/// cp <= 0x257F` 를 각자 적어 두고 이 함수는 테스트에서만 쓰였는데, 그래서 powerline
+/// 대역을 더할 때 고칠 자리가 네 곳이 됐다 (#534).
+pub fn handles(cp: u21) bool {
+    return isBoxDrawing(cp) or isPowerline(cp);
+}
+
+/// box-drawing 본래 범위 (대각선 포함 — 전 범위를 그린다).
 pub fn isBoxDrawing(cp: u21) bool {
     return cp >= 0x2500 and cp <= 0x257F;
+}
+
+/// powerline 확장 (#534). Nerd Font 계열에만 있는 PUA 대역.
+pub fn isPowerline(cp: u21) bool {
+    return cp >= 0xE0B0 and cp <= 0xE0BF;
 }
 
 // ───────────────────────── tests ─────────────────────────
@@ -507,10 +684,123 @@ test "all four rounded corners produce an arc" {
     }
 }
 
-test "isBoxDrawing covers full range incl diagonals, excludes blocks" {
-    try std.testing.expect(isBoxDrawing(0x2500));
-    try std.testing.expect(isBoxDrawing(0x256D));
-    try std.testing.expect(isBoxDrawing(0x2571)); // 대각선도 그린다
-    try std.testing.expect(!isBoxDrawing(0x2588)); // 블록(block_element 담당)
-    try std.testing.expect(!isBoxDrawing('A'));
+test "#534 powerline — 16 자 전부 그리고, MAX_RECTS 를 넘지 않으며, 픽셀을 두 번 덮지 않는다" {
+    // 마지막 조건이 핵심이다. renderer 는 coverage 를 배경과 *미리* 합성하고 그것이
+    // 순차 blend 와 같다고 전제하는데 (`software_terminal.zig` 의 emit 주석), 한 픽셀이
+    // 두 번 그려지면 그 픽셀만 진해진다. 속 사각형이 AA 밴드를 덮으면 그렇게 된다.
+    var buf: [MAX_RECTS]Rect = undefined;
+    // 마지막 둘은 큰 폰트 쪽 여유를 지킨다. 선 계열 (꺾쇠 · 대각선) 은 개수가 셀 높이에
+    // 비례해서 (둘레 ∝ ch), 여기서 새면 큰 폰트에서 글리프가 잘려 그려진다.
+    const sizes = [_][2]f32{ .{ 8, 16 }, .{ 10, 20 }, .{ 20, 40 }, .{ 33, 66 }, .{ 13, 27 }, .{ 40, 80 }, .{ 60, 120 } };
+    for (sizes) |sz| {
+        const cw = sz[0];
+        const ch = sz[1];
+        var cp: u21 = 0xE0B0;
+        while (cp <= 0xE0BF) : (cp += 1) {
+            const n = boxRects(cp, cw, ch, &buf) orelse {
+                std.debug.print("U+{X} 가 null 을 냈다\n", .{cp});
+                return error.PowerlineNotDrawn;
+            };
+            try std.testing.expect(n > 0);
+            try std.testing.expect(n <= MAX_RECTS);
+
+            var hits: [122][62]u8 = .{.{0} ** 62} ** 122;
+            for (buf[0..n]) |r| {
+                try std.testing.expect(r.cov > 0 and r.cov <= 1);
+                // 셀 밖으로 새면 이웃 셀을 침범한다.
+                try std.testing.expect(r.x >= 0 and r.y >= 0);
+                try std.testing.expect(r.x + r.w <= cw + 0.001);
+                try std.testing.expect(r.y + r.h <= ch + 0.001);
+                var yy: usize = @intFromFloat(r.y);
+                const y_end: usize = @intFromFloat(r.y + r.h);
+                while (yy < y_end) : (yy += 1) {
+                    var xx: usize = @intFromFloat(r.x);
+                    const x_end: usize = @intFromFloat(r.x + r.w);
+                    while (xx < x_end) : (xx += 1) {
+                        hits[yy][xx] += 1;
+                        if (hits[yy][xx] > 1) {
+                            std.debug.print("U+{X} {d}x{d}: 픽셀 ({d},{d}) 를 두 번 덮었다\n", .{ cp, cw, ch, xx, yy });
+                            return error.PixelCoveredTwice;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "#534 powerline — 채움 글리프의 면적이 기하 기대값과 맞는다" {
+    // 모양이 뒤집히거나 절반만 그려지면 면적으로 드러난다. 참조 렌더로 확정한 기하는
+    // 삼각형 = 셀의 1/2, 반타원 = π/4 (반지름 cw · ch/2 의 반타원 넓이 ÷ 셀 넓이) 다.
+    var buf: [MAX_RECTS]Rect = undefined;
+    const cw: f32 = 24;
+    const ch: f32 = 48;
+    const cell = cw * ch;
+    const cases = [_]struct { cp: u21, ratio: f32 }{
+        .{ .cp = 0xE0B0, .ratio = 0.5 }, // 채움 삼각형 →
+        .{ .cp = 0xE0B2, .ratio = 0.5 }, // 채움 삼각형 ←
+        .{ .cp = 0xE0B4, .ratio = std.math.pi / 4.0 }, // 채움 반타원 →
+        .{ .cp = 0xE0B6, .ratio = std.math.pi / 4.0 }, // 채움 반타원 ←
+        .{ .cp = 0xE0B8, .ratio = 0.5 }, // 좌하
+        .{ .cp = 0xE0BA, .ratio = 0.5 }, // 우하
+        .{ .cp = 0xE0BC, .ratio = 0.5 }, // 좌상
+        .{ .cp = 0xE0BE, .ratio = 0.5 }, // 우상
+    };
+    for (cases) |c| {
+        const n = boxRects(c.cp, cw, ch, &buf).?;
+        var area: f32 = 0;
+        for (buf[0..n]) |r| area += r.w * r.h * r.cov;
+        const got = area / cell;
+        if (@abs(got - c.ratio) > 0.03) {
+            std.debug.print("U+{X}: 면적비 {d:.3}, 기대 {d:.3}\n", .{ c.cp, got, c.ratio });
+            return error.PowerlineAreaMismatch;
+        }
+    }
+}
+
+test "#534 powerline — 채움 삼각형의 방향이 맞다 (행별 폭으로 판정)" {
+    var buf: [MAX_RECTS]Rect = undefined;
+    const cw: f32 = 24;
+    const ch: f32 = 48;
+
+    // E0B0 (→): 세로 중앙에서 가장 넓고 위아래 끝에서 가장 좁다.
+    const n0 = boxRects(0xE0B0, cw, ch, &buf).?;
+    var w_top: f32 = 0;
+    var w_mid: f32 = 0;
+    for (buf[0..n0]) |r| {
+        if (r.y < 1) w_top += r.w * r.cov;
+        if (r.y >= ch / 2 - 1 and r.y < ch / 2) w_mid += r.w * r.cov;
+    }
+    try std.testing.expect(w_mid > w_top * 4);
+
+    // E0BC (좌상 채움): 맨 위 행이 거의 꽉 차고 맨 아래 행은 거의 비었다.
+    const n1 = boxRects(0xE0BC, cw, ch, &buf).?;
+    var top: f32 = 0;
+    var bot: f32 = 0;
+    for (buf[0..n1]) |r| {
+        if (r.y < 1) top += r.w * r.cov;
+        if (r.y >= ch - 1) bot += r.w * r.cov;
+    }
+    try std.testing.expect(top > cw * 0.9);
+    try std.testing.expect(bot < cw * 0.1);
+
+    // E0BE (우상 채움) 은 같은 세로 분포이되 왼쪽이 아니라 오른쪽에 붙는다.
+    const n2 = boxRects(0xE0BE, cw, ch, &buf).?;
+    var right_edge_hits: f32 = 0;
+    for (buf[0..n2]) |r| {
+        if (r.x + r.w >= cw - 0.001) right_edge_hits += 1;
+    }
+    try std.testing.expect(right_edge_hits > ch * 0.9);
+}
+
+test "handles covers box-drawing incl diagonals and powerline, excludes blocks" {
+    try std.testing.expect(handles(0x2500));
+    try std.testing.expect(handles(0x256D));
+    try std.testing.expect(handles(0x2571)); // 대각선도 그린다
+    try std.testing.expect(handles(0xE0B0)); // #534 powerline 시작
+    try std.testing.expect(handles(0xE0BF)); // powerline 끝
+    try std.testing.expect(!handles(0xE0AF)); // 그 바로 앞은 아니다
+    try std.testing.expect(!handles(0xE0C0)); // 그 바로 뒤도 아니다
+    try std.testing.expect(!handles(0x2588)); // 블록(block_element 담당)
+    try std.testing.expect(!handles('A'));
 }
