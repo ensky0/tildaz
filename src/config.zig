@@ -1703,6 +1703,10 @@ pub fn defaultConfigToml(
         \\# Position names are W3C KeyboardEvent.code values. Full list: CONFIG.md
         \\hotkey           = "{s}"
         \\
+        \\# Windows accepts arguments, so the first space ends the executable path:
+        \\# "wsl.exe -d Debian" runs wsl.exe. A path that itself contains spaces has
+        \\# to be quoted -- "\"C:\\Program Files\\Git\\bin\\bash.exe\"".
+        \\# macOS and Linux expect a plain absolute path with no arguments.
         \\shell            = "{s}"
         \\
         \\auto_start       = {}
@@ -3426,4 +3430,19 @@ test "explicit line height ratio is preserved when parsing" {
     const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.toml");
     defer config.deinit(allocator);
     try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
+}
+
+test "#558 기본 config 가 Windows 의 공백 경로 인용법을 알려 준다" {
+    // 오류 다이얼로그의 예시 목록에는 넣지 않기로 했다 (escape 가 겹친 문자열이라
+    // 깔끔한 한 줄짜리 예시 넷 옆에 두면 흔한 경우의 가독성을 해친다). 그래서 이
+    // 주석과 CONFIG.md 가 유일한 안내다 — 조용히 사라지면 안내가 통째로 없어진다.
+    const alloc = std.testing.allocator;
+    const doc = try defaultConfigToml(alloc, "/bin/bash", Defaults.hotkeyFor(0));
+    defer alloc.free(doc);
+
+    const quoted_example =
+        \\"\"C:\\Program Files\\Git\\bin\\bash.exe\""
+    ;
+    try std.testing.expect(std.mem.indexOf(u8, doc, quoted_example) != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc, "the first space ends the executable path") != null);
 }
