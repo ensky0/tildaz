@@ -33,6 +33,14 @@ Internal changes belong in neither.
 - Linux: mouse input lands where you point at fractional display scales; it was biased
   by up to two pixels toward the top-left.
   ([#552](https://github.com/ensky0/tildaz/issues/552))
+- Windows: dialogs now follow the display scale while they are open. Changing the scale,
+  or dragging the window to a monitor with a different one, used to leave the text and
+  buttons at their original size - which could push the OK button outside the window, so
+  the dialog could only be closed with the keyboard.
+  ([#540](https://github.com/ensky0/tildaz/issues/540))
+- Windows: the terminal no longer takes typing while a dialog is open. It was meant to be
+  modal all along, as it already is on Linux and macOS.
+  ([#567](https://github.com/ensky0/tildaz/issues/567))
 - Powerline separators (U+E0B0-E0BF) are drawn by TildaZ itself, so prompts and status
   bars that use them - zellij, starship, powerlevel10k - render on every platform even
   without a Nerd Font installed. They used to show as replacement boxes.
