@@ -386,7 +386,11 @@ pub const Tab = struct {
     /// 등) 을 PTY 로 송신. stream 파싱은 main thread 의 drainOutput 에서
     /// 일어나므로 blocking 가능한 backend.write 직접 호출 대신 키 입력과 같은
     /// write_queue 경로로 (순서 보존 + push 가 복사라 data lifetime 무관).
-    fn vtWritePty(handler: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+    ///
+    /// #550 — 인자가 `[:0]const u8` 이었다가 upstream 이 `[]const u8` 로 바꿨다.
+    /// 본문이 널 종단을 쓰지 않고 `queueWrite` 도 평범한 slice 를 받으므로 타입만
+    /// 넓히면 되고 동작은 그대로다.
+    fn vtWritePty(handler: *ghostty.TerminalStream.Handler, data: []const u8) void {
         const tab: *Tab = @alignCast(@fieldParentPtr("terminal", handler.terminal));
         tab.queueWrite(data);
     }
@@ -639,7 +643,9 @@ test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled"
             calls = 0;
         }
 
-        fn writePty(_: *ghostty.TerminalStream.Handler, data: [:0]const u8) void {
+        // #550 — upstream 이 `Effects.write_pty` 의 인자를 `[:0]const u8` 에서
+        // `[]const u8` 로 바꿨다. 여기도 길이만 쓰므로 타입만 맞춘다.
+        fn writePty(_: *ghostty.TerminalStream.Handler, data: []const u8) void {
             @memcpy(response[0..data.len], data);
             len = data.len;
             calls += 1;

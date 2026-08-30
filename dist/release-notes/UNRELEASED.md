@@ -21,6 +21,12 @@ Internal changes belong in neither.
 
 ## Body candidates
 
+- Heavy output lands faster. Emoji, ZWJ sequences and CJK text parse roughly twice as
+  fast, and ANSI-heavy output about 1.5x, measured on Linux, macOS and Windows.
+  ([#550](https://github.com/ensky0/tildaz/issues/550))
+- Fixed a crash that could corrupt memory while printing grapheme clusters when a
+  program emits OSC 8 hyperlinks.
+  ([#550](https://github.com/ensky0/tildaz/issues/550))
 - Linux: windows and dialogs are no longer resampled at fractional display scales, so
   text and lines stay sharp at 1.7x and other fractional factors.
   ([#539](https://github.com/ensky0/tildaz/issues/539))
