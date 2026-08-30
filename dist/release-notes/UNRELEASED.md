@@ -19,6 +19,16 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- The `[keys]` table changed with the split-pane work. `split_vertical` and
+  `split_horizontal` were renamed to `split_right` and `split_down`, `split_left` and
+  `split_up` were added beside them, and `close_pane` is new. Against a `config_N.toml`
+  written by an earlier version that is five names the file does not have and two it no
+  longer recognises, so loading stops with `missing required key "split_down"`. Move the
+  file aside (add `.bak` to its name), start TildaZ once so a fresh default file is
+  written, then copy back the values you had changed.
+  ([#483](https://github.com/ensky0/tildaz/issues/483),
+  [#544](https://github.com/ensky0/tildaz/issues/544))
+
 ## Body candidates
 
 - Heavy output lands faster. Emoji, ZWJ sequences and CJK text parse roughly twice as
