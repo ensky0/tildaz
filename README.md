@@ -16,10 +16,10 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.9.3 — Tabs can be split into panes.**
-> An arrow key picks the side the new shell lands on — left, right, above or
-> below. Move the focus and the split line with the keyboard, zoom one pane to
-> the whole tab, or drag the line between two panes. Every pane runs its own shell.
+> **v0.9.4 — Heavy output lands about twice as fast.**
+> Emoji, ZWJ sequences and CJK text parse roughly twice as fast, and ANSI-heavy
+> output about 1.5x. Powerline separators now draw without a Nerd Font, and on
+> Linux text stays sharp at fractional display scales.
 
 ## Who is TildaZ for?
 
