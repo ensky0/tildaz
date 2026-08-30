@@ -362,8 +362,9 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         .{ .name = "backquote", .key = .grave },          .{ .name = "tab", .key = .tab },
         .{ .name = "escape", .key = .escape },            .{ .name = "esc", .key = .escape },
         .{ .name = "return", .key = .@"return" },         .{ .name = "enter", .key = .@"return" },
-        // #493 — `[keys]` 의 기본 bindings 가 쓴다 (scroll_page_up / prev_tab 등).
-        // 어느 layout 에나 있는 단일 물리 키라 layout 종속 문제가 없다 (#482).
+        // #493 — `[keys]` 의 기본 bindings 가 쓴다 (`prev_tab` · `next_tab` 의
+        // `ctrl+pageup` / `ctrl+pagedown`). 어느 layout 에나 있는 단일 물리 키라
+        // layout 종속 문제가 없다 (#482).
         .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
         .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
         // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
@@ -1769,9 +1770,9 @@ pub fn defaultConfigToml(
     // `[keys]` 는 액션 수가 많아 별 helper 로 조립한다. **최상위 스칼라 뒤, 테이블
     // 뒤**에 온다 — TOML 은 테이블 헤더 다음의 키를 그 테이블 소속으로 읽으므로
     // 순서를 바꿀 수 없다.
-    // 액션 23 개 × 한 줄 ~60 byte + 안내 주석 (라벨 / 위치 두 표기 설명이 들어가
-    // 커졌다). 고정 버퍼로 충분하고 (이 코드베이스의 `Io.Writer.fixed` 패턴) 넘치면
-    // `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
+    // 액션 하나가 한 줄 ~60 byte (지금 38 개) + 안내 주석 (라벨 / 위치 두 표기 설명이
+    // 들어가 커졌다). 고정 버퍼로 충분하고 (이 코드베이스의 `Io.Writer.fixed` 패턴)
+    // 넘치면 `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
     var keys_buf: [8192]u8 = undefined;
     var keys_fbs: std.Io.Writer = .fixed(&keys_buf);
     try appendKeysSection(&keys_fbs);

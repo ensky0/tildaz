@@ -169,6 +169,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
+| `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 38 of them, all required. An empty list unbinds the action |
 
 ### Font names
 
@@ -246,6 +247,15 @@ sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f
 Startup only fails when the name matches **no** installed font at all — a typo, or a font that is
 not installed.
 
+#### Ligatures and emoji
+
+**Ligatures** require a ligature-capable `font.family` (e.g. Fira Code or
+JetBrains Mono — both free). The Windows default (Cascadia Code) includes them;
+the macOS (Menlo) and Linux (DejaVu Sans Mono) defaults do not, so point
+`font.family` at a ligature font to enable them. Color emoji and ZWJ families
+(skin tones, multi-person families) come from the emoji fallback (Segoe UI Emoji
+/ Apple Color Emoji / Noto Color Emoji) and work with the defaults.
+
 ### Keyboard shortcuts
 
 The `[keys]` table binds an action to one or more key combinations. Every action
@@ -270,6 +280,41 @@ quit      = []
   separate. See KEYBINDINGS.md for the full list.
 - `cmd` resolves per platform (Super on Linux, Win on Windows, Command on
   macOS), so a combination you write yourself works on all three.
+
+#### The actions
+
+These are the names the file must contain — all of them, since the table is
+strict in both directions: a missing action fails the load, and so does one that
+is not on this list. The generated file writes them in these groups. The *default*
+key for each is per-OS and lives in [KEYBINDINGS.md](KEYBINDINGS.md); repeating it
+here would give it two homes to drift between.
+
+| Group | Actions | What they do |
+|---|---|---|
+| Tabs | `new_tab` | Open a tab |
+| | `close_tab` | Close the active tab, and every pane in it |
+| | `prev_tab` `next_tab` | Cycle through the tabs |
+| | `switch_tab1` … `switch_tab9` | Jump to the tab at that index |
+| Panes | `split_left` `split_right` `split_up` `split_down` | Split the active pane in that direction. The new pane takes half the space and receives focus |
+| | `focus_pane_left` `focus_pane_right` `focus_pane_up` `focus_pane_down` | Move focus to the neighboring pane in that direction |
+| | `resize_pane_left` `resize_pane_right` `resize_pane_up` `resize_pane_down` | Move the split line next to the active pane by one cell |
+| | `equalize_panes` | Give every row or column of panes an even share |
+| | `zoom_pane` | Toggle the active pane to fill the whole tab |
+| | `close_pane` | Close the active pane — the tab, when it is the last pane in it |
+| Clipboard | `copy_selection` | Copy the selection |
+| | `paste` | Paste the clipboard |
+| Window | `fullscreen` | Fullscreen, covering the taskbar / dock / panels |
+| | `fullscreen_workarea` | Fullscreen, keeping the taskbar / dock / panels visible |
+| | `quit` | Quit, after the confirmation dialog |
+| Tools | `reset_terminal` | Reset the terminal |
+| | `show_about` | Open the About dialog |
+| | `open_config` | Open this config file in your editor |
+| | `open_log` | Open `tildaz_N.log` in your editor |
+| | `dump_perf` | Write a performance snapshot to the log |
+
+A tab holds up to 16 panes. Splitting is also available without a key — Alt+click
+the `+` button, or use the `…` menu — and [KEYBINDINGS.md](KEYBINDINGS.md#split-panes)
+describes how the layout behaves.
 
 #### Two ways to name a key
 
@@ -362,10 +407,12 @@ Windows.
 
 **A key that types text needs `Ctrl`, `Alt`, or `Cmd`** — binding it with no
 modifier, or with `Shift` alone, would make that character impossible to type in
-the terminal. Keys that type nothing may be bound bare: `F1`–`F24`, `PageUp`,
-`PageDown`, `Escape`, `NumLock`, `CapsLock`. Arrow and editing keys count as
-typing keys even though they produce no character, because they send escape
-sequences that programs in the terminal expect to receive.
+the terminal. Keys that type nothing may be bound bare: by label `F1`–`F12`,
+`PageUp`, `PageDown` and `Escape`; by position those same keys plus `[F13]`–`[F24]`,
+`[NumLock]`, `[CapsLock]`, `[PrintScreen]`, `[ScrollLock]`, `[Pause]` and
+`[ContextMenu]`. Arrow and editing keys count as typing keys even though they
+produce no character, because they send escape sequences that programs in the
+terminal expect to receive.
 
 **Digit bindings ignore Shift.** On layouts where the digit row needs Shift —
 French AZERTY, where the unshifted row is `&é"'(-è_çà` — `Alt+1` physically
@@ -404,14 +451,20 @@ invalid value shows an error dialog and exits):
 - **Modifiers**: `Ctrl`, `Alt`, `Shift`, and the platform key written as `Cmd`
   (Win key on Windows / Command on macOS / Super on Linux). The `cmd` token maps
   to each platform's equivalent, so one config value works everywhere.
-- **A modifier-free hotkey must be a function key** (`F1`–`F12`). A plain letter,
-  digit, or `Space` with no modifier is rejected.
+- **A modifier-free hotkey must be a function key** — `F1`–`F12` by label, or
+  `[F1]`–`[F24]` by position. A plain letter, digit, or `Space` with no modifier
+  is rejected. `[F13]`–`[F24]` are accepted bare even though no label names them:
+  those spots are rare on physical keyboards and are mostly reached by remapping
+  another key to them (QMK, ZMK), so requiring a modifier would put them out of
+  reach entirely. They type nothing, so they cannot steal everyday input.
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
 - **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
   `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
-  `` ` `` (also `Grave` / `Backquote`), `[` (also `BracketLeft`), and `]` (also
-  `BracketRight`). Letter case does not matter.
+  `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
+  (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
+  matter. This is the same label set `[keys]` accepts — the two differ in what
+  they allow *without* a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same
@@ -459,7 +512,7 @@ Latin *alphabet*.
 KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
 sway / Hyprland limitation it matters most for.
 
-### New tab working directory
+## New tab working directory
 
 A new tab starts in the **active tab's current directory**. When that location
 can't be determined or entered, it falls back to your **home directory**. There is
@@ -494,32 +547,30 @@ Combinations that fall back to the home directory:
 | The directory was deleted, or isn't a directory | Checked before spawning |
 | A shell whose prompt hook was overwritten by your rc file | For bash, assigning `PROMPT_COMMAND=` in `.bashrc` replaces what TildaZ passed in |
 
-**Ligatures** require a ligature-capable `font.family` (e.g. Fira Code or
-JetBrains Mono — both free). The Windows default (Cascadia Code) includes them;
-the macOS (Menlo) and Linux (DejaVu Sans Mono) defaults do not, so point
-`font.family` at a ligature font to enable them. Color emoji and ZWJ families
-(skin tones, multi-person families) come from the emoji fallback (Segoe UI Emoji
-/ Apple Color Emoji / Noto Color Emoji) and work with the defaults.
-
 ## Position examples
 
-```
-"window": { "dock_position": "top", "width_percent": 100.0, "height_percent": 40.0, "offset_percent": 0.0 }
- -> top of screen, full width, 40% height, flush to the left edge
+Four values in the `[window]` table decide where the terminal sits. `offset_percent`
+runs along the docked edge — 0 is the start, 50 the center, 100 the end.
 
-"window": { "dock_position": "top", "width_percent": 60.0, "height_percent": 40.0, "offset_percent": 50.0 }
- -> top of screen, 60% width, 40% height, centered horizontally
+| `dock_position` | `width_percent` | `height_percent` | `offset_percent` | Where it lands |
+|---|---|---|---|---|
+| `"top"` | `100.0` | `40.0` | `0.0` | Top of the screen, full width, 40% height, flush left |
+| `"top"` | `60.0` | `40.0` | `50.0` | Top of the screen, 60% width, 40% height, horizontally centered |
+| `"top"` | `50.0` | `100.0` | `100.0` | Top of the screen, 50% width, full height, flush right |
+| `"left"` | `33.3` | `80.0` | `50.0` | Left side, about a third of the width, 80% height, vertically centered — a fractional percent for fine adjustment |
 
-"window": { "dock_position": "top", "width_percent": 50.0, "height_percent": 100.0, "offset_percent": 100.0 }
- -> top of screen, 50% width, full height, flush to the right edge
-
-"window": { "dock_position": "left", "width_percent": 33.3, "height_percent": 80.0, "offset_percent": 50.0 }
- -> left side of screen, ~one third width, 80% height, vertically centered (fractional percent demonstrating fine adjustment)
+```toml
+[window]
+dock_position   = "left"
+width_percent   = 33.3
+height_percent  = 80.0
+offset_percent  = 50.0
+opacity_percent = 100.0
 ```
 
 ## Built-in themes
 
-Set `"theme"` to one of the names below. If no theme is set, the Tilda palette is used.
+Set `theme` to one of the names below. If no theme is set, the Tilda palette is used.
 
 ### Classic
 
