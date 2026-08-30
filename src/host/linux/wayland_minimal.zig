@@ -2041,7 +2041,32 @@ const Client = struct {
         }
         if (self.caps.seat.name != 0) {
             self.seat_id = self.allocId();
-            try self.bind(self.caps.seat.name, "wl_seat", @min(self.caps.seat.version, 7), self.seat_id);
+            // #562 — v10 이 필요하다. `wl_keyboard.key_state.repeated` (값 2) 가 v10 부터라,
+            // 그 아래로 bind 하면 compositor 가 반복을 알려 줄 수 없어 **Linux 의 반복 보고는
+            // 전부 우리 자체 타이머**가 만든다. 그런데 fcitx5 처럼 자동반복을 낱개
+            // press/release 쌍으로 재생하는 IME 가 떠 있으면 그 release 가 매번 타이머를
+            // disarm 해서 (`handleKeyboardKey` 의 disarm) 타이머가 영영 못 뛴다. 한국어
+            // 사용자는 fcitx5 를 상시 띄우므로 실사용에서 만나는 조합이다.
+            //
+            // **이중 반복은 규격이 배제한다.** `wl_keyboard.key` 서술이 *"compositors may
+            // send key events with the repeated key state **when a repeat_info event with a
+            // rate argument of 0 has been received**"* 로, `rate = 0` 을 전제 조건으로
+            // 못박는다. 그래서 두 경우뿐이고 우리는 둘 다 이미 갖고 있다 —
+            // `rate = 0` 이면 `maybeRepeatKey` 의 `if (self.key_repeat_rate_hz <= 0) return`
+            // 이 물러나고, `rate > 0` 이면 compositor 가 `repeated` 를 보낼 수 없어 타이머가
+            // 지금처럼 반복한다.
+            //
+            // **올려도 새로 오는 이벤트는 pointer 둘뿐이다** — v8 `axis_value120` ·
+            // v9 `axis_relative_direction`. 둘 다 `handlePointerEvent` 의 `else => {}` 가
+            // 무시한다. v10 은 새 이벤트가 아니라 기존 `key` 이벤트의 새 `state` 값이다.
+            //
+            // v10 을 내주지 않는 compositor 는 `@min` 이 예전 동작을 그대로 유지한다.
+            const seat_version = @min(self.caps.seat.version, 10);
+            try self.bind(self.caps.seat.name, "wl_seat", seat_version, self.seat_id);
+            // 데스크톱마다 내주는 버전이 갈리므로 판정 근거를 남긴다. `bound=10` 이면
+            // compositor 가 반복을 맡을 수 있고 (그때 `repeat rate=0` 이 뒤따른다),
+            // 그보다 낮으면 우리 타이머가 반복을 만든다.
+            log.appendLineVerbose("wayland", "wl_seat bound version={} (advertised {}) (#562)", .{ seat_version, self.caps.seat.version });
         }
         if (self.caps.data_device_manager.name != 0) {
             self.data_device_manager_id = self.allocId();
