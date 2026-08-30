@@ -3258,6 +3258,20 @@ const Client = struct {
         return @divFloor(logical * num, den);
     }
 
+    /// **크기** (buffer / surface 크기) 전용 변환 — 위 좌표용과 반올림 규칙이 다르다.
+    ///
+    /// `fractional-scale-v1` 은 버퍼 크기를 *"surface 크기 × 배율, 0 에서 먼 쪽으로
+    /// 반올림"* 으로 규정한다 (protocol description: *"the size is rounded halfway
+    /// away from zero"*). 내림하면 버퍼가 compositor 의 목적지 사각형보다 최대 1 px
+    /// 짧아지고, compositor 가 그 축으로 창 전체를 늘려 **글자까지 번진다** (#539 —
+    /// scale 1.7 · 논리 높이 735 에서 1249.5 를 1249 로 버려 발생).
+    ///
+    /// 어긋남은 소수부가 0.5 이상일 때만 생기므로 배율과 창 크기의 조합에 따라
+    /// 나타났다 사라진다 — "이 배율에서는 괜찮더라" 로 판정하면 안 된다.
+    fn logicalToPhysicalSize(self: *const Client, logical: i32) i32 {
+        return physicalSizeForLogical(logical, self.preferred_scale);
+    }
+
     fn physicalToLogical(self: *const Client, physical: i32) i32 {
         const num: i32 = @intCast(self.preferred_scale);
         const den: i32 = @intCast(fractional_scale_denominator);
@@ -3271,8 +3285,9 @@ const Client = struct {
     }
 
     /// dialog surface 요청은 계산한 physical content보다 작아지면 마지막 glyph가
-    /// 잘릴 수 있으므로 positive ceil을 쓴다. configure의 logical→physical floor와
-    /// 짝을 이뤄 요청한 buffer 크기를 보존한다 (#306).
+    /// 잘릴 수 있으므로 positive ceil을 쓴다. configure의 `logicalToPhysicalSize`와
+    /// 짝을 이뤄 요청한 buffer 크기를 보존한다 (#306). 그쪽이 내림에서 반올림으로
+    /// 바뀌어도(#539) 보존은 유지된다 — 반올림은 내림보다 작아지지 않는다.
     fn physicalToLogicalCeil(self: *const Client, physical: i32) i32 {
         if (physical <= 0) return 0;
         const num: i64 = @intCast(self.preferred_scale);
@@ -5302,8 +5317,8 @@ const Client = struct {
                 // 이면 실제 layout 의 크기가 초기 안전 commit 과 같아 compositor 가 두
                 // 번째 configure 를 안 보낼 수 있으므로, 이 configure 를 boot 진행
                 // 신호로 계속 써야 한다 (안 그러면 그 config 에서 boot 가 멈춘다).
-                if (w > 0) self.pending_width = self.logicalToPhysical(w_logical);
-                if (h > 0) self.pending_height = self.logicalToPhysical(h_logical);
+                if (w > 0) self.pending_width = self.logicalToPhysicalSize(w_logical);
+                if (h > 0) self.pending_height = self.logicalToPhysicalSize(h_logical);
                 self.applyPendingSize();
                 // viewport.set_destination — compositor 가 우리 buffer (physical)
                 // 를 logical surface size 안에 1:1 매핑하게. 호출 안 하면 buffer
@@ -7708,8 +7723,8 @@ const Client = struct {
         if (payload.len < 12) return error.WaylandBadMessage;
         // xdg-shell configure 의 width/height = *logical pixel* (compositor 단위).
         // 우리 내부 단위는 physical 이라 변환.
-        self.pending_width = self.logicalToPhysical(readI32(payload[0..4]));
-        self.pending_height = self.logicalToPhysical(readI32(payload[4..8]));
+        self.pending_width = self.logicalToPhysicalSize(readI32(payload[0..4]));
+        self.pending_height = self.logicalToPhysicalSize(readI32(payload[4..8]));
     }
 
     fn handleBufferEvent(self: *Client, id: u32, opcode: u16) bool {
@@ -9421,8 +9436,8 @@ const Client = struct {
                 const w_clamped: i32 = @intCast(@min(w_logical, @as(u32, std.math.maxInt(i32))));
                 const h_clamped: i32 = @intCast(@min(h_logical, @as(u32, std.math.maxInt(i32))));
                 const configured = dialog_layout.Size{
-                    .w = self.logicalToPhysical(w_clamped),
-                    .h = self.logicalToPhysical(h_clamped),
+                    .w = self.logicalToPhysicalSize(w_clamped),
+                    .h = self.logicalToPhysicalSize(h_clamped),
                 };
                 const configured_layout = self.applyCurrentDialogLayoutForSurface(configured);
                 if (!configured_layout.fits) {
@@ -10272,6 +10287,46 @@ fn isAcceptableTextMime(mime: []const u8) bool {
 /// `@divTrunc` 로 0 방향 정수 변환 — pixelToCell 의 범위 검사가 음수 reject.
 fn wlFixedToPx(value: i32) i32 {
     return @divTrunc(value, 256);
+}
+
+/// logical 크기 → physical buffer 크기. `Client.logicalToPhysicalSize` 의 계산부로,
+/// Client 없이 검증할 수 있게 file-scope 순수 함수로 둔다.
+///
+/// 반올림은 **0 에서 먼 쪽** (half away from zero) 이다 — `fractional-scale-v1` 의
+/// 규정이자 compositor 가 목적지 사각형을 잡는 방식이라, 이것과 어긋나면 창이
+/// 그 축으로 리샘플된다 (#539).
+fn physicalSizeForLogical(logical: i32, scale_num: u32) i32 {
+    const num: i64 = @intCast(scale_num);
+    const den: i64 = fractional_scale_denominator;
+    const scaled: i64 = @as(i64, logical) * num;
+    const half: i64 = @divFloor(den, 2);
+    const rounded: i64 = if (scaled >= 0)
+        @divFloor(scaled + half, den)
+    else
+        -@divFloor(-scaled + half, den);
+    return @intCast(rounded);
+}
+
+test "#539 buffer 크기는 0 에서 먼 쪽으로 반올림한다 (내림이 아니다)" {
+    const s17: u32 = 204; // 1.7x
+    // 이슈의 실측 조합 — 논리 735 는 1249.5 라 내림하면 1 px 짧아진다.
+    try std.testing.expectEqual(@as(i32, 1250), physicalSizeForLogical(735, s17));
+    // 같은 화면의 논리 폭 2259 는 3840.3 이라 반올림해도 그대로 — 가로가 또렷했던 이유.
+    try std.testing.expectEqual(@as(i32, 3840), physicalSizeForLogical(2259, s17));
+    // 로그에서 확인한 dialog 값들 (내림일 때 897 / 545 였다).
+    try std.testing.expectEqual(@as(i32, 898), physicalSizeForLogical(528, s17)); // 897.6
+    try std.testing.expectEqual(@as(i32, 546), physicalSizeForLogical(321, s17)); // 545.7
+    try std.testing.expectEqual(@as(i32, 476), physicalSizeForLogical(280, s17)); // 476.0 정확
+    // 정확히 .5 는 0 에서 먼 쪽 = 올림 (5 × 1.7 = 8.5).
+    try std.testing.expectEqual(@as(i32, 9), physicalSizeForLogical(5, s17));
+
+    // 정수 배율과 fractional 미advertise (120) 는 내림과 결과가 같아야 한다 — 회귀 가드.
+    try std.testing.expectEqual(@as(i32, 1271), physicalSizeForLogical(1271, 120));
+    try std.testing.expectEqual(@as(i32, 2542), physicalSizeForLogical(1271, 240));
+
+    // 0 과 음수 (compositor 가 0 을 보내는 경로가 있다).
+    try std.testing.expectEqual(@as(i32, 0), physicalSizeForLogical(0, s17));
+    try std.testing.expectEqual(@as(i32, -1250), physicalSizeForLogical(-735, s17));
 }
 
 fn readU32(bytes: *const [4]u8) u32 {
