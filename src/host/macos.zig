@@ -948,7 +948,16 @@ fn firstCodepoint(text: []const u8) u21 {
 ///
 /// `utf8` 은 이 키가 만든 문자다 — 특수키 경로는 빈 문자열을 준다. 제어문자는
 /// `key_encode` 가 걸러 내므로 (`textForEncoding`) 호출부가 신경 쓰지 않아도 된다.
-fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
+/// #538 — `NSEvent.isARepeat`. 길게 눌러 OS 가 만든 반복이면 `.repeat` 이다.
+///
+/// 뗌에는 쓰지 않는다 — `keyUp:` 의 이벤트에는 의미가 없다. 호출처가 누름 갈래에서만 쓴다.
+fn macKeyAction(event: objc.id) key_encode.Action {
+    if (event == null) return .press;
+    const is_repeat = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool);
+    return if (is_repeat(event, objc.sel("isARepeat"))) .repeat else .press;
+}
+
+fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8, action: key_encode.Action) bool {
     if (event == null) return false;
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
     const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
@@ -993,6 +1002,7 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8) bool {
         .consumed_mods = .{ .shift = shift, .alt = option and !option_as_alt },
         .utf8 = text,
         .unshifted_codepoint = unshifted,
+        .action = action,
     }, keyEncodeOptionsMac(option_as_alt)) catch return false;
 
     const bytes = writer.buffered();
@@ -1314,6 +1324,26 @@ fn runKeyAction(action: config.KeyAction) bool {
     return true;
 }
 
+/// #538 — `keyUp:`. kitty keyboard protocol 의 `report_events` 를 켠 앱에만 의미가 있다.
+///
+/// **`keyDown:` 의 경로를 재사용하지 않는다.** 그쪽은 커맨드 메뉴 · Cmd 단축키 · IME
+/// (`interpretKeyEvents:`) 가 엮여 있어서 뗌을 흘리면 단축키가 두 번 발동한다. 뗌에
+/// 필요한 것은 인코딩뿐이라 `sendEncodedKeyMac` 으로 직행한다.
+///
+/// 모드 검사는 하지 않는다 — 인코더가 거른다 (`key_encode.Event.action` 주석).
+/// 대신 **press 가 PTY 로 가지 않은 상황**에서는 보내지 않는다.
+///
+///   * 커맨드 메뉴가 열려 있을 때 — 그때 press 는 메뉴가 삼킨다.
+///   * IME 조합 중 (`g_marked_len > 0`) — 그때 글자는 `insertText:` 로 확정되지
+///     `keyDown:` 의 인코더 경로로 나가지 않는다. 뗌만 내보내면 짝이 안 맞는다.
+fn tildazKeyUp(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (event == null) return;
+    if (g_command_menu_open) return;
+    if (g_marked_len > 0) return;
+    const tab = g_session.activeTab() orelse return;
+    _ = sendEncodedKeyMac(tab, event, "", .release);
+}
+
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
     requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
@@ -1467,7 +1497,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                 // #533 — 인코더가 code + mods 로 제어문자를 만든다. `characters` 를
                 // 그대로 넘겨도 `textForEncoding` 이 제어문자를 걸러 내므로 이중으로
                 // 나가지 않는다. Ctrl+C 의 큐 우회도 인코더 결과를 보고 판정한다.
-                if (!sendEncodedKeyMac(tab, event, cstr[0..len])) {
+                if (!sendEncodedKeyMac(tab, event, cstr[0..len], macKeyAction(event))) {
                     // 인코더가 낼 것이 없으면 예전 경로 그대로 — 우리가 모르는 keycode 의
                     // Ctrl 조합이 조용히 사라지지 않게 한다.
                     if (ctrl_c) {
@@ -1519,7 +1549,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // 집합은 그대로다 — `isNavOrFunction` 이 글자 키를 걸러, 문자 입력이
         // `interpretKeyEvents:` 를 건너뛰어 한글 조합이 깨지는 일을 막는다.
         if (physical_key.fromMacKeyCode(keycode)) |code| {
-            if (key_encode.isNavOrFunction(code) and sendEncodedKeyMac(tab, event, "")) return;
+            if (key_encode.isNavOrFunction(code) and sendEncodedKeyMac(tab, event, "", macKeyAction(event))) return;
         }
 
         // #533 — `[input] macos_option_as_alt` 가 Option 을 Alt 로 쓰라고 하면 **글자
@@ -1542,7 +1572,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     plain = us[0..1];
                 }
             }
-            if (sendEncodedKeyMac(tab, event, plain)) return;
+            if (sendEncodedKeyMac(tab, event, plain, macKeyAction(event))) return;
         }
     }
 
@@ -1560,7 +1590,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     return;
                 }
                 commitPreeditToPty(self_view);
-                _ = sendEncodedKeyMac(tab, event, "");
+                _ = sendEncodedKeyMac(tab, event, "", macKeyAction(event));
                 return;
             }
         }
@@ -3614,6 +3644,8 @@ fn registerTildazViewClass() !objc.Class {
         return error.ViewSubclassAddMethodFailed;
     // "v@:@" = void 반환, self + _cmd + 한 인자 (NSEvent id).
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    if (!objc.class_addMethod(cls, objc.sel("keyUp:"), @ptrCast(&tildazKeyUp), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
