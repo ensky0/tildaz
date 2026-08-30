@@ -3248,14 +3248,25 @@ const Client = struct {
         return id;
     }
 
-    /// fractional scaling 변환. 우리 코드 내부 단위 = physical pixel. compositor
-    /// 와 I/O 시 logical 단위로 변환 / 역변환. KDE Plasma 6 의 170% 환경에서
-    /// preferred_scale=204 (= 120×1.7) → logical_w × 204 / 120 = physical_w.
-    /// fallback (advertise 안 된 compositor): preferred_scale=120 → no-op.
-    fn logicalToPhysical(self: *const Client, logical: i32) i32 {
-        const num: i32 = @intCast(self.preferred_scale);
-        const den: i32 = @intCast(fractional_scale_denominator);
-        return @divFloor(logical * num, den);
+    // fractional scaling 변환. 우리 코드 내부 단위 = physical pixel. compositor
+    // 와 I/O 시 logical 단위로 변환 / 역변환. KDE Plasma 6 의 170% 환경에서
+    // preferred_scale=204 (= 120×1.7) → logical × 204 / 120 = physical.
+    // fallback (advertise 안 된 compositor): preferred_scale=120 → no-op.
+    //
+    // **좌표와 크기는 반올림 규칙이 다르다.** 하나로 합치지 않는다 — 아래 두
+    // 함수의 주석이 각각 이유를 적는다.
+
+    /// **좌표** (포인터 위치) 전용 변환.
+    ///
+    /// `wl_fixed` (24.8 고정소수점) 를 논리 정수로 **먼저 자르지 않는다.** 자른 뒤에
+    /// 배율을 곱하면 버린 소수부 × 배율만큼 (1.7x 에서 최대 2 px) 항상 작아지는 쪽으로
+    /// 치우쳤다 (#552). 고정소수점 상태에서 곱하고 마지막에 한 번만 내린다.
+    ///
+    /// 내림인 것은 크기와 달리 **의도한 것**이다 — 좌표는 "이 점이 몇 번 픽셀 안에
+    /// 있는가" 라서, 반올림하면 히트테스트가 반 픽셀 밀린다. 크기 (`logicalToPhysicalSize`)
+    /// 쪽이 반올림인 이유는 그쪽 주석에 있다.
+    fn fixedLogicalToPhysicalPx(self: *const Client, fixed: i32) i32 {
+        return physicalPxForFixedLogical(fixed, self.preferred_scale);
     }
 
     /// **크기** (buffer / surface 크기) 전용 변환 — 위 좌표용과 반올림 규칙이 다르다.
@@ -6785,8 +6796,8 @@ const Client = struct {
         self.last_pointer_enter_surface_id = readU32(payload[4..8]);
         const sx = readI32(payload[8..12]);
         const sy = readI32(payload[12..16]);
-        self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
-        self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
+        self.pointer_x_px = self.fixedLogicalToPhysicalPx(sx);
+        self.pointer_y_px = self.fixedLogicalToPhysicalPx(sy);
         self.pointer_inside = true;
         // #193 — enter 시 우리 surface 가 받는 첫 serial. 이 시점에 cursor 첫
         // 송신해야 compositor 의 default cursor 가 우리 의도 (cell I-beam 또는
@@ -6830,8 +6841,8 @@ const Client = struct {
         // payload[0..4]=time.
         const sx = readI32(payload[4..8]);
         const sy = readI32(payload[8..12]);
-        self.pointer_x_px = self.logicalToPhysical(wlFixedToPx(sx));
-        self.pointer_y_px = self.logicalToPhysical(wlFixedToPx(sy));
+        self.pointer_x_px = self.fixedLogicalToPhysicalPx(sx);
+        self.pointer_y_px = self.fixedLogicalToPhysicalPx(sy);
         // #193 — region 변경 시만 set_shape (캐시 hit 시 no-op).
         self.updateCursorShape() catch {};
 
@@ -10282,11 +10293,47 @@ fn isAcceptableTextMime(mime: []const u8) bool {
         std.mem.eql(u8, mime, clipboard_mime_text_plain);
 }
 
-/// wl_fixed_t (signed 24.8 fixed-point packed in i32) → integer pixel.
-/// surface 좌표는 음수가 정상 흐름엔 안 들어오지만, leave 직후 등 edge case 대비
-/// `@divTrunc` 로 0 방향 정수 변환 — pixelToCell 의 범위 검사가 음수 reject.
-fn wlFixedToPx(value: i32) i32 {
-    return @divTrunc(value, 256);
+/// wl_fixed_t (signed 24.8 fixed-point packed in i32) 논리 좌표 → 물리 픽셀 인덱스.
+/// `Client.fixedLogicalToPhysicalPx` 의 계산부로, Client 없이 검증할 수 있게
+/// file-scope 순수 함수로 둔다.
+///
+/// 나눗셈이 한 번뿐인 것이 핵심이다 — `wl_fixed` 를 논리 정수로 자른 뒤 배율을
+/// 곱하면 정밀도를 먼저 버려 결과가 한쪽으로 치우친다 (#552).
+///
+/// surface 좌표는 음수가 정상 흐름엔 안 들어오지만 leave 직후 등 edge case 가 있다.
+/// `@divFloor` 라 바깥 점이 음수로 남고, pixelToCell 의 범위 검사가 그것을 reject
+/// 한다 (예전 `@divTrunc` 는 논리 -0.5 를 0 으로 만들어 안쪽으로 보이게 했다).
+fn physicalPxForFixedLogical(fixed: i32, scale_num: u32) i32 {
+    const num: i64 = @intCast(scale_num);
+    const den: i64 = @as(i64, fractional_scale_denominator) * 256;
+    return @intCast(@divFloor(@as(i64, fixed) * num, den));
+}
+
+test "#552 포인터 좌표는 논리 정수로 자르지 않고 고정소수점에서 곱한다" {
+    const s17: u32 = 204; // 1.7x
+    const fx = struct {
+        fn v(whole: i32, two_fifty_sixths: i32) i32 {
+            return whole * 256 + two_fifty_sixths;
+        }
+    };
+
+    // 논리 100.996 → 171.69 → 171. 논리 정수로 먼저 자르면 170 이었다.
+    try std.testing.expectEqual(@as(i32, 171), physicalPxForFixedLogical(fx.v(100, 255), s17));
+    // 논리 10.996 → 18.69 → 18. 자르면 17 이었다.
+    try std.testing.expectEqual(@as(i32, 18), physicalPxForFixedLogical(fx.v(10, 255), s17));
+    // 논리 정수 자리는 자르던 때와 같아야 한다 — 회귀 가드.
+    try std.testing.expectEqual(@as(i32, 170), physicalPxForFixedLogical(fx.v(100, 0), s17));
+
+    // 내림이다 (반올림 아님) — 점이 들어 있는 픽셀 인덱스라서.
+    try std.testing.expectEqual(@as(i32, 1), physicalPxForFixedLogical(fx.v(1, 0), s17)); // 1.7 → 1
+
+    // fractional 미advertise (120) 는 논리 = 물리.
+    try std.testing.expectEqual(@as(i32, 100), physicalPxForFixedLogical(fx.v(100, 0), 120));
+    try std.testing.expectEqual(@as(i32, 100), physicalPxForFixedLogical(fx.v(100, 255), 120));
+
+    // surface 바깥 (음수) 은 음수로 남아야 한다 — `@divTrunc` 는 -0.5 를 0 으로 만들어
+    // 바깥 점을 안쪽으로 보이게 했다.
+    try std.testing.expectEqual(@as(i32, -1), physicalPxForFixedLogical(-128, s17)); // 논리 -0.5
 }
 
 /// logical 크기 → physical buffer 크기. `Client.logicalToPhysicalSize` 의 계산부로,
