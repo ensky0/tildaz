@@ -215,14 +215,18 @@ pub const App = struct {
         self.syncPaneGrids();
     }
 
-    /// #483 5단계 — 모든 탭의 pane 격자를 layout 에 맞춘다 (`applyLayouts`, 같은 격자면 건너뜀). `-size` 측정
-    /// 인스턴스는 창 안 단축키가 없어 분할이 없으므로 pane 하나에 요청 격자 그대로 (#382 — 이전의 `resizeAll`).
+    /// #483 5단계 — 모든 탭의 pane 격자를 layout 에 맞춘다 (`applyLayouts`, 같은 격자면 건너뜀).
+    ///
+    /// #555 — 예전에는 `-size` 측정 인스턴스만 `resizeAll` 로 갈랐다 (#382). 근거가 *"측정
+    /// 인스턴스에는 창 안 단축키가 없어 분할이 일어나지 않는다"* 였는데 **그 전제가 거짓이다** —
+    /// 단축키 유무를 정하는 것은 `-size` 가 아니라 그 회차가 뜰 때 config 파일이 있었는지다
+    /// (AGENTS.md `# config_N.toml 이 없는 실행에는 창 안 단축키가 하나도 없어요`). config 가
+    /// 있으면 `-size` 인스턴스도 분할되고, 그때 `resizeAll` 이 모든 pane 에 **창 전체 격자**를
+    /// 줘서 pane 이 분할선을 넘어 그려졌다.
+    ///
+    /// 갈래를 없애도 측정은 그대로다 — pane 하나면 `applyLayouts` 가 `getTerminalGridSize()` 와
+    /// 같은 값을 낸다. `pane_layout.zig` 의 단일 pane 테스트가 그 등식을 단언한다.
     fn syncPaneGrids(self: *App) void {
-        if (self.grid != null) {
-            const grid = self.getTerminalGridSize();
-            self.session.resizeAll(grid.cols, grid.rows);
-            return;
-        }
         self.session.applyLayouts(self.paneArea(), self.paneMetrics());
     }
 

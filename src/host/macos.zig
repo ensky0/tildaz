@@ -2425,17 +2425,16 @@ fn syncGeometryAfterScreenChange() void {
 
     // 4. 새 viewport 에 맞춰 cols/rows 재계산. cell 크기 같으면 viewport 만
     //    변경. ghostty Terminal + PTY 도 같은 cols/rows 로 resize.
-    const grid = terminalGrid(vp_w_px, vp_h_px, @floatCast(scale_pt));
     const before_cols = tab.terminal.cols;
     const before_rows = tab.terminal.rows;
-    if (g_run_opts.grid != null) {
-        // #382 — 측정 격자는 창이 아니라 `-size` 가 정한다. 측정 인스턴스에는 창 안 단축키가 없어 분할이
-        // 없으므로 pane 하나에 그 격자를 그대로 준다.
-        if (grid.cols != before_cols or grid.rows != before_rows) g_session.resizeAll(grid.cols, grid.rows);
-    } else {
-        // #483 5단계 — pane 마다 격자가 다르다 (`applyLayouts`, 같은 격자면 건너뜀).
-        g_session.applyLayouts(paneAreaMac(), paneMetricsMac());
-    }
+    // #483 5단계 — pane 마다 격자가 다르다 (`applyLayouts`, 같은 격자면 건너뜀).
+    //
+    // #555 — 예전에는 `-size` 측정 인스턴스만 `resizeAll` 로 갈랐다 (#382). 근거가 *"측정
+    // 인스턴스에는 창 안 단축키가 없어 분할이 일어나지 않는다"* 였는데 그 전제가 거짓이라
+    // (AGENTS.md `# config_N.toml 이 없는 실행에는 …`) 분할된 상태에서 pane 이 분할선을 넘어
+    // 그려졌다. pane 하나면 `applyLayouts` 가 `terminalGrid` 와 같은 값을 내므로 (그 등식은
+    // `pane_layout.zig` 의 단일 pane 테스트가 단언한다) 갈래를 없애도 측정은 그대로다.
+    g_session.applyLayouts(paneAreaMac(), paneMetricsMac());
     if (tab.terminal.cols != before_cols or tab.terminal.rows != before_rows) {
         log.appendLine("geom", "screen changed: vp={d}x{d}px scale={d:.2} cols={d} rows={d}", .{
             vp_w_px, vp_h_px, scale_pt, tab.terminal.cols, tab.terminal.rows,
