@@ -16,6 +16,27 @@ fn preserveResolvedWindowsAbi(target: std.Build.ResolvedTarget) std.Build.Resolv
     return explicit_target;
 }
 
+/// ghostty-vt 에서 끄는 기능 (#554). 네 곳의 의존성 선언이 **같은 값을 써야** 하므로
+/// 상수 하나로 둔다 — 인라인으로 네 번 적으면 어긋난다 (#534 에서 실제로 겪었다).
+///
+/// **왜 끄나.** 우리는 이미지를 그리지 않는다 (`src/` 에 kitty graphics 를 다루는 코드가
+/// 없다). 그런데 켜 두면 ghostty 의 stream 이 APC 로 온 명령을 파싱해 **이미지 데이터를
+/// 페이지에 저장하고**, `write_pty` 로 **"지원한다" 는 응답까지 보낸다**
+/// (`stream_terminal.zig` 의 `apcEnd`). 앱은 그 응답을 믿고 이미지를 보내는데 화면에는
+/// 아무것도 안 나온다. 끄면 앱이 텍스트 대체 경로로 정상 폴백한다.
+///
+/// **절감** (2026-08-30 · ReleaseFast · simd=true · x86_64-linux):
+/// 17,549,928 → 15,209,024 바이트, **2.23 MiB (13.3 %)**. 그중 89 % 가 kitty-graphics 다
+/// (이미지 저장 구조가 `Screen` · `PageList` · `page` 에 박혀 있다).
+///
+/// **나머지 일곱 기능은 꺼도 0 바이트다.** `snapshot` · `formatter` · `selection` ·
+/// `render_state` · `input_encode` · `color` · `grid_introspection` 은 C API export 에만
+/// 걸리는데, 그 블록이 `lib_vt.zig` 의 `if (@import("root") == lib)` 안이라 Zig 모듈로
+/// 쓰는 우리 바이너리에는 애초에 들어오지 않는다.
+///
+/// 이미지를 그리기로 하면 이 줄을 지우면 된다.
+const vt_features_disabled = "-kitty-graphics,-glyph-protocol";
+
 // 빌드:
 //   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
 //   zig build -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 최적화 + SIMD (#19)
@@ -100,6 +121,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .@"emit-lib-vt" = true,
         .@"font-backend" = .freetype,
+        .@"vt-features" = @as([]const u8, vt_features_disabled),
     })) |dep| {
         exe_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
@@ -331,6 +353,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .@"emit-lib-vt" = true,
         .@"font-backend" = .freetype,
+        .@"vt-features" = @as([]const u8, vt_features_disabled),
     })) |dep| {
         test_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
@@ -443,6 +466,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .@"emit-lib-vt" = true,
         .@"font-backend" = .freetype,
+        .@"vt-features" = @as([]const u8, vt_features_disabled),
     })) |dep| {
         stress_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
@@ -581,6 +605,7 @@ pub fn build(b: *std.Build) void {
                 // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
                 // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
                 .@"font-backend" = .freetype,
+                .@"vt-features" = @as([]const u8, vt_features_disabled),
             })) |dep| {
                 check_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
             }
