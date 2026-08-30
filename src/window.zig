@@ -2184,7 +2184,7 @@ pub const Window = struct {
                 const kd_scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
                 const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
-                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", .press);
+                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam));
                 }
 
                 // #533 — kitty protocol 이 켜져 있을 때만 `Ctrl`+글자도 인코더로 보낸다.
@@ -2205,7 +2205,7 @@ pub const Window = struct {
                         GetKeyState(VK_SHIFT) < 0,
                         &ctrl_chars,
                     );
-                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, .press)) {
+                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, keyActionFromLParam(lParam))) {
                         // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR`(제어문자) 를 삼킨다 —
                         // 그러지 않으면 `CSI u` 와 `\x03` 이 둘 다 나간다.
                         self.swallow_next_wm_char = true;
@@ -2403,7 +2403,7 @@ pub const Window = struct {
                         GetKeyState(VK_SHIFT) < 0,
                         &char_buf,
                     );
-                    if (self.sendEncodedKeyWin(@intCast(wParam), lParam, text, .press)) return 0;
+                    if (self.sendEncodedKeyWin(@intCast(wParam), lParam, text, keyActionFromLParam(lParam))) return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
@@ -2961,6 +2961,16 @@ pub const Window = struct {
     ///
     /// `utf8` 은 이 키가 만든 글자다. Windows 는 그것을 `WM_CHAR` 로 따로 주므로 이
     /// 경로는 대개 빈 문자열이고, 인코더가 `code` 와 `mods` 로 바이트를 만든다.
+    /// #538 — `WM_KEYDOWN` · `WM_SYSKEYDOWN` 의 `lParam` 30 번 비트가 **직전 키 상태**다.
+    /// 1 이면 이미 눌려 있던 키라 OS 가 만든 반복이다.
+    ///
+    /// 뗌에는 쓸 수 없다 — `WM_KEYUP` 의 그 비트는 늘 1 이다 (직전에 눌려 있었으니까).
+    /// 그래서 호출처가 누름 갈래에서만 이 함수를 쓴다.
+    fn keyActionFromLParam(lParam: LPARAM) key_encode.Action {
+        const bits: usize = @bitCast(lParam);
+        return if ((bits >> 30) & 1 != 0) .repeat else .press;
+    }
+
     fn sendEncodedKeyWin(self: *Window, vk: UINT, lParam: LPARAM, utf8: []const u8, action: key_encode.Action) bool {
         const write_fn = self.write_fn orelse return false;
 
