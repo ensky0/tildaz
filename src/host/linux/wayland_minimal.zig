@@ -95,6 +95,7 @@ const max_dmabuf_tranches: usize = 16;
 const wl_seat_capability_pointer: u32 = 1;
 const wl_seat_capability_keyboard: u32 = 2;
 const wl_keyboard_keymap_format_xkb_v1: u32 = 1;
+const wl_keyboard_key_state_released: u32 = 0;
 const wl_keyboard_key_state_pressed: u32 = 1;
 const wl_keyboard_key_state_repeated: u32 = 2;
 const wayland_xkb_keycode_offset: u32 = 8;
@@ -6242,7 +6243,7 @@ const Client = struct {
         if (state == wl_keyboard_key_state_pressed) {
             self.key_repeat_keycode = key;
             self.key_repeat_next_ms = self.rt.nowMs() + @as(i64, self.key_repeat_delay_ms);
-        } else if (state == 0 and self.key_repeat_keycode == key) {
+        } else if (state == wl_keyboard_key_state_released and self.key_repeat_keycode == key) {
             // released — same key disarm.
             //
             // #546 — 이 disarm 이 `maybeRepeatKey` 의 스테일 발동 방어의 전제다. 그 함수가
@@ -6252,8 +6253,22 @@ const Client = struct {
             // 한 번에 탭 둘이 닫히는 증상이 조용히 되돌아온다.
             self.key_repeat_keycode = 0;
         }
+        // #538 — 뗌(release) 은 **`processKeyEvent` 를 타지 않는다.** 그 함수는 다이얼로그
+        // 라우팅 · 커맨드 메뉴 · compose · 단축키 분류가 전부 엮여 있어서, 뗌을 흘리면
+        // 단축키가 두 번 발동하고 compose 상태가 깨진다. 뗌에 필요한 것은 인코딩뿐이라
+        // `sendEncodedKey` 로 직행한다.
+        //
+        // 모드 검사는 하지 않는다 — 인코더가 거른다 (`key_encode.Event.action` 주석).
+        // 다만 **다이얼로그 · 메뉴가 떠 있으면 보내지 않는다.** 그때 press 는 PTY 로
+        // 가지 않았으므로 뗌만 가면 앱이 짝 없는 release 를 본다.
+        if (state == wl_keyboard_key_state_released) {
+            if (self.dialog.active() or self.command_menu_open) return;
+            self.last_serial = serial;
+            self.sendEncodedKey(key, key + wayland_xkb_keycode_offset, "", .release);
+            return;
+        }
         if (state != wl_keyboard_key_state_pressed and state != wl_keyboard_key_state_repeated) return;
-        try self.processKeyEvent(serial, key);
+        try self.processKeyEvent(serial, key, if (state == wl_keyboard_key_state_repeated) .repeat else .press);
     }
 
     /// L12-γ-5 — main loop 의 매 iteration 에서 repeat timer 검사. timer 가
@@ -6291,7 +6306,7 @@ const Client = struct {
 
         const now = self.rt.nowMs();
         if (now < self.key_repeat_next_ms) return; // 새 press 가 arm 을 다시 잡았다
-        try self.processKeyEvent(self.last_serial, self.key_repeat_keycode);
+        try self.processKeyEvent(self.last_serial, self.key_repeat_keycode, .repeat);
         self.key_repeat_next_ms = now + @divTrunc(1000, @as(i64, self.key_repeat_rate_hz));
     }
 
@@ -6319,7 +6334,7 @@ const Client = struct {
     /// L12-γ-5 — keyboard.key 의 실제 처리 (byte parsing 분리 후). pressed /
     /// repeated 둘 다 같은 path. serial 은 clipboard 등 시점 기록용으로 자기
     /// 자신에게 보관 (matchClipboardSerial 같은 path 에서 사용).
-    fn processKeyEvent(self: *Client, serial: u32, key: u32) !void {
+    fn processKeyEvent(self: *Client, serial: u32, key: u32, action: key_encode.Action) !void {
         self.last_serial = serial;
 
         // #494 — compose 를 거치지 않고 끝난 키 (다이얼로그 · 메뉴 · 단축키 · nav 키 · Ctrl/Alt
@@ -6481,14 +6496,14 @@ const Client = struct {
         // #533 — 여기서 PTY 로 나가는 바이트가 정해진다. 예전엔 `utf8()` 결과를 그대로
         // 보냈고 (그래서 Alt 가 사라졌다) 그 위에 `terminalSequenceForKeysym` 이 특수키를
         // 따로 적고 있었다. 이제 둘 다 인코더 한 곳으로 모은다 — modifier 가 실린다.
-        self.sendEncodedKey(key, xkb_key, self.keyboard.utf8(xkb_key, &buf));
+        self.sendEncodedKey(key, xkb_key, self.keyboard.utf8(xkb_key, &buf), action);
     }
 
     /// #533 — 키 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다.
     ///
     /// `key` 는 wl_keyboard 가 준 raw evdev keycode, `xkb_key` 는 거기에 8 을 더한 xkb 값이다
     /// (둘 다 필요하다 — 물리 위치는 evdev 로, xkb 조회는 xkb 값으로 한다).
-    fn sendEncodedKey(self: *Client, key: u32, xkb_key: u32, utf8_in: []const u8) void {
+    fn sendEncodedKey(self: *Client, key: u32, xkb_key: u32, utf8_in: []const u8, action: key_encode.Action) void {
         const consumed = self.keyboard.consumedMods(xkb_key);
 
         // #533 — **제어문자는 Ctrl 을 뺀 글자로 바꿔서 넘긴다.** xkb 의 `utf8()` 은 Ctrl
@@ -6551,6 +6566,7 @@ const Client = struct {
             },
             .utf8 = utf8,
             .unshifted_codepoint = unshifted,
+            .action = action,
         }, self.keyEncodeOptions()) catch return;
         const bytes = writer.buffered();
         if (bytes.len > 0) self.queueInput(bytes);

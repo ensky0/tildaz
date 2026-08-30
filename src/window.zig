@@ -88,6 +88,7 @@ const PM_REMOVE: UINT = 0x0001;
 /// `messageLoop`) 직접 비교한다.
 const WM_QUIT: UINT = 0x0012;
 const WM_SYSKEYDOWN: UINT = 0x0104;
+const WM_SYSKEYUP: UINT = 0x0105;
 const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -2183,7 +2184,7 @@ pub const Window = struct {
                 const kd_scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
                 const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
-                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "");
+                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", .press);
                 }
 
                 // #533 — kitty protocol 이 켜져 있을 때만 `Ctrl`+글자도 인코더로 보낸다.
@@ -2204,7 +2205,7 @@ pub const Window = struct {
                         GetKeyState(VK_SHIFT) < 0,
                         &ctrl_chars,
                     );
-                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text)) {
+                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, .press)) {
                         // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR`(제어문자) 를 삼킨다 —
                         // 그러지 않으면 `CSI u` 와 `\x03` 이 둘 다 나간다.
                         self.swallow_next_wm_char = true;
@@ -2213,14 +2214,25 @@ pub const Window = struct {
                 }
                 return 0;
             },
-            WM_KEYUP => {
+            WM_KEYUP, WM_SYSKEYUP => {
                 // preserve 요청 뒤 IME result가 전혀 오지 않은 IME에서는 chord가
                 // 끝날 때 요청만 해제. 예상 read-only result가 보류됐는데 action이
                 // 소비하지 못한 예외에는 결과를 확정해 입력 손실/가짜 overlay 방지.
-                if (GetKeyState(VK_CONTROL) >= 0 and GetKeyState(VK_SHIFT) >= 0) {
+                if (msg == WM_KEYUP and GetKeyState(VK_CONTROL) >= 0 and GetKeyState(VK_SHIFT) >= 0) {
                     self.ime_preserve_requested = false;
                     if (self.ime_deferred_result != null) _ = self.imeDispatchDeferredResult();
                 }
+                // #538 — kitty keyboard protocol 의 뗌(release) 보고. `report_events` 를
+                // 켠 앱에만 바이트가 나간다 (인코더가 거른다 — `key_encode.Event.action`).
+                //
+                // **`WM_KEYDOWN` 의 경로를 재사용하지 않는다.** 그쪽은 단축키 · 커맨드 메뉴 ·
+                // IME 가 엮여 있어서 뗌을 흘리면 단축키가 두 번 발동한다. 뗌에 필요한 것은
+                // 인코딩뿐이라 `sendEncodedKeyWin` 으로 직행한다.
+                //
+                // IME 조합 중에는 보내지 않는다 — 그때 글자는 `WM_IME_COMPOSITION` 경로로
+                // 확정되지 이 인코더로 나가지 않아서, 뗌만 가면 짝이 안 맞는다.
+                // (macOS 의 `g_marked_len > 0` 과 같은 판정이다.)
+                if (self.preedit_len == 0) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", .release);
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
             WM_SIZE => {
@@ -2391,7 +2403,7 @@ pub const Window = struct {
                         GetKeyState(VK_SHIFT) < 0,
                         &char_buf,
                     );
-                    if (self.sendEncodedKeyWin(@intCast(wParam), lParam, text)) return 0;
+                    if (self.sendEncodedKeyWin(@intCast(wParam), lParam, text, .press)) return 0;
                 }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
             },
@@ -2949,7 +2961,7 @@ pub const Window = struct {
     ///
     /// `utf8` 은 이 키가 만든 글자다. Windows 는 그것을 `WM_CHAR` 로 따로 주므로 이
     /// 경로는 대개 빈 문자열이고, 인코더가 `code` 와 `mods` 로 바이트를 만든다.
-    fn sendEncodedKeyWin(self: *Window, vk: UINT, lParam: LPARAM, utf8: []const u8) bool {
+    fn sendEncodedKeyWin(self: *Window, vk: UINT, lParam: LPARAM, utf8: []const u8, action: key_encode.Action) bool {
         const write_fn = self.write_fn orelse return false;
 
         // scan code 는 lParam 16~23 비트, extended 는 24 비트. 둘을 함께 봐야
@@ -2992,6 +3004,7 @@ pub const Window = struct {
             .consumed_mods = .{},
             .utf8 = text,
             .unshifted_codepoint = unshifted,
+            .action = action,
         }, self.keyEncodeOptions()) catch return false;
 
         const bytes = writer.buffered();

@@ -35,6 +35,10 @@ const physical_key = @import("physical_key.zig");
 /// (`mouse_report.zig` 와 달리) 같은 shape 를 다시 정의하지 않는다.
 pub const Mods = ghostty.input.KeyMods;
 
+/// 눌림 · 반복 · 뗌. #538 — 그 전에는 `repeat: bool` 뿐이었고 그마저 세팅하는 자리가
+/// 없어서 **세 갈래가 전부 `.press` 로** 인코딩됐다.
+pub const Action = ghostty.input.KeyAction;
+
 /// 인코딩 옵션. 8 개 중 7 개는 `fromTerminal` 이 터미널 상태에서 뽑아 주고,
 /// `macos_option_as_alt` 만 앱 config 가 정한다 (터미널이 알 수 없는 값).
 pub const Options = ghostty.input.KeyEncodeOptions;
@@ -70,9 +74,17 @@ pub const Event = struct {
     /// 되고 `Alt+n` 이 `ESC` 없이 `n` 으로 나간다.
     unshifted_codepoint: u21 = 0,
 
-    /// 길게 눌러 반복 중인가. 뗌(release) 은 아직 보내지 않는다 — kitty protocol 의
-    /// release 보고는 후속 작업이다 (#533 코멘트의 결정).
-    repeat: bool = false,
+    /// 눌림 · 반복 · 뗌 (#538).
+    ///
+    /// **`.release` 를 모드와 무관하게 넘겨도 된다.** 인코더가 알아서 거른다 — kitty
+    /// flags 가 없으면 legacy 경로가 `.press` · `.repeat` 만 내보내고, flags 가 있어도
+    /// `report_events` 가 꺼져 있으면 `kitty()` 앞부분에서 돌아간다. 그래서 host 가
+    /// "지금 kitty 모드인가" 를 판정할 필요가 없다.
+    ///
+    /// 다만 **`.release` 를 인코더까지 흘리기 전에 host 가 걸러야 하는 것**은 있다.
+    /// 다이얼로그 · 메뉴가 떠 있어 press 가 PTY 로 가지 않은 경우다 — 그때 뗌만 가면
+    /// 앱이 짝 없는 release 를 본다.
+    action: Action = .press,
 };
 
 /// #533 — **글자를 만들지 않는 키**인가 (화살표 · nav · F-key).
@@ -146,7 +158,7 @@ pub fn encode(
     opts: Options,
 ) std.Io.Writer.Error!void {
     return ghostty.input.encodeKey(writer, .{
-        .action = if (event.repeat) .repeat else .press,
+        .action = event.action,
         .key = toGhosttyKey(event.code),
         .mods = event.mods,
         .consumed_mods = event.consumed_mods,
@@ -467,4 +479,77 @@ test "② kitty keyboard protocol — 수식키 없는 글자는 그대로" {
         .unshifted_codepoint = 'a',
     }, .{ .kitty_flags = .{ .disambiguate = true } });
     try testing.expectEqualStrings("a", out);
+}
+
+test "#538 release 는 report_events + report_all 에서만 나간다" {
+    var buf: [32]u8 = undefined;
+    var ev: Event = .{ .code = .enter };
+    ev.action = .release;
+
+    // upstream 이 스스로 단언하는 값이다 — enter · backspace · tab 은 `report_all`
+    // 이 있어야 뗌을 낸다. 마지막 `:3` 이 event type = release 다.
+    try testing.expectEqualStrings("\x1b[13;1:3u", try encodeToBuf(&buf, ev, .{
+        .kitty_flags = .{ .disambiguate = true, .report_events = true, .report_all = true },
+    }));
+
+    // `report_all` 이 없으면 그 셋은 뗌을 안 낸다.
+    try testing.expectEqualStrings("", try encodeToBuf(&buf, ev, .{
+        .kitty_flags = .{ .disambiguate = true, .report_events = true },
+    }));
+}
+
+test "#538 report_events 가 없으면 release 는 바이트를 내지 않는다 — 회귀 가드" {
+    var buf: [32]u8 = undefined;
+    var release: Event = .{ .code = .key_a, .utf8 = "a", .unshifted_codepoint = 'a' };
+    release.action = .release;
+
+    // kitty flags 자체가 없는 흔한 경우 — legacy 경로가 press · repeat 만 낸다.
+    try testing.expectEqualStrings("", try encodeToBuf(&buf, release, .{}));
+
+    // `disambiguate` 만 켠 경우 (#533 에서 fish · neovim · zellij 로 검증한 그 모드).
+    // **이 줄이 핵심 회귀 가드다** — 여기서 바이트가 나오면 흔한 앱에 입력이 두 배로 간다.
+    try testing.expectEqualStrings("", try encodeToBuf(&buf, release, .{
+        .kitty_flags = .{ .disambiguate = true },
+    }));
+
+    // 화살표처럼 kitty 표에 항목이 있는 키도 마찬가지여야 한다.
+    var arrow: Event = .{ .code = .arrow_left };
+    arrow.action = .release;
+    try testing.expectEqualStrings("", try encodeToBuf(&buf, arrow, .{
+        .kitty_flags = .{ .disambiguate = true },
+    }));
+}
+
+test "#538 repeat 는 press 와 갈린다 — 그 전에는 둘 다 press 로 나갔다" {
+    var buf: [32]u8 = undefined;
+    const opts: Options = .{
+        .kitty_flags = .{ .disambiguate = true, .report_events = true, .report_all = true },
+    };
+    var press: Event = .{ .code = .enter };
+    press.action = .press;
+    var repeat: Event = .{ .code = .enter };
+    repeat.action = .repeat;
+
+    // press 는 수식키가 기본값이면 `;1` 을 생략한다 (event 항목이 뒤에 붙는
+    // repeat · release 는 자리를 채워야 해서 `;1` 이 남는다).
+    try testing.expectEqualStrings("\x1b[13u", try encodeToBuf(&buf, press, opts));
+    var buf2: [32]u8 = undefined;
+    try testing.expectEqualStrings("\x1b[13;1:2u", try encodeToBuf(&buf2, repeat, opts));
+}
+
+test "#538 report_events 를 켜도 press 는 그대로다 — 기존 동작 회귀 가드" {
+    var buf: [32]u8 = undefined;
+    var press: Event = .{
+        .code = .key_c,
+        .mods = .{ .ctrl = true },
+        .utf8 = "c",
+        .unshifted_codepoint = 'c',
+    };
+    press.action = .press;
+    const with = try encodeToBuf(&buf, press, .{
+        .kitty_flags = .{ .disambiguate = true, .report_events = true },
+    });
+    var buf2: [32]u8 = undefined;
+    const without = try encodeToBuf(&buf2, press, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings(without, with);
 }
