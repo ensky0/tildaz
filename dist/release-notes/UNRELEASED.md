@@ -20,3 +20,10 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 ## Body candidates
+
+- Linux: windows and dialogs are no longer resampled at fractional display scales, so
+  text and lines stay sharp at 1.7x and other fractional factors.
+  ([#539](https://github.com/ensky0/tildaz/issues/539))
+- Linux: mouse input lands where you point at fractional display scales; it was biased
+  by up to two pixels toward the top-left.
+  ([#552](https://github.com/ensky0/tildaz/issues/552))
