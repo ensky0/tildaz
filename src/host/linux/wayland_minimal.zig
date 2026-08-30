@@ -3578,9 +3578,20 @@ const Client = struct {
             const tab = session.activeTab() orelse return;
             const before_cols = tab.terminal.cols;
             const before_rows = tab.terminal.rows;
-            if (self.run_opts.grid != null) {
-                // #382 — 측정 격자는 창이 아니라 `-size` 가 정한다. 측정 인스턴스에는 창 안 단축키가
-                // 없어 분할이 일어나지 않으므로 pane 하나에 그 격자를 그대로 준다.
+            // #555 — `-size` 의 격자 고정은 **pane 이 하나일 때만** 뜻이 있다. 예전에는 `-size`
+            // 이기만 하면 `resizeAll` 로 모든 pane 에 창 전체 격자를 줬는데, 근거가 *"측정
+            // 인스턴스에는 창 안 단축키가 없어 분할이 일어나지 않는다"* (#382) 였고 **그 전제가
+            // 거짓이다** — 단축키 유무는 `-size` 가 아니라 그 회차가 뜰 때 config 파일이 있었는지가
+            // 정한다 (AGENTS.md `# config_N.toml 이 없는 실행에는 창 안 단축키가 하나도 없어요`).
+            // 분할된 채 그 갈래를 타면 pane 이 분할선을 넘어 그려진다.
+            //
+            // Windows · macOS 는 창 자체를 요청 격자에 맞추므로 이 갈래가 아예 없다. Linux 만
+            // 위에서 `grid` 를 요청값으로 덮어쓰기 때문에 (측정 중 격자가 흔들리는 것을 막는 #382)
+            // 여기서 조건을 둔다.
+            const has_split = session.totalPaneCount() > session.count();
+            if (self.run_opts.grid != null and !has_split) {
+                // #382 — 격자가 측정 중에 움직이면 producer 가 SIGWINCH 를 더 받아 측정이 오염된다.
+                // pane 이 하나인 동안에는 창이 아니라 `-size` 가 격자를 정한다.
                 if (before_cols != grid.cols or before_rows != grid.rows) session.resizeAll(grid.cols, grid.rows);
             } else {
                 // #483 4b — pane 마다 격자가 다르다. 창 · 탭바 · metrics 로 layout 을 다시 펴서 모든 탭의
