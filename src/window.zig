@@ -1180,10 +1180,10 @@ pub const Window = struct {
             // #175 — F1 hide 도 focus_loss = commit. show 분기에선 호출 안 함.
             if (self.before_hide_fn) |f| f(self.userdata);
             // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
-            log.appendLineVerbose("toggle", "hide", .{});
+            log.logToggle(false);
             self.hide();
         } else {
-            log.appendLineVerbose("toggle", "show", .{});
+            log.logToggle(true);
             self.show();
         }
     }
@@ -1600,10 +1600,7 @@ pub const Window = struct {
             _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
             return;
         };
-        log.appendLine("startup", "frame clock started: refresh={d}Hz period={d:.2}ms", .{
-            refresh_hz,
-            @as(f64, @floatFromInt(self.frame_period_100ns)) / 10_000.0,
-        });
+        log.logDisplayTiming(@floatFromInt(refresh_hz));
     }
 
     /// #386 — 프레임 clock 정지. `WM_TIMER` fallback 으로 돌고 있었을 수도 있으니 그쪽도

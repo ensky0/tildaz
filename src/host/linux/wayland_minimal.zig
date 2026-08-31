@@ -262,6 +262,7 @@ const OutputSlot = struct {
     object_id: u32 = 0, // bind 된 proxy id (0 = 미bind)
     width: i32 = 0, // 물리 px — mode(CURRENT) event
     height: i32 = 0,
+    refresh_millihz: i32 = 0, // mode(CURRENT) event, 60000 = 60 Hz
     scale: i32 = 1, // wl_output.scale (정수 배율)
     // #295 — main surface 가 현재 이 output 에 걸쳐있는지 (`wl_surface.enter`
     // 로 set, `leave` 로 clear). 한 surface 가 동시에 여러 output 에 걸칠 수
@@ -1265,6 +1266,10 @@ const Client = struct {
     // 뒤집으면 재생성 surface 가 또 양쪽 enter → 무한 recreate 진동이 된다
     // (기본 config offset=100 우측 패널 + 오른쪽 인접 모니터에서 실측 재현).
     current_output_object_id: u32 = 0,
+    // #570 — 같은 mode event 재송신은 중복 기록하지 않되, 같은 주사율인 다른
+    // output으로 옮겨도 현재 screen이 바뀌었음을 한 줄 남긴다.
+    logged_display_timing_output_id: u32 = 0,
+    logged_display_timing_millihz: i32 = 0,
     // #295 — 이번 dispatch batch 에 surface 의 enter/leave 가 있었음. batch 종료
     // 후 drainSurfaceOutputs 가 entered 집합을 보고 basis 를 한 번만 재선택한다
     // (intra-batch 의 중간 enter 값으로 recreate 예약하던 진동 제거). batch-local.
@@ -3037,6 +3042,7 @@ const Client = struct {
                 if ((flags & wl_output_mode_flag_current) == 0) return;
                 const new_width = readI32(payload[4..8]);
                 const new_height = readI32(payload[8..12]);
+                const new_refresh_millihz = readI32(payload[12..16]);
                 // #356 — **이전 값과 비교해 실제 dims 변경만** 처리한다. 세 가지가
                 // 걸러진다:
                 //  - boot 첫 mode event: `slot.width` 초기값이 0 이라 "변경" 이 아니다.
@@ -3049,15 +3055,17 @@ const Client = struct {
                 const dims_changed = had_dims and (new_width != slot.width or new_height != slot.height);
                 slot.width = new_width;
                 slot.height = new_height;
+                slot.refresh_millihz = new_refresh_millihz;
                 if (is_basis) {
                     self.screen_width = slot.width;
                     self.screen_height = slot.height;
+                    self.logBasisDisplayTiming(slot);
                 }
                 log.appendLineVerbose("wayland", "output mode object_id={} width={} height={} refresh={} basis={} dims_changed={}", .{
                     slot.object_id,
                     slot.width,
                     slot.height,
-                    readI32(payload[12..16]),
+                    slot.refresh_millihz,
                     is_basis,
                     dims_changed,
                 });
@@ -3146,6 +3154,7 @@ const Client = struct {
         self.current_output_object_id = output_object_id;
         // mode event 이전이면 보류 — 도착 시 handleOutputEvent 가 basis 로 반영.
         if (slot.width <= 0 or slot.height <= 0) return;
+        self.logBasisDisplayTiming(slot);
         const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
         self.screen_width = slot.width;
         self.screen_height = slot.height;
@@ -3177,6 +3186,16 @@ const Client = struct {
         // applyScaleChange 가 renderer scale + layout 재송신 + grid 재계산 + redraw 를
         // 모두 처리한다.
         if (pending_scale) |new_scale| try self.applyScaleChange(new_scale, "wl_output/enter");
+    }
+
+    fn logBasisDisplayTiming(self: *Client, slot: *const OutputSlot) void {
+        if (slot.refresh_millihz <= 0) return;
+        if (self.logged_display_timing_output_id == slot.object_id and
+            self.logged_display_timing_millihz == slot.refresh_millihz) return;
+
+        self.logged_display_timing_output_id = slot.object_id;
+        self.logged_display_timing_millihz = slot.refresh_millihz;
+        log.logDisplayTiming(@as(f64, @floatFromInt(slot.refresh_millihz)) / 1000.0);
     }
 
     /// #336 — 초기 안전 commit(createLayerSurface 의 4-edge span) 후 실제 config
@@ -3622,7 +3641,7 @@ const Client = struct {
         // 전파하지만, 여기서 먼저 걸면 첫 탭이 태어날 때부터 통보가 붙는다).
         self.session.?.setOutputWake(linuxOutputWake, self);
         if (self.output_eventfd >= 0) {
-            log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+            log.logOutputWakeInstalled();
         } else {
             // eventfd 를 못 만들어도 앱은 정상이다 — 유휴 응답이 예전처럼 `poll` timeout 을 기다릴 뿐이다.
             log.appendLine("startup", "output wake unavailable — idle output waits for poll timeout", .{});
@@ -3630,7 +3649,7 @@ const Client = struct {
         try self.session.?.createTab(grid.cols, grid.rows);
         log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
         if (self.run_opts.scrollback) |n| {
-            log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, self.config.max_scroll_lines });
+            log.logScrollbackOverride(n, self.config.max_scroll_lines);
         }
     }
 
@@ -5540,7 +5559,7 @@ const Client = struct {
         if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
         const active = self.activeTabOrNull() orelse return;
         self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
-            log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+            log.logNewTabFailed(err);
             return;
         };
         // #127 — 1 → 2 탭 전환 시 탭바 등장으로 cell 영역 변함 → 모든 탭
@@ -5645,7 +5664,7 @@ const Client = struct {
             error.TooSmall => {
                 // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
                 // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ @tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS });
+                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
                 var buf: [160]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                     messages.pane_too_small_format;
@@ -5653,7 +5672,7 @@ const Client = struct {
                 return;
             },
             error.TooManyPanes => {
-                log.appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ @tagName(dir), pane_layout.MAX_PANES_PER_TAB });
+                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
                 var buf: [128]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                     messages.pane_limit_format;
@@ -5662,12 +5681,12 @@ const Client = struct {
             },
             error.NoActiveTab => return,
             else => {
-                log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+                log.logPaneSplitFailed(err);
                 return;
             },
         };
         const group = self.session.?.activeGroup().?;
-        log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane });
+        log.logPaneSplit(@tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5686,7 +5705,7 @@ const Client = struct {
         self.ensureSessionGrid() catch |err| {
             log.appendLine("pane", "ensureSessionGrid after focus failed: {s}", .{@errorName(err)});
         };
-        log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), session.activeGroup().?.active_pane });
+        log.logPaneFocus(@tagName(dir), session.activeGroup().?.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5702,7 +5721,7 @@ const Client = struct {
         const session = if (self.session) |*s| s else return;
         const group = session.activeGroup() orelse return;
         session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.appendLine("pane", "equalize — {} panes", .{group.tree.count()});
+        log.logPaneEqualize(group.tree.count());
         self.needs_redraw = true;
     }
 
@@ -5725,7 +5744,7 @@ const Client = struct {
         self.ensureSessionGrid() catch |err| {
             log.appendLine("pane", "ensureSessionGrid after zoom failed: {s}", .{@errorName(err)});
         };
-        log.appendLine("pane", "zoom {s} — active pane {}", .{ if (session.activeGroup().?.zoomed != null) "on" else "off", session.activeGroup().?.active_pane });
+        log.logPaneZoom(session.activeGroup().?.zoomed != null, session.activeGroup().?.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5735,9 +5754,9 @@ const Client = struct {
         const session = if (self.session) |*s| s else return;
         const axis = if (d.axis == .side_by_side) "x" else "y";
         if (session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) |placed| {
-            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+            log.logPaneSeparatorMoved(d.node, axis, placed);
         } else {
-            log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
+            log.logPaneSeparatorUnchanged(d.node);
         }
         self.needs_redraw = true;
     }
@@ -5754,7 +5773,7 @@ const Client = struct {
         group.activeTab().interaction.cancelPointerModes();
         self.sel_autoscroll_dir = 0;
         _ = session.setActivePane(id);
-        log.appendLine("pane", "focus by click — active pane {}", .{id});
+        log.logPaneFocusByClick(id);
         self.needs_redraw = true;
         return true;
     }
@@ -7190,7 +7209,7 @@ const Client = struct {
                     if (self.session) |*session_ptr| {
                         if (self.tab_drag.finish(tab_w_int, session_ptr.count())) |req| {
                             _ = session_ptr.reorderTabs(req.from, req.to) catch |err| {
-                                log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+                                log.logTabReorderFailed(err);
                             };
                             // 활성 탭 위치 변경 — auto-scroll override 해제 +
                             // 다음 paint 의 `ensureActiveVisible` 가 갱신.
@@ -8318,6 +8337,7 @@ const Client = struct {
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
         if (self.surface_hidden) {
+            log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
             // 발생하므로 그 site 에 별도 logShowElapsed.
@@ -8371,6 +8391,7 @@ const Client = struct {
         }
         // hide 진입 — mac #175 동등 정책: preedit commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
+        log.logToggle(false);
         self.commitPendingInput();
         // #329 — 열린 menu 는 hide 때 닫는다. global hotkey 로 show 했을 때
         // 이전 menu 가 남아 있지 않게 (transient overlay 는 복원 대상 아님).

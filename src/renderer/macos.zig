@@ -440,7 +440,7 @@ pub const MetalRenderer = struct {
             defer ct.CGColorSpaceRelease(cs);
             objc.msgSendVoid1(layer, objc.sel("setColorspace:"), cs);
         } else {
-            std.log.warn("sRGB 색공간 생성 실패 — layer colorspace 를 그대로 둠", .{});
+            std.log.warn("sRGB color space creation failed — keeping the layer color space unchanged", .{});
         }
 
         return .{

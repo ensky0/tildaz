@@ -30,7 +30,7 @@ pub fn config() *const config_mod.Config {
 }
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
-    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.logPanic(msg, addr);
     // zig default panic — stderr 에 자동으로 file:line + backtrace dump.
     // 시연 시 `./zig-out/bin/tildaz 2>&1 | tee /tmp/run.log` 처럼 stderr 도
     // 캡처해야 보임. 우리 log file 에는 ret_addr 만 남기고 자세한 stack 은
@@ -50,7 +50,7 @@ pub fn showFatalRunError(err: anyerror) void {
         // 정확한 메시지를 이미 stderr + log 양쪽에 남겼다. 여기선 errorName 만
         // compact 하게 한 줄 — generic 본문을 다시 내면 그 진단을 가린다.
         error.WaylandSocketUnavailable => {
-            log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+            log.logRunFailed(err);
         },
         // #336 — bringUpInitialSurface 가 이미 showError(host overlay 또는 stderr
         // fallback)로 안내했다. 여기선 log 만 — generic 본문을 다시 내면 그 안내를 가린다.

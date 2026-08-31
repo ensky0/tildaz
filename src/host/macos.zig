@@ -50,7 +50,7 @@ const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
-    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.logPanic(msg, addr);
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(g_rt, messages.crash_title, text);
@@ -58,7 +58,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+    log.logRunFailed(err);
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
     dialog.showError(g_rt, messages.error_title, text);
@@ -590,6 +590,9 @@ var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
 /// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
 var g_display_link: objc.id = null;
+/// #570 — 첫 displayLink callback과 screen 변경 뒤 첫 callback에서 실제
+/// `targetTimestamp - timestamp`를 읽어 현재 합성 cadence를 기록한다.
+var g_display_timing_pending: bool = true;
 /// #439 — PTY 출력 도착 통보 source. `null` = 미설치 (그때는 `CADisplayLink` 가 지금까지
 /// 처럼 다음 vsync 에 집는다 — 예전 동작 그대로라 회귀가 아니다).
 var g_output_source: CFRunLoopSourceRef = null;
@@ -2379,6 +2382,9 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
 /// notification 모두 같은 handler. 윈도우 frame 재계산 + layer / drawable /
 /// renderer / Terminal / PTY 의 cols/rows 재동기화.
 fn tildazScreenChanged(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+    // notification 자체에는 refresh 정보가 없다. 창에 귀속된 CADisplayLink가 새
+    // screen을 반영한 다음 callback에서 timing을 읽는다 (#570).
+    g_display_timing_pending = true;
     syncGeometryAfterScreenChange();
 }
 
@@ -3241,7 +3247,7 @@ fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             const tab_w_int: c_int = ui_metrics.scaledPx(c_int, ui_metrics.TAB_WIDTH_PT, r.scale);
             if (g_drag.finish(tab_w_int, g_session.count())) |req| {
                 _ = g_session.reorderTabs(req.from, req.to) catch |err| {
-                    log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+                    log.logTabReorderFailed(err);
                 };
                 // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동 (#117).
                 g_tab_scroll_user_override = false;
@@ -3399,7 +3405,7 @@ fn handleSplit(dir: pane_layout.Direction) void {
         error.TooSmall => {
             // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
             // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-            log.appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ @tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS });
+            log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
             var buf: [160]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                 messages.pane_too_small_format;
@@ -3407,7 +3413,7 @@ fn handleSplit(dir: pane_layout.Direction) void {
             return;
         },
         error.TooManyPanes => {
-            log.appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ @tagName(dir), pane_layout.MAX_PANES_PER_TAB });
+            log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                 messages.pane_limit_format;
@@ -3416,12 +3422,12 @@ fn handleSplit(dir: pane_layout.Direction) void {
         },
         error.NoActiveTab => return,
         else => {
-            log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+            log.logPaneSplitFailed(err);
             return;
         },
     };
     const group = g_session.activeGroup().?;
-    log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), g_session.active_tab, group.paneCount(), group.active_pane });
+    log.logPaneSplit(@tagName(dir), g_session.active_tab, group.paneCount(), group.active_pane);
     afterPaneLayoutChange();
 }
 
@@ -3434,7 +3440,7 @@ fn handleFocusPane(dir: pane_layout.Direction) void {
     g_sel_autoscroll_dir = 0;
     // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
     syncTerminalGeometry();
-    log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), g_session.activeGroup().?.active_pane });
+    log.logPaneFocus(@tagName(dir), g_session.activeGroup().?.active_pane);
     afterPaneLayoutChange();
 }
 
@@ -3449,7 +3455,7 @@ fn handleResizePane(dir: pane_layout.Direction) void {
 fn handleEqualizePanes() void {
     if (g_renderer == null or g_session.activeGroup() == null) return;
     g_session.equalizeActive(paneAreaMac(), paneMetricsMac());
-    log.appendLine("pane", "equalize — {} panes", .{g_session.activeGroup().?.tree.count()});
+    log.logPaneEqualize(g_session.activeGroup().?.tree.count());
     afterPaneLayoutChange();
 }
 
@@ -3458,7 +3464,7 @@ fn handleZoomPane() void {
     if (g_renderer == null) return;
     if (!g_session.toggleZoomActive()) return;
     syncTerminalGeometry();
-    log.appendLine("pane", "zoom {s} — active pane {}", .{ if (g_session.activeGroup().?.zoomed != null) "on" else "off", g_session.activeGroup().?.active_pane });
+    log.logPaneZoom(g_session.activeGroup().?.zoomed != null, g_session.activeGroup().?.active_pane);
     afterPaneLayoutChange();
 }
 
@@ -3481,7 +3487,7 @@ fn focusPaneUnderPointer(x: f32, y: f32) bool {
     group.activeTab().interaction.cancelPointerModes();
     g_sel_autoscroll_dir = 0;
     _ = g_session.setActivePane(id);
-    log.appendLine("pane", "focus by click — active pane {}", .{id});
+    log.logPaneFocusByClick(id);
     afterPaneLayoutChange();
     return true;
 }
@@ -3491,9 +3497,9 @@ fn finishSeparatorDrag(d: SepDrag) void {
     if (g_renderer == null) return;
     const axis = if (d.axis == .side_by_side) "x" else "y";
     if (g_session.setSeparatorPx(d.node, d.px, paneAreaMac(), paneMetricsMac())) |placed| {
-        log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+        log.logPaneSeparatorMoved(d.node, axis, placed);
     } else {
-        log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
+        log.logPaneSeparatorUnchanged(d.node);
     }
     afterPaneLayoutChange();
 }
@@ -3531,7 +3537,7 @@ fn handleNewTab() void {
     if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
     const active = g_session.activeTab() orelse return;
     g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
-        log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+        log.logNewTabFailed(err);
         return;
     };
     syncGeometryAfterTabCountChange();
@@ -4115,7 +4121,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     });
     // #381 — override 가 먹었는지 확인 가능하게 (Windows host 와 같은 이유).
     if (g_run_opts.scrollback) |n| {
-        log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, g_config.max_scroll_lines });
+        log.logScrollbackOverride(n, g_config.max_scroll_lines);
     }
 
     // CADisplayLink (#255) — vsync render driver. `NSWindow.displayLink`
@@ -4152,7 +4158,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         if (g_output_source) |source| {
             CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
             g_session.setOutputWake(macOutputWake, null);
-            log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+            log.logOutputWakeInstalled();
         } else {
             // 만들지 못해도 앱은 정상이다 — 유휴 응답이 예전처럼 다음 vsync 를 기다릴 뿐이다.
             log.appendLine("startup", "output wake unavailable — idle output waits for vsync", .{});
@@ -4244,8 +4250,20 @@ fn drainExitedTabs() bool {
 }
 
 /// CADisplayLink (#255) fire — vsync 마다 main thread 호출. ObjC method
-/// signature: (self, _cmd, CADisplayLink*). 인자는 안 씀.
-fn displayLinkFire(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
+/// signature: (self, _cmd, CADisplayLink*).
+fn displayLinkFire(_: objc.id, _: objc.SEL, display_link: objc.id) callconv(.c) void {
+    if (g_display_timing_pending and display_link != null) {
+        // Apple이 정의한 실제 frame duration은 targetTimestamp - timestamp다.
+        // NSWindow가 만든 link라 현재 창이 올라간 screen을 자동으로 따른다 (#570).
+        const get_time = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+        const timestamp = get_time(display_link, objc.sel("timestamp"));
+        const target_timestamp = get_time(display_link, objc.sel("targetTimestamp"));
+        const frame_duration = target_timestamp - timestamp;
+        if (std.math.isFinite(frame_duration) and frame_duration > 0.0) {
+            log.logDisplayTiming(1.0 / frame_duration);
+            g_display_timing_pending = false;
+        }
+    }
     renderFrameTick();
 }
 
@@ -4924,11 +4942,11 @@ fn toggleWindow() void {
         // #329 — 열린 menu 는 hide 때 닫는다. 다음 show 에 남지 않게.
         if (g_command_menu_open) closeCommandMenu();
         // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
-        log.appendLineVerbose("toggle", "hide", .{});
+        log.logToggle(false);
         hideWindow();
     } else {
         // 화면 / Dock 변화 대비해 매번 dock rect 재계산.
-        log.appendLineVerbose("toggle", "show", .{});
+        log.logToggle(true);
         repositionWindow();
         showWindow();
     }

@@ -244,6 +244,92 @@ pub fn logConfigLoaded(cfg: anytype) void {
     });
 }
 
+/// 세 host가 같은 의미와 형식을 써야 하는 진단 로그. platform 코드는 측정값과
+/// 동작 결과만 넘기고 category / format string은 여기 한 곳에서 정한다 (#576).
+pub fn logPanic(msg: []const u8, return_addr: usize) void {
+    appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, return_addr });
+}
+
+pub fn logRunFailed(err: anyerror) void {
+    appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+}
+
+pub fn logScrollbackOverride(lines: anytype, config_lines: anytype) void {
+    appendLine("startup", "scrollback override: {d} lines (config {d})", .{ lines, config_lines });
+}
+
+pub fn logOutputWakeInstalled() void {
+    appendLine("startup", "output wake installed (idle PTY notify)", .{});
+}
+
+pub fn logDisplayTiming(refresh_hz: f64) void {
+    if (!std.math.isFinite(refresh_hz) or refresh_hz <= 0.0) return;
+    appendLine("startup", "display timing: refresh={d:.3}Hz period={d:.3}ms", .{
+        refresh_hz,
+        1000.0 / refresh_hz,
+    });
+}
+
+pub fn logPrimaryFont(family: []const u8, cell_w: anytype, cell_h: anytype, ascent: anytype, descent: anytype) void {
+    appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+        family, cell_w, cell_h, ascent, descent,
+    });
+}
+
+pub fn logPaneFocusByClick(id: anytype) void {
+    appendLine("pane", "focus by click — active pane {}", .{id});
+}
+
+pub fn logPaneSplitTooSmall(direction: []const u8, min_cols: anytype, min_rows: anytype) void {
+    appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ direction, min_cols, min_rows });
+}
+
+pub fn logPaneSplitTooMany(direction: []const u8, max_panes: anytype) void {
+    appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ direction, max_panes });
+}
+
+pub fn logPaneSplitFailed(err: anyerror) void {
+    appendLine("pane", "split failed: {s}", .{@errorName(err)});
+}
+
+pub fn logPaneSplit(direction: []const u8, tab_index: anytype, pane_count: anytype, active_pane: anytype) void {
+    appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{
+        direction, tab_index, pane_count, active_pane,
+    });
+}
+
+pub fn logPaneFocus(direction: []const u8, active_pane: anytype) void {
+    appendLine("pane", "focus {s} — active pane {}", .{ direction, active_pane });
+}
+
+pub fn logPaneEqualize(pane_count: anytype) void {
+    appendLine("pane", "equalize — {} panes", .{pane_count});
+}
+
+pub fn logPaneZoom(enabled: bool, active_pane: anytype) void {
+    appendLine("pane", "zoom {s} — active pane {}", .{ if (enabled) "on" else "off", active_pane });
+}
+
+pub fn logPaneSeparatorMoved(node: anytype, axis: []const u8, placed: anytype) void {
+    appendLine("pane", "separator drag — node {} to {s} {}", .{ node, axis, placed });
+}
+
+pub fn logPaneSeparatorUnchanged(node: anytype) void {
+    appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{node});
+}
+
+pub fn logNewTabFailed(err: anyerror) void {
+    appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+}
+
+pub fn logTabReorderFailed(err: anyerror) void {
+    appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+}
+
+pub fn logToggle(show: bool) void {
+    appendLineVerbose("toggle", "{s}", .{if (show) "show" else "hide"});
+}
+
 /// #197 — fatal / 시작 실패처럼 *사용자에게 직접 보여주는* 메시지를 한 번만
 /// 받아 두 채널에 동일하게 보낸다:
 ///   1. stderr — 터미널에서 직접 실행한 사용자가 즉시 본다.

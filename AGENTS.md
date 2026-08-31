@@ -21,6 +21,12 @@
 - 프로그램 안에서 사용자에게 직접 표시되는 메시지 (MessageBox, 오류 다이얼로그, About 다이얼로그 등 최종 사용자가 앱 안에서 보는 텍스트)
 - **로그 파일 (`tildaz_N.log`) 의 모든 메시지** — format string 과 **그 인자까지** 영어예요. 사용자가 이슈에 붙여 공유하는 진단 자료라서요. 로그 옆의 *주석*은 내부 기록이니 계속 한국어예요. (2026-08-03 에 이 규칙이 문서에 없어서 새 `[cwd]` 로그를 한국어로 적었고, 사용자 지적으로 점검하니 기존 코드 29곳도 한국어였어요 — 전부 영어로 고쳤어요.)
 
+**Linux · macOS · Windows에서 의미가 같은 로그는 [`src/log.zig`](src/log.zig)의 semantic 함수 하나가
+category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같은 문자열을 세 파일에 복사하거나
+각자 비슷하게 다시 쓰지 않아요. `logStart` · `logDisplayTiming` · pane 로그가 이 형태예요
+([#576](https://github.com/ensky0/tildaz/issues/576)). 반대로 font discovery API나 compositor protocol처럼
+실제 의미와 인자가 다른 세부 진단은 억지로 합치지 않고 host에 둬요.
+
 공개 레포의 정문과 앱 UI 는 국제 방문자가 바로 읽을 수 있는 언어 (= 영어) 에 맞추는 게 기본값이고, 내부 기록은 한국어로 남겨서 두 역할을 분리해요. **이 구분은 "출력은 한국어" 규칙의 예외가 아니라 대상이 달라서예요** — 사용자에게 하는 말은 한국어, 저장소 방문자 / end-user 가 읽는 산출물은 영어.
 
 # 워크플로우
@@ -979,7 +985,7 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 | 노트북 · Intel Core i5-1240P (12C/16T) | **Windows · Linux 듀얼부트** | 1920x1080 · **59.997 Hz** (100 %) |
 | 데스크탑 · AMD Ryzen 5 5700G | **Windows · Linux 듀얼부트** | (미기록) |
 | 미니PC · Firebat ZY-A8 · AMD Ryzen 7 8845HS (8C/16T) | **Windows · Linux 듀얼부트** (Linux 는 CachyOS) | 3840x2160 · **60 Hz** (Linux scale 1.7 → 논리 2259x1271) |
-| MacBook Pro (M5 Pro) | macOS | **120 Hz** (ProMotion) |
+| MacBook Pro (M5 Pro) | macOS | 내장 3024x1964 · **120 Hz** (ProMotion); 보통 clamshell + 외장 **60 Hz** |
 
 **같은 하드웨어에서 OS 만 바꿀 수 있다는 게 성능 측정의 강점이에요.** CPU · 패널이 고정된 채
 host 구현 차이만 남아서, platform 비교가 하드웨어 차이에 오염되지 않아요
@@ -1069,10 +1075,10 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
 그대로예요.
 
 **어느 화면에서 쟀는지도 함께 적어요.** 모니터가 여러 대면 창이 뜬 화면이 값을 정해요 —
-Windows 의 `startFrameClock` 은 *우리 창이 올라간 디스플레이* 의 DC 로 `GetDeviceCaps(VREFRESH)` 를
-읽으므로, 같은 기기에서도 내장 패널(120 Hz)과 외장 모니터(60 Hz)에서 프레임 주기가 갈려요.
-앱 로그의 `[startup] frame clock started: refresh=..Hz` 와 `window initialized: dpi=..` 를 근거로
-남겨요.
+Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
+`[startup] display timing: refresh=..Hz period=..ms`로 남겨요. 같은 기기에서도 내장 패널(120 Hz)과
+외장 모니터(60 Hz)에서 프레임 주기가 갈리므로, 이 줄과 platform별 화면 정보
+(`window initialized: dpi=..` 등)를 근거로 남겨요.
 
 **측정 때 종료한 평소 쓰는 TildaZ worker 는 다시 띄우지 않아요** (2026-08-05 사용자 지시:
 *"측정 위생 때문에 종료한 TildaZ를 다시 띄울 필요는 없어. 다시 묻지 마"*). 처리량 측정은
