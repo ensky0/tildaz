@@ -459,9 +459,13 @@ pub const Context = struct {
             // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는
             // platform 차이(mac/win 은 system font 라 path 없음)라 제외 — Linux
             // path 는 위 chain verbose 에 남음. fallback chain / ratios 는 verbose.
-            log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
-                family, self.cell_width_px, self.cell_height_px, self.ascent_px, self.descent_px,
-            });
+            log.logPrimaryFont(
+                family,
+                self.cell_width_px,
+                self.cell_height_px,
+                self.ascent_px,
+                self.descent_px,
+            );
             self.placeholder = rasterOne(self.allocator, self.ft_api, ft_face, '?') catch self.placeholder;
         }
     }

@@ -33,7 +33,7 @@ const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     // #197 — macOS / Linux showPanic 와 동일하게 crash 를 로그에 남긴다 (parity).
-    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.logPanic(msg, addr);
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(g_rt, messages.crash_title, text);
@@ -41,7 +41,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
 }
 
 pub fn showFatalRunError(err: anyerror) void {
-    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+    log.logRunFailed(err);
 
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
@@ -127,7 +127,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #381 — override 가 먹었는지 로그로 확인할 수 있어야 한다. `config loaded:` 줄은 config
     // 값을 찍으므로 그것만 보면 override 실패를 알 수 없다 (측정이 이 값에 걸려 있다).
     if (opts.scrollback) |n| {
-        log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, config.max_scroll_lines });
+        log.logScrollbackOverride(n, config.max_scroll_lines);
     }
     // tab_actions.Host 콜백 — &app 안정 후 한 번만. helper 가 user_data 통해
     // *App 으로 cast 후 invalidateRenderer / window.copyToClipboard
@@ -153,7 +153,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #439 — PTY 출력 도착을 UI 스레드에 알린다. 이것이 없으면 유휴에서 `WaitMessage` 가
     // 다음 `WM_FRAME_TICK` 까지 자고, 그 주기가 그대로 응답 지연이 된다.
     app.session.setOutputWake(onOutputWake, &app.window);
-    log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+    log.logOutputWakeInstalled();
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시

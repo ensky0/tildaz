@@ -726,10 +726,13 @@ pub const DWriteFontContext = struct {
         // system font 라 제외. family 는 UTF-16 → UTF-8 변환.
         var fam_buf: [128]u8 = undefined;
         const fam_len = std.unicode.utf16LeToUtf8(&fam_buf, self.primary_family_name[0..self.primary_family_len]) catch 0;
-        log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
-            fam_buf[0..fam_len],                             self.cell_width_px,                               self.cell_height_px,
-            @as(u32, @round(self.ascent_px)), @as(u32, @round(self.descent_px)),
-        });
+        log.logPrimaryFont(
+            fam_buf[0..fam_len],
+            self.cell_width_px,
+            self.cell_height_px,
+            @as(u32, @round(self.ascent_px)),
+            @as(u32, @round(self.descent_px)),
+        );
 
         // 5. Get IDWriteFactory2 for system font fallback
         var factory2: ?*dw.IDWriteFactory2 = null;

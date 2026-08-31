@@ -425,13 +425,13 @@ pub const CoreTextFontContext = struct {
 
         // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는 mac
         // (system font) 에 없어 제외. ascent/descent 는 retina 적용 후 px 정수.
-        log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+        log.logPrimaryFont(
             font_family,
             cell_w_px,
             cell_h_px,
             @as(u32, @round(ascent * retina_scale)),
             @as(u32, @round(descent * retina_scale)),
-        });
+        );
 
         // #375 — 변종 chain. `CTFontCreateCopyWithSymbolicTraits` 는 해당 face 가
         // 없으면 null 을 주므로, 그 결과가 곧 "이 family 에 bold / italic 이 있나" 의

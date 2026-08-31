@@ -226,7 +226,7 @@ pub fn registerWindowRuleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: 
     // 그래서 `detail` 을 쓰지 않고 버린다.
     var detail_buf: [1]u8 = undefined;
     const outcome = runCommand(allocator, sock_path, command, &detail_buf) catch |err| {
-        log.appendLine("sway", "for_window IPC failed: {s} — 창이 기본 위치로 뜬다", .{@errorName(err)});
+        log.appendLine("sway", "for_window IPC failed: {s} — window will open at the default position", .{@errorName(err)});
         return;
     };
     if (outcome.ok) {
