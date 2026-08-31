@@ -370,6 +370,17 @@ pub const Tab = struct {
         alloc.destroy(tab);
     }
 
+    /// #397 · #572 — 정상적인 측정 종료가 Tab 을 버리기 전에 ring 의 마지막
+    /// payload 를 파싱한다. `closeTab` 과 다중 pane 의 `closePane`이 함께 부른다.
+    /// 오류 정리와 SessionCore 자체 deinit 은 perf 스냅숏을 완성하는 경로가 아니므로
+    /// 부르지 않는다 — producer 가 살아 있는 OOM 정리에서 출력을 기다리면 안 된다.
+    fn finishStressOutput(tab: *Tab) void {
+        if (!instance_context.isStress()) return;
+        // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다. producer
+        // PTY exit 통보 뒤에는 EOF 에 도달했으므로 새 payload 는 더 오지 않는다.
+        while (tab.drainOutputChunk()) {}
+    }
+
     /// #483 — 이 탭이 화면에서 사라졌다. 스냅숏 메모리를 돌려주고 `.empty` 로 되돌린다.
     /// ghostty 의 pin 은 추적 pin 이 아니라 (render.zig: "NOT a tracked pin") 터미널과
     /// 무관하게 언제든 버릴 수 있다. 다음 `update` 가 전체를 다시 만든다.
@@ -850,7 +861,10 @@ pub const TabGroup = struct {
     /// 닫는다.
     fn closePane(group: *TabGroup, alloc: std.mem.Allocator, id: pane_layout.PaneId) bool {
         const next = group.tree.close(id) catch return false;
-        if (group.panes[id]) |tab| tab.deinit(alloc);
+        if (group.panes[id]) |tab| {
+            tab.finishStressOutput();
+            tab.deinit(alloc);
+        }
         group.panes[id] = null;
         if (group.active_pane == id) group.active_pane = next;
         // 최대화된 pane 이 닫혔거나 pane 이 하나만 남으면 최대화는 뜻이 없다.
@@ -1073,16 +1087,9 @@ pub const SessionCore = struct {
         const remaining_len = self.tabs.items.len - 1;
         const next_active = nextActiveIndexAfterClose(self.active_tab, index, remaining_len);
         const group = self.tabs.orderedRemove(index);
-        // #397 — 측정 인스턴스는 탭을 버리기 전에 ring 에 남은 출력을 마저 파싱한다.
-        // ring 은 Tab 소유라 아래 deinit 뒤에는 사라지고, 그 시점의 perf 스냅숏
-        // (#396 의 종료 시 자동 덤프) 은 파싱하다 만 값이 된다 — macOS 실측에서
-        // `drain` 이 `readloop` 의 54 % 였다. host 의 `terminate` 구현이 셋 다 달라
-        // (macOS 는 `exit()` 직행) 종료 뒤에 기대면 platform 마다 결과가 갈리므로
-        // 공통 경로인 여기서 끝낸다. `drainOutputChunk` 은 ring 이 비면 false 라
-        // 그 자체가 종료 조건이고, producer 는 이미 죽어 EOF 다. worker 는 no-op.
-        if (instance_context.isStress()) {
-            for (group.panes) |p| if (p) |tab| while (Tab.drainOutputChunk(tab)) {};
-        }
+        // #397 — 그룹 전체를 닫는 기존 측정 종료 보장. 실제 drain 로직은 #572 에서
+        // closePane 과 공유하도록 Tab.finishStressOutput 으로 모았다.
+        for (group.panes) |p| if (p) |tab| tab.finishStressOutput();
         defer group.deinit(self.allocator);
 
         if (next_active) |active| {
@@ -1866,6 +1873,34 @@ fn testRuntime() Runtime {
     return .{ .io = std.testing.io, .environ = .empty };
 }
 
+fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+    try session.splitActive(.right, rect, m);
+    const closing = session.activeTab().?;
+
+    // PTY read thread 의 timing 에 기대지 않고, 닫는 순간 반드시 unread 인 marker 를
+    // target pane 의 ring 에 직접 둔다. closeTabByPtr 은 stress actual-app 에서 producer
+    // 종료 통보가 타는 바로 그 경로다.
+    const marker = "\x1b]0;close-pane-drain-regression\x07";
+    try std.testing.expectEqual(marker.len, closing.output_ring.push(marker));
+    try std.testing.expect(!closing.output_ring.isEmpty());
+    _ = perf.snapshot(&perf.drain);
+    defer _ = perf.snapshot(&perf.drain);
+
+    const previous_role = instance_context.currentRole();
+    instance_context.setRole(.stress);
+    defer instance_context.setRole(previous_role);
+
+    try std.testing.expectEqual(
+        SessionCore.CloseResult.changed,
+        session.closeTabByPtr(@intFromPtr(closing)),
+    );
+    try std.testing.expectEqual(@as(usize, 1), session.activeGroup().?.paneCount());
+    const drained = perf.snapshot(&perf.drain);
+    try std.testing.expect(drained[2] >= marker.len);
+}
+
 test "POSIX: new tab shows Tab N from creation, before any shell output" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -1953,6 +1988,28 @@ test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 
     const stranger = try std.testing.allocator.create(Tab);
     defer std.testing.allocator.destroy(stranger);
     try std.testing.expectEqual(SessionCore.CloseResult.none, session.closeTabByPtr(@intFromPtr(stranger)));
+}
+
+test "POSIX: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 한다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    try session.createTab(80, 24);
+    try expectStressCloseDrainsUnreadPane(&session);
 }
 
 test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {
@@ -2255,6 +2312,34 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
         try std.testing.expect(session.activeTab().?.title_len > 0);
         testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
+}
+
+test "Windows: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 한다" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    const shell = std.unicode.utf8ToUtf16LeStringLiteral(
+        "cmd.exe /d /q /c \"ping -n 2 127.0.0.1 >nul\"",
+    );
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        shell,
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+    session.createTab(80, 24) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try expectStressCloseDrainsUnreadPane(&session);
 }
 
 test "tab title truncation preserves valid UTF-8 boundary" {
