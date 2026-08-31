@@ -1803,7 +1803,7 @@ pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산
 | platform · 기기 | 최장 드레인 1 → 16 pane | 합계 처리량 1 → 16 pane (120 fps) |
 |---|---|---|
 | **macOS** · MacBook Pro M5 Pro · 120 Hz | 1.69 → **4.07** ms | 143 → 111 MiB/s |
-| **Windows** · 기기 미기록 ([#551](https://github.com/ensky0/tildaz/issues/551)) | 4.16 → **4.55** ms | 161 → 79 MiB/s |
+| **Windows** · Lenovo 83JY · Ryzen AI 7 350 · 120 Hz | 4.16 → **4.55** ms | 161 → 79 MiB/s |
 | **Linux** · Ryzen AI 7 350 · 120 Hz | 4.32 → **7.93** ms | 101 → 46 MiB/s |
 
 producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한 값 — 120 fps 기준:
@@ -1827,9 +1827,10 @@ producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는
   host 에서는 드러나지 않아, 같은 코드가 macOS 0.9 프레임 · Linux 125 프레임으로 갈린다 (8 pane).
 - **프레임당 렌더 비용은 pane 수에 비례하지 않는다.** 실제 앱을 띄워 `perf.render` 로 잰
-  `render/call` 이 1 → 8 pane 에서 macOS 0.386 → 0.286 ms, Linux 0.368 → 0.430 ms 로 평평하다
-  (Windows 는 그 회차에 payload 의 5 % 를 소화하지 못해 값을 쓰지 않는다). 즉 pane 을 늘려도 밀리는 것은
-  렌더가 아니라 위의 드레인 공정성이다.
+  `render/call` 이 1 → 8 pane 에서 macOS 0.386 → 0.286 ms, Windows 0.653 → 0.894 ms,
+  Linux 0.368 → 0.430 ms 로 pane 수에 비례하지 않는다. Windows 4 · 8 pane 은 중간 pane 종료 전
+  ring 을 마저 소화하도록 고친 뒤 120 Hz 에서 다시 잰 유효값이다 ([#572](https://github.com/ensky0/tildaz/issues/572)).
+  즉 pane 을 늘려도 밀리는 것은 렌더가 아니라 위의 드레인 공정성이다.
 
 합계 처리량은 격자를 고정했는데도 pane 수가 늘면 내려간다 (pane 하나의 몫이 아니라 합계다) — 격자 변화가 아니라
 producer · PTY · ring 경쟁 때문이다. `frame` 층은 프레임마다 한 번만 드레인해 (사양 A 없음) 앱의 하한이다.
