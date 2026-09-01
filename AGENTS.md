@@ -510,6 +510,36 @@ magick out.png -format "%[pixel:p{40,40}]\n" info:     # 값 읽기
 
 Linux 는 software renderer + 프로파일 없는 캡처라 이 절차가 아예 없고, Windows 는 swapchain 이 `DXGI_FORMAT_B8G8R8A8_UNORM` 이라 raw 픽셀이 곧 앱 출력이에요. **macOS 만 이 절차가 필요해요.**
 
+# macOS — 실행마다 화면이 흔들리는지 보는 법
+
+같은 바이너리를 여러 번 띄워 캡처를 견주는 도구예요 ([`dist/macos/repeat-render-check.sh`](dist/macos/repeat-render-check.sh)).
+회차 사이에 다른 것이 없으니, 캡처가 회차마다 다르면 그 차이는 **실행 간 비결정**이에요.
+[#529](https://github.com/ensky0/tildaz/issues/529) 에서 atlas 의 cluster 키가 일반 글리프와
+자리를 나눠 쓰던 결함을 이걸로 잡았어요 — 24 회 중 1 회에서 `a̸` 자리에 `U` 가 그려졌어요.
+
+```sh
+dist/macos/repeat-render-check.sh                       # render-test 화면 24 회
+dist/macos/repeat-render-check.sh 40                    # 회차만 바꿔서
+dist/macos/repeat-render-check.sh 24 6 /path/show.sh    # 다른 화면으로
+```
+
+- **A/B 는 반드시 같은 화면에서 찍어요.** `color-capture` 가 출력 색공간을 sRGB 로 잡아도
+  **디스플레이가 다르면 값이 갈려요** — 같은 화면인데 내장 120 Hz 캡처와 외장 60 Hz 캡처가
+  서로 `AE 168466` 이 나왔어요 (#529 검증). 수정 전후를 견줄 때 화면을 바꾸지 않아요.
+- **재현이 관측된 조건과 같은 회차 수로 재요.** 확률이 낮은 결함은 (#529 는 회차당 10.5%)
+  회차가 적으면 그냥 지나가요. *"수정 전에 N 회에서 M 번"* 을 적어 두고 수정 뒤 **같은 N**
+  으로 다시 재요. 60 Hz 12 회 무재현을 근거로 삼으려다 조건이 안 맞아 120 Hz 24 회로 다시
+  쟀어요 (사용자 지적).
+- **`AE` 숫자만으로는 *사라짐* 과 *다른 것으로 바뀜* 을 못 갈라요.** 갈린 회차가 나오면 차이
+  영역을 잘라 **눈으로** 봐요. #529 의 원 관측이 이것 때문에 어느 쪽인지 끝내 확정되지
+  못했어요 — 캡처 원본을 안 남겨서 되짚을 수도 없었어요.
+- 도구는 `--instance 9` 로만 띄우고 끝나면 `config_9.toml` 을 스스로 지워요. 실기라서 위
+  `# 실행 환경` 대로 **시작 전에 알리고 동의를 받아요** — 창이 회차마다 떴다 사라져 화면이
+  깜빡이고, 그동안 사용자가 기기를 만지면 그 회차가 오염돼요.
+- **한 회차를 먼저 돌려 조건을 확인하고 시작해요.** 앱이 뜨는지 · 캡처 크기 · 주사율
+  (`[startup] display timing`) 을 보고 나서 전체를 돌려요. 이걸 건너뛰어 10 회를 통째로
+  버린 적이 있어요 (앱이 매 회차 죽고 있었는데 모르고 끝까지 돌렸어요).
+
 # macOS — 키보드 layout 조회 실측 방법
 
 단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`dist/macos/layout-probe.m`](dist/macos/layout-probe.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
