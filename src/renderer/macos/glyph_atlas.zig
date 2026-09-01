@@ -22,10 +22,16 @@ pub const ATLAS_SIZE: u32 = 2048;
 // #282 G5 — AtlasEntry / GlyphKey / packing 은 Windows atlas 와 공통(라인 동일).
 pub const AtlasEntry = atlas_common.AtlasEntry;
 const GlyphKey = atlas_common.GlyphKey;
+/// #529 — cluster 는 **일반 글리프와 다른 맵**에 산다. 근거는 공용 파일의 정의에 있다.
+const ClusterKey = atlas_common.ClusterKey;
 
 pub const GlyphAtlas = struct {
     alloc: std.mem.Allocator,
+    /// 단일 글리프 + 탭 아이콘. 키가 **진짜 glyph index** 다.
     cache: std.AutoHashMap(GlyphKey, AtlasEntry),
+    /// 여러 글리프를 합성한 cluster (#401). **위 맵과 반드시 갈라 둔다** (#529) —
+    /// 한 맵을 쓰면 cluster 해시가 진짜 glyph index 와 겹쳐 남의 그림이 나온다.
+    cluster_cache: std.AutoHashMap(ClusterKey, AtlasEntry),
 
     // 단순 row-based packing 상태.
     cursor_x: u32 = 0,
@@ -65,6 +71,7 @@ pub const GlyphAtlas = struct {
         return .{
             .alloc = alloc,
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
+            .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
             .font_size = font_size,
             .scale = scale,
             .pixels = pixels,
@@ -76,6 +83,7 @@ pub const GlyphAtlas = struct {
         self.alloc.free(self.temp_buf);
         self.alloc.free(self.pixels);
         self.cache.deinit();
+        self.cluster_cache.deinit();
     }
 
     /// 글리프 lookup or rasterize. 라스터 실패 시 null.
@@ -114,6 +122,10 @@ pub const GlyphAtlas = struct {
         // 키는 글리프 인덱스들의 해시다. 같은 인덱스 조합이면 결과가 같다 (positions 는 그
         // 조합에서 결정되므로 키에 안 넣는다). **폰트도 전부 넣는다** — 같은 인덱스가 폰트마다
         // 다른 글리프를 가리키므로, 갈린 cluster 를 인덱스만으로 구분하면 남의 그림을 준다.
+        //
+        // ⚠️ **해시를 자르지 않고, 일반 글리프와 다른 맵에 넣는다** (#529). 예전에는 `u16` 으로
+        // 잘라 `cache` 에 넣었는데, 그 대역이 *진짜* glyph index 와 같은 자리라 값이 겹치면 먼저
+        // 들어간 쪽의 비트맵이 나왔다 — 실기에서 `a̸` 자리에 `U` 가 그려졌다.
         var h = std.hash.Wyhash.init(0xC1_05_7E_47);
         for (glyphs) |g| h.update(std.mem.asBytes(&g));
         if (fonts.len == glyphs.len) {
@@ -122,11 +134,11 @@ pub const GlyphAtlas = struct {
                 h.update(std.mem.asBytes(&p));
             }
         }
-        const key = GlyphKey{ .font_ptr = @intFromPtr(font), .index = @truncate(h.final()) };
-        if (self.cache.get(key)) |entry| return entry;
+        const key = ClusterKey{ .font_ptr = @intFromPtr(font), .indices_hash = h.final() };
+        if (self.cluster_cache.get(key)) |entry| return entry;
 
         const entry = self.rasterizeCluster(font, glyphs, positions, fonts, cluster_advance_pt) orelse return null;
-        self.cache.put(key, entry) catch return null;
+        self.cluster_cache.put(key, entry) catch return null;
         return entry;
     }
 
@@ -190,6 +202,8 @@ pub const GlyphAtlas = struct {
     /// 아틀라스 reset (cache + packing 상태 + 픽셀 모두 클리어).
     pub fn reset(self: *GlyphAtlas) void {
         self.cache.clearRetainingCapacity();
+        // cluster 맵도 함께 비운다 — 빠뜨리면 폰트 · scale 이 바뀐 뒤 죽은 좌표가 남는다.
+        self.cluster_cache.clearRetainingCapacity();
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
