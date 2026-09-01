@@ -2595,9 +2595,31 @@ pub const Config = struct {
             };
             defer allocator.free(content);
 
-            // disk 정상 — parse 가 JSON 의 shell 을 dupe 하므로 인자는 미사용. 누수 방지 free.
+            // disk 정상 — parse 가 TOML 의 shell 을 dupe 하므로 인자는 미사용.
+            //
+            // #577 — free 를 parse **뒤로** 옮겼다. parse 가 이제 오류로 돌아올 수
+            // 있고, 그 경로는 `defaultOwned(allocator, shell_resolved)` 로 떨어지므로
+            // 먼저 free 하면 해제된 메모리를 넘기게 된다.
+            const parsed_config = parse(rt, allocator, content, path) catch {
+                // 문구는 `pendingFatalNotice` 에 담겼다. host 가 다이얼로그를 그릴 수
+                // 있게 된 뒤 읽어 안내하고 종료한다 — 여기서 죽지 않는 것이 요점이다.
+                //
+                // **버려지는 부분 config 를 정리하지 않는다.** `parse` 는 `shell` 과
+                // `font_families` 를 필드 순서대로 owned dupe 로 바꾸는데, 오류가 그
+                // 중간에서 나면 앞쪽만 owned 다. `Config{}` 의 기본값이 comptime
+                // 리터럴이라 (#501 test 주석) 일괄 `deinit` 은 static 메모리를 해제하게
+                // 되고, 어디까지 owned 인지 추적하려면 필드마다 소유권 flag 가 필요하다.
+                //
+                // 그렇게까지 하지 않는 근거는 이 경로의 **끝이 항상 `exit(1)`** 이라는
+                // 것이다 (host 세 곳 모두 안내 후 종료). `std.process.exit` 는 defer 를
+                // 돌리지 않아 `gpa.deinit()` 의 누수 검출도 지나가고, 반납은 OS 가 한다.
+                //
+                // 단 **테스트는 arena 를 쓴다** — testing allocator 로 늦은 단계 오류를
+                // 재현하면 이 미해제가 누수로 잡힌다.
+                break :blk defaultOwned(allocator, shell_resolved);
+            };
             allocator.free(shell_resolved);
-            break :blk parse(rt, allocator, content, path);
+            break :blk parsed_config;
         };
 
         // #431 — 핫키 중복 검사는 **여기 한 곳**이다. `parse` 안에 두면 위의 두 fallback
@@ -2608,7 +2630,12 @@ pub const Config = struct {
         // 기본값이 `F(N+1)` 이라 *기본값끼리는* 겹치지 않는다. 그래도 검사는 그대로 둔다 —
         // 사용자가 config 를 직접 겹치게 고치는 경우가 남고, 애초에 이 검사가 막는 것이
         // 그쪽이다.
-        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path);
+        //
+        // #577 — 이 검사도 오류를 **담아 두고** 돌아온다. 파싱이 성공한 config 를 그대로
+        // 들고 나가는 것이 중요하다 — host 는 이 config 로 창을 세운 뒤 담긴 문구를
+        // 안내하고 종료한다. 기본값으로 갈아치우면 안내를 그릴 창의 폰트 · 크기가
+        // 사용자 설정과 달라진다.
+        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path) catch {};
         return loaded;
     }
 
@@ -2619,7 +2646,7 @@ pub const Config = struct {
     /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
     /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
     /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
-    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) void {
+    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) LoadError!void {
         // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
         // (단위 테스트 등) 비교할 자기 자신이 없다.
         if (instance_context.isStress()) return;
@@ -2634,7 +2661,7 @@ pub const Config = struct {
             messages.config_hotkey_duplicate_format,
             .{ hotkeyDisplay(&key_buf, hotkey), owner },
         ) catch messages.config_hotkey_duplicate_fallback_msg;
-        showConfigFatalMsg(rt, config_path, msg);
+        return recordConfigFatalMsg(rt, config_path, msg);
     }
 
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
@@ -2658,7 +2685,7 @@ pub const Config = struct {
         return c;
     }
 
-    fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) Config {
+    fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) LoadError!Config {
         var config = Config{};
         // #493 — TOML. `toml.Table` 로 받아 **값 트리**를 직접 훑는다. 구조체 매핑을
         // 쓰지 않는 이유는 아래 필드별 오류 메시지다 — 매핑에 맡기면 "어느 필드가 왜
@@ -2690,7 +2717,7 @@ pub const Config = struct {
                 messages.config_parse_failed_format,
                 .{@errorName(err)},
             ) catch messages.config_parse_failed_fallback_msg;
-            showConfigFatalMsg(rt, config_path, msg);
+            return recordConfigFatalMsg(rt, config_path, msg);
         };
         defer parsed.deinit();
 
@@ -2702,15 +2729,22 @@ pub const Config = struct {
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
         // 의도 (primary single string + glyph fallback list) 를 명확히 안내.
         if (true) {
+            // #577 — 이 세 문구는 `font/validate.zig` 가 경로까지 조립해서 준다
+            // (경로가 본문 **끝**에 붙는 자기 형식 — `font_schema_error_path_format`).
+            // 그래서 #495 접두를 또 붙이지 않는 `...Prebuilt` 로 담는다.
+            var font_msg_buf: [1024]u8 = undefined;
             if (root.table.get("font")) |fv_pre| {
                 if (fv_pre == .table) {
                     if (fv_pre.table.get("family")) |fam_v| {
-                        if (fam_v != .string) font_validate.showFamilyMustBeStringFatal(rt);
+                        if (fam_v != .string)
+                            return recordConfigFatalPrebuilt(font_validate.familyMustBeStringMessage(rt, &font_msg_buf));
                     }
                     if (fv_pre.table.get("glyph_fallback")) |fb_v| {
-                        if (fb_v != .array) font_validate.showGlyphFallbackMustBeListFatal(rt);
+                        if (fb_v != .array)
+                            return recordConfigFatalPrebuilt(font_validate.glyphFallbackMustBeListMessage(rt, &font_msg_buf));
                         for (fb_v.array.items) |item| {
-                            if (item != .string) font_validate.showGlyphFallbackMustBeListFatal(rt);
+                            if (item != .string)
+                                return recordConfigFatalPrebuilt(font_validate.glyphFallbackMustBeListMessage(rt, &font_msg_buf));
                         }
                     }
                 }
@@ -2726,7 +2760,7 @@ pub const Config = struct {
         var default_parsed = default_parser.parseString(default_doc) catch unreachable;
         defer default_parsed.deinit();
         const default_root: toml.Value = .{ .table = &default_parsed.value };
-        validateStructure(rt, root, default_root, "(top-level)", config_path);
+        try validateStructure(rt, root, default_root, "(top-level)", config_path);
 
         // #533 — input section. macOS 만 값을 쓰지만 세 platform 이 같은 파일을
         // 읽을 수 있어야 해서 어디서든 파싱한다 (`MacOptionAsAlt` 주석 참고).
@@ -2741,7 +2775,7 @@ pub const Config = struct {
                         messages.config_macos_option_as_alt_invalid_format,
                         .{v.string},
                     ) catch messages.config_macos_option_as_alt_invalid_fallback_msg;
-                    showConfigFatalMsg(rt, config_path, msg);
+                    return recordConfigFatalMsg(rt, config_path, msg);
                 }
             }
         }
@@ -2758,27 +2792,27 @@ pub const Config = struct {
                         messages.config_dock_position_invalid_format,
                         .{v.string},
                     ) catch messages.config_dock_position_invalid_fallback_msg;
-                    showConfigFatalMsg(rt, config_path, msg);
+                    return recordConfigFatalMsg(rt, config_path, msg);
                 }
             }
             if (wv.table.get("width_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
+                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
+                if (f < 1.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
                 config.width_percent = f;
             }
             if (wv.table.get("height_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
-                if (f < 1.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
+                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
+                if (f < 1.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
                 config.height_percent = f;
             }
             if (wv.table.get("offset_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
+                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
+                if (f < 0.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
                 config.offset_percent = f;
             }
             if (wv.table.get("opacity_percent")) |v| {
-                const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
-                if (f < 0.0 or f > 100.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
+                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
+                if (f < 0.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
                 config.opacity_alpha = @round(f * 255.0 / 100.0);
             }
         }
@@ -2796,7 +2830,7 @@ pub const Config = struct {
                         if (i > 0) w.writeAll(", ") catch {};
                         w.writeAll(t.name) catch {};
                     }
-                    showConfigFatalMsg(rt, config_path, fbs.buffered());
+                    return recordConfigFatalMsg(rt, config_path, fbs.buffered());
                 }
             }
         }
@@ -2826,7 +2860,7 @@ pub const Config = struct {
                     .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
                         messages.config_hotkey_position_absent_fallback_msg,
                 };
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             }
         }
 
@@ -2846,7 +2880,7 @@ pub const Config = struct {
         // max_scroll_lines
         if (root.table.get("max_scroll_lines")) |v| {
             if (v.integer < 100 or v.integer > 10_000_000) {
-                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
+                return recordConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
             }
             config.max_scroll_lines = @intCast(v.integer);
         }
@@ -2857,18 +2891,18 @@ pub const Config = struct {
         const fv = root.table.get("font").?;
         if (fv.table.get("size_point")) |v| {
             if (v.integer < 8 or v.integer > 72) {
-                showConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
+                return recordConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
             }
             config.font_size_point = @intCast(v.integer);
         }
         if (fv.table.get("cell_width_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
+            if (f < 0.5 or f > 2.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
             config.cell_width_ratio = f;
         }
         if (fv.table.get("line_height_ratio")) |v| {
-            const f = parseFloat(v) orelse showConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
-            if (f < 0.5 or f > 2.0) showConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
+            const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
+            if (f < 0.5 or f > 2.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
             config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
@@ -2876,7 +2910,7 @@ pub const Config = struct {
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
         if (fv.table.get("family")) |v| {
-            if (v.string.len == 0) showConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
+            if (v.string.len == 0) return recordConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
             config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
             chain_count = 1;
         }
@@ -2895,7 +2929,7 @@ pub const Config = struct {
                         messages.config_font_chain_too_long_format,
                         .{MAX_FONT_FAMILIES},
                     ) catch messages.config_font_chain_too_long_fallback_msg;
-                    showConfigFatalMsg(rt, config_path, msg);
+                    return recordConfigFatalMsg(rt, config_path, msg);
                 }
                 config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
                 chain_count += 1;
@@ -2906,7 +2940,7 @@ pub const Config = struct {
         while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
         config.font_family_count = @intCast(chain_count);
 
-        parseKeys(rt, root, config_path, &config);
+        try parseKeys(rt, root, config_path, &config);
 
         return config;
     }
@@ -2921,7 +2955,7 @@ pub const Config = struct {
     /// `[keys]` 자체가 없거나 특정 액션이 빠져 있으면 **기본값으로 채운다** (결정 2).
     /// 정상 상태에서는 생성기가 모든 액션을 적으므로 이 경로는 버전 업그레이드 뒤의
     /// 안전망이다.
-    fn parseKeys(rt: Runtime, root: toml.Value, config_path: []const u8, config: *Config) void {
+    fn parseKeys(rt: Runtime, root: toml.Value, config_path: []const u8, config: *Config) LoadError!void {
         const keys_table: ?*toml.Table = if (root.table.get("keys")) |kv|
             (if (kv == .table) kv.table else null)
         else
@@ -2939,7 +2973,7 @@ pub const Config = struct {
                         var buf: [512]u8 = undefined;
                         const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
                             messages.config_key_not_list_fallback_msg;
-                        showConfigFatalMsg(rt, config_path, msg);
+                        return recordConfigFatalMsg(rt, config_path, msg);
                     }
                     from_file = v.array;
                 }
@@ -2951,13 +2985,13 @@ pub const Config = struct {
                         var buf: [512]u8 = undefined;
                         const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
                             messages.config_key_not_list_fallback_msg;
-                        showConfigFatalMsg(rt, config_path, msg);
+                        return recordConfigFatalMsg(rt, config_path, msg);
                     }
-                    count = addBinding(rt, config, count, action, item.string, config_path);
+                    count = try addBinding(rt, config, count, action, item.string, config_path);
                 }
             } else {
                 for (defaultBindings(action)) |text| {
-                    count = addBinding(rt, config, count, action, text, config_path);
+                    count = try addBinding(rt, config, count, action, text, config_path);
                 }
             }
         }
@@ -2973,33 +3007,33 @@ pub const Config = struct {
         action: KeyAction,
         text: []const u8,
         config_path: []const u8,
-    ) usize {
+    ) LoadError!usize {
         const parsed = switch (parseHotkeyString(text, .app_binding)) {
             .ok => |v| v,
             .unknown_key => {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.config_key_invalid_format, .{ action.configName(), text }) catch
                     messages.config_key_invalid_fallback_msg;
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             },
             .modifier_required => {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.config_key_needs_modifier_format, .{ action.configName(), text }) catch
                     messages.config_key_needs_modifier_fallback_msg;
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             },
             // #496 — macOS 에서만 나온다. 겹침 / 부재를 갈라 다른 안내를 준다.
             .position_aliased_on_macos => {
                 var buf: [640]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.config_key_position_aliased_format, .{ action.configName(), text }) catch
                     messages.config_key_position_aliased_fallback_msg;
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             },
             .position_absent_on_macos => {
                 var buf: [640]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.config_key_position_absent_format, .{ action.configName(), text }) catch
                     messages.config_key_position_absent_fallback_msg;
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             },
         };
         const hotkey = Hotkey.fromParsed(parsed);
@@ -3012,7 +3046,7 @@ pub const Config = struct {
                     existing.action.configName(),
                     action.configName(),
                 }) catch messages.config_key_conflict_fallback_msg;
-                showConfigFatalMsg(rt, config_path, msg);
+                return recordConfigFatalMsg(rt, config_path, msg);
             }
         }
 
@@ -3020,7 +3054,7 @@ pub const Config = struct {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, messages.config_key_too_many_format, .{MAX_KEY_BINDINGS}) catch
                 messages.config_key_too_many_fallback_msg;
-            showConfigFatalMsg(rt, config_path, msg);
+            return recordConfigFatalMsg(rt, config_path, msg);
         }
         config.key_bindings[count] = .{ .hotkey = hotkey, .action = action };
         return count + 1;
@@ -3184,16 +3218,113 @@ pub fn showLoadNoticeText(rt: Runtime, notice: []const u8) void {
     dialog.showError(rt, messages.config_not_loaded_title, notice);
 }
 
-fn showConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) noreturn {
-    const full_message = configErrorMessageAlloc(std.heap.page_allocator, message, config_path) catch
-        messages.config_error_with_path_fallback_msg;
-    dialog.showFatal(rt, messages.config_error_title, full_message);
+/// #577 — 담긴 config fatal 문구를 보여주고 **종료한다.** 담긴 것이 없으면 아무 일도
+/// 하지 않으므로 host 는 조건 없이 부르면 된다.
+///
+/// **Windows · macOS 전용이다.** 두 platform 은 OS 가 modal 을 주므로
+/// (`MessageBoxW` / `NSAlert`) `dialog.showFatal` 이 사용자가 창을 닫을 때까지
+/// 돌아오지 않고, 그래서 `Config.load` 직후 — 창을 세우기 전 — 에 그대로 부를 수 있다.
+///
+/// **Linux 는 이 함수를 쓰지 않는다.** 그쪽 `dialog.showFatal` 은 overlay 요청만 걸고
+/// 바로 돌아오는 fire-and-forget 이라 뒤이은 `exit(1)` 이 paint 전에 프로세스를 죽인다
+/// (#282 F9). Linux host 는 `pendingFatalNotice` 를 직접 읽어 blocking overlay
+/// (`runFatalDialog`) 로 띄운 뒤 종료한다 — `showLoadNotice` 와 `showLoadNoticeText`
+/// 가 갈리는 것과 **같은 이유, 같은 모양**이다 (#501).
+pub fn showFatalNoticeIfAny(rt: Runtime) void {
+    const notice = pendingFatalNotice() orelse return;
+    // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
+    dialog.showFatal(rt, messages.config_error_title, notice);
 }
 
-fn showConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
+/// #577 — config 오류로 시작을 거부할 때 그 사실을 나르는 error. 문구 자체는
+/// `pendingFatalNotice` 가 들고 있다 — Zig error 는 payload 를 못 실어서다.
+pub const LoadError = error{InvalidConfig};
+
+/// 담아 두는 문구의 상한. Linux overlay 가 받는 상한
+/// (`dialog/linux.zig` 의 `message_capacity`) 과 **같은 값**이다 — 여기서 더 담아도
+/// 그쪽에서 잘리므로 두 상한이 갈리면 로그와 화면의 문구가 달라진다 (#310 과 같은 이유).
+const fatal_notice_capacity: usize = 4096;
+
+/// process lifetime 고정 buffer. allocator 를 쓰지 않는 이유가 두 가지다 —
+/// (1) 이 문구를 읽는 host 는 `load` 가 끝나고 **한참 뒤**라 스택 buffer 로는
+/// 살아남지 못하고, (2) 오류를 만드는 자리 중 `validateStructure` 는 allocator 를
+/// 안 들고 있어 넘기려면 재귀 전체에 인자를 하나 더 끼워야 한다.
+var fatal_notice_buf: [fatal_notice_capacity]u8 = undefined;
+var fatal_notice_len: usize = 0;
+
+/// #577 — host 가 다이얼로그를 그릴 수 있게 된 뒤 읽는다. 담긴 것이 없으면 `null`.
+///
+/// **첫 오류만 담는다.** 사용자가 고칠 지점이 첫 오류이고, 그 뒤 오류는 첫 것을 고친
+/// 다음 실행에서 다시 걸린다. 예전 동작 (첫 오류에서 즉시 종료) 과 사용자가 보는
+/// 문구가 같아지는 것도 이 선택 덕이다.
+pub fn pendingFatalNotice() ?[]const u8 {
+    if (fatal_notice_len == 0) return null;
+    return fatal_notice_buf[0..fatal_notice_len];
+}
+
+/// #577 — 문구를 **담아 두기만 한다.** 예전에는 이 자리가 곧바로
+/// `dialog.showFatal` + `exit(1)` 이었는데, config 파싱은 Linux 에서 dialog backend
+/// 등록 **전에** 돌아서 (`dialog/linux.zig` 의 `showFatal` 주석) 메뉴 · autostart 로
+/// 띄운 사용자에게 그 안내가 **한 번도 보이지 않았다** — 창도 다이얼로그도 없이
+/// 조용히 죽었다.
+///
+/// #501 이 로드 실패 안내에 쓴 방식과 같다 — 담아 두고 host 가 그릴 수 있게 된 뒤에
+/// 보여준다. 다른 점은 이것이 **fatal** 이라는 것뿐이다: host 는 blocking overlay 로
+/// 띄운 뒤 종료한다 (#282 C2 의 shell · 폰트 검증과 같은 자리, 같은 이유).
+///
+/// **stderr + 로그는 여기서 즉시 남긴다.** overlay 를 못 그리는 환경 (headless,
+/// Wayland 연결 실패) 에서도 원인이 남아야 하고, 터미널에서 띄운 사용자는 예전과
+/// 똑같이 그 자리에서 문구를 본다. shell 검증 (`wayland_minimal.zig`) 이 쓰는
+/// `log.userFacing` + blocking overlay 조합과 같은 모양이다.
+fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u8) LoadError {
+    // 문구 조립에 rt 가 필요 없다 — 표시는 host 가 나중에 한다.
+    _ = rt;
+    if (fatal_notice_len != 0) return error.InvalidConfig;
+
+    const written = std.fmt.bufPrint(
+        &fatal_notice_buf,
+        messages.config_error_with_path_format,
+        .{ config_path, message },
+    ) catch blk: {
+        // 경로가 너무 길어 상한을 넘긴 경우. 조립을 포기하더라도 **무음으로는
+        // 돌아가지 않는다** — 이 이슈가 고치려는 것이 바로 그 무음이다.
+        const fallback = messages.config_error_with_path_fallback_msg;
+        const n = @min(fallback.len, fatal_notice_buf.len);
+        @memcpy(fatal_notice_buf[0..n], fallback[0..n]);
+        break :blk fatal_notice_buf[0..n];
+    };
+    return publishFatalNotice(written.len);
+}
+
+fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) LoadError {
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
-    showConfigFatalMsg(rt, config_path, msg);
+    return recordConfigFatalMsg(rt, config_path, msg);
+}
+
+/// #577 — 경로까지 이미 조립된 문구를 **그대로** 담는다. 폰트 schema 오류
+/// (`font/validate.zig`) 는 경로를 본문 끝에 붙이는 자기 형식이 있어
+/// (`font_schema_error_path_format`), 여기서 #495 접두를 또 붙이면 경로가 두 번 나온다.
+fn recordConfigFatalPrebuilt(message: []const u8) LoadError {
+    if (fatal_notice_len != 0) return error.InvalidConfig;
+    const n = @min(message.len, fatal_notice_buf.len);
+    @memcpy(fatal_notice_buf[0..n], message[0..n]);
+    return publishFatalNotice(n);
+}
+
+/// 길이를 확정하고 stderr + 로그에 남긴다. **다이얼로그보다 먼저 남긴다** —
+/// `dialog.showFatal` 이 그렇게 하는 이유와 같다 (#510): overlay 를 못 그리는
+/// 환경에서도 원인이 남아야 한다.
+fn publishFatalNotice(len: usize) LoadError {
+    fatal_notice_len = len;
+    log.userFacing("fatal", fatal_notice_buf[0..len]);
+    return error.InvalidConfig;
+}
+
+/// 테스트 전용 — 담긴 문구를 비운다. `fatal_notice_*` 가 process 전역이라
+/// 테스트끼리 상태가 새는 것을 막는다.
+fn resetFatalNoticeForTest() void {
+    fatal_notice_len = 0;
 }
 
 /// user config 의 구조가 default config 와 일치하는지 재귀 검증:
@@ -3205,7 +3336,7 @@ fn showConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u
 /// #493 — `std.json.Value` 트리 비교에서 `toml.Value` 트리 비교로 옮겼다. 구조는
 /// 그대로다: 사용자 문서와 `defaultConfigToml` 을 파싱한 기준 문서를 같은 자리에서
 /// 비교해 key set · 중첩 · 타입을 검사한다.
-fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []const u8, config_path: []const u8) void {
+fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []const u8, config_path: []const u8) LoadError!void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != def_tag) {
@@ -3218,7 +3349,7 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
                 messages.config_type_mismatch_format,
                 .{ ctx, @tagName(def_tag), @tagName(user_tag) },
             ) catch messages.config_type_mismatch_fallback_msg;
-            showConfigFatalMsg(rt, config_path, msg);
+            return recordConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -3234,7 +3365,7 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
                 messages.config_missing_key_format,
                 .{ key, ctx },
             ) catch messages.config_missing_key_fallback_msg;
-            showConfigFatalMsg(rt, config_path, msg);
+            return recordConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -3252,7 +3383,7 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
                 messages.config_unknown_key_format,
                 .{ key, ctx },
             ) catch messages.config_unknown_key_fallback_msg;
-            showConfigFatalMsg(rt, config_path, msg);
+            return recordConfigFatalMsg(rt, config_path, msg);
         }
     }
 
@@ -3265,7 +3396,7 @@ fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []cons
             std.fmt.bufPrint(&path_buf, "{s}", .{key}) catch key
         else
             std.fmt.bufPrint(&path_buf, "{s}.{s}", .{ ctx, key }) catch key;
-        validateStructure(rt, u_val, entry.value_ptr.*, path, config_path);
+        try validateStructure(rt, u_val, entry.value_ptr.*, path, config_path);
     }
 }
 
@@ -3368,6 +3499,108 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, long_message, &long_path));
 }
 
+/// #577 — 늦은 단계 config 오류는 `parse` 가 버리는 부분 할당을 남긴다 (`load` 의
+/// catch 주석). arena 로 감싸 어느 단계에서 걸려도 test 가 누수로 실패하지 않게 한다.
+fn expectParseInvalid(content: []const u8, config_path: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    // **죽지 않고 오류로 돌아온다.** 예전에는 이 자리가 `dialog.showFatal` +
+    // `exit(1)` 이라 이런 test 자체를 쓸 수 없었다 — 그것이 #577 의 원인이다.
+    try std.testing.expectError(
+        error.InvalidConfig,
+        Config.parse(rt, arena.allocator(), content, config_path),
+    );
+}
+
+/// 기본 template 에서 한 section 을 통째로 지운다 — "예전 버전이 쓴 config" 를
+/// 만드는 가장 정확한 방법이다. 문구를 손으로 적으면 schema 가 넓어질 때 test 가
+/// 조용히 현실과 갈린다.
+fn tomlWithoutSection(allocator: std.mem.Allocator, doc: []const u8, header: []const u8, next_header: []const u8) ![]u8 {
+    const from = std.mem.indexOf(u8, doc, header) orelse return error.TestUnexpectedResult;
+    const to = std.mem.indexOf(u8, doc, next_header) orelse return error.TestUnexpectedResult;
+    return std.mem.concat(allocator, u8, &.{ doc[0..from], doc[to..] });
+}
+
+test "#577 스키마가 넓어진 뒤의 옛 config 는 프로세스를 죽이지 않고 문구를 담아 돌아온다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    // v0.9.2 가 더한 `[input]` 이 없는 config — #577 의 실제 재현 조건이다.
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const old = try tomlWithoutSection(allocator, full, "\n[input]\n", "\n[keys]\n");
+    defer allocator.free(old);
+
+    const path = "/home/user/.config/tildaz/config_0.toml";
+    try expectParseInvalid(old, path);
+
+    // 문구가 담겨 있어야 한다. 담기지 않으면 host 가 보여줄 것이 없어 증상이 그대로다.
+    const notice = pendingFatalNotice() orelse return error.TestUnexpectedResult;
+    // #495 형식 — 경로가 첫 줄, 정확히 한 번.
+    try std.testing.expect(std.mem.startsWith(u8, notice, "Config: " ++ path));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, notice, path));
+    // 사용자가 무엇을 고쳐야 하는지 — 빠진 key 이름이 들어 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, notice, "\"input\"") != null);
+}
+
+test "#577 pane 액션이 빠진 v0.9.2 config 도 같은 경로로 안내된다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    // v0.9.3 이 더한 15 개 pane 액션이 없는 config. `[keys]` 를 통째로 지우면 첫
+    // 액션에서 걸리므로, 여기서는 **pane 그룹만** 지운 상태를 만든다.
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const old = try tomlWithoutSection(allocator, full, "\n# Panes\n", "\n# Clipboard\n");
+    defer allocator.free(old);
+
+    try expectParseInvalid(old, "/home/user/.config/tildaz/config_0.toml");
+    const notice = pendingFatalNotice() orelse return error.TestUnexpectedResult;
+    // 빠진 액션 이름이 나와야 한다 — 15 개 중 어느 것이든 첫 번째가 지목된다.
+    try std.testing.expect(std.mem.indexOf(u8, notice, "in keys") != null);
+}
+
+test "#577 첫 오류만 담는다 — 뒤 오류가 앞 문구를 덮지 않는다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const no_input = try tomlWithoutSection(allocator, full, "\n[input]\n", "\n[keys]\n");
+    defer allocator.free(no_input);
+
+    try expectParseInvalid(no_input, "/first/config_0.toml");
+    const first = pendingFatalNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.startsWith(u8, first, "Config: /first/config_0.toml"));
+
+    // 두 번째 오류는 담기지 않는다. 사용자가 고칠 지점은 첫 오류이고, 예전 동작
+    // (첫 오류에서 즉시 종료) 과 보이는 문구가 같아야 한다.
+    try expectParseInvalid(no_input, "/second/config_0.toml");
+    const still_first = pendingFatalNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.startsWith(u8, still_first, "Config: /first/config_0.toml"));
+    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, still_first, "/second/"));
+}
+
+test "#577 정상 config 는 문구를 담지 않는다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const full = try defaultConfigToml(arena.allocator(), Defaults.shell, Defaults.hotkeyFor(0));
+
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    _ = try Config.parse(rt, arena.allocator(), full, "/home/user/.config/tildaz/config_0.toml");
+
+    // 담긴 것이 없어야 한다 — 있으면 host 가 정상 부팅을 오류로 끊는다.
+    try std.testing.expectEqual(@as(?[]const u8, null), pendingFatalNotice());
+}
+
 test "DockPosition.fromString" {
     try std.testing.expectEqual(DockPosition.top, DockPosition.fromString("top").?);
     try std.testing.expectEqual(DockPosition.bottom, DockPosition.fromString("bottom").?);
@@ -3428,7 +3661,7 @@ test "explicit line height ratio is preserved when parsing" {
     // #451 — 정상 문서라 `parse` 가 fatal 경로 (config 경로 조회) 로 가지 않는다.
     // 그래서 `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
     const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
-    const config = Config.parse(rt, allocator, json_text, "/tmp/config_0.toml");
+    const config = try Config.parse(rt, allocator, json_text, "/tmp/config_0.toml");
     defer config.deinit(allocator);
     try std.testing.expectEqual(@as(f32, 0.9), config.line_height_ratio);
 }

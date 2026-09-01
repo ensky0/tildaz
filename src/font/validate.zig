@@ -21,24 +21,28 @@ const paths = @import("../paths.zig");
 
 /// `font.family` 가 string 이 아닐 때 (예: 구 schema 의 array). 메시지 +
 /// runtime 에서 결정한 config path 한 줄.
-pub fn showFamilyMustBeStringFatal(rt: Runtime) noreturn {
-    showSchemaErrorFatal(rt, messages.font_family_must_be_string_msg);
+///
+/// #577 — **문구만 만들고 띄우지 않는다.** 이 검증은 config 파싱 안에서 도는데
+/// 그 시점의 Linux 는 dialog backend 가 없어 (`dialog/linux.zig` 의 `showFatal`
+/// 주석) 여기서 `dialog.showFatal` 을 부르면 안내가 stderr 로만 가고 메뉴로 띄운
+/// 사용자에게는 보이지 않는다. 표시는 `config.zig` 의 지연 표시 경로가 맡는다.
+pub fn familyMustBeStringMessage(rt: Runtime, msg_buf: []u8) []const u8 {
+    return schemaErrorMessageFor(rt, msg_buf, messages.font_family_must_be_string_msg);
 }
 
 /// `font.glyph_fallback` 이 string 의 list 가 아닐 때 (다른 type, 또는 array
-/// element 가 string 아닌 경우).
-pub fn showGlyphFallbackMustBeListFatal(rt: Runtime) noreturn {
-    showSchemaErrorFatal(rt, messages.font_glyph_fallback_must_be_list_msg);
+/// element 가 string 아닌 경우). 위와 같은 이유로 문구만 만든다 (#577).
+pub fn glyphFallbackMustBeListMessage(rt: Runtime, msg_buf: []u8) []const u8 {
+    return schemaErrorMessageFor(rt, msg_buf, messages.font_glyph_fallback_must_be_list_msg);
 }
 
-/// 단순 schema 위반 메시지 + Config path 라인 → fatal. 위 두 fn 의 공유 helper.
-fn showSchemaErrorFatal(rt: Runtime, line: []const u8) noreturn {
+/// 단순 schema 위반 메시지 + Config path 라인. 위 두 fn 의 공유 helper.
+fn schemaErrorMessageFor(rt: Runtime, msg_buf: []u8, line: []const u8) []const u8 {
     var alloc_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
     const cfg_path: []const u8 = paths.configPath(rt, fba.allocator()) catch messages.unknown_path_msg;
 
-    var msg_buf: [1024]u8 = undefined;
-    dialog.showFatal(rt, messages.config_error_title, schemaErrorMessage(&msg_buf, line, cfg_path));
+    return schemaErrorMessage(msg_buf, line, cfg_path);
 }
 
 fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {

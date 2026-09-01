@@ -3776,6 +3776,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     g_config = config.Config.load(rt, g_gpa.allocator(), shell_resolved);
     log.logConfigLoaded(g_config);
 
+    // #577 — config 오류가 담겨 있으면 여기서 안내하고 종료한다. `Config.load` 는
+    // 더 이상 그 자리에서 죽지 않고 문구를 담아 기본값으로 돌아온다 (Linux 에서
+    // 파싱 시점에는 다이얼로그를 그릴 수 없기 때문이다 — `config.zig` 의
+    // `recordConfigFatalMsg` 주석). macOS 는 `NSAlert` 가 modal 이라 창을 세우기
+    // 전 이 자리에서 그대로 띄울 수 있다.
+    //
+    // **shell 검증보다 앞이다** — 세 platform 같은 순서다 (Windows host 주석 참고).
+    config.showFatalNoticeIfAny(g_rt);
+
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.

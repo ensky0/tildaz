@@ -81,6 +81,17 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     defer config.deinit(alloc);
     log.logConfigLoaded(config);
 
+    // #577 — config 오류가 담겨 있으면 여기서 안내하고 종료한다. `Config.load` 는
+    // 더 이상 그 자리에서 죽지 않고 문구를 담아 기본값으로 돌아온다 (Linux 에서
+    // 파싱 시점에는 다이얼로그를 그릴 수 없기 때문이다 — `config.zig` 의
+    // `recordConfigFatalMsg` 주석). Windows 는 `MessageBoxW` 가 modal 이라 창을
+    // 세우기 전 이 자리에서 그대로 띄울 수 있다.
+    //
+    // **shell 검증보다 앞이다** — config 를 못 읽은 실행은 기본값으로 도는 중이라
+    // 아래 검증이 보는 shell 이 사용자가 적은 값이 아니다. 순서가 뒤바뀌면 사용자는
+    // 자기가 고치지도 않은 shell 을 의심한다 (Linux host 도 같은 순서다).
+    config_mod.showFatalNoticeIfAny(rt);
+
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
     // 뒤 generic 에러로 끝남 — 사용자에게 어디 고쳐야 할지 안내 안 됨.
