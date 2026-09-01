@@ -19,39 +19,19 @@ const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const paths = @import("../paths.zig");
 
-/// `font.family` 가 string 이 아닐 때 (예: 구 schema 의 array). 메시지 +
-/// runtime 에서 결정한 config path 한 줄.
-///
-/// #577 — **문구만 만들고 띄우지 않는다.** 이 검증은 config 파싱 안에서 도는데
-/// 그 시점의 Linux 는 dialog backend 가 없어 (`dialog/linux.zig` 의 `showFatal`
-/// 주석) 여기서 `dialog.showFatal` 을 부르면 안내가 stderr 로만 가고 메뉴로 띄운
-/// 사용자에게는 보이지 않는다. 표시는 `config.zig` 의 지연 표시 경로가 맡는다.
-pub fn familyMustBeStringMessage(rt: Runtime, msg_buf: []u8) []const u8 {
-    return schemaErrorMessageFor(rt, msg_buf, messages.font_family_must_be_string_msg);
-}
-
-/// `font.glyph_fallback` 이 string 의 list 가 아닐 때 (다른 type, 또는 array
-/// element 가 string 아닌 경우). 위와 같은 이유로 문구만 만든다 (#577).
-pub fn glyphFallbackMustBeListMessage(rt: Runtime, msg_buf: []u8) []const u8 {
-    return schemaErrorMessageFor(rt, msg_buf, messages.font_glyph_fallback_must_be_list_msg);
-}
-
-/// 단순 schema 위반 메시지 + Config path 라인. 위 두 fn 의 공유 helper.
-fn schemaErrorMessageFor(rt: Runtime, msg_buf: []u8, line: []const u8) []const u8 {
-    var alloc_buf: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
-    const cfg_path: []const u8 = paths.configPath(rt, fba.allocator()) catch messages.unknown_path_msg;
-
-    return schemaErrorMessage(msg_buf, line, cfg_path);
-}
-
-fn schemaErrorMessage(msg_buf: []u8, line: []const u8, cfg_path: []const u8) []const u8 {
-    var fbs: std.Io.Writer = .fixed(msg_buf);
-    const w = &fbs;
-    w.writeAll(line) catch {};
-    w.print(messages.font_schema_error_path_format, .{cfg_path}) catch {};
-    return fbs.buffered();
-}
+// #577 — `font.family` / `font.glyph_fallback` 의 **schema** 위반 (string 이
+// 아님 · list 가 아님) 은 이 파일을 더 이상 지나지 않는다. 두 가지가 바뀌었다.
+//
+// (1) 그 검증은 config 파싱 안에서 도는데, 그 시점의 Linux 에는 dialog backend 가
+//     없어 여기서 `dialog.showFatal` 을 부르면 안내가 stderr 로만 갔다. 이제
+//     `config.zig` 가 문구를 담아 두고 host 가 그릴 수 있게 된 뒤 띄운다.
+// (2) 문구 조립도 `config.zig` 의 `recordConfigFatalMsg` 한 곳으로 모았다. 여기서
+//     만들면 경로를 `paths.configPath` 로 **다시 조회**해야 했는데, 파싱 중인 파일의
+//     경로는 이미 인자로 들어와 있다. 다시 조회하면 instance 번호와 실제 파일이
+//     갈릴 수 있다 (#316 의 교훈).
+//
+// 문구 상수 자체 (`messages.font_family_must_be_string_msg` 등) 는 그대로다 —
+// `config.zig` 가 그것을 `recordConfigFatalMsg` 에 넘긴다.
 
 /// `missing` 은 시스템에서 lookup 실패한 chain entry 이름. `chain` 은 사용자
 /// config 의 font.family 전체 (UTF-8 raw). 본 함수는 dialog.showFatal 로
@@ -95,6 +75,10 @@ pub fn notFoundMessageSub(rt: Runtime, msg_buf: []u8, missing: []const u8, chain
 pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const []const u8, cfg_path: []const u8, substitute: ?[]const u8) []const u8 {
     var fbs: std.Io.Writer = .fixed(msg_buf);
     const w = &fbs;
+    // #577 — 경로가 **첫 줄**이다 (#495). 예전에는 맨 끝 footer 였다. 본문을 writer 로
+    // 쌓는 구조라 `config_error_with_path_format` 을 한 번에 print 할 수 없어서, 접두만
+    // 뺀 `config_error_path_prefix_format` 을 쓴다 — 다른 config 오류와 같은 첫 줄이다.
+    w.print(messages.config_error_path_prefix_format, .{cfg_path}) catch {};
     w.print(messages.font_not_found_format, .{missing}) catch {};
     w.writeAll(messages.font_chain_header_msg) catch {};
     for (chain) |fam| {
@@ -109,31 +93,43 @@ pub fn notFoundMessageForPath(msg_buf: []u8, missing: []const u8, chain: []const
             w.print(messages.font_substituted_format, .{ sub, missing }) catch {};
         }
     }
-    w.print(messages.font_chain_footer_format, .{cfg_path}) catch {};
+    w.writeAll(messages.font_chain_footer_msg) catch {};
     return fbs.buffered();
 }
 
 test "font validation messages preserve runtime values and final newline" {
-    var schema_buf: [256]u8 = undefined;
-    try std.testing.expectEqualStrings(
-        "Invalid config: font.family must be a string (font name).\n\nConfig path:\n  /tmp/config_3.json",
-        schemaErrorMessage(
-            &schema_buf,
-            messages.font_family_must_be_string_msg,
-            "/tmp/config_3.json",
-        ),
-    );
-
     var missing_buf: [1024]u8 = undefined;
     const chain = [_][]const u8{ "DejaVu Sans Mono", "Missing Font", "Noto Color Emoji" };
+    // #577 — 경로가 **첫 줄**이다 (#495). 예전에는 맨 끝 `Config path:` 였고,
+    // 폰트 schema 오류는 또 다른 자기 형식 (`  ` 들여쓰기) 이라 세 갈래였다.
     try std.testing.expectEqualStrings(
-        "Font not found: \"Missing Font\"\n\n" ++
+        "Config: /tmp/config_3.json\n\n" ++
+            "Font not found: \"Missing Font\"\n\n" ++
             "config \"font.family\" chain (in order):\n" ++
             "  - \"DejaVu Sans Mono\"\n" ++
             "  - \"Missing Font\" ← not installed\n" ++
             "  - \"Noto Color Emoji\"\n" ++
-            "\nAll families listed in font.family must be installed on the system.\n\n" ++
-            "Config path:\n/tmp/config_3.json\n",
+            "\nAll families listed in font.family must be installed on the system.\n",
         notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json", null),
+    );
+    // 경로는 정확히 한 번만 나온다 — 접두로 옮기면서 footer 에서 뺐다.
+    const message = notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json", null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, "/tmp/config_3.json"));
+}
+
+test "#577 폰트 schema 오류도 다른 config 오류와 같은 첫 줄을 쓴다" {
+    // 이 문구는 이제 `config.zig` 의 `recordConfigFatalMsg` 가 조립한다. 여기서는
+    // 그 조립이 지나는 공통 형식만 고정한다 — 세 갈래였던 형식이 하나로 모였다는
+    // 사실이 test 로 남아야 한다 (#495 가 노렸고 #577 이 마무리한 지점).
+    var buf: [512]u8 = undefined;
+    const message = try std.fmt.bufPrint(
+        &buf,
+        messages.config_error_with_path_format,
+        .{ "/tmp/config_3.toml", messages.font_family_must_be_string_msg },
+    );
+    try std.testing.expectEqualStrings(
+        "Config: /tmp/config_3.toml\n\n" ++
+            "Invalid config: font.family must be a string (font name).",
+        message,
     );
 }

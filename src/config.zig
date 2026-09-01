@@ -21,7 +21,6 @@ const instance_context = @import("instance_context.zig");
 // (`config.Hotkey`), 서로의 *값*에 의존하지 않아 순환 참조가 성립한다.
 const instances = @import("instances.zig");
 const paths = @import("paths.zig");
-const font_validate = @import("font/validate.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
@@ -2729,22 +2728,23 @@ pub const Config = struct {
         // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
         // 의도 (primary single string + glyph fallback list) 를 명확히 안내.
         if (true) {
-            // #577 — 이 세 문구는 `font/validate.zig` 가 경로까지 조립해서 준다
-            // (경로가 본문 **끝**에 붙는 자기 형식 — `font_schema_error_path_format`).
-            // 그래서 #495 접두를 또 붙이지 않는 `...Prebuilt` 로 담는다.
-            var font_msg_buf: [1024]u8 = undefined;
+            // #577 — 예전에는 `font/validate.zig` 가 자기 형식으로 (경로를 본문 끝에)
+            // 조립해서 띄웠다. 이제 다른 config 오류와 **같은 한 형식**을 지난다
+            // (#495 — 경로가 첫 줄). 경로도 `paths.configPath` 로 다시 조회하지 않고
+            // 파싱 중인 파일의 `config_path` 를 그대로 쓴다 — 다시 조회하면 instance
+            // 번호와 실제 파일이 갈릴 수 있다 (#316).
             if (root.table.get("font")) |fv_pre| {
                 if (fv_pre == .table) {
                     if (fv_pre.table.get("family")) |fam_v| {
                         if (fam_v != .string)
-                            return recordConfigFatalPrebuilt(font_validate.familyMustBeStringMessage(rt, &font_msg_buf));
+                            return recordConfigFatalMsg(rt, config_path, messages.font_family_must_be_string_msg);
                     }
                     if (fv_pre.table.get("glyph_fallback")) |fb_v| {
                         if (fb_v != .array)
-                            return recordConfigFatalPrebuilt(font_validate.glyphFallbackMustBeListMessage(rt, &font_msg_buf));
+                            return recordConfigFatalMsg(rt, config_path, messages.font_glyph_fallback_must_be_list_msg);
                         for (fb_v.array.items) |item| {
                             if (item != .string)
-                                return recordConfigFatalPrebuilt(font_validate.glyphFallbackMustBeListMessage(rt, &font_msg_buf));
+                                return recordConfigFatalMsg(rt, config_path, messages.font_glyph_fallback_must_be_list_msg);
                         }
                     }
                 }
@@ -2906,7 +2906,7 @@ pub const Config = struct {
             config.line_height_ratio = f;
         }
         // font.family — primary, single string. type 은 사전 체크에서 이미
-        // 보장됨 (위 font_validate.showFamilyMustBeStringFatal). 여기서는 빈
+        // 보장됨 (위 `font_family_must_be_string_msg` 분기). 여기서는 빈
         // 문자열만 reject + chain[0] 에 저장.
         var chain_count: usize = 0;
         if (fv.table.get("family")) |v| {
@@ -3300,16 +3300,6 @@ fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
     return recordConfigFatalMsg(rt, config_path, msg);
-}
-
-/// #577 — 경로까지 이미 조립된 문구를 **그대로** 담는다. 폰트 schema 오류
-/// (`font/validate.zig`) 는 경로를 본문 끝에 붙이는 자기 형식이 있어
-/// (`font_schema_error_path_format`), 여기서 #495 접두를 또 붙이면 경로가 두 번 나온다.
-fn recordConfigFatalPrebuilt(message: []const u8) LoadError {
-    if (fatal_notice_len != 0) return error.InvalidConfig;
-    const n = @min(message.len, fatal_notice_buf.len);
-    @memcpy(fatal_notice_buf[0..n], message[0..n]);
-    return publishFatalNotice(n);
 }
 
 /// 길이를 확정하고 stderr + 로그에 남긴다. **다이얼로그보다 먼저 남긴다** —
