@@ -3307,14 +3307,29 @@ fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const
 /// 환경에서도 원인이 남아야 한다.
 fn publishFatalNotice(len: usize) LoadError {
     fatal_notice_len = len;
-    log.userFacing("fatal", fatal_notice_buf[0..len]);
+    if (fatal_notice_quiet) {
+        // test — 로그만. `log.appendLine` 은 로그 파일이 없으면 no-op 이라 조용하다.
+        log.appendLine("fatal", "{s}", .{fatal_notice_buf[0..len]});
+    } else {
+        log.userFacing("fatal", fatal_notice_buf[0..len]);
+    }
     return error.InvalidConfig;
 }
 
+/// test 에서만 true. `log.userFacing` 은 stderr 로도 쓰는데, config 오류 본문은
+/// 여러 줄이라 `zig build test` 의 진행 표시와 뒤엉켜 **통과한 실행이 실패처럼**
+/// 보인다 (실측 — 413 passed · exit 0 인데 출력 끝이 `failed command` 였다).
+///
+/// stderr 경로 자체는 실기로 검증한다 — 터미널에서 띄우면 예전과 같은 자리에 같은
+/// 문구가 나온다. 여기서 끄는 것은 그 반향뿐이고, 담기는 문구와 로그는 그대로다.
+var fatal_notice_quiet: bool = false;
+
 /// 테스트 전용 — 담긴 문구를 비운다. `fatal_notice_*` 가 process 전역이라
-/// 테스트끼리 상태가 새는 것을 막는다.
+/// 테스트끼리 상태가 새는 것을 막는다. stderr 반향도 함께 끈다
+/// (`fatal_notice_quiet` 주석).
 fn resetFatalNoticeForTest() void {
     fatal_notice_len = 0;
+    fatal_notice_quiet = true;
 }
 
 /// user config 의 구조가 default config 와 일치하는지 재귀 검증:

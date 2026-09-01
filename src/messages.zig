@@ -134,6 +134,21 @@ pub const request_endpoint_unavailable_msg =
     "TildaZ is running, but it cannot receive a request to create another instance. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const worker_exited_before_endpoint_ready_msg =
     "TildaZ exited before it was ready to receive a request to create another instance. Start TildaZ again and check the log if this continues.";
+/// #577 — launcher 가 띄운 worker 가 **기동 중에** 끝난 경우. 위 문구와 상황이 다르다:
+/// 그쪽은 이미 떠 있는 인스턴스에 "새 인스턴스를 만들라" 고 보내려던 참이고, 이쪽은
+/// 창이 한 번도 뜨지 못한 첫 기동이다.
+///
+/// 예전에는 이 경우가 generic `WorkerStartTimeout` ("Error: WorkerStartTimeout") 이었고,
+/// 그것도 10 초를 기다린 뒤였다. 사용자가 무엇을 해야 하는지 말해 주지 않았다.
+///
+/// **로그를 가리키는 것이 핵심이다.** worker 가 스스로 안내를 띄웠다면 (config 오류 등)
+/// launcher 는 여기까지 오지 않는다 — 그쪽은 안내를 띄우는 동안 lock 을 들고 살아 있어
+/// `waitUntilRunning` 이 성공한다. 그래서 이 문구에 도달한 실행은 **아무 화면도 없이**
+/// 끝난 경우이고, 남은 단서가 로그뿐이다.
+pub const worker_exited_during_startup_msg =
+    "TildaZ stopped while starting up, before any window appeared.\n\n" ++
+    "The reason is in the TildaZ log -- open it and read the last lines. " ++
+    "Start TildaZ again and check the log if this continues.";
 pub const request_endpoint_ready_timeout_msg =
     "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const toggle_unsupported_msg =
@@ -230,6 +245,8 @@ pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
         error.RequestEndpointUnavailable => request_endpoint_unavailable_msg,
         error.WorkerExitedBeforeEndpointReady => worker_exited_before_endpoint_ready_msg,
         error.RequestEndpointReadyTimeout => request_endpoint_ready_timeout_msg,
+        // #577 — 첫 기동이 화면 없이 끝난 경우. generic `WorkerStartTimeout` 대신.
+        error.WorkerExitedDuringStartup => worker_exited_during_startup_msg,
         else => std.fmt.bufPrint(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
     };
 }
@@ -248,6 +265,15 @@ test "request endpoint run errors have specific user messages" {
         request_endpoint_ready_timeout_msg,
         runFailureMessage(&buf, error.RequestEndpointReadyTimeout),
     );
+    // #577 — 첫 기동이 화면 없이 끝난 경우. 예전에는 generic
+    // `"Error: WorkerStartTimeout"` 이었고 그것도 10 초 뒤였다.
+    try std.testing.expectEqualStrings(
+        worker_exited_during_startup_msg,
+        runFailureMessage(&buf, error.WorkerExitedDuringStartup),
+    );
+    // 이 문구는 사용자에게 **무엇을 볼지** 말해야 한다 — 여기까지 온 실행은 화면에
+    // 아무것도 남기지 않았으므로 단서가 로그뿐이다.
+    try std.testing.expect(std.mem.indexOf(u8, worker_exited_during_startup_msg, "log") != null);
     try std.testing.expectEqualStrings(
         "TildaZ failed to start.\n\nError: ExampleFailure",
         runFailureMessage(&buf, error.ExampleFailure),
