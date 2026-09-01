@@ -1037,6 +1037,46 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   완료, Windows의 HWND·renderer·첫 tab·표시 정책 적용 후 message loop 진입 직전이다.
   최초 launcher는 기존처럼 worker lock/PID까지만 확인하고 반환하므로 endpoint 실패가
   terminal 자체 실행을 막지 않는 graceful-degradation 동작은 유지한다.
+- **최초 launcher 의 기동 대기도 worker 사망을 즉시 구분한다** ([#577](https://github.com/ensky0/tildaz/issues/577)).
+  예전에는 `waitUntilRunning` 이 lock 파일만 봐서 "아직 시작 중" 과 "이미 죽음" 이 똑같이
+  *빈 lock 파일* 로 보였고 (worker 는 PID 를 쓴 뒤 죽고 `clear_pid_on_close` 가 그것을
+  지운다), 그래서 기동 실패는 전부 타임아웃 10 초를 채운 뒤 generic `WorkerStartTimeout`
+  으로 끝났다. 사용자가 본 것은 "클릭했는데 10 초간 아무 일도 없음" 이었다.
+
+  판정 근거는 위 항목과 같은 **쓰기 순서**다 — lock 을 잡은 뒤 `.starting` 을 owner PID
+  보다 먼저 쓴다. 따라서 "endpoint 파일이 있는데 lock 이 비었다" 는 곧 "lock 을 잡는
+  데까지 갔다가 죽었다" 이고, `error.WorkerExitedDuringStartup` 으로 즉시 끝난다. PID 를
+  쓴 뒤 죽은 창 (PID 있음 + lock 없음) 도 같은 결론이다.
+
+  stale 파일로 오판하지 않는 근거는 `spawnWorker` 가 **spawn 직전에** 그 파일을 지운다는
+  것이다. 그래서 대기 중에 파일이 보이면 방금 띄운 worker 가 쓴 것이다. 응답 없는 worker
+  (hang) 에는 유한 타임아웃이 그대로 남는다 — 그 경우엔 타임아웃이 유일한 탈출구다.
+
+  문구도 갈라진다. `WorkerExitedDuringStartup` 은 *창이 한 번도 뜨지 못한 첫 기동* 이므로
+  "새 인스턴스를 만들라고 보내려던" 쪽 문구와 다르고, **로그를 가리킨다** — 여기까지 온
+  실행은 화면에 아무것도 남기지 않았으므로 남은 단서가 로그뿐이다. worker 가 스스로
+  안내를 띄운 경우 (§11.4 의 config 오류 등) 는 안내를 띄우는 동안 lock 을 들고 살아 있어
+  이 대기가 **성공**하므로 이 경로로 오지 않는다 — 다이얼로그가 두 번 뜨지 않는 근거다.
+- **launcher 의 기동 실패 안내도 세 platform 이 다이얼로그다** ([#577](https://github.com/ensky0/tildaz/issues/577)).
+  launcher 는 `host.run` 을 거치지 않아 Linux 에서는 `Client` 가 아예 없고, 그래서 예전에는
+  `log.userFacing` 으로 stderr + 로그에만 남겼다 — `.desktop` (메뉴 · autostart) 실행에서
+  stderr 는 어디에도 붙지 않으므로 **사용자는 아무것도 보지 못했다.** Windows
+  (`MessageBoxW`) · macOS (`NSAlert`) 는 OS 가 모달을 주므로 같은 자리에서 그냥 떴다.
+
+  Linux 는 창도 PTY 도 만들지 않고 **다이얼로그만** 세운다 (`showFatalStandalone`). dialog
+  는 자기 layer-shell surface 이고 항상 `wl_shm` 이라 (GPU 불필요) Wayland 연결 + globals +
+  keyboard 까지만 있으면 그릴 수 있다. config 는 기본값을 쓰고 다이얼로그 폰트도 시스템
+  폰트로 고정한다 — 이 경로가 알리는 것은 config 과 무관한 실패이고, 애초에 config 을
+  읽지 못한 실행일 수도 있다.
+
+  예외는 `WaylandSocketUnavailable` 이다 — Wayland 에 연결할 수 없다는 것이 그 오류의
+  내용이므로 Wayland 로 그리는 안내는 정의상 뜰 수 없다. 그 경로는 `Client.init` 이 이미
+  socket path 와 env 를 stderr + 로그에 남긴다.
+
+  `showFatalRunError` 가 `rt` 를 **인자로** 받는다. 예전에는 `g_rt` 를 읽었는데 그것은
+  `run()` 안에서만 심어지고 launcher 실패 경로는 `run()` 을 거치지 않으므로, Windows ·
+  macOS 에서 그 자리는 `undefined` Runtime 을 읽고 있었다. Linux 에 다이얼로그를 붙이려고
+  서명을 바꾸면서 함께 닫혔다.
 - `launcher.lock`은 config 열거, index별 생존 확인, 누락 worker spawn, 새-instance 요청
   결정과 worker 0의 hotkey dialog/config 생성 transaction을 직렬화한다. 누락 worker를
   spawn한 launcher 또는 새 config를 만든 worker 0은 각 worker가 자기 lock을 획득하고
@@ -1423,7 +1463,25 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+잘못된 config 값 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+
+**안내는 담아 두고 host 가 그릴 수 있게 된 뒤에 띄운다** ([#577](https://github.com/ensky0/tildaz/issues/577)). config 파싱은 세 platform 공통이고 Linux 에서는 dialog backend (layer-shell overlay) 가 등록되기 **전에** 돈다 — `Client` 가 config 을 인자로 받아 만들어지기 때문이다. 그 자리에서 `dialog.showFatal` 을 부르면 안내가 stderr + 로그로만 가고, `.desktop` (메뉴 · autostart) 로 띄운 사용자에게는 **창도 다이얼로그도 없이 조용히 죽는 것**만 보였다.
+
+그래서 `recordConfigFatalMsg` 가 문구를 process lifetime 고정 buffer 에 담고 `error.InvalidConfig` 를 반환한다. `Config.load` 는 그것을 받아 기본값으로 돌아오고, 표시는 각 host 가 **그 platform 에서 다이얼로그가 실제로 보이는 가장 이른 지점**에서 한다.
+
+| platform | 표시 지점 | 방법 |
+|---|---|---|
+| Linux | Wayland globals + keyboard 준비 후, 전역 hotkey 판정 · shell · 폰트 검증 **앞** | `runFatalDialog` (blocking pump) → `exit(1)` |
+| Windows | `Config.load` 직후, shell 검증 앞 | `showFatalNoticeIfAny` → `MessageBoxW` (OS modal) |
+| macOS | 같음 | `showFatalNoticeIfAny` → `NSAlert` (OS modal) |
+
+Linux 가 공통 함수를 쓰지 않는 이유는 그쪽 `dialog.showFatal` 이 overlay 요청만 걸고 바로 돌아오는 fire-and-forget 이라 뒤이은 `exit(1)` 이 paint 전에 프로세스를 죽이기 때문이다 (#282 F9). §11.5 의 `showLoadNotice` / `showLoadNoticeText` 가 갈리는 것과 같은 이유·같은 모양이다.
+
+**shell · 폰트 검증보다 앞이다.** config 를 못 읽은 실행은 기본값으로 도는 중이라, 그 검증이 보는 shell · 폰트가 사용자가 적은 값이 아니다. 순서가 뒤바뀌면 사용자는 자기가 고치지도 않은 shell 을 의심한다.
+
+**첫 오류만 담는다.** 사용자가 고칠 지점이 첫 오류이고, 그것을 고친 다음 실행에서 뒤 오류가 다시 걸린다. 예전 동작 (첫 오류에서 즉시 종료) 과 사용자가 보는 문구가 같아지는 것도 이 선택 덕이다.
+
+**stderr + 로그는 담을 때 즉시 남긴다.** overlay 를 못 그리는 환경 (headless, Wayland 연결 실패) 에서도 원인이 남아야 하고, 터미널에서 띄운 사용자는 예전과 같은 자리에서 문구를 본다.
 
 **경로는 첫 줄이고 형식이 하나다** ([#495](https://github.com/ensky0/tildaz/issues/495)).
 
@@ -1435,7 +1493,15 @@ Configuration: missing required key "window" in (top-level).
 
 예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
 
-조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `showConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
+조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `recordConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
+
+**세 갈래가 남아 있었고 [#577](https://github.com/ensky0/tildaz/issues/577) 에서 정리했다.** #495 가 위 문단을 적은 뒤에도 자기 형식으로 경로를 **맨 끝**에 붙이는 producer 가 셋 있었다 — 폰트 schema 오류 (`font_schema_error_path_format`, 경로를 `  ` 로 들여씀), 폰트 chain not-found (`font_chain_footer_format`, 들여쓰지 않음), shell 검증 세 문구 (`Config path:\n{s}`). 같은 다이얼로그 제목 (`TildaZ Config Error`) 아래에서 오류 종류에 따라 경로 위치와 들여쓰기가 달랐다.
+
+이제 넷 모두 `config_error_path_prefix_format` (`"Config: {s}\n\n"`) 한 정의를 지난다. 본문을 writer 로 조금씩 쌓는 폰트 chain 안내는 `{s}` 두 개를 한 번에 print 할 수 없어서 접두만 뺀 그 상수를 쓴다 — `config_error_with_path_format` 자체가 그 접두로 정의된다. 폰트 schema 오류는 producer 를 아예 없애고 `recordConfigFatalMsg` 에 문구 상수만 넘긴다: 경로를 `paths.configPath` 로 **다시 조회하지 않고** 파싱 중인 파일의 path 를 그대로 쓰므로 #316 이 막으려던 "instance 번호와 실제 파일이 갈림" 도 함께 닫힌다.
+
+부수 효과로 문구가 한 줄 짧아졌다 (맨 끝 3 줄 footer → 첫 줄 2 줄 접두). 640x480 최소 화면의 스크롤 행이 shell 오류 `2 → 1` (1.7x), 폰트 오류 `5/5/5 → 4/4/4` 로 줄었다.
+
+런타임 새 탭 실패 알림 (`shell_new_tab_not_found_format`, [#248](https://github.com/ensky0/tildaz/issues/248)) 은 **이 통일에서 제외한다.** startup config fatal 이 아니라 종료하지 않는 알림이고, 문구가 경로를 오류 헤더가 아니라 *다음 행동 안내* 로 제시한다 (`Check "shell" in this instance's config file:`).
 
 `allocPrint` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
 

@@ -496,13 +496,19 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.config_error_title, .message = parse_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = hotkey_invalid_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
-        // 여백을 폰트 비례로 넓히면서 (#407) 1.7x 에서만 2 행이 넘친다 — 고정 chrome
+        // 여백을 폰트 비례로 넓히면서 (#407) 1.7x 에서만 행이 넘친다 — 고정 chrome
         // 반올림이 그 배율에서 한 행을 더 먹는다 (font 오류 주석과 같은 이유).
-        .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info, .standard_scroll_by_scale = .{ 0, 2, 0 } },
+        //
+        // #577 — 2 → 1. 경로를 맨 끝 `Config path:` 에서 첫 줄 `Config: ` 로 옮기면서
+        // 문구가 한 줄 짧아졌다 (예전 footer 는 빈 줄 + 라벨 줄 + 경로 줄 셋이었다).
+        .{ .title = messages.config_error_title, .message = shell_msg, .kind = .info, .standard_scroll_by_scale = .{ 0, 1, 0 } },
         .{ .title = messages.shell_new_tab_error_title, .message = new_tab_msg, .kind = .info },
         // 64pt branded icon을 고정하면 최대 8-entry font 오류는 640x480에서
         // 본문만 overflow한다. 여백을 폰트 비례로 넓히며 (#407) 3/4/3 → 5/5/5 가 됐다.
-        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 5, 5, 5 } },
+        //
+        // #577 — 5/5/5 → 4/4/4. 위 shell 과 같은 이유다 — 경로가 맨 끝 3 줄 footer 에서
+        // 첫 줄 2 줄 접두로 옮겨져 문구가 한 줄 짧아졌다. 세 배율이 함께 줄었다.
+        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 4, 4, 4 } },
         .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
         .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
         .{ .title = messages.new_instance_title, .message = create_error_msg, .kind = .info },

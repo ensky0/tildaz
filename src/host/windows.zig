@@ -40,12 +40,17 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     std.process.exit(1);
 }
 
-pub fn showFatalRunError(err: anyerror) void {
+pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
+    // #577 — `rt` 를 인자로 받는다. 예전에는 `g_rt` 를 읽었는데 그것은 `run()` 안에서만
+    // 심어지고, **launcher 실패 경로는 `run()` 을 거치지 않는다** (`main.zig` 의
+    // `runLauncher` catch). 즉 그 경로에서 `g_rt` 는 `undefined` 였다. Linux 가 이 자리에
+    // 다이얼로그를 붙이려고 서명을 바꾸면서 함께 닫았다.
+    _ = allocator;
     log.logRunFailed(err);
 
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(g_rt, messages.error_title, text);
+    dialog.showError(rt, messages.error_title, text);
 }
 
 pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
@@ -80,6 +85,17 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     var config = Config.load(rt, alloc, shell_resolved);
     defer config.deinit(alloc);
     log.logConfigLoaded(config);
+
+    // #577 — config 오류가 담겨 있으면 여기서 안내하고 종료한다. `Config.load` 는
+    // 더 이상 그 자리에서 죽지 않고 문구를 담아 기본값으로 돌아온다 (Linux 에서
+    // 파싱 시점에는 다이얼로그를 그릴 수 없기 때문이다 — `config.zig` 의
+    // `recordConfigFatalMsg` 주석). Windows 는 `MessageBoxW` 가 modal 이라 창을
+    // 세우기 전 이 자리에서 그대로 띄울 수 있다.
+    //
+    // **shell 검증보다 앞이다** — config 를 못 읽은 실행은 기본값으로 도는 중이라
+    // 아래 검증이 보는 shell 이 사용자가 적은 값이 아니다. 순서가 뒤바뀌면 사용자는
+    // 자기가 고치지도 않은 shell 을 의심한다 (Linux host 도 같은 순서다).
+    config_mod.showFatalNoticeIfAny(rt);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
