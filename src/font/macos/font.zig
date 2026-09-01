@@ -229,9 +229,9 @@ pub const CoreTextFontContext = struct {
     ///
     /// **macOS 값에는 소유권이 있다** (Linux 의 face index 와 다르고 Windows 와 같다).
     /// `resolveGrapheme` 은 CT 가 fallback 으로 고른 폰트를 `CFRetain` 해서 돌려주고
-    /// (`owned = true`) 셀 루프가 매 프레임 `CFRelease` 한다. 캐시에 담은 폰트를 그대로
-    /// `owned = true` 로 주면 그 release 가 캐시 안의 폰트를 죽인다. 그래서 캐시가 소유권을
-    /// 가져가고 caller 에게는 `owned = false` 로 준다.
+    /// (`owned = true`) 셀 루프가 매 프레임 `CFRelease` 한다. **캐시는 담을 때 자기 몫을
+    /// 따로 `CFRetain` 한다** ([#578](https://github.com/ensky0/tildaz/issues/578)) — 참조를
+    /// 호출자에게서 넘겨받으면 캐시가 비워지는 순간 호출자가 아직 쓸 폰트까지 풀려 죽는다.
     ///
     /// negative 도 담는다 — CT 가 못 만든 cluster 를 안 담으면 매 프레임 `CTLine` 을 헛 만든다.
     cluster_cache: cluster_cache.ClusterCache(GlyphResult, releaseCluster),
@@ -768,16 +768,19 @@ pub const CoreTextFontContext = struct {
 
         // #399 (B) — 다음 런이 shape 를 건너뛸 수 있게 담는다.
         //
-        // ⚠️ **Windows 와 다른 자리다.** 거기는 런 결과가 전부 chain face (`owned = false`) 라
-        // 소유권 문제가 없었지만, macOS 는 위에서 cluster 마다 `CFRetain` 했다. 그래서 담을 수
-        // 있는 것만 담고 소유권을 캐시에 넘기며 (`owned = false`), **키 상한을 넘어 못 담는
-        // cluster 는 `owned = true` 그대로 둬서** 호출자가 release 하게 한다. `put` 이 못 담는
-        // 값을 그 자리에서 해제하기 때문에 (`cluster_cache.zig:78`) 이 판정을 건너뛰면 caller 가
-        // 죽은 폰트를 쓴다.
+        // **캐시 몫을 따로 retain 한다** ([#578](https://github.com/ensky0/tildaz/issues/578)).
+        // 예전에는 호출자의 참조를 캐시에 넘기고 (`owned = false`) 그것을 캐시 몫으로 삼았는데,
+        // 그러면 담는 도중 캐시가 비워질 때 (`CAPACITY` 초과 · 같은 키 덮어쓰기) **호출자가
+        // 아직 쓸 폰트가 풀려** 죽는다 — 셀 루프는 런을 통째로 받아 놓고 뒤에서 하나씩 atlas
+        // 에 넣기 때문이다. 각자 자기 몫을 소유하면 담는 순서에 기대지 않아도 된다.
+        //
+        // 키 상한을 넘는 cluster 는 애초에 담지 않는다 — `put` 은 못 담는 값을 그 자리에서
+        // 해제하는데 (`cluster_cache.zig`), 그 값이 이제 *캐시 몫*이라 짝이 맞는다.
         for (0..clusters.len) |i| {
             if (clusters[i].len <= cluster_cache.MAX_KEY_CPS) {
-                self.cluster_cache.put(clusters[i], out[i]);
-                out[i].owned = false;
+                var cached = out[i];
+                for (cached.fonts[0..cached.count]) |f| _ = ct.CFRetain(f);
+                self.cluster_cache.put(clusters[i], cached);
             }
         }
         return count;
@@ -785,16 +788,16 @@ pub const CoreTextFontContext = struct {
 
     /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
     ///
-    /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `CFRelease` 하는데,
-    /// 캐시에 담은 폰트를 `owned = true` 로 돌려주면 그 release 가 캐시 안의 폰트를 죽인다
-    /// (use-after-free). 그래서 **캐시가 소유권을 가져가고 caller 에게는 `owned = false`** 로
-    /// 준다. 해제는 `releaseCluster` 가 퇴출 · 무효화 때 한다.
+    /// **소유권이 이 함수의 핵심이다.** 캐시와 호출자가 **각자 자기 몫을 소유**한다
+    /// ([#578](https://github.com/ensky0/tildaz/issues/578)) — 담을 때 캐시 몫을 따로
+    /// `CFRetain` 하고, 호출자에게는 `owned` 를 그대로 돌려줘서 셀 루프가 매 프레임
+    /// `CFRelease` 하게 둔다. 참조를 넘겨 주던 예전 방식은 캐시가 비워지는 순간 호출자가
+    /// 쓰던 폰트까지 풀어 버렸다 (배칭 경로에서 실제로 죽었다).
     ///
-    /// ⚠️ **담지 못하는 cluster 는 소유권을 넘기면 안 된다.** `ClusterCache.put` 은 키 상한
-    /// (`MAX_KEY_CPS` = 8) 을 넘으면 담지 않고 **그 자리에서 값을 해제**한다 (소유권을 받았다고
-    /// 보기 때문이다). 그때도 `owned = false` 로 바꿔 주면 caller 가 이미 죽은 폰트를 쓴다.
-    /// 그래서 담을 수 있는지 **먼저 판정**하고, 못 담으면 원래 소유권 그대로 돌려준다
-    /// (Windows 에서 실제로 걸린 함정이다, 1c1a5d1).
+    /// 키 상한 (`MAX_KEY_CPS` = 8) 을 넘는 cluster 는 담지 않는다 — `ClusterCache.put` 이
+    /// 못 담는 값을 그 자리에서 해제하는데, 그 값이 캐시 몫이라 짝이 맞는다.
+    ///
+    /// **캐시에서 꺼내 주는 값은 `owned = false`** 다. 그 폰트는 캐시가 소유한 채 살아 있다.
     fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (self.cluster_cache.get(cps)) |cached| {
             const c = cached orelse return null; // negative hit — CTLine 을 다시 헛 만들지 않는다
@@ -806,11 +809,15 @@ pub const CoreTextFontContext = struct {
         const result = self.resolveGraphemeUncached(cps);
         if (cps.len == 0 or cps.len > cluster_cache.MAX_KEY_CPS) return result;
 
-        self.cluster_cache.put(cps, result);
-        const r = result orelse return null;
-        var out = r;
-        out.owned = false;
-        return out;
+        if (result) |r| {
+            var cached = r;
+            for (cached.fonts[0..cached.count]) |f| _ = ct.CFRetain(f);
+            self.cluster_cache.put(cps, cached);
+        } else {
+            // negative 도 담는다 — 안 담으면 매 프레임 `CTLine` 을 헛 만든다.
+            self.cluster_cache.put(cps, null);
+        }
+        return result;
     }
 
     fn resolveGraphemeUncached(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
