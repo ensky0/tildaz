@@ -57,11 +57,14 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     std.process.exit(1);
 }
 
-pub fn showFatalRunError(err: anyerror) void {
+pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
+    // #577 — `rt` 를 인자로 받는다. `g_rt` 는 `run()` 안에서만 심어지는데 launcher 실패
+    // 경로는 `run()` 을 거치지 않아 `undefined` 를 읽었다 (Windows host 주석 참고).
+    _ = allocator;
     log.logRunFailed(err);
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(g_rt, messages.error_title, text);
+    dialog.showError(rt, messages.error_title, text);
 }
 
 // AppKit / Metal 상수.

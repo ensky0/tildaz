@@ -214,7 +214,7 @@ pub fn main(init: std.process.Init) void {
                 // 않는다.
                 log.appendLine("toggle-ipc", "--toggle found no running instance {d} — starting it", .{index});
                 initLogging(rt, arena);
-                runLauncher(rt, init.gpa, autostart_launch) catch |launch_err| host.showFatalRunError(launch_err);
+                runLauncher(rt, init.gpa, autostart_launch) catch |launch_err| host.showFatalRunError(rt, init.gpa, launch_err);
                 return;
             };
             log.appendLine("toggle-ipc", "--toggle sent to running instance", .{});
@@ -243,7 +243,7 @@ pub fn main(init: std.process.Init) void {
         instance_context.setRole(.stress);
         instance_context.setWorkerIndex(worker_index orelse 0);
         initLogging(rt, arena);
-        host.run(rt, run_opts) catch |err| host.showFatalRunError(err);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, init.gpa, err);
         return;
     }
 
@@ -251,16 +251,16 @@ pub fn main(init: std.process.Init) void {
         instance_context.setWorkerIndex(index);
         initLogging(rt, arena);
         var worker_lock = (instances.acquireWorkerLock(rt, init.gpa, index) catch |err| {
-            host.showFatalRunError(err);
+            host.showFatalRunError(rt, init.gpa, err);
             return;
         }) orelse return;
         defer worker_lock.deinit(rt);
-        host.run(rt, run_opts) catch |err| host.showFatalRunError(err);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, init.gpa, err);
         return;
     }
 
     initLogging(rt, arena);
-    runLauncher(rt, init.gpa, autostart_launch) catch |err| host.showFatalRunError(err);
+    runLauncher(rt, init.gpa, autostart_launch) catch |err| host.showFatalRunError(rt, init.gpa, err);
 }
 
 fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool) !void {
