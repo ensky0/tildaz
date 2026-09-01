@@ -102,6 +102,7 @@ dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
 | `--cols` / `--rows` | 그리드 | `120` × `40` |
 | `--scrollback` | scrollback 줄 수 | config 기본값 (100,000) |
 | `--fps` | `frame` 층이 모사할 프레임 주기 | `60` |
+| `--panes` | `frame` 층의 활성 `TabGroup`에 만들 producer/pane 수 (`1`–`16`) | `1` |
 | `--segments` | `scrollback` 이 나눠 볼 구간 수 | `8` |
 
 ### 층
@@ -117,6 +118,12 @@ dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
 
 `frame` 층은 `drainOutputForRender` 를 `--fps` 주기로 **한 번씩** 부르고, 그 안의 `drainFrame`
 이 `SessionCore.DRAIN_FRAME_BUDGET_NS` (현재 **4 ms**) 만 파싱해요.
+
+`--panes N`이면 N producer가 각 준비 파일을 만든 뒤 하나의 start barrier에서 함께 풀려요. 각 producer는
+payload 끝에 pane별 OSC title marker를 쓰고, 하네스가 그 marker를 해당 `PaneId`의 `Terminal`에서 확인할 때까지
+process를 살려 둬요. 그래서 리포트의 `parsed done`은 process 종료나 PTY read 완료가 아니라 **마지막 marker를 VT
+parser가 실제 반영한 시점**이에요. 함께 나오는 pane별 drain 청크·바이트, 최장 service gap, 청크 수 skew와 완료
+퍼짐으로 스케줄러 공정성을 봐요. process 종료 시점은 marker 확인 뒤의 보조 진단일 뿐이에요 ([#574](https://github.com/ensky0/tildaz/issues/574)).
 
 ⚠️ **이 층은 더 이상 앱과 같지 않아요.** 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387),
 SPEC §13) 이후 세 host 는 **프레임 사이에도** 드레인해서 실제 앱의 duty 가 훨씬 높아요 — Windows ②
@@ -355,7 +362,9 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 
 현재는 [#572](https://github.com/ensky0/tildaz/issues/572) / [PR #575](https://github.com/ensky0/tildaz/pull/575)에서
 `closePane`도 제거 전에 남은 출력을 끝까지 드레인하도록 고쳤어요. 실제 앱의 Windows pane 4 · 8을
-각 5회 다시 측정해 모두 `push − drain = 0`을 확인했으므로, 다중 pane producer 종료도 그대로 써도 돼요.
+각 5회 다시 측정해 모두 `push − drain = 0`을 확인했어요. 다만 scheduler 공정성 측정은 종료 callback을 완료
+시점으로 쓰지 않아요. `frame --panes N` producer는 마지막 OSC marker가 모든 pane에서 파싱될 때까지 살아 있고,
+그 marker의 `PaneId`별 반영 시점을 비교해 close-time drain이 측정 꼬리를 가리는 일을 막아요 (#574).
 
 | 지표 | 정상 (4 회차) | **오염 (5 회차)** |
 |---|---|---|
