@@ -751,7 +751,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 (20×5 셀) 에 닿으면 **거기서 멈춘다** (clamp, 2026-08-27 결정 — 고스트가 한계에 서고 놓으면 거기까지만; 예전엔 드래그 전체를 거부해 "끌다가 취소됨" 으로 보였다). **선에 붙은 칸만 변한다** — 선 너머가 같은 축으로 또 갈려 있어도 먼 칸은 px 그대로 (`Tree.keepFarFixed` 가 안쪽 같은-축 분할의 비율을 다시 놓는다; 예전엔 비율이 그대로라 안쪽 분할선까지 비례해 밀렸다). 위아래로 쌓인 칸은 둘 다 선의 이웃이라 같이 변한다. 한계도 먼 칸을 고정한 채 잰다 (`Tree.minExtentKeepFar`). 커서는 분할선 위에서 `col_resize` / `row_resize` | `App.sep_drag` · `finishSeparatorDrag`, 커서는 `WM_SETCURSOR` 의 `IDC_SIZEWE` / `IDC_SIZENS` (`CursorRegion.separator_*`) | `g_sep_drag` · `finishSeparatorDrag`, 커서는 `resetCursorRects` 의 `resizeLeftRight/UpDownCursor` | `sep_drag` · `finishSeparatorDrag` | ✅ | ✅ | ✅ |
 | 최소 크기 20 열 × 5 행 | `MIN_PANE_COLS` / `MIN_PANE_ROWS` (열 × 행 — 터미널 `80x24` 표기 순서). **분할은 갈라지는 두 조각을, 가르는 축만** 검사한다 (2026-08-28 결정 — 좌우 분할은 `cols`, 위아래 분할은 `rows`. 반대 축은 이 분할이 건드리지 않는다: 창이 줄어 19 열이 된 pane 을 위아래로 가르는 것이 "20 열 미만" 으로 거부되던 것이 실기에서 걸렸다). 거부는 `TooSmall` → 대화상자 "Each pane needs at least 20 columns × 5 rows". 창이 줄면 (drop-down 은 커서가 있는 모니터 크기를 따르고 pane 은 비율 유지) pane 이 최소 아래로 **갈 수 있다** — 막지 않는다 (tmux 도 같다). 그 뒤 크기 조절 · 드래그는 그 pane 을 **더 줄이지만 않고** (한계 = 지금 크기, `minExtentKeepFar`), 뒤 검사는 "새로 최소 아래로 떨어지는 pane 이 없다" (`noPaneNewlyBelowMin`) 다. 2026-08-27 macOS 실기: 큰 모니터에서 가른 뒤 작은 모니터로 돌아오니 B · C 가 17 열이 됐고, 예전의 탭 전체 검사 (`allPanesAtLeastMin`, 삭제) 가 A 의 위아래 분할과 B 키우기까지 막았다 | 공통 `pane_layout` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_right/horizontal`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | ✅ | ✅ | ✅ |
-| 출력 드레인 | 예산 4 ms 하나를 보이는 pane 이 나눠 씀 — 활성 pane 먼저, pane 사이에도 예산 검사 (§13.3.1, 세 platform 실측 표). **코드는 공통이지만 실측은 갈린다** — Linux 만 16 pane 에서 상한이 깨지고, 공정성은 pane 2 개부터 host 마다 크게 다르다 (§13.3.1) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 출력 드레인 | 예산 4 ms 하나를 활성 `TabGroup`의 pane 이 나눠 쓴다. 호출 경계를 넘는 **논리 라운드**마다 active pane 을 먼저, 나머지 존재 pane 을 안정된 `PaneId` 순서로 각각 한 번, 마지막에 숨은 탭 한 슬롯을 처리한다 (§13.3.1). 예산이 끝나면 다음 호출이 중단 지점부터 이어서, 매 호출 처음 pane 으로 돌아가던 starvation 을 막는다 ([#574](https://github.com/ensky0/tildaz/issues/574)) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 비활성 pane 스크롤바 | 클릭 = 그 pane 포커스 뒤 그 pane 의 scrollbar 로 (좌클릭 경로가 포커스를 먼저 옮긴다) | 동일 | 동일 | 동일 | ✅ | ✅ | ✅ |
 
 ---
@@ -1786,14 +1786,26 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 상한에 붙어 처리량이 반토막난다 (Windows ② 60 Hz 실측: 29.3~30.2 → 15.1~15.2 MiB/s, ×0.50). 즉 예산은
 사양 A 아래에서 **응답성 손잡이**, 사양 A 없이는 **처리량 손잡이**다.
 
-### 13.3.1 pane 수 축 — 예산은 하나, 보이는 pane 이 나눠 쓴다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27 · 세 platform 재측정 [#551](https://github.com/ensky0/tildaz/issues/551), 2026-08-31)
+### 13.3.1 pane 수 축 — 예산은 하나, 논리 라운드는 호출을 넘어 이어진다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27 · 세 platform 재측정 [#551](https://github.com/ensky0/tildaz/issues/551), 2026-08-31 · 공정성 수정 [#574](https://github.com/ensky0/tildaz/issues/574), 2026-09-01)
 
-화면 분할로 "활성/비활성" 2 분법이 "보임/안 보임" 이 됐다. `drainFrame` 은 **활성 pane 을 먼저**, 그다음 보이는
-pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산을 검사**한다 — 검사 없이 N 청크를 돌면 최악 점유가
-`예산 + N 청크` 로 pane 수에 비례해 커진다. 예산 자체는 **4 ms 하나**다 — 보이는 pane 이 몇이든 UI 스레드가 한
-번에 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다. "pane 마다 1 ms" 나
-"pane 수 × 4 ms" 는 택하지 않았다 — 전자는 처리량을 pane 수로 나누고 (사양 A 가 있어 어차피 프레임 사이에 더
-드레인한다), 후자는 최악 입력 지연을 pane 수에 비례해 늘린다.
+화면 분할 뒤 `drainFrame` 은 현재 활성 `TabGroup`의 pane 과 숨은 탭을 다음 **논리 라운드**로 스케줄한다.
+
+1. 라운드 시작 시 존재하는 pane 을 `PaneId` 집합으로 고정한다.
+2. 그때의 active pane 을 첫 토큰으로 처리한다.
+3. 나머지 존재 pane 을 안정된 `PaneId` 순서로 각각 한 번 처리한다. 이 순서는 분할 트리의 화면 배치 순서라는
+   뜻이 아니다.
+4. 활성 그룹을 모두 처리한 뒤 기존 hidden round-robin 한 슬롯을 처리한다.
+5. 공통 **4 ms** 예산이 끝나면 아직 처리하지 않은 `PaneId`와 hidden 차례를 보존해 다음 호출에서 이어 간다.
+
+따라서 active-first는 **매 호출**이 아니라 **매 논리 라운드**의 시작 우선권이다. 구성과 포커스가 안정되고 출력이
+계속 밀린 동안 각 활성 그룹 pane 의 처리 청크 수 차이는 최대 하나다. 포커스가 바뀌면 새 active를 다음 차례로
+당긴다. 이미 이번 라운드에서 처리한 pane 은 입력 반응을 위해 한 번 더 처리할 수 있지만, 다른 pane 의 남은 차례는
+지우지 않는다. split · close · active tab 변경처럼 구성 자체가 바뀌면 새 집합으로 라운드를 다시 시작한다. zoom은
+렌더 표시만 바꾸므로 라운드를 버리지 않고, 그 뒤에 가려진 같은 그룹 pane 도 기존과 같이 계속 드레인한다.
+
+예산 자체는 **pane마다가 아니라 4 ms 하나**다. "pane마다 1 ms"는 처리량을 pane 수로 나누고, "pane 수 × 4 ms"는
+최악 입력 지연을 pane 수에 비례해 늘리므로 채택하지 않는다. 예산 검사는 청크 사이에서만 가능해 마지막 청크 하나가
+4 ms를 넘길 수 있다. 이 비선점 청크 초과는 라운드 공정성과 별개이며 #574가 해결하는 범위가 아니다.
 
 **실측 — 세 platform** (`zig build stress -- throughput --layer frame --panes N --cols 120 --rows 40`,
 `plain` · pane 마다 producer 하나 · **64 MiB/pane** · 합계 격자를 **120×40 으로 고정** · 조건별 5 회 절사평균).
@@ -1806,7 +1818,7 @@ pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산
 | **Windows** · Lenovo 83JY · Ryzen AI 7 350 · 120 Hz | 4.16 → **4.55** ms | 161 → 79 MiB/s |
 | **Linux** · Ryzen AI 7 350 · 120 Hz | 4.32 → **7.93** ms | 101 → 46 MiB/s |
 
-producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한 값 — 120 fps 기준:
+**수정 전** producer 종료 퍼짐을 모사 프레임으로 환산한 값 — 120 fps 기준:
 
 | pane | macOS | Windows | Linux |
 |---:|---:|---:|---:|
@@ -1822,7 +1834,7 @@ producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한
   초과 폭이 0.6 ms 안 (청크 하나) 에 머문다.
 - **Linux 만 16 pane 에서 상한이 깨진다** (6.98~11.27 ms). 원인 코드는 공통 `drainFrame` 이지만
   **발현은 host 에서 갈린다** — macOS · Windows 는 같은 조건에서 묶였다. Linux host 의 드레인 구조로 따로 추적한다.
-- **공정성은 pane 2 개부터 나빠지고 host 마다 크게 다르다.** `drainFrame` 이 매 호출 `group.panes` 를
+- **수정 전 공정성은 pane 2 개부터 나빠지고 host 마다 크게 달랐다.** `drainFrame` 이 매 호출 `group.panes` 를
   **처음부터** 도는데 (숨은 탭에는 `inactive_drain_cursor` 가 있지만 **보이는 pane 에는 커서가 없다**)
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는
   host 에서는 드러나지 않아, 같은 코드가 macOS 0.9 프레임 · Linux 125 프레임으로 갈린다 (8 pane).
@@ -1834,6 +1846,31 @@ producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한
 
 합계 처리량은 격자를 고정했는데도 pane 수가 늘면 내려간다 (pane 하나의 몫이 아니라 합계다) — 격자 변화가 아니라
 producer · PTY · ring 경쟁 때문이다. `frame` 층은 프레임마다 한 번만 드레인해 (사양 A 없음) 앱의 하한이다.
+
+위 종료 퍼짐은 #574 수정 전 원인을 찾은 역사적 자료다. 당시 producer는 동시에 시작하지 않았고, 종료 시점도
+각 pane의 VT parser가 마지막 바이트를 반영한 시점이 아니라 자식 process 종료 callback이었다. 따라서 수치 자체를
+화면 완료 지연으로 해석하지 않는다. #574부터 `frame --panes N`은 모든 producer가 준비 barrier에 모인 뒤 함께
+시작하고, pane별 마지막 OSC title marker가 실제 `Terminal`에 반영된 시점을 `PaneId`별로 기록한다. 리포트는
+pane별 drain 청크·바이트, 최장 service gap, 청크 수 skew, marker 완료 퍼짐을 함께 내며 process 종료는 보조 진단으로만
+남긴다.
+
+**#574 보강 하네스의 Linux 수정 전/후 실측** — AMD Ryzen AI 7 350, ReleaseFast + SIMD, `plain`, 120 fps,
+120×40, pane마다 64 MiB, 조건별 5회 절사평균 ([전체 결과와 quantum 실험](https://github.com/ensky0/tildaz/issues/574#issuecomment-5488591291)):
+
+| pane | 마지막 VT marker 퍼짐: 수정 전 → 후 | 최대 chunk skew: 수정 전 → 후 | 합계 처리량: 수정 전 → 후 |
+|---:|---:|---:|---:|
+| 2 | 61.3 → **0.0 ms** | 103.7 → **1** | 68.4 → 68.1 MiB/s (−0.5%) |
+| 4 | 397.3 → **1.6 ms** | 346.7 → **1** | 56.1 → 56.3 MiB/s (+0.2%) |
+| 8 | 1,409.8 → **3.3 ms** | 991.3 → **1** | 53.0 → 48.1 MiB/s (−9.2%) |
+| 16 | 16,507.6 → **2.0 ms** | 1,037 → **1** | 41.3 → 33.8 MiB/s (−18.1%) |
+
+2·4 pane 은 처리량 변화 없이 공정성 오류가 사라졌다. 8·16 pane 이 **모두 계속 대용량 출력하는** 조건에서는
+동시에 활동하는 producer · PTY · read thread 경쟁이 끝까지 유지돼 합계 처리량이 낮아진 것으로 *추정*한다
+(hardware counter 미확인). pane 이 16개여도 backlog pane 이 하나면 나머지는 빈 ring 확인만 하므로 이 비용은
+거의 없다. pane당 연속 quantum 을 2·4청크로 늘려도 16 pane 처리량은 각각 33.6 MiB/s로 회복되지 않고 skew만
+2·4로 늘었다. 따라서 가장 단순하고 강한 strict round-robin (quantum 1)을 사양으로 유지한다. 이 새 전후 실측은
+Linux에서만 했으며, 공통 코드의 Windows · macOS compile check는 통과했지만 두 platform의 새 처리량은 아직 실기
+측정하지 않았다.
 
 ### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
 

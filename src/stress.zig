@@ -75,6 +75,10 @@ const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
 const env_hold_ms = "TILDAZ_STRESS_HOLD_MS";
 /// producer 가 이 그리드가 될 때까지 기다렸다가 출력을 시작한다 (`ProducerRequest.target_grid`).
 const env_grid = "TILDAZ_STRESS_GRID";
+/// `frame --panes N`의 producer를 모두 준비한 뒤 함께 시작하고, 마지막 VT marker가
+/// 파싱될 때까지 process를 살려 두는 파일 barrier의 공통 경로와 pane id.
+const env_start_barrier = "TILDAZ_STRESS_START_BARRIER";
+const env_pane_id = "TILDAZ_STRESS_PANE_ID";
 
 /// 자식이 죽은 뒤에도 read thread 가 아직 안 읽은 데이터가 남아 있을 수 있다 —
 /// `waitpid` 는 프로세스 종료만 알려주고 커널 버퍼가 비었는지는 말하지 않는다
@@ -84,6 +88,7 @@ const drain_quiet_ns: u64 = 50 * std.time.ns_per_ms;
 
 /// 무한 대기 방지. producer 가 죽지도 않고 데이터도 안 보내는 상황에서 빠져나온다.
 const total_timeout_ns: u64 = 120 * std.time.ns_per_s;
+const barrier_timeout_ns: u64 = 10 * std.time.ns_per_s;
 
 const chunk_size = 64 * 1024;
 
@@ -157,6 +162,9 @@ const ProducerRequest = struct {
     /// 다른 대상과 비교할 수 없다. 전후 그리드를 둘 다 남기는 것만으로는 **얼마나 오염됐는지**
     /// 를 알 수 없다 (전환 시점이 없다) — 그래서 아예 기다린다.
     target_grid: ?Grid = null,
+    /// 둘 다 있으면 내부 frame 하네스의 다중 producer barrier에 참여한다.
+    start_barrier: ?[]const u8 = null,
+    pane_id: ?pane_layout.PaneId = null,
 };
 
 /// `target_grid` 를 기다린 상한. 넘으면 그대로 진행하고 timing 에 대기 시간이 남는다 —
@@ -193,13 +201,91 @@ fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
         target_grid = parseGrid(text);
     }
 
+    var start_barrier: ?[]const u8 = null;
+    var pane_id: ?pane_layout.PaneId = null;
+    if (rt.envAlloc(alloc, env_start_barrier) catch null) |path| {
+        if (rt.envAlloc(alloc, env_pane_id) catch null) |text| {
+            defer alloc.free(text);
+            const parsed = std.fmt.parseInt(pane_layout.PaneId, text, 10) catch
+                @as(pane_layout.PaneId, @intCast(pane_layout.MAX_PANES_PER_TAB));
+            if (parsed < pane_layout.MAX_PANES_PER_TAB) {
+                start_barrier = path;
+                pane_id = parsed;
+            } else {
+                alloc.free(path);
+            }
+        } else {
+            alloc.free(path);
+        }
+    }
+
     return .{
         .kind = kind,
         .bytes = bytes,
         .timing_path = timing_path,
         .hold_ms = hold_ms,
         .target_grid = target_grid,
+        .start_barrier = start_barrier,
+        .pane_id = pane_id,
     };
+}
+
+fn paneBarrierPath(buf: []u8, base: []const u8, id: pane_layout.PaneId, suffix: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}.{d}.{s}", .{ base, id, suffix });
+}
+
+fn globalBarrierPath(buf: []u8, base: []const u8, suffix: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}.{s}", .{ base, suffix });
+}
+
+fn createBarrierFile(rt: Runtime, path: []const u8) !void {
+    const file = try std.Io.Dir.createFileAbsolute(rt.io, path, .{});
+    file.close(rt.io);
+}
+
+fn barrierFileExists(rt: Runtime, path: []const u8) bool {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return false;
+    file.close(rt.io);
+    return true;
+}
+
+fn waitForBarrierFile(rt: Runtime, path: []const u8) !void {
+    var timer: Timer = .start(rt);
+    while (!barrierFileExists(rt, path)) {
+        if (timer.read() >= barrier_timeout_ns) return error.StressBarrierTimeout;
+        rt.sleepNs(std.time.ns_per_ms);
+    }
+}
+
+/// producer가 준비됐음을 알리고 부모의 동시 시작 신호를 기다린다.
+fn waitForProducerStart(rt: Runtime, base: []const u8, id: pane_layout.PaneId) !void {
+    var ready_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const ready_path = try paneBarrierPath(&ready_buf, base, id, "ready");
+    try createBarrierFile(rt, ready_path);
+
+    var go_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const go_path = try globalBarrierPath(&go_buf, base, "go");
+    try waitForBarrierFile(rt, go_path);
+}
+
+fn doneTitle(buf: []u8, id: pane_layout.PaneId) ![]const u8 {
+    return std.fmt.bufPrint(buf, "tildaz-stress-done-{d}", .{id});
+}
+
+fn writeDoneMarker(rt: Runtime, out: std.Io.File, id: pane_layout.PaneId) !void {
+    var title_buf: [48]u8 = undefined;
+    const title = try doneTitle(&title_buf, id);
+    var marker_buf: [64]u8 = undefined;
+    const marker = try std.fmt.bufPrint(&marker_buf, "\x1b]0;{s}\x07", .{title});
+    try out.writeStreamingAll(rt.io, marker);
+}
+
+/// 마지막 marker가 부모 VT에 도달할 때까지 process 종료를 미뤄 close-time 강제 drain이
+/// 공정성 측정을 대신하지 못하게 한다.
+fn waitForProducerStop(rt: Runtime, base: []const u8) !void {
+    var stop_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const stop_path = try globalBarrierPath(&stop_buf, base, "stop");
+    try waitForBarrierFile(rt, stop_path);
 }
 
 fn parseGrid(text: []const u8) ?Grid {
@@ -255,6 +341,7 @@ fn produce(rt: Runtime, req: ProducerRequest) !void {
     // 목표 그리드를 받았으면 그 전에 **기다린다** (`target_grid` 주석). 기다린 뒤에 읽어야
     // `grid_start` 가 실제로 출력한 그리드와 같다.
     const grid_wait_ms = if (req.target_grid) |t| waitForGrid(rt, t) else 0;
+    if (req.start_barrier) |base| try waitForProducerStart(rt, base, req.pane_id.?);
     const grid_start = producerGrid();
 
     var timer: Timer = .start(rt);
@@ -267,6 +354,11 @@ fn produce(rt: Runtime, req: ProducerRequest) !void {
     }
     const elapsed_ns = timer.read();
     const grid_end = producerGrid();
+
+    if (req.start_barrier) |base| {
+        try writeDoneMarker(rt, out, req.pane_id.?);
+        try waitForProducerStop(rt, base);
+    }
 
     if (req.timing_path) |path| {
         writeTiming(rt, path, req, elapsed_ns, grid_start, grid_end, grid_wait_ms) catch {};
@@ -461,8 +553,7 @@ fn parseArgs(args: []const []const u8) !Options {
 }
 
 fn printUsage(rt: Runtime) !void {
-    try std.Io.File.stdout().writeStreamingAll(
-        rt.io,
+    try std.Io.File.stdout().writeStreamingAll(rt.io,
         \\usage: zig build stress -- <throughput | scrollback> [options]
         \\
         \\  throughput   how fast bulk output is consumed
@@ -522,11 +613,56 @@ const FrameSplit = struct {
     frames: u64,
     /// 프레임 예산 (`DRAIN_FRAME_BUDGET_NS`) 을 넘긴 프레임 수. 리포트가 값을 함께 찍는다.
     over_budget: u64,
-    /// #483 6단계 — pane 수 · pane 별 producer 종료 시각 (프레임 단위, timer 절대값) · 드레인 1 회 최장 점유.
+    /// #574 — pane별 마지막 OSC marker가 VT에 도달한 시각, process 종료 시각, 직접
+    /// drain 통계. process 종료 순번 대신 `PaneId` index로 보존한다.
     panes: u32 = 1,
-    finished: u32 = 0,
-    finish_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    parsed_done: u32 = 0,
+    parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    exited: u32 = 0,
+    exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    max_chunk_skew: u64 = 0,
     max_drain_ns: u64 = 0,
+};
+
+const FramePaneProgress = struct {
+    last_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    last_service_frame: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    max_chunk_skew: u64 = 0,
+
+    fn observe(
+        progress: *FramePaneProgress,
+        group: *session_core.TabGroup,
+        panes: u32,
+        parsed_done_ns: *const [pane_layout.MAX_PANES_PER_TAB]u64,
+        frame: u64,
+    ) void {
+        var min_chunks: u64 = std.math.maxInt(u64);
+        var max_chunks: u64 = 0;
+        for (group.panes[0..panes], 0..) |pane, i| {
+            // 앞선 frame에서 marker까지 파싱한 pane은 더 이상 동시에 밀린 집합이 아니다.
+            if (parsed_done_ns[i] != 0) continue;
+            const tab = pane orelse continue;
+            const chunks = tab.stress_drain_chunks;
+            min_chunks = @min(min_chunks, chunks);
+            max_chunks = @max(max_chunks, chunks);
+            if (chunks == progress.last_chunks[i]) continue;
+            if (progress.last_service_frame[i] != 0) {
+                progress.max_service_gap_frames[i] = @max(
+                    progress.max_service_gap_frames[i],
+                    frame - progress.last_service_frame[i],
+                );
+            }
+            progress.last_service_frame[i] = frame;
+            progress.last_chunks[i] = chunks;
+        }
+        if (min_chunks != std.math.maxInt(u64)) {
+            progress.max_chunk_skew = @max(progress.max_chunk_skew, max_chunks - min_chunks);
+        }
+    }
 };
 
 const Counters = struct {
@@ -610,13 +746,40 @@ const ExitState = struct {
     exited: std.atomic.Value(bool) = .init(false),
     /// #483 6단계 — pane 마다 producer 가 하나라 마지막 pane 이 끝날 때 `exited`.
     exited_count: std.atomic.Value(u32) = .init(0),
+    exited_panes: std.atomic.Value(VisiblePaneMask) = .init(0),
+    tab_ptrs: [pane_layout.MAX_PANES_PER_TAB]usize = [_]usize{0} ** pane_layout.MAX_PANES_PER_TAB,
     total: u32 = 1,
+
+    const VisiblePaneMask = u16;
+
+    fn rememberPanes(state: *ExitState, group: *session_core.TabGroup) void {
+        for (group.panes, 0..) |pane, i| {
+            state.tab_ptrs[i] = if (pane) |tab| @intFromPtr(tab) else 0;
+        }
+    }
+
+    fn recordExit(state: *ExitState, tab_ptr: usize) void {
+        for (state.tab_ptrs, 0..) |known, i| {
+            if (known != tab_ptr) continue;
+            _ = state.exited_panes.fetchOr(@as(VisiblePaneMask, 1) << @intCast(i), .acq_rel);
+            break;
+        }
+        const n = state.exited_count.fetchAdd(1, .acq_rel) + 1;
+        if (n >= state.total) state.exited.store(true, .release);
+    }
 };
 
-fn onTabExit(_: usize, userdata: ?*anyopaque) void {
+fn onTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     const state: *ExitState = @ptrCast(@alignCast(userdata.?));
-    const n = state.exited_count.fetchAdd(1, .acq_rel) + 1;
-    if (n >= state.total) state.exited.store(true, .release);
+    state.recordExit(tab_ptr);
+}
+
+fn stressCurrentPid() u32 {
+    return switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        .linux => @intCast(std.os.linux.getpid()),
+        else => @intCast(std.c.getpid()),
+    };
 }
 
 /// producer 를 PTY 자식으로 띄운 세션. `pty` 와 `frame` 층이 같은 준비 과정을 쓴다.
@@ -624,17 +787,22 @@ fn onTabExit(_: usize, userdata: ?*anyopaque) void {
 /// 힙에 두는 이유는 `extra_env` 가 자기 안의 `bytes_text` 를 가리키기 때문이다 —
 /// 스택에 두면 이 struct 를 옮기는 순간 그 포인터가 어긋난다.
 const ProducerSession = struct {
+    rt: Runtime,
     alloc: std.mem.Allocator,
     shell_command: terminal.ShellCommand,
     bytes_text: [24]u8 = undefined,
-    extra_env: [2]terminal.ExtraEnv = undefined,
+    pane_id_text: [3]u8 = undefined,
+    barrier_path: [std.Io.Dir.max_path_bytes]u8 = undefined,
+    barrier_path_len: usize = 0,
+    extra_env: [4]terminal.ExtraEnv = undefined,
+    extra_env_len: usize = 2,
     state: ExitState = .{},
     core: session_core.SessionCore = undefined,
 
     fn start(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !*ProducerSession {
         const self = try alloc.create(ProducerSession);
         errdefer alloc.destroy(self);
-        self.* = .{ .alloc = alloc, .shell_command = undefined };
+        self.* = .{ .rt = rt, .alloc = alloc, .shell_command = undefined };
 
         var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
@@ -646,7 +814,15 @@ const ProducerSession = struct {
         self.extra_env = .{
             .{ .name = env_workload, .value = @tagName(opts.workload_kind) },
             .{ .name = env_bytes, .value = bytes_text },
+            undefined,
+            undefined,
         };
+        if (opts.layer == .frame) {
+            try self.prepareBarrierPath();
+            self.extra_env_len = 4;
+            self.extra_env[2] = .{ .name = env_start_barrier, .value = self.barrierPath() };
+            self.setProducerPaneId(0);
+        }
 
         self.core = session_core.SessionCore.init(
             rt,
@@ -654,11 +830,12 @@ const ProducerSession = struct {
             self.shell_command,
             opts.scroll_lines,
             null,
-            &self.extra_env,
+            self.extra_env[0..self.extra_env_len],
             onTabExit,
             &self.state,
         );
         errdefer self.core.deinit();
+        errdefer self.releaseBarriers() catch {};
 
         // 여기서 자식이 뜨고 곧바로 쓰기 시작한다 — 호출자는 바로 비우기 시작해야 한다.
         self.state.total = opts.panes;
@@ -681,18 +858,97 @@ const ProducerSession = struct {
                 }
                 const pr = biggest orelse return error.NoTab;
                 _ = self.core.setActivePane(pr.pane);
+                if (opts.layer == .frame) self.setProducerPaneId(i);
                 try self.core.splitActive(if (pr.rect.w >= pr.rect.h) .right else .down, area, m);
                 // 분할마다 균등화 — 새 pane 만 계속 가르면 1/2 · 1/4 · 1/8 로 줄어 `TooSmall` 에 걸린다.
                 self.core.equalizeActive(area, m);
             }
         }
+        const group = self.core.activeGroup() orelse return error.NoTab;
+        self.state.rememberPanes(group);
+        if (opts.layer == .frame) try self.waitForReadyAndRelease(opts.panes);
         return self;
     }
 
     fn deinit(self: *ProducerSession) void {
+        self.releaseBarriers() catch {};
         self.core.deinit();
+        self.cleanupBarriers();
         freeShellCommand(self.alloc, self.shell_command);
         self.alloc.destroy(self);
+    }
+
+    fn prepareBarrierPath(self: *ProducerSession) !void {
+        const env_name = if (builtin.os.tag == .windows) "TEMP" else "TMPDIR";
+        const fallback = if (builtin.os.tag == .windows) "." else "/tmp";
+        const temp_dir = self.rt.envAlloc(self.alloc, env_name) catch try self.alloc.dupe(u8, fallback);
+        defer self.alloc.free(temp_dir);
+
+        var name_buf: [96]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "tildaz-stress-{d}-{d}", .{ stressCurrentPid(), perf.now() orelse 0 });
+        const path = try std.Io.Dir.path.join(self.alloc, &.{ temp_dir, name });
+        defer self.alloc.free(path);
+        if (path.len > self.barrier_path.len) return error.NameTooLong;
+        @memcpy(self.barrier_path[0..path.len], path);
+        self.barrier_path_len = path.len;
+    }
+
+    fn barrierPath(self: *const ProducerSession) []const u8 {
+        return self.barrier_path[0..self.barrier_path_len];
+    }
+
+    fn setProducerPaneId(self: *ProducerSession, id: anytype) void {
+        const text = std.fmt.bufPrint(&self.pane_id_text, "{d}", .{id}) catch unreachable;
+        self.extra_env[3] = .{ .name = env_pane_id, .value = text };
+    }
+
+    fn waitForReadyAndRelease(self: *ProducerSession, panes: u32) !void {
+        var timer: Timer = .start(self.rt);
+        while (true) {
+            var ready: u32 = 0;
+            for (0..panes) |i| {
+                var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const path = try paneBarrierPath(&path_buf, self.barrierPath(), @intCast(i), "ready");
+                if (barrierFileExists(self.rt, path)) ready += 1;
+            }
+            if (ready == panes) break;
+            if (timer.read() >= barrier_timeout_ns) return error.StressBarrierTimeout;
+            self.rt.sleepNs(std.time.ns_per_ms);
+        }
+
+        var go_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const go_path = try globalBarrierPath(&go_buf, self.barrierPath(), "go");
+        try createBarrierFile(self.rt, go_path);
+    }
+
+    fn stopProducers(self: *ProducerSession) !void {
+        if (self.barrier_path_len == 0) return;
+        var stop_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const stop_path = try globalBarrierPath(&stop_buf, self.barrierPath(), "stop");
+        try createBarrierFile(self.rt, stop_path);
+    }
+
+    /// 오류 정리에서는 producer가 go/stop 어느 쪽을 기다리는지 모르므로 둘 다 연다.
+    fn releaseBarriers(self: *ProducerSession) !void {
+        if (self.barrier_path_len == 0) return;
+        var go_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const go_path = try globalBarrierPath(&go_buf, self.barrierPath(), "go");
+        try createBarrierFile(self.rt, go_path);
+        try self.stopProducers();
+    }
+
+    fn cleanupBarriers(self: *ProducerSession) void {
+        if (self.barrier_path_len == 0) return;
+        for (0..pane_layout.MAX_PANES_PER_TAB) |i| {
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path = paneBarrierPath(&path_buf, self.barrierPath(), @intCast(i), "ready") catch continue;
+            std.Io.Dir.deleteFileAbsolute(self.rt.io, path) catch {};
+        }
+        for ([_][]const u8{ "go", "stop" }) |suffix| {
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const path = globalBarrierPath(&path_buf, self.barrierPath(), suffix) catch continue;
+            std.Io.Dir.deleteFileAbsolute(self.rt.io, path) catch {};
+        }
     }
 
     fn tab(self: *ProducerSession) !*session_core.Tab {
@@ -747,6 +1003,13 @@ fn runPty(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
 // --- layer: frame ---
 
+fn paneParsedDone(tab: *session_core.Tab, id: pane_layout.PaneId) bool {
+    var expected_buf: [48]u8 = undefined;
+    const expected = doneTitle(&expected_buf, id) catch return false;
+    const actual = tab.terminal.getTitle() orelse return false;
+    return std.mem.eql(u8, actual, expected);
+}
+
 /// 프레임당 1 회 드레인을 모사한다 — `drainOutputForRender` 를 `--fps` 주기로 한 번씩 부르고,
 /// 그 안의 `drainFrame` 이 `session_core.SessionCore.DRAIN_FRAME_BUDGET_NS` 만 파싱한다.
 /// 그래서 처리량이 파서 상한이 아니라 `예산 / 프레임 간격` 으로 눌린다.
@@ -769,6 +1032,7 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
     const session = try ProducerSession.start(rt, alloc, opts);
     defer session.deinit();
+    const group = session.core.activeGroup() orelse return error.NoTab;
 
     const frame_ns = std.time.ns_per_s / @as(u64, opts.fps);
     var next_frame_ns: u64 = frame_ns;
@@ -778,8 +1042,12 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
     var max_drain_ns: u64 = 0;
-    var finish_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
-    var finished: u32 = 0;
+    var parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var parsed_done: u32 = 0;
+    var exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var exited: u32 = 0;
+    var stop_sent = false;
+    var pane_progress: FramePaneProgress = .{};
 
     while (true) {
         const before_ns = timer.read();
@@ -789,14 +1057,35 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
         frames += 1;
         if (after_ns - before_ns > frame_budget_ns) over_budget += 1;
         max_drain_ns = @max(max_drain_ns, after_ns - before_ns);
-        // #483 6단계 — pane 별 producer 종료 시각 (이 프레임에서 처음 본 순간).
-        const exited_now = session.state.exited_count.load(.acquire);
-        while (finished < exited_now and finished < finish_ns.len) : (finished += 1) finish_ns[finished] = after_ns;
+        pane_progress.observe(group, opts.panes, &parsed_done_ns, frames);
+
+        // process 종료가 아니라 마지막 OSC marker를 VT가 실제로 적용한 시각을 pane별로 본다.
+        for (group.panes[0..opts.panes], 0..) |pane, i| {
+            if (parsed_done_ns[i] != 0) continue;
+            const tab = pane orelse continue;
+            if (!paneParsedDone(tab, @intCast(i))) continue;
+            parsed_done_ns[i] = after_ns;
+            parsed_done += 1;
+        }
+        if (!stop_sent and parsed_done == opts.panes) {
+            try session.stopProducers();
+            stop_sent = true;
+        }
+
+        // callback이 버리던 Tab pointer를 PaneId로 보존해 process 종료도 보조 지표로 남긴다.
+        const exited_mask = session.state.exited_panes.load(.acquire);
+        for (0..opts.panes) |i| {
+            const bit = @as(ExitState.VisiblePaneMask, 1) << @intCast(i);
+            if (exited_mask & bit == 0 or exit_ns[i] != 0) continue;
+            exit_ns[i] = after_ns;
+            exited += 1;
+        }
 
         if (had_output) {
             if (first_data_ns == null) first_data_ns = after_ns;
             last_data_ns = after_ns;
         } else if (session.exited() and after_ns - last_data_ns > drain_quiet_ns) {
+            if (parsed_done != opts.panes) return error.MissingStressDoneMarker;
             break;
         }
 
@@ -815,6 +1104,13 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
     const counters = takeCounters();
     const start_ns = first_data_ns orelse return error.NoOutput;
+    var drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    for (group.panes[0..opts.panes], 0..) |pane, i| {
+        const tab = pane orelse continue;
+        drain_chunks[i] = tab.stress_drain_chunks;
+        drain_bytes[i] = tab.stress_drain_bytes;
+    }
 
     try report(rt, opts, .{
         .consumed = counters.drain[2],
@@ -828,8 +1124,14 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
             .frames = frames,
             .over_budget = over_budget,
             .panes = opts.panes,
-            .finished = finished,
-            .finish_ns = finish_ns,
+            .parsed_done = parsed_done,
+            .parsed_done_ns = parsed_done_ns,
+            .exited = exited,
+            .exit_ns = exit_ns,
+            .drain_chunks = drain_chunks,
+            .drain_bytes = drain_bytes,
+            .max_service_gap_frames = pane_progress.max_service_gap_frames,
+            .max_chunk_skew = pane_progress.max_chunk_skew,
             .max_drain_ns = max_drain_ns,
         },
     });
@@ -1071,7 +1373,7 @@ fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void
 // --- 리포트 ---
 
 fn report(rt: Runtime, opts: Options, result: Result) !void {
-    var buf: [4096]u8 = undefined;
+    var buf: [8192]u8 = undefined;
     var w = Report{ .buf = &buf };
 
     const mib = 1024.0 * 1024.0;
@@ -1183,13 +1485,42 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
         w.print("  drain max   {d:.2} ms (한 번 호출의 최장 점유)\n", .{
             @as(f64, @floatFromInt(split.max_drain_ns)) / std.time.ns_per_ms,
         });
-        // #483 6단계 — pane 마다 producer 하나. 종료 시각의 퍼짐이 pane 간 공정성이다.
+        // #574 — process 종료가 아니라 pane별 마지막 OSC marker의 VT parse 시각과 직접
+        // drain 통계를 공정성의 주 지표로 쓴다. 종료는 보조 지표다.
         if (split.panes > 1) {
-            w.print("  panes       {d} (pane 마다 producer 하나, 합쳐 {d} MiB)\n", .{ split.panes, opts.bytes / (1024 * 1024) * split.panes });
+            w.print("  panes       {d} (one producer per pane, {d} MiB total)\n", .{ split.panes, opts.bytes / (1024 * 1024) * split.panes });
             const base = result.spawn_ns orelse 0;
-            for (split.finish_ns[0..split.finished], 0..) |t, i| {
-                w.print("  pane exit   #{d} at {d:.1} ms\n", .{ i + 1, @as(f64, @floatFromInt(t -| base)) / std.time.ns_per_ms });
+            var first_done: u64 = std.math.maxInt(u64);
+            var last_done: u64 = 0;
+            for (0..split.panes) |i| {
+                const parsed_ns = split.parsed_done_ns[i];
+                if (parsed_ns != 0) {
+                    first_done = @min(first_done, parsed_ns);
+                    last_done = @max(last_done, parsed_ns);
+                }
+                w.print(
+                    "  pane #{d:<2}   parsed={d:.1} ms chunks={d} bytes={d} max-gap={d} frames\n",
+                    .{
+                        i,
+                        @as(f64, @floatFromInt(parsed_ns -| base)) / std.time.ns_per_ms,
+                        split.drain_chunks[i],
+                        split.drain_bytes[i],
+                        split.max_service_gap_frames[i],
+                    },
+                );
+                if (split.exit_ns[i] != 0) {
+                    w.print("              process exit={d:.1} ms\n", .{
+                        @as(f64, @floatFromInt(split.exit_ns[i] -| base)) / std.time.ns_per_ms,
+                    });
+                }
             }
+            if (first_done != std.math.maxInt(u64)) {
+                w.print("  parsed spread {d:.1} ms (final VT markers)\n", .{
+                    @as(f64, @floatFromInt(last_done - first_done)) / std.time.ns_per_ms,
+                });
+            }
+            w.print("  chunk skew   {d} max (while panes were pending)\n", .{split.max_chunk_skew});
+            w.print("  completed    parsed={d}/{d} process={d}/{d}\n", .{ split.parsed_done, split.panes, split.exited, split.panes });
         }
         // 기본값을 그대로 쓰면 고주사율 화면에서 크게 어긋난다. 실측 (당시 예산 8 ms):
         // 120 Hz 화면을 60 으로 모사했더니 ansi 가 103 MiB/s 로 나왔는데 (예산 초과 86 %),
