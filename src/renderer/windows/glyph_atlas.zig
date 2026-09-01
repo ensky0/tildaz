@@ -32,22 +32,9 @@ const MAX_CLUSTER_GLYPHS = dwrite_font.MAX_CLUSTER_GLYPHS;
 pub const AtlasEntry = atlas_common.AtlasEntry;
 const GlyphKey = atlas_common.GlyphKey;
 
-/// Multi-glyph cluster (#139) cache key.
-///
-/// **face 를 함께 본다 (#401).** 예전에는 `indices_hash` 만 썼고, 근거는 *"system
-/// fallback 의 face 는 매번 새 instance 라 key 에 넣으면 항상 miss"* + *"같은 glyph
-/// index 시퀀스면 같은 그림"* 이었다. 앞의 것은 지금도 사실이 아니고 (아래), **뒤의 것이
-/// 틀렸다** — glyph index 는 폰트 안에서만 의미가 있어서 `Cascadia Code` 의 3054 번과
-/// `Segoe UI Symbol` 의 3054 번은 전혀 다른 글리프다. cluster 경로에 컬러 emoji 만 들어오던
-/// 동안에는 face 가 사실상 `Segoe UI Emoji` 하나라 드러나지 않았지만, 결합 기호까지 이
-/// 경로를 타면서 mono face 여럿이 같은 캐시를 공유하게 됐다.
-///
-/// miss 걱정도 없다 — `resolveGrapheme` 의 cluster 캐시가 face 를 **소유한 채 재사용**하므로
-/// (`releaseCluster` 는 퇴출 시에만 부른다) 같은 cluster 에 대해 포인터가 안정적이다.
-const ClusterKey = struct {
-    font_ptr: usize,
-    indices_hash: u64,
-};
+/// Multi-glyph cluster (#139) cache key — 정의와 근거는 `glyph_atlas_common.zig` 에 있다
+/// (#529 에서 macOS 와 공용으로 올렸다).
+const ClusterKey = atlas_common.ClusterKey;
 
 fn hashIndices(indices: []const u16) u64 {
     var h: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
