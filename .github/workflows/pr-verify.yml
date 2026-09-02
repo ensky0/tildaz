@@ -64,6 +64,11 @@ jobs:
       - name: Compile-only verify (6 targets)
         run: zig build check
 
+      # #583 B19 — fmt 어긋남이 main 에 들어와도 CI 가 잡지 못했다 (세 파일이 걸린 채 머지됐다).
+      # `zig fmt --check` 는 수정하지 않고 어긋난 파일 이름만 내고 실패한다.
+      - name: Format check
+        run: zig fmt --check src/ build.zig
+
       - name: Test
         run: zig build test
 
