@@ -93,8 +93,15 @@ pub const GlyphAtlas = struct {
     }
 
     /// 글리프 lookup or rasterize. 라스터 실패 시 null.
-    pub fn getOrInsert(self: *GlyphAtlas, font: ct.CTFontRef, glyph_index: ct.CGGlyph) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = @intFromPtr(font), .index = glyph_index };
+    pub fn getOrInsert(
+        self: *GlyphAtlas,
+        font: ct.CTFontRef,
+        /// #584 — 폰트를 가리키는 **안정된 id** (`atlas_common.fontId`). 주소를 쓰면 macOS 는
+        /// codepoint 캐시가 없어 같은 글리프가 셀마다 새 키로 담긴다.
+        font_id: u64,
+        glyph_index: ct.CGGlyph,
+    ) ?AtlasEntry {
+        const key = GlyphKey{ .font_id = font_id, .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
         const entry = self.rasterize(font, glyph_index) orelse return null;
@@ -126,7 +133,7 @@ pub const GlyphAtlas = struct {
         cluster_advance_pt: f32,
     ) ?AtlasEntry {
         if (glyphs.len == 0) return null;
-        if (glyphs.len == 1) return self.getOrInsert(font, glyphs[0]);
+        if (glyphs.len == 1) return self.getOrInsert(font, font_id, glyphs[0]);
 
         // 키는 글리프 인덱스들의 해시 + **폰트 id** 다. 같은 인덱스 조합이면 결과가 같다
         // (positions 는 그 조합에서 결정되므로 키에 안 넣는다).
@@ -156,7 +163,7 @@ pub const GlyphAtlas = struct {
     /// tint 경로 사용. scale 변경 시 `applyScale` 이 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = 0, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 
@@ -218,6 +225,30 @@ pub const GlyphAtlas = struct {
         self.dirty = true;
         self.dirty_min_y = 0;
         self.dirty_max_y = ATLAS_SIZE;
+    }
+
+    /// ⚠️ **임시 진단** (#584 초반 깜빡임) — 단일 글리프 캐시에 실린 **서로 다른 폰트 주소 수**.
+    /// `GlyphKey` 는 아직 주소를 쓰므로, 화면이 쓰는 폰트 수보다 크게 나오면 같은 글리프가
+    /// 주소마다 새로 담긴다는 뜻이다. **규명이 끝나면 지운다.**
+    pub fn distinctGlyphFonts(self: *const GlyphAtlas) u32 {
+        var seen: [256]u64 = undefined;
+        var n: u32 = 0;
+        var it = self.cache.keyIterator();
+        while (it.next()) |k| {
+            var found = false;
+            for (seen[0..n]) |x| {
+                if (x == k.font_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (n >= seen.len) return @intCast(seen.len);
+                seen[n] = k.font_id;
+                n += 1;
+            }
+        }
+        return n;
     }
 
     /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`resetFull` 에서만 부른다).

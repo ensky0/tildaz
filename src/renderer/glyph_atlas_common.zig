@@ -19,14 +19,29 @@ pub const AtlasEntry = struct {
     advance: f32 = 0,
 };
 
-/// glyph cache key — 폰트 객체 포인터 값 + glyph index. macOS 는 CTFontRef, Windows 는
-/// IDWriteFontFace 포인터다.
+/// glyph cache key — 폰트 **id** + glyph index.
 ///
-/// **여기서는 주소를 써도 된다** — 단일 글리프 경로는 우리가 만들어 배열에 들고 있는 chain
-/// 폰트만 쓰므로 객체가 재사용된다 (실측: 결합 문자 2,816 종 화면에서 이 맵의 항목이 약 280
-/// 개로 안정적이었다). `ClusterKey` 는 사정이 다르다 — 아래를 본다.
+/// **주소를 쓰면 안 된다** ([#584](https://github.com/ensky0/tildaz/issues/584)). 예전 주석은
+/// *"단일 글리프 경로는 chain 폰트만 쓰므로 객체가 재사용된다"* 고 적었는데 **틀렸다.**
+///
+/// - **macOS 는 codepoint 캐시가 없다.** chain 에 없는 글리프는 셀마다 `CTFontCreateForString`
+///   으로 **새 객체**를 받는다. 다국어 화면 (cluster 7,560 종) 실측에서 이 맵의 서로 다른
+///   폰트 주소가 **256 개를 넘었다** (실제 폰트는 32 종). 그 중복이 atlas 를 부풀려 프레임마다
+///   차게 만들고, 화면이 흐르듯 무너졌다.
+/// - **cluster 가 글리프 하나로 합성되면 이 키로 온다** (`getOrInsertCluster` 의 `len == 1`
+///   분기). 그 폰트는 cluster 경로의 OS fallback 이라 주소가 더 불안정하다.
+/// 탭바 아이콘 (`+` · `×` · `⋯`) 이 `GlyphKey.font_id` 에 쓰는 **예약값**.
+///
+/// 아이콘은 폰트에서 온 글리프가 아니라 코드로 그리는 그림이라 폰트 id 가 없다. 예전에는
+/// 주소 자리에 `0` 을 넣었는데, `fontId` 는 **이름을 못 읽으면 0** 을 내므로 그대로 두면
+/// 이름 없는 폰트의 글리프와 한 키 공간을 나눠 쓴다 — index 대역이 겹치면 남의 그림이 나온다
+/// ([#529](https://github.com/ensky0/tildaz/issues/529) 가 그 종류였다). 그래서 폰트 이름
+/// 해시가 닿을 일이 없는 값을 예약한다.
+pub const ICON_FONT_ID: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
 pub const GlyphKey = struct {
-    font_ptr: usize,
+    /// `fontId(PostScript 이름)`. 아래 `ClusterKey.font_id` 와 같은 값을 쓴다.
+    font_id: u64,
     index: u16,
 };
 

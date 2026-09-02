@@ -225,6 +225,10 @@ pub const CoreTextFontContext = struct {
     /// 에 사용 (Windows DWriteFontContext 와 동등). [0] 은 primary 와 동일.
     fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef,
     fallback_count: usize,
+    /// #584 — chain 폰트의 `atlas_common.fontId`. **`init` 에서 한 번만** 구한다 (이름 조회가
+    /// `CFStringGetBytes` 를 타므로 셀마다 부를 수 없다). atlas 키가 폰트를 주소가 아니라 이
+    /// 값으로 식별한다.
+    fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS,
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `fallback_fonts` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -232,6 +236,10 @@ pub const CoreTextFontContext = struct {
     /// 조회가 언제나 성공하므로 호출부에 "없으면 regular" 분기를 두지 않아도 된다
     /// (synthetic 은 만들지 않는다는 결정의 자연스러운 귀결).
     styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef,
+    /// #584 — `styled_fonts` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Menlo-Bold` vs
+    /// `Menlo-Regular`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
+    styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
+        .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
     /// platform 별이다.
@@ -250,6 +258,20 @@ pub const CoreTextFontContext = struct {
     fn chainFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const ct.CTFontRef {
         if (style == .regular) return self.fallback_fonts[0..self.fallback_count];
         return self.styled_fonts[style.index() - 1][0..self.fallback_count];
+    }
+
+    /// #584 — `primary_font` 의 폰트 id. ligature 경로가 primary 로 직접 raster 할 때 쓴다.
+    ///
+    /// `primary_font` 는 chain 의 첫 폰트와 같은 face 다 (`init` 이 같은 `candidate` 를 둘 다에
+    /// 넣는다). chain 이 비어 있을 수는 없다 — 없으면 `init` 이 fatal 로 끝난다.
+    pub fn primaryFontId(self: *const CoreTextFontContext) u64 {
+        return self.fallback_font_id[0];
+    }
+
+    /// #584 — `chainFor` 와 **같은 순서**의 폰트 id. atlas 키에 주소 대신 싣는다.
+    fn chainIdFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const u64 {
+        if (style == .regular) return self.fallback_font_id[0..self.fallback_count];
+        return self.styled_font_id[style.index() - 1][0..self.fallback_count];
     }
 
     pub fn init(
@@ -446,10 +468,18 @@ pub const CoreTextFontContext = struct {
         // 없으면 null 을 주므로, 그 결과가 곧 "이 family 에 bold / italic 이 있나" 의
         // 답이다. 없으면 regular 를 retain 해 넣어 조회가 언제나 성공하게 한다.
         var styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
+        // #584 — 폰트 id 도 여기서 한 번만 구한다. atlas 키가 주소 대신 이 값을 쓴다.
+        var fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS;
+        var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
+            .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
+        for (fallback_fonts[0..fallback_count], 0..) |base, i| {
+            fallback_font_id[i] = fontIdOf(base);
+        }
         inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
             const slot = fs.index() - 1;
             for (fallback_fonts[0..fallback_count], 0..) |base, i| {
                 styled_fonts[slot][i] = styledCopy(base, spec.size_logical, fs);
+                styled_font_id[slot][i] = fontIdOf(styled_fonts[slot][i]);
             }
         }
 
@@ -464,8 +494,10 @@ pub const CoreTextFontContext = struct {
             .cell_height_px = cell_h_px,
             .font_family = font_family,
             .fallback_fonts = fallback_fonts,
+            .fallback_font_id = fallback_font_id,
             .fallback_count = fallback_count,
             .styled_fonts = styled_fonts,
+            .styled_font_id = styled_font_id,
             .ligature_cache = ligature.Cache.init(allocator),
             .cluster_cache = cluster_cache.ClusterCache(GlyphResult, releaseCluster).init(allocator),
         };
@@ -1160,11 +1192,13 @@ pub const CoreTextFontContext = struct {
         }
 
         // 1. chain 순회 — 글리프 가진 첫 폰트 사용.
-        for (self.chainFor(style)) |f| {
+        const chain = self.chainFor(style);
+        const chain_ids = self.chainIdFor(style);
+        for (chain, 0..) |f, ci| {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS };
+                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci] };
                 }
             }
         }
@@ -1180,7 +1214,12 @@ pub const CoreTextFontContext = struct {
         var fb_glyphs: [2]ct.CGGlyph = .{ 0, 0 };
         if (ct.CTFontGetGlyphsForCharacters(fallback_font.?, &utf16_buf, &fb_glyphs, @intCast(utf16_len))) {
             if (fb_glyphs[0] != 0) {
-                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS };
+                // #584 — **여기서 id 를 잰다.** `CTFontCreateForString` 은 같은 폰트에도 매번 새
+                // 객체를 주므로 (실측: 이 맵의 주소가 256 개를 넘었다 — 실제 폰트는 32 종) 주소를
+                // atlas 키에 실으면 같은 글리프가 주소마다 새로 담긴다. macOS 는 codepoint 캐시가
+                // 없어 이 경로가 셀마다 돌지만, 그 자리에서 이미 `CTFontCreateForString` (폰트
+                // 매칭) 을 부르고 있어 이름 조회 하나가 더해지는 비용은 그에 비해 작다.
+                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS, .font_id = fontIdOf(fallback_font.?) };
             }
         }
 

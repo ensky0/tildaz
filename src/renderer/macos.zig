@@ -9,6 +9,7 @@
 const std = @import("std");
 const objc = @import("../macos_objc.zig");
 const perf = @import("../perf.zig");
+const log = @import("../log.zig");
 const ct = @import("../font/macos/coretext.zig");
 const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
@@ -296,6 +297,10 @@ pub const MetalRenderer = struct {
     current_drawable: objc.id = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
+    /// ⚠️ **임시 계측** ([#584](https://github.com/ensky0/tildaz/issues/584) — 초반 깜빡임).
+    /// `uploadAtlas` 를 부른 누적 횟수. 이 값이 초반 몇 프레임 동안 늘다 멈추는지를 보고,
+    /// 깜빡임 구간과 겹치는지 판정한다. **규명이 끝나면 지운다.**
+    diag_upload_n: u32 = 0,
     /// renderTabBar 가 받은 args 보관. endFrame 에서 z-order 상 terminal
     /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
@@ -641,6 +646,14 @@ pub const MetalRenderer = struct {
         if (self.atlas.dirty) {
             self.uploadAtlas(&self.atlas, self.atlas_texture);
             self.atlas.dirty = false;
+            // ⚠️ 임시 계측 (#584 초반 깜빡임) — 업로드가 언제까지 일어나는지 본다.
+            self.diag_upload_n += 1;
+            log.appendLine("gpu", "atlas upload #{d} (glyphs={d} glyph_fonts={d} clusters={d})", .{
+                self.diag_upload_n,
+                self.atlas.cache.count(),
+                self.atlas.distinctGlyphFonts(),
+                self.atlas.cluster_cache.count(),
+            });
         }
         // 탭 glyph/icon atlas도 main atlas와 같은 2-frame 정책: 이전 frame에서
         // 만든 내용을 draw 전에 upload한다. 삽입 직후 같은 Metal encoder에서
@@ -1141,7 +1154,7 @@ pub const MetalRenderer = struct {
                     x += 1;
                     continue;
                 };
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                     mac_font.releaseCluster(result);
                     x += 1;
                     continue;
@@ -1239,7 +1252,7 @@ pub const MetalRenderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                     mac_font.releaseCluster(result);
                     continue;
                 };
@@ -1392,7 +1405,7 @@ pub const MetalRenderer = struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         if (c.text_n.* >= MAX_TEXT) return;
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-                        const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                        const entry = c.self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                             mac_font.releaseCluster(result);
                             return;
                         };
@@ -1642,7 +1655,7 @@ pub const MetalRenderer = struct {
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                    const entry = r.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                         mac_font.releaseCluster(result);
                         continue;
                     };
@@ -1942,7 +1955,7 @@ fn emitLigatureMatch(
                 self.drawTextInstances(encoder, text_buf[0..text_count.*]);
                 text_count.* = 0;
             }
-            const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(lg.glyph_index)) orelse return;
+            const entry = self.atlas.getOrInsert(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index)) orelse return;
             if (entry.w == 0 or entry.h == 0) return;
             emitTextInstance(text_buf, text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset)));
         },
@@ -1952,7 +1965,7 @@ fn emitLigatureMatch(
                     self.drawTextInstances(encoder, text_buf[0..text_count.*]);
                     text_count.* = 0;
                 }
-                const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(sp.glyph_indices[i])) orelse continue;
+                const entry = self.atlas.getOrInsert(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i])) orelse continue;
                 if (entry.w == 0 or entry.h == 0) continue;
                 emitTextInstance(text_buf, text_count, entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i])));
             }

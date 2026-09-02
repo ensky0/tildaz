@@ -1672,7 +1672,21 @@ glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 �
 
 **id 는 프로세스가 달라도 같다.** 주소와 갈리는 지점이다 — Windows 실측에서 `MV Boli` 가 세 번의 실행 내내 `0xbaa15b1cca03f6b6` 였다.
 
-**단일 글리프 키 (`atlas_common.GlyphKey`) 는 주소를 그대로 쓴다.** 단일 경로는 폰트 층의 codepoint 캐시가 face 를 process lifetime 동안 붙잡고 있어 객체가 재사용된다. cluster 경로만 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPACITY` = 2048) 를 거치는데, **그 캐시가 넘치면 통째로 비워지면서 face 를 놓는 것**이 위 문제의 출발점이다.
+**단일 글리프 키 (`atlas_common.GlyphKey`) 도 같은 id 를 쓴다.** 예전에는 여기만 주소를 두고 *"단일 경로는 폰트 층의 codepoint 캐시가 face 를 붙잡아 객체가 재사용된다"* 를 근거로 삼았는데, **그 근거는 Windows 에만 맞았다.**
+
+| platform | 단일 경로의 codepoint 캐시 | 주소를 두면 |
+|---|---|---|
+| Windows | `glyph_map` 이 **chain 밖 fallback face 를 붙잡는다** | 주소가 안정적이다 |
+| macOS | **없다.** chain 밖 글리프는 셀마다 `CTFontCreateForString` 으로 **새 객체**를 받는다 | 같은 글리프가 주소마다 새로 담긴다 |
+| Linux | (자체 `Key` 가 face index 를 쓴다 — 해당 없음) | — |
+
+그리고 **cluster 가 글리프 하나로 합성되면 이 키로 온다** (`getOrInsertCluster` 의 `len == 1` 분기). 그 폰트는 cluster 경로의 OS fallback 이라 세 platform 모두 codepoint 캐시를 거치지 않는다.
+
+macOS 실측 — 다국어 화면 (cluster 7,560 종) 에서 이 맵의 서로 다른 폰트 주소가 **256 개를 넘었다** (실제 폰트는 32 종). 그 중복이 atlas 를 부풀려 **프레임마다 차게** 만들고 (`atlas full` 125 회 / 4.3 초), 찰 때마다 그린 것을 지워 화면이 흐르듯 무너졌다. id 로 옮긴 뒤 `atlas full` 0 회 · 업로드 140 → 1 회 · 이웃 프레임 대조 `0 px` 이 됐다.
+
+**아이콘은 예약값을 쓴다** (`atlas_common.ICON_FONT_ID`). 폰트에서 온 글리프가 아니라 id 가 없는데, 주소 자리에 `0` 을 넣던 것을 그대로 두면 **`fontId` 가 이름을 못 읽어 낸 `0`** 과 한 키 공간을 나눠 쓴다.
+
+cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPACITY` = 2048) 는 **넘치면 통째로 비워지면서 face 를 놓는다** — 그것이 위 문제의 출발점이다.
 
 #### ① 찼을 때 — 이미 그린 것을 지킨다
 

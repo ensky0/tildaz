@@ -305,8 +305,15 @@ pub const GlyphAtlas = struct {
     ///
     /// Color emoji 글리프는 `rasterizeColor` (TranslateColorGlyphRun) 를 먼저
     /// 시도; 실패 (DWRITE_E_NOCOLOR 포함) 시 일반 alpha rasterize 로 fall-through.
-    pub fn getOrInsert(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = @intFromPtr(face), .index = glyph_index };
+    pub fn getOrInsert(
+        self: *GlyphAtlas,
+        face: *dw.IDWriteFontFace,
+        /// #584 — 폰트를 가리키는 **안정된 id** (`atlas_common.fontId`). 세 platform 이 같은
+        /// 키 타입을 쓴다.
+        font_id: u64,
+        glyph_index: u16,
+    ) ?AtlasEntry {
+        const key = GlyphKey{ .font_id = font_id, .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
         const single_indices = [_]u16{glyph_index};
@@ -356,7 +363,7 @@ pub const GlyphAtlas = struct {
         overlay_marks: bool,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
-        if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
+        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0]);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
         // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
@@ -503,7 +510,7 @@ pub const GlyphAtlas = struct {
     /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
     /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = 0, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 

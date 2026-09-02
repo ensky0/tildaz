@@ -27,6 +27,11 @@ pub const GlyphResult = struct {
     face: *dw.IDWriteFontFace,
     index: dw.UINT16,
     owned: bool, // true = caller must Release face
+    /// [#584](https://github.com/ensky0/tildaz/issues/584) — atlas 키가 쓰는 **안정된 폰트 id**
+    /// (`atlas_common.fontId`). Windows 의 단일 경로는 `glyph_map` 이 fallback face 를 붙잡아
+    /// 주소가 안정적이지만, **키 타입을 세 platform 이 공유**하므로 여기도 id 를 싣는다.
+    /// cluster 가 글리프 하나로 합성되는 경로는 그 캐시를 거치지 않아 id 가 실제로 필요하다.
+    font_id: u64 = 0,
 };
 
 /// ZWJ family / VS-16 / skin tone modifier cluster 의 multi-glyph 결과 (#139).
@@ -163,6 +168,8 @@ fn clusterOverlayOnly(cps: []const u21) bool {
 const CachedGlyph = struct {
     face: *dw.IDWriteFontFace,
     index: u16,
+    /// #584 — atlas 키가 쓰는 폰트 id. 캐시에 담을 때 한 번만 구한다.
+    font_id: u64,
 };
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
@@ -600,6 +607,10 @@ pub const DWriteFontContext = struct {
     /// COM 왕복 셋 (`GetFontFromFontFace` → `GetInformationalStrings` → `GetString`) 이라
     /// cluster 마다 부를 수 없다. chain face 는 process lifetime 동안 안 바뀌므로 캐시가 맞다.
     chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN,
+    /// #584 — `styled_faces` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Cascadia Code Bold`
+    /// vs `Cascadia Code`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
+    styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
+        .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `chain_faces` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -663,6 +674,8 @@ pub const DWriteFontContext = struct {
         var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
         // #584 — chain face 의 PostScript 이름 id. 여기서 한 번만 구한다.
         var chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN;
+        var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
+            .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
             .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var chain_count: u8 = 0;
@@ -712,6 +725,8 @@ pub const DWriteFontContext = struct {
                         var styled_face: ?*dw.IDWriteFontFace = null;
                         if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
                             styled_faces[fs.index() - 1][chain_count] = styled_face.?;
+                            // #584 — `IDWriteFont` 를 손에 든 이 자리에서 id 를 구한다.
+                            styled_font_id[fs.index() - 1][chain_count] = postscriptNameId(styled_font.?);
                         }
                     }
                     // 실패하면 null 로 남고 `chainFor` 가 regular face 로 떨어뜨린다.
@@ -734,6 +749,7 @@ pub const DWriteFontContext = struct {
             .font_collection = collection.?,
             .chain_faces = chain_faces,
             .chain_font_id = chain_font_id,
+            .styled_font_id = styled_font_id,
             .styled_faces = styled_faces,
             .chain_count = chain_count,
             .cell_width_px = cell_w,
@@ -886,6 +902,15 @@ pub const DWriteFontContext = struct {
         return self.chain_faces[i];
     }
 
+    /// #584 — `faceAt` 이 고른 face 의 폰트 id. **같은 갈림을 따라야** 한다 — 변종 face 가
+    /// 없어 regular 로 떨어지면 id 도 regular 것이어야 한다.
+    fn chainFontId(self: *const DWriteFontContext, i: usize, style: font_constants.FaceStyle) u64 {
+        if (style != .regular) {
+            if (self.styled_faces[style.index() - 1][i] != null) return self.styled_font_id[style.index() - 1][i];
+        }
+        return self.chain_font_id[i];
+    }
+
     /// `style` (#375) 은 SGR `1` · `3` 이 요구하는 face 변종이다. chain 순회만 이
     /// 값을 따르고, system fallback (`MapCharacters`) 경로와 grapheme · ligature 는
     /// regular 를 쓴다 — 컬러 emoji 에 굵기는 의미가 없다.
@@ -893,7 +918,7 @@ pub const DWriteFontContext = struct {
         // 캐시는 **chain 밖** cp 의 system fallback 결과만 담는다 (chain 히트는 아래에서
         // 바로 반환하고 캐시에 넣지 않는다) — 그래서 변종이 캐시와 충돌하지 않는다.
         if (self.glyph_map.get(codepoint)) |c| {
-            return .{ .face = c.face, .index = c.index, .owned = false };
+            return .{ .face = c.face, .index = c.index, .owned = false, .font_id = c.font_id };
         }
 
         const cp32: dw.UINT32 = codepoint;
@@ -906,7 +931,8 @@ pub const DWriteFontContext = struct {
             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
             if (glyph_index != 0) {
                 // chain face 는 stable — cache 안 해도 OK (deinit 에서 release).
-                return .{ .face = face, .index = glyph_index, .owned = false };
+                // #584 — id 는 `init` 에서 구해 둔 것을 쓴다 (변종도 face 마다 갈린다).
+                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = self.chainFontId(i, style) };
             }
         }
 
@@ -950,13 +976,15 @@ pub const DWriteFontContext = struct {
                         if (mf_face) |face| {
                             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
                             if (glyph_index != 0) {
+                                // #584 — `IDWriteFont` 를 아직 들고 있는 이 자리에서 id 를 구한다.
+                                const fb_id = postscriptNameId(mf);
                                 // Retain the face in the cache; ownership stays with the context.
                                 // This keeps the face pointer stable for the atlas cache key.
-                                self.glyph_map.put(codepoint, .{ .face = face, .index = glyph_index }) catch {
+                                self.glyph_map.put(codepoint, .{ .face = face, .index = glyph_index, .font_id = fb_id }) catch {
                                     // On put failure, release to avoid leak and return owned.
-                                    return .{ .face = face, .index = glyph_index, .owned = true };
+                                    return .{ .face = face, .index = glyph_index, .owned = true, .font_id = fb_id };
                                 };
-                                return .{ .face = face, .index = glyph_index, .owned = false };
+                                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = fb_id };
                             }
                             _ = face.vtable.Release(face);
                         }
