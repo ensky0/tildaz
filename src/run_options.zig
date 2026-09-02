@@ -108,7 +108,7 @@ test "parseGrid 는 COLSxROWS 를 읽는다" {
 
 test "parseGrid 는 잘못된 형식을 거른다" {
     for ([_][]const u8{
-        "", "120", "120x", "x40", "120x40x2", "0x40", "120x0",
+        "",      "120",      "120x",    "x40",       "120x40x2", "0x40", "120x0",
         "-1x40", "120 x 40", "abcxdef", "999999x40",
     }) |bad| {
         try std.testing.expectEqual(@as(?Grid, null), parseGrid(bad));

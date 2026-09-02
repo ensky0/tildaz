@@ -148,8 +148,14 @@ test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
     const filler = "PAD=" ++ ("x" ** 512);
     const entries = [_:null]?[*:0]const u8{
         "TILDAZ_519=ok",
-        filler, filler, filler, filler,
-        filler, filler, filler, filler,
+        filler,
+        filler,
+        filler,
+        filler,
+        filler,
+        filler,
+        filler,
+        filler,
     };
     const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } } };
 
