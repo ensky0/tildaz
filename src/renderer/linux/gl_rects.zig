@@ -15,7 +15,7 @@
 //! 하지 않고 top-down 을 그대로 쓴다 (#277 S0-b 에서 실측 확인).
 
 const std = @import("std");
-const egl = @import("egl.zig");
+const egl = @import("../../host/linux/egl.zig");
 const ui_rect = @import("../../ui_rect.zig");
 
 /// #343 이 만든 공통 사각형 타입을 그대로 쓴다 — 탭바 · scrollbar · command menu

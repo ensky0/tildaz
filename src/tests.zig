@@ -62,10 +62,11 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("font/linux/font.zig");
             _ = @import("host/linux/dialog_layout.zig");
             _ = @import("host/linux/gbm.zig");
-            _ = @import("host/linux/gl_atlas.zig");
-            _ = @import("host/linux/gl_rects.zig");
-            _ = @import("host/linux/gl_text.zig");
             _ = @import("host/linux/gsettings_hotkey.zig");
+            // #586 — GL 렌더 코드는 `renderer/linux/` 로 옮겼다 (macOS · Windows 와 배치 통일).
+            _ = @import("renderer/linux/gl_atlas.zig");
+            _ = @import("renderer/linux/gl_rects.zig");
+            _ = @import("renderer/linux/gl_text.zig");
             _ = @import("host/linux/hotkey_format.zig");
             _ = @import("host/linux/kglobalaccel.zig");
             _ = @import("host/linux/instance_identity.zig");

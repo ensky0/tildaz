@@ -20,7 +20,7 @@
 //! 텍셀을 그대로 낸다.
 
 const std = @import("std");
-const egl = @import("egl.zig");
+const egl = @import("../../host/linux/egl.zig");
 const gl_atlas = @import("gl_atlas.zig");
 
 /// 정점 — 위치(px) + atlas UV(0..1) + fg 색.

@@ -26,11 +26,11 @@
 //! 배치 규칙을 쓰는 값이 더 크다.
 
 const std = @import("std");
-const egl = @import("egl.zig");
+const egl = @import("../../host/linux/egl.zig");
 const font = @import("../../font/linux/font.zig");
 const freetype = @import("../../font/linux/freetype.zig");
-const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
-const software_terminal = @import("software_terminal.zig");
+const atlas_common = @import("../glyph_atlas_common.zig");
+const software_terminal = @import("../../host/linux/software_terminal.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const log = @import("../../log.zig");
 
