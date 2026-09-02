@@ -321,6 +321,12 @@ pub const MetalRenderer = struct {
     current_drawable: objc.id = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
+    /// #585 — **이 프레임에** 안전망이 atlas 를 비웠는가. 비웠으면 "이번 프레임에 담은 것은
+    /// 다음 프레임 시작에 올린다" (2-frame) 는 전제가 깨진다 — 비운 뒤 담은 글리프는 이
+    /// 프레임의 남은 draw 시점에 텍스처에 없고, 정적 화면이면 다음 렌더가 없어 영영 안 보인다.
+    /// 그래서 그 뒤의 draw 앞에는 매번 올린다 (`uploadAndRestartPass`). 정상 프레임에는 비용이
+    /// 없다. 프레임 시작에 내린다.
+    atlas_reset_this_frame: bool = false,
     /// renderTabBar 가 받은 args 보관. endFrame 에서 z-order 상 terminal
     /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
@@ -616,6 +622,7 @@ pub const MetalRenderer = struct {
 
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
         self.current_cmd_buf = cmd_buf;
+        self.atlas_reset_this_frame = false;
 
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
         const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
@@ -1095,10 +1102,9 @@ pub const MetalRenderer = struct {
                             const fg = resolveFg(st, &rr, &colors, sel, inv);
 
                             if (text_count >= MAX_CELLS) {
-                                // #584 ① — 이 flush 도 **올린 뒤에** 그려야 한다. atlas 가 찬
-                                // 적이 있는 프레임에서는 담긴 픽셀이 아직 텍스처에 없다.
-                                if (self.atlas.dirty and self.atlas.resets > 0) {
-                                    if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                                // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                                if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                                    if (self.uploadAndRestartPass()) |ne| encoder = ne;
                                 }
                                 self.drawTextInstances(encoder, text_buf[0..text_count]);
                                 text_count = 0;
@@ -1151,9 +1157,9 @@ pub const MetalRenderer = struct {
 
                     // 개별 경로 — 런이 1 개거나 배칭이 실패했을 때. 렌더가 틀리느니 느린 게 낫다.
                     if (text_count >= MAX_CELLS) {
-                        // #584 ① — 위와 같은 규칙이다.
-                        if (self.atlas.dirty and self.atlas.resets > 0) {
-                            if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                        // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                        if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                            if (self.uploadAndRestartPass()) |ne| encoder = ne;
                         }
                         self.drawTextInstances(encoder, text_buf[0..text_count]);
                         text_count = 0;
@@ -1233,9 +1239,9 @@ pub const MetalRenderer = struct {
                 }
 
                 if (text_count >= MAX_CELLS) {
-                    // #584 ① — 위와 같은 규칙이다.
-                    if (self.atlas.dirty and self.atlas.resets > 0) {
-                        if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                    // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                    if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                        if (self.uploadAndRestartPass()) |ne| encoder = ne;
                     }
                     self.drawTextInstances(encoder, text_buf[0..text_count]);
                     text_count = 0;
@@ -1290,16 +1296,9 @@ pub const MetalRenderer = struct {
             }
         }
 
-        // #584 ① — **마지막 구간을 올린 뒤에 그린다.** 이 renderer 는 atlas 를 프레임 시작에
-        // 한 번만 올리므로 (2-frame 정책), 이 프레임에 담은 것은 그냥 두면 다음 프레임에나
-        // 텍스처에 나타난다. 그러면 마지막 구간의 글자가 이 프레임에서 빠지고, 어디가 마지막
-        // 구간인지가 프레임마다 달라 화면이 흔들린다.
-        //
-        // atlas 가 한 번도 안 찬 프레임에서는 이 재시작이 일어나지 않는다 — `dirty` 만 보고
-        // 끊으면 매 프레임 pass 가 갈리므로, **찬 적이 있을 때만** (`resets` 가 늘었을 때만)
-        // 마지막 구간을 올린다.
-        if (self.atlas.dirty and self.atlas.resets > 0) {
-            if (self.restartPassAfterAtlasFull()) |new_encoder| encoder = new_encoder;
+        // #585 — 이 프레임에 안전망이 비웠으면 마지막 구간도 올린 뒤에 그린다.
+        if (self.atlas_reset_this_frame and self.atlas.dirty) {
+            if (self.uploadAndRestartPass()) |ne| encoder = ne;
         }
         if (text_count > 0) self.drawTextInstances(encoder, text_buf[0..text_count]);
         // Block element pass flush — text pass 안에서 bg_buf 재사용해 누적된 것.
@@ -1873,7 +1872,10 @@ pub const MetalRenderer = struct {
     /// offset 이라 pass 를 넘어도 유효하다.
     ///
     /// 실패하면 `null` 을 돌려준다 — 호출자는 그 셀을 건너뛰고 프레임을 끝낸다.
-    fn restartPassAfterAtlasFull(self: *MetalRenderer) objc.id {
+    /// #585 — pass 를 끊고, GPU 가 끝나기를 기다린 뒤, dirty 구간을 올리고, 새 pass 를 연다.
+    /// **비우지는 않는다.** 두 곳이 쓴다 — 안전망 (`restartPassAfterAtlasFull`, 비우기 포함) 과,
+    /// 안전망이 돈 프레임의 이후 draw 들 (비운 뒤 담은 글리프를 그리기 전에 올려야 한다).
+    fn uploadAndRestartPass(self: *MetalRenderer) objc.id {
         const old_encoder = self.current_encoder;
         if (old_encoder == null) return null;
         const drawable = self.current_drawable;
@@ -1882,31 +1884,29 @@ pub const MetalRenderer = struct {
 
         objc.msgSendVoid(old_encoder, objc.sel("endEncoding"));
 
-        // #585 — **GPU 가 앞 pass 를 끝낼 때까지 기다린다.** Metal 은 CPU 쓰기와 GPU 읽기의
-        // 순서를 대신 지켜 주지 않는다 — `replaceRegion` 은 즉시 복사라 최종 상태만 보였고,
-        // blit 도 staging 을 다음 구간이 덮어써서 마지막 내용을 올렸다. 두 번 실패한 뿌리가
-        // 같다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Apple 문서가 정확히 이것을
-        // 요구한다 — *"ensure these operations complete before calling replaceRegion"*.
+        // **GPU 가 앞 pass 를 끝낼 때까지 기다린다.** Metal 은 CPU 쓰기와 GPU 읽기의 순서를
+        // 대신 지켜 주지 않는다 — `replaceRegion` 은 즉시 복사라 최종 상태만 보였고, blit 도
+        // staging 을 다음 구간이 덮어써서 마지막 내용을 올렸다. 뿌리가 같다: **앞 pass 가
+        // 텍스처를 다 읽기 전에 CPU 가 덮었다.** Apple 문서가 정확히 이것을 요구한다 —
+        // *"ensure these operations complete before calling replaceRegion"*.
         //
-        // 그래서 앞 cmd_buf 를 present 없이 commit 하고 끝나기를 기다린다. drawable 에 그린 것은
-        // Store 로 남고, present 는 프레임 끝의 마지막 cmd_buf 가 한다. Windows · Linux 는
-        // 드라이버가 이 순서를 만들어 주지만 (`UpdateSubresource` · `glTexSubImage2D`) macOS 는
-        // 우리가 만든다 — 계약은 같고 주체만 다르다 (SPEC §12.6).
-        //
-        // 비용은 구간마다 GPU 대기 한 번이다. 이 경로는 `grow` 가 상한 (`MAX_ATLAS_SIZE`) 에
-        // 닿았을 때만 돌므로 정상 경로에는 영향이 없다.
+        // 앞 cmd_buf 를 present 없이 commit 하고 끝나기를 기다린다. drawable 에 그린 것은 Store
+        // 로 남고, present 는 프레임 끝의 마지막 cmd_buf 가 한다. Windows · Linux 는 드라이버가
+        // 이 순서를 만들어 주지만 (`UpdateSubresource` · `glTexSubImage2D`) macOS 는 우리가 만든다
+        // — 계약은 같고 주체만 다르다 (SPEC §12.6). 비용은 GPU 대기 한 번이고, 안전망이 돈
+        // 프레임에서만 일어난다.
         objc.msgSendVoid(old_cmd_buf, objc.sel("commit"));
         objc.msgSendVoid(old_cmd_buf, objc.sel("waitUntilCompleted"));
 
-        // 새 cmd_buf — 이후 blit 과 pass 가 여기 들어가고, `endFrame` 이 이것을 present 한다.
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
         if (cmd_buf == null) return null;
         self.current_cmd_buf = cmd_buf;
 
         // 이제 안전하다 — 앞 pass 가 텍스처와 staging 을 다 읽었다.
-        self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
-        self.atlas.dirty = false;
-        self.atlas.resetFull();
+        if (self.atlas.dirty) {
+            self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
+            self.atlas.dirty = false;
+        }
 
         const texture = objc.msgSend(drawable, objc.sel("texture"));
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -1920,6 +1920,16 @@ pub const MetalRenderer = struct {
 
         const enc = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
         self.current_encoder = enc;
+        return enc;
+    }
+
+    /// #584 ① — atlas 가 **프레임 중간에** 찼다 (`grow` 상한). 이미 그린 것을 지키고 비운 뒤
+    /// 이어 그린다. `uploadAndRestartPass` + 비우기다.
+    fn restartPassAfterAtlasFull(self: *MetalRenderer) objc.id {
+        const enc = self.uploadAndRestartPass();
+        if (enc == null) return null;
+        self.atlas.resetFull();
+        self.atlas_reset_this_frame = true;
         return enc;
     }
 

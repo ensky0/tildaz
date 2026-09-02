@@ -1787,7 +1787,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 
 **macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
 
-그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). drawable 에 그린 것은 Store 로 남고 present 는 프레임 끝의 마지막 cmd_buf 가 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다.
+그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). drawable 에 그린 것은 Store 로 남고 present 는 프레임 끝의 마지막 cmd_buf 가 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다. **비운 프레임에서는 그 뒤의 draw 앞에도 매번 올린다** (`atlas_reset_this_frame`) — 비우면 *"이번 프레임에 담은 것은 다음 프레임 시작에 올린다"* 는 2-frame 전제가 깨져서, 비운 뒤 담은 글리프가 그 프레임의 남은 draw 에 없고 정적 화면이면 다음 렌더가 없어 영영 안 보인다 (실측: 아랫부분 5.5 % 어긋남). 정상 프레임에는 이 비용이 없다.
 
 **macOS 실측** (MacBook Pro M5 Pro · macOS 26.6.2 · 내장 3024×1964 · Menlo 15pt · `cell 19x39`). `MAX_ATLAS_SIZE = INITIAL_ATLAS_SIZE` 로 두어 `grow` 를 막고 ① 만 돌게 했다. 화면은 mark 를 둘 쌓은 cluster **6,000 종** (150 칸 × 40 줄).
 
@@ -1875,6 +1875,11 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 | macOS · Monaco | 2048² | 약 **5,880** |
 | Linux · DejaVu Sans Mono 15pt · `cell 14x31` (scale 1.6) · **gray** | 2048² | **8,971 ~ 9,156** (`filled_y` 2,042~2,047) |
 | Linux · Noto Color Emoji · 같은 기기 · **color** | 2048² | emoji **210 종** (`filled_y` 1,935) |
+| macOS · Menlo 15pt · `cell 19x39` (scale 2.0) · 내장 3024×1964 · 17 화면 누적 ([#585](https://github.com/ensky0/tildaz/issues/585)) | 2048² → 4096² 시점 | `clusters 5,134` |
+| 같은 회차 | 4096² → 8192² 시점 | `clusters 15,441` |
+| 같은 회차 | **8192² 가 찬 시점** | `glyphs 195` + `clusters 56,835` = **57,030** (`filled_y 8,165`) |
+
+**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`applyScale`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 
