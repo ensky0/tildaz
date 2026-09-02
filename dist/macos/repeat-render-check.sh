@@ -66,10 +66,11 @@ echo "   결과 : $OUT"
 echo "   ⚠️ 도는 동안 기기를 만지지 않는다. 창이 회차마다 떴다 사라진다."
 echo
 
-# 사용자의 일상 인스턴스를 건드리지 않도록 `--instance 9` 로만 띄운다.
+# 사용자의 일상 인스턴스를 건드리지 않도록 `--instance 9` 로만 띄우고, 내릴 때도 그 인스턴스만 잡는다
+# (`pkill -x tildaz` 는 instance 0 도 죽였다 — #583 A12).
 for i in $(seq 1 "$N"); do
   printf "  회차 %2d/%d ... " "$i" "$N"
-  pkill -x tildaz 2>/dev/null
+  pkill -f "tildaz --instance 9" 2>/dev/null
   sleep 0.5
 
   # `disown` 은 아래 `pkill` 로 내릴 때 셸이 "Terminated: 15" 를 찍는 것을 막는다.
@@ -87,7 +88,7 @@ for i in $(seq 1 "$N"); do
     echo "캡처 실패 (화면이 잠겼는지 확인한다)"
   fi
 
-  pkill -x tildaz 2>/dev/null
+  pkill -f "tildaz --instance 9" 2>/dev/null
   sleep 0.5
 done
 
@@ -135,7 +136,7 @@ fi
 
 echo
 echo "== 정리 =="
-pkill -x tildaz 2>/dev/null
+pkill -f "tildaz --instance 9" 2>/dev/null
 rm -f "$HOME/.config/tildaz/config_9.toml"   # 안 지우면 로그온 때 그 인스턴스가 같이 뜬다
 echo "  tildaz 프로세스 $(pgrep -x tildaz | wc -l | tr -d ' ') 개 · config_9.toml 제거"
 echo "  캡처는 $OUT 에 남겼다 (판정이 끝나면 지운다)."

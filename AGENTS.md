@@ -112,8 +112,11 @@ git rebase origin/main
 **에이전트 memory 기능은 쓰지 않아요.** 사용자는 여러 머신을 오가며 작업하는데 (아래 `# 실행 환경`
 의 머신 목록), memory 는 **기록한 그 머신에만** 남아서 *한쪽에서만 보이는 사실*을 만들어요 — 다른
 머신으로 옮기거나 같은 노트북을 다른 OS 로 부팅하면 없는 것과 같아요. 남길 가치가 있는 내용은
-**관련 GitHub 이슈 댓글**에 적어요. 어느 머신에서든 같이 보이고, 바로 위의 "작업 기록은 GitHub
-이슈에" 와 같은 방향이에요. (2026-08-05 사용자 지적 — 세션마다 반복돼서 문서에 적어요.)
+**레포에서 관리되는 곳**에 적어요 — 작업 기록은 **관련 GitHub 이슈 댓글**, 검증 절차 · 함정 · 도구
+사용법은 **이 문서 (AGENTS.md)** 나 스크립트 머리 주석, 동작 사양은 **SPEC.md**, 재사용할 스크립트는
+`dist/<platform>/` 에 커밋. 어느 머신에서든 같이 보이고, 바로 위의 "작업 기록은 GitHub 이슈에" 와
+같은 방향이에요. (2026-08-05 사용자 지적 — 세션마다 반복돼서 문서에 적어요. 2026-09-02 에 또
+반복됐어요 — 세션이 이 절을 읽기 전에 memory 를 썼어요. **이 문서를 끝까지 읽는 것이 먼저예요.**)
 
 **용어 — Wayland `advertise` 를 "광고 / 미광고" 로 옮기지 않아요.** compositor 가 `wl_registry.global` 로 client 에게 지원 protocol 을 알리는 행위 (*advertise*) 를 "광고" 로 직역하면 한국어로 의미가 안 통해요 (사용자 두 번 지적). 대신 "client 에게 노출 (*advertise*)", "지원 통보가 온다 / 안 온다", "`wl_registry.global` 로 알린다", 또는 영어 *advertised* / *not advertised* 를 그대로 써요. "이 capability 는 compositor 에 없음" 처럼 풀어 써도 좋아요. 이슈 / 답변 / 공유 문서 / 코드 주석 / 커밋 메시지 모두 적용.
 
@@ -539,6 +542,55 @@ dist/macos/repeat-render-check.sh 24 6 /path/show.sh    # 다른 화면으로
 - **한 회차를 먼저 돌려 조건을 확인하고 시작해요.** 앱이 뜨는지 · 캡처 크기 · 주사율
   (`[startup] display timing`) 을 보고 나서 전체를 돌려요. 이걸 건너뛰어 10 회를 통째로
   버린 적이 있어요 (앱이 매 회차 죽고 있었는데 모르고 끝까지 돌렸어요).
+
+# macOS — 렌더 결과와 그리는 과정을 픽셀로 검증하는 법
+
+렌더 경로 (atlas · 업로드 · pass 구조) 를 바꿨을 때 쓰는 절차예요. #584 · #585 · #591 에서 다듬었어요.
+**최종 그림 한 장만 보지 않아요 — 그리는 과정도 봐요** (2026-09-02 사용자 지시). 도구는 셋이에요.
+
+| 도구 | 무엇 |
+|---|---|
+| [`dist/macos/render-ab-shot.sh`](dist/macos/render-ab-shot.sh) | 두 앱 판을 같은 화면으로 찍어 **최종 그림**을 픽셀 수로 견줘요 |
+| [`dist/macos/render-process-check.sh`](dist/macos/render-process-check.sh) | 기동 직후부터 촘촘히 찍어 **이웃 프레임 차이 · 최종 대비 차이**를 내요 — 과정이 단계적으로 채워지면 여기서 보여요 |
+| [`dist/screens/clusters.py`](dist/screens/clusters.py) | 검증 화면 생성기 — `many` (일반 · grow 0) · `stack2` (좁은 atlas 를 채움) · `overflow` (17 화면 누적 · 8192² 상한) · `mini` (프레임 수 계측) |
+
+```sh
+python3 dist/screens/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
+git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=ReleaseFast -Dsimd=true)   # 기준판
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true                             # 수정판
+dist/macos/render-ab-shot.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ.app zig-out/TildaZ.app      # 정적 → 0 px
+dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
+```
+
+- **기준판은 별도 worktree 에서 빌드해요.** `.zig-cache` 를 나누지 않으면 두 판의 바이너리가 같아져
+  "0 차이" 가짜 통과가 나요. 스크립트가 md5 를 찍어 주니 다른지 봐요.
+- **픽셀 수는 `-compose difference` + `-threshold 0` 로 세요.** `magick compare -metric AE` 는 소수 ·
+  지수 표기를 내서 (Linux 회차가 실측으로 걸렸어요) 행별 합이 안 맞아요.
+- **픽셀 대조에는 로그의 계수도 같이 봐요** — `atlas full` 회수가 `pack fail` 같은 원인 로그 회수와
+  맞는지. #585 에서 pass 구간화 시절 잔재 코드가 4,096 인스턴스마다 atlas 를 비우며 우연히 그림을 지켜
+  `0 px` 가 났고 (`atlas full` 1,060 회 vs 원인 3 회 — 거짓 full), 잔재를 지우자 5.5 % 어긋났어요.
+  임시 · 잔재 코드를 지운 뒤에는 **반드시 다시 견줘요.**
+- **atlas 안전망 경로를 강제로 돌리려면** `MAX_ATLAS_SIZE = INITIAL_ATLAS_SIZE` (예 1024) 로 빌드한
+  판을 `INITIAL = 4096` (그 화면으로 안 넘침) 판과 견줘요 — 안전망이 정확하면 `0 px` 예요. 상수는 끝나면
+  되돌리고 `git diff` 로 확인해요.
+- **과정 캡처의 첫 장이 최종과 크게 다르면 "present 전 투명 창" 인지 먼저 가르세요** — 배경색
+  `srgba(0,0,0,0)` · 배경 아닌 픽셀 0 이면 아직 아무것도 안 그린 거예요 (안전망이 GPU 를 여러 번 기다리는
+  판은 첫 present 가 늦어요). 스크립트가 그 판정을 함께 찍어요.
+- **"한 프레임 늦음" 은 캡처로 못 가르세요** — 캡처 간격 20~50 ms 가 60 Hz 한 프레임 (16 ms) 보다
+  길어요 (main 의 2-frame 지연도 30 장 전부 0 이었어요). 대신 perf 종료 덤프의 `render calls` (프레임당
+  1) 를 봐요 — `clusters.py mini` 가 스스로 끝나는 화면이라 `atexit` 덤프가 남아요 (`pkill` 로 내리면
+  덤프가 없어요). 출력이 크면 여러 프레임에 걸쳐 도착해 ±2 노이즈가 나니 작은 화면으로 **3 회 반복**하고,
+  구조로 확실한 것과 수치로 보인 것을 갈라 적어요 (#591 2 단계는 기대한 −1 프레임이 수치로 안 보였어요).
+- **사용자에게 보여 줄 창은 서명 빌드를 `open` 으로 띄워요** — `zig build -Dmacos-sign-identity=TildazLocal …`
+  뒤 `open -n -a zig-out/TildaZ.app --args --instance 9`. 바이너리를 직접 실행하면 TCC 권한이 안 맞아
+  안내 다이얼로그가 뜨고 키 입력이 막혀요 (아래 `# 실행 환경` 의 같은 규칙 — 2026-09-02 에 또 걸렸어요).
+  캡처만 하는 무입력 회차는 직접 실행도 동작해요.
+- **화면이 잠겨 있으면 캡처가 전부 실패해요** (`Display 1 Shield`). 사용자가 자리를 비우면 30 분
+  넘게 이어지니 `ioreg -n Root -d1 -r | grep -c CGSSessionScreenIsLocked` 가 0 이 될 때까지 백그라운드로
+  기다리고, 그동안 캡처가 필요 없는 일 (빌드 · 문서) 을 먼저 해요. `caffeinate -disu` 는 검증 동안만 켜요.
+- 도구는 `--instance 9` 로만 띄우고 내릴 때도 `pkill -f "tildaz --instance 9"` 로 **그 인스턴스만** 잡아요
+  (`pkill -x tildaz` 는 사용자의 instance 0 도 죽여요 — #583 A12). 실기라서 `# 실행 환경` 대로
+  **시작 전에 창이 몇 번 뜨는지 알리고** 그동안 키 · 마우스를 건드리지 말라고 해요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
