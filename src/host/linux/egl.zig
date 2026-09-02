@@ -82,6 +82,8 @@ pub const GL_RGBA: i32 = 0x1908;
 pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
 pub const GL_TEXTURE0: u32 = 0x84C0;
 pub const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
+/// #586 — atlas `grow` 의 상한 조회 (`glGetIntegerv`). GLES2 의 보장 최소값은 64 라 실제로 물어야 한다.
+pub const GL_MAX_TEXTURE_SIZE: u32 = 0x0D33;
 pub const GL_CLAMP_TO_EDGE: i32 = 0x812F;
 pub const GL_TEXTURE_WRAP_S: u32 = 0x2802;
 pub const GL_TEXTURE_WRAP_T: u32 = 0x2803;
