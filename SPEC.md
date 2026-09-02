@@ -1781,13 +1781,30 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 |---|---|---|
 | **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
 | **Linux** | `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
-| **macOS** | `is_full` 을 세우고 호출자가 처리하되, **먼저 ② 의 `grow` 를 시도한다.** 키우면 이 경로가 아예 안 돈다 | **상한 경로만.** 아래 ⚠️ |
+| **macOS** | `is_full` 을 세우고 호출자가 처리한다 — **앞 cmd_buf 를 commit 하고 GPU 가 끝나기를 기다린 뒤** 올리고 비우고 새 pass 로 재시도 (`restartPassAfterAtlasFull`). **먼저 ② 의 `grow` 를 시도**하므로 상한에서만 돈다 | **사양대로.** 실기 확인 |
 
 **Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
 
-⚠️ **macOS 는 ① 을 완전히 만족할 수 없다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). 그래서 render pass 를 끊어 그 사이에 올려도 **모든 pass 가 최종 텍스처를 읽는다** — Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다. 실측으로 확인했다: 안전망만으로는 기준판과 23~38 % 가 어긋났다.
->
-> **그래서 macOS 는 ② 의 `grow` 를 주 경로로 쓴다** (아래). 키우면 프레임 중간에 비우는 상황 자체가 없어서 이 문제가 성립하지 않는다. ① 은 `MAX_ATLAS_SIZE` 에 닿았을 때만 도는 마지막 방어이고, 그 경로에서는 그림이 어긋날 수 있다.
+**macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
+
+그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). drawable 에 그린 것은 Store 로 남고 present 는 프레임 끝의 마지막 cmd_buf 가 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다. **비운 프레임에서는 그 뒤의 draw 앞에도 매번 올린다** (`atlas_reset_this_frame`) — 비우면 *"이번 프레임에 담은 것은 다음 프레임 시작에 올린다"* 는 2-frame 전제가 깨져서, 비운 뒤 담은 글리프가 그 프레임의 남은 draw 에 없고 정적 화면이면 다음 렌더가 없어 영영 안 보인다 (실측: 아랫부분 5.5 % 어긋남). 정상 프레임에는 이 비용이 없다.
+
+**macOS 실측** (MacBook Pro M5 Pro · macOS 26.6.2 · 내장 3024×1964 · Menlo 15pt · `cell 19x39`). `MAX_ATLAS_SIZE = INITIAL_ATLAS_SIZE` 로 두어 `grow` 를 막고 ① 만 돌게 했다. 화면은 mark 를 둘 쌓은 cluster **6,000 종** (150 칸 × 40 줄).
+
+| | 4096 (기준 · 안 넘침) | 1024 (① 만 돈다) |
+|---|---|---|
+| `atlas full` | 0 회 | 한 화면에 **1,672 회** |
+| 그림 | — | **기준판과 `0 / 4,584,100 px`** |
+
+**업로드 단위도 갈렸다가 이제 비슷하다.**
+
+| platform | 텍스처에 올리는 단위 |
+|---|---|
+| Windows | 글리프 하나 (`UpdateSubresource` + `D3D11_BOX`) |
+| Linux | 글리프 하나 (`glTexSubImage2D`) |
+| macOS | **dirty 구간** (`dirty_min_y`~`dirty_max_y`, blit encoder) — 프레임 시작과 안전망 구간 경계에서 |
+
+macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸다. blit 은 영역 지정이 자연스러워 dirty 구간만 올린다. staging buffer 는 **atlas 마다 따로** 둔다 — blit 은 GPU 가 나중에 실행할 때 buffer 를 읽으므로, 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의 blit 에 실린다 (실측으로 탭 아이콘이 깨졌다).
 
 **재시도는 한 번뿐이다** (세 platform 공통). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 
@@ -1858,6 +1875,11 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 | macOS · Monaco | 2048² | 약 **5,880** |
 | Linux · DejaVu Sans Mono 15pt · `cell 14x31` (scale 1.6) · **gray** | 2048² | **8,971 ~ 9,156** (`filled_y` 2,042~2,047) |
 | Linux · Noto Color Emoji · 같은 기기 · **color** | 2048² | emoji **210 종** (`filled_y` 1,935) |
+| macOS · Menlo 15pt · `cell 19x39` (scale 2.0) · 내장 3024×1964 · 17 화면 누적 ([#585](https://github.com/ensky0/tildaz/issues/585)) | 2048² → 4096² 시점 | `clusters 5,134` |
+| 같은 회차 | 4096² → 8192² 시점 | `clusters 15,441` |
+| 같은 회차 | **8192² 가 찬 시점** | `glyphs 195` + `clusters 56,835` = **57,030** (`filled_y 8,165`) |
+
+**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`applyScale`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 
@@ -1865,7 +1887,7 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 #### ② 계속 — 차면 키운다 (macOS)
 
-**macOS 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), macOS 가 ① 을 완전히 만족할 수 없기 때문에 여기서는 이것이 **주 경로**다.
+**macOS 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), ① 도 완전하지만 구간마다 GPU 를 기다려야 하므로, **차기 전에 키우는 것이 주 경로**다 — ① 은 상한에서만 돈다.
 
 | | |
 |---|---|

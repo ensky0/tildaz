@@ -256,6 +256,21 @@ pub const MetalRenderer = struct {
     bg_buffer: objc.id,
     text_buffer: objc.id,
     atlas_texture: objc.id,
+    /// #585 — atlas 업로드용 staging buffer. `replaceRegion` 이 **즉시 CPU 복사이고 GPU 작업과
+    /// 순서가 보장되지 않아서** (Apple 문서: *"does not synchronize against GPU accesses"*)
+    /// 그것을 쓰면 프레임 중간에 텍스처를 갈 수 없다. blit encoder 로 올리면 복사가 **command
+    /// buffer 안**에 들어가 순서가 지켜진다.
+    ///
+    /// Windows (`UpdateSubresource`) · Linux (`glTexSubImage2D`) 는 글리프 단위로 즉시 올리는데
+    /// macOS 만 프레임마다 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 올리고
+    /// 있었다. blit 은 영역 지정이 자연스러워 `dirty_min_y`~`dirty_max_y` 만 올린다.
+    /// ⚠️ **atlas 마다 따로여야 한다.** blit 은 `replaceRegion` 과 달리 **GPU 가 나중에
+    /// 실행할 때** buffer 를 읽는다. 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의
+    /// blit 에 실려 **본문 blit 이 탭 데이터를 읽는다** (실측으로 화면이 깨졌다).
+    staging_buffer: objc.id,
+    staging_bytes: u32 = 0,
+    tab_staging_buffer: objc.id,
+    tab_staging_bytes: u32 = 0,
     /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.size` 가 이보다 커지면
     /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
     atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
@@ -306,6 +321,12 @@ pub const MetalRenderer = struct {
     current_drawable: objc.id = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
+    /// #585 — **이 프레임에** 안전망이 atlas 를 비웠는가. 비웠으면 "이번 프레임에 담은 것은
+    /// 다음 프레임 시작에 올린다" (2-frame) 는 전제가 깨진다 — 비운 뒤 담은 글리프는 이
+    /// 프레임의 남은 draw 시점에 텍스처에 없고, 정적 화면이면 다음 렌더가 없어 영영 안 보인다.
+    /// 그래서 그 뒤의 draw 앞에는 매번 올린다 (`uploadAndRestartPass`). 정상 프레임에는 비용이
+    /// 없다. 프레임 시작에 내린다.
+    atlas_reset_this_frame: bool = false,
     /// renderTabBar 가 받은 args 보관. endFrame 에서 z-order 상 terminal
     /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
@@ -425,6 +446,9 @@ pub const MetalRenderer = struct {
 
         // constants buffer = float4 (screen_w, screen_h, atlas_w, atlas_h).
         const const_buf = createBuffer(device, 16);
+        // #585 — atlas 전체를 담을 수 있는 staging (grow 하면 재생성한다).
+        const staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
+        const tab_staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
         const tab_const_buf = createBuffer(device, 16);
 
         const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
@@ -469,6 +493,10 @@ pub const MetalRenderer = struct {
             .bg_buffer = bg_buf,
             .text_buffer = text_buf,
             .atlas_texture = atlas_tex,
+            .staging_buffer = staging,
+            .staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
+            .tab_staging_buffer = tab_staging,
+            .tab_staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
             .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
             .tab_constants_buffer = tab_const_buf,
@@ -594,6 +622,7 @@ pub const MetalRenderer = struct {
 
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
         self.current_cmd_buf = cmd_buf;
+        self.atlas_reset_this_frame = false;
 
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
         const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
@@ -613,6 +642,17 @@ pub const MetalRenderer = struct {
         };
         const setClearColorFn: *const fn (objc.id, objc.SEL, ClearColor) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         setClearColorFn(att0, objc.sel("setClearColor:"), clear);
+
+        // #585 — **blit 은 render encoder 밖에서 해야 한다** (Metal 은 command buffer 당 encoder
+        // 하나다). 그래서 atlas 업로드를 encoder 를 만들기 **전에** 한다. 예전 `replaceRegion`
+        // 은 encoder 와 무관했지만 GPU 와 순서가 안 맞았다 (SPEC §12.6 ①).
+        self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
+        if (self.atlas.dirty) {
+            self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
+            self.atlas.dirty = false;
+        }
+        self.syncAtlasTexture(&self.tab_atlas, &self.tab_atlas_texture, &self.tab_atlas_texture_size);
+        self.uploadTabAtlasIfDirty();
 
         const encoder = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
         if (encoder == null) {
@@ -650,16 +690,8 @@ pub const MetalRenderer = struct {
         self.panes_drawn += 1;
         self.updateConstants();
 
-        self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
-        if (self.atlas.dirty) {
-            self.uploadAtlas(&self.atlas, self.atlas_texture);
-            self.atlas.dirty = false;
-        }
-        // 탭 glyph/icon atlas도 main atlas와 같은 2-frame 정책: 이전 frame에서
-        // 만든 내용을 draw 전에 upload한다. 삽입 직후 같은 Metal encoder에서
-        // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
-        self.syncAtlasTexture(&self.tab_atlas, &self.tab_atlas_texture, &self.tab_atlas_texture_size);
-        self.uploadTabAtlasIfDirty();
+        // #585 — atlas 업로드는 **프레임 시작** (`renderTabBar` 의 encoder 생성 전) 으로 옮겼다.
+        // blit 이 render encoder 밖에서 일어나야 하기 때문이다.
 
         self.renderTerminalContent(encoder, pane);
     }
@@ -1070,10 +1102,9 @@ pub const MetalRenderer = struct {
                             const fg = resolveFg(st, &rr, &colors, sel, inv);
 
                             if (text_count >= MAX_CELLS) {
-                                // #584 ① — 이 flush 도 **올린 뒤에** 그려야 한다. atlas 가 찬
-                                // 적이 있는 프레임에서는 담긴 픽셀이 아직 텍스처에 없다.
-                                if (self.atlas.dirty and self.atlas.resets > 0) {
-                                    if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                                // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                                if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                                    if (self.uploadAndRestartPass()) |ne| encoder = ne;
                                 }
                                 self.drawTextInstances(encoder, text_buf[0..text_count]);
                                 text_count = 0;
@@ -1126,9 +1157,9 @@ pub const MetalRenderer = struct {
 
                     // 개별 경로 — 런이 1 개거나 배칭이 실패했을 때. 렌더가 틀리느니 느린 게 낫다.
                     if (text_count >= MAX_CELLS) {
-                        // #584 ① — 위와 같은 규칙이다.
-                        if (self.atlas.dirty and self.atlas.resets > 0) {
-                            if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                        // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                        if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                            if (self.uploadAndRestartPass()) |ne| encoder = ne;
                         }
                         self.drawTextInstances(encoder, text_buf[0..text_count]);
                         text_count = 0;
@@ -1208,9 +1239,9 @@ pub const MetalRenderer = struct {
                 }
 
                 if (text_count >= MAX_CELLS) {
-                    // #584 ① — 위와 같은 규칙이다.
-                    if (self.atlas.dirty and self.atlas.resets > 0) {
-                        if (self.restartPassAfterAtlasFull()) |ne| encoder = ne;
+                    // #585 — 이 프레임에 안전망이 비웠으면 그 뒤 담은 글리프가 아직 텍스처에 없다.
+                    if (self.atlas_reset_this_frame and self.atlas.dirty) {
+                        if (self.uploadAndRestartPass()) |ne| encoder = ne;
                     }
                     self.drawTextInstances(encoder, text_buf[0..text_count]);
                     text_count = 0;
@@ -1265,16 +1296,9 @@ pub const MetalRenderer = struct {
             }
         }
 
-        // #584 ① — **마지막 구간을 올린 뒤에 그린다.** 이 renderer 는 atlas 를 프레임 시작에
-        // 한 번만 올리므로 (2-frame 정책), 이 프레임에 담은 것은 그냥 두면 다음 프레임에나
-        // 텍스처에 나타난다. 그러면 마지막 구간의 글자가 이 프레임에서 빠지고, 어디가 마지막
-        // 구간인지가 프레임마다 달라 화면이 흔들린다.
-        //
-        // atlas 가 한 번도 안 찬 프레임에서는 이 재시작이 일어나지 않는다 — `dirty` 만 보고
-        // 끊으면 매 프레임 pass 가 갈리므로, **찬 적이 있을 때만** (`resets` 가 늘었을 때만)
-        // 마지막 구간을 올린다.
-        if (self.atlas.dirty and self.atlas.resets > 0) {
-            if (self.restartPassAfterAtlasFull()) |new_encoder| encoder = new_encoder;
+        // #585 — 이 프레임에 안전망이 비웠으면 마지막 구간도 올린 뒤에 그린다.
+        if (self.atlas_reset_this_frame and self.atlas.dirty) {
+            if (self.uploadAndRestartPass()) |ne| encoder = ne;
         }
         if (text_count > 0) self.drawTextInstances(encoder, text_buf[0..text_count]);
         // Block element pass flush — text pass 안에서 bg_buf 재사용해 누적된 것.
@@ -1848,19 +1872,41 @@ pub const MetalRenderer = struct {
     /// offset 이라 pass 를 넘어도 유효하다.
     ///
     /// 실패하면 `null` 을 돌려준다 — 호출자는 그 셀을 건너뛰고 프레임을 끝낸다.
-    fn restartPassAfterAtlasFull(self: *MetalRenderer) objc.id {
+    /// #585 — pass 를 끊고, GPU 가 끝나기를 기다린 뒤, dirty 구간을 올리고, 새 pass 를 연다.
+    /// **비우지는 않는다.** 두 곳이 쓴다 — 안전망 (`restartPassAfterAtlasFull`, 비우기 포함) 과,
+    /// 안전망이 돈 프레임의 이후 draw 들 (비운 뒤 담은 글리프를 그리기 전에 올려야 한다).
+    fn uploadAndRestartPass(self: *MetalRenderer) objc.id {
         const old_encoder = self.current_encoder;
         if (old_encoder == null) return null;
         const drawable = self.current_drawable;
-        const cmd_buf = self.current_cmd_buf;
-        if (drawable == null or cmd_buf == null) return null;
+        const old_cmd_buf = self.current_cmd_buf;
+        if (drawable == null or old_cmd_buf == null) return null;
 
         objc.msgSendVoid(old_encoder, objc.sel("endEncoding"));
 
-        // 여기까지 담은 픽셀을 올린다 — 앞 pass 의 인스턴스가 이 자리를 가리킨다.
-        self.uploadAtlas(&self.atlas, self.atlas_texture);
-        self.atlas.dirty = false;
-        self.atlas.resetFull();
+        // **GPU 가 앞 pass 를 끝낼 때까지 기다린다.** Metal 은 CPU 쓰기와 GPU 읽기의 순서를
+        // 대신 지켜 주지 않는다 — `replaceRegion` 은 즉시 복사라 최종 상태만 보였고, blit 도
+        // staging 을 다음 구간이 덮어써서 마지막 내용을 올렸다. 뿌리가 같다: **앞 pass 가
+        // 텍스처를 다 읽기 전에 CPU 가 덮었다.** Apple 문서가 정확히 이것을 요구한다 —
+        // *"ensure these operations complete before calling replaceRegion"*.
+        //
+        // 앞 cmd_buf 를 present 없이 commit 하고 끝나기를 기다린다. drawable 에 그린 것은 Store
+        // 로 남고, present 는 프레임 끝의 마지막 cmd_buf 가 한다. Windows · Linux 는 드라이버가
+        // 이 순서를 만들어 주지만 (`UpdateSubresource` · `glTexSubImage2D`) macOS 는 우리가 만든다
+        // — 계약은 같고 주체만 다르다 (SPEC §12.6). 비용은 GPU 대기 한 번이고, 안전망이 돈
+        // 프레임에서만 일어난다.
+        objc.msgSendVoid(old_cmd_buf, objc.sel("commit"));
+        objc.msgSendVoid(old_cmd_buf, objc.sel("waitUntilCompleted"));
+
+        const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
+        if (cmd_buf == null) return null;
+        self.current_cmd_buf = cmd_buf;
+
+        // 이제 안전하다 — 앞 pass 가 텍스처와 staging 을 다 읽었다.
+        if (self.atlas.dirty) {
+            self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
+            self.atlas.dirty = false;
+        }
 
         const texture = objc.msgSend(drawable, objc.sel("texture"));
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -1874,6 +1920,16 @@ pub const MetalRenderer = struct {
 
         const enc = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
         self.current_encoder = enc;
+        return enc;
+    }
+
+    /// #584 ① — atlas 가 **프레임 중간에** 찼다 (`grow` 상한). 이미 그린 것을 지키고 비운 뒤
+    /// 이어 그린다. `uploadAndRestartPass` + 비우기다.
+    fn restartPassAfterAtlasFull(self: *MetalRenderer) objc.id {
+        const enc = self.uploadAndRestartPass();
+        if (enc == null) return null;
+        self.atlas.resetFull();
+        self.atlas_reset_this_frame = true;
         return enc;
     }
 
@@ -1892,24 +1948,91 @@ pub const MetalRenderer = struct {
         atlas.dirty_max_y = atlas.size;
     }
 
-    fn uploadAtlas(_: *MetalRenderer, atlas: *GlyphAtlas, texture: objc.id) void {
-        const Region = extern struct { ox: usize, oy: usize, oz: usize, sx: usize, sy: usize, sz: usize };
-        const region = Region{ .ox = 0, .oy = 0, .oz = 0, .sx = atlas.size, .sy = atlas.size, .sz = 1 };
+    /// #585 — atlas 픽셀을 텍스처로 올린다. **blit encoder 를 쓴다.**
+    ///
+    /// 예전에는 `MTLTexture.replaceRegion` 이었는데 그것은 **즉시 CPU 복사이고 GPU 작업과
+    /// 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize
+    /// against GPU accesses"*). 그래서 프레임 중간에 올려도 **모든 render pass 가 최종
+    /// 텍스처를 읽었다** — 안전망 (SPEC §12.6 ①) 이 macOS 에서 동작하지 못한 이유다.
+    ///
+    /// blit 은 복사를 **command buffer 안**에 넣으므로 앞뒤 pass 와 순서가 지켜진다. 그리고
+    /// 영역 지정이 자연스러워 **dirty 구간만** 올린다 — Windows (`UpdateSubresource`) ·
+    /// Linux (`glTexSubImage2D`) 가 글리프 단위로 올리는 것과 같은 방향이다.
+    ///
+    /// 실패하면 조용히 지나간다 (그 프레임은 옛 텍스처를 쓴다) — 다음 프레임이 다시 올린다.
+    fn uploadAtlas(
+        self: *MetalRenderer,
+        atlas: *GlyphAtlas,
+        texture: objc.id,
+        /// ⚠️ **atlas 마다 따로** — 위 필드 주석의 이유다.
+        staging: *objc.id,
+        staging_bytes: *u32,
+    ) void {
+        const cmd_buf = self.current_cmd_buf;
+        if (cmd_buf == null) return;
 
-        const f: *const fn (objc.id, objc.SEL, Region, objc.NSUInteger, [*]const u8, objc.NSUInteger) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        // dirty 구간만 — 줄 단위다 (`packRow` 가 줄로 채우므로 x 는 늘 전폭이 맞다).
+        const y0 = @min(atlas.dirty_min_y, atlas.size);
+        const y1 = @min(atlas.dirty_max_y, atlas.size);
+        if (y1 <= y0) return;
+        const row_bytes: usize = @as(usize, atlas.size) * 4;
+        const rows: usize = y1 - y0;
+        const bytes = rows * row_bytes;
+
+        // staging 이 작으면 키운다 (`grow` 뒤).
+        if (staging_bytes.* < atlas.size * atlas.size * 4) {
+            const new_buf = createBuffer(self.device, atlas.size * atlas.size * 4);
+            if (new_buf == null) return;
+            objc.msgSendVoid(staging.*, objc.sel("release"));
+            staging.* = new_buf;
+            staging_bytes.* = atlas.size * atlas.size * 4;
+        }
+
+        const dst = objc.msgSend(staging.*, objc.sel("contents")) orelse return;
+        const dst_ptr: [*]u8 = @ptrCast(dst);
+        @memcpy(dst_ptr[0..bytes], atlas.pixels[y0 * row_bytes ..][0..bytes]);
+
+        const blit = objc.msgSend(cmd_buf, objc.sel("blitCommandEncoder"));
+        if (blit == null) return;
+
+        const MTLSize = extern struct { w: usize, h: usize, d: usize };
+        const MTLOrigin = extern struct { x: usize, y: usize, z: usize };
+        const f: *const fn (
+            objc.id,
+            objc.SEL,
+            objc.id, // sourceBuffer
+            usize, // sourceOffset
+            usize, // sourceBytesPerRow
+            usize, // sourceBytesPerImage
+            MTLSize, // sourceSize
+            objc.id, // destinationTexture
+            usize, // destinationSlice
+            usize, // destinationLevel
+            MTLOrigin, // destinationOrigin
+        ) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         f(
-            texture,
-            objc.sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
-            region,
+            blit,
+            objc.sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+            staging.*,
             0,
-            atlas.pixels.ptr,
-            atlas.size * 4, // BGRA8 = 4 bytes per pixel.
+            row_bytes,
+            bytes,
+            MTLSize{ .w = atlas.size, .h = rows, .d = 1 },
+            texture,
+            0,
+            0,
+            MTLOrigin{ .x = 0, .y = y0, .z = 0 },
         );
+        objc.msgSendVoid(blit, objc.sel("endEncoding"));
+
+        // 올린 구간은 깨끗해졌다.
+        atlas.dirty_min_y = atlas.size;
+        atlas.dirty_max_y = 0;
     }
 
     fn uploadTabAtlasIfDirty(self: *MetalRenderer) void {
         if (!self.tab_atlas.dirty) return;
-        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture);
+        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture, &self.tab_staging_buffer, &self.tab_staging_bytes);
         self.tab_atlas.dirty = false;
     }
 
