@@ -29,6 +29,9 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 
 공개 레포의 정문과 앱 UI 는 국제 방문자가 바로 읽을 수 있는 언어 (= 영어) 에 맞추는 게 기본값이고, 내부 기록은 한국어로 남겨서 두 역할을 분리해요. **이 구분은 "출력은 한국어" 규칙의 예외가 아니라 대상이 달라서예요** — 사용자에게 하는 말은 한국어, 저장소 방문자 / end-user 가 읽는 산출물은 영어.
 
+**사고 과정 (visible thinking) 도 한국어예요.** 답변만 한국어로 쓰고 생각을 영어로 하면 사용자에게 그
+영어가 그대로 보여요 — 2026-07-22 에 두 번 지적됐어요. "보이는 모든 텍스트" 에 thinking 이 들어가요.
+
 # 워크플로우
 
 모든 작업은 아래 순서로 진행해요.
@@ -1074,6 +1077,11 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 **작업이 1 분 안에 끝나지 않는 게 자연스러운 경우 (예: `zig build` 에서 ghostty 첫 컴파일, 대량 다운로드)** 는 `run_in_background: true` 로 백그라운드에 던지고, 짧은 주기 (1 분 이하) 로 상태를 확인하거나 완료 알림을 기다려요. 단일 blocking 호출로 오래 기다리지 않아요.
 
 이 규칙은 쉘 호출뿐 아니라 Agent / WebFetch / TaskOutput 같은 다른 모든 도구에도 적용해요.
+
+**검증 명령을 파이프로 묶으면 exit code 는 마지막 명령의 것이에요.** `zig build check 2>&1 | tail -3 && echo OK`
+는 `tail` 이 성공하면 "OK" 를 찍어요 — 빌드가 실패해도요. 통과를 보고하기 전에 **실제 성공 표식**을 봐요:
+`set -o pipefail`, 또는 `zig build check; echo "CHECK=$?"` 처럼 exit code 를 따로 찍기, 또는 `${PIPESTATUS[0]}`.
+`| tail && echo OK` 로 가짜 통과를 보고한 적이 있어요.
 
 # 실행 환경
 
