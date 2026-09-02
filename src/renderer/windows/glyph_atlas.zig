@@ -24,7 +24,12 @@ const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const atlas_common = @import("../glyph_atlas_common.zig");
 
-pub const ATLAS_SIZE: u32 = 2048;
+/// #586 — 시작 크기와 상한. macOS (`macos/glyph_atlas.zig`) 와 같은 값 · 같은 정책이다 — **차면 두 배로
+/// 키운다** (`grow`) 그리고 상한에서만 ① 안전망 (비우기) 으로 물러선다. 지금 크기는 `size` 필드다.
+/// 8192² 는 BGRA8 로 256 MB 다 (`BIND_RENDER_TARGET` 까지 붙는다) — 실제 상한은 `CreateTexture2D` 가
+/// 실패하는 지점이고, 그러면 `grow` 가 `false` 를 돌려 ① 로 간다 (feature level 은 조회하지 않는다).
+pub const INITIAL_ATLAS_SIZE: u32 = 2048;
+pub const MAX_ATLAS_SIZE: u32 = 8192;
 
 /// cluster 하나가 가질 수 있는 글리프 수 — shaping 쪽 상한과 같은 값을 쓴다.
 const MAX_CLUSTER_GLYPHS = dwrite_font.MAX_CLUSTER_GLYPHS;
@@ -55,6 +60,10 @@ pub const GlyphAtlas = struct {
     cursor_x: u32 = 0,
     cursor_y: u32 = 0,
     row_height: u32 = 0,
+    /// #586 — 지금 한 변. `grow` 가 두 배로 키운다.
+    size: u32 = INITIAL_ATLAS_SIZE,
+    /// #586 — 키운 횟수 (진단).
+    grows: u32 = 0,
 
     // DWrite resources for rasterization
     dw_factory: *dw.IDWriteFactory,
@@ -139,13 +148,96 @@ pub const GlyphAtlas = struct {
         ) < 0) return error.RenderingParamsFailed;
         errdefer _ = rp.?.vtable.Release(rp.?);
 
+        // Allocate temp buffers for max glyph size (256x256)
+        const temp_buf = try alloc.alloc(u8, 256 * 256 * 4); // RGBA
+        errdefer alloc.free(temp_buf);
+        const ct_buf = try alloc.alloc(u8, 256 * 256 * 3); // ClearType 3x1 RGB
+
+        // D2D factory 는 atlas 수명 동안 하나다. 실패해도 init 성공 — `d2d_factory==null` 이면 color emoji
+        // path disable, mono fallback. 텍스처 · SRV · D2D RT 체인은 `createGpu` 가 만든다 — `grow` 가 같은
+        // 함수로 더 큰 것을 다시 만든다 (#586).
+        var d2d_factory: ?*d2d.ID2D1Factory = null;
+        _ = d2d.D2D1CreateFactory(d2d.D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d.IID_ID2D1Factory, null, &d2d_factory);
+        errdefer if (d2d_factory) |fac| d2d.factoryRelease(fac);
+
+        const gpu = try createGpu(device, INITIAL_ATLAS_SIZE, d2d_factory, rp.?, pixels_per_dip);
+        errdefer gpu.release();
+
+        // IDWriteFactory4 QI (#137-4) — Factory2.TranslateColorGlyphRun 은
+        // desiredGlyphImageFormats 인자 없어 PNG layer 안 받음. Factory4 신규
+        // overload 로 모든 형식 (TRUETYPE | CFF | COLR | SVG | PNG | JPEG | TIFF |
+        // PREMULTIPLIED) 명시 요청.
+        var dw_factory4: ?*dw.IDWriteFactory4 = null;
+        var f4_ptr: ?*anyopaque = null;
+        if (dw_factory.QueryInterface(&dw.IID_IDWriteFactory4, &f4_ptr) >= 0 and f4_ptr != null) {
+            dw_factory4 = @ptrCast(@alignCast(f4_ptr));
+        }
+        errdefer if (dw_factory4) |f| dw.factory4Release(f);
+
+        return .{
+            .alloc = alloc,
+            .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
+            .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
+            .dw_factory = dw_factory,
+            .rendering_params = rp.?,
+            .rendering_mode = sys_rendering_mode,
+            .font_em_size = font_em_size,
+            .pixels_per_dip = pixels_per_dip,
+            .texture = gpu.texture,
+            .srv = gpu.srv,
+            .d3d_device = device,
+            .d3d_ctx = ctx,
+            .temp_buf = temp_buf,
+            .ct_buf = ct_buf,
+            .d2d_factory = d2d_factory,
+            .atlas_dxgi_surface = gpu.dxgi_surface,
+            .atlas_d2d_rt = gpu.d2d_rt,
+            .atlas_brush = gpu.brush,
+            .atlas_dc = gpu.dc,
+            .atlas_dc4 = gpu.dc4,
+            .dw_factory4 = dw_factory4,
+        };
+    }
+
+    /// #586 — atlas 의 GPU 자원 한 묶음. 텍스처 하나에 D2D render target 체인이 딸려 있어 (컬러 emoji 를
+    /// packed 자리에 직접 그린다) 크기를 바꾸면 **일곱 객체를 함께** 다시 만들어야 한다. `init` 과
+    /// `grow` 가 같은 `createGpu` 를 쓴다.
+    const Gpu = struct {
+        texture: *d3d.ID3D11Texture2D,
+        srv: *d3d.ID3D11ShaderResourceView,
+        dxgi_surface: ?*d3d.IDXGISurface,
+        d2d_rt: ?*d2d.ID2D1RenderTarget,
+        dc: ?*d2d.ID2D1DeviceContext,
+        dc4: ?*d2d.ID2D1DeviceContext4,
+        brush: ?*d2d.ID2D1SolidColorBrush,
+
+        fn release(self: Gpu) void {
+            if (self.brush) |b_| d2d.brushRelease(b_);
+            if (self.dc4) |c_| d2d.deviceContext4Release(c_);
+            if (self.dc) |c_| d2d.deviceContextRelease(c_);
+            if (self.d2d_rt) |r_| d2d.renderTargetRelease(r_);
+            if (self.dxgi_surface) |s_| _ = s_.Release();
+            _ = self.srv.Release();
+            _ = self.texture.Release();
+        }
+    };
+
+    fn createGpu(
+        device: *d3d.ID3D11Device,
+        size: u32,
+        d2d_factory: ?*d2d.ID2D1Factory,
+        rp: *dw.IDWriteRenderingParams,
+        pixels_per_dip: f32,
+    ) !Gpu {
         // Create atlas texture — BIND_SHADER_RESOURCE (shader sample) +
         // BIND_RENDER_TARGET (D2D 가 atlas 의 packed 위치에 직접 그림).
         // USAGE_DEFAULT 라 mono path 의 UpdateSubresource 도 그대로 동작.
+        // 내용은 초기화하지 않는다 — 샘플러가 POINT 필터라 (`D3D11_FILTER_MIN_MAG_MIP_POINT`) 담긴
+        // 사각형 밖 텍셀은 읽히지 않고, 컬러 경로는 자기 clip 영역을 먼저 Clear 한다.
         var tex: ?*d3d.ID3D11Texture2D = null;
         if (device.CreateTexture2D(&.{
-            .Width = ATLAS_SIZE,
-            .Height = ATLAS_SIZE,
+            .Width = size,
+            .Height = size,
             .Format = d3d.DXGI_FORMAT_R8G8B8A8_UNORM,
             .BindFlags = d3d.D3D11_BIND_SHADER_RESOURCE | d3d.D3D11_BIND_RENDER_TARGET,
         }, null, &tex) < 0) return error.AtlasTextureFailed;
@@ -157,27 +249,15 @@ pub const GlyphAtlas = struct {
             return error.AtlasSrvFailed;
         errdefer _ = srv.?.Release();
 
-        // Allocate temp buffers for max glyph size (256x256)
-        const temp_buf = try alloc.alloc(u8, 256 * 256 * 4); // RGBA
-        errdefer alloc.free(temp_buf);
-        const ct_buf = try alloc.alloc(u8, 256 * 256 * 3); // ClearType 3x1 RGB
-
-        // D2D factory + atlas D2D RT 한 번 생성. per-glyph staging 폐기 — atlas
-        // 자체에 D2D RT 만들고 layer 마다 PushAxisAlignedClip + DrawGlyphRun 으로
-        // packed 위치에 직접 그림. atlas RGBA + D2D RT RGBA 같은 format 이라
-        // byte swap 자동 해결. 실패해도 init 성공 — d2d_factory==null 이면
-        // color emoji path disable, mono fallback.
-        var d2d_factory: ?*d2d.ID2D1Factory = null;
-        _ = d2d.D2D1CreateFactory(d2d.D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d.IID_ID2D1Factory, null, &d2d_factory);
-        errdefer if (d2d_factory) |f| d2d.factoryRelease(f);
-
+        // atlas D2D RT — per-glyph staging 폐기, atlas 자체에 RT 를 만들고 layer 마다
+        // PushAxisAlignedClip + DrawGlyphRun 으로 packed 위치에 직접 그림. atlas RGBA + D2D RT RGBA
+        // 같은 format 이라 byte swap 자동 해결.
         var atlas_dxgi: ?*d3d.IDXGISurface = null;
         var atlas_d2d_rt: ?*d2d.ID2D1RenderTarget = null;
         if (d2d_factory) |fac| {
             var dxgi_ptr: ?*anyopaque = null;
             if (tex.?.QueryInterface(&d3d.IID_IDXGISurface, &dxgi_ptr) >= 0 and dxgi_ptr != null) {
                 atlas_dxgi = @ptrCast(@alignCast(dxgi_ptr));
-                // atlas D2D RT — RGBA format (atlas 와 동일) + PREMULTIPLIED.
                 // dpi=96 으로 두면 1 DIP = 1 device pixel — bounds (device px)
                 // 좌표를 그대로 baseline DIP 로 줘도 일치 (high DPI 정밀도는
                 // 별도 작업 — SetUnitMode(PIXELS) 도입 시).
@@ -189,15 +269,13 @@ pub const GlyphAtlas = struct {
                     .usage = d2d.D2D1_RENDER_TARGET_USAGE_NONE,
                     .minLevel = d2d.D2D1_FEATURE_LEVEL_DEFAULT,
                 };
-                // RGBA atlas 에 BGRA RT 연결 — pixelFormat.format 은 R8G8B8A8 이어야
-                // atlas 와 일치. 위 props 의 format 도 R8G8B8A8 으로 변경 필요.
+                // RGBA atlas 에 BGRA RT 연결 — pixelFormat.format 은 R8G8B8A8 이어야 atlas 와 일치.
                 var props_rgba = rt_props;
                 props_rgba.pixelFormat.format = d3d.DXGI_FORMAT_R8G8B8A8_UNORM;
                 if (d2d.factoryCreateDxgiSurfaceRenderTarget(fac, @ptrCast(atlas_dxgi.?), &props_rgba, &atlas_d2d_rt) >= 0 and atlas_d2d_rt != null) {
-                    // 한 번만 antialias mode + rendering params 설정 (BeginDraw
-                    // 와 무관한 RT state).
+                    // 한 번만 antialias mode + rendering params 설정 (BeginDraw 와 무관한 RT state).
                     d2d.renderTargetSetTextAntialiasMode(atlas_d2d_rt.?, d2d.D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                    d2d.renderTargetSetTextRenderingParams(atlas_d2d_rt.?, @ptrCast(rp.?));
+                    d2d.renderTargetSetTextRenderingParams(atlas_d2d_rt.?, @ptrCast(rp));
                     // sys_dpi 적용 — RT 가 device pixel 좌표를 정확히 해석.
                     const sys_dpi: f32 = 96.0 * pixels_per_dip;
                     d2d.renderTargetSetDpi(atlas_d2d_rt.?, sys_dpi, sys_dpi);
@@ -205,8 +283,8 @@ pub const GlyphAtlas = struct {
             }
         }
         errdefer if (atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
-        errdefer if (atlas_dxgi) |s| {
-            _ = s.Release();
+        errdefer if (atlas_dxgi) |sf| {
+            _ = sf.Release();
         };
 
         // ID2D1DeviceContext QI (#137-3) — SetUnitMode(PIXELS) + GetGlyphRunWorldBounds.
@@ -221,7 +299,7 @@ pub const GlyphAtlas = struct {
                 d2d.deviceContextSetUnitMode(atlas_dc.?, d2d.D2D1_UNIT_MODE_PIXELS);
             }
         }
-        errdefer if (atlas_dc) |c| d2d.deviceContextRelease(c);
+        errdefer if (atlas_dc) |c_| d2d.deviceContextRelease(c_);
 
         // ID2D1DeviceContext4 QI (#137-4) — Win 10 1607+ 에서 bitmap emoji 글리프
         // (PNG/SVG) 처리 위한 DrawColorBitmapGlyphRun. null 이면 outline path 만.
@@ -233,68 +311,81 @@ pub const GlyphAtlas = struct {
                 atlas_dc4 = @ptrCast(@alignCast(dc4_ptr));
             }
         }
-        errdefer if (atlas_dc4) |c| d2d.deviceContext4Release(c);
+        errdefer if (atlas_dc4) |c_| d2d.deviceContext4Release(c_);
 
-        // IDWriteFactory4 QI (#137-4) — Factory2.TranslateColorGlyphRun 은
-        // desiredGlyphImageFormats 인자 없어 PNG layer 안 받음. Factory4 신규
-        // overload 로 모든 형식 (TRUETYPE | CFF | COLR | SVG | PNG | JPEG | TIFF |
-        // PREMULTIPLIED) 명시 요청.
-        var dw_factory4: ?*dw.IDWriteFactory4 = null;
-        var f4_ptr: ?*anyopaque = null;
-        if (dw_factory.QueryInterface(&dw.IID_IDWriteFactory4, &f4_ptr) >= 0 and f4_ptr != null) {
-            dw_factory4 = @ptrCast(@alignCast(f4_ptr));
-        }
-        errdefer if (dw_factory4) |f| dw.factory4Release(f);
-
-        // Reusable solid brush (#137-6) — atlas init 시 흰색으로 한 번 생성,
-        // layer 마다 SetColor 만 호출해서 재사용. brush 매번 생성/release 비용
-        // 제거. Win Terminal `_emojiBrush` (BackendD3D.cpp:892) 동등.
+        // Reusable solid brush (#137-6) — 흰색으로 한 번 생성, layer 마다 SetColor 만 호출해서 재사용.
+        // Win Terminal `_emojiBrush` (BackendD3D.cpp:892) 동등.
         var atlas_brush: ?*d2d.ID2D1SolidColorBrush = null;
         if (atlas_d2d_rt) |rt| {
             const white = d2d.D2D1_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 1 };
             _ = d2d.renderTargetCreateSolidColorBrush(rt, &white, &atlas_brush);
         }
-        errdefer if (atlas_brush) |b| d2d.brushRelease(b);
 
         return .{
-            .alloc = alloc,
-            .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
-            .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
-            .dw_factory = dw_factory,
-            .rendering_params = rp.?,
-            .rendering_mode = sys_rendering_mode,
-            .font_em_size = font_em_size,
-            .pixels_per_dip = pixels_per_dip,
             .texture = tex.?,
             .srv = srv.?,
-            .d3d_device = device,
-            .d3d_ctx = ctx,
-            .temp_buf = temp_buf,
-            .ct_buf = ct_buf,
-            .d2d_factory = d2d_factory,
-            .atlas_dxgi_surface = atlas_dxgi,
-            .atlas_d2d_rt = atlas_d2d_rt,
-            .atlas_brush = atlas_brush,
-            .atlas_dc = atlas_dc,
-            .atlas_dc4 = atlas_dc4,
-            .dw_factory4 = dw_factory4,
+            .dxgi_surface = atlas_dxgi,
+            .d2d_rt = atlas_d2d_rt,
+            .dc = atlas_dc,
+            .dc4 = atlas_dc4,
+            .brush = atlas_brush,
         };
     }
 
+    fn currentGpu(self: *const GlyphAtlas) Gpu {
+        return .{
+            .texture = self.texture,
+            .srv = self.srv,
+            .dxgi_surface = self.atlas_dxgi_surface,
+            .d2d_rt = self.atlas_d2d_rt,
+            .dc = self.atlas_dc,
+            .dc4 = self.atlas_dc4,
+            .brush = self.atlas_brush,
+        };
+    }
+
+    /// #586 — 차면 **두 배로 키운다** (macOS `grow` 와 같은 정책 · ghostty 방식). 새 텍스처를 만들고 옛 내용을
+    /// **같은 (x, y) 로** 복사한다 — row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다. 이미
+    /// emit 된 인스턴스의 UV 는 픽셀 좌표고 셰이더가 `atlas_w/h` 로 정규화하므로 그대로 맞는다
+    /// (`drawTextInstancesWithAtlas` 가 draw 마다 그 atlas 크기를 상수 버퍼에 쓴다).
+    ///
+    /// Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 가 필요했던 GPU 대기 (`submitPassEarly`) 가 없다 —
+    /// 이미 기록된 draw 는 옛 SRV 를 참조하고, `CopySubresourceRegion` 은 command stream 안에서 앞의
+    /// 업로드 · D2D 그리기 뒤에 놓인다 (D3D11 계약 — 이 레포에서 실측하지는 않았다, 실기 검증 항목).
+    ///
+    /// 상한 (`MAX_ATLAS_SIZE`) 이거나 텍스처 생성이 실패하면 `false` — 호출자가 ① 안전망으로 물러선다.
+    pub fn grow(self: *GlyphAtlas) bool {
+        if (self.size >= MAX_ATLAS_SIZE) return false;
+        const new_size = self.size * 2;
+        const gpu = createGpu(self.d3d_device, new_size, self.d2d_factory, self.rendering_params, self.pixels_per_dip) catch return false;
+
+        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = self.size, .bottom = self.size };
+        self.d3d_ctx.CopySubresourceRegion(@ptrCast(gpu.texture), 0, 0, 0, 0, @ptrCast(self.texture), 0, &box);
+
+        // 옛 객체는 command list 가 참조를 들고 있어 지연 파괴는 드라이버가 처리한다.
+        self.currentGpu().release();
+        self.texture = gpu.texture;
+        self.srv = gpu.srv;
+        self.atlas_dxgi_surface = gpu.dxgi_surface;
+        self.atlas_d2d_rt = gpu.d2d_rt;
+        self.atlas_dc = gpu.dc;
+        self.atlas_dc4 = gpu.dc4;
+        self.atlas_brush = gpu.brush;
+        self.size = new_size;
+        self.grows += 1;
+        self.is_full = false;
+        log.logAtlasGrew(new_size, self.grows, self.cache.count(), self.cluster_cache.count());
+        return true;
+    }
+
     pub fn deinit(self: *GlyphAtlas) void {
-        if (self.atlas_brush) |b| d2d.brushRelease(b);
-        if (self.atlas_dc4) |c| d2d.deviceContext4Release(c);
-        if (self.atlas_dc) |c| d2d.deviceContextRelease(c);
-        if (self.atlas_d2d_rt) |r| d2d.renderTargetRelease(r);
-        if (self.atlas_dxgi_surface) |s| _ = s.Release();
+        self.currentGpu().release();
         if (self.dw_factory4) |f| dw.factory4Release(f);
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
         self.cache.deinit();
         self.cluster_cache.deinit();
-        _ = self.srv.Release();
-        _ = self.texture.Release();
         _ = self.rendering_params.Release();
     }
 
@@ -529,11 +620,7 @@ pub const GlyphAtlas = struct {
             }
         }
 
-        const pos = self.packGlyph(size, size) orelse {
-            self.is_full = true;
-            self.full_kind = "icon";
-            return null;
-        };
+        const pos = self.packOrMarkFull(size, size, "icon") orelse return null;
         const box = d3d.D3D11_BOX{
             .left = pos[0],
             .top = pos[1],
@@ -724,11 +811,7 @@ pub const GlyphAtlas = struct {
         }
 
         // Pack into atlas; if full, signal caller to flush+reset+retry before we overwrite anything
-        const pos = self.packGlyph(w, h) orelse {
-            self.is_full = true;
-            self.full_kind = "mono";
-            return null;
-        };
+        const pos = self.packOrMarkFull(w, h, "mono") orelse return null;
 
         // Upload to GPU texture via UpdateSubresource
         const box = d3d.D3D11_BOX{
@@ -893,11 +976,7 @@ pub const GlyphAtlas = struct {
         const h: u32 = @intCast(gh);
         if (w > 256 or h > 256) return null;
 
-        const pos = self.packGlyph(w, h) orelse {
-            self.is_full = true;
-            self.full_kind = "color";
-            return null;
-        };
+        const pos = self.packOrMarkFull(w, h, "color") orelse return null;
 
         // atlas D2D RT 의 packed 영역에 직접 그림. dpi=96 (init 시 설정) 라 1 DIP =
         // 1 device pixel — pos / bounds (device pixel) 좌표를 baseline 에 그대로
@@ -1006,6 +1085,22 @@ pub const GlyphAtlas = struct {
 
     /// #282 G5 — 공통 row-based packing 에 위임.
     fn packGlyph(self: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, ATLAS_SIZE, w, h);
+        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, self.size, w, h);
+    }
+
+    /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#586 — macOS `packOrMarkFull` ·
+    /// Linux `glAddGlyph` 와 같은 규칙, 전에는 Windows 만 이 가드가 없었다).
+    ///
+    /// 1. **판정은 호출 *전* 값으로 한다.** `packRow` 는 실패할 때도 커서를 움직인다.
+    /// 2. **이미 빈 atlas 인데 안 들어가면 세우지 않는다.** 그림 하나가 atlas 보다 크다는 뜻이라 비워도
+    ///    (키워도) 소용없고, 세우면 호출자가 글리프마다 헛되게 flush + reset 을 돈다.
+    fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
+        const was_empty = self.cursor_x == 0 and self.cursor_y == 0 and self.row_height == 0;
+        if (self.packGlyph(w, h)) |pos| return pos;
+        if (!was_empty) {
+            self.is_full = true;
+            self.full_kind = kind;
+        }
+        return null;
     }
 };
