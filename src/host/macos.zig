@@ -4500,12 +4500,10 @@ fn renderFrameTick() void {
         hotkey_hint,
     );
 
-    // #255 — 이번 frame draw 중 *처음 본* glyph 는 atlas 에 추가되지만(getOrInsert →
-    // dirty=true) GPU 업로드는 *다음* frame uploadAtlas 에서 일어난다(현재 upload 는
-    // draw 前 순서). 그래서 그 glyph 는 이번 frame 엔 빈칸이고 다음 frame 에 채워진다
-    // — Phase 1(60fps 무조건 render)은 자연 보정됐으나, idle skip 이 그 다음 frame 을
-    // 없애면 처음 보는 문자(`"`,`(`,`N` 등)가 빈칸으로 남는다. atlas 가 아직 dirty 면
-    // 한 frame 더 요청해 업로드+재draw 시킨다(빈칸은 1 frame, Phase 1 과 동일).
+    // #255 · #591 — 본문 atlas 는 이제 `endFrame` 이 draw **앞에** 올리므로 처음 본 글리프도
+    // 같은 frame 에 보이고, 프레임이 끝나면 `atlas.dirty` 는 늘 false 다 (조건은 안전을 위해
+    // 남긴다). **탭 atlas 만 아직 다음 frame 에 올라간다** — 탭바 · 메뉴는 encoder 안에서
+    // 담고 그리기 때문이다 (#591 2 단계). 그래서 그것이 dirty 면 한 frame 더 요청한다.
     if (g_renderer.?.atlas.dirty or g_renderer.?.tabAtlasDirty()) g_needs_render = true;
 }
 
