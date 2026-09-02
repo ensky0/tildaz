@@ -276,6 +276,36 @@ pub fn logPrimaryFont(family: []const u8, cell_w: anytype, cell_h: anytype, asce
     });
 }
 
+/// glyph atlas 가 가득 차서 통째로 비웠다. `kind` 는 어느 쪽이 찼는지다 — platform 마다
+/// 라스터 경로가 갈리는 자리가 달라서 값도 다르다: Linux 는 텍스처 종류 (`gray` · `color`),
+/// macOS 는 채우던 경로 (`glyph` · `cluster` · `icon`), Windows 는 (`icon` · `mono` · `color`).
+///
+/// **이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.** 한 화면이 요구하는 글리프가 용량을
+/// 넘으면 매 프레임 다시 차서 이 줄이 계속 늘어난다.
+///
+/// `glyphs` · `clusters` 는 비우기 직전에 담고 있던 항목 수 (단일 글리프 / 합성 cluster 로
+/// 나눠 센다 — 둘의 비가 어긋나면 같은 그림을 두 번 담고 있다는 신호다), `filled_y` 는
+/// 채운 높이 (px) 다. `fonts` 는 cluster 키에 실린 **서로 다른 폰트 객체 수**다 — 화면이
+/// 한 폰트로 그려지는데 이 값이 1 을 넘으면 같은 그림이 폰트 주소별로 여러 번 담긴다는
+/// 뜻이다 —
+/// **이 둘이 실제 용량이다.** `ATLAS_SIZE` 를 얼마로 할지는 산술이 아니라 이 값으로 정한다
+/// (cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 낸다).
+/// glyph atlas 를 **두 배로 키웠다** ([#584](https://github.com/ensky0/tildaz/issues/584) ②).
+///
+/// 비우고 재사용하는 대신 키우면 **프레임 중간에 비우는 상황 자체가 없어진다** — 이미 그린
+/// 것의 UV 가 무효화될 일이 없다. 이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
+pub fn logAtlasGrew(new_size: anytype, grows: anytype, glyphs: anytype, clusters: anytype) void {
+    appendLine("gpu", "atlas grew to {d}x{d} (grows={d}, glyphs={d}, clusters={d})", .{
+        new_size, new_size, grows, glyphs, clusters,
+    });
+}
+
+pub fn logAtlasFull(kind: []const u8, resets: anytype, glyphs: anytype, clusters: anytype, fonts: anytype, filled_y: anytype) void {
+    appendLine("gpu", "atlas full — cleared and refilling ({s}, resets={d}, glyphs={d}, clusters={d}, fonts={d}, filled_y={d})", .{
+        kind, resets, glyphs, clusters, fonts, filled_y,
+    });
+}
+
 pub fn logPaneFocusByClick(id: anytype) void {
     appendLine("pane", "focus by click — active pane {}", .{id});
 }

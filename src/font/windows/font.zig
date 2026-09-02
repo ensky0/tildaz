@@ -9,6 +9,7 @@ const cluster_cache = @import("../cluster_cache.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
+const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
@@ -26,6 +27,11 @@ pub const GlyphResult = struct {
     face: *dw.IDWriteFontFace,
     index: dw.UINT16,
     owned: bool, // true = caller must Release face
+    /// [#584](https://github.com/ensky0/tildaz/issues/584) — atlas 키가 쓰는 **안정된 폰트 id**
+    /// (`atlas_common.fontId`). Windows 의 단일 경로는 `glyph_map` 이 fallback face 를 붙잡아
+    /// 주소가 안정적이지만, **키 타입을 세 platform 이 공유**하므로 여기도 id 를 싣는다.
+    /// cluster 가 글리프 하나로 합성되는 경로는 그 캐시를 거치지 않아 id 가 실제로 필요하다.
+    font_id: u64 = 0,
 };
 
 /// ZWJ family / VS-16 / skin tone modifier cluster 의 multi-glyph 결과 (#139).
@@ -35,6 +41,17 @@ pub const GlyphResult = struct {
 pub const MAX_CLUSTER_GLYPHS: usize = 16;
 pub const ClusterResult = struct {
     face: *dw.IDWriteFontFace,
+    /// [#584](https://github.com/ensky0/tildaz/issues/584) — cluster 키가 쓰는 **안정된 폰트 id**
+    /// (`atlas_common.fontId` = PostScript 이름의 FNV-1a 해시).
+    ///
+    /// **주소를 쓰지 않는다.** system fallback (`tryClusterOnSystemFallback`) 은 `CreateFontFace`
+    /// 로 face 를 매번 새로 만들고, cluster 캐시가 `CAPACITY` 를 넘으면 통째로 비우며 그것을
+    /// 해제한다. 그래서 같은 폰트가 주소 여럿을 갖는다 — Windows 실기에서 `MV Boli` 가 한
+    /// 프로세스 안에서 주소 2 개로 나왔다 (macOS 는 `Monaco` 가 50 개였다). 주소를 키에 실으면
+    /// 같은 그림이 id 마다 새로 담겨 atlas 가 부푼다.
+    ///
+    /// cluster 하나는 face 하나로 shape 하므로 macOS 처럼 run 별로 섞을 일이 없다 — 값 하나다.
+    font_id: u64 = 0,
     indices: [MAX_CLUSTER_GLYPHS]dw.UINT16,
     advances: [MAX_CLUSTER_GLYPHS]dw.FLOAT,
     offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
@@ -151,6 +168,8 @@ fn clusterOverlayOnly(cps: []const u21) bool {
 const CachedGlyph = struct {
     face: *dw.IDWriteFontFace,
     index: u16,
+    /// #584 — atlas 키가 쓰는 폰트 id. 캐시에 담을 때 한 번만 구한다.
+    font_id: u64,
 };
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
@@ -264,6 +283,43 @@ fn localizedString(strings: *dw.IDWriteLocalizedStrings, index: dw.UINT32, buf: 
     if (len == 0 or len + 1 > buf.len) return null;
     if (strings.GetString(index, buf.ptr, len + 1) < 0) return null;
     return buf[0..len];
+}
+
+/// [#584](https://github.com/ensky0/tildaz/issues/584) — 폰트의 **PostScript 이름 id**
+/// (`atlas_common.fontId`). cluster 키가 폰트를 이것으로 식별한다.
+///
+/// **왜 family 이름이 아닌가.** `Cascadia Code` 는 regular 와 bold 의 family 가 같아서, family
+/// 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 ([#529](https://github.com/ensky0/tildaz/issues/529)).
+/// 세 platform 이 같은 이유로 PostScript 이름을 쓴다.
+///
+/// 이름을 못 읽으면 0 이다. 그러면 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수 있지만,
+/// **주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다** — macOS 판과 같은 판단이다.
+fn postscriptNameId(font: *dw.IDWriteFont) u64 {
+    var strings: ?*dw.IDWriteLocalizedStrings = null;
+    var exists: BOOL = .FALSE;
+    if (font.GetInformationalStrings(dw.DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME, &strings, &exists) < 0) return 0;
+    const ss = strings orelse return 0;
+    defer _ = ss.Release();
+    if (exists == .FALSE) return 0;
+
+    var w_buf: [128]WCHAR = undefined;
+    const name_w = localizedString(ss, 0, &w_buf) orelse return 0;
+    var u8_buf: [256]u8 = undefined;
+    const len = std.unicode.utf16LeToUtf8(&u8_buf, name_w) catch return 0;
+    if (len == 0) return 0;
+    return atlas_common.fontId(u8_buf[0..len]);
+}
+
+/// #584 — face 에서 `postscriptNameId` 를 얻는다. face 가 시스템 컬렉션에 없으면 0 이다.
+///
+/// **chain face 에만 쓴다** (init 에서 한 번). system fallback 은 `IDWriteFont` 를 이미 손에
+/// 들고 있어서 이 왕복이 필요 없다.
+fn faceFontId(collection: *dw.IDWriteFontCollection, face: *dw.IDWriteFontFace) u64 {
+    var font: ?*dw.IDWriteFont = null;
+    if (collection.GetFontFromFontFace(face, &font) < 0) return 0;
+    const fo = font orelse return 0;
+    defer _ = fo.Release();
+    return postscriptNameId(fo);
 }
 
 /// family 의 정식 표기를 `out` 에 담고 길이를 돌려준다.
@@ -547,6 +603,14 @@ pub const DWriteFontContext = struct {
     /// 안정 (deinit 까지 Release 안 함) — atlas cache key 가 face 포인터라
     /// 안정성 필수.
     chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN,
+    /// #584 — chain face 의 `atlas_common.fontId`. **init 에서 한 번만 구한다** — 이름 조회가
+    /// COM 왕복 셋 (`GetFontFromFontFace` → `GetInformationalStrings` → `GetString`) 이라
+    /// cluster 마다 부를 수 없다. chain face 는 process lifetime 동안 안 바뀌므로 캐시가 맞다.
+    chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN,
+    /// #584 — `styled_faces` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Cascadia Code Bold`
+    /// vs `Cascadia Code`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
+    styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
+        .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `chain_faces` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -608,6 +672,10 @@ pub const DWriteFontContext = struct {
         //    isFontAvailable loop) 했지만 race 방지 위해 여기서도 missing 시 error.
         //    중간 실패 시 errdefer 가 이미 만든 faces 모두 release.
         var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
+        // #584 — chain face 의 PostScript 이름 id. 여기서 한 번만 구한다.
+        var chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN;
+        var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
+            .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
             .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var chain_count: u8 = 0;
@@ -632,6 +700,7 @@ pub const DWriteFontContext = struct {
             defer resolved.releaseFamily();
 
             chain_faces[chain_count] = resolved.face;
+            chain_font_id[chain_count] = faceFontId(collection.?, resolved.face);
             if (chain_count == 0) {
                 primary_canon = resolved.family_name;
                 primary_canon_len = resolved.family_name_len;
@@ -656,6 +725,8 @@ pub const DWriteFontContext = struct {
                         var styled_face: ?*dw.IDWriteFontFace = null;
                         if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
                             styled_faces[fs.index() - 1][chain_count] = styled_face.?;
+                            // #584 — `IDWriteFont` 를 손에 든 이 자리에서 id 를 구한다.
+                            styled_font_id[fs.index() - 1][chain_count] = postscriptNameId(styled_font.?);
                         }
                     }
                     // 실패하면 null 로 남고 `chainFor` 가 regular face 로 떨어뜨린다.
@@ -677,6 +748,8 @@ pub const DWriteFontContext = struct {
             .factory = factory.?,
             .font_collection = collection.?,
             .chain_faces = chain_faces,
+            .chain_font_id = chain_font_id,
+            .styled_font_id = styled_font_id,
             .styled_faces = styled_faces,
             .chain_count = chain_count,
             .cell_width_px = cell_w,
@@ -829,6 +902,15 @@ pub const DWriteFontContext = struct {
         return self.chain_faces[i];
     }
 
+    /// #584 — `faceAt` 이 고른 face 의 폰트 id. **같은 갈림을 따라야** 한다 — 변종 face 가
+    /// 없어 regular 로 떨어지면 id 도 regular 것이어야 한다.
+    fn chainFontId(self: *const DWriteFontContext, i: usize, style: font_constants.FaceStyle) u64 {
+        if (style != .regular) {
+            if (self.styled_faces[style.index() - 1][i] != null) return self.styled_font_id[style.index() - 1][i];
+        }
+        return self.chain_font_id[i];
+    }
+
     /// `style` (#375) 은 SGR `1` · `3` 이 요구하는 face 변종이다. chain 순회만 이
     /// 값을 따르고, system fallback (`MapCharacters`) 경로와 grapheme · ligature 는
     /// regular 를 쓴다 — 컬러 emoji 에 굵기는 의미가 없다.
@@ -836,7 +918,7 @@ pub const DWriteFontContext = struct {
         // 캐시는 **chain 밖** cp 의 system fallback 결과만 담는다 (chain 히트는 아래에서
         // 바로 반환하고 캐시에 넣지 않는다) — 그래서 변종이 캐시와 충돌하지 않는다.
         if (self.glyph_map.get(codepoint)) |c| {
-            return .{ .face = c.face, .index = c.index, .owned = false };
+            return .{ .face = c.face, .index = c.index, .owned = false, .font_id = c.font_id };
         }
 
         const cp32: dw.UINT32 = codepoint;
@@ -849,7 +931,8 @@ pub const DWriteFontContext = struct {
             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
             if (glyph_index != 0) {
                 // chain face 는 stable — cache 안 해도 OK (deinit 에서 release).
-                return .{ .face = face, .index = glyph_index, .owned = false };
+                // #584 — id 는 `init` 에서 구해 둔 것을 쓴다 (변종도 face 마다 갈린다).
+                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = self.chainFontId(i, style) };
             }
         }
 
@@ -893,13 +976,15 @@ pub const DWriteFontContext = struct {
                         if (mf_face) |face| {
                             _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
                             if (glyph_index != 0) {
+                                // #584 — `IDWriteFont` 를 아직 들고 있는 이 자리에서 id 를 구한다.
+                                const fb_id = postscriptNameId(mf);
                                 // Retain the face in the cache; ownership stays with the context.
                                 // This keeps the face pointer stable for the atlas cache key.
-                                self.glyph_map.put(codepoint, .{ .face = face, .index = glyph_index }) catch {
+                                self.glyph_map.put(codepoint, .{ .face = face, .index = glyph_index, .font_id = fb_id }) catch {
                                     // On put failure, release to avoid leak and return owned.
-                                    return .{ .face = face, .index = glyph_index, .owned = true };
+                                    return .{ .face = face, .index = glyph_index, .owned = true, .font_id = fb_id };
                                 };
-                                return .{ .face = face, .index = glyph_index, .owned = false };
+                                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = fb_id };
                             }
                             _ = face.vtable.Release(face);
                         }
@@ -1051,11 +1136,11 @@ pub const DWriteFontContext = struct {
         const overlay = clusterOverlayOnly(cps);
 
         // 1. user chain 순회 — face 별로 cluster shape 시도.
-        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+        for (self.chain_faces[0..self.chain_count], 0..) |maybe_face, ci| {
             const face = maybe_face orelse continue;
             const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, sa, &indices_buf, &advances_buf, &offsets_buf);
             if (cnt > 0) {
-                return .{ .face = face, .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
+                return .{ .face = face, .font_id = self.chain_font_id[ci], .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
             }
         }
 
@@ -1132,6 +1217,10 @@ pub const DWriteFontContext = struct {
         const mf = mapped_font orelse return null;
         defer _ = mf.vtable.Release(mf);
 
+        // #584 — 폰트 id 를 **여기서** 구한다. 이 face 는 `CreateFontFace` 가 매번 새로 만드는
+        // 객체라 주소가 안정적이지 않다 (실기: `MV Boli` 가 한 프로세스에서 주소 2 개).
+        const fallback_font_id = postscriptNameId(mf);
+
         var face_ptr: ?*dw.IDWriteFontFace = null;
         if (mf.CreateFontFace(&face_ptr) < 0) return null;
         const face = face_ptr orelse return null;
@@ -1143,7 +1232,7 @@ pub const DWriteFontContext = struct {
             _ = face.vtable.Release(face);
             return null;
         }
-        return .{ .face = face, .indices = indices_buf.*, .advances = advances_buf.*, .offsets = offsets_buf.*, .count = cnt, .owned = true };
+        return .{ .face = face, .font_id = fallback_font_id, .indices = indices_buf.*, .advances = advances_buf.*, .offsets = offsets_buf.*, .count = cnt, .owned = true };
     }
 
     /// 런 배칭 상한 ([#399](https://github.com/ensky0/tildaz/issues/399)). 넘으면 호출자가
@@ -1264,9 +1353,9 @@ pub const DWriteFontContext = struct {
             if (s.script != sa.script or s.shapes != sa.shapes) return 0;
         }
 
-        for (self.chain_faces[0..self.chain_count]) |maybe_face| {
+        for (self.chain_faces[0..self.chain_count], 0..) |maybe_face, ci| {
             const face = maybe_face orelse continue;
-            if (self.shapeRunOnFace(face, &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], sa, out)) {
+            if (self.shapeRunOnFace(face, self.chain_font_id[ci], &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], sa, out)) {
                 // #418 — 관통 mark 여부는 codepoint 를 봐야 알 수 있고 `shapeRunOnFace` 는
                 // UTF-16 만 받으므로 여기서 채운다 (캐시에 담기 전이어야 한다).
                 for (0..clusters.len) |i| out[i].overlay_marks = clusterOverlayOnly(clusters[i]);
@@ -1290,6 +1379,8 @@ pub const DWriteFontContext = struct {
     fn shapeRunOnFace(
         self: *DWriteFontContext,
         face: *dw.IDWriteFontFace,
+        /// #584 — 이 face 의 `atlas_common.fontId`. 런 전체가 한 face 라 값 하나다.
+        font_id: u64,
         text: [*]const WCHAR,
         text_len: dw.UINT32,
         /// 길이가 cluster 수 + 1 이다 (마지막이 센티넬).
@@ -1377,6 +1468,7 @@ pub const DWriteFontContext = struct {
 
             out[ci] = .{
                 .face = face,
+                .font_id = font_id,
                 .indices = undefined,
                 .advances = undefined,
                 .offsets = undefined,

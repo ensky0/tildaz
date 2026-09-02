@@ -146,9 +146,33 @@ const Surface = struct {
 pub const Atlas = struct {
     gray: Surface,
     color: Surface,
-    cache: std.AutoHashMap(Key, AtlasEntry),
+    /// **캐시를 surface 별로 나눈다** ([#584](https://github.com/ensky0/tildaz/issues/584) ①).
+    /// 한쪽이 가득 차 rewind 되면 무효가 되는 것은 **그 surface 의 항목뿐이다** — 다른
+    /// surface 는 커서가 그대로여서 이미 내준 좌표가 살아 있다. 한 맵에 섞어 두면 gray 를
+    /// 비울 때 color 항목까지 버려서, 같은 emoji 가 color 텍스처에 다시 올라가 자리를 두 번
+    /// 먹고 color 가 필요 이상으로 빨리 찬다.
+    gray_cache: std.AutoHashMap(Key, AtlasEntry),
+    color_cache: std.AutoHashMap(Key, AtlasEntry),
+    /// #584 ① — 가득 찬 surface. `null` 이면 안 찼다.
+    ///
+    /// `upload` 는 여기에 **표시만 하고 그 자리에서 비우지 않는다.** 이 프레임이 이미 emit 한
+    /// 정점들이 비우기 전 좌표를 가리키고 있어서, *먼저 그리는 것*은 batch 를 들고 있는
+    /// 호출자만 할 수 있다. 호출자는 이 값을 보고 flush → `resetFull` → 재시도 한 번을 한다
+    /// (Windows `renderer/windows.zig` 의 `is_full` 경로와 같은 계약, SPEC §12.6 ①).
+    full: ?Kind = null,
     /// 업로드용 임시 버퍼 (BGRA → RGBA 변환에 쓴다). 글리프마다 할당하지 않는다.
     swizzle: std.ArrayList(u8) = .empty,
+
+    /// 어느 텍스처인지. 로그의 `kind` 자리에 그대로 쓴다 (`@tagName`).
+    pub const Kind = enum { gray, color };
+
+    fn cacheFor(self: *Atlas, is_color: bool) *std.AutoHashMap(Key, AtlasEntry) {
+        return if (is_color) &self.color_cache else &self.gray_cache;
+    }
+
+    fn surfaceFor(self: *Atlas, is_color: bool) *Surface {
+        return if (is_color) &self.color else &self.gray;
+    }
 
     pub fn create(api: *const egl.Api, allocator: std.mem.Allocator) Atlas {
         // 1 byte 정렬 — 글리프 폭이 4 의 배수가 아닐 때 행이 밀리는 것을 막는다.
@@ -164,13 +188,15 @@ pub const Atlas = struct {
         return .{
             .gray = Surface.create(api, egl.GL_ALPHA, egl.GL_NEAREST, null),
             .color = Surface.create(api, egl.GL_RGBA, egl.GL_LINEAR, zeros),
-            .cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
+            .gray_cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
+            .color_cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
         };
     }
 
     pub fn deinit(self: *Atlas, api: *const egl.Api, allocator: std.mem.Allocator) void {
         self.swizzle.deinit(allocator);
-        self.cache.deinit();
+        self.gray_cache.deinit();
+        self.color_cache.deinit();
         var gray_tex = self.gray.texture;
         var color_tex = self.color.texture;
         api.deleteTextures(1, @ptrCast(&gray_tex));
@@ -190,13 +216,16 @@ pub const Atlas = struct {
         item: *const software_terminal.GlyphItem,
     ) ?AtlasEntry {
         const key = Key.fromItem(item);
-        if (self.cache.get(key)) |entry| return entry;
+        // #584 ① — 캐시가 surface 별이라 **조회 전에** 어느 쪽인지 정해야 한다. 여기서는
+        // 이미 raster 결과를 들고 있어 (위 주석) 픽셀 모드로 바로 갈린다.
         const g = item.glyph;
+        const is_color = g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA;
+        if (self.cacheFor(is_color).get(key)) |entry| return entry;
         return self.upload(api, allocator, key, .{
             .pixels = g.bitmap,
             .w = g.width,
             .h = g.height,
-            .is_color = g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA,
+            .is_color = is_color,
             .advance = @floatFromInt(g.advance),
         });
     }
@@ -215,7 +244,8 @@ pub const Atlas = struct {
     ) ?AtlasEntry {
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
         const key = Key.fromIcon(kind, size, stroke);
-        if (self.cache.get(key)) |entry| return entry;
+        // 아이콘은 알파 커버리지라 언제나 gray surface 다 (`upload` 에 `is_color = false`).
+        if (self.gray_cache.get(key)) |entry| return entry;
 
         var cov: [tab_icons.MAX_SIZE * tab_icons.MAX_SIZE]u8 = undefined;
         tab_icons.rasterize(kind, size, stroke, &cov);
@@ -231,9 +261,35 @@ pub const Atlas = struct {
     /// 폰트가 다시 raster 된 뒤 (scale 변경 등) 캐시를 버린다. 같은 키가 이제 다른
     /// 그림을 뜻하므로 비우지 않으면 이전 크기의 글리프가 그대로 나온다.
     pub fn invalidate(self: *Atlas) void {
-        self.cache.clearRetainingCapacity();
+        self.gray_cache.clearRetainingCapacity();
+        self.color_cache.clearRetainingCapacity();
         self.gray.rewind();
         self.color.rewind();
+        // 두 surface 를 함께 되돌렸으니 미처리 `full` 표시도 없앤다 — 남겨 두면 호출자가
+        // 이미 비워진 surface 를 또 비운다.
+        self.full = null;
+    }
+
+    /// #584 ① — 가득 찬 surface 를 비운다. **호출자가 이미 그린 것을 flush 한 뒤에만** 부른다.
+    ///
+    /// 그 순서가 이 함수의 존재 이유다. rewind 는 커서를 처음으로 돌려 다음 글리프가 앞자리를
+    /// **덮어쓰게** 하므로, 그 자리를 가리키는 정점이 아직 안 그려져 있으면 다른 글리프가
+    /// 그려진다 (Linux 는 텍스처를 0 으로 지우지 않아 *사라지는* 대신 *바뀐다*). 비운 뒤
+    /// 호출자가 한 번만 재시도한다 — 그래도 실패하면 그림 하나가 atlas 보다 큰 경우다.
+    pub fn resetFull(self: *Atlas) void {
+        const kind = self.full orelse return;
+        const is_color = kind == .color;
+        const surface = self.surfaceFor(is_color);
+        const cache = self.cacheFor(is_color);
+        // 로그 값은 **비우기 전에** 읽는다 — 그것이 이 surface 가 실제로 담을 수 있었던 양이다.
+        // Linux 는 cluster 를 별도 맵에 두지 않는다 (인덱스 캐시 하나다) — cluster · fonts 칸은 0.
+        const held = cache.count();
+        const filled_y = surface.cursor_y + surface.row_height;
+        cache.clearRetainingCapacity();
+        surface.reset();
+        // 사용자 로그에 남긴다 — 문구는 세 platform 공통 정의를 쓴다 (#576).
+        log.logAtlasFull(@tagName(kind), surface.resets, held, 0, 0, filled_y);
+        self.full = null;
     }
 
     /// atlas 에 올릴 비트맵 하나. 폰트 글리프든 아이콘이든 여기서는 같다.
@@ -252,7 +308,11 @@ pub const Atlas = struct {
         key: Key,
         bmp: Bitmap,
     ) ?AtlasEntry {
+        const is_color = bmp.is_color;
+        const cache = self.cacheFor(is_color);
+
         // 보이지 않는 그림 (공백 등) 도 캐시한다 — 매번 raster 를 다시 묻지 않게.
+        // 자리를 안 먹으므로 rewind 와 무관하게 계속 유효하다.
         if (bmp.w == 0 or bmp.h == 0 or bmp.pixels.len == 0) {
             const empty = AtlasEntry{
                 .x = 0,
@@ -263,12 +323,15 @@ pub const Atlas = struct {
                 .bearing_y = 0,
                 .advance = bmp.advance,
             };
-            self.cache.put(key, empty) catch {};
+            cache.put(key, empty) catch {};
             return empty;
         }
 
-        const is_color = bmp.is_color;
-        const surface = if (is_color) &self.color else &self.gray;
+        const surface = self.surfaceFor(is_color);
+        // `packRow` 는 **실패할 때도 커서를 움직인다** (줄바꿈 분기가 높이 검사보다 앞이다).
+        // 그래서 "비우면 들어갈 여지가 있었나" 는 호출 **전** 값으로 판정해야 한다.
+        const before_x = surface.cursor_x;
+        const before_y = surface.cursor_y;
 
         const placed = atlas_common.packRow(
             &surface.cursor_x,
@@ -277,29 +340,25 @@ pub const Atlas = struct {
             ATLAS_SIZE,
             bmp.w,
             bmp.h,
-        ) orelse blk: {
-            // 가득 찼다 — 비우고 한 번만 재시도한다. 캐시도 함께 버려야 이전
-            // 좌표를 가리키는 entry 가 남지 않는다.
+        ) orelse {
+            // #584 ① — 가득 찼다. **그 자리에서 비우지 않는다.**
             //
-            // 이 프레임의 앞쪽 글리프들이 이미 이 atlas 좌표를 참조해 정점을
-            // 만들었을 수 있다. 그 프레임은 일부 글리프가 어긋나 보일 수 있고,
-            // 다음 프레임부터 정상이다 — atlas 를 키우지 않는 한 근본 회피가
-            // 불가능한 지점이라 정직하게 남긴다 (`resets` 로 빈도를 관찰한다).
-            self.cache.clearRetainingCapacity();
-            surface.reset();
-            // 사용자 로그에 남긴다 — 이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.
-            log.appendLine("gpu", "GL atlas {s} full — clearing and refilling (resets={d})", .{
-                if (is_color) "color" else "gray",
-                surface.resets,
-            });
-            break :blk atlas_common.packRow(
-                &surface.cursor_x,
-                &surface.cursor_y,
-                &surface.row_height,
-                ATLAS_SIZE,
-                bmp.w,
-                bmp.h,
-            ) orelse return null; // 그림 하나가 atlas 보다 크다 — 포기.
+            // 이 프레임이 이미 emit 한 정점들이 이 atlas 좌표를 가리키고 있고, UV 는
+            // `gl_text.Batch.add` 시점에 굽는다. 여기서 rewind 하면 뒤이어 올라오는
+            // 글리프가 그 자리를 덮어써서 **앞의 글자들이 다른 글자로 바뀐다** (Linux 는
+            // 텍스처를 0 으로 지우지 않으므로 사라지는 대신 바뀐다). 2026-09-02 KDE 실기에서
+            // 화면 위쪽 6.22 줄이 그렇게 어긋나는 것을 확인했다.
+            //
+            // 그래서 표시만 하고 돌아간다. 호출자가 batch 를 flush 해 그린 뒤 `resetFull`
+            // 을 부르고 한 번만 재시도한다 (SPEC §12.6 ①).
+            //
+            // **이미 빈 surface 인데도 안 들어가면 표시하지 않는다** — 비워도 못 담는다는
+            // 뜻이라 (그림 하나가 atlas 보다 크다), 표시하면 호출자가 글리프마다 헛되게
+            // flush + reset 을 한다.
+            if (before_x != 0 or before_y != 0) {
+                self.full = if (is_color) .color else .gray;
+            }
+            return null;
         };
 
         const pixels: [*]const u8 = if (is_color) blk: {
@@ -341,7 +400,7 @@ pub const Atlas = struct {
             .is_color = is_color,
             .advance = bmp.advance,
         };
-        self.cache.put(key, entry) catch {};
+        cache.put(key, entry) catch {};
         return entry;
     }
 

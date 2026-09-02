@@ -4441,9 +4441,16 @@ const Client = struct {
                     .h = @floatFromInt(r.h),
                     .color = .{ colorF(r.color.r), colorF(r.color.g), colorF(r.color.b), 1.0 },
                 }, r.shade),
-                .glyph => |g| self.glAddGlyph(ctx, text_batch, atlas, &g.item),
+                .glyph => |g| self.glAddGlyph(ctx, text_batch, atlas, &g.item, clip, viewport_w, viewport_h),
                 .icon => |ic| {
-                    const entry = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke) orelse continue;
+                    // #584 ① — 글리프와 같은 안전망. 아이콘도 gray surface 를 쓰므로 여기서 찰 수 있다.
+                    var entry_opt = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke);
+                    if (entry_opt == null and atlas.full != null) {
+                        glFlushText(ctx, text_batch, atlas, clip, viewport_w, viewport_h);
+                        atlas.resetFull();
+                        entry_opt = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke);
+                    }
+                    const entry = entry_opt orelse continue;
                     text_batch.add(self.allocator, .{
                         .x = @floatFromInt(ic.x),
                         .y = @floatFromInt(ic.y),
@@ -4475,18 +4482,45 @@ const Client = struct {
         viewport_h: f32,
     ) void {
         _ = self;
-        const clipped = clip[0] > 0 or clip[1] < @as(i32, @trunc(viewport_w));
-        if (clipped) {
-            ctx.api.enable(egl.GL_SCISSOR_TEST);
-            ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @trunc(viewport_h));
+        if (!is_rect) {
+            glFlushText(ctx, text_batch, atlas, clip, viewport_w, viewport_h);
+            return;
         }
-        if (is_rect) {
-            rect_batch.flush(&ctx.api, viewport_w, viewport_h);
-            rect_batch.clear();
-        } else {
-            text_batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
-            text_batch.clear();
-        }
+        const clipped = glClipped(clip, viewport_w);
+        if (clipped) glApplyClip(ctx, clip, viewport_h);
+        rect_batch.flush(&ctx.api, viewport_w, viewport_h);
+        rect_batch.clear();
+        if (clipped) ctx.api.disable(egl.GL_SCISSOR_TEST);
+    }
+
+    fn glClipped(clip: [2]i32, viewport_w: f32) bool {
+        return clip[0] > 0 or clip[1] < @as(i32, @trunc(viewport_w));
+    }
+
+    fn glApplyClip(ctx: egl.Context, clip: [2]i32, viewport_h: f32) void {
+        ctx.api.enable(egl.GL_SCISSOR_TEST);
+        ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @trunc(viewport_h));
+    }
+
+    /// 텍스트 batch 를 지금 그린다. **`clip` 을 함께 받는 것이 요점이다** — chrome 은 항목마다
+    /// clip 이 달라서 (탭 제목이 탭 밖으로 새지 않게 자른다), 그 clip 을 빼고 그리면 글자가
+    /// 탭 경계를 넘는다.
+    ///
+    /// [#584](https://github.com/ensky0/tildaz/issues/584) ① 의 안전망도 이 자리를 쓴다 —
+    /// atlas 가 프레임 중간에 차면 *지금까지 쌓은 정점*을 이 함수로 먼저 그린 뒤 비운다.
+    /// 그래서 chrome 한가운데서 차도 clip 이 유지된다.
+    fn glFlushText(
+        ctx: egl.Context,
+        text_batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        clip: [2]i32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        const clipped = glClipped(clip, viewport_w);
+        if (clipped) glApplyClip(ctx, clip, viewport_h);
+        text_batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
+        text_batch.clear();
         if (clipped) ctx.api.disable(egl.GL_SCISSOR_TEST);
     }
 
@@ -4506,7 +4540,9 @@ const Client = struct {
     ) void {
         if (items.len == 0) return;
         batch.clear();
-        for (items) |*item| self.glAddGlyph(ctx, batch, atlas, item);
+        // 이 계층은 화면 전체라 자를 것이 없다. #584 ① 의 안전망 flush 도 같은 clip 을 쓴다.
+        const clip: [2]i32 = .{ 0, @intFromFloat(@trunc(viewport_w)) };
+        for (items) |*item| self.glAddGlyph(ctx, batch, atlas, item, clip, viewport_w, viewport_h);
         batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
     }
 
@@ -4519,8 +4555,22 @@ const Client = struct {
         batch: *gl_text.Batch,
         atlas: *gl_atlas.Atlas,
         item: *const software_terminal.GlyphItem,
+        clip: [2]i32,
+        viewport_w: f32,
+        viewport_h: f32,
     ) void {
-        const entry = atlas.glyphForItem(&ctx.api, self.allocator, item) orelse return;
+        var entry_opt = atlas.glyphForItem(&ctx.api, self.allocator, item);
+        if (entry_opt == null and atlas.full != null) {
+            // #584 ① — atlas 가 이 프레임 중간에 찼다. **지금까지 쌓은 정점을 먼저 그린다.**
+            // 그 정점들의 UV 는 비우기 전 좌표를 가리키므로 (UV 는 `Batch.add` 시점에 굽는다),
+            // 비운 뒤에 그리면 그 자리에 새로 올라온 다른 글리프가 그려진다.
+            glFlushText(ctx, batch, atlas, clip, viewport_w, viewport_h);
+            atlas.resetFull();
+            // 재시도는 한 번뿐이다 — 또 실패하면 그림 하나가 atlas 보다 큰 경우라 이 셀을
+            // 건너뛴다 (Windows `emitClusterInstance` 와 같은 규칙, 무한 루프가 없다).
+            entry_opt = atlas.glyphForItem(&ctx.api, self.allocator, item);
+        }
+        const entry = entry_opt orelse return;
         if (entry.is_color) {
             const fit = software_terminal.colorGlyphFit(item.w, item.h, item.glyph.width, item.glyph.height) orelse return;
             batch.add(self.allocator, .{
