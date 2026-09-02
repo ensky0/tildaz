@@ -30,6 +30,12 @@ pub const AtlasEntry = struct {
 ///   차게 만들고, 화면이 흐르듯 무너졌다.
 /// - **cluster 가 글리프 하나로 합성되면 이 키로 온다** (`getOrInsertCluster` 의 `len == 1`
 ///   분기). 그 폰트는 cluster 경로의 OS fallback 이라 주소가 더 불안정하다.
+pub const GlyphKey = struct {
+    /// `fontId(PostScript 이름)`. 아래 `ClusterKey.font_id` 와 같은 값을 쓴다.
+    font_id: u64,
+    index: u16,
+};
+
 /// 탭바 아이콘 (`+` · `×` · `⋯`) 이 `GlyphKey.font_id` 에 쓰는 **예약값**.
 ///
 /// 아이콘은 폰트에서 온 글리프가 아니라 코드로 그리는 그림이라 폰트 id 가 없다. 예전에는
@@ -38,12 +44,6 @@ pub const AtlasEntry = struct {
 /// ([#529](https://github.com/ensky0/tildaz/issues/529) 가 그 종류였다). 그래서 폰트 이름
 /// 해시가 닿을 일이 없는 값을 예약한다.
 pub const ICON_FONT_ID: u64 = 0xFFFF_FFFF_FFFF_FFFF;
-
-pub const GlyphKey = struct {
-    /// `fontId(PostScript 이름)`. 아래 `ClusterKey.font_id` 와 같은 값을 쓴다.
-    font_id: u64,
-    index: u16,
-};
 
 /// 폰트를 가리키는 **안정된 id** — PostScript 이름의 FNV-1a 64bit 해시다.
 ///

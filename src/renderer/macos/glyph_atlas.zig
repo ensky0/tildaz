@@ -18,7 +18,13 @@ const tab_icons = @import("../../tab_icons.zig");
 const atlas_common = @import("../glyph_atlas_common.zig");
 const log = @import("../../log.zig");
 
-pub const ATLAS_SIZE: u32 = 2048;
+/// atlas 텍스처의 **처음** 한 변 (px). 차면 `grow` 가 두 배로 키운다 (#584 ②).
+pub const INITIAL_ATLAS_SIZE: u32 = 2048;
+
+/// 키울 수 있는 상한. Metal 의 텍스처 상한은 기종에 따라 16384 이지만, 8192² 는 이미
+/// **256 MB** (BGRA8) 라 그 위로 가면 메모리가 화면 이득을 넘는다. 여기 닿으면 더 키우지
+/// 않고 ① 안전망 (찬 것을 표시하고 호출자가 flush → 비우기 → 재시도) 으로 물러선다.
+pub const MAX_ATLAS_SIZE: u32 = 8192;
 
 // #282 G5 — AtlasEntry / GlyphKey / packing 은 Windows atlas 와 공통(라인 동일).
 pub const AtlasEntry = atlas_common.AtlasEntry;
@@ -33,6 +39,15 @@ pub const GlyphAtlas = struct {
     /// 여러 글리프를 합성한 cluster (#401). **위 맵과 반드시 갈라 둔다** (#529) —
     /// 한 맵을 쓰면 cluster 해시가 진짜 glyph index 와 겹쳐 남의 그림이 나온다.
     cluster_cache: std.AutoHashMap(ClusterKey, AtlasEntry),
+
+    /// 지금 atlas 한 변 (px). `grow` 가 두 배로 키운다 (#584 ②) — ghostty 가 쓰는 방식이다
+    /// (`font.Atlas.grow` + `syncAtlasTexture`). 비우고 재사용하는 것보다 나은 이유는
+    /// **프레임 중간에 비우는 상황 자체가 없어지기** 때문이다. 이미 emit 한 인스턴스의 UV 가
+    /// 무효화될 일이 없다.
+    ///
+    /// 셰이더는 이 값을 `atlas_w` · `atlas_h` uniform 으로 받아 UV 를 정규화하므로, 크기가
+    /// 바뀌면 renderer 가 그 uniform 과 Metal 텍스처를 함께 갱신해야 한다.
+    size: u32 = INITIAL_ATLAS_SIZE,
 
     // 단순 row-based packing 상태.
     cursor_x: u32 = 0,
@@ -50,6 +65,17 @@ pub const GlyphAtlas = struct {
     // 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는 (B*a, G*a, R*a, a).
     pixels: []u8,
 
+    /// #584 ① — 프레임 중간에 자리를 못 잡았다. **그 자리에서 비우지 않는다** — 호출자가
+    /// 이미 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6). 예전에는
+    /// 여기서 바로 `reset` 을 불러 **앞서 emit 한 인스턴스의 UV 가 빈 자리를 가리켰다.**
+    is_full: bool = false,
+    /// #584 — 어느 라스터 경로에서 찼는지 (`icon` · `cluster` · `glyph`). 호출자가 비울 때
+    /// 로그에 실어 어느 쪽이 용량을 먹는지 가른다.
+    full_kind: []const u8 = "unknown",
+
+    /// #584 ② — 두 배로 키운 횟수. 이 값이 늘면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
+    grows: u32 = 0,
+
     /// 가득 차서 통째로 비운 횟수. **scale 변경으로 부르는 `reset` 은 세지 않는다** —
     /// 그쪽은 정상 동작이다. 이 값이 프레임마다 늘면 한 화면이 요구하는 글리프가 용량을
     /// 넘었다는 뜻이다 ([#584](https://github.com/ensky0/tildaz/issues/584)).
@@ -57,7 +83,7 @@ pub const GlyphAtlas = struct {
 
     // Metal 업로드를 위한 dirty 영역 트래킹.
     dirty: bool = false,
-    dirty_min_y: u32 = ATLAS_SIZE,
+    dirty_min_y: u32 = INITIAL_ATLAS_SIZE,
     dirty_max_y: u32 = 0,
 
     // 글리프 라스터 임시 버퍼 (RGBA premultiplied, max 256x256).
@@ -69,7 +95,7 @@ pub const GlyphAtlas = struct {
         scale: f32,
     ) !GlyphAtlas {
         // BGRA8 = 4 bytes per pixel.
-        const pixels = try alloc.alloc(u8, ATLAS_SIZE * ATLAS_SIZE * 4);
+        const pixels = try alloc.alloc(u8, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
         @memset(pixels, 0);
 
         const temp_buf = try alloc.alloc(u8, 256 * 256 * 4);
@@ -183,13 +209,12 @@ pub const GlyphAtlas = struct {
             }
         }
 
-        const pos = self.packGlyph(size, size) orelse blk: {
-            self.resetFull("icon");
-            break :blk self.packGlyph(size, size) orelse return null;
-        };
+        // #584 ① — 자리가 없으면 **여기서 비우지 않고** 호출자에게 알린다. 호출자가 이미
+        // 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6).
+        const pos = self.packOrMarkFull(size, size, "icon") orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = ATLAS_SIZE * 4;
+        const atlas_row_bytes = self.size * 4;
         for (0..size) |row| {
             const src_off = row * bytes_per_row;
             const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
@@ -221,34 +246,14 @@ pub const GlyphAtlas = struct {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
-        @memset(self.pixels, 0);
+        self.is_full = false;
+        // #584 — **픽셀을 0 으로 밀지 않는다.** 예전에는 `@memset(self.pixels, 0)` 을 했는데,
+        // 이 atlas 는 프레임 시작에 한 번만 업로드되므로 (2-frame 정책) 비운 직후의 0 이 다음
+        // 프레임에 올라가 **화면이 통째로 비었다.** 자리만 되돌리면 다음에 담기는 글리프가
+        // 그 위를 덮어쓴다 — 아무도 참조하지 않는 옛 픽셀이 남는 것은 무해하다.
         self.dirty = true;
         self.dirty_min_y = 0;
-        self.dirty_max_y = ATLAS_SIZE;
-    }
-
-    /// ⚠️ **임시 진단** (#584 초반 깜빡임) — 단일 글리프 캐시에 실린 **서로 다른 폰트 주소 수**.
-    /// `GlyphKey` 는 아직 주소를 쓰므로, 화면이 쓰는 폰트 수보다 크게 나오면 같은 글리프가
-    /// 주소마다 새로 담긴다는 뜻이다. **규명이 끝나면 지운다.**
-    pub fn distinctGlyphFonts(self: *const GlyphAtlas) u32 {
-        var seen: [256]u64 = undefined;
-        var n: u32 = 0;
-        var it = self.cache.keyIterator();
-        while (it.next()) |k| {
-            var found = false;
-            for (seen[0..n]) |x| {
-                if (x == k.font_id) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                if (n >= seen.len) return @intCast(seen.len);
-                seen[n] = k.font_id;
-                n += 1;
-            }
-        }
-        return n;
+        self.dirty_max_y = self.size;
     }
 
     /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`resetFull` 에서만 부른다).
@@ -281,8 +286,9 @@ pub const GlyphAtlas = struct {
     /// **가득 차서** 비운다 — `reset` 에 횟수 세기와 로그를 얹은 것이다. scale 변경 경로와
     /// 갈라 두어야 로그가 "용량이 모자란다" 는 뜻으로만 읽힌다
     /// ([#584](https://github.com/ensky0/tildaz/issues/584)).
-    fn resetFull(self: *GlyphAtlas, kind: []const u8) void {
+    pub fn resetFull(self: *GlyphAtlas) void {
         self.resets += 1;
+        const kind = self.full_kind;
         // `reset` 전에 읽는다 — 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
         log.logAtlasFull(kind, self.resets, self.cache.count(), self.cluster_cache.count(), self.distinctClusterFonts(), self.cursor_y + self.row_height);
         self.reset();
@@ -434,13 +440,10 @@ pub const GlyphAtlas = struct {
             i = j;
         }
 
-        const pos = self.packGlyph(gw, gh) orelse blk: {
-            self.resetFull("cluster");
-            break :blk self.packGlyph(gw, gh) orelse return null;
-        };
+        const pos = self.packOrMarkFull(gw, gh, "cluster") orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = ATLAS_SIZE * 4;
+        const atlas_row_bytes = self.size * 4;
         for (0..gh) |row| {
             const src_off = row * bytes_per_row;
             const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
@@ -573,15 +576,12 @@ pub const GlyphAtlas = struct {
         ct.CTFontDrawGlyphs(font, &glyphs, &positions, 1, ctx);
 
         // 아틀라스에 packing.
-        const pos = self.packGlyph(gw, gh) orelse blk: {
-            self.resetFull("glyph");
-            break :blk self.packGlyph(gw, gh) orelse return null;
-        };
+        const pos = self.packOrMarkFull(gw, gh, "glyph") orelse return null;
 
         // BGRA temp_buf (4 bytes per pixel) 를 atlas (BGRA8) 로 row 단위 복사.
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = ATLAS_SIZE * 4;
+        const atlas_row_bytes = self.size * 4;
         for (0..gh) |row| {
             const src_off = row * bytes_per_row;
             const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
@@ -607,7 +607,63 @@ pub const GlyphAtlas = struct {
 
     /// #282 G5 — 공통 row-based packing 에 위임.
     fn packGlyph(self: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, ATLAS_SIZE, w, h);
+        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, self.size, w, h);
+    }
+
+    /// #584 ② — atlas 를 **두 배로 키운다.** ghostty 가 쓰는 방식이다 (`font.Atlas.grow`).
+    ///
+    /// **비우고 재사용하는 것보다 나은 이유.** 비우면 이미 emit 한 인스턴스의 UV 가 무효가
+    /// 되고, macOS 는 그것을 프레임 안에서 되살릴 방법이 없다 — `replaceRegion` 은 **즉시
+    /// CPU 복사이고 GPU 작업과 순서가 보장되지 않아서**, render pass 를 몇 번 끊어도 모든
+    /// pass 가 최종 텍스처를 읽는다 (Apple 문서: *"immediately copies … does not synchronize
+    /// against GPU accesses"*). 키우면 그 상황 자체가 없다.
+    ///
+    /// 옛 내용을 **같은 (x, y) 로** 옮긴다 — row-based packing 이라 좌표가 그대로 유효하고,
+    /// 커서도 이어서 쓸 수 있다. 다만 UV 는 크기로 정규화되므로 renderer 가 uniform 과 Metal
+    /// 텍스처를 함께 갱신해야 한다 (`syncAtlasTexture`).
+    ///
+    /// 상한 (`MAX_ATLAS_SIZE`) 에 닿으면 `false` 를 돌려준다 — 호출자는 ① 안전망으로 물러선다.
+    pub fn grow(self: *GlyphAtlas) bool {
+        if (self.size >= MAX_ATLAS_SIZE) return false;
+        const new_size = self.size * 2;
+        const new_pixels = self.alloc.alloc(u8, @as(usize, new_size) * new_size * 4) catch return false;
+        @memset(new_pixels, 0);
+
+        // 옛 내용을 같은 좌표로 복사한다 — row stride 만 달라진다.
+        const old_row = @as(usize, self.size) * 4;
+        const new_row = @as(usize, new_size) * 4;
+        for (0..self.size) |y| {
+            @memcpy(new_pixels[y * new_row ..][0..old_row], self.pixels[y * old_row ..][0..old_row]);
+        }
+
+        self.alloc.free(self.pixels);
+        self.pixels = new_pixels;
+        self.size = new_size;
+        self.grows += 1;
+        // 전체를 다시 올려야 한다 — 텍스처가 새로 만들어진다.
+        self.dirty = true;
+        self.dirty_min_y = 0;
+        self.dirty_max_y = new_size;
+        log.logAtlasGrew(new_size, self.grows, self.cache.count(), self.cluster_cache.count());
+        return true;
+    }
+
+    /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①).
+    ///
+    /// 규칙 둘이 Linux 판 (`gl_atlas.upload`) 과 같다.
+    ///
+    /// 1. **판정은 호출 *전* 값으로 한다.** `packRow` 는 실패할 때도 커서를 움직인다 (줄바꿈
+    ///    분기가 높이 검사보다 앞이다). 실패 후 값을 보면 "빈 atlas 였는지" 를 알 수 없다.
+    /// 2. **이미 빈 atlas 인데 안 들어가면 세우지 않는다.** 그림 하나가 atlas 보다 크다는
+    ///    뜻이라 비워도 소용없고, 세우면 호출자가 글리프마다 헛되게 flush + reset 을 돈다.
+    fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
+        const was_empty = self.cursor_x == 0 and self.cursor_y == 0 and self.row_height == 0;
+        if (self.packGlyph(w, h)) |pos| return pos;
+        if (!was_empty) {
+            self.is_full = true;
+            self.full_kind = kind;
+        }
+        return null;
     }
 };
 

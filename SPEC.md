@@ -1715,9 +1715,13 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 |---|---|---|
 | **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
 | **Linux** | `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
-| **macOS** | 그 자리에서 `reset()` + `@memset(pixels, 0)` | **미구현** ([#584](https://github.com/ensky0/tildaz/issues/584)) |
+| **macOS** | `is_full` 을 세우고 호출자가 처리하되, **먼저 ② 의 `grow` 를 시도한다.** 키우면 이 경로가 아예 안 돈다 | **상한 경로만.** 아래 ⚠️ |
 
 **Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
+
+⚠️ **macOS 는 ① 을 완전히 만족할 수 없다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). 그래서 render pass 를 끊어 그 사이에 올려도 **모든 pass 가 최종 텍스처를 읽는다** — Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다. 실측으로 확인했다: 안전망만으로는 기준판과 23~38 % 가 어긋났다.
+>
+> **그래서 macOS 는 ② 의 `grow` 를 주 경로로 쓴다** (아래). 키우면 프레임 중간에 비우는 상황 자체가 없어서 이 문제가 성립하지 않는다. ① 은 `MAX_ATLAS_SIZE` 에 닿았을 때만 도는 마지막 방어이고, 그 경로에서는 그림이 어긋날 수 있다.
 
 **재시도는 한 번뿐이다** (세 platform 공통). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 
@@ -1770,6 +1774,14 @@ atlas full — cleared and refilling (<kind>, resets=N, glyphs=N, clusters=N, fo
 
 Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이고, `glyphs` 는 **찬 surface 의 캐시 항목 수**다 (`kind` 와 같은 축이라 두 값이 짝이 맞는다).
 
+**키울 때는 다른 줄을 남긴다** (macOS 만 — ② 의 `grow`).
+
+```
+atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
+```
+
+이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다. `atlas full` 과 갈라 두는 이유는 **뜻이 반대**이기 때문이다 — `full` 은 "그린 것을 지켜야 했다", `grew` 는 "지킬 필요가 없어졌다" 다.
+
 #### ② 용량 — 실측 기준선
 
 `ATLAS_SIZE` 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
@@ -1785,7 +1797,33 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 **컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
 
-**용량으로 막는 것은 포기한다.** 4K@2x 최악 (11,110 종) 은 4096² (약 11,000) 으로도 경계라, ① 이 받게 한다.
+#### ② 계속 — 차면 키운다 (macOS)
+
+**macOS 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), macOS 가 ① 을 완전히 만족할 수 없기 때문에 여기서는 이것이 **주 경로**다.
+
+| | |
+|---|---|
+| 시작 크기 | `INITIAL_ATLAS_SIZE` = **2048** |
+| 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
+| 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
+| UV | 셰이더가 `atlas_w`/`atlas_h` uniform 으로 정규화하므로, 크기가 바뀌면 renderer 가 그 uniform 과 Metal 텍스처를 함께 갱신한다 (`syncAtlasTexture`) |
+
+**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다.
+
+**검증** (MacBook Pro M5 Pro · macOS 26.6.2 · 5120x2880 60 Hz · Menlo 15pt · `cell 19x39`). mark 를 둘 쌓은 cluster **10,000 종** 화면 (200 칸 × 50 줄) 이라 2048² 을 넘긴다. **`INITIAL_ATLAS_SIZE` 만 바꾼 세 판**을 맞댔다 — `grow` 가 정확하면 **시작 크기와 무관하게 최종 그림이 같아야** 한다.
+
+| 판 | `grow` | `atlas full` | 4096 판과 다른 픽셀 (창 7,588,060 px) |
+|---|---|---|---|
+| 4096 (기준 · 안 넘침) | 0 회 | 0 회 | — |
+| **2048** (기본값) | 1 회 → 4096 | **0 회** | **0 px** |
+| **512** | 3 회 → 1024 → 2048 → 4096 | **0 회** | **0 px** |
+| 일반 화면 (cluster 2,816 종) | **0 회** | 0 회 | 이웃 프레임 `0 px` |
+
+**`atlas full` 이 0 회인 것이 핵심이다** — 차기 전에 커지므로 ① 이 발동하지 않는다.
+
+**Windows · Linux 는 아직 고정 크기 + ① 이다.** 그쪽은 ① 로 계약을 이미 만족하고 실측으로 `0 px` 을 확인했으므로, `grow` 로 갈아타면 그 검증이 무효가 된다. **세 platform 을 `grow` 로 통일하는 것은 후속 항목이다** ([#584](https://github.com/ensky0/tildaz/issues/584)) — 그때는 이미 검증된 ① 이 안전망으로 남아 있어 위험이 낮다.
+
+**용량으로 막는 것을 포기하는 것은 고정 크기 platform 에 해당한다.** Windows · Linux 는 4K@2x 최악 (11,110 종) 을 4096² (약 11,000) 으로도 못 담으므로 ① 이 받는다. macOS 는 8192 까지 키워 그 지점을 넘긴다.
 
 ---
 

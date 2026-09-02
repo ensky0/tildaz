@@ -290,6 +290,16 @@ pub fn logPrimaryFont(family: []const u8, cell_w: anytype, cell_h: anytype, asce
 /// 뜻이다 —
 /// **이 둘이 실제 용량이다.** `ATLAS_SIZE` 를 얼마로 할지는 산술이 아니라 이 값으로 정한다
 /// (cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 낸다).
+/// glyph atlas 를 **두 배로 키웠다** ([#584](https://github.com/ensky0/tildaz/issues/584) ②).
+///
+/// 비우고 재사용하는 대신 키우면 **프레임 중간에 비우는 상황 자체가 없어진다** — 이미 그린
+/// 것의 UV 가 무효화될 일이 없다. 이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
+pub fn logAtlasGrew(new_size: anytype, grows: anytype, glyphs: anytype, clusters: anytype) void {
+    appendLine("gpu", "atlas grew to {d}x{d} (grows={d}, glyphs={d}, clusters={d})", .{
+        new_size, new_size, grows, glyphs, clusters,
+    });
+}
+
 pub fn logAtlasFull(kind: []const u8, resets: anytype, glyphs: anytype, clusters: anytype, fonts: anytype, filled_y: anytype) void {
     appendLine("gpu", "atlas full — cleared and refilling ({s}, resets={d}, glyphs={d}, clusters={d}, fonts={d}, filled_y={d})", .{
         kind, resets, glyphs, clusters, fonts, filled_y,
