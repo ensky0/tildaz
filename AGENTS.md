@@ -1093,6 +1093,47 @@ magick out.png -crop 130x62+3020+148 +repage -resize 500% one.png    # 글리프
 cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글자 (`é`)** 를 같은 화면에
 넣어요. 이 넷이 그대로면 흔한 경로에 회귀가 없다는 뜻이에요.
 
+# Linux — 이 macOS 머신에서 lima VM 으로 Linux 를 돌려 보는 법 (software 경로만)
+
+macOS 작업 머신에 Linux 실동작을 볼 lima VM 이 있어요 — `tildaz-linux` (Ubuntu aarch64 · sway 1.11 · grim ·
+DejaVu Sans Mono · Noto Sans CJK KR · Noto Color Emoji). `limactl start tildaz-linux` 로 켜고 끝나면 `limactl stop`.
+(예전에 memory 에만 있던 내용을 여기로 옮겼어요 — 2026-09-03.)
+
+```sh
+zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe          # 크로스빌드 (macOS 에서)
+limactl copy zig-out/bin/tildaz tildaz-linux:/tmp/tildaz-test
+limactl shell tildaz-linux -- bash -c '
+  cat > /tmp/tz-sway.conf <<EOF
+output HEADLESS-1 resolution 1280x800
+exec sh -c "sleep 2; /tmp/tildaz-test --instance 1 -e /tmp/screen.sh"      # sleep 없이 exec 하면 소켓 연결이 실패한다 (실측)
+exec sh -c "sleep 9; grim /tmp/tz-shot.png; sleep 1; swaymsg exit"
+EOF
+  env -i HOME=/tmp/tz-home XDG_CONFIG_HOME=/tmp/tz-xdg XDG_STATE_HOME=/tmp/tz-state XDG_RUNTIME_DIR=/tmp/tz-run \
+      PATH=/usr/bin:/bin TILDAZ_VERBOSE=1 WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+      timeout 16 sway -c /tmp/tz-sway.conf'
+limactl copy tildaz-linux:/tmp/tz-shot.png /tmp/tz-shot.png                # 회수해서 눈으로 · 픽셀로
+```
+
+- **격리**는 `env -i` + `/tmp/tz-*` 홈 · config · state 로 해요. 로그는 `/tmp/tz-state/tildaz/tildaz_*.log`
+  (`-e` 화면은 측정 역할이라 `tildaz_stress.log`). `-e` 는 인자를 못 받으니 화면은 스크립트 파일로
+  (`dist/screens/clusters.py` 가 만들어 줘요).
+- **창은 화면 오른쪽 절반 (x 640~1280 · 640×800)** 이에요 — tildaz 가 sway IPC 로 `resize set width 50 ppt`
+  를 등록해요. `-size` 는 sway 에서 창에 영향을 못 줘요 (layer-shell 을 일부러 안 써요, #454). 좌우 3분할은
+  20 열 최소에 걸려 안 되니 세로축으로 짜요.
+- **해상도를 바꾸지 마세요** (`swaymsg output "*" resolution …`) — compositor 가 창을 축소해 보여 1px 선이
+  두 픽셀에 번져요 (#374 에서 걸렸어요). 기본 출력 크기 그대로 캡처.
+- `set -e` 스크립트에서 `pkill -x sway` 는 죽일 것이 없으면 exit 1 이라 조용히 중단돼요 — `|| true`.
+- 폭 0 문자 (default-ignorable) 는 cell 이 안 생겨 렌더 테스트에 못 써요 — 미배정 U+0378 이 "어떤 폰트에도
+  없는 폭 1 문자" 로 유용해요.
+
+**⚠️ GL 경로 (atlas · `gl_*.zig`) 는 이 VM 에서 켜지지 않아요 — software (`wl_shm`) 경로만 검증돼요.**
+2026-09-03 #586 Linux atlas `grow` 를 재려다 확인했어요. VM 에 `/dev/dri` 가 없어 tildaz 가 *"software path —
+cannot open DRM render node"* 로 떨어지고, `sudo modprobe vkms` 는 `card0` 만 (렌더 노드 없음), `sudo modprobe vgem`
++ `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` + `WLR_RENDERER=gles2` 로 렌더 노드 · dmabuf 광고까지 만들어도 tildaz 의
+GLES 가 *"all 1 advertised modifiers failed FBO"* · *"gbm 할당 실패"* 로 software 로 떨어졌어요. **atlas 관련
+변경의 Linux 실기는 실제 GPU 가 있는 Linux 기기 (`# 실행 환경` 의 듀얼부트 노트북) 에서** 해요 — 절차는
+`# Linux — 글리프 · cluster 렌더 실기 검증 방법` 과 SPEC §12.6 의 Linux 실측 표대로예요.
+
 # 사이트 (`docs/`) 렌더 확인 — headless 브라우저
 
 `docs/` 의 페이지를 고치면 **눈으로 한 번 봐요.** 표 · 각주처럼 구조가 있는 변경은 HTML 파서로 태그
