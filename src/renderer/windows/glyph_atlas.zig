@@ -105,13 +105,6 @@ pub const GlyphAtlas = struct {
     /// 글리프와 합성 cluster 가 함께 온다) · `color` (`rasterizeColor` — 컬러 emoji). macOS 는
     /// 단일과 cluster 가 함수부터 갈려 있어 라벨이 다르다.
     full_kind: []const u8 = "unknown",
-    /// ⚠️ **임시 진단** ([#584](https://github.com/ensky0/tildaz/issues/584)) — cluster 에 쓰인
-    /// face 주소를 처음 볼 때 로그에 남긴다. chain face 수 (최대 8 + bold/italic 변종) 보다
-    /// 훨씬 많으면 DirectWrite 가 fallback face 를 **매번 새로 만든다**는 뜻이고, 그러면
-    /// `ClusterKey.font_id` 에 주소를 두는 지금 방식이 macOS 와 같은 증상을 낸다 (같은 그림이
-    /// 주소마다 새로 담겨 atlas 가 부풀고 화면이 깜빡임). **확인이 끝나면 지운다.**
-    diag_face_seen: [64]usize = [_]usize{0} ** 64,
-    diag_face_n: u32 = 0,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -352,6 +345,9 @@ pub const GlyphAtlas = struct {
     pub fn getOrInsertCluster(
         self: *GlyphAtlas,
         face: *dw.IDWriteFontFace,
+        /// #584 — 폰트를 가리키는 **안정된 id** (`atlas_common.fontId`, 폰트 층이 PostScript
+        /// 이름에서 만든다). 주소를 쓰면 같은 폰트가 여러 키로 갈려 atlas 가 부푼다.
+        font_id: u64,
         glyph_indices: []const u16,
         advances: []const dw.FLOAT,
         offsets: []const dw.DWRITE_GLYPH_OFFSET,
@@ -362,17 +358,13 @@ pub const GlyphAtlas = struct {
         if (glyph_indices.len == 0) return null;
         if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
-        self.diagFace(face); // ⚠️ 임시 진단 (#584)
 
-        // #584 — `font_id` 는 폰트를 가리키는 **안정된 값**이어야 한다. Windows 는 chain face 를
-        // `chain_faces` 배열에 담아 재사용하므로 그 주소가 안정적이고, 그래서 주소를 그대로
-        // 쓴다.
-        //
-        // ⚠️ **system fallback 경로는 확인하지 않았다.** DirectWrite 가 chain 밖 폰트의 face 를
-        // 매번 새로 만들어 주면 macOS 와 같은 증상 (같은 그림이 주소마다 새로 담겨 atlas 가
-        // 부풀고 화면이 깜빡임) 이 난다 — macOS 는 CoreText 가 그랬다 (같은 `Monaco` 가 주소
-        // 50 개). Windows 실기에서 `logAtlasFull` 의 `fonts` 값으로 확인한다.
-        const key = ClusterKey{ .font_id = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
+        // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
+        // 아니다). Windows 실기에서 system fallback 이 같은 폰트에 face 를 여러 번 새로 만드는
+        // 것을 확인했다 — 다국어 화면 (cluster 7,560 종 · fallback 폰트 6 종) 에서 `MV Boli` 가
+        // 한 프로세스 안에서 주소 2 개로 나왔다. macOS 의 `Monaco` 50 개와 같은 기전이고 규모만
+        // 작다. 주소를 키에 실으면 같은 그림이 id 마다 새로 담겨 atlas 가 부푼다.
+        const key = ClusterKey{ .font_id = font_id, .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         // #415 · #418 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
@@ -587,19 +579,6 @@ pub const GlyphAtlas = struct {
             }
         }
         return n;
-    }
-
-    /// ⚠️ **임시 진단** (#584). 처음 보는 face 주소를 로그에 남긴다.
-    /// **확인이 끝나면 이 함수와 `diag_face_*` 필드를 함께 지운다.**
-    fn diagFace(self: *GlyphAtlas, face: *dw.IDWriteFontFace) void {
-        const p = @intFromPtr(face);
-        for (self.diag_face_seen[0..self.diag_face_n]) |x| {
-            if (x == p) return;
-        }
-        if (self.diag_face_n >= self.diag_face_seen.len) return;
-        self.diag_face_seen[self.diag_face_n] = p;
-        self.diag_face_n += 1;
-        log.appendLine("gpu", "cluster face #{d}: ptr=0x{x}", .{ self.diag_face_n, p });
     }
 
     pub fn reset(self: *GlyphAtlas) void {

@@ -201,13 +201,6 @@ fn normalizeFamily(name: []const u8, buf: []u8) []const u8 {
 }
 
 pub const CoreTextFontContext = struct {
-    /// ⚠️ **임시 진단** ([#584](https://github.com/ensky0/tildaz/issues/584)) — cluster 에 쓰인
-    /// 폰트 객체 주소를 처음 볼 때 family 이름을 로그에 한 번 남긴다. 같은 이름이 여러 주소로
-    /// 나오면 atlas 의 `ClusterKey.font_ptr` 이 같은 그림을 여러 번 담는다는 뜻이다.
-    /// **원인 규명이 끝나면 지운다.**
-    diag_font_seen: [64]usize = [_]usize{0} ** 64,
-    diag_font_n: u32 = 0,
-
     primary_font: ct.CTFontRef,
     font_em_size: f32,
     /// Retina scale factor — physical pixels per logical point. CoreText shape
@@ -677,7 +670,6 @@ pub const CoreTextFontContext = struct {
             const run_attrs = ct.CTRunGetAttributes(run);
             const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
             const run_font: ct.CTFontRef = @constCast(font_val);
-            self.diagClusterFont(run_font); // ⚠️ 임시 진단 (#584)
             // #584 — **run 당 한 번만** 잰다. 이 run 의 글리프는 모두 이 폰트다.
             const run_font_id = fontIdOf(run_font);
 
@@ -864,30 +856,6 @@ pub const CoreTextFontContext = struct {
     /// cluster 는 그림이 다르다.
     fn mixFontId(acc: u64, id: u64) u64 {
         return (acc *% 0x100000001b3) ^ id;
-    }
-
-    /// ⚠️ **임시 진단** (#584). 처음 보는 폰트 주소면 family 이름을 로그에 남긴다.
-    /// **원인 규명이 끝나면 이 함수와 `diag_font_*` 필드를 함께 지운다.**
-    fn diagClusterFont(self: *CoreTextFontContext, f: ct.CTFontRef) void {
-        const p = @intFromPtr(f);
-        for (self.diag_font_seen[0..self.diag_font_n]) |seen| {
-            if (seen == p) return;
-        }
-        if (self.diag_font_n >= self.diag_font_seen.len) return;
-        self.diag_font_seen[self.diag_font_n] = p;
-        self.diag_font_n += 1;
-
-        const name = ct.CTFontCopyFamilyName(f);
-        defer ct.CFRelease(@ptrCast(name));
-        var buf: [128]u8 = undefined;
-        const len = ct.CFStringGetLength(name);
-        var used: ct.CFIndex = 0;
-        if (len > 0) {
-            _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = len }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
-        }
-        log.appendLine("gpu", "cluster font #{d}: ptr=0x{x} family=\"{s}\"", .{
-            self.diag_font_n, p, if (used > 0) buf[0..@intCast(used)] else "?",
-        });
     }
 
     fn resolveGraphemeUncached(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {

@@ -1645,6 +1645,83 @@ Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴�
 
 **한글 bold 가 붙는다.** chain 전체 (primary + `glyph_fallback`) 에 변종을 만들기 때문이다 — macOS 실기 비교에서 kitty · Alacritty 와 같고, ghostty 는 한글이 regular 로 남았다 (2026-08-03).
 
+### 12.6 Glyph atlas — 폰트 식별과 용량 초과 ([#584](https://github.com/ensky0/tildaz/issues/584))
+
+한 화면이 요구하는 글리프가 atlas 에 다 안 들어갈 때의 사양이다. 세 platform 이 **같은 계약**을 쓴다 (§0 #1).
+
+| 축 | 사양 |
+|---|---|
+| ⓿ **폰트 식별** | cluster 캐시 키는 폰트를 **주소가 아니라 안정된 id** 로 식별한다 |
+| ① **찼을 때** | **이미 그린 것을 먼저 flush 하고, 비우고, 재시도한다.** 그 프레임의 화면은 온전하다 |
+| ② **용량** | `ATLAS_SIZE` 는 **2048**. 산술이 아니라 ③ 의 실측으로 정한다 |
+| ③ **로그** | [`log.logAtlasFull`](src/log.zig) 한 문구를 세 platform 이 그대로 쓴다 |
+
+#### ⓿ 폰트 식별 — 주소를 키에 싣지 않는다
+
+glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 축이 있어야 한다. **그 축에 폰트 객체의 주소를 쓰면 안 된다** — OS 폰트 매칭이 같은 폰트에 객체를 여러 번 새로 만들기 때문이다. 그러면 같은 그림이 주소마다 새로 담겨 atlas 가 부풀고, 넘치면 화면이 무너진다.
+
+| platform | cluster 키의 폰트 축 | 주소가 왜 안 되는가 (실측) |
+|---|---|---|
+| macOS | `atlas_common.fontId` — **PostScript 이름의 FNV-1a 64bit 해시** | CoreText 가 CTLine 마다 새 객체를 준다. 같은 `Monaco` 가 주소 **50 개** (640 byte 간격 순차 할당). cluster 2,816 종 화면이 항목 5,600 개 = 정확히 2 배를 썼다 |
+| Windows | **같은 `atlas_common.fontId`** | DirectWrite system fallback (`tryClusterOnSystemFallback`) 이 `CreateFontFace` 로 매번 새 객체를 만든다. fallback 폰트 6 종 · cluster 7,560 종 화면에서 `MV Boli` 가 한 프로세스 안에서 주소 **2 개**로 나왔다 |
+| Linux | chain face **index** (`gl_atlas.Key.face`, `u8`) | 인덱스는 chain 배열의 자리라 **애초에 주소가 아니다.** 같은 계약을 다른 방식으로 지킨다 |
+
+**family 이름이 아니라 PostScript 이름이다.** `Menlo-Bold` 와 `Menlo-Regular` 는 family 가 둘 다 `"Menlo"` 라, family 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 — [#529](https://github.com/ensky0/tildaz/issues/529) 가 그것이었다.
+
+**레지스트리가 아니라 해시다.** 이름 → id 표를 두면 상한과 초과 처리가 생긴다. 해시는 상태도 상한도 없고, 키에 `indices_hash` 가 함께 실려 이중이다. 이름을 못 읽으면 `0` 이다 — 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수 있지만, 주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다 (둘 중 덜 나쁜 쪽).
+
+**id 는 프로세스가 달라도 같다.** 주소와 갈리는 지점이다 — Windows 실측에서 `MV Boli` 가 세 번의 실행 내내 `0xbaa15b1cca03f6b6` 였다.
+
+**단일 글리프 키 (`atlas_common.GlyphKey`) 는 주소를 그대로 쓴다.** 단일 경로는 폰트 층의 codepoint 캐시가 face 를 process lifetime 동안 붙잡고 있어 객체가 재사용된다. cluster 경로만 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPACITY` = 2048) 를 거치는데, **그 캐시가 넘치면 통째로 비워지면서 face 를 놓는 것**이 위 문제의 출발점이다.
+
+#### ① 찼을 때 — 이미 그린 것을 지킨다
+
+**셀 루프는 셀마다 atlas 에 넣고 그 자리에서 인스턴스를 emit 한 뒤 프레임 끝에 한 번 업로드한다.** 그래서 프레임 중간에 atlas 를 비우면 앞서 emit 한 인스턴스의 UV 가 빈 자리를 가리켜 **그 글자들이 사라진다.** 비우기 전에 flush 하는 것이 이를 막는 유일한 방법이다.
+
+| platform | 구현 | 상태 |
+|---|---|---|
+| **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
+| **macOS** | 그 자리에서 `reset()` + `@memset(pixels, 0)` | **미구현** ([#584](https://github.com/ensky0/tildaz/issues/584)) |
+| **Linux** | 그 자리에서 `reset()` | **미구현** ([#584](https://github.com/ensky0/tildaz/issues/584)) |
+
+**Windows 실측** (노트북 · Ryzen AI 7 350 · Windows 11 Pro 26200 · 2880x1800 120 Hz · 150 % · `cell 14x29` · Cascadia Code 15pt). `ATLAS_SIZE` 를 2048 → 256 (넓이로 1/64) 으로 임시로 줄여 강제로 채웠다.
+
+| | `ATLAS_SIZE=2048` | `ATLAS_SIZE=256` |
+|---|---|---|
+| `atlas full` | 0 회 | 한 화면을 그리는 데 **15 회** |
+| 그림 | — | **두 판이 `0 / 1,258,008 px` — 완전 동일** |
+
+**실패 모양이 platform 마다 다르다.** macOS 는 매 프레임 다시 채우므로 **화면이 계속 깜빡인다.** Windows 는 화면이 바뀔 때만 다시 그리므로 (6 초 · 120 Hz 에서 `resets` 가 15 에서 멈춘다) 안전망이 없었다면 깜빡임이 아니라 **틀린 화면이 그대로 멈춰** 있었을 것이다 — 더 눈에 안 띄는 실패다.
+
+#### ③ 로그 — 세 platform 이 같은 문구
+
+```
+atlas full — cleared and refilling (<kind>, resets=N, glyphs=N, clusters=N, fonts=N, filled_y=N)
+```
+
+**비우기 직전에** 남긴다 — 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
+
+| 필드 | 뜻 |
+|---|---|
+| `kind` | 어느 라스터 경로에서 찼는지 (`mono` · `color` · `icon` · `gray`) |
+| `glyphs` · `clusters` | 담고 있던 항목 수. 둘의 비가 어긋나면 같은 그림을 여러 번 담고 있다는 신호다 |
+| `fonts` | cluster 키에 실린 **서로 다른 폰트 id 수.** 화면이 쓰는 폰트 수와 맞아야 한다 |
+| `filled_y` | 채운 높이 (px) |
+| `resets` | 비운 누적 횟수 |
+
+Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이다.
+
+#### ② 용량 — 실측 기준선
+
+`ATLAS_SIZE` 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
+
+| 환경 | atlas | 담긴 양 |
+|---|---|---|
+| Windows · Cascadia Code 15pt · `cell 14x29` (150 %) | 2048² | `glyphs 925` + `clusters 5,157` = **6,082** (`filled_y 2,037`) |
+| macOS · Monaco | 2048² | 약 **5,880** |
+
+**용량으로 막는 것은 포기한다.** 4K@2x 최악 (11,110 종) 은 4096² (약 11,000) 으로도 경계라, ① 이 받게 한다.
+
 ---
 
 ## 13. VT 파싱 예산 — **응답성 상한이지 처리량 상한이 아니다** ([#387](https://github.com/ensky0/tildaz/issues/387))
