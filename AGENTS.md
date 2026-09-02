@@ -592,6 +592,26 @@ dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   (`pkill -x tildaz` 는 사용자의 instance 0 도 죽여요 — #583 A12). 실기라서 `# 실행 환경` 대로
   **시작 전에 창이 몇 번 뜨는지 알리고** 그동안 키 · 마우스를 건드리지 말라고 해요.
 
+# macOS — 합성 입력으로 마우스 보고 · dead key 를 자동 검증하는 법
+
+사람 손 없이 `cliclick` 으로 클릭 · 키를 보내 판정하는 도구 둘이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A3 · A4).
+
+| 도구 | 무엇 |
+|---|---|
+| [`dist/mouse/mouse-auto-check.sh`](dist/mouse/mouse-auto-check.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
+| [`dist/macos/deadkey-check.sh`](dist/macos/deadkey-check.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
+
+- **창 위치는 `dist/macos/color-capture --list` 의 위치 열**에서 읽어요 — Accessory 앱은 AX 의
+  `position of window` 가 창을 못 찾고 (`유효하지 않은 인덱스`), JXA 의 `CGWindowListCopyWindowInfo`
+  는 CFArray 를 풀지 못했어요. 그래서 우리 도구에 열을 더했어요 (크기 뒤 · 제목 앞 — 앞 열로 읽는
+  스크립트가 그대로 맞아요).
+- **화면이 잠겨 있으면 클릭 · 키가 잠금 화면으로 가요.** 프로브는 떠 있고 캡처도 되는데 로그만 비어
+  있어서 원인을 못 짚어요 — 2026-09-02 에 한 회차를 통째로 버렸어요 (창 목록에 `com.apple.loginwindow`
+  30000×30000 이 클릭점을 덮고 있었어요). 두 스크립트가 시작 전에 `CGSSessionScreenIsLocked` 와
+  합성 입력 전달 (`cliclick m:` 뒤 `p` 로 위치 확인) 을 먼저 봐요. 회차 동안 `caffeinate -disu` 를 켜요.
+- 비활성 창의 **첫 클릭은 창을 깨우는 데 쓰일 수 있어** (`acceptsFirstMouse`) 두 번 눌러요 — 두 번째가
+  판정 대상이에요. 키는 창을 클릭해 key window 로 만든 뒤, 무해한 `arrow-right` 하나를 먼저 보내요.
+
 # macOS — 키보드 layout 조회 실측 방법
 
 단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`dist/macos/layout-probe.m`](dist/macos/layout-probe.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
