@@ -1693,6 +1693,42 @@ const Client = struct {
         closeFd(self.wayland_fd);
     }
 
+    /// #577 — registry → globals 까지. `run` 과 `showFatalStandalone` 이 **같은 코드**를
+    /// 쓴다. 사이에 끼어드는 것이 없는 구간이라 그대로 뺄 수 있었고, 그래서 `run` 의
+    /// 나머지 순서 (GPU → KGlobalAccel → keyboard) 는 손대지 않았다 — 그 순서에는
+    /// #277 · #496 1-c 의 근거가 붙어 있다.
+    fn connectAndBindGlobals(self: *Client) !void {
+        try self.getRegistry();
+        try self.roundtrip();
+        self.logBootElapsed("registry+roundtrip");
+
+        if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
+        if (self.caps.shm.name == 0) return error.WaylandShmMissing;
+        if (self.caps.xdg_wm_base.name == 0) return error.WaylandXdgWmBaseMissing;
+
+        try self.bindGlobals();
+        try self.roundtrip();
+    }
+
+    /// #577 — dialog overlay 를 그릴 수 있는 최소 상태까지만 세운다
+    /// (`showFatalStandalone` 전용). GPU 와 전역 hotkey 등록은 건너뛴다 — dialog surface
+    /// 는 항상 `wl_shm` 이고, 곧 종료할 프로세스가 KDE 단축키 레지스트리를 건드릴 이유가
+    /// 없다.
+    ///
+    /// `argb8888` 과 keyboard 는 `run` 과 겹치는 세 줄이다. 그쪽 순서를 바꾸지 않으려고
+    /// (사이에 GPU · KGlobalAccel 이 있다) 여기 다시 적었다 — **bring-up 순서를 고칠
+    /// 때는 `run` 과 이 함수를 함께 본다.**
+    fn bringUpForDialog(self: *Client) !void {
+        try self.connectAndBindGlobals();
+        self.logCapabilities();
+        // L13-γ — dialog surface 도 alpha 채널이 필요하다 (`run` 의 같은 검사).
+        if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
+        // dialog 를 Enter · Esc 로 닫을 수 있어야 한다.
+        try self.createKeyboardIfAvailable();
+        if (self.keyboard_id != 0) try self.roundtrip();
+        self.logBootElapsed("dialog-only bring-up");
+    }
+
     fn run(self: *Client) !void {
         // #205 — boot phase elapsed timer start. 사용자 *체감* 1-2 sec startup
         // latency 진단용. monotonic, ns_per_ms 단위로 log.
@@ -1722,16 +1758,7 @@ const Client = struct {
         });
         defer dialog_linux.unregisterCallbacks();
 
-        try self.getRegistry();
-        try self.roundtrip();
-        self.logBootElapsed("registry+roundtrip");
-
-        if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
-        if (self.caps.shm.name == 0) return error.WaylandShmMissing;
-        if (self.caps.xdg_wm_base.name == 0) return error.WaylandXdgWmBaseMissing;
-
-        try self.bindGlobals();
-        try self.roundtrip();
+        try self.connectAndBindGlobals();
         // #277 — roundtrip 이후여야 dmabuf 의 modifier event 가 다 도착해 있다.
         self.initGpuIfAvailable();
         self.logCapabilities();
@@ -1759,6 +1786,38 @@ const Client = struct {
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
         self.logBootElapsed("keyboard ready");
+
+        // #577 — **config 오류를 여기서 안내하고 멈춘다.** `Config.load` 는 문구를
+        // 담아 두고 기본값으로 돌아온다 (`config.zig` 의 `recordConfigFatalMsg` 주석) —
+        // 파싱 시점의 Linux 에는 dialog backend 가 없어서 그 자리에서 띄우면 안내가
+        // stderr 로만 가고, 메뉴 · autostart 로 띄운 사용자는 **창도 다이얼로그도 없이**
+        // 죽는 것만 본다. 그것이 이 이슈다.
+        //
+        // 자리가 여기인 이유는 아래 shell · 폰트 검증과 같다 (#282 C2) — Wayland
+        // globals + keyboard 가 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 는 아직
+        // 안 띄웠다. 다만 그 둘보다 **앞이다**:
+        //
+        //   - config 를 못 읽은 실행은 기본값으로 도는 중이라, shell · 폰트 검증이
+        //     보는 값이 사용자가 적은 값이 아니다. 그 상태의 안내를 먼저 내면 사용자는
+        //     자기가 고치지도 않은 shell 을 의심한다.
+        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdePositionHotkey`) 과 hotkey
+        //     claim 판정 (`fatalIfHotkeyClaimFailed`) 보다 앞이다. 그 판정이 보는
+        //     hotkey 도 기본값이라 "F1 을 못 잡았다" 가 사용자 설정과 무관해진다.
+        //
+        // **라벨 표기 hotkey 의 KGlobalAccel 등록은 이미 위에서 지나갔다** — 그쪽은
+        // keymap 이 필요 없어 `createKeyboardIfAvailable` 앞에 있고, overlay 는 keyboard
+        // 준비 뒤에만 그릴 수 있어 여기보다 앞으로 옮길 수 없다. 그래서 이 경로는 KDE
+        // 단축키 등록을 남긴 채 종료한다 — `exit(1)` 이 `deinit` 의 `setInactive` 를
+        // 건너뛰기 때문이다. 아래 shell · 폰트 검증도 같은 성질이라 새로 생긴 것은 아니다.
+        //
+        // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`). 여기서
+        // 다시 남기지 않는다 — 로그에 같은 문장이 두 번 찍히면 어느 것이 실제 표시
+        // 시점인지 알 수 없다.
+        if (config_mod.pendingFatalNotice()) |notice| {
+            self.runFatalDialog(messages.config_error_title, notice);
+            std.process.exit(1);
+        }
+
         // #496 1-c — 위치 표기 hotkey 의 KDE 등록. keymap 이 방금 도착했다.
         if (!self.run_opts.isStressRun()) {
             self.registerKdePositionHotkey();
@@ -10174,6 +10233,53 @@ pub fn runBaselineWindow(
     // 으로 자동 등록. 그 외 DE 면 no-op.
     if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(rt, allocator, cfg);
     try client.run();
+}
+
+/// #577 — **창도 PTY 도 없이 fatal 다이얼로그 하나만 띄운다.**
+///
+/// launcher (`main.zig` 의 `runLauncher`) 는 `host.run` 을 거치지 않아 `Client` 가 아예
+/// 없다. 그래서 Linux 에서는 기동 실패 안내가 `log.userFacing` 으로 stderr + 로그에만
+/// 갔고, `.desktop` (메뉴 · autostart) 실행에서 stderr 는 어디에도 붙지 않으므로
+/// **사용자는 아무것도 보지 못했다.** Windows (`MessageBoxW`) · macOS (`NSAlert`) 는 OS 가
+/// 모달을 주므로 같은 자리에서 그냥 떴다 — SPEC §0 #1 (세 platform 동등) 이 깨진 자리다.
+///
+/// 그릴 수 있는 근거: dialog 는 **자기 layer-shell surface** 이고 항상 `wl_shm` 이라
+/// (GPU 불필요) Wayland 연결 + globals + keyboard 까지만 있으면 된다. 그리고
+/// `runFatalDialog` 는 이미 "터미널 세션이 없는 상태에서 blocking 안내" 를 하는 경로다
+/// (#282 C2 — 그 함수 주석의 *"그 시점엔 세션이 아직 없어서 `deinit` 을 건너뛰어도 거둘
+/// PTY 자식이 없다"*). 여기서는 그 상태를 **처음부터** 만든다.
+///
+/// config 는 **기본값**을 쓴다 (`Config{}`). 이 경로가 알리는 것은 config 과 무관한
+/// 실패 (spawn 실패 · lock 실패 · worker 무응답) 이고, 애초에 config 을 읽지 못한
+/// 실행일 수도 있다. 다이얼로그 폰트도 시스템 폰트로 고정한다 — 사용자 폰트 설정이
+/// 잘못됐을 가능성을 이 화면이 다시 밟지 않게 한다 (폰트 오류 안내가 쓰는 것과 같은
+/// 이유, #406).
+///
+/// **`deinit` 을 부르지 않는다.** 호출처가 곧 `exit(1)` 하고, 이 시점에는 거둘 PTY
+/// 자식도 KDE 등록도 없다 (`runFatalDialog` 의 세 기존 호출처와 같은 성질).
+///
+/// 실패하면 **조용히 돌아간다.** 호출처가 이미 stderr + 로그에 같은 문구를 남겼으므로,
+/// 여기서 또 오류를 내면 "안내를 못 띄웠다" 가 원래 오류를 덮는다.
+pub fn showFatalStandalone(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8) void {
+    const cfg = config_mod.Config{};
+    var client = Client.init(rt, allocator, &cfg, .{}) catch |err| {
+        // Wayland 연결 자체가 안 되는 환경 (headless · X11 세션). `Client.init` 이
+        // socket path 와 env 를 이미 stderr + 로그에 남겼다 (`reportWaylandSocketFailure`).
+        log.appendLine("dialog", "standalone fatal dialog unavailable: {s} — stderr/log only", .{@errorName(err)});
+        return;
+    };
+    // 사용자 폰트 설정과 무관하게 읽히게 한다.
+    client.renderer.dialog_use_system_font = true;
+
+    // `Client.run` 의 앞부분과 **같은 순서**다 — registry → globals → keyboard. GPU
+    // (`initGpuIfAvailable`) 와 전역 hotkey 등록은 건너뛴다: dialog 는 `wl_shm` 으로
+    // 그리고, 곧 종료할 프로세스가 KDE 단축키 레지스트리를 건드릴 이유가 없다.
+    client.bringUpForDialog() catch |err| {
+        log.appendLine("dialog", "standalone fatal dialog bring-up failed: {s} — stderr/log only", .{@errorName(err)});
+        return;
+    };
+
+    client.runFatalDialog(title, message);
 }
 
 const Msg = struct {

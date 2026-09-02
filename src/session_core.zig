@@ -260,6 +260,10 @@ pub const Tab = struct {
     /// — 이전 공유 state 가 탭 전환마다 전체 재구축하던 것과 같은 비용이다.
     render_state: ghostty.RenderState = .empty,
     output_ring: RingBuffer = .{},
+    /// stress 하네스가 pane별 공정성을 직접 재는 누적값. `drainOutputChunk`를 호출하는
+    /// UI thread 하나만 쓰고 하네스가 같은 thread에서 읽으므로 atomic이 필요 없다.
+    stress_drain_chunks: u64 = 0,
+    stress_drain_bytes: u64 = 0,
     /// #451 — `Io` 를 담아야 해서 기본값이 없다. `Tab.init` 이 `rt.io` 로 채운다.
     write_queue: WriteQueue,
     write_thread: ?std.Thread = null,
@@ -378,7 +382,7 @@ pub const Tab = struct {
         if (!instance_context.isStress()) return;
         // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다. producer
         // PTY exit 통보 뒤에는 EOF 에 도달했으므로 새 payload 는 더 오지 않는다.
-        while (tab.drainOutputChunk()) {}
+        while (tab.drainOutputChunk() > 0) {}
     }
 
     /// #483 — 이 탭이 화면에서 사라졌다. 스냅숏 메모리를 돌려주고 `.empty` 로 되돌린다.
@@ -463,11 +467,11 @@ pub const Tab = struct {
 
     /// 한 번에 최대 64KiB만 파싱한다. frame 전체 예산과 탭 간 순서는
     /// SessionCore가 관리하고, 이 함수는 한 탭의 원자적인 drain 단위만 담당한다.
-    fn drainOutputChunk(tab: *Tab) bool {
+    fn drainOutputChunk(tab: *Tab) usize {
         const drain_t0 = perf.now();
         var buf: [65536]u8 = undefined;
         const n = tab.output_ring.pop(&buf);
-        if (n == 0) return false;
+        if (n == 0) return 0;
 
         const parse_t0 = perf.now();
         tab.stream.nextSlice(buf[0..n]);
@@ -477,7 +481,12 @@ pub const Tab = struct {
         if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
         perf.addTimed(&perf.parse, parse_t0);
         perf.addTimedBytes(&perf.drain, drain_t0, @intCast(n));
-        return true;
+        // 평소 앱의 hot path에는 측정용 누적 연산도 넣지 않는다.
+        if (instance_context.isStress()) {
+            tab.stress_drain_chunks += 1;
+            tab.stress_drain_bytes += n;
+        }
+        return n;
     }
 
     fn writeLoop(tab: *Tab) void {
@@ -582,7 +591,7 @@ pub const Tab = struct {
     /// 를 지키는 경로다. 단 **프레임당 1 회로 부르면 앱과 다르다** — 사양 A (#387) 이후
     /// host 는 프레임 사이에도 부른다 (SPEC §13.1).
     pub fn drainChunkForStress(tab: *Tab) bool {
-        return tab.drainOutputChunk();
+        return tab.drainOutputChunk() > 0;
     }
 };
 
@@ -778,6 +787,107 @@ fn flushAutomaticTitle(
 /// 안내 (cross-platform 동등).
 pub const MAX_TABS: usize = 32;
 
+const VisiblePaneMask = u16;
+
+comptime {
+    if (pane_layout.MAX_PANES_PER_TAB > @bitSizeOf(VisiblePaneMask))
+        @compileError("VisiblePaneMask cannot represent every pane slot");
+}
+
+const VisibleDrainStep = union(enum) {
+    pane: pane_layout.PaneId,
+    hidden,
+};
+
+/// [#574](https://github.com/ensky0/tildaz/issues/574) — 활성 `TabGroup`의 pane을 한 번씩
+/// 처리하는 논리 라운드. 4 ms `drainFrame` 호출이 라운드 중간에서 끝나도 `pending`과 다음
+/// 위치를 보존하므로 다음 호출이 활성 pane부터 다시 시작하지 않는다.
+const VisibleDrainRound = struct {
+    const Phase = enum { visible, hidden };
+
+    members: VisiblePaneMask = 0,
+    pending: VisiblePaneMask = 0,
+    next_index: usize = 0,
+    phase: Phase = .visible,
+    round_did_work: bool = false,
+    /// 포커스만 바뀌었고 새 활성 pane이 이번 라운드 몫을 이미 썼을 때의 1회 우선권.
+    /// `pending`은 그대로 두므로 사용자 동작이 남은 pane의 라운드를 폐기하지 않는다.
+    focus_priority: ?pane_layout.PaneId = null,
+
+    fn paneBit(id: pane_layout.PaneId) VisiblePaneMask {
+        std.debug.assert(id < pane_layout.MAX_PANES_PER_TAB);
+        return @as(VisiblePaneMask, 1) << @intCast(id);
+    }
+
+    fn reset(round: *VisibleDrainRound, members: VisiblePaneMask, active: pane_layout.PaneId) void {
+        round.* = .{
+            .members = members,
+            .pending = members,
+            .next_index = @intCast(active),
+        };
+    }
+
+    fn ensure(round: *VisibleDrainRound, members: VisiblePaneMask, active: pane_layout.PaneId) void {
+        if (round.members != members) round.reset(members, active);
+    }
+
+    /// 새 활성 pane을 남은 라운드 안에서 먼저 처리한다. 아직 `pending`이면 순서만 당기고,
+    /// 이미 처리했으면 정확히 한 번의 우선권만 더한다.
+    fn prioritize(round: *VisibleDrainRound, members: VisiblePaneMask, active: pane_layout.PaneId) void {
+        round.ensure(members, active);
+        if (round.pending & paneBit(active) != 0) {
+            round.next_index = @intCast(active);
+            round.focus_priority = null;
+        } else {
+            round.focus_priority = active;
+        }
+    }
+
+    fn next(round: *VisibleDrainRound, members: VisiblePaneMask, active: pane_layout.PaneId) VisibleDrainStep {
+        round.ensure(members, active);
+
+        if (round.focus_priority) |id| {
+            round.focus_priority = null;
+            if (members & paneBit(id) != 0) return .{ .pane = id };
+        }
+
+        if (round.phase == .visible) {
+            var scanned: usize = 0;
+            while (scanned < pane_layout.MAX_PANES_PER_TAB) : (scanned += 1) {
+                const i = (round.next_index + scanned) % pane_layout.MAX_PANES_PER_TAB;
+                const id: pane_layout.PaneId = @intCast(i);
+                const bit = paneBit(id);
+                if (round.pending & bit == 0) continue;
+                round.pending &= ~bit;
+                round.next_index = (i + 1) % pane_layout.MAX_PANES_PER_TAB;
+                return .{ .pane = id };
+            }
+            round.phase = .hidden;
+        }
+        return .hidden;
+    }
+
+    /// hidden 단계가 끝나면 라운드를 마치고 그 라운드에 실제 출력이 있었는지를 돌려준다.
+    /// pane 단계면 아직 라운드 중이므로 null.
+    fn complete(
+        round: *VisibleDrainRound,
+        step: VisibleDrainStep,
+        did_work: bool,
+        members: VisiblePaneMask,
+        active: pane_layout.PaneId,
+    ) ?bool {
+        round.round_did_work = round.round_did_work or did_work;
+        return switch (step) {
+            .pane => null,
+            .hidden => finished: {
+                const result = round.round_did_work;
+                round.reset(members, active);
+                break :finished result;
+            },
+        };
+    }
+};
+
 /// [#483](https://github.com/ensky0/tildaz/issues/483) 3단계 — 탭바의 탭 하나 = 화면 하나.
 /// pane (`Tab`, 터미널 하나) 들을 분할 트리 (`pane_layout.Tree`) 로 배치한다. 지금은 항상
 /// leaf 하나다 — 4단계가 `split` 을 부르기 전까지 host 가 보는 동작은 이전의 "탭 = 터미널
@@ -795,6 +905,8 @@ pub const TabGroup = struct {
     /// 않는다 (셸은 계속 돈다). 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다 (`closePane`). 분할 ·
     /// 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (`unzoom`) — tmux 의 zoom 과 같은 규칙.
     zoomed: ?pane_layout.PaneId = null,
+    /// #574 — 4 ms 호출 경계 밖까지 이어지는 활성 그룹 pane 드레인 라운드.
+    visible_drain_round: VisibleDrainRound = .{},
 
     fn initSingle(alloc: std.mem.Allocator, tab: *Tab) !*TabGroup {
         const group = try alloc.create(TabGroup);
@@ -815,6 +927,22 @@ pub const TabGroup = struct {
 
     pub fn paneCount(group: *const TabGroup) usize {
         return group.tree.count();
+    }
+
+    fn drainMembers(group: *const TabGroup) VisiblePaneMask {
+        var members: VisiblePaneMask = 0;
+        for (group.panes, 0..) |pane, i| {
+            if (pane != null) members |= VisibleDrainRound.paneBit(@intCast(i));
+        }
+        return members;
+    }
+
+    fn resetVisibleDrainRound(group: *TabGroup) void {
+        group.visible_drain_round.reset(group.drainMembers(), group.active_pane);
+    }
+
+    fn prioritizeActiveDrain(group: *TabGroup) void {
+        group.visible_drain_round.prioritize(group.drainMembers(), group.active_pane);
     }
 
     /// 이 그룹의 pane 배치 — 최대화 중이면 그 pane 하나가 `rect` 전체 (`pane_layout.leafRect`), 아니면
@@ -869,6 +997,7 @@ pub const TabGroup = struct {
         if (group.active_pane == id) group.active_pane = next;
         // 최대화된 pane 이 닫혔거나 pane 이 하나만 남으면 최대화는 뜻이 없다.
         if (group.zoomed == id or group.paneCount() < 2) group.zoomed = null;
+        group.resetVisibleDrainRound();
         return true;
     }
 };
@@ -1047,7 +1176,7 @@ pub const SessionCore = struct {
         errdefer self.allocator.destroy(group);
         try self.tabs.append(self.allocator, group);
         self.active_tab = self.tabs.items.len - 1;
-        self.releaseHiddenRenderStates();
+        self.finishActiveGroupChange();
     }
 
     /// 터미널 하나 (pane) 를 만들어 셸을 띄운다 — 탭 (`createTab`) 과 분할 (`splitActive`) 의
@@ -1094,7 +1223,7 @@ pub const SessionCore = struct {
 
         if (next_active) |active| {
             self.active_tab = active;
-            self.releaseHiddenRenderStates();
+            self.finishActiveGroupChange();
             return .changed;
         }
         self.active_tab = 0;
@@ -1139,6 +1268,7 @@ pub const SessionCore = struct {
         const tab = try self.spawnTab(pr.cols, pr.rows);
         group.panes[new_id] = tab;
         group.active_pane = new_id;
+        group.resetVisibleDrainRound();
         self.applyGroupLayout(group, lay);
     }
 
@@ -1168,6 +1298,7 @@ pub const SessionCore = struct {
         const lay = group.layout(rect, m, &buf);
         const anchor = cursorAnchor(group, lay, dir, m);
         group.active_pane = pane_layout.neighbor(lay, group.active_pane, dir, anchor) orelse return was_zoomed;
+        group.prioritizeActiveDrain();
         return true;
     }
 
@@ -1246,6 +1377,7 @@ pub const SessionCore = struct {
         const group = self.activeGroup() orelse return false;
         if (id >= group.panes.len or group.panes[id] == null or group.active_pane == id) return false;
         group.active_pane = id;
+        group.prioritizeActiveDrain();
         return true;
     }
 
@@ -1312,7 +1444,7 @@ pub const SessionCore = struct {
     pub fn setActiveTab(self: *SessionCore, index: usize) bool {
         if (index >= self.tabs.items.len or index == self.active_tab) return false;
         self.active_tab = index;
-        self.releaseHiddenRenderStates();
+        self.finishActiveGroupChange();
         return true;
     }
 
@@ -1321,7 +1453,7 @@ pub const SessionCore = struct {
     pub fn activateNext(self: *SessionCore) bool {
         if (self.tabs.items.len <= 1) return false;
         self.active_tab = (self.active_tab + 1) % self.tabs.items.len;
-        self.releaseHiddenRenderStates();
+        self.finishActiveGroupChange();
         return true;
     }
 
@@ -1329,8 +1461,15 @@ pub const SessionCore = struct {
     pub fn activatePrev(self: *SessionCore) bool {
         if (self.tabs.items.len <= 1) return false;
         self.active_tab = if (self.active_tab == 0) self.tabs.items.len - 1 else self.active_tab - 1;
-        self.releaseHiddenRenderStates();
+        self.finishActiveGroupChange();
         return true;
+    }
+
+    /// 활성 그룹이 바뀐 뒤 새 그룹은 활성 pane에서 논리 라운드를 시작하고, 다른 그룹의
+    /// 렌더 스냅숏은 비운다. 활성 탭을 바꾸는 모든 진입점이 이 한 함수를 쓴다.
+    fn finishActiveGroupChange(self: *SessionCore) void {
+        if (self.activeGroup()) |group| group.resetVisibleDrainRound();
+        self.releaseHiddenRenderStates();
     }
 
     /// #483 2단계 ① · 3단계 — 활성 그룹에 없는 (보이지 않는) pane 의 렌더 스냅숏을 비운다
@@ -1572,48 +1711,45 @@ pub const SessionCore = struct {
                 if (!in_range) continue;
                 if (e.tab.output_ring.isEmpty()) continue;
                 self.inactive_drain_cursor = (e.flat + 1) % total;
-                return e.tab.drainOutputChunk();
+                return e.tab.drainOutputChunk() > 0;
             }
         }
         self.inactive_drain_cursor = (start + 1) % total;
         return false;
     }
 
-    /// 활성 탭 한 chunk와 다음 비활성 탭 한 chunk를 번갈아 처리한다. 활성 탭은
-    /// 매 frame 첫 순서를 보장하되, 모든 탭이 하나의 `DRAIN_FRAME_BUDGET_NS` 예산을 공유해 탭 수가
-    /// 늘어나도 UI thread 점유 시간이 비례해 늘지 않는다.
+    /// 활성 `TabGroup`의 pane을 논리 라운드당 한 chunk씩 처리한 뒤 숨은 pane 하나를 처리한다.
+    /// 라운드는 `drainFrame` 호출 경계를 넘어 이어지고, 활성 pane은 **매 호출**이 아니라 **매
+    /// 논리 라운드**의 첫 순서다. 모든 탭은 하나의 `DRAIN_FRAME_BUDGET_NS` 예산을 공유한다.
     fn drainFrame(self: *SessionCore) DrainFrameResult {
         const group = self.activeGroup() orelse return .{};
         const active = group.activeTab();
         const started_ns = active.title_clock.read();
         var result: DrainFrameResult = .{};
+        const members = group.drainMembers();
 
         while (active.title_clock.read() - started_ns < DRAIN_FRAME_BUDGET_NS) {
-            // #483 3단계 — "활성 탭" 은 활성 그룹의 pane 전부다 (보이는 것은 모두 지연 민감).
-            // leaf 하나면 이전의 활성 탭 한 chunk 와 같다.
-            //
-            // #483 6단계 — 키보드가 가는 활성 pane 을 먼저, 그다음 나머지 보이는 pane 을 화면 순서로. pane
-            // 사이에서도 예산을 검사한다 — 검사 없이 N 청크를 돌면 최악 점유가 `예산 + N 청크` 로 pane 수에
-            // 비례해 커진다 (측정: 4 pane 에서 4.3 ms 로 1 pane 의 4.0~4.4 와 같았지만 16 pane 은 보장이 없다).
-            // 예산 자체 (4 ms) 는 pane 수와 무관하게 하나다 — 보이는 pane 이 몇이든 UI 스레드가 한 번에
-            // 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다 (측정: 2 · 4 pane
-            // 의 producer 가 같은 프레임에 끝났다).
-            var drained_visible = active.drainOutputChunk();
-            var over_budget = false;
-            for (group.panes) |p| {
-                const tab = p orelse continue;
-                if (tab == active) continue;
-                if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) {
-                    over_budget = true;
-                    break;
-                }
-                drained_visible = tab.drainOutputChunk() or drained_visible;
-            }
-            result.active_output = result.active_output or drained_visible;
+            // #574 — pane 사이에서 예산이 끝나도 `next`가 pending 위치를 보존한다. 마지막
+            // 활성 그룹 pane 뒤에서 끝나면 hidden 단계 역시 다음 호출로 이월된다.
+            const step = group.visible_drain_round.next(members, group.active_pane);
+            const did_work = switch (step) {
+                .pane => |id| pane: {
+                    const tab = group.panes[id] orelse break :pane false;
+                    const drained = tab.drainOutputChunk() > 0;
+                    result.active_output = result.active_output or drained;
+                    break :pane drained;
+                },
+                .hidden => self.drainNextInactiveChunk(),
+            };
+            const completed_round = group.visible_drain_round.complete(
+                step,
+                did_work,
+                members,
+                group.active_pane,
+            );
 
-            if (over_budget or active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
-            const drained_inactive = self.drainNextInactiveChunk();
-            if (!drained_visible and !drained_inactive) break;
+            if (active.title_clock.read() - started_ns >= DRAIN_FRAME_BUDGET_NS) break;
+            if (completed_round != null and !completed_round.?) break;
         }
 
         for (group.panes) |p| {
@@ -1689,6 +1825,112 @@ test "next active index shifts when closing earlier tab" {
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(2, 0, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 1, 2));
     try std.testing.expectEqual(@as(?usize, 1), nextActiveIndexAfterClose(1, 2, 2));
+}
+
+fn expectVisibleDrainPane(step: VisibleDrainStep, expected: pane_layout.PaneId) !void {
+    switch (step) {
+        .pane => |actual| try std.testing.expectEqual(expected, actual),
+        .hidden => try std.testing.expect(false),
+    }
+}
+
+fn takeVisibleDrainPane(
+    round: *VisibleDrainRound,
+    members: VisiblePaneMask,
+    active: pane_layout.PaneId,
+    expected: pane_layout.PaneId,
+    did_work: bool,
+) !void {
+    const step = round.next(members, active);
+    try expectVisibleDrainPane(step, expected);
+    try std.testing.expectEqual(@as(?bool, null), round.complete(step, did_work, members, active));
+}
+
+fn finishVisibleDrainRound(
+    round: *VisibleDrainRound,
+    members: VisiblePaneMask,
+    active: pane_layout.PaneId,
+    hidden_did_work: bool,
+) !bool {
+    const step = round.next(members, active);
+    switch (step) {
+        .pane => try std.testing.expect(false),
+        .hidden => {},
+    }
+    return round.complete(step, hidden_did_work, members, active).?;
+}
+
+test "#574 — 논리 드레인 라운드는 호출 경계를 넘어 이어진다" {
+    const members: VisiblePaneMask = 0b1111;
+    var round: VisibleDrainRound = .{};
+
+    // 각 줄 사이가 4 ms 호출 경계라고 해도 A를 다시 넣지 않고 A, B | C, D로 이어진다.
+    try takeVisibleDrainPane(&round, members, 0, 0, true);
+    try takeVisibleDrainPane(&round, members, 0, 1, true);
+
+    try takeVisibleDrainPane(&round, members, 0, 2, true);
+    try takeVisibleDrainPane(&round, members, 0, 3, true);
+
+    // 마지막 pane 직후 호출이 끝나도 hidden 차례가 사라지지 않는다.
+    try std.testing.expect(try finishVisibleDrainRound(&round, members, 0, false));
+    try takeVisibleDrainPane(&round, members, 0, 0, true);
+}
+
+test "#574 — 한 청크가 예산을 다 써도 두 pane이 번갈아 진행한다" {
+    const members: VisiblePaneMask = 0b11;
+    var round: VisibleDrainRound = .{};
+
+    // 호출마다 한 단계만 실행하는 최악 조건: A | B | hidden, 그다음 라운드의 A.
+    try takeVisibleDrainPane(&round, members, 0, 0, true);
+    try takeVisibleDrainPane(&round, members, 0, 1, true);
+    try std.testing.expect(try finishVisibleDrainRound(&round, members, 0, false));
+    try takeVisibleDrainPane(&round, members, 0, 0, true);
+}
+
+test "#574 — 빈 slot과 포커스 우선권이 남은 라운드를 폐기하지 않는다" {
+    const members = VisibleDrainRound.paneBit(0) |
+        VisibleDrainRound.paneBit(2) |
+        VisibleDrainRound.paneBit(5);
+    var round: VisibleDrainRound = .{};
+
+    try takeVisibleDrainPane(&round, members, 2, 2, true);
+    // 아직 pending인 pane 0은 다음으로 당긴다.
+    round.prioritize(members, 0);
+    try takeVisibleDrainPane(&round, members, 0, 0, true);
+    // 이미 처리한 pane 2는 한 번만 우선하고, pending pane 5는 그대로 남는다.
+    round.prioritize(members, 2);
+    try takeVisibleDrainPane(&round, members, 2, 2, true);
+    try takeVisibleDrainPane(&round, members, 2, 5, true);
+    try std.testing.expect(try finishVisibleDrainRound(&round, members, 2, false));
+}
+
+test "#574 — pane 구성 변경은 새 활성 pane에서 라운드를 다시 만든다" {
+    var round: VisibleDrainRound = .{};
+    try takeVisibleDrainPane(&round, 0b111, 0, 0, true);
+
+    // pane 0이 닫히고 pane 1이 활성이 된 상태. 옛 pending을 이어 pane 1을 건너뛰지 않는다.
+    try takeVisibleDrainPane(&round, 0b110, 1, 1, true);
+    try takeVisibleDrainPane(&round, 0b110, 1, 2, true);
+    try std.testing.expect(try finishVisibleDrainRound(&round, 0b110, 1, false));
+}
+
+test "#574 — 16 pane 라운드도 각 slot을 정확히 한 번 처리한다" {
+    const members = std.math.maxInt(VisiblePaneMask);
+    var round: VisibleDrainRound = .{};
+
+    try takeVisibleDrainPane(&round, members, 15, 15, true);
+    for (0..15) |i| {
+        try takeVisibleDrainPane(&round, members, 15, @intCast(i), true);
+    }
+    try std.testing.expect(try finishVisibleDrainRound(&round, members, 15, false));
+}
+
+test "#574 — 출력이 없는 완전한 라운드는 유휴로 끝난다" {
+    const members: VisiblePaneMask = 0b11;
+    var round: VisibleDrainRound = .{};
+    try takeVisibleDrainPane(&round, members, 0, 0, false);
+    try takeVisibleDrainPane(&round, members, 0, 1, false);
+    try std.testing.expect(!try finishVisibleDrainRound(&round, members, 0, false));
 }
 
 test "OSC 0 and 2 update automatic tab title and empty title restores default" {
