@@ -376,7 +376,7 @@ pub const App = struct {
         group.activeTab().interaction.cancelPointerModes();
         self.window.setAutoScroll(false);
         _ = self.session.setActivePane(id);
-        log.appendLine("pane", "focus by click — active pane {}", .{id});
+        log.logPaneFocusByClick(id);
         return true;
     }
 
@@ -388,7 +388,7 @@ pub const App = struct {
             error.TooSmall => {
                 // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
                 // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ @tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS });
+                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
                 var buf: [160]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                     messages.pane_too_small_format;
@@ -396,7 +396,7 @@ pub const App = struct {
                 return;
             },
             error.TooManyPanes => {
-                log.appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ @tagName(dir), pane_layout.MAX_PANES_PER_TAB });
+                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
                 var buf: [128]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                     messages.pane_limit_format;
@@ -405,12 +405,12 @@ pub const App = struct {
             },
             error.NoActiveTab => return,
             else => {
-                log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+                log.logPaneSplitFailed(err);
                 return;
             },
         };
         const group = self.session.activeGroup().?;
-        log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), self.session.active_tab, group.paneCount(), group.active_pane });
+        log.logPaneSplit(@tagName(dir), self.session.active_tab, group.paneCount(), group.active_pane);
     }
 
     fn handleFocusPane(self: *App, dir: pane_layout.Direction) void {
@@ -420,7 +420,7 @@ pub const App = struct {
         self.window.setAutoScroll(false);
         // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
         self.syncPaneGrids();
-        log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), self.session.activeGroup().?.active_pane });
+        log.logPaneFocus(@tagName(dir), self.session.activeGroup().?.active_pane);
     }
 
     fn handleResizePane(self: *App, dir: pane_layout.Direction) void {
@@ -430,14 +430,14 @@ pub const App = struct {
     fn handleEqualizePanes(self: *App) void {
         const group = self.session.activeGroup() orelse return;
         self.session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.appendLine("pane", "equalize — {} panes", .{group.tree.count()});
+        log.logPaneEqualize(group.tree.count());
     }
 
     /// `Ctrl+Shift+Z` — 활성 pane 최대화 토글. 격자는 `syncPaneGrids` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
     fn handleZoomPane(self: *App) void {
         if (!self.session.toggleZoomActive()) return;
         self.syncPaneGrids();
-        log.appendLine("pane", "zoom {s} — active pane {}", .{ if (self.session.activeGroup().?.zoomed != null) "on" else "off", self.session.activeGroup().?.active_pane });
+        log.logPaneZoom(self.session.activeGroup().?.zoomed != null, self.session.activeGroup().?.active_pane);
     }
 
     /// `+` 클릭 — Alt 를 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례). 방향은
@@ -456,9 +456,9 @@ pub const App = struct {
     fn finishSeparatorDrag(self: *App, d: SepDrag) void {
         const axis = if (d.axis == .side_by_side) "x" else "y";
         if (self.session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) |placed| {
-            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+            log.logPaneSeparatorMoved(d.node, axis, placed);
         } else {
-            log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
+            log.logPaneSeparatorUnchanged(d.node);
         }
     }
 
@@ -871,7 +871,9 @@ pub const App = struct {
         if (tab_actions.checkAtLimitAndDialog(self.rt, &self.host)) return;
         // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
         if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
-        self.createTab() catch {};
+        self.createTab() catch |err| {
+            log.logNewTabFailed(err);
+        };
     }
 
     /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (마지막이면 탭, 마지막 탭이면
@@ -1185,7 +1187,11 @@ pub const App = struct {
 
     pub fn handleDragEnd(self: *App) void {
         if (self.tab_drag.finish(self.TAB_WIDTH, self.session.count())) |request| {
-            if (self.session.reorderTabs(request.from, request.to) catch false) {
+            const reordered = self.session.reorderTabs(request.from, request.to) catch |err| {
+                log.logTabReorderFailed(err);
+                return;
+            };
+            if (reordered) {
                 // drag reorder 끝 — 활성 탭 위치 변경, ensure 재가동.
                 self.tab_scroll_user_override = false;
             }

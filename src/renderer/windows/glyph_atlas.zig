@@ -18,6 +18,7 @@
 const std = @import("std");
 const dw = @import("../../font/windows/directwrite.zig");
 const dwrite_font = @import("../../font/windows/font.zig");
+const log = @import("../../log.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
@@ -32,22 +33,9 @@ const MAX_CLUSTER_GLYPHS = dwrite_font.MAX_CLUSTER_GLYPHS;
 pub const AtlasEntry = atlas_common.AtlasEntry;
 const GlyphKey = atlas_common.GlyphKey;
 
-/// Multi-glyph cluster (#139) cache key.
-///
-/// **face 를 함께 본다 (#401).** 예전에는 `indices_hash` 만 썼고, 근거는 *"system
-/// fallback 의 face 는 매번 새 instance 라 key 에 넣으면 항상 miss"* + *"같은 glyph
-/// index 시퀀스면 같은 그림"* 이었다. 앞의 것은 지금도 사실이 아니고 (아래), **뒤의 것이
-/// 틀렸다** — glyph index 는 폰트 안에서만 의미가 있어서 `Cascadia Code` 의 3054 번과
-/// `Segoe UI Symbol` 의 3054 번은 전혀 다른 글리프다. cluster 경로에 컬러 emoji 만 들어오던
-/// 동안에는 face 가 사실상 `Segoe UI Emoji` 하나라 드러나지 않았지만, 결합 기호까지 이
-/// 경로를 타면서 mono face 여럿이 같은 캐시를 공유하게 됐다.
-///
-/// miss 걱정도 없다 — `resolveGrapheme` 의 cluster 캐시가 face 를 **소유한 채 재사용**하므로
-/// (`releaseCluster` 는 퇴출 시에만 부른다) 같은 cluster 에 대해 포인터가 안정적이다.
-const ClusterKey = struct {
-    font_ptr: usize,
-    indices_hash: u64,
-};
+/// Multi-glyph cluster (#139) cache key — 정의와 근거는 `glyph_atlas_common.zig` 에 있다
+/// (#529 에서 macOS 와 공용으로 올렸다).
+const ClusterKey = atlas_common.ClusterKey;
 
 fn hashIndices(indices: []const u16) u64 {
     var h: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
@@ -110,6 +98,13 @@ pub const GlyphAtlas = struct {
 
     // Set to true when getOrInsert finds the atlas full; caller must flush, call reset(), then retry.
     is_full: bool = false,
+    /// #584 — 가득 차서 비운 횟수. `reset` 은 호출자가 `is_full` 을 보고서만 부르므로 이 값이
+    /// 곧 "용량이 모자라 다시 채운 횟수" 다.
+    resets: u32 = 0,
+    /// #584 — 어느 라스터 경로에서 찼는지. `icon` (탭바 아이콘) · `mono` (`rasterize` — 단일
+    /// 글리프와 합성 cluster 가 함께 온다) · `color` (`rasterizeColor` — 컬러 emoji). macOS 는
+    /// 단일과 cluster 가 함수부터 갈려 있어 라벨이 다르다.
+    full_kind: []const u8 = "unknown",
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -310,8 +305,15 @@ pub const GlyphAtlas = struct {
     ///
     /// Color emoji 글리프는 `rasterizeColor` (TranslateColorGlyphRun) 를 먼저
     /// 시도; 실패 (DWRITE_E_NOCOLOR 포함) 시 일반 alpha rasterize 로 fall-through.
-    pub fn getOrInsert(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = @intFromPtr(face), .index = glyph_index };
+    pub fn getOrInsert(
+        self: *GlyphAtlas,
+        face: *dw.IDWriteFontFace,
+        /// #584 — 폰트를 가리키는 **안정된 id** (`atlas_common.fontId`). 세 platform 이 같은
+        /// 키 타입을 쓴다.
+        font_id: u64,
+        glyph_index: u16,
+    ) ?AtlasEntry {
+        const key = GlyphKey{ .font_id = font_id, .index = glyph_index };
         if (self.cache.get(key)) |entry| return entry;
 
         const single_indices = [_]u16{glyph_index};
@@ -350,6 +352,9 @@ pub const GlyphAtlas = struct {
     pub fn getOrInsertCluster(
         self: *GlyphAtlas,
         face: *dw.IDWriteFontFace,
+        /// #584 — 폰트를 가리키는 **안정된 id** (`atlas_common.fontId`, 폰트 층이 PostScript
+        /// 이름에서 만든다). 주소를 쓰면 같은 폰트가 여러 키로 갈려 atlas 가 부푼다.
+        font_id: u64,
         glyph_indices: []const u16,
         advances: []const dw.FLOAT,
         offsets: []const dw.DWRITE_GLYPH_OFFSET,
@@ -358,10 +363,15 @@ pub const GlyphAtlas = struct {
         overlay_marks: bool,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
-        if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
+        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0]);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
-        const key = ClusterKey{ .font_ptr = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
+        // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
+        // 아니다). Windows 실기에서 system fallback 이 같은 폰트에 face 를 여러 번 새로 만드는
+        // 것을 확인했다 — 다국어 화면 (cluster 7,560 종 · fallback 폰트 6 종) 에서 `MV Boli` 가
+        // 한 프로세스 안에서 주소 2 개로 나왔다. macOS 의 `Monaco` 50 개와 같은 기전이고 규모만
+        // 작다. 주소를 키에 실으면 같은 그림이 id 마다 새로 담겨 atlas 가 부푼다.
+        const key = ClusterKey{ .font_id = font_id, .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         // #415 · #418 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
@@ -500,7 +510,7 @@ pub const GlyphAtlas = struct {
     /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
     /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_ptr = 0, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 
@@ -521,6 +531,7 @@ pub const GlyphAtlas = struct {
 
         const pos = self.packGlyph(size, size) orelse {
             self.is_full = true;
+            self.full_kind = "icon";
             return null;
         };
         const box = d3d.D3D11_BOX{
@@ -552,7 +563,43 @@ pub const GlyphAtlas = struct {
     }
 
     /// Reset the atlas (clear cache and packing state). Call only after flushing all pending draws.
+    /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`reset` 에서만 부른다).
+    ///
+    /// 화면이 쓰는 폰트 수와 맞아야 한다. 크게 벗어나면 같은 그림이 여러 키로 담긴다는 뜻이다
+    /// ([#584](https://github.com/ensky0/tildaz/issues/584)). 256 개까지만 센다.
+    fn distinctClusterFonts(self: *const GlyphAtlas) u32 {
+        var seen: [256]u64 = undefined;
+        var n: u32 = 0;
+        var it = self.cluster_cache.keyIterator();
+        while (it.next()) |k| {
+            var found = false;
+            for (seen[0..n]) |x| {
+                if (x == k.font_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (n >= seen.len) return @intCast(seen.len);
+                seen[n] = k.font_id;
+                n += 1;
+            }
+        }
+        return n;
+    }
+
     pub fn reset(self: *GlyphAtlas) void {
+        // #584 — 비우기 **전에** 남긴다. 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
+        // 세 platform 이 같은 문구를 쓴다 (#576).
+        self.resets += 1;
+        log.logAtlasFull(
+            self.full_kind,
+            self.resets,
+            self.cache.count(),
+            self.cluster_cache.count(),
+            self.distinctClusterFonts(),
+            self.cursor_y + self.row_height,
+        );
         self.cache.clearRetainingCapacity();
         self.cluster_cache.clearRetainingCapacity();
         self.cursor_x = 0;
@@ -679,6 +726,7 @@ pub const GlyphAtlas = struct {
         // Pack into atlas; if full, signal caller to flush+reset+retry before we overwrite anything
         const pos = self.packGlyph(w, h) orelse {
             self.is_full = true;
+            self.full_kind = "mono";
             return null;
         };
 
@@ -847,6 +895,7 @@ pub const GlyphAtlas = struct {
 
         const pos = self.packGlyph(w, h) orelse {
             self.is_full = true;
+            self.full_kind = "color";
             return null;
         };
 

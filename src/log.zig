@@ -244,6 +244,122 @@ pub fn logConfigLoaded(cfg: anytype) void {
     });
 }
 
+/// 세 host가 같은 의미와 형식을 써야 하는 진단 로그. platform 코드는 측정값과
+/// 동작 결과만 넘기고 category / format string은 여기 한 곳에서 정한다 (#576).
+pub fn logPanic(msg: []const u8, return_addr: usize) void {
+    appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, return_addr });
+}
+
+pub fn logRunFailed(err: anyerror) void {
+    appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+}
+
+pub fn logScrollbackOverride(lines: anytype, config_lines: anytype) void {
+    appendLine("startup", "scrollback override: {d} lines (config {d})", .{ lines, config_lines });
+}
+
+pub fn logOutputWakeInstalled() void {
+    appendLine("startup", "output wake installed (idle PTY notify)", .{});
+}
+
+pub fn logDisplayTiming(refresh_hz: f64) void {
+    if (!std.math.isFinite(refresh_hz) or refresh_hz <= 0.0) return;
+    appendLine("startup", "display timing: refresh={d:.3}Hz period={d:.3}ms", .{
+        refresh_hz,
+        1000.0 / refresh_hz,
+    });
+}
+
+pub fn logPrimaryFont(family: []const u8, cell_w: anytype, cell_h: anytype, ascent: anytype, descent: anytype) void {
+    appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+        family, cell_w, cell_h, ascent, descent,
+    });
+}
+
+/// glyph atlas 가 가득 차서 통째로 비웠다. `kind` 는 어느 쪽이 찼는지다 — platform 마다
+/// 라스터 경로가 갈리는 자리가 달라서 값도 다르다: Linux 는 텍스처 종류 (`gray` · `color`),
+/// macOS 는 채우던 경로 (`glyph` · `cluster` · `icon`), Windows 는 (`icon` · `mono` · `color`).
+///
+/// **이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.** 한 화면이 요구하는 글리프가 용량을
+/// 넘으면 매 프레임 다시 차서 이 줄이 계속 늘어난다.
+///
+/// `glyphs` · `clusters` 는 비우기 직전에 담고 있던 항목 수 (단일 글리프 / 합성 cluster 로
+/// 나눠 센다 — 둘의 비가 어긋나면 같은 그림을 두 번 담고 있다는 신호다), `filled_y` 는
+/// 채운 높이 (px) 다. `fonts` 는 cluster 키에 실린 **서로 다른 폰트 객체 수**다 — 화면이
+/// 한 폰트로 그려지는데 이 값이 1 을 넘으면 같은 그림이 폰트 주소별로 여러 번 담긴다는
+/// 뜻이다 —
+/// **이 둘이 실제 용량이다.** `ATLAS_SIZE` 를 얼마로 할지는 산술이 아니라 이 값으로 정한다
+/// (cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 낸다).
+/// glyph atlas 를 **두 배로 키웠다** ([#584](https://github.com/ensky0/tildaz/issues/584) ②).
+///
+/// 비우고 재사용하는 대신 키우면 **프레임 중간에 비우는 상황 자체가 없어진다** — 이미 그린
+/// 것의 UV 가 무효화될 일이 없다. 이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
+pub fn logAtlasGrew(new_size: anytype, grows: anytype, glyphs: anytype, clusters: anytype) void {
+    appendLine("gpu", "atlas grew to {d}x{d} (grows={d}, glyphs={d}, clusters={d})", .{
+        new_size, new_size, grows, glyphs, clusters,
+    });
+}
+
+pub fn logAtlasFull(kind: []const u8, resets: anytype, glyphs: anytype, clusters: anytype, fonts: anytype, filled_y: anytype) void {
+    appendLine("gpu", "atlas full — cleared and refilling ({s}, resets={d}, glyphs={d}, clusters={d}, fonts={d}, filled_y={d})", .{
+        kind, resets, glyphs, clusters, fonts, filled_y,
+    });
+}
+
+pub fn logPaneFocusByClick(id: anytype) void {
+    appendLine("pane", "focus by click — active pane {}", .{id});
+}
+
+pub fn logPaneSplitTooSmall(direction: []const u8, min_cols: anytype, min_rows: anytype) void {
+    appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ direction, min_cols, min_rows });
+}
+
+pub fn logPaneSplitTooMany(direction: []const u8, max_panes: anytype) void {
+    appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ direction, max_panes });
+}
+
+pub fn logPaneSplitFailed(err: anyerror) void {
+    appendLine("pane", "split failed: {s}", .{@errorName(err)});
+}
+
+pub fn logPaneSplit(direction: []const u8, tab_index: anytype, pane_count: anytype, active_pane: anytype) void {
+    appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{
+        direction, tab_index, pane_count, active_pane,
+    });
+}
+
+pub fn logPaneFocus(direction: []const u8, active_pane: anytype) void {
+    appendLine("pane", "focus {s} — active pane {}", .{ direction, active_pane });
+}
+
+pub fn logPaneEqualize(pane_count: anytype) void {
+    appendLine("pane", "equalize — {} panes", .{pane_count});
+}
+
+pub fn logPaneZoom(enabled: bool, active_pane: anytype) void {
+    appendLine("pane", "zoom {s} — active pane {}", .{ if (enabled) "on" else "off", active_pane });
+}
+
+pub fn logPaneSeparatorMoved(node: anytype, axis: []const u8, placed: anytype) void {
+    appendLine("pane", "separator drag — node {} to {s} {}", .{ node, axis, placed });
+}
+
+pub fn logPaneSeparatorUnchanged(node: anytype) void {
+    appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{node});
+}
+
+pub fn logNewTabFailed(err: anyerror) void {
+    appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+}
+
+pub fn logTabReorderFailed(err: anyerror) void {
+    appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+}
+
+pub fn logToggle(show: bool) void {
+    appendLineVerbose("toggle", "{s}", .{if (show) "show" else "hide"});
+}
+
 /// #197 — fatal / 시작 실패처럼 *사용자에게 직접 보여주는* 메시지를 한 번만
 /// 받아 두 채널에 동일하게 보낸다:
 ///   1. stderr — 터미널에서 직접 실행한 사용자가 즉시 본다.

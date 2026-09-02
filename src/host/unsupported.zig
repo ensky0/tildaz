@@ -7,7 +7,10 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     std.process.exit(1);
 }
 
-pub fn showFatalRunError(err: anyerror) void {
+pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
+    // #577 — 세 host 와 같은 서명. 이 platform 은 다이얼로그가 없어 둘 다 안 쓴다.
+    _ = rt;
+    _ = allocator;
     std.debug.print("TildaZ failed to start.\n\nError: {s}\n", .{@errorName(err)});
 }
 

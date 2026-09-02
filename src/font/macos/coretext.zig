@@ -92,6 +92,9 @@ pub extern "CoreText" fn CTFontCreateWithName(
 /// substitute (대개 `.SF NS Mono`) 를 반환해도 family name 은 그대로 보고하므로
 /// 우리가 요청한 이름과 비교해 substitute 인지 판별 가능.
 pub extern "CoreText" fn CTFontCopyFamilyName(font: CTFontRef) CFStringRef;
+/// #584 — atlas 의 cluster 키가 쓰는 **안정된 폰트 이름**. family 로는 안 된다
+/// (`Menlo-Bold` 와 `Menlo-Regular` 가 둘 다 `"Menlo"` 다).
+pub extern "CoreText" fn CTFontCopyPostScriptName(font: CTFontRef) CFStringRef;
 
 /// CFString 비교. 0 = equal, -1/1 = less/greater. compareOptions = 0 = literal binary 비교.
 pub extern "CoreFoundation" fn CFStringCompare(

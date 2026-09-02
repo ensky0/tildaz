@@ -751,7 +751,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 (20×5 셀) 에 닿으면 **거기서 멈춘다** (clamp, 2026-08-27 결정 — 고스트가 한계에 서고 놓으면 거기까지만; 예전엔 드래그 전체를 거부해 "끌다가 취소됨" 으로 보였다). **선에 붙은 칸만 변한다** — 선 너머가 같은 축으로 또 갈려 있어도 먼 칸은 px 그대로 (`Tree.keepFarFixed` 가 안쪽 같은-축 분할의 비율을 다시 놓는다; 예전엔 비율이 그대로라 안쪽 분할선까지 비례해 밀렸다). 위아래로 쌓인 칸은 둘 다 선의 이웃이라 같이 변한다. 한계도 먼 칸을 고정한 채 잰다 (`Tree.minExtentKeepFar`). 커서는 분할선 위에서 `col_resize` / `row_resize` | `App.sep_drag` · `finishSeparatorDrag`, 커서는 `WM_SETCURSOR` 의 `IDC_SIZEWE` / `IDC_SIZENS` (`CursorRegion.separator_*`) | `g_sep_drag` · `finishSeparatorDrag`, 커서는 `resetCursorRects` 의 `resizeLeftRight/UpDownCursor` | `sep_drag` · `finishSeparatorDrag` | ✅ | ✅ | ✅ |
 | 최소 크기 20 열 × 5 행 | `MIN_PANE_COLS` / `MIN_PANE_ROWS` (열 × 행 — 터미널 `80x24` 표기 순서). **분할은 갈라지는 두 조각을, 가르는 축만** 검사한다 (2026-08-28 결정 — 좌우 분할은 `cols`, 위아래 분할은 `rows`. 반대 축은 이 분할이 건드리지 않는다: 창이 줄어 19 열이 된 pane 을 위아래로 가르는 것이 "20 열 미만" 으로 거부되던 것이 실기에서 걸렸다). 거부는 `TooSmall` → 대화상자 "Each pane needs at least 20 columns × 5 rows". 창이 줄면 (drop-down 은 커서가 있는 모니터 크기를 따르고 pane 은 비율 유지) pane 이 최소 아래로 **갈 수 있다** — 막지 않는다 (tmux 도 같다). 그 뒤 크기 조절 · 드래그는 그 pane 을 **더 줄이지만 않고** (한계 = 지금 크기, `minExtentKeepFar`), 뒤 검사는 "새로 최소 아래로 떨어지는 pane 이 없다" (`noPaneNewlyBelowMin`) 다. 2026-08-27 macOS 실기: 큰 모니터에서 가른 뒤 작은 모니터로 돌아오니 B · C 가 17 열이 됐고, 예전의 탭 전체 검사 (`allPanesAtLeastMin`, 삭제) 가 A 의 위아래 분할과 B 키우기까지 막았다 | 공통 `pane_layout` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_right/horizontal`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | ✅ | ✅ | ✅ |
-| 출력 드레인 | 예산 4 ms 하나를 보이는 pane 이 나눠 씀 — 활성 pane 먼저, pane 사이에도 예산 검사 (§13.3.1, 세 platform 실측 표). **코드는 공통이지만 실측은 갈린다** — Linux 만 16 pane 에서 상한이 깨지고, 공정성은 pane 2 개부터 host 마다 크게 다르다 (§13.3.1) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 출력 드레인 | 예산 4 ms 하나를 활성 `TabGroup`의 pane 이 나눠 쓴다. 호출 경계를 넘는 **논리 라운드**마다 active pane 을 먼저, 나머지 존재 pane 을 안정된 `PaneId` 순서로 각각 한 번, 마지막에 숨은 탭 한 슬롯을 처리한다 (§13.3.1). 예산이 끝나면 다음 호출이 중단 지점부터 이어서, 매 호출 처음 pane 으로 돌아가던 starvation 을 막는다 ([#574](https://github.com/ensky0/tildaz/issues/574)) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 비활성 pane 스크롤바 | 클릭 = 그 pane 포커스 뒤 그 pane 의 scrollbar 로 (좌클릭 경로가 포커스를 먼저 옮긴다) | 동일 | 동일 | 동일 | ✅ | ✅ | ✅ |
 
 ---
@@ -1037,6 +1037,46 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   완료, Windows의 HWND·renderer·첫 tab·표시 정책 적용 후 message loop 진입 직전이다.
   최초 launcher는 기존처럼 worker lock/PID까지만 확인하고 반환하므로 endpoint 실패가
   terminal 자체 실행을 막지 않는 graceful-degradation 동작은 유지한다.
+- **최초 launcher 의 기동 대기도 worker 사망을 즉시 구분한다** ([#577](https://github.com/ensky0/tildaz/issues/577)).
+  예전에는 `waitUntilRunning` 이 lock 파일만 봐서 "아직 시작 중" 과 "이미 죽음" 이 똑같이
+  *빈 lock 파일* 로 보였고 (worker 는 PID 를 쓴 뒤 죽고 `clear_pid_on_close` 가 그것을
+  지운다), 그래서 기동 실패는 전부 타임아웃 10 초를 채운 뒤 generic `WorkerStartTimeout`
+  으로 끝났다. 사용자가 본 것은 "클릭했는데 10 초간 아무 일도 없음" 이었다.
+
+  판정 근거는 위 항목과 같은 **쓰기 순서**다 — lock 을 잡은 뒤 `.starting` 을 owner PID
+  보다 먼저 쓴다. 따라서 "endpoint 파일이 있는데 lock 이 비었다" 는 곧 "lock 을 잡는
+  데까지 갔다가 죽었다" 이고, `error.WorkerExitedDuringStartup` 으로 즉시 끝난다. PID 를
+  쓴 뒤 죽은 창 (PID 있음 + lock 없음) 도 같은 결론이다.
+
+  stale 파일로 오판하지 않는 근거는 `spawnWorker` 가 **spawn 직전에** 그 파일을 지운다는
+  것이다. 그래서 대기 중에 파일이 보이면 방금 띄운 worker 가 쓴 것이다. 응답 없는 worker
+  (hang) 에는 유한 타임아웃이 그대로 남는다 — 그 경우엔 타임아웃이 유일한 탈출구다.
+
+  문구도 갈라진다. `WorkerExitedDuringStartup` 은 *창이 한 번도 뜨지 못한 첫 기동* 이므로
+  "새 인스턴스를 만들라고 보내려던" 쪽 문구와 다르고, **로그를 가리킨다** — 여기까지 온
+  실행은 화면에 아무것도 남기지 않았으므로 남은 단서가 로그뿐이다. worker 가 스스로
+  안내를 띄운 경우 (§11.4 의 config 오류 등) 는 안내를 띄우는 동안 lock 을 들고 살아 있어
+  이 대기가 **성공**하므로 이 경로로 오지 않는다 — 다이얼로그가 두 번 뜨지 않는 근거다.
+- **launcher 의 기동 실패 안내도 세 platform 이 다이얼로그다** ([#577](https://github.com/ensky0/tildaz/issues/577)).
+  launcher 는 `host.run` 을 거치지 않아 Linux 에서는 `Client` 가 아예 없고, 그래서 예전에는
+  `log.userFacing` 으로 stderr + 로그에만 남겼다 — `.desktop` (메뉴 · autostart) 실행에서
+  stderr 는 어디에도 붙지 않으므로 **사용자는 아무것도 보지 못했다.** Windows
+  (`MessageBoxW`) · macOS (`NSAlert`) 는 OS 가 모달을 주므로 같은 자리에서 그냥 떴다.
+
+  Linux 는 창도 PTY 도 만들지 않고 **다이얼로그만** 세운다 (`showFatalStandalone`). dialog
+  는 자기 layer-shell surface 이고 항상 `wl_shm` 이라 (GPU 불필요) Wayland 연결 + globals +
+  keyboard 까지만 있으면 그릴 수 있다. config 는 기본값을 쓰고 다이얼로그 폰트도 시스템
+  폰트로 고정한다 — 이 경로가 알리는 것은 config 과 무관한 실패이고, 애초에 config 을
+  읽지 못한 실행일 수도 있다.
+
+  예외는 `WaylandSocketUnavailable` 이다 — Wayland 에 연결할 수 없다는 것이 그 오류의
+  내용이므로 Wayland 로 그리는 안내는 정의상 뜰 수 없다. 그 경로는 `Client.init` 이 이미
+  socket path 와 env 를 stderr + 로그에 남긴다.
+
+  `showFatalRunError` 가 `rt` 를 **인자로** 받는다. 예전에는 `g_rt` 를 읽었는데 그것은
+  `run()` 안에서만 심어지고 launcher 실패 경로는 `run()` 을 거치지 않으므로, Windows ·
+  macOS 에서 그 자리는 `undefined` Runtime 을 읽고 있었다. Linux 에 다이얼로그를 붙이려고
+  서명을 바꾸면서 함께 닫혔다.
 - `launcher.lock`은 config 열거, index별 생존 확인, 누락 worker spawn, 새-instance 요청
   결정과 worker 0의 hotkey dialog/config 생성 transaction을 직렬화한다. 누락 worker를
   spawn한 launcher 또는 새 config를 만든 worker 0은 각 worker가 자기 lock을 획득하고
@@ -1423,7 +1463,25 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 `dialog.showFatal` 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+잘못된 config 값 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+
+**안내는 담아 두고 host 가 그릴 수 있게 된 뒤에 띄운다** ([#577](https://github.com/ensky0/tildaz/issues/577)). config 파싱은 세 platform 공통이고 Linux 에서는 dialog backend (layer-shell overlay) 가 등록되기 **전에** 돈다 — `Client` 가 config 을 인자로 받아 만들어지기 때문이다. 그 자리에서 `dialog.showFatal` 을 부르면 안내가 stderr + 로그로만 가고, `.desktop` (메뉴 · autostart) 로 띄운 사용자에게는 **창도 다이얼로그도 없이 조용히 죽는 것**만 보였다.
+
+그래서 `recordConfigFatalMsg` 가 문구를 process lifetime 고정 buffer 에 담고 `error.InvalidConfig` 를 반환한다. `Config.load` 는 그것을 받아 기본값으로 돌아오고, 표시는 각 host 가 **그 platform 에서 다이얼로그가 실제로 보이는 가장 이른 지점**에서 한다.
+
+| platform | 표시 지점 | 방법 |
+|---|---|---|
+| Linux | Wayland globals + keyboard 준비 후, 전역 hotkey 판정 · shell · 폰트 검증 **앞** | `runFatalDialog` (blocking pump) → `exit(1)` |
+| Windows | `Config.load` 직후, shell 검증 앞 | `showFatalNoticeIfAny` → `MessageBoxW` (OS modal) |
+| macOS | 같음 | `showFatalNoticeIfAny` → `NSAlert` (OS modal) |
+
+Linux 가 공통 함수를 쓰지 않는 이유는 그쪽 `dialog.showFatal` 이 overlay 요청만 걸고 바로 돌아오는 fire-and-forget 이라 뒤이은 `exit(1)` 이 paint 전에 프로세스를 죽이기 때문이다 (#282 F9). §11.5 의 `showLoadNotice` / `showLoadNoticeText` 가 갈리는 것과 같은 이유·같은 모양이다.
+
+**shell · 폰트 검증보다 앞이다.** config 를 못 읽은 실행은 기본값으로 도는 중이라, 그 검증이 보는 shell · 폰트가 사용자가 적은 값이 아니다. 순서가 뒤바뀌면 사용자는 자기가 고치지도 않은 shell 을 의심한다.
+
+**첫 오류만 담는다.** 사용자가 고칠 지점이 첫 오류이고, 그것을 고친 다음 실행에서 뒤 오류가 다시 걸린다. 예전 동작 (첫 오류에서 즉시 종료) 과 사용자가 보는 문구가 같아지는 것도 이 선택 덕이다.
+
+**stderr + 로그는 담을 때 즉시 남긴다.** overlay 를 못 그리는 환경 (headless, Wayland 연결 실패) 에서도 원인이 남아야 하고, 터미널에서 띄운 사용자는 예전과 같은 자리에서 문구를 본다.
 
 **경로는 첫 줄이고 형식이 하나다** ([#495](https://github.com/ensky0/tildaz/issues/495)).
 
@@ -1435,7 +1493,15 @@ Configuration: missing required key "window" in (top-level).
 
 예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
 
-조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `showConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
+조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `recordConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
+
+**세 갈래가 남아 있었고 [#577](https://github.com/ensky0/tildaz/issues/577) 에서 정리했다.** #495 가 위 문단을 적은 뒤에도 자기 형식으로 경로를 **맨 끝**에 붙이는 producer 가 셋 있었다 — 폰트 schema 오류 (`font_schema_error_path_format`, 경로를 `  ` 로 들여씀), 폰트 chain not-found (`font_chain_footer_format`, 들여쓰지 않음), shell 검증 세 문구 (`Config path:\n{s}`). 같은 다이얼로그 제목 (`TildaZ Config Error`) 아래에서 오류 종류에 따라 경로 위치와 들여쓰기가 달랐다.
+
+이제 넷 모두 `config_error_path_prefix_format` (`"Config: {s}\n\n"`) 한 정의를 지난다. 본문을 writer 로 조금씩 쌓는 폰트 chain 안내는 `{s}` 두 개를 한 번에 print 할 수 없어서 접두만 뺀 그 상수를 쓴다 — `config_error_with_path_format` 자체가 그 접두로 정의된다. 폰트 schema 오류는 producer 를 아예 없애고 `recordConfigFatalMsg` 에 문구 상수만 넘긴다: 경로를 `paths.configPath` 로 **다시 조회하지 않고** 파싱 중인 파일의 path 를 그대로 쓰므로 #316 이 막으려던 "instance 번호와 실제 파일이 갈림" 도 함께 닫힌다.
+
+부수 효과로 문구가 한 줄 짧아졌다 (맨 끝 3 줄 footer → 첫 줄 2 줄 접두). 640x480 최소 화면의 스크롤 행이 shell 오류 `2 → 1` (1.7x), 폰트 오류 `5/5/5 → 4/4/4` 로 줄었다.
+
+런타임 새 탭 실패 알림 (`shell_new_tab_not_found_format`, [#248](https://github.com/ensky0/tildaz/issues/248)) 은 **이 통일에서 제외한다.** startup config fatal 이 아니라 종료하지 않는 알림이고, 문구가 경로를 오류 헤더가 아니라 *다음 행동 안내* 로 제시한다 (`Check "shell" in this instance's config file:`).
 
 `allocPrint` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
 
@@ -1645,6 +1711,221 @@ Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴�
 
 **한글 bold 가 붙는다.** chain 전체 (primary + `glyph_fallback`) 에 변종을 만들기 때문이다 — macOS 실기 비교에서 kitty · Alacritty 와 같고, ghostty 는 한글이 regular 로 남았다 (2026-08-03).
 
+### 12.6 Glyph atlas — 폰트 식별과 용량 초과 ([#584](https://github.com/ensky0/tildaz/issues/584))
+
+한 화면이 요구하는 글리프가 atlas 에 다 안 들어갈 때의 사양이다. 세 platform 이 **같은 계약**을 쓴다 (§0 #1).
+
+| 축 | 사양 |
+|---|---|
+| ⓿ **폰트 식별** | cluster 캐시 키는 폰트를 **주소가 아니라 안정된 id** 로 식별한다 |
+| ① **찼을 때** | **이미 그린 것을 먼저 flush 하고, 비우고, 재시도한다.** 그 프레임의 화면은 온전하다 |
+| ② **용량** | `ATLAS_SIZE` 는 **2048**. 산술이 아니라 ③ 의 실측으로 정한다 |
+| ③ **로그** | [`log.logAtlasFull`](src/log.zig) 한 문구를 세 platform 이 그대로 쓴다 |
+
+#### ⓿ 폰트 식별 — 주소를 키에 싣지 않는다
+
+glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 축이 있어야 한다. **그 축에 폰트 객체의 주소를 쓰면 안 된다** — OS 폰트 매칭이 같은 폰트에 객체를 여러 번 새로 만들기 때문이다. 그러면 같은 그림이 주소마다 새로 담겨 atlas 가 부풀고, 넘치면 화면이 무너진다.
+
+| platform | cluster 키의 폰트 축 | 주소가 왜 안 되는가 (실측) |
+|---|---|---|
+| macOS | `atlas_common.fontId` — **PostScript 이름의 FNV-1a 64bit 해시** | CoreText 가 CTLine 마다 새 객체를 준다. 같은 `Monaco` 가 주소 **50 개** (640 byte 간격 순차 할당). cluster 2,816 종 화면이 항목 5,600 개 = 정확히 2 배를 썼다 |
+| Windows | **같은 `atlas_common.fontId`** | DirectWrite system fallback (`tryClusterOnSystemFallback`) 이 `CreateFontFace` 로 매번 새 객체를 만든다. fallback 폰트 6 종 · cluster 7,560 종 화면에서 `MV Boli` 가 한 프로세스 안에서 주소 **2 개**로 나왔다 |
+| Linux | 합성 cluster 는 **내용 해시** (`font/linux/font.zig` 의 `composeCluster` — glyph_index · x_offset · y_offset · x_advance 의 Wyhash), 폰트 축은 chain face **index** (`gl_atlas.Key.face`, `u8`) | **애초에 주소가 없다.** 아래 「Linux 가 계약을 지키는 근거는 셋이다」 |
+
+**family 이름이 아니라 PostScript 이름이다.** `Menlo-Bold` 와 `Menlo-Regular` 는 family 가 둘 다 `"Menlo"` 라, family 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 — [#529](https://github.com/ensky0/tildaz/issues/529) 가 그것이었다.
+
+**레지스트리가 아니라 해시다.** 이름 → id 표를 두면 상한과 초과 처리가 생긴다. 해시는 상태도 상한도 없고, 키에 `indices_hash` 가 함께 실려 이중이다. 이름을 못 읽으면 `0` 이다 — 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수 있지만, 주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다 (둘 중 덜 나쁜 쪽).
+
+**id 는 프로세스가 달라도 같다.** 주소와 갈리는 지점이다 — Windows 실측에서 `MV Boli` 가 세 번의 실행 내내 `0xbaa15b1cca03f6b6` 였다.
+
+**단일 글리프 키 (`atlas_common.GlyphKey`) 도 같은 id 를 쓴다.** 예전에는 여기만 주소를 두고 *"단일 경로는 폰트 층의 codepoint 캐시가 face 를 붙잡아 객체가 재사용된다"* 를 근거로 삼았는데, **그 근거는 Windows 에만 맞았다.**
+
+| platform | 단일 경로의 codepoint 캐시 | 주소를 두면 |
+|---|---|---|
+| Windows | `glyph_map` 이 **chain 밖 fallback face 를 붙잡는다** | 주소가 안정적이다 |
+| macOS | **없다.** chain 밖 글리프는 셀마다 `CTFontCreateForString` 으로 **새 객체**를 받는다 | 같은 글리프가 주소마다 새로 담긴다 |
+| Linux | (자체 `Key` 가 face index 를 쓴다 — 해당 없음) | — |
+
+그리고 **cluster 가 글리프 하나로 합성되면 이 키로 온다** (`getOrInsertCluster` 의 `len == 1` 분기). 그 폰트는 cluster 경로의 OS fallback 이라 세 platform 모두 codepoint 캐시를 거치지 않는다.
+
+macOS 실측 — 다국어 화면 (cluster 7,560 종) 에서 이 맵의 서로 다른 폰트 주소가 **256 개를 넘었다** (실제 폰트는 32 종). 그 중복이 atlas 를 부풀려 **프레임마다 차게** 만들고 (`atlas full` 125 회 / 4.3 초), 찰 때마다 그린 것을 지워 화면이 흐르듯 무너졌다. id 로 옮긴 뒤 `atlas full` 0 회 · 업로드 140 → 1 회 · 이웃 프레임 대조 `0 px` 이 됐다.
+
+**아이콘은 예약값을 쓴다** (`atlas_common.ICON_FONT_ID`). 폰트에서 온 글리프가 아니라 id 가 없는데, 주소 자리에 `0` 을 넣던 것을 그대로 두면 **`fontId` 가 이름을 못 읽어 낸 `0`** 과 한 키 공간을 나눠 쓴다.
+
+cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPACITY` = 2048) 는 **넘치면 통째로 비워지면서 face 를 놓는다** — 그것이 위 문제의 출발점이다.
+
+**Linux 가 계약을 지키는 근거는 셋이다** (2026-09-02 소스 판정 + 실기). 인덱스라는 것만으로는 부족하다 — 인덱스가 *재사용되면* 같은 키가 다른 폰트를 뜻하게 되고, 캐시가 *비워지면* 같은 그림이 새 키로 담긴다. 셋이 함께여야 위 사슬이 끊긴다.
+
+| # | 근거 | 어디 |
+|---|---|---|
+| 1 | 합성 cluster 키가 **내용 해시**라 같은 그림이면 항상 같은 키다 | `font/linux/font.zig` 의 `composeCluster` |
+| 2 | fallback face index 를 **재사용하지 않는다** — `MAX_FALLBACK` (8) 에 닿으면 퇴출이 아니라 그 자리에서 placeholder + 로그 | 같은 파일의 `loadFallbackForCp` |
+| 3 | 합성 비트맵 맵 `composed_glyphs` 에 **상한이 없다.** 폰트를 다시 로드할 때만 비운다 | 같은 파일의 `Context.composed_glyphs` |
+
+3 번이 macOS 를 부풀린 사슬을 끊는다. 그쪽은 *"`cluster_cache` 가 넘쳐 비워지면 face 를 놓고, 다시 shape 하면 CoreText 가 새 객체를 준다"* 였는데, Linux 는 `cluster_cache` 가 비워져도 다시 shape 한 **내용이 같으므로 해시가 같고 곧 같은 키**다. cluster 10,400 종 화면 (`CAPACITY` 의 5 배) 실측에서 face index 가 하나뿐이었고 같은 그림이 두 키로 담긴 흔적이 없었다.
+
+#### ① 찼을 때 — 이미 그린 것을 지킨다
+
+**셀 루프는 셀마다 atlas 에 넣고 그 자리에서 인스턴스를 emit 한 뒤 나중에 그린다.** 그래서 프레임 중간에 atlas 를 비우면 앞서 emit 한 인스턴스의 UV 가 **이제 다른 것이 들어 있는 자리**를 가리킨다. 비우기 전에 flush 하는 것이 이를 막는 유일한 방법이다.
+
+**어긋난 것이 어떻게 보이는지는 비울 때 픽셀을 지우는지에 달렸다.**
+
+| 비울 때 | 앞서 emit 한 글자 | 어느 platform |
+|---|---|---|
+| 픽셀을 **0 으로 지운다** | **사라진다** (빈 칸) | macOS 의 예전 `reset` (`@memset(pixels, 0)`) |
+| 커서만 되돌린다 | **다른 글자로 바뀐다** — 그 자리에 새로 올라온 글리프가 보인다 | Linux · Windows · macOS (지금 — `resetFull` 은 지우지 않는다) |
+
+빈 칸이 눈에 더 잘 띄므로 **후자가 더 알아보기 어려운 실패다** — 그럴듯한 다른 글자는 "폰트가 이상한가" 로 읽힌다.
+
+| platform | 구현 | 상태 |
+|---|---|---|
+| **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
+| **Linux** | `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
+| **macOS** | `is_full` 을 세우고 호출자가 처리한다 (`insertGlyphOrRecover` · `insertClusterOrRecover` → `recoverFromAtlasFull`) — **먼저 ② 의 `grow`**, 상한이면 **지금까지 담은 구간을 pass 로 제출하고 GPU 가 끝나기를 기다린 뒤** (`submitPassEarly`) 비우고 재시도. cluster · 단일 · ligature **모든 삽입 경로가 같은 함수를 지난다** ([#591](https://github.com/ensky0/tildaz/issues/591) — 전에는 ligature 경로만 복구가 없어 조용히 버렸다) | **사양대로.** 실기 확인 |
+
+**Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
+
+**macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
+
+그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). drawable 에 그린 것은 Store 로 남고 present 는 프레임 끝의 마지막 cmd_buf 가 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다. [#591](https://github.com/ensky0/tildaz/issues/591) 이후 **draw 는 atlas 를 올린 뒤 한 곳에서만 일어나므로** (아래 "업로드 시점") "비운 뒤 담은 글리프를 따로 올리는" 규칙이 필요 없다 — 2-frame 구조이던 때는 그것이 깨져 아랫부분이 5.5 % 어긋났고 (#585) `atlas_reset_this_frame` 플래그로 막았는데, 그 플래그는 #591 에서 구조와 함께 사라졌다.
+
+**macOS 실측** (MacBook Pro M5 Pro · macOS 26.6.2 · 내장 3024×1964 · Menlo 15pt · `cell 19x39`). `MAX_ATLAS_SIZE = INITIAL_ATLAS_SIZE` 로 두어 `grow` 를 막고 ① 만 돌게 했다. 화면은 mark 를 둘 쌓은 cluster **6,000 종** (150 칸 × 40 줄).
+
+| | 4096 (기준 · 안 넘침) | 1024 (① 만 돈다) |
+|---|---|---|
+| `atlas full` | 0 회 | 한 화면에 **11 회** |
+| 그림 (정적) | — | **기준판과 `0 / 4,584,100 px`** |
+| **그리는 과정** (기동 직후 40 장 · 0.05 s 간격) | — | 이웃 차이 · 최종 대비 **전부 0 px** — 단계적으로 채워지는 모습이 없다 |
+
+**업로드 단위도 갈렸다가 이제 비슷하다.**
+
+| platform | 텍스처에 올리는 단위 |
+|---|---|
+| Windows | 글리프 하나 (`UpdateSubresource` + `D3D11_BOX`) |
+| Linux | 글리프 하나 (`glTexSubImage2D`) |
+| macOS | **dirty 구간** (`dirty_min_y`~`dirty_max_y`, blit encoder) — **프레임 끝 draw 직전** (`endFrame` → `beginPassWithRanges`) 과 안전망 제출 직전 |
+
+macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸다. blit 은 영역 지정이 자연스러워 dirty 구간만 올린다. staging buffer 는 **atlas 마다 따로** 둔다 — blit 은 GPU 가 나중에 실행할 때 buffer 를 읽으므로, 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의 blit 에 실린다 (실측으로 탭 아이콘이 깨졌다).
+
+**업로드 시점 — 담은 글리프는 세 platform 모두 같은 프레임에 보인다** ([#591](https://github.com/ensky0/tildaz/issues/591)).
+
+| platform | 담기 → 보이기 |
+|---|---|
+| Windows | 삽입 즉시 `UpdateSubresource` → 그 프레임의 draw 가 본다 |
+| Linux | 삽입 즉시 `glTexSubImage2D` → 같음 |
+| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에 — 본문은 `.text`, 탭 atlas 는 `.tab_text`), `endFrame` 이 **두 atlas 의 dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
+
+macOS 가 그렇게 된 이유 — Metal 은 render encoder 가 열린 동안 텍스처를 갈 수 없다 (blit 은 encoder 밖). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을 끼울 수 없었고, **프레임 시작에 지난 프레임 것을 올리는** 2-frame 구조였다 — 새 글리프가 한 프레임 늦게 보였고 host 가 `atlas.dirty` 를 보고 한 프레임을 더 요청해야 했다. #591 에서 draw 를 셀 루프 뒤로 미루자 그 지연과 재요청이 함께 사라졌다. 실측 (한 줄 출력 화면 · 자연 종료 시 perf 덤프의 `render calls`): 전 **6 · 6 · 5** vs 후 **5 · 5 · 5** — 재요청 프레임 하나가 두 회차에서 보였고, 한 회차는 초기 프레임과 겹친 것으로 보이나 확정하지 않았다. 부수로 draw call 이 프레임당 구간 수만큼으로 줄고 (`MAX_CELLS` 4096 마다 하던 중간 flush 가 없다), 셀 루프의 지역 인스턴스 배열 (bg 48 B + text 64 B) × 4096 = 약 448 KiB 스택이 없어졌다. 그리기 순서는 구간을 닫는 순서로 지킨다 — 셀 bg · SGR 선 → 글리프 → block · box → 커서 → 스크롤바 → preedit 배경 → preedit 글자.
+
+**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 두 atlas 를 올리고 그린다. clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
+
+**비운 뒤 재시도는 한 번뿐이다** (세 platform 공통 — macOS 는 그 앞에 `grow` 가 최대 두 번 더 있어 `insert*OrRecover` 가 세 번까지 돈다). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
+
+**Windows 실측** (노트북 · Ryzen AI 7 350 · Windows 11 Pro 26200 · 2880x1800 120 Hz · 150 % · `cell 14x29` · Cascadia Code 15pt). `ATLAS_SIZE` 를 2048 → 256 (넓이로 1/64) 으로 임시로 줄여 강제로 채웠다.
+
+| | `ATLAS_SIZE=2048` | `ATLAS_SIZE=256` |
+|---|---|---|
+| `atlas full` | 0 회 | 한 화면을 그리는 데 **15 회** |
+| 그림 | — | **두 판이 `0 / 1,258,008 px` — 완전 동일** |
+
+**Linux 실측** (노트북 · Ryzen AI 7 350 · CachyOS · KDE Plasma Wayland · 2880x1800 120 Hz · scale 1.6 · `render_path=gpu-gl` · `cell 14x31` · DejaVu Sans Mono 15pt). 결합 기호 cluster **10,400 종** 화면 (200 칸 × 52 줄) 이라 기본 `ATLAS_SIZE` 로도 찬다. **기준은 `ATLAS_SIZE=4096` 판**이다 — 그 화면으로 안 넘치므로 (`atlas full` 0 회) 그것이 온전한 그림이다.
+
+| | 안전망 전 | 안전망 후 |
+|---|---|---|
+| `ATLAS_SIZE=2048` · `atlas full` | 한 화면에 **4 회** (`glyphs` 8,971~9,156 · `filled_y` 2,042~2,047) | 같음 — 안전망은 *차는 것*을 막지 않는다 |
+| 2048 판과 4096 기준판의 그림 | **213,940 / 4,416,000 px 다름** (위쪽 6.22 줄) | **`0 px`** |
+| `ATLAS_SIZE=256` (강제) · `atlas full` | 한 화면에 **292 회** | 같음 |
+| 256 판과 4096 기준판의 그림 | **2,244,514 px 다름** (50.83 %) | **`0 px`** |
+
+어긋난 폭이 산술과 맞았다 — 마지막 프레임이 `glyphs=9,156` 에서 비웠고 화면이 10,400 셀이므로 남은 `1,244` 셀이 앞자리를 덮어써 `1,244 ÷ 200 = 6.22` 줄이다.
+
+**안전망은 네 조건에서 확인했다** (모두 4096 기준판과 `0 px`).
+
+| 회차 | 무엇을 겨눴나 | `atlas full` |
+|---|---|---|
+| `ATLAS_SIZE` 2048 · 결합 기호 10,400 종 | 기본값에서 gray 가 차는 경우 | gray 4 회 |
+| `ATLAS_SIZE` 256 · 같은 화면 | 한 화면에 여러 번 비우는 경우 | gray 292 회 |
+| 2048 · emoji 400 종 + cluster 9,600 종 | **color 가 차는 경우**와 surface 별 캐시 분리 | color 7 회 · gray 4 회 |
+| `ATLAS_SIZE` 128 · 탭 2 개 | **chrome 을 그리는 중에 차는 경우** (탭 제목이 clip 된다) | gray 2,423 회 |
+
+마지막 회차가 clip 을 겨눈다 — clip 은 `.glyph` 항목에만 걸리므로 (아이콘 · 사각형은 화면 전체) **탭이 둘 이상이어야** 그 경로가 생긴다. 탭바까지 포함해 대조해 `0 px` 이었다.
+
+**실패 모양이 platform 마다 다르다.** macOS 는 매 프레임 다시 채우므로 **화면이 계속 깜빡인다.** **Linux · Windows 는 화면이 바뀔 때만 다시 그리므로** (Windows 는 6 초 · 120 Hz 에서 `resets` 가 15 에서 멈췄고, Linux 는 두 회차의 그림이 `0 px` 로 같았다) 깜빡임이 아니라 **틀린 화면이 그대로 멈춘다** — 더 눈에 안 띄는 실패다. Windows 는 안전망이 있어 가정법이지만, Linux 는 안전망을 넣기 전까지 실제로 그랬다.
+
+#### ③ 로그 — 세 platform 이 같은 문구
+
+```
+atlas full — cleared and refilling (<kind>, resets=N, glyphs=N, clusters=N, fonts=N, filled_y=N)
+```
+
+**비우기 직전에** 남긴다 — 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
+
+| 필드 | 뜻 |
+|---|---|
+| `kind` | 어느 라스터 경로에서 찼는지 (`mono` · `color` · `icon` · `gray`) |
+| `glyphs` · `clusters` | 담고 있던 항목 수. 둘의 비가 어긋나면 같은 그림을 여러 번 담고 있다는 신호다 |
+| `fonts` | cluster 키에 실린 **서로 다른 폰트 id 수.** 화면이 쓰는 폰트 수와 맞아야 한다 |
+| `filled_y` | 채운 높이 (px) |
+| `resets` | 비운 누적 횟수 |
+
+Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이고, `glyphs` 는 **찬 surface 의 캐시 항목 수**다 (`kind` 와 같은 축이라 두 값이 짝이 맞는다).
+
+**키울 때는 다른 줄을 남긴다** (macOS 만 — ② 의 `grow`).
+
+```
+atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
+```
+
+이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다. `atlas full` 과 갈라 두는 이유는 **뜻이 반대**이기 때문이다 — `full` 은 "그린 것을 지켜야 했다", `grew` 는 "지킬 필요가 없어졌다" 다.
+
+#### ② 용량 — 실측 기준선
+
+`ATLAS_SIZE` 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
+
+| 환경 | atlas | 담긴 양 |
+|---|---|---|
+| Windows · Cascadia Code 15pt · `cell 14x29` (150 %) | 2048² | `glyphs 925` + `clusters 5,157` = **6,082** (`filled_y 2,037`) |
+| macOS · Monaco | 2048² | 약 **5,880** |
+| Linux · DejaVu Sans Mono 15pt · `cell 14x31` (scale 1.6) · **gray** | 2048² | **8,971 ~ 9,156** (`filled_y` 2,042~2,047) |
+| Linux · Noto Color Emoji · 같은 기기 · **color** | 2048² | emoji **210 종** (`filled_y` 1,935) |
+| macOS · Menlo 15pt · `cell 19x39` (scale 2.0) · 내장 3024×1964 · 17 화면 누적 ([#585](https://github.com/ensky0/tildaz/issues/585)) | 2048² → 4096² 시점 | `clusters 5,134` |
+| 같은 회차 | 4096² → 8192² 시점 | `clusters 15,441` |
+| 같은 회차 | **8192² 가 찬 시점** | `glyphs 195` + `clusters 56,835` = **57,030** (`filled_y 8,165`) |
+
+**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`applyScale`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
+
+Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
+
+**컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
+
+#### ② 계속 — 차면 키운다 (macOS)
+
+**macOS 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), ① 도 완전하지만 구간마다 GPU 를 기다려야 하므로, **차기 전에 키우는 것이 주 경로**다 — ① 은 상한에서만 돈다.
+
+| | |
+|---|---|
+| 시작 크기 | `INITIAL_ATLAS_SIZE` = **2048** |
+| 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
+| 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
+| UV | 셰이더가 `atlas_w`/`atlas_h` uniform 으로 정규화하므로, 크기가 바뀌면 renderer 가 그 uniform 과 Metal 텍스처를 함께 갱신한다 (`syncAtlasTexture`) |
+
+**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다.
+
+**검증** (MacBook Pro M5 Pro · macOS 26.6.2 · 5120x2880 60 Hz · Menlo 15pt · `cell 19x39`). mark 를 둘 쌓은 cluster **10,000 종** 화면 (200 칸 × 50 줄) 이라 2048² 을 넘긴다. **`INITIAL_ATLAS_SIZE` 만 바꾼 세 판**을 맞댔다 — `grow` 가 정확하면 **시작 크기와 무관하게 최종 그림이 같아야** 한다.
+
+| 판 | `grow` | `atlas full` | 4096 판과 다른 픽셀 (창 7,588,060 px) |
+|---|---|---|---|
+| 4096 (기준 · 안 넘침) | 0 회 | 0 회 | — |
+| **2048** (기본값) | 1 회 → 4096 | **0 회** | **0 px** |
+| **512** | 3 회 → 1024 → 2048 → 4096 | **0 회** | **0 px** |
+| 일반 화면 (cluster 2,816 종) | **0 회** | 0 회 | 이웃 프레임 `0 px` |
+
+**`atlas full` 이 0 회인 것이 핵심이다** — 차기 전에 커지므로 ① 이 발동하지 않는다.
+
+**Windows · Linux 는 아직 고정 크기 + ① 이다.** 그쪽은 ① 로 계약을 이미 만족하고 실측으로 `0 px` 을 확인했으므로, `grow` 로 갈아타면 그 검증이 무효가 된다. **세 platform 을 `grow` 로 통일하는 것은 후속 항목이다** ([#584](https://github.com/ensky0/tildaz/issues/584)) — 그때는 이미 검증된 ① 이 안전망으로 남아 있어 위험이 낮다.
+
+**용량으로 막는 것을 포기하는 것은 고정 크기 platform 에 해당한다.** Windows · Linux 는 4K@2x 최악 (11,110 종) 을 4096² (약 11,000) 으로도 못 담으므로 ① 이 받는다. macOS 는 8192 까지 키워 그 지점을 넘긴다.
+
 ---
 
 ## 13. VT 파싱 예산 — **응답성 상한이지 처리량 상한이 아니다** ([#387](https://github.com/ensky0/tildaz/issues/387))
@@ -1786,14 +2067,26 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 상한에 붙어 처리량이 반토막난다 (Windows ② 60 Hz 실측: 29.3~30.2 → 15.1~15.2 MiB/s, ×0.50). 즉 예산은
 사양 A 아래에서 **응답성 손잡이**, 사양 A 없이는 **처리량 손잡이**다.
 
-### 13.3.1 pane 수 축 — 예산은 하나, 보이는 pane 이 나눠 쓴다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27 · 세 platform 재측정 [#551](https://github.com/ensky0/tildaz/issues/551), 2026-08-31)
+### 13.3.1 pane 수 축 — 예산은 하나, 논리 라운드는 호출을 넘어 이어진다 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-27 · 세 platform 재측정 [#551](https://github.com/ensky0/tildaz/issues/551), 2026-08-31 · 공정성 수정 [#574](https://github.com/ensky0/tildaz/issues/574), 2026-09-01)
 
-화면 분할로 "활성/비활성" 2 분법이 "보임/안 보임" 이 됐다. `drainFrame` 은 **활성 pane 을 먼저**, 그다음 보이는
-pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산을 검사**한다 — 검사 없이 N 청크를 돌면 최악 점유가
-`예산 + N 청크` 로 pane 수에 비례해 커진다. 예산 자체는 **4 ms 하나**다 — 보이는 pane 이 몇이든 UI 스레드가 한
-번에 붙잡히는 상한은 같고, pane 들은 청크를 번갈아 받아 같은 프레임에 함께 나아간다. "pane 마다 1 ms" 나
-"pane 수 × 4 ms" 는 택하지 않았다 — 전자는 처리량을 pane 수로 나누고 (사양 A 가 있어 어차피 프레임 사이에 더
-드레인한다), 후자는 최악 입력 지연을 pane 수에 비례해 늘린다.
+화면 분할 뒤 `drainFrame` 은 현재 활성 `TabGroup`의 pane 과 숨은 탭을 다음 **논리 라운드**로 스케줄한다.
+
+1. 라운드 시작 시 존재하는 pane 을 `PaneId` 집합으로 고정한다.
+2. 그때의 active pane 을 첫 토큰으로 처리한다.
+3. 나머지 존재 pane 을 안정된 `PaneId` 순서로 각각 한 번 처리한다. 이 순서는 분할 트리의 화면 배치 순서라는
+   뜻이 아니다.
+4. 활성 그룹을 모두 처리한 뒤 기존 hidden round-robin 한 슬롯을 처리한다.
+5. 공통 **4 ms** 예산이 끝나면 아직 처리하지 않은 `PaneId`와 hidden 차례를 보존해 다음 호출에서 이어 간다.
+
+따라서 active-first는 **매 호출**이 아니라 **매 논리 라운드**의 시작 우선권이다. 구성과 포커스가 안정되고 출력이
+계속 밀린 동안 각 활성 그룹 pane 의 처리 청크 수 차이는 최대 하나다. 포커스가 바뀌면 새 active를 다음 차례로
+당긴다. 이미 이번 라운드에서 처리한 pane 은 입력 반응을 위해 한 번 더 처리할 수 있지만, 다른 pane 의 남은 차례는
+지우지 않는다. split · close · active tab 변경처럼 구성 자체가 바뀌면 새 집합으로 라운드를 다시 시작한다. zoom은
+렌더 표시만 바꾸므로 라운드를 버리지 않고, 그 뒤에 가려진 같은 그룹 pane 도 기존과 같이 계속 드레인한다.
+
+예산 자체는 **pane마다가 아니라 4 ms 하나**다. "pane마다 1 ms"는 처리량을 pane 수로 나누고, "pane 수 × 4 ms"는
+최악 입력 지연을 pane 수에 비례해 늘리므로 채택하지 않는다. 예산 검사는 청크 사이에서만 가능해 마지막 청크 하나가
+4 ms를 넘길 수 있다. 이 비선점 청크 초과는 라운드 공정성과 별개이며 #574가 해결하는 범위가 아니다.
 
 **실측 — 세 platform** (`zig build stress -- throughput --layer frame --panes N --cols 120 --rows 40`,
 `plain` · pane 마다 producer 하나 · **64 MiB/pane** · 합계 격자를 **120×40 으로 고정** · 조건별 5 회 절사평균).
@@ -1803,10 +2096,10 @@ pane 을 화면 순서로 한 청크씩 돌리고, **pane 사이에서도 예산
 | platform · 기기 | 최장 드레인 1 → 16 pane | 합계 처리량 1 → 16 pane (120 fps) |
 |---|---|---|
 | **macOS** · MacBook Pro M5 Pro · 120 Hz | 1.69 → **4.07** ms | 143 → 111 MiB/s |
-| **Windows** · 기기 미기록 ([#551](https://github.com/ensky0/tildaz/issues/551)) | 4.16 → **4.55** ms | 161 → 79 MiB/s |
+| **Windows** · Lenovo 83JY · Ryzen AI 7 350 · 120 Hz | 4.16 → **4.55** ms | 161 → 79 MiB/s |
 | **Linux** · Ryzen AI 7 350 · 120 Hz | 4.32 → **7.93** ms | 101 → 46 MiB/s |
 
-producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한 값 — 120 fps 기준:
+**수정 전** producer 종료 퍼짐을 모사 프레임으로 환산한 값 — 120 fps 기준:
 
 | pane | macOS | Windows | Linux |
 |---:|---:|---:|---:|
@@ -1822,17 +2115,43 @@ producer 종료 퍼짐 (pane 간 공정성) 을 모사 프레임으로 환산한
   초과 폭이 0.6 ms 안 (청크 하나) 에 머문다.
 - **Linux 만 16 pane 에서 상한이 깨진다** (6.98~11.27 ms). 원인 코드는 공통 `drainFrame` 이지만
   **발현은 host 에서 갈린다** — macOS · Windows 는 같은 조건에서 묶였다. Linux host 의 드레인 구조로 따로 추적한다.
-- **공정성은 pane 2 개부터 나빠지고 host 마다 크게 다르다.** `drainFrame` 이 매 호출 `group.panes` 를
+- **수정 전 공정성은 pane 2 개부터 나빠지고 host 마다 크게 달랐다.** `drainFrame` 이 매 호출 `group.panes` 를
   **처음부터** 도는데 (숨은 탭에는 `inactive_drain_cursor` 가 있지만 **보이는 pane 에는 커서가 없다**)
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는
   host 에서는 드러나지 않아, 같은 코드가 macOS 0.9 프레임 · Linux 125 프레임으로 갈린다 (8 pane).
 - **프레임당 렌더 비용은 pane 수에 비례하지 않는다.** 실제 앱을 띄워 `perf.render` 로 잰
-  `render/call` 이 1 → 8 pane 에서 macOS 0.386 → 0.286 ms, Linux 0.368 → 0.430 ms 로 평평하다
-  (Windows 는 그 회차에 payload 의 5 % 를 소화하지 못해 값을 쓰지 않는다). 즉 pane 을 늘려도 밀리는 것은
-  렌더가 아니라 위의 드레인 공정성이다.
+  `render/call` 이 1 → 8 pane 에서 macOS 0.386 → 0.286 ms, Windows 0.653 → 0.894 ms,
+  Linux 0.368 → 0.430 ms 로 pane 수에 비례하지 않는다. Windows 4 · 8 pane 은 중간 pane 종료 전
+  ring 을 마저 소화하도록 고친 뒤 120 Hz 에서 다시 잰 유효값이다 ([#572](https://github.com/ensky0/tildaz/issues/572)).
+  즉 pane 을 늘려도 밀리는 것은 렌더가 아니라 위의 드레인 공정성이다.
 
 합계 처리량은 격자를 고정했는데도 pane 수가 늘면 내려간다 (pane 하나의 몫이 아니라 합계다) — 격자 변화가 아니라
 producer · PTY · ring 경쟁 때문이다. `frame` 층은 프레임마다 한 번만 드레인해 (사양 A 없음) 앱의 하한이다.
+
+위 종료 퍼짐은 #574 수정 전 원인을 찾은 역사적 자료다. 당시 producer는 동시에 시작하지 않았고, 종료 시점도
+각 pane의 VT parser가 마지막 바이트를 반영한 시점이 아니라 자식 process 종료 callback이었다. 따라서 수치 자체를
+화면 완료 지연으로 해석하지 않는다. #574부터 `frame --panes N`은 모든 producer가 준비 barrier에 모인 뒤 함께
+시작하고, pane별 마지막 OSC title marker가 실제 `Terminal`에 반영된 시점을 `PaneId`별로 기록한다. 리포트는
+pane별 drain 청크·바이트, 최장 service gap, 청크 수 skew, marker 완료 퍼짐을 함께 내며 process 종료는 보조 진단으로만
+남긴다.
+
+**#574 보강 하네스의 Linux 수정 전/후 실측** — AMD Ryzen AI 7 350, ReleaseFast + SIMD, `plain`, 120 fps,
+120×40, pane마다 64 MiB, 조건별 5회 절사평균 ([전체 결과와 quantum 실험](https://github.com/ensky0/tildaz/issues/574#issuecomment-5488591291)):
+
+| pane | 마지막 VT marker 퍼짐: 수정 전 → 후 | 최대 chunk skew: 수정 전 → 후 | 합계 처리량: 수정 전 → 후 |
+|---:|---:|---:|---:|
+| 2 | 61.3 → **0.0 ms** | 103.7 → **1** | 68.4 → 68.1 MiB/s (−0.5%) |
+| 4 | 397.3 → **1.6 ms** | 346.7 → **1** | 56.1 → 56.3 MiB/s (+0.2%) |
+| 8 | 1,409.8 → **3.3 ms** | 991.3 → **1** | 53.0 → 48.1 MiB/s (−9.2%) |
+| 16 | 16,507.6 → **2.0 ms** | 1,037 → **1** | 41.3 → 33.8 MiB/s (−18.1%) |
+
+2·4 pane 은 처리량 변화 없이 공정성 오류가 사라졌다. 8·16 pane 이 **모두 계속 대용량 출력하는** 조건에서는
+동시에 활동하는 producer · PTY · read thread 경쟁이 끝까지 유지돼 합계 처리량이 낮아진 것으로 *추정*한다
+(hardware counter 미확인). pane 이 16개여도 backlog pane 이 하나면 나머지는 빈 ring 확인만 하므로 이 비용은
+거의 없다. pane당 연속 quantum 을 2·4청크로 늘려도 16 pane 처리량은 각각 33.6 MiB/s로 회복되지 않고 skew만
+2·4로 늘었다. 따라서 가장 단순하고 강한 strict round-robin (quantum 1)을 사양으로 유지한다. 이 새 전후 실측은
+Linux에서만 했으며, 공통 코드의 Windows · macOS compile check는 통과했지만 두 platform의 새 처리량은 아직 실기
+측정하지 않았다.
 
 ### 13.4 렌더 게이트는 "화면이 바뀌었나" 하나다 ([#388](https://github.com/ensky0/tildaz/issues/388))
 

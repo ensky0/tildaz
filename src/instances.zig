@@ -241,17 +241,89 @@ fn workerLockOwned(rt: Runtime, path: []const u8) !bool {
 }
 
 pub fn waitUntilRunning(rt: Runtime, allocator: std.mem.Allocator, index: u32, timeout_ns: u64) !void {
-    const path = try paths.instanceLockPath(rt, allocator, index);
-    defer allocator.free(path);
-    var timer: runtime.Timer = .start(rt);
-    while (timer.read() < timeout_ns) {
-        // PID는 worker가 lock을 획득한 뒤 기록한다. 파일이 비어 있는 동안 lock을
-        // probe하면 launcher가 worker보다 먼저 lock을 잡는 race가 생기므로 metadata만
-        // 확인한다. PID가 쓰인 뒤 실제 생존 판정은 다시 advisory lock으로 검증한다.
-        if (ownerPidWritten(rt, path) and try isRunning(rt, allocator, index)) return;
-        rt.sleepNs(10 * std.time.ns_per_ms);
+    const lock_path = try paths.instanceLockPath(rt, allocator, index);
+    defer allocator.free(lock_path);
+    const endpoint_path = try paths.instanceEndpointStatePath(rt, allocator, index);
+    defer allocator.free(endpoint_path);
+
+    var probe = FileStartupProbe{
+        .rt = rt,
+        .lock_path = lock_path,
+        .endpoint_path = endpoint_path,
+        .timer = .start(rt),
+    };
+    try waitUntilRunningWithProbe(&probe, timeout_ns);
+}
+
+/// #577 — launcher 가 방금 띄운 worker 의 기동 결과. 예전에는 `waitUntilRunning` 이
+/// lock 파일만 봐서 "아직 시작 중" 과 "이미 죽음" 을 구별하지 못했고, 그래서 기동에
+/// 실패한 실행은 전부 타임아웃 10 초를 통째로 기다린 뒤 generic `WorkerStartTimeout`
+/// 을 냈다. 사용자가 본 것은 "클릭했는데 10 초간 아무 일도 없음" 이었다.
+const StartupProbeResult = enum {
+    not_yet,
+    running,
+    worker_exited,
+};
+
+const startup_poll_interval_ns = 10 * std.time.ns_per_ms;
+
+const FileStartupProbe = struct {
+    rt: Runtime,
+    lock_path: []const u8,
+    endpoint_path: []const u8,
+    timer: runtime.Timer,
+
+    fn poll(self: *@This()) !StartupProbeResult {
+        return probeStartupFiles(self.rt, self.lock_path, self.endpoint_path);
+    }
+
+    fn elapsedNs(self: *@This()) u64 {
+        return self.timer.read();
+    }
+
+    fn sleep(self: *@This(), duration_ns: u64) void {
+        self.rt.sleepNs(duration_ns);
+    }
+};
+
+fn waitUntilRunningWithProbe(probe: anytype, timeout_ns: u64) !void {
+    while (probe.elapsedNs() < timeout_ns) {
+        switch (try probe.poll()) {
+            .running => return,
+            .worker_exited => return error.WorkerExitedDuringStartup,
+            .not_yet => {},
+        }
+
+        const elapsed = probe.elapsedNs();
+        if (elapsed >= timeout_ns) break;
+        probe.sleep(@min(startup_poll_interval_ns, timeout_ns - elapsed));
     }
     return error.WorkerStartTimeout;
+}
+
+/// 두 파일로 기동 여부를 읽는다. 판정 근거는 `acquireWorkerLock` 의 **쓰기 순서**다 —
+/// lock 을 잡은 뒤 endpoint 상태 `.starting` 을 먼저 쓰고, 그 다음 owner PID 를 쓴다.
+///
+/// 이 읽기가 **이전 실행이 남긴 endpoint 파일을 보고 오판하지 않는** 근거는
+/// `spawnWorker` 가 spawn 직전에 그 파일을 지운다는 것이다 (`clearEndpointState`).
+/// 그래서 여기서 파일이 보이면 방금 띄운 worker 가 쓴 것이다.
+fn probeStartupFiles(rt: Runtime, lock_path: []const u8, endpoint_path: []const u8) !StartupProbeResult {
+    // PID는 worker가 lock을 획득한 뒤 기록한다. 파일이 비어 있는 동안 lock을
+    // probe하면 launcher가 worker보다 먼저 lock을 잡는 race가 생기므로 metadata만
+    // 확인한다. PID가 쓰인 뒤 실제 생존 판정은 다시 advisory lock으로 검증한다.
+    if (ownerPidWritten(rt, lock_path)) {
+        if (try workerLockOwned(rt, lock_path)) return .running;
+        // PID 는 쓰였는데 lock 이 비었다 — 쓴 뒤에 죽었다. 정상 종료는
+        // `clear_pid_on_close` 가 PID 를 비우므로 아래 분기로 간다.
+        return .worker_exited;
+    }
+
+    // PID 가 아직 없다. endpoint 상태 파일이 있으면 worker 가 lock 을 잡는 데까지는
+    // 갔다는 뜻이고, 그런데 lock 이 비어 있다면 그 사이에 죽은 것이다.
+    if (try readEndpointSnapshot(rt, endpoint_path) != null and !try workerLockOwned(rt, lock_path))
+        return .worker_exited;
+
+    return .not_yet;
 }
 
 pub fn recordEndpointState(rt: Runtime, allocator: std.mem.Allocator, index: u32, state: EndpointState) !void {
@@ -489,10 +561,27 @@ pub fn spawnWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void 
     const exe = exe_buf[0..exe_len];
     const index_text = try std.fmt.allocPrint(allocator, "{d}", .{index});
     defer allocator.free(index_text);
+    // #577 — spawn **직전에** 이전 실행이 남긴 endpoint 상태 파일을 지운다.
+    // `waitUntilRunning` 이 "그 파일이 있다 = 방금 띄운 worker 가 lock 을 잡았다" 로
+    // 읽어 조기 사망을 판정하므로, stale 파일이 남아 있으면 시작하자마자 죽은 것으로
+    // 오판한다. 여기가 자리인 이유는 spawn 하는 쪽이 한 곳이라 호출처가 잊을 수 없다는
+    // 것이다. 이 시점에 그 index 의 worker 는 살아 있지 않다 (`main.zig` 가
+    // `!isRunning(index)` 일 때만 부른다).
+    try clearEndpointState(rt, allocator, index);
     // 자식을 기다리지 않는다 — worker 는 독립 프로세스이고, launcher 는 lock 파일로
     // 기동을 확인한 뒤 (`waitUntilRunning`) 곧 끝난다. 예전 `Child.init` + `spawn` 도
     // 같았다 (`wait` 를 부르지 않았다).
     _ = try std.process.spawn(rt.io, .{ .argv = &.{ exe, "--instance", index_text } });
+}
+
+/// #577 — endpoint 상태 파일을 없앤다. 없으면 아무 일도 하지 않는다.
+fn clearEndpointState(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void {
+    const path = try paths.instanceEndpointStatePath(rt, allocator, index);
+    defer allocator.free(path);
+    std.Io.Dir.deleteFileAbsolute(rt.io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
 
 pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
@@ -855,4 +944,101 @@ test "endpoint ready wait has a finite timeout" {
         waitUntilEndpointReadyWithProbe(&probe, timeout_ns),
     );
     try std.testing.expectEqual(timeout_ns, probe.elapsed_ns);
+}
+
+const FakeStartupProbe = struct {
+    results: []const StartupProbeResult,
+    next_result: usize = 0,
+    elapsed_ns: u64 = 0,
+
+    fn poll(self: *@This()) !StartupProbeResult {
+        const index = @min(self.next_result, self.results.len - 1);
+        self.next_result += 1;
+        return self.results[index];
+    }
+
+    fn elapsedNs(self: *@This()) u64 {
+        return self.elapsed_ns;
+    }
+
+    fn sleep(self: *@This(), duration_ns: u64) void {
+        self.elapsed_ns += duration_ns;
+    }
+};
+
+test "#577 기동 대기는 worker 사망을 타임아웃 없이 알린다" {
+    const results = [_]StartupProbeResult{ .not_yet, .worker_exited };
+    var probe = FakeStartupProbe{ .results = &results };
+    try std.testing.expectError(
+        error.WorkerExitedDuringStartup,
+        waitUntilRunningWithProbe(&probe, 10 * std.time.ns_per_s),
+    );
+    // **10 초를 기다리지 않는다.** 예전에는 사망도 타임아웃으로만 드러나서 사용자가
+    // 클릭 후 10 초를 아무 반응 없이 기다렸다 — 이 값이 그 회귀를 막는다.
+    try std.testing.expectEqual(startup_poll_interval_ns, probe.elapsed_ns);
+}
+
+test "#577 기동 대기는 성공 시 즉시 돌아온다" {
+    const results = [_]StartupProbeResult{.running};
+    var probe = FakeStartupProbe{ .results = &results };
+    try waitUntilRunningWithProbe(&probe, 10 * std.time.ns_per_s);
+    try std.testing.expectEqual(@as(u64, 0), probe.elapsed_ns);
+}
+
+test "#577 기동 대기는 응답 없는 worker 에 유한 타임아웃을 유지한다" {
+    // 죽지도 뜨지도 않는 worker (hang) — 여기서는 타임아웃이 유일한 탈출구다.
+    const results = [_]StartupProbeResult{.not_yet};
+    var probe = FakeStartupProbe{ .results = &results };
+    const timeout_ns = 25 * std.time.ns_per_ms;
+    try std.testing.expectError(
+        error.WorkerStartTimeout,
+        waitUntilRunningWithProbe(&probe, timeout_ns),
+    );
+    try std.testing.expectEqual(timeout_ns, probe.elapsed_ns);
+}
+
+test "#577 기동 probe 는 lock 과 endpoint 파일로 사망을 가려낸다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
+    defer allocator.free(root);
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.lock" });
+    defer allocator.free(lock_path);
+    const endpoint_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance0.endpoint" });
+    defer allocator.free(endpoint_path);
+
+    // 아무것도 없다 — 방금 spawn 했고 worker 가 아직 lock 을 못 잡았다.
+    // `spawnWorker` 가 endpoint 파일을 지우고 spawn 하므로 이것이 실제 초기 상태다.
+    try std.testing.expectEqual(
+        StartupProbeResult.not_yet,
+        try probeStartupFiles(rt, lock_path, endpoint_path),
+    );
+
+    const pid = currentProcessId();
+    {
+        var worker_lock = (try tryAcquireProcessLock(rt, lock_path)).?;
+        defer worker_lock.deinit(rt);
+
+        // lock 을 잡고 `.starting` 만 쓴 상태 (PID 는 아직) — 계속 기다려야 한다.
+        try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .starting);
+        try std.testing.expectEqual(
+            StartupProbeResult.not_yet,
+            try probeStartupFiles(rt, lock_path, endpoint_path),
+        );
+
+        // PID 까지 썼다 — 기동 성공.
+        try writeOwnerPid(rt, worker_lock.file);
+        try std.testing.expectEqual(
+            StartupProbeResult.running,
+            try probeStartupFiles(rt, lock_path, endpoint_path),
+        );
+    }
+
+    // lock 이 풀렸고 endpoint 파일은 남아 있다 = 쓰고 나서 죽었다.
+    try std.testing.expectEqual(
+        StartupProbeResult.worker_exited,
+        try probeStartupFiles(rt, lock_path, endpoint_path),
+    );
 }

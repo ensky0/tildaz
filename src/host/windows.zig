@@ -33,19 +33,24 @@ const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
     // #197 — macOS / Linux showPanic 와 동일하게 crash 를 로그에 남긴다 (parity).
-    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.logPanic(msg, addr);
     var buf: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
 
-pub fn showFatalRunError(err: anyerror) void {
-    log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
+    // #577 — `rt` 를 인자로 받는다. 예전에는 `g_rt` 를 읽었는데 그것은 `run()` 안에서만
+    // 심어지고, **launcher 실패 경로는 `run()` 을 거치지 않는다** (`main.zig` 의
+    // `runLauncher` catch). 즉 그 경로에서 `g_rt` 는 `undefined` 였다. Linux 가 이 자리에
+    // 다이얼로그를 붙이려고 서명을 바꾸면서 함께 닫았다.
+    _ = allocator;
+    log.logRunFailed(err);
 
     var buf: [256]u8 = undefined;
     const text = messages.runFailureMessage(&buf, err);
-    dialog.showError(g_rt, messages.error_title, text);
+    dialog.showError(rt, messages.error_title, text);
 }
 
 pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
@@ -80,6 +85,17 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     var config = Config.load(rt, alloc, shell_resolved);
     defer config.deinit(alloc);
     log.logConfigLoaded(config);
+
+    // #577 — config 오류가 담겨 있으면 여기서 안내하고 종료한다. `Config.load` 는
+    // 더 이상 그 자리에서 죽지 않고 문구를 담아 기본값으로 돌아온다 (Linux 에서
+    // 파싱 시점에는 다이얼로그를 그릴 수 없기 때문이다 — `config.zig` 의
+    // `recordConfigFatalMsg` 주석). Windows 는 `MessageBoxW` 가 modal 이라 창을
+    // 세우기 전 이 자리에서 그대로 띄울 수 있다.
+    //
+    // **shell 검증보다 앞이다** — config 를 못 읽은 실행은 기본값으로 도는 중이라
+    // 아래 검증이 보는 shell 이 사용자가 적은 값이 아니다. 순서가 뒤바뀌면 사용자는
+    // 자기가 고치지도 않은 shell 을 의심한다 (Linux host 도 같은 순서다).
+    config_mod.showFatalNoticeIfAny(rt);
 
     // shell executable 이 PATH 또는 절대경로로 실제 존재하는지 *지금* 검증.
     // CreateProcessW 단계까지 가면 윈도우 / 렌더러 / PTY 초기화 비용 다 쓴
@@ -127,7 +143,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #381 — override 가 먹었는지 로그로 확인할 수 있어야 한다. `config loaded:` 줄은 config
     // 값을 찍으므로 그것만 보면 override 실패를 알 수 없다 (측정이 이 값에 걸려 있다).
     if (opts.scrollback) |n| {
-        log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, config.max_scroll_lines });
+        log.logScrollbackOverride(n, config.max_scroll_lines);
     }
     // tab_actions.Host 콜백 — &app 안정 후 한 번만. helper 가 user_data 통해
     // *App 으로 cast 후 invalidateRenderer / window.copyToClipboard
@@ -153,7 +169,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #439 — PTY 출력 도착을 UI 스레드에 알린다. 이것이 없으면 유휴에서 `WaitMessage` 가
     // 다음 `WM_FRAME_TICK` 까지 자고, 그 주기가 그대로 응답 지연이 된다.
     app.session.setOutputWake(onOutputWake, &app.window);
-    log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+    log.logOutputWakeInstalled();
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
     // Validate all font families exist on the system. 하나라도 미설치면 즉시

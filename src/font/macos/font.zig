@@ -9,6 +9,7 @@ const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
+const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
@@ -51,6 +52,14 @@ pub const GlyphResult = struct {
 
     /// 유효한 글리프 수. 1 이면 `index` 만 쓰면 된다.
     count: u8 = 1,
+
+    /// #584 — atlas 의 cluster 키가 쓰는 **안정된 폰트 식별자**. cluster 안 글리프들의
+    /// PostScript 이름 id (`atlas_common.fontId`) 를 순서대로 누적한 값이다.
+    ///
+    /// **폰트 객체 주소를 쓰면 안 된다** — CoreText 는 같은 폰트에 CTLine 마다 새 객체를 준다
+    /// (실측: 같은 `Monaco` 가 주소 50 개). 주소를 키에 실으면 같은 그림이 주소마다 새로 담겨
+    /// atlas 가 몇 배로 찬다.
+    font_id: u64 = 0,
 
     /// #401 — cluster 가 차지하는 가로 폭 (pt). 셀 안 가운데 정렬이 이 값을 쓴다.
     ///
@@ -216,6 +225,10 @@ pub const CoreTextFontContext = struct {
     /// 에 사용 (Windows DWriteFontContext 와 동등). [0] 은 primary 와 동일.
     fallback_fonts: [MAX_FALLBACK_FONTS]ct.CTFontRef,
     fallback_count: usize,
+    /// #584 — chain 폰트의 `atlas_common.fontId`. **`init` 에서 한 번만** 구한다 (이름 조회가
+    /// `CFStringGetBytes` 를 타므로 셀마다 부를 수 없다). atlas 키가 폰트를 주소가 아니라 이
+    /// 값으로 식별한다.
+    fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS,
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `fallback_fonts` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -223,15 +236,19 @@ pub const CoreTextFontContext = struct {
     /// 조회가 언제나 성공하므로 호출부에 "없으면 regular" 분기를 두지 않아도 된다
     /// (synthetic 은 만들지 않는다는 결정의 자연스러운 귀결).
     styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef,
+    /// #584 — `styled_fonts` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Menlo-Bold` vs
+    /// `Menlo-Regular`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
+    styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
+        .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
     /// platform 별이다.
     ///
     /// **macOS 값에는 소유권이 있다** (Linux 의 face index 와 다르고 Windows 와 같다).
     /// `resolveGrapheme` 은 CT 가 fallback 으로 고른 폰트를 `CFRetain` 해서 돌려주고
-    /// (`owned = true`) 셀 루프가 매 프레임 `CFRelease` 한다. 캐시에 담은 폰트를 그대로
-    /// `owned = true` 로 주면 그 release 가 캐시 안의 폰트를 죽인다. 그래서 캐시가 소유권을
-    /// 가져가고 caller 에게는 `owned = false` 로 준다.
+    /// (`owned = true`) 셀 루프가 매 프레임 `CFRelease` 한다. **캐시는 담을 때 자기 몫을
+    /// 따로 `CFRetain` 한다** ([#578](https://github.com/ensky0/tildaz/issues/578)) — 참조를
+    /// 호출자에게서 넘겨받으면 캐시가 비워지는 순간 호출자가 아직 쓸 폰트까지 풀려 죽는다.
     ///
     /// negative 도 담는다 — CT 가 못 만든 cluster 를 안 담으면 매 프레임 `CTLine` 을 헛 만든다.
     cluster_cache: cluster_cache.ClusterCache(GlyphResult, releaseCluster),
@@ -241,6 +258,20 @@ pub const CoreTextFontContext = struct {
     fn chainFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const ct.CTFontRef {
         if (style == .regular) return self.fallback_fonts[0..self.fallback_count];
         return self.styled_fonts[style.index() - 1][0..self.fallback_count];
+    }
+
+    /// #584 — `primary_font` 의 폰트 id. ligature 경로가 primary 로 직접 raster 할 때 쓴다.
+    ///
+    /// `primary_font` 는 chain 의 첫 폰트와 같은 face 다 (`init` 이 같은 `candidate` 를 둘 다에
+    /// 넣는다). chain 이 비어 있을 수는 없다 — 없으면 `init` 이 fatal 로 끝난다.
+    pub fn primaryFontId(self: *const CoreTextFontContext) u64 {
+        return self.fallback_font_id[0];
+    }
+
+    /// #584 — `chainFor` 와 **같은 순서**의 폰트 id. atlas 키에 주소 대신 싣는다.
+    fn chainIdFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const u64 {
+        if (style == .regular) return self.fallback_font_id[0..self.fallback_count];
+        return self.styled_font_id[style.index() - 1][0..self.fallback_count];
     }
 
     pub fn init(
@@ -425,22 +456,30 @@ pub const CoreTextFontContext = struct {
 
         // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는 mac
         // (system font) 에 없어 제외. ascent/descent 는 retina 적용 후 px 정수.
-        log.appendLine("font", "primary family={s} cell_w={d} cell_h={d} ascent={d} descent={d}", .{
+        log.logPrimaryFont(
             font_family,
             cell_w_px,
             cell_h_px,
             @as(u32, @round(ascent * retina_scale)),
             @as(u32, @round(descent * retina_scale)),
-        });
+        );
 
         // #375 — 변종 chain. `CTFontCreateCopyWithSymbolicTraits` 는 해당 face 가
         // 없으면 null 을 주므로, 그 결과가 곧 "이 family 에 bold / italic 이 있나" 의
         // 답이다. 없으면 regular 를 retain 해 넣어 조회가 언제나 성공하게 한다.
         var styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
+        // #584 — 폰트 id 도 여기서 한 번만 구한다. atlas 키가 주소 대신 이 값을 쓴다.
+        var fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS;
+        var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
+            .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
+        for (fallback_fonts[0..fallback_count], 0..) |base, i| {
+            fallback_font_id[i] = fontIdOf(base);
+        }
         inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
             const slot = fs.index() - 1;
             for (fallback_fonts[0..fallback_count], 0..) |base, i| {
                 styled_fonts[slot][i] = styledCopy(base, spec.size_logical, fs);
+                styled_font_id[slot][i] = fontIdOf(styled_fonts[slot][i]);
             }
         }
 
@@ -455,8 +494,10 @@ pub const CoreTextFontContext = struct {
             .cell_height_px = cell_h_px,
             .font_family = font_family,
             .fallback_fonts = fallback_fonts,
+            .fallback_font_id = fallback_font_id,
             .fallback_count = fallback_count,
             .styled_fonts = styled_fonts,
+            .styled_font_id = styled_font_id,
             .ligature_cache = ligature.Cache.init(allocator),
             .cluster_cache = cluster_cache.ClusterCache(GlyphResult, releaseCluster).init(allocator),
         };
@@ -661,6 +702,8 @@ pub const CoreTextFontContext = struct {
             const run_attrs = ct.CTRunGetAttributes(run);
             const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
             const run_font: ct.CTFontRef = @constCast(font_val);
+            // #584 — **run 당 한 번만** 잰다. 이 run 의 글리프는 모두 이 폰트다.
+            const run_font_id = fontIdOf(run_font);
 
             const n: usize = @intCast(glyph_count);
             var glyphs_buf: [MAX_RUN_CLUSTERS * 2]ct.CGGlyph = undefined;
@@ -701,7 +744,7 @@ pub const CoreTextFontContext = struct {
                     g_hi[ci] = g;
                     // `index` 는 run 순서상 첫 글리프다 — 개별 경로와 같다. 폰트 retain 은
                     // **글리프를 담을 때마다** 한다 (`releaseCluster` 가 `count` 만큼 놓는다).
-                    out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0 };
+                    out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0, .font_id = 0 };
                     count += 1;
                 } else if (!touched[ci]) {
                     // 앞선 run 이 이미 채운 cluster 다. 섞지 않는다.
@@ -715,6 +758,8 @@ pub const CoreTextFontContext = struct {
                     out[ci].positions[out[ci].count] = positions[g];
                     out[ci].fonts[out[ci].count] = run_font;
                     _ = ct.CFRetain(run_font);
+                    // #584 — 담는 순서대로 섞는다. atlas 키가 이 값으로 cluster 를 가른다.
+                    out[ci].font_id = mixFontId(out[ci].font_id, run_font_id);
                     out[ci].count += 1;
                 }
             }
@@ -768,16 +813,19 @@ pub const CoreTextFontContext = struct {
 
         // #399 (B) — 다음 런이 shape 를 건너뛸 수 있게 담는다.
         //
-        // ⚠️ **Windows 와 다른 자리다.** 거기는 런 결과가 전부 chain face (`owned = false`) 라
-        // 소유권 문제가 없었지만, macOS 는 위에서 cluster 마다 `CFRetain` 했다. 그래서 담을 수
-        // 있는 것만 담고 소유권을 캐시에 넘기며 (`owned = false`), **키 상한을 넘어 못 담는
-        // cluster 는 `owned = true` 그대로 둬서** 호출자가 release 하게 한다. `put` 이 못 담는
-        // 값을 그 자리에서 해제하기 때문에 (`cluster_cache.zig:78`) 이 판정을 건너뛰면 caller 가
-        // 죽은 폰트를 쓴다.
+        // **캐시 몫을 따로 retain 한다** ([#578](https://github.com/ensky0/tildaz/issues/578)).
+        // 예전에는 호출자의 참조를 캐시에 넘기고 (`owned = false`) 그것을 캐시 몫으로 삼았는데,
+        // 그러면 담는 도중 캐시가 비워질 때 (`CAPACITY` 초과 · 같은 키 덮어쓰기) **호출자가
+        // 아직 쓸 폰트가 풀려** 죽는다 — 셀 루프는 런을 통째로 받아 놓고 뒤에서 하나씩 atlas
+        // 에 넣기 때문이다. 각자 자기 몫을 소유하면 담는 순서에 기대지 않아도 된다.
+        //
+        // 키 상한을 넘는 cluster 는 애초에 담지 않는다 — `put` 은 못 담는 값을 그 자리에서
+        // 해제하는데 (`cluster_cache.zig`), 그 값이 이제 *캐시 몫*이라 짝이 맞는다.
         for (0..clusters.len) |i| {
             if (clusters[i].len <= cluster_cache.MAX_KEY_CPS) {
-                self.cluster_cache.put(clusters[i], out[i]);
-                out[i].owned = false;
+                var cached = out[i];
+                for (cached.fonts[0..cached.count]) |f| _ = ct.CFRetain(f);
+                self.cluster_cache.put(clusters[i], cached);
             }
         }
         return count;
@@ -785,16 +833,16 @@ pub const CoreTextFontContext = struct {
 
     /// #399 (B) — 캐시를 씌운 층. shape 자체는 `resolveGraphemeUncached` 가 한다.
     ///
-    /// **소유권이 이 함수의 핵심이다.** 셀 루프는 `result.owned` 면 매 프레임 `CFRelease` 하는데,
-    /// 캐시에 담은 폰트를 `owned = true` 로 돌려주면 그 release 가 캐시 안의 폰트를 죽인다
-    /// (use-after-free). 그래서 **캐시가 소유권을 가져가고 caller 에게는 `owned = false`** 로
-    /// 준다. 해제는 `releaseCluster` 가 퇴출 · 무효화 때 한다.
+    /// **소유권이 이 함수의 핵심이다.** 캐시와 호출자가 **각자 자기 몫을 소유**한다
+    /// ([#578](https://github.com/ensky0/tildaz/issues/578)) — 담을 때 캐시 몫을 따로
+    /// `CFRetain` 하고, 호출자에게는 `owned` 를 그대로 돌려줘서 셀 루프가 매 프레임
+    /// `CFRelease` 하게 둔다. 참조를 넘겨 주던 예전 방식은 캐시가 비워지는 순간 호출자가
+    /// 쓰던 폰트까지 풀어 버렸다 (배칭 경로에서 실제로 죽었다).
     ///
-    /// ⚠️ **담지 못하는 cluster 는 소유권을 넘기면 안 된다.** `ClusterCache.put` 은 키 상한
-    /// (`MAX_KEY_CPS` = 8) 을 넘으면 담지 않고 **그 자리에서 값을 해제**한다 (소유권을 받았다고
-    /// 보기 때문이다). 그때도 `owned = false` 로 바꿔 주면 caller 가 이미 죽은 폰트를 쓴다.
-    /// 그래서 담을 수 있는지 **먼저 판정**하고, 못 담으면 원래 소유권 그대로 돌려준다
-    /// (Windows 에서 실제로 걸린 함정이다, 1c1a5d1).
+    /// 키 상한 (`MAX_KEY_CPS` = 8) 을 넘는 cluster 는 담지 않는다 — `ClusterCache.put` 이
+    /// 못 담는 값을 그 자리에서 해제하는데, 그 값이 캐시 몫이라 짝이 맞는다.
+    ///
+    /// **캐시에서 꺼내 주는 값은 `owned = false`** 다. 그 폰트는 캐시가 소유한 채 살아 있다.
     fn resolveGraphemeInner(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (self.cluster_cache.get(cps)) |cached| {
             const c = cached orelse return null; // negative hit — CTLine 을 다시 헛 만들지 않는다
@@ -806,11 +854,40 @@ pub const CoreTextFontContext = struct {
         const result = self.resolveGraphemeUncached(cps);
         if (cps.len == 0 or cps.len > cluster_cache.MAX_KEY_CPS) return result;
 
-        self.cluster_cache.put(cps, result);
-        const r = result orelse return null;
-        var out = r;
-        out.owned = false;
-        return out;
+        if (result) |r| {
+            var cached = r;
+            for (cached.fonts[0..cached.count]) |f| _ = ct.CFRetain(f);
+            self.cluster_cache.put(cps, cached);
+        } else {
+            // negative 도 담는다 — 안 담으면 매 프레임 `CTLine` 을 헛 만든다.
+            self.cluster_cache.put(cps, null);
+        }
+        return result;
+    }
+
+    /// #584 — 폰트의 **PostScript 이름**으로 안정된 id 를 만든다.
+    ///
+    /// **run 당 한 번만 부른다** — 이름 조회가 `CFStringGetBytes` 를 타므로 cluster 마다
+    /// 부르면 비싸다. CTRun 하나는 폰트가 하나라 run 단위가 자연스러운 경계다.
+    ///
+    /// 이름을 못 읽으면 0 을 낸다. 그러면 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수
+    /// 있지만, **주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다** — 둘 중 덜 나쁜 쪽이다.
+    fn fontIdOf(f: ct.CTFontRef) u64 {
+        const name = ct.CTFontCopyPostScriptName(f);
+        defer ct.CFRelease(@ptrCast(name));
+        const len = ct.CFStringGetLength(name);
+        if (len <= 0) return 0;
+        var buf: [128]u8 = undefined;
+        var used: ct.CFIndex = 0;
+        _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = len }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
+        if (used <= 0) return 0;
+        return atlas_common.fontId(buf[0..@intCast(used)]);
+    }
+
+    /// cluster 의 폰트 id 를 누적한다. 순서가 반영돼야 한다 — 같은 폰트 두 개가 순서만 다른
+    /// cluster 는 그림이 다르다.
+    fn mixFontId(acc: u64, id: u64) u64 {
+        return (acc *% 0x100000001b3) ^ id;
     }
 
     fn resolveGraphemeUncached(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
@@ -875,6 +952,8 @@ pub const CoreTextFontContext = struct {
         var fonts: [MAX_CLUSTER_GLYPHS]ct.CTFontRef = undefined;
         var take: usize = 0;
         var advance: f64 = 0;
+        // #584 — 담는 순서대로 섞은 폰트 id. atlas 키가 이 값으로 cluster 를 가른다.
+        var font_id_acc: u64 = 0;
 
         var r: ct.CFIndex = 0;
         while (r < run_count and take < MAX_CLUSTER_GLYPHS) : (r += 1) {
@@ -889,6 +968,8 @@ pub const CoreTextFontContext = struct {
             const run_attrs = ct.CTRunGetAttributes(run);
             const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
             const run_font: ct.CTFontRef = @constCast(font_val);
+            // #584 — **run 당 한 번만** 잰다. 이 run 의 글리프는 모두 이 폰트다.
+            const run_font_id = fontIdOf(run_font);
 
             const n: usize = @min(@as(usize, @intCast(glyph_count)), MAX_CLUSTER_GLYPHS - take);
             var gbuf: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined;
@@ -911,6 +992,7 @@ pub const CoreTextFontContext = struct {
                 positions[take] = pbuf[i];
                 fonts[take] = run_font;
                 _ = ct.CFRetain(run_font);
+                font_id_acc = mixFontId(font_id_acc, run_font_id);
                 take += 1;
             }
             // cluster 폭은 run 들의 폭을 더한다. run 이 하나면 곧 그 cluster 의 폭이다.
@@ -938,6 +1020,7 @@ pub const CoreTextFontContext = struct {
             .fonts = fonts,
             .count = @intCast(take),
             .advance = @floatCast(advance),
+            .font_id = font_id_acc,
         };
     }
 
@@ -1109,11 +1192,13 @@ pub const CoreTextFontContext = struct {
         }
 
         // 1. chain 순회 — 글리프 가진 첫 폰트 사용.
-        for (self.chainFor(style)) |f| {
+        const chain = self.chainFor(style);
+        const chain_ids = self.chainIdFor(style);
+        for (chain, 0..) |f, ci| {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS };
+                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci] };
                 }
             }
         }
@@ -1129,7 +1214,12 @@ pub const CoreTextFontContext = struct {
         var fb_glyphs: [2]ct.CGGlyph = .{ 0, 0 };
         if (ct.CTFontGetGlyphsForCharacters(fallback_font.?, &utf16_buf, &fb_glyphs, @intCast(utf16_len))) {
             if (fb_glyphs[0] != 0) {
-                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS };
+                // #584 — **여기서 id 를 잰다.** `CTFontCreateForString` 은 같은 폰트에도 매번 새
+                // 객체를 주므로 (실측: 이 맵의 주소가 256 개를 넘었다 — 실제 폰트는 32 종) 주소를
+                // atlas 키에 실으면 같은 글리프가 주소마다 새로 담긴다. macOS 는 codepoint 캐시가
+                // 없어 이 경로가 셀마다 돌지만, 그 자리에서 이미 `CTFontCreateForString` (폰트
+                // 매칭) 을 부르고 있어 이름 조회 하나가 더해지는 비용은 그에 비해 작다.
+                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS, .font_id = fontIdOf(fallback_font.?) };
             }
         }
 

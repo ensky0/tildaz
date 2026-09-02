@@ -102,6 +102,7 @@ dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
 | `--cols` / `--rows` | 그리드 | `120` × `40` |
 | `--scrollback` | scrollback 줄 수 | config 기본값 (100,000) |
 | `--fps` | `frame` 층이 모사할 프레임 주기 | `60` |
+| `--panes` | `frame` 층의 활성 `TabGroup`에 만들 producer/pane 수 (`1`–`16`) | `1` |
 | `--segments` | `scrollback` 이 나눠 볼 구간 수 | `8` |
 
 ### 층
@@ -117,6 +118,12 @@ dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
 
 `frame` 층은 `drainOutputForRender` 를 `--fps` 주기로 **한 번씩** 부르고, 그 안의 `drainFrame`
 이 `SessionCore.DRAIN_FRAME_BUDGET_NS` (현재 **4 ms**) 만 파싱해요.
+
+`--panes N`이면 N producer가 각 준비 파일을 만든 뒤 하나의 start barrier에서 함께 풀려요. 각 producer는
+payload 끝에 pane별 OSC title marker를 쓰고, 하네스가 그 marker를 해당 `PaneId`의 `Terminal`에서 확인할 때까지
+process를 살려 둬요. 그래서 리포트의 `parsed done`은 process 종료나 PTY read 완료가 아니라 **마지막 marker를 VT
+parser가 실제 반영한 시점**이에요. 함께 나오는 pane별 drain 청크·바이트, 최장 service gap, 청크 수 skew와 완료
+퍼짐으로 스케줄러 공정성을 봐요. process 종료 시점은 marker 확인 뒤의 보조 진단일 뿐이에요 ([#574](https://github.com/ensky0/tildaz/issues/574)).
 
 ⚠️ **이 층은 더 이상 앱과 같지 않아요.** 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387),
 SPEC §13) 이후 세 host 는 **프레임 사이에도** 드레인해서 실제 앱의 duty 가 훨씬 높아요 — Windows ②
@@ -348,11 +355,16 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 | **`Ctrl+Shift+F12` · `⇧⌘F12`** (`dump_perf`) 뒤 프로세스 종료 | ✅ `=== snapshot` | 카운터는 같지만 **ring 을 비우는 단계가 없어요.** 종료를 못 쓸 때만 |
 | `Ctrl+Q` · `⌘Q` (`quit`) | ❌ | 확인 다이얼로그가 막아요 |
 
-⚠️ **pane 이 둘 이상인 채로 producer 가 끝나면 그 pane 의 남은 ring 은 버려져요.**
-PTY 가 닫힐 때 [`closeTabByPtr`](../../src/session_core.zig) 이 `paneCount() > 1` 이면 `closePane` 으로 가는데,
-**거기에는 `closeTab` 에 있는 #397 드레인이 없어요.** #551 Windows 회차가 pane 4 에서 2.2 % ·
-pane 8 에서 4.958 % 를 소화하지 못한 것이 이것이에요 (pane 이 많을수록 큽니다).
-러너가 폭포 뒤에 **셸로 남으면** (`exec "$SHELL"`) 이 경로를 안 타요 — 같은 회차의 macOS 가 손실 0 이었던 이유예요.
+#551 Windows 회차에서 pane 4는 2.2 %, pane 8은 4.958 %의 남은 ring을 소화하지 못했어요.
+원인은 PTY 종료 때 [`closeTabByPtr`](../../src/session_core.zig)이 다중 pane을 `closePane`으로 보내면서
+`closeTab`의 #397 드레인을 거치지 않던 것이었어요. 러너가 폭포 뒤에 **셸로 남으면**
+(`exec "$SHELL"`) 이 경로를 안 타서 같은 회차의 macOS는 손실 0이었어요.
+
+현재는 [#572](https://github.com/ensky0/tildaz/issues/572) / [PR #575](https://github.com/ensky0/tildaz/pull/575)에서
+`closePane`도 제거 전에 남은 출력을 끝까지 드레인하도록 고쳤어요. 실제 앱의 Windows pane 4 · 8을
+각 5회 다시 측정해 모두 `push − drain = 0`을 확인했어요. 다만 scheduler 공정성 측정은 종료 callback을 완료
+시점으로 쓰지 않아요. `frame --panes N` producer는 마지막 OSC marker가 모든 pane에서 파싱될 때까지 살아 있고,
+그 marker의 `PaneId`별 반영 시점을 비교해 close-time drain이 측정 꼬리를 가리는 일을 막아요 (#574).
 
 | 지표 | 정상 (4 회차) | **오염 (5 회차)** |
 |---|---|---|
@@ -443,7 +455,7 @@ $ powercfg //getactivescheme      # 슬래시를 겹치거나 `-getactivescheme`
 #### Windows 의 동적 새로 고침 빈도(DRR)는 회차를 **두 무리로 갈라요**
 
 Windows 11 의 *동적 새로 고침 빈도* 는 화면 내용에 따라 주사율을 오르내려요. 그런데 앱은
-주사율을 **시작할 때 한 번만** 읽어서 (`[startup] frame clock started: refresh=..Hz`) 중간 변동을
+주사율을 **시작할 때 한 번만** 읽어서 (`[startup] display timing: refresh=..Hz period=..ms`) 중간 변동을
 몰라요. 그래서 값이 한 중심 주위로 흩어지는 게 아니라 **두 무리로 갈려요**.
 
 같은 조건 (`zwj` · 64 MiB · 5 회 · 노트북 AMD Ryzen AI 7 350 · Windows) 을 DRR 만 바꿔 쟀어요
@@ -1068,10 +1080,13 @@ render/present** 예요. 같은 회차 덤프의 `render` · `present` 가 합�
 
 #### 주사율은 로그로 **실측**할 수 있어요 (추정 아님)
 
-macOS 는 Windows 의 `[startup] frame clock started: refresh=..Hz` 같은 로그가 없어요 (깨우기가
-`CADisplayLink` 라서요). 그래서 [`hygiene.sh`](hygiene.sh) 도 macOS 주사율은 확인하지 않고
-*"기록할 때 사람이 적는다"* 로 둬요. 그런데 **`onrender` 가 [`displayLinkFire`](../../src/host/macos.zig)
-마다 세지므로** 덤프에서 역산할 수 있어요.
+Linux · macOS · Windows 모두 `[startup] display timing: refresh=..Hz period=..ms`를 남겨요
+([#570](https://github.com/ensky0/tildaz/issues/570)). macOS는 창에 귀속된 `CADisplayLink`의
+`targetTimestamp - timestamp`를 첫 callback과 화면 변경 뒤에 읽으므로, 창이 실제로 올라간 화면의
+합성 cadence가 근거예요.
+
+아래 #551 측정 당시에는 이 로그가 아직 없어 **`onrender`가
+[`displayLinkFire`](../../src/host/macos.zig)마다 세진다**는 성질로 덤프에서 역산했어요.
 
 ```sh
 # 같은 회차의 [boot] · [exit] 타임스탬프 차이로 나눠요

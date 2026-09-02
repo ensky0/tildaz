@@ -1111,7 +1111,7 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     if (!nsapp_ready) return confirmOsascript(rt, title, message);
 
     const alert = newAlert() orelse {
-        log.userFacing("dialog", "NSAlert 생성 실패 — confirm 을 osascript 로 대체");
+        log.userFacing("dialog", "NSAlert creation failed — falling back to osascript for confirmation");
         return confirmOsascript(rt, title, message);
     };
     setMessage(alert, title);
@@ -1152,11 +1152,11 @@ fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {
     var child = std.process.spawn(rt.io, .{
         .argv = &.{ "/usr/bin/osascript", "-e", script },
     }) catch {
-        log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
+        log.userFacing("dialog", "osascript confirmation failed — treating it as Cancel");
         return false;
     };
     const term = child.wait(rt.io) catch {
-        log.userFacing("dialog", "osascript confirm 실행 실패 — Cancel 로 처리");
+        log.userFacing("dialog", "osascript confirmation failed — treating it as Cancel");
         return false;
     };
     return switch (term) {
@@ -1171,11 +1171,11 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
     // backend 미가용 시 조용히 null 대신 안내 로그 후 null (호출부가 기존
     // hotkey 유지 등 안전 처리).
     if (!nsapp_ready) {
-        log.userFacing("dialog", "hotkey 캡처 dialog 를 아직 열 수 없음 (NSApp 미준비) — 변경 취소");
+        log.userFacing("dialog", "Hotkey capture dialog is not ready (NSApp unavailable) — cancelling the change");
         return null;
     }
     const alert = newAlert() orelse {
-        log.userFacing("dialog", "hotkey 캡처 dialog 생성 실패 — 변경 취소");
+        log.userFacing("dialog", "Hotkey capture dialog creation failed — cancelling the change");
         return null;
     };
     setMessage(alert, title);

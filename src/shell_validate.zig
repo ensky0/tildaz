@@ -55,23 +55,25 @@ fn formatValidationFailure(
     token: []const u8,
     config_path: []const u8,
 ) ValidationMessage {
+    // #577 — `config_path` 가 **첫 인자**다. 세 형식이 경로를 첫 줄에 두는
+    // `config_error_path_prefix_format` 으로 시작하도록 바뀌었다 (#495).
     return switch (failure) {
         .empty => allocMessageOrFallback(
             allocator,
             messages.shell_empty_format,
-            .{ examples(), config_path },
+            .{ config_path, examples() },
             messages.shell_empty_fallback_msg,
         ),
         .first_token_empty => allocMessageOrFallback(
             allocator,
             messages.shell_first_token_empty_format,
-            .{ shell, examples(), config_path },
+            .{ config_path, shell, examples() },
             messages.shell_first_token_empty_fallback_msg,
         ),
         .executable_not_found => allocMessageOrFallback(
             allocator,
             messages.shell_executable_not_found_format,
-            .{ shell, token, examples(), config_path },
+            .{ config_path, shell, token, examples() },
             messages.shell_executable_not_found_fallback_msg,
         ),
     };
@@ -226,7 +228,10 @@ test "shell validation preserves long and multibyte failure details beyond 1024 
     try std.testing.expect(message.text.len > 1024);
     try std.testing.expect(std.unicode.utf8ValidateSlice(message.text));
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, message.text, shell));
-    try std.testing.expect(std.mem.endsWith(u8, message.text, config_path));
+    // #577 — 경로가 **첫 줄**이다 (#495). 예전에는 맨 끝의 `Config path:` 라
+    // 여기도 `endsWith` 였다. 긴 경로에서도 잘리지 않는 것은 그대로 본다.
+    try std.testing.expect(std.mem.startsWith(u8, message.text, "Config: " ++ config_path));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message.text, config_path));
 }
 
 test "shell validation uses the specific static fallback only when allocation fails" {

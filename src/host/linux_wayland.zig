@@ -30,7 +30,7 @@ pub fn config() *const config_mod.Config {
 }
 
 pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
-    log.appendLine("panic", "{s}  return_addr=0x{x}", .{ msg, addr });
+    log.logPanic(msg, addr);
     // zig default panic — stderr 에 자동으로 file:line + backtrace dump.
     // 시연 시 `./zig-out/bin/tildaz 2>&1 | tee /tmp/run.log` 처럼 stderr 도
     // 캡처해야 보임. 우리 log file 에는 ret_addr 만 남기고 자세한 stack 은
@@ -39,7 +39,7 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     std.debug.defaultPanic(msg, addr);
 }
 
-pub fn showFatalRunError(err: anyerror) void {
+pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
     // #197 — 사용자 메시지를 stderr + 로그에 동일하게 (log.userFacing). 로그와
     // 화면 내용이 갈리지 않는다.
     switch (err) {
@@ -49,8 +49,11 @@ pub fn showFatalRunError(err: anyerror) void {
         // Wayland socket 실패는 `Client.init` 안에서 path / env 까지 포함한
         // 정확한 메시지를 이미 stderr + log 양쪽에 남겼다. 여기선 errorName 만
         // compact 하게 한 줄 — generic 본문을 다시 내면 그 진단을 가린다.
+        //
+        // #577 — 다이얼로그도 띄우지 않는다. Wayland 에 연결할 수 없다는 것이 이 오류의
+        // 내용이므로, Wayland 로 그리는 안내는 정의상 뜰 수 없다.
         error.WaylandSocketUnavailable => {
-            log.appendLine("fatal", "run failed: {s}", .{@errorName(err)});
+            log.logRunFailed(err);
         },
         // #336 — bringUpInitialSurface 가 이미 showError(host overlay 또는 stderr
         // fallback)로 안내했다. 여기선 log 만 — generic 본문을 다시 내면 그 안내를 가린다.
@@ -60,7 +63,19 @@ pub fn showFatalRunError(err: anyerror) void {
         else => {
             var buf: [256]u8 = undefined;
             const text = messages.runFailureMessage(&buf, err);
+            // stderr + 로그를 **먼저** 남긴다 — 아래 다이얼로그는 사용자가 닫을 때까지
+            // 돌아오지 않으므로, 뒤에 두면 창을 안 닫고 프로세스를 죽인 회차에 아무것도
+            // 안 남는다 (`dialog.showFatal` 이 같은 순서를 쓰는 이유, #510).
             log.userFacing("fatal", text);
+            // #577 — **여기가 이 이슈의 원인 ② 다.** 예전에는 위 한 줄로 끝이라, launcher
+            // 가 기동 실패를 알려도 `.desktop` 실행에서는 stderr 가 어디에도 붙지 않아
+            // 사용자가 아무것도 보지 못했다. Windows (`MessageBoxW`) · macOS (`NSAlert`) 는
+            // 같은 자리에서 OS 모달을 띄웠다 — SPEC §0 #1 이 깨진 자리였다.
+            //
+            // launcher 는 `host.run` 을 거치지 않아 `Client` 가 없으므로 `dialog.showError`
+            // 로는 안 된다 (등록된 backend 가 없어 stderr fallback 으로 되돌아간다). 그래서
+            // 창도 PTY 도 없이 다이얼로그만 세우는 경로를 쓴다.
+            wayland.showFatalStandalone(rt, allocator, messages.error_title, text);
         },
     }
     std.process.exit(1);

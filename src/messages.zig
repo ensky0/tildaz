@@ -134,6 +134,21 @@ pub const request_endpoint_unavailable_msg =
     "TildaZ is running, but it cannot receive a request to create another instance. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const worker_exited_before_endpoint_ready_msg =
     "TildaZ exited before it was ready to receive a request to create another instance. Start TildaZ again and check the log if this continues.";
+/// #577 — launcher 가 띄운 worker 가 **기동 중에** 끝난 경우. 위 문구와 상황이 다르다:
+/// 그쪽은 이미 떠 있는 인스턴스에 "새 인스턴스를 만들라" 고 보내려던 참이고, 이쪽은
+/// 창이 한 번도 뜨지 못한 첫 기동이다.
+///
+/// 예전에는 이 경우가 generic `WorkerStartTimeout` ("Error: WorkerStartTimeout") 이었고,
+/// 그것도 10 초를 기다린 뒤였다. 사용자가 무엇을 해야 하는지 말해 주지 않았다.
+///
+/// **로그를 가리키는 것이 핵심이다.** worker 가 스스로 안내를 띄웠다면 (config 오류 등)
+/// launcher 는 여기까지 오지 않는다 — 그쪽은 안내를 띄우는 동안 lock 을 들고 살아 있어
+/// `waitUntilRunning` 이 성공한다. 그래서 이 문구에 도달한 실행은 **아무 화면도 없이**
+/// 끝난 경우이고, 남은 단서가 로그뿐이다.
+pub const worker_exited_during_startup_msg =
+    "TildaZ stopped while starting up, before any window appeared.\n\n" ++
+    "The reason is in the TildaZ log -- open it and read the last lines. " ++
+    "Start TildaZ again and check the log if this continues.";
 pub const request_endpoint_ready_timeout_msg =
     "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const toggle_unsupported_msg =
@@ -230,6 +245,8 @@ pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
         error.RequestEndpointUnavailable => request_endpoint_unavailable_msg,
         error.WorkerExitedBeforeEndpointReady => worker_exited_before_endpoint_ready_msg,
         error.RequestEndpointReadyTimeout => request_endpoint_ready_timeout_msg,
+        // #577 — 첫 기동이 화면 없이 끝난 경우. generic `WorkerStartTimeout` 대신.
+        error.WorkerExitedDuringStartup => worker_exited_during_startup_msg,
         else => std.fmt.bufPrint(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
     };
 }
@@ -248,6 +265,15 @@ test "request endpoint run errors have specific user messages" {
         request_endpoint_ready_timeout_msg,
         runFailureMessage(&buf, error.RequestEndpointReadyTimeout),
     );
+    // #577 — 첫 기동이 화면 없이 끝난 경우. 예전에는 generic
+    // `"Error: WorkerStartTimeout"` 이었고 그것도 10 초 뒤였다.
+    try std.testing.expectEqualStrings(
+        worker_exited_during_startup_msg,
+        runFailureMessage(&buf, error.WorkerExitedDuringStartup),
+    );
+    // 이 문구는 사용자에게 **무엇을 볼지** 말해야 한다 — 여기까지 온 실행은 화면에
+    // 아무것도 남기지 않았으므로 단서가 로그뿐이다.
+    try std.testing.expect(std.mem.indexOf(u8, worker_exited_during_startup_msg, "log") != null);
     try std.testing.expectEqualStrings(
         "TildaZ failed to start.\n\nError: ExampleFailure",
         runFailureMessage(&buf, error.ExampleFailure),
@@ -287,7 +313,11 @@ pub const linux_wayland_socket_unavailable_format =
 ;
 pub const already_running_msg = "TildaZ is already running.";
 pub const unknown_path_msg = "(unknown)";
-pub const font_schema_error_path_format = "\n\nConfig path:\n  {s}";
+// #577 — `font_schema_error_path_format` 을 없앴다. 폰트 schema 오류
+// (`font.family` 가 string 이 아님 등) 는 config 파싱 안에서 나므로 다른 config
+// 오류와 같은 `config_error_with_path_format` 을 지난다. 경로를 본문 끝에 다시
+// 붙이는 자기 형식이 있어서 #495 가 정한 "경로는 첫 줄" 과 어긋나 있었고,
+// 들여쓰기 (`  {s}`) 까지 아래 chain footer 와 달랐다.
 pub const font_not_found_format = "Font not found: \"{s}\"\n\n";
 pub const font_chain_header_msg = "config \"font.family\" chain (in order):\n";
 pub const font_chain_entry_format = "  - \"{s}\"{s}\n";
@@ -310,8 +340,11 @@ pub const font_substituted_format =
     "\nThis name resolves to \"{s}\" instead of \"{s}\".\n" ++
     "Use the exact family name as installed on this system.\n" ++
     "See CONFIG.md \"Font names\" for how to list them.\n";
-pub const font_chain_footer_format =
-    "\nAll families listed in font.family must be installed on the system.\n\nConfig path:\n{s}\n";
+/// #577 — 경로가 빠졌다. 이제 `notFoundMessageForPath` 가 본문 **앞에**
+/// `config_error_path_prefix_format` 으로 붙인다 (#495 의 "경로는 첫 줄").
+/// 형식 인자가 없어져 `_format` 이 아니라 `_msg` 다.
+pub const font_chain_footer_msg =
+    "\nAll families listed in font.family must be installed on the system.\n";
 
 /// glyph fallback chain 의 모든 명시 폰트 lookup 실패 — chain 비어있는 케이스
 /// (사용자가 모두 잘못된 이름 명시) 등 edge. strict 검증 path 는 한 개 이름을
@@ -403,7 +436,13 @@ pub const config_error_fallback_msg = "Configuration is invalid.";
 ///
 /// 그리고 **모든 config 오류가 이 한 형식을 지난다** — 파싱 오류든 의미 오류든.
 /// 형식이 두 갈래였던 것이 위치 불일치의 원인이었다.
-pub const config_error_with_path_format = "Config: {s}\n\n{s}";
+///
+/// #577 — 경로 접두만 따로 뺀다. 본문을 writer 로 조금씩 쌓는 쪽 (폰트 chain 안내)
+/// 은 `{s}` 두 개를 한 번에 print 할 수 없어서 예전에는 자기 형식으로 경로를 **끝에**
+/// 붙였다. 접두를 상수로 두면 그쪽도 같은 첫 줄을 쓴다 — #495 가 노린 "한 형식" 이
+/// 그 세 갈래 (config / 폰트 / shell) 까지 실제로 덮인다.
+pub const config_error_path_prefix_format = "Config: {s}\n\n";
+pub const config_error_with_path_format = config_error_path_prefix_format ++ "{s}";
 /// `allocPrint` 실패 시. **경로 자리를 비우지 않는다** — 예전 파싱 쪽 fallback 은
 /// 경로를 아예 잃어서 (`"Failed to parse config JSON."`) 정작 가장 도움이 필요한
 /// 상황에서 가장 적은 정보를 줬다.
@@ -495,14 +534,23 @@ pub const config_missing_key_fallback_msg = "Configuration: missing key";
 pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
 pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 
+// #577 — 세 문구 모두 경로가 **첫 줄**로 왔다 (#495). 예전에는 맨 끝의
+// `Config path:` 였는데, 그러면 같은 다이얼로그 안에서도 오류 종류에 따라 경로
+// 위치가 달라졌다 — #495 가 없애려던 바로 그 불일치다.
+//
+// 경로가 첫 인자가 된 것에 주의한다 (`shell_validate.zig` 의 인자 순서도 함께
+// 바뀐다). 형식 문자열이 인자 순서를 정하므로 접두를 앞에 두면 경로가 앞이다.
 pub const shell_empty_format =
-    "Configuration: \"shell\" is empty.\n\n{s}\n\nConfig path:\n{s}";
+    config_error_path_prefix_format ++
+    "Configuration: \"shell\" is empty.\n\n{s}";
 pub const shell_empty_fallback_msg = "Configuration: shell is empty.";
 pub const shell_first_token_empty_format =
-    "Configuration: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+    config_error_path_prefix_format ++
+    "Configuration: \"shell\" first token is empty.\n\nValue: \"{s}\"\n\n{s}";
 pub const shell_first_token_empty_fallback_msg = "Configuration: shell first token empty.";
 pub const shell_executable_not_found_format =
-    "Configuration: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}\n\nConfig path:\n{s}";
+    config_error_path_prefix_format ++
+    "Configuration: shell executable not found.\n\n\"shell\" value: \"{s}\"\nLookup token: \"{s}\"\n\n{s}";
 pub const shell_executable_not_found_fallback_msg = "Configuration: shell executable not found.";
 
 // #248 — 런타임 새 탭 생성 시 shell 바이너리가 사라진 경우 (brew/패키지 업데이트로

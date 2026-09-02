@@ -1220,7 +1220,7 @@ pub const D3d11Renderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                        const entry = c.self.tab_atlas.getOrInsert(result.face, result.index) orelse {
+                        const entry = c.self.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
                             if (result.owned) _ = result.face.vtable.Release(result.face);
                             return;
                         };
@@ -1824,7 +1824,7 @@ pub const D3d11Renderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.face, result.index) orelse {
+                const entry = self.atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
@@ -2092,7 +2092,7 @@ pub const D3d11Renderer = struct {
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(cp, .regular) orelse continue;
-                    const entry = r.tab_atlas.getOrInsert(result.face, result.index) orelse {
+                    const entry = r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         continue;
                     };
@@ -2284,7 +2284,7 @@ pub const D3d11Renderer = struct {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
         }
-        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
                 self.drawTextInstances(text_buf[0..text_count.*]);
@@ -2295,7 +2295,7 @@ pub const D3d11Renderer = struct {
                 block_count.* = 0;
             }
             self.atlas.reset();
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -2367,7 +2367,7 @@ pub const D3d11Renderer = struct {
         const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
 
         for (split.marks[0..split.mark_count]) |m| {
-            const me = self.atlas.getOrInsert(m.face, m.index) orelse {
+            const me = self.atlas.getOrInsert(m.face, m.font_id, m.index) orelse {
                 if (m.owned) _ = m.face.vtable.Release(m.face);
                 continue;
             };

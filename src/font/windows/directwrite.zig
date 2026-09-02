@@ -916,7 +916,7 @@ pub const IDWriteFont = extern struct {
         GetStyle: *const anyopaque,
         IsSymbolFont: *const anyopaque,
         GetFaceNames: *const anyopaque,
-        GetInformationalStrings: *const anyopaque,
+        GetInformationalStrings: *const fn (*IDWriteFont, UINT32, *?*IDWriteLocalizedStrings, *BOOL) callconv(.c) HRESULT,
         GetSimulations: *const anyopaque,
         GetMetrics: *const anyopaque,
         HasCharacter: *const anyopaque,
@@ -934,7 +934,23 @@ pub const IDWriteFont = extern struct {
     pub fn CreateFontFace(self: *IDWriteFont, face: *?*IDWriteFontFace) HRESULT {
         return self.vtable.CreateFontFace(self, face);
     }
+
+    /// `DWRITE_INFORMATIONAL_STRING_ID` 로 지정한 name 테이블 문자열. 우리는 PostScript
+    /// 이름 하나만 쓴다 ([#584](https://github.com/ensky0/tildaz/issues/584) — cluster 키의
+    /// 폰트 식별). `exists` 가 false 면 그 폰트에 그 문자열이 없다.
+    pub fn GetInformationalStrings(
+        self: *IDWriteFont,
+        id: UINT32,
+        strings: *?*IDWriteLocalizedStrings,
+        exists: *BOOL,
+    ) HRESULT {
+        return self.vtable.GetInformationalStrings(self, id, strings, exists);
+    }
 };
+
+/// `DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME` — `dwrite.h` 의 열거값이다.
+/// 세 platform 이 cluster 키에서 폰트를 PostScript 이름으로 식별한다 (#584).
+pub const DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME: UINT32 = 17;
 
 // --- IDWriteLocalizedStrings ---
 // IDWriteLocalizedStrings : IUnknown — IUnknown (3) + 6 own = 9.

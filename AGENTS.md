@@ -21,6 +21,12 @@
 - 프로그램 안에서 사용자에게 직접 표시되는 메시지 (MessageBox, 오류 다이얼로그, About 다이얼로그 등 최종 사용자가 앱 안에서 보는 텍스트)
 - **로그 파일 (`tildaz_N.log`) 의 모든 메시지** — format string 과 **그 인자까지** 영어예요. 사용자가 이슈에 붙여 공유하는 진단 자료라서요. 로그 옆의 *주석*은 내부 기록이니 계속 한국어예요. (2026-08-03 에 이 규칙이 문서에 없어서 새 `[cwd]` 로그를 한국어로 적었고, 사용자 지적으로 점검하니 기존 코드 29곳도 한국어였어요 — 전부 영어로 고쳤어요.)
 
+**Linux · macOS · Windows에서 의미가 같은 로그는 [`src/log.zig`](src/log.zig)의 semantic 함수 하나가
+category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같은 문자열을 세 파일에 복사하거나
+각자 비슷하게 다시 쓰지 않아요. `logStart` · `logDisplayTiming` · pane 로그가 이 형태예요
+([#576](https://github.com/ensky0/tildaz/issues/576)). 반대로 font discovery API나 compositor protocol처럼
+실제 의미와 인자가 다른 세부 진단은 억지로 합치지 않고 host에 둬요.
+
 공개 레포의 정문과 앱 UI 는 국제 방문자가 바로 읽을 수 있는 언어 (= 영어) 에 맞추는 게 기본값이고, 내부 기록은 한국어로 남겨서 두 역할을 분리해요. **이 구분은 "출력은 한국어" 규칙의 예외가 아니라 대상이 달라서예요** — 사용자에게 하는 말은 한국어, 저장소 방문자 / end-user 가 읽는 산출물은 영어.
 
 # 워크플로우
@@ -504,6 +510,36 @@ magick out.png -format "%[pixel:p{40,40}]\n" info:     # 값 읽기
 
 Linux 는 software renderer + 프로파일 없는 캡처라 이 절차가 아예 없고, Windows 는 swapchain 이 `DXGI_FORMAT_B8G8R8A8_UNORM` 이라 raw 픽셀이 곧 앱 출력이에요. **macOS 만 이 절차가 필요해요.**
 
+# macOS — 실행마다 화면이 흔들리는지 보는 법
+
+같은 바이너리를 여러 번 띄워 캡처를 견주는 도구예요 ([`dist/macos/repeat-render-check.sh`](dist/macos/repeat-render-check.sh)).
+회차 사이에 다른 것이 없으니, 캡처가 회차마다 다르면 그 차이는 **실행 간 비결정**이에요.
+[#529](https://github.com/ensky0/tildaz/issues/529) 에서 atlas 의 cluster 키가 일반 글리프와
+자리를 나눠 쓰던 결함을 이걸로 잡았어요 — 24 회 중 1 회에서 `a̸` 자리에 `U` 가 그려졌어요.
+
+```sh
+dist/macos/repeat-render-check.sh                       # render-test 화면 24 회
+dist/macos/repeat-render-check.sh 40                    # 회차만 바꿔서
+dist/macos/repeat-render-check.sh 24 6 /path/show.sh    # 다른 화면으로
+```
+
+- **A/B 는 반드시 같은 화면에서 찍어요.** `color-capture` 가 출력 색공간을 sRGB 로 잡아도
+  **디스플레이가 다르면 값이 갈려요** — 같은 화면인데 내장 120 Hz 캡처와 외장 60 Hz 캡처가
+  서로 `AE 168466` 이 나왔어요 (#529 검증). 수정 전후를 견줄 때 화면을 바꾸지 않아요.
+- **재현이 관측된 조건과 같은 회차 수로 재요.** 확률이 낮은 결함은 (#529 는 회차당 10.5%)
+  회차가 적으면 그냥 지나가요. *"수정 전에 N 회에서 M 번"* 을 적어 두고 수정 뒤 **같은 N**
+  으로 다시 재요. 60 Hz 12 회 무재현을 근거로 삼으려다 조건이 안 맞아 120 Hz 24 회로 다시
+  쟀어요 (사용자 지적).
+- **`AE` 숫자만으로는 *사라짐* 과 *다른 것으로 바뀜* 을 못 갈라요.** 갈린 회차가 나오면 차이
+  영역을 잘라 **눈으로** 봐요. #529 의 원 관측이 이것 때문에 어느 쪽인지 끝내 확정되지
+  못했어요 — 캡처 원본을 안 남겨서 되짚을 수도 없었어요.
+- 도구는 `--instance 9` 로만 띄우고 끝나면 `config_9.toml` 을 스스로 지워요. 실기라서 위
+  `# 실행 환경` 대로 **시작 전에 알리고 동의를 받아요** — 창이 회차마다 떴다 사라져 화면이
+  깜빡이고, 그동안 사용자가 기기를 만지면 그 회차가 오염돼요.
+- **한 회차를 먼저 돌려 조건을 확인하고 시작해요.** 앱이 뜨는지 · 캡처 크기 · 주사율
+  (`[startup] display timing`) 을 보고 나서 전체를 돌려요. 이걸 건너뛰어 10 회를 통째로
+  버린 적이 있어요 (앱이 매 회차 죽고 있었는데 모르고 끝까지 돌렸어요).
+
 # macOS — 키보드 layout 조회 실측 방법
 
 단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`dist/macos/layout-probe.m`](dist/macos/layout-probe.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
@@ -979,7 +1015,7 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 | 노트북 · Intel Core i5-1240P (12C/16T) | **Windows · Linux 듀얼부트** | 1920x1080 · **59.997 Hz** (100 %) |
 | 데스크탑 · AMD Ryzen 5 5700G | **Windows · Linux 듀얼부트** | (미기록) |
 | 미니PC · Firebat ZY-A8 · AMD Ryzen 7 8845HS (8C/16T) | **Windows · Linux 듀얼부트** (Linux 는 CachyOS) | 3840x2160 · **60 Hz** (Linux scale 1.7 → 논리 2259x1271) |
-| MacBook Pro (M5 Pro) | macOS | **120 Hz** (ProMotion) |
+| MacBook Pro (M5 Pro) | macOS | 내장 3024x1964 · **120 Hz** (ProMotion); 보통 clamshell + 외장 **60 Hz** |
 
 **같은 하드웨어에서 OS 만 바꿀 수 있다는 게 성능 측정의 강점이에요.** CPU · 패널이 고정된 채
 host 구현 차이만 남아서, platform 비교가 하드웨어 차이에 오염되지 않아요
@@ -1069,10 +1105,10 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
 그대로예요.
 
 **어느 화면에서 쟀는지도 함께 적어요.** 모니터가 여러 대면 창이 뜬 화면이 값을 정해요 —
-Windows 의 `startFrameClock` 은 *우리 창이 올라간 디스플레이* 의 DC 로 `GetDeviceCaps(VREFRESH)` 를
-읽으므로, 같은 기기에서도 내장 패널(120 Hz)과 외장 모니터(60 Hz)에서 프레임 주기가 갈려요.
-앱 로그의 `[startup] frame clock started: refresh=..Hz` 와 `window initialized: dpi=..` 를 근거로
-남겨요.
+Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
+`[startup] display timing: refresh=..Hz period=..ms`로 남겨요. 같은 기기에서도 내장 패널(120 Hz)과
+외장 모니터(60 Hz)에서 프레임 주기가 갈리므로, 이 줄과 platform별 화면 정보
+(`window initialized: dpi=..` 등)를 근거로 남겨요.
 
 **측정 때 종료한 평소 쓰는 TildaZ worker 는 다시 띄우지 않아요** (2026-08-05 사용자 지시:
 *"측정 위생 때문에 종료한 TildaZ를 다시 띄울 필요는 없어. 다시 묻지 마"*). 처리량 측정은

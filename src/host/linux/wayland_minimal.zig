@@ -262,6 +262,7 @@ const OutputSlot = struct {
     object_id: u32 = 0, // bind 된 proxy id (0 = 미bind)
     width: i32 = 0, // 물리 px — mode(CURRENT) event
     height: i32 = 0,
+    refresh_millihz: i32 = 0, // mode(CURRENT) event, 60000 = 60 Hz
     scale: i32 = 1, // wl_output.scale (정수 배율)
     // #295 — main surface 가 현재 이 output 에 걸쳐있는지 (`wl_surface.enter`
     // 로 set, `leave` 로 clear). 한 surface 가 동시에 여러 output 에 걸칠 수
@@ -1265,6 +1266,10 @@ const Client = struct {
     // 뒤집으면 재생성 surface 가 또 양쪽 enter → 무한 recreate 진동이 된다
     // (기본 config offset=100 우측 패널 + 오른쪽 인접 모니터에서 실측 재현).
     current_output_object_id: u32 = 0,
+    // #570 — 같은 mode event 재송신은 중복 기록하지 않되, 같은 주사율인 다른
+    // output으로 옮겨도 현재 screen이 바뀌었음을 한 줄 남긴다.
+    logged_display_timing_output_id: u32 = 0,
+    logged_display_timing_millihz: i32 = 0,
     // #295 — 이번 dispatch batch 에 surface 의 enter/leave 가 있었음. batch 종료
     // 후 drainSurfaceOutputs 가 entered 집합을 보고 basis 를 한 번만 재선택한다
     // (intra-batch 의 중간 enter 값으로 recreate 예약하던 진동 제거). batch-local.
@@ -1688,6 +1693,42 @@ const Client = struct {
         closeFd(self.wayland_fd);
     }
 
+    /// #577 — registry → globals 까지. `run` 과 `showFatalStandalone` 이 **같은 코드**를
+    /// 쓴다. 사이에 끼어드는 것이 없는 구간이라 그대로 뺄 수 있었고, 그래서 `run` 의
+    /// 나머지 순서 (GPU → KGlobalAccel → keyboard) 는 손대지 않았다 — 그 순서에는
+    /// #277 · #496 1-c 의 근거가 붙어 있다.
+    fn connectAndBindGlobals(self: *Client) !void {
+        try self.getRegistry();
+        try self.roundtrip();
+        self.logBootElapsed("registry+roundtrip");
+
+        if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
+        if (self.caps.shm.name == 0) return error.WaylandShmMissing;
+        if (self.caps.xdg_wm_base.name == 0) return error.WaylandXdgWmBaseMissing;
+
+        try self.bindGlobals();
+        try self.roundtrip();
+    }
+
+    /// #577 — dialog overlay 를 그릴 수 있는 최소 상태까지만 세운다
+    /// (`showFatalStandalone` 전용). GPU 와 전역 hotkey 등록은 건너뛴다 — dialog surface
+    /// 는 항상 `wl_shm` 이고, 곧 종료할 프로세스가 KDE 단축키 레지스트리를 건드릴 이유가
+    /// 없다.
+    ///
+    /// `argb8888` 과 keyboard 는 `run` 과 겹치는 세 줄이다. 그쪽 순서를 바꾸지 않으려고
+    /// (사이에 GPU · KGlobalAccel 이 있다) 여기 다시 적었다 — **bring-up 순서를 고칠
+    /// 때는 `run` 과 이 함수를 함께 본다.**
+    fn bringUpForDialog(self: *Client) !void {
+        try self.connectAndBindGlobals();
+        self.logCapabilities();
+        // L13-γ — dialog surface 도 alpha 채널이 필요하다 (`run` 의 같은 검사).
+        if (!self.saw_argb8888) return error.WaylandShmArgb8888Missing;
+        // dialog 를 Enter · Esc 로 닫을 수 있어야 한다.
+        try self.createKeyboardIfAvailable();
+        if (self.keyboard_id != 0) try self.roundtrip();
+        self.logBootElapsed("dialog-only bring-up");
+    }
+
     fn run(self: *Client) !void {
         // #205 — boot phase elapsed timer start. 사용자 *체감* 1-2 sec startup
         // latency 진단용. monotonic, ns_per_ms 단위로 log.
@@ -1717,16 +1758,7 @@ const Client = struct {
         });
         defer dialog_linux.unregisterCallbacks();
 
-        try self.getRegistry();
-        try self.roundtrip();
-        self.logBootElapsed("registry+roundtrip");
-
-        if (self.caps.compositor.name == 0) return error.WaylandCompositorMissing;
-        if (self.caps.shm.name == 0) return error.WaylandShmMissing;
-        if (self.caps.xdg_wm_base.name == 0) return error.WaylandXdgWmBaseMissing;
-
-        try self.bindGlobals();
-        try self.roundtrip();
+        try self.connectAndBindGlobals();
         // #277 — roundtrip 이후여야 dmabuf 의 modifier event 가 다 도착해 있다.
         self.initGpuIfAvailable();
         self.logCapabilities();
@@ -1754,6 +1786,38 @@ const Client = struct {
         try self.createKeyboardIfAvailable();
         if (self.keyboard_id != 0) try self.roundtrip();
         self.logBootElapsed("keyboard ready");
+
+        // #577 — **config 오류를 여기서 안내하고 멈춘다.** `Config.load` 는 문구를
+        // 담아 두고 기본값으로 돌아온다 (`config.zig` 의 `recordConfigFatalMsg` 주석) —
+        // 파싱 시점의 Linux 에는 dialog backend 가 없어서 그 자리에서 띄우면 안내가
+        // stderr 로만 가고, 메뉴 · autostart 로 띄운 사용자는 **창도 다이얼로그도 없이**
+        // 죽는 것만 본다. 그것이 이 이슈다.
+        //
+        // 자리가 여기인 이유는 아래 shell · 폰트 검증과 같다 (#282 C2) — Wayland
+        // globals + keyboard 가 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 는 아직
+        // 안 띄웠다. 다만 그 둘보다 **앞이다**:
+        //
+        //   - config 를 못 읽은 실행은 기본값으로 도는 중이라, shell · 폰트 검증이
+        //     보는 값이 사용자가 적은 값이 아니다. 그 상태의 안내를 먼저 내면 사용자는
+        //     자기가 고치지도 않은 shell 을 의심한다.
+        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdePositionHotkey`) 과 hotkey
+        //     claim 판정 (`fatalIfHotkeyClaimFailed`) 보다 앞이다. 그 판정이 보는
+        //     hotkey 도 기본값이라 "F1 을 못 잡았다" 가 사용자 설정과 무관해진다.
+        //
+        // **라벨 표기 hotkey 의 KGlobalAccel 등록은 이미 위에서 지나갔다** — 그쪽은
+        // keymap 이 필요 없어 `createKeyboardIfAvailable` 앞에 있고, overlay 는 keyboard
+        // 준비 뒤에만 그릴 수 있어 여기보다 앞으로 옮길 수 없다. 그래서 이 경로는 KDE
+        // 단축키 등록을 남긴 채 종료한다 — `exit(1)` 이 `deinit` 의 `setInactive` 를
+        // 건너뛰기 때문이다. 아래 shell · 폰트 검증도 같은 성질이라 새로 생긴 것은 아니다.
+        //
+        // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`). 여기서
+        // 다시 남기지 않는다 — 로그에 같은 문장이 두 번 찍히면 어느 것이 실제 표시
+        // 시점인지 알 수 없다.
+        if (config_mod.pendingFatalNotice()) |notice| {
+            self.runFatalDialog(messages.config_error_title, notice);
+            std.process.exit(1);
+        }
+
         // #496 1-c — 위치 표기 hotkey 의 KDE 등록. keymap 이 방금 도착했다.
         if (!self.run_opts.isStressRun()) {
             self.registerKdePositionHotkey();
@@ -3037,6 +3101,7 @@ const Client = struct {
                 if ((flags & wl_output_mode_flag_current) == 0) return;
                 const new_width = readI32(payload[4..8]);
                 const new_height = readI32(payload[8..12]);
+                const new_refresh_millihz = readI32(payload[12..16]);
                 // #356 — **이전 값과 비교해 실제 dims 변경만** 처리한다. 세 가지가
                 // 걸러진다:
                 //  - boot 첫 mode event: `slot.width` 초기값이 0 이라 "변경" 이 아니다.
@@ -3049,15 +3114,17 @@ const Client = struct {
                 const dims_changed = had_dims and (new_width != slot.width or new_height != slot.height);
                 slot.width = new_width;
                 slot.height = new_height;
+                slot.refresh_millihz = new_refresh_millihz;
                 if (is_basis) {
                     self.screen_width = slot.width;
                     self.screen_height = slot.height;
+                    self.logBasisDisplayTiming(slot);
                 }
                 log.appendLineVerbose("wayland", "output mode object_id={} width={} height={} refresh={} basis={} dims_changed={}", .{
                     slot.object_id,
                     slot.width,
                     slot.height,
-                    readI32(payload[12..16]),
+                    slot.refresh_millihz,
                     is_basis,
                     dims_changed,
                 });
@@ -3146,6 +3213,7 @@ const Client = struct {
         self.current_output_object_id = output_object_id;
         // mode event 이전이면 보류 — 도착 시 handleOutputEvent 가 basis 로 반영.
         if (slot.width <= 0 or slot.height <= 0) return;
+        self.logBasisDisplayTiming(slot);
         const dims_changed = slot.width != self.screen_width or slot.height != self.screen_height;
         self.screen_width = slot.width;
         self.screen_height = slot.height;
@@ -3177,6 +3245,16 @@ const Client = struct {
         // applyScaleChange 가 renderer scale + layout 재송신 + grid 재계산 + redraw 를
         // 모두 처리한다.
         if (pending_scale) |new_scale| try self.applyScaleChange(new_scale, "wl_output/enter");
+    }
+
+    fn logBasisDisplayTiming(self: *Client, slot: *const OutputSlot) void {
+        if (slot.refresh_millihz <= 0) return;
+        if (self.logged_display_timing_output_id == slot.object_id and
+            self.logged_display_timing_millihz == slot.refresh_millihz) return;
+
+        self.logged_display_timing_output_id = slot.object_id;
+        self.logged_display_timing_millihz = slot.refresh_millihz;
+        log.logDisplayTiming(@as(f64, @floatFromInt(slot.refresh_millihz)) / 1000.0);
     }
 
     /// #336 — 초기 안전 commit(createLayerSurface 의 4-edge span) 후 실제 config
@@ -3622,7 +3700,7 @@ const Client = struct {
         // 전파하지만, 여기서 먼저 걸면 첫 탭이 태어날 때부터 통보가 붙는다).
         self.session.?.setOutputWake(linuxOutputWake, self);
         if (self.output_eventfd >= 0) {
-            log.appendLine("startup", "output wake installed (idle PTY notify)", .{});
+            log.logOutputWakeInstalled();
         } else {
             // eventfd 를 못 만들어도 앱은 정상이다 — 유휴 응답이 예전처럼 `poll` timeout 을 기다릴 뿐이다.
             log.appendLine("startup", "output wake unavailable — idle output waits for poll timeout", .{});
@@ -3630,7 +3708,7 @@ const Client = struct {
         try self.session.?.createTab(grid.cols, grid.rows);
         log.appendLine("linux", "terminal session created cols={} rows={}", .{ grid.cols, grid.rows });
         if (self.run_opts.scrollback) |n| {
-            log.appendLine("startup", "scrollback override: {d} lines (config {d})", .{ n, self.config.max_scroll_lines });
+            log.logScrollbackOverride(n, self.config.max_scroll_lines);
         }
     }
 
@@ -4363,9 +4441,16 @@ const Client = struct {
                     .h = @floatFromInt(r.h),
                     .color = .{ colorF(r.color.r), colorF(r.color.g), colorF(r.color.b), 1.0 },
                 }, r.shade),
-                .glyph => |g| self.glAddGlyph(ctx, text_batch, atlas, &g.item),
+                .glyph => |g| self.glAddGlyph(ctx, text_batch, atlas, &g.item, clip, viewport_w, viewport_h),
                 .icon => |ic| {
-                    const entry = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke) orelse continue;
+                    // #584 ① — 글리프와 같은 안전망. 아이콘도 gray surface 를 쓰므로 여기서 찰 수 있다.
+                    var entry_opt = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke);
+                    if (entry_opt == null and atlas.full != null) {
+                        glFlushText(ctx, text_batch, atlas, clip, viewport_w, viewport_h);
+                        atlas.resetFull();
+                        entry_opt = atlas.iconEntry(&ctx.api, self.allocator, ic.kind, ic.size, ic.stroke);
+                    }
+                    const entry = entry_opt orelse continue;
                     text_batch.add(self.allocator, .{
                         .x = @floatFromInt(ic.x),
                         .y = @floatFromInt(ic.y),
@@ -4397,18 +4482,45 @@ const Client = struct {
         viewport_h: f32,
     ) void {
         _ = self;
-        const clipped = clip[0] > 0 or clip[1] < @as(i32, @trunc(viewport_w));
-        if (clipped) {
-            ctx.api.enable(egl.GL_SCISSOR_TEST);
-            ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @trunc(viewport_h));
+        if (!is_rect) {
+            glFlushText(ctx, text_batch, atlas, clip, viewport_w, viewport_h);
+            return;
         }
-        if (is_rect) {
-            rect_batch.flush(&ctx.api, viewport_w, viewport_h);
-            rect_batch.clear();
-        } else {
-            text_batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
-            text_batch.clear();
-        }
+        const clipped = glClipped(clip, viewport_w);
+        if (clipped) glApplyClip(ctx, clip, viewport_h);
+        rect_batch.flush(&ctx.api, viewport_w, viewport_h);
+        rect_batch.clear();
+        if (clipped) ctx.api.disable(egl.GL_SCISSOR_TEST);
+    }
+
+    fn glClipped(clip: [2]i32, viewport_w: f32) bool {
+        return clip[0] > 0 or clip[1] < @as(i32, @trunc(viewport_w));
+    }
+
+    fn glApplyClip(ctx: egl.Context, clip: [2]i32, viewport_h: f32) void {
+        ctx.api.enable(egl.GL_SCISSOR_TEST);
+        ctx.api.scissor(clip[0], 0, @max(0, clip[1] - clip[0]), @trunc(viewport_h));
+    }
+
+    /// 텍스트 batch 를 지금 그린다. **`clip` 을 함께 받는 것이 요점이다** — chrome 은 항목마다
+    /// clip 이 달라서 (탭 제목이 탭 밖으로 새지 않게 자른다), 그 clip 을 빼고 그리면 글자가
+    /// 탭 경계를 넘는다.
+    ///
+    /// [#584](https://github.com/ensky0/tildaz/issues/584) ① 의 안전망도 이 자리를 쓴다 —
+    /// atlas 가 프레임 중간에 차면 *지금까지 쌓은 정점*을 이 함수로 먼저 그린 뒤 비운다.
+    /// 그래서 chrome 한가운데서 차도 clip 이 유지된다.
+    fn glFlushText(
+        ctx: egl.Context,
+        text_batch: *gl_text.Batch,
+        atlas: *gl_atlas.Atlas,
+        clip: [2]i32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) void {
+        const clipped = glClipped(clip, viewport_w);
+        if (clipped) glApplyClip(ctx, clip, viewport_h);
+        text_batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
+        text_batch.clear();
         if (clipped) ctx.api.disable(egl.GL_SCISSOR_TEST);
     }
 
@@ -4428,7 +4540,9 @@ const Client = struct {
     ) void {
         if (items.len == 0) return;
         batch.clear();
-        for (items) |*item| self.glAddGlyph(ctx, batch, atlas, item);
+        // 이 계층은 화면 전체라 자를 것이 없다. #584 ① 의 안전망 flush 도 같은 clip 을 쓴다.
+        const clip: [2]i32 = .{ 0, @intFromFloat(@trunc(viewport_w)) };
+        for (items) |*item| self.glAddGlyph(ctx, batch, atlas, item, clip, viewport_w, viewport_h);
         batch.flush(&ctx.api, atlas, viewport_w, viewport_h);
     }
 
@@ -4441,8 +4555,22 @@ const Client = struct {
         batch: *gl_text.Batch,
         atlas: *gl_atlas.Atlas,
         item: *const software_terminal.GlyphItem,
+        clip: [2]i32,
+        viewport_w: f32,
+        viewport_h: f32,
     ) void {
-        const entry = atlas.glyphForItem(&ctx.api, self.allocator, item) orelse return;
+        var entry_opt = atlas.glyphForItem(&ctx.api, self.allocator, item);
+        if (entry_opt == null and atlas.full != null) {
+            // #584 ① — atlas 가 이 프레임 중간에 찼다. **지금까지 쌓은 정점을 먼저 그린다.**
+            // 그 정점들의 UV 는 비우기 전 좌표를 가리키므로 (UV 는 `Batch.add` 시점에 굽는다),
+            // 비운 뒤에 그리면 그 자리에 새로 올라온 다른 글리프가 그려진다.
+            glFlushText(ctx, batch, atlas, clip, viewport_w, viewport_h);
+            atlas.resetFull();
+            // 재시도는 한 번뿐이다 — 또 실패하면 그림 하나가 atlas 보다 큰 경우라 이 셀을
+            // 건너뛴다 (Windows `emitClusterInstance` 와 같은 규칙, 무한 루프가 없다).
+            entry_opt = atlas.glyphForItem(&ctx.api, self.allocator, item);
+        }
+        const entry = entry_opt orelse return;
         if (entry.is_color) {
             const fit = software_terminal.colorGlyphFit(item.w, item.h, item.glyph.width, item.glyph.height) orelse return;
             batch.add(self.allocator, .{
@@ -5540,7 +5668,7 @@ const Client = struct {
         if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
         const active = self.activeTabOrNull() orelse return;
         self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
-            log.appendLine("tab", "new tab failed: {s}", .{@errorName(err)});
+            log.logNewTabFailed(err);
             return;
         };
         // #127 — 1 → 2 탭 전환 시 탭바 등장으로 cell 영역 변함 → 모든 탭
@@ -5645,7 +5773,7 @@ const Client = struct {
             error.TooSmall => {
                 // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
                 // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.appendLine("pane", "split {s} rejected: pane would be under {d}x{d}", .{ @tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS });
+                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
                 var buf: [160]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                     messages.pane_too_small_format;
@@ -5653,7 +5781,7 @@ const Client = struct {
                 return;
             },
             error.TooManyPanes => {
-                log.appendLine("pane", "split {s} rejected: tab already has {d} panes", .{ @tagName(dir), pane_layout.MAX_PANES_PER_TAB });
+                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
                 var buf: [128]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                     messages.pane_limit_format;
@@ -5662,12 +5790,12 @@ const Client = struct {
             },
             error.NoActiveTab => return,
             else => {
-                log.appendLine("pane", "split failed: {s}", .{@errorName(err)});
+                log.logPaneSplitFailed(err);
                 return;
             },
         };
         const group = self.session.?.activeGroup().?;
-        log.appendLine("pane", "split {s} — tab {} has {} panes, active pane {}", .{ @tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane });
+        log.logPaneSplit(@tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5686,7 +5814,7 @@ const Client = struct {
         self.ensureSessionGrid() catch |err| {
             log.appendLine("pane", "ensureSessionGrid after focus failed: {s}", .{@errorName(err)});
         };
-        log.appendLine("pane", "focus {s} — active pane {}", .{ @tagName(dir), session.activeGroup().?.active_pane });
+        log.logPaneFocus(@tagName(dir), session.activeGroup().?.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5702,7 +5830,7 @@ const Client = struct {
         const session = if (self.session) |*s| s else return;
         const group = session.activeGroup() orelse return;
         session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.appendLine("pane", "equalize — {} panes", .{group.tree.count()});
+        log.logPaneEqualize(group.tree.count());
         self.needs_redraw = true;
     }
 
@@ -5725,7 +5853,7 @@ const Client = struct {
         self.ensureSessionGrid() catch |err| {
             log.appendLine("pane", "ensureSessionGrid after zoom failed: {s}", .{@errorName(err)});
         };
-        log.appendLine("pane", "zoom {s} — active pane {}", .{ if (session.activeGroup().?.zoomed != null) "on" else "off", session.activeGroup().?.active_pane });
+        log.logPaneZoom(session.activeGroup().?.zoomed != null, session.activeGroup().?.active_pane);
         self.needs_redraw = true;
     }
 
@@ -5735,9 +5863,9 @@ const Client = struct {
         const session = if (self.session) |*s| s else return;
         const axis = if (d.axis == .side_by_side) "x" else "y";
         if (session.setSeparatorPx(d.node, d.px, self.paneArea(), self.paneMetrics())) |placed| {
-            log.appendLine("pane", "separator drag — node {} to {s} {}", .{ d.node, axis, placed });
+            log.logPaneSeparatorMoved(d.node, axis, placed);
         } else {
-            log.appendLine("pane", "separator drag — node {} unchanged (limit or same cell)", .{d.node});
+            log.logPaneSeparatorUnchanged(d.node);
         }
         self.needs_redraw = true;
     }
@@ -5754,7 +5882,7 @@ const Client = struct {
         group.activeTab().interaction.cancelPointerModes();
         self.sel_autoscroll_dir = 0;
         _ = session.setActivePane(id);
-        log.appendLine("pane", "focus by click — active pane {}", .{id});
+        log.logPaneFocusByClick(id);
         self.needs_redraw = true;
         return true;
     }
@@ -7190,7 +7318,7 @@ const Client = struct {
                     if (self.session) |*session_ptr| {
                         if (self.tab_drag.finish(tab_w_int, session_ptr.count())) |req| {
                             _ = session_ptr.reorderTabs(req.from, req.to) catch |err| {
-                                log.appendLine("tab", "reorder failed: {s}", .{@errorName(err)});
+                                log.logTabReorderFailed(err);
                             };
                             // 활성 탭 위치 변경 — auto-scroll override 해제 +
                             // 다음 paint 의 `ensureActiveVisible` 가 갱신.
@@ -8318,6 +8446,7 @@ const Client = struct {
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
         if (self.surface_hidden) {
+            log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
             // 발생하므로 그 site 에 별도 logShowElapsed.
@@ -8371,6 +8500,7 @@ const Client = struct {
         }
         // hide 진입 — mac #175 동등 정책: preedit commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
+        log.logToggle(false);
         self.commitPendingInput();
         // #329 — 열린 menu 는 hide 때 닫는다. global hotkey 로 show 했을 때
         // 이전 menu 가 남아 있지 않게 (transient overlay 는 복원 대상 아님).
@@ -10103,6 +10233,53 @@ pub fn runBaselineWindow(
     // 으로 자동 등록. 그 외 DE 면 no-op.
     if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(rt, allocator, cfg);
     try client.run();
+}
+
+/// #577 — **창도 PTY 도 없이 fatal 다이얼로그 하나만 띄운다.**
+///
+/// launcher (`main.zig` 의 `runLauncher`) 는 `host.run` 을 거치지 않아 `Client` 가 아예
+/// 없다. 그래서 Linux 에서는 기동 실패 안내가 `log.userFacing` 으로 stderr + 로그에만
+/// 갔고, `.desktop` (메뉴 · autostart) 실행에서 stderr 는 어디에도 붙지 않으므로
+/// **사용자는 아무것도 보지 못했다.** Windows (`MessageBoxW`) · macOS (`NSAlert`) 는 OS 가
+/// 모달을 주므로 같은 자리에서 그냥 떴다 — SPEC §0 #1 (세 platform 동등) 이 깨진 자리다.
+///
+/// 그릴 수 있는 근거: dialog 는 **자기 layer-shell surface** 이고 항상 `wl_shm` 이라
+/// (GPU 불필요) Wayland 연결 + globals + keyboard 까지만 있으면 된다. 그리고
+/// `runFatalDialog` 는 이미 "터미널 세션이 없는 상태에서 blocking 안내" 를 하는 경로다
+/// (#282 C2 — 그 함수 주석의 *"그 시점엔 세션이 아직 없어서 `deinit` 을 건너뛰어도 거둘
+/// PTY 자식이 없다"*). 여기서는 그 상태를 **처음부터** 만든다.
+///
+/// config 는 **기본값**을 쓴다 (`Config{}`). 이 경로가 알리는 것은 config 과 무관한
+/// 실패 (spawn 실패 · lock 실패 · worker 무응답) 이고, 애초에 config 을 읽지 못한
+/// 실행일 수도 있다. 다이얼로그 폰트도 시스템 폰트로 고정한다 — 사용자 폰트 설정이
+/// 잘못됐을 가능성을 이 화면이 다시 밟지 않게 한다 (폰트 오류 안내가 쓰는 것과 같은
+/// 이유, #406).
+///
+/// **`deinit` 을 부르지 않는다.** 호출처가 곧 `exit(1)` 하고, 이 시점에는 거둘 PTY
+/// 자식도 KDE 등록도 없다 (`runFatalDialog` 의 세 기존 호출처와 같은 성질).
+///
+/// 실패하면 **조용히 돌아간다.** 호출처가 이미 stderr + 로그에 같은 문구를 남겼으므로,
+/// 여기서 또 오류를 내면 "안내를 못 띄웠다" 가 원래 오류를 덮는다.
+pub fn showFatalStandalone(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8) void {
+    const cfg = config_mod.Config{};
+    var client = Client.init(rt, allocator, &cfg, .{}) catch |err| {
+        // Wayland 연결 자체가 안 되는 환경 (headless · X11 세션). `Client.init` 이
+        // socket path 와 env 를 이미 stderr + 로그에 남겼다 (`reportWaylandSocketFailure`).
+        log.appendLine("dialog", "standalone fatal dialog unavailable: {s} — stderr/log only", .{@errorName(err)});
+        return;
+    };
+    // 사용자 폰트 설정과 무관하게 읽히게 한다.
+    client.renderer.dialog_use_system_font = true;
+
+    // `Client.run` 의 앞부분과 **같은 순서**다 — registry → globals → keyboard. GPU
+    // (`initGpuIfAvailable`) 와 전역 hotkey 등록은 건너뛴다: dialog 는 `wl_shm` 으로
+    // 그리고, 곧 종료할 프로세스가 KDE 단축키 레지스트리를 건드릴 이유가 없다.
+    client.bringUpForDialog() catch |err| {
+        log.appendLine("dialog", "standalone fatal dialog bring-up failed: {s} — stderr/log only", .{@errorName(err)});
+        return;
+    };
+
+    client.runFatalDialog(title, message);
 }
 
 const Msg = struct {

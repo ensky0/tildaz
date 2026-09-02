@@ -9,6 +9,7 @@
 const std = @import("std");
 const objc = @import("../macos_objc.zig");
 const perf = @import("../perf.zig");
+const log = @import("../log.zig");
 const ct = @import("../font/macos/coretext.zig");
 const mac_font = @import("../font/macos/font.zig");
 const CoreTextFontContext = mac_font.CoreTextFontContext;
@@ -21,7 +22,7 @@ const themes = @import("../themes.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
-const ATLAS_SIZE = macos_glyph_atlas.ATLAS_SIZE;
+const INITIAL_ATLAS_SIZE = macos_glyph_atlas.INITIAL_ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
@@ -41,6 +42,14 @@ const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
 const MAX_INSTANCES: u32 = 32768;
+
+/// #591 — 프레임 안에서 "무엇을 어떤 순서로 그리나" 의 기록 단위. 셀 루프는 인스턴스를 mapped
+/// 버퍼에 담고 여기에 (종류 · 시작 offset · 개수) 만 남긴다. draw 는 atlas 를 올린 **뒤**
+/// `beginPassWithRanges` 가 이 목록 순서대로 한 번에 한다.
+/// `.text` 는 본문 atlas, `.tab_text` 는 탭 atlas (탭바 · 스트립 · 메뉴 — #591 2 단계). 인스턴스는
+/// 같은 text 버퍼에 담기고 encode 때 텍스처와 constants 만 갈린다.
+const DrawKind = enum(u8) { bg, text, tab_text };
+const DrawRange = struct { kind: DrawKind, offset: u32, count: u32 };
 
 // --- #255 Phase 2: CADisplayLink pause 합성 게이트 ---
 // drawable 이 *실제로 화면에 표시*됐는지 확인하는 신호. host 가 idle 시 displayLink
@@ -255,10 +264,34 @@ pub const MetalRenderer = struct {
     bg_buffer: objc.id,
     text_buffer: objc.id,
     atlas_texture: objc.id,
+    /// #585 — atlas 업로드용 staging buffer. `replaceRegion` 이 **즉시 CPU 복사이고 GPU 작업과
+    /// 순서가 보장되지 않아서** (Apple 문서: *"does not synchronize against GPU accesses"*)
+    /// 그것을 쓰면 프레임 중간에 텍스처를 갈 수 없다. blit encoder 로 올리면 복사가 **command
+    /// buffer 안**에 들어가 순서가 지켜진다.
+    ///
+    /// Windows (`UpdateSubresource`) · Linux (`glTexSubImage2D`) 는 글리프 단위로 즉시 올리는데
+    /// macOS 만 프레임마다 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 올리고
+    /// 있었다. blit 은 영역 지정이 자연스러워 `dirty_min_y`~`dirty_max_y` 만 올린다.
+    /// ⚠️ **atlas 마다 따로여야 한다.** blit 은 `replaceRegion` 과 달리 **GPU 가 나중에
+    /// 실행할 때** buffer 를 읽는다. 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의
+    /// blit 에 실려 **본문 blit 이 탭 데이터를 읽는다** (실측으로 화면이 깨졌다).
+    staging_buffer: objc.id,
+    staging_bytes: u32 = 0,
+    tab_staging_buffer: objc.id,
+    tab_staging_bytes: u32 = 0,
+    /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.size` 가 이보다 커지면
+    /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
+    atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
     tab_atlas_texture: objc.id,
+    tab_atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
     constants_buffer: objc.id,
+    /// #584 ② — **탭 atlas 용 constants.** 셰이더가 UV 를 `atlas_w`/`atlas_h` 로 정규화하는데,
+    /// 본문 atlas 는 `grow` 로 커지고 탭 atlas 는 안 커진다 — 크기가 갈리면 uniform 하나로는
+    /// 둘 다 맞출 수 없다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않았고, 실측에서
+    /// 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다.
+    tab_constants_buffer: objc.id,
 
-    // frame 내 누적된 instance 수. 매 drawBgInstances / drawTextInstances 호출이
+    // frame 내 누적된 instance 수. 매 `pushBg` / `pushText` 가
     // 같은 buffer 의 *다음 offset* 에 쓰고 setVertexBuffer offset 도 그에 맞게.
     // 같은 frame 안에서 여러 호출 (cell bg → cursor → scrollbar → preedit) 의
     // 데이터가 buffer 안에서 서로 덮어쓰지 않게. renderTabBar 시작 시 0 reset.
@@ -296,6 +329,27 @@ pub const MetalRenderer = struct {
     current_drawable: objc.id = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
+    /// #591 — 이 프레임에 그릴 구간의 순서 목록. 셀 루프 (`drawPane`) 는 담기만 하고 draw 는
+    /// `endFrame` 이 atlas 를 올린 뒤 한다 — 그래서 **이번 프레임에 담은 글리프가 같은 프레임에
+    /// 보인다** (Windows · Linux 와 같은 시점). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을
+    /// 끼울 수 없었고, 프레임 시작에 지난 프레임 것을 올리는 2-frame 구조였다.
+    draw_ranges: std.ArrayListUnmanaged(DrawRange) = .empty,
+    /// 열려 있는 구간의 시작 offset (null = 안 열림). `openRange` / `closeRange`.
+    open_bg_start: ?u32 = null,
+    /// text 계열 (`.text` · `.tab_text`) 은 같은 버퍼라 **한 번에 하나만** 열린다 — 본문은
+    /// `drawPane` 안에서 닫히고 탭 · 메뉴는 `endFrame` 초입에서 순차로 연다. 어느 종류가
+    /// 열렸는지는 `open_text_kind` 가 기억한다.
+    open_text_start: ?u32 = null,
+    open_text_kind: DrawKind = .text,
+    /// 이 프레임에 이미 제출한 pass 수 (#584 ① 안전망이 프레임 중간에 제출한다). 0 이면 다음
+    /// pass 는 Clear 로 열고, 아니면 앞 pass 가 그린 것을 Load 로 이어받는다.
+    passes_submitted: u32 = 0,
+    /// 이 프레임의 clear 색 — `renderTabBar` 가 정하고 첫 pass 가 쓴다.
+    frame_clear: [4]f64 = .{ 0, 0, 0, 1 },
+    /// 이 프레임의 mapped 인스턴스 버퍼. `growInstanceBuffers` 는 프레임 시작에만 도므로 프레임
+    /// 동안 유효하다. null 이면 이 프레임은 그리지 않는다.
+    bg_map: ?[*]BgInstance = null,
+    text_map: ?[*]TextInstance = null,
     /// renderTabBar 가 받은 args 보관. endFrame 에서 z-order 상 terminal
     /// 위에 tabs 가 그려지도록 마지막에 encode (Windows 와 layout 자체가 분리
     /// 영역이라 z-order 무관하지만, 같은 frame state 의 일부로 처리).
@@ -415,9 +469,13 @@ pub const MetalRenderer = struct {
 
         // constants buffer = float4 (screen_w, screen_h, atlas_w, atlas_h).
         const const_buf = createBuffer(device, 16);
+        // #585 — atlas 전체를 담을 수 있는 staging (grow 하면 재생성한다).
+        const staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
+        const tab_staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
+        const tab_const_buf = createBuffer(device, 16);
 
-        const atlas_tex = createAtlasTexture(device);
-        const tab_atlas_tex = createAtlasTexture(device);
+        const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
+        const tab_atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
 
         // CAMetalLayer 설정 (device 등록 + pixel format).
         objc.msgSendVoid1(layer, objc.sel("setDevice:"), device);
@@ -440,7 +498,7 @@ pub const MetalRenderer = struct {
             defer ct.CGColorSpaceRelease(cs);
             objc.msgSendVoid1(layer, objc.sel("setColorspace:"), cs);
         } else {
-            std.log.warn("sRGB 색공간 생성 실패 — layer colorspace 를 그대로 둠", .{});
+            std.log.warn("sRGB color space creation failed — keeping the layer color space unchanged", .{});
         }
 
         return .{
@@ -458,8 +516,13 @@ pub const MetalRenderer = struct {
             .bg_buffer = bg_buf,
             .text_buffer = text_buf,
             .atlas_texture = atlas_tex,
+            .staging_buffer = staging,
+            .staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
+            .tab_staging_buffer = tab_staging,
+            .tab_staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
             .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
+            .tab_constants_buffer = tab_const_buf,
             .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
             .scale = scale,
@@ -502,7 +565,7 @@ pub const MetalRenderer = struct {
 
         // 2. atlas 를 새 scale 로 재구성 — cache/packing/pixels clear + scale 갱신.
         //    다음 render 에서 글리프가 새 scale 로 재라스터되고 dirty 로 재업로드됨.
-        //    (atlas_texture 자체는 ATLAS_SIZE 고정이라 재사용.)
+        //    (atlas_texture 는 `syncAtlasTexture` 가 크기를 맞춘다 — #584 ②.)
         self.atlas.scale = new_scale;
         self.atlas.ascent_pt = self.font.ascent_px / self.font.retina_scale;
         self.atlas.reset();
@@ -514,6 +577,7 @@ pub const MetalRenderer = struct {
     }
 
     pub fn deinit(self: *MetalRenderer) void {
+        self.draw_ranges.deinit(self.alloc);
         self.tab_atlas.deinit();
         self.tab_font.deinit();
         self.atlas.deinit();
@@ -567,7 +631,7 @@ pub const MetalRenderer = struct {
 
         // 직전 frame 이 요청한 instance 수가 buffer 용량을 넘었으면 키운다. 누적-offset
         // 방식이라 buffer 는 frame 전체 instance 를 동시에 담아야 하는데, 초과 시
-        // drawBgInstances 가 그 호출을 통째 drop 해 box-drawing 등 뒷 draw 가 사라졌다.
+        // 넘치는 인스턴스를 drop 해 box-drawing 등 뒷 draw 가 사라졌다.
         // frame 시작(아직 draw 없음)에서만 재할당 — 진행 중 swap 회피. 직전 frame 의
         // command buffer 가 옛 buffer 를 retain 하므로 즉시 release 안전.
         self.growInstanceBuffers();
@@ -578,38 +642,31 @@ pub const MetalRenderer = struct {
         self.bg_needed = 0;
         self.text_needed = 0;
 
-        const texture = objc.msgSend(drawable, objc.sel("texture"));
-
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
+        if (cmd_buf == null) {
+            self.current_drawable = null;
+            self.pending_tabs = null;
+            return;
+        }
         self.current_cmd_buf = cmd_buf;
 
-        const rpd_class = objc.getClass("MTLRenderPassDescriptor");
-        const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
-
-        const attachments = objc.msgSend(rpd, objc.sel("colorAttachments"));
-        const att0 = objc.msgSend1(attachments, objc.sel("objectAtIndexedSubscript:"), @as(objc.NSUInteger, 0));
-        objc.msgSendVoid1(att0, objc.sel("setTexture:"), texture);
-        objc.msgSendVoid1(att0, objc.sel("setLoadAction:"), @as(objc.NSUInteger, 2)); // Clear
-        objc.msgSendVoid1(att0, objc.sel("setStoreAction:"), @as(objc.NSUInteger, 1)); // Store
-
-        const ClearColor = extern struct { r: f64, g: f64, b: f64, a: f64 };
-        const clear = ClearColor{
-            .r = @floatCast(frame_bg[0]),
-            .g = @floatCast(frame_bg[1]),
-            .b = @floatCast(frame_bg[2]),
-            .a = 1.0,
-        };
-        const setClearColorFn: *const fn (objc.id, objc.SEL, ClearColor) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-        setClearColorFn(att0, objc.sel("setClearColor:"), clear);
-
-        const encoder = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
-        if (encoder == null) {
+        // #591 — encoder 는 여기서 열지 않는다. 셀 루프가 담기만 하고, `endFrame` 이 atlas 를
+        // 올린 뒤 (blit 은 render encoder 밖이어야 한다) encoder 를 열어 한 번에 그린다.
+        self.frame_clear = .{ @floatCast(frame_bg[0]), @floatCast(frame_bg[1]), @floatCast(frame_bg[2]), 1.0 };
+        self.draw_ranges.clearRetainingCapacity();
+        self.open_bg_start = null;
+        self.open_text_start = null;
+        self.passes_submitted = 0;
+        const bg_ptr = objc.msgSend(self.bg_buffer, objc.sel("contents"));
+        const text_ptr = objc.msgSend(self.text_buffer, objc.sel("contents"));
+        if (bg_ptr == null or text_ptr == null) {
             self.current_drawable = null;
             self.current_cmd_buf = null;
             self.pending_tabs = null;
             return;
         }
-        self.current_encoder = encoder;
+        self.bg_map = @ptrCast(@alignCast(bg_ptr));
+        self.text_map = @ptrCast(@alignCast(text_ptr));
 
         self.pending_tabs = .{
             .titles = tab_titles,
@@ -623,10 +680,9 @@ pub const MetalRenderer = struct {
 
     /// #483 2단계 ② — pane 하나를 그린다 (셀 · 커서 · preedit · scrollbar 를 `pane.rect` 안에).
     /// 프레임 시작은 `renderTabBar`, 끝 (탭바 · 스트립 · 메뉴 · endEncoding · present) 은 `endFrame`.
-    /// `renderTabBar` 가 drawable 획득에 실패했으면 (`current_encoder` 가 null) no-op (frame skip).
+    /// `renderTabBar` 가 drawable 획득에 실패했으면 (`current_cmd_buf` 가 null) no-op (frame skip).
     pub fn drawPane(self: *MetalRenderer, pane: pane_draw.PaneDraw) void {
-        const encoder = self.current_encoder;
-        if (encoder == null) return;
+        if (self.current_cmd_buf == null) return;
 
         if (self.panes_drawn == 0) {
             // #160 — render(그리기, present 제외) 계측. Windows renderer/windows.zig 동등. 첫 pane 의
@@ -636,18 +692,10 @@ pub const MetalRenderer = struct {
             self.saw_blink_cell = false;
         }
         self.panes_drawn += 1;
-        self.updateConstants();
 
-        if (self.atlas.dirty) {
-            self.uploadAtlas(&self.atlas, self.atlas_texture);
-            self.atlas.dirty = false;
-        }
-        // 탭 glyph/icon atlas도 main atlas와 같은 2-frame 정책: 이전 frame에서
-        // 만든 내용을 draw 전에 upload한다. 삽입 직후 같은 Metal encoder에서
-        // sample하면 정적인 단일 탭 최초 frame의 icon이 투명하게 남았다.
-        self.uploadTabAtlasIfDirty();
-
-        self.renderTerminalContent(encoder, pane);
+        // #591 — 여기서는 담기만 한다. atlas 업로드 · constants · draw 는 `endFrame` 의
+        // `beginPassWithRanges` 가 한다.
+        self.renderTerminalContent(pane);
     }
 
     /// #483 5단계 — pane 사이 회색 분할선 · 활성 pane 의 amber 선 · 드래그 고스트 (Linux
@@ -655,8 +703,7 @@ pub const MetalRenderer = struct {
     /// `TAB_ACCENT_COLOR` 를 활성 pane 의 padding 안쪽 · 다른 pane 과 맞닿는 변에만). `drawPane` 들 뒤,
     /// `endFrame` 앞에 한 번. 셀 위에 겹치지 않는 자리라 순서는 무관하고 고스트만 드래그 중 셀 위에 얹힌다.
     pub fn drawPaneChrome(self: *MetalRenderer, seps: []const pane_layout.Separator, area: pane_layout.Rect, active: ?pane_layout.Rect, ghost: ?pane_layout.Rect, zoomed: bool) void {
-        const encoder = self.current_encoder;
-        if (encoder == null) return;
+        if (self.current_cmd_buf == null) return;
         // 분할선 ≤ MAX−1, amber 변 ≤ 4, 고스트 1.
         var buf: [pane_layout.MAX_PANES_PER_TAB + 5]BgInstance = undefined;
         var n: usize = 0;
@@ -691,23 +738,34 @@ pub const MetalRenderer = struct {
             buf[n] = rectInstance(g, amber);
             n += 1;
         }
-        self.drawBgInstances(encoder, buf[0..n]);
+        self.openRange(.bg);
+        for (buf[0..n]) |inst| self.pushBg(inst);
+        self.closeRange(.bg);
     }
 
     /// #483 2단계 ② — 프레임 끝: 보류한 탭바 (또는 단일 탭 스트립) · command menu → endEncoding →
     /// present + commit. `drawPane` 이 0 번이어도 프레임은 끝낸다.
     pub fn endFrame(self: *MetalRenderer, menu_ui: command_menu.Ui, toggle_hotkey: []const u8) void {
-        const encoder = self.current_encoder;
-        if (encoder == null) return;
+        if (self.current_cmd_buf == null) return;
 
+        // #591 2 단계 — 탭바 · 스트립 · 메뉴도 **먼저 담는다** (blit 앞). pane 들 뒤에 담으니
+        // 그 위에 그려지고, 여기서 tab atlas 에 담은 글리프도 같은 프레임에 보인다.
         if (self.pending_tabs) |t| {
             if (t.titles.len >= 2) {
-                self.drawTabBar(encoder, t.titles, t.active, t.drag_view, t.scroll_x_px, t.layout, t.hover);
+                self.emitTabBar(t.titles, t.active, t.drag_view, t.scroll_x_px, t.layout, t.hover);
             } else if (t.titles.len == 1) {
-                self.drawSingleControlStrip(encoder, t.layout, t.hover);
+                self.emitSingleControlStrip(t.layout, t.hover);
             }
         }
-        if (menu_ui.open) self.drawCommandMenu(encoder, menu_ui, toggle_hotkey);
+        if (menu_ui.open) self.emitCommandMenu(menu_ui, toggle_hotkey);
+
+        // #591 — 두 atlas 를 올리고 encoder 를 열어 담은 것을 전부 순서대로 그린다. 여기가 이
+        // 프레임의 (마지막) pass 다 — 안전망이 중간에 제출했으면 Load 로 이어받는다.
+        const encoder = self.beginPassWithRanges();
+        if (encoder == null) {
+            self.abandonFrame();
+            return;
+        }
 
         objc.msgSendVoid(encoder, objc.sel("endEncoding"));
         // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
@@ -737,9 +795,261 @@ pub const MetalRenderer = struct {
         self.current_cmd_buf = null;
         self.current_drawable = null;
         self.pending_tabs = null;
+        self.bg_map = null;
+        self.text_map = null;
     }
 
-    fn renderTerminalContent(self: *MetalRenderer, encoder: objc.id, pane: pane_draw.PaneDraw) void {
+    /// #591 — pass 를 열 수 없어 이 프레임을 버린다 (present 없이). 다음 프레임이 다시 그린다.
+    fn abandonFrame(self: *MetalRenderer) void {
+        self.current_encoder = null;
+        self.current_cmd_buf = null;
+        self.current_drawable = null;
+        self.pending_tabs = null;
+        self.bg_map = null;
+        self.text_map = null;
+        self.panes_drawn = 0;
+        self.draw_ranges.clearRetainingCapacity();
+    }
+
+    // ── #591 — 담기 (mapped 버퍼 직접 쓰기) 와 구간 기록 ──────────────────────────────────
+
+    /// 인스턴스 하나를 이 프레임의 bg 버퍼 끝에 담는다. 용량을 넘으면 버리고 `bg_needed` 만
+    /// 센다 — 다음 프레임 시작에 `growInstanceBuffers` 가 키운다 (#261 과 같은 정책).
+    fn pushBg(self: *MetalRenderer, inst: BgInstance) void {
+        self.bg_needed += 1;
+        if (self.bg_used >= self.bg_capacity) return;
+        const map = self.bg_map orelse return;
+        map[self.bg_used] = inst;
+        self.bg_used += 1;
+    }
+
+    fn pushText(self: *MetalRenderer, inst: TextInstance) void {
+        self.text_needed += 1;
+        if (self.text_used >= self.text_capacity) return;
+        const map = self.text_map orelse return;
+        map[self.text_used] = inst;
+        self.text_used += 1;
+    }
+
+    /// 구간을 연다 — 지금 offset 을 시작으로 기억한다. bg 와 text 는 버퍼가 따로라 **동시에 열려
+    /// 있을 수 있다** (text pass 는 글리프를 text 에, block · box 를 bg 에 섞어 담는다).
+    fn openRange(self: *MetalRenderer, kind: DrawKind) void {
+        switch (kind) {
+            .bg => self.open_bg_start = self.bg_used,
+            .text, .tab_text => {
+                std.debug.assert(self.open_text_start == null); // text 계열은 한 번에 하나만
+                self.open_text_start = self.text_used;
+                self.open_text_kind = kind;
+            },
+        }
+    }
+
+    /// 구간을 닫는다 — 시작부터 지금까지를 그릴 순서 목록에 넣는다. **닫는 순서가 그리는
+    /// 순서다** (text pass 는 글리프 → block · box, preedit 은 bg → 글자).
+    fn closeRange(self: *MetalRenderer, kind: DrawKind) void {
+        const start = switch (kind) {
+            .bg => self.open_bg_start,
+            .text, .tab_text => self.open_text_start,
+        } orelse return;
+        const used = switch (kind) {
+            .bg => self.bg_used,
+            .text, .tab_text => self.text_used,
+        };
+        if (used > start) self.appendRange(kind, start, used - start);
+        switch (kind) {
+            .bg => self.open_bg_start = null,
+            .text, .tab_text => self.open_text_start = null,
+        }
+    }
+
+    fn appendRange(self: *MetalRenderer, kind: DrawKind, offset: u32, count: u32) void {
+        // 바로 앞 구간과 같은 종류로 이어지면 합친다 — draw call 이 줄어든다.
+        if (self.draw_ranges.items.len > 0) {
+            const last = &self.draw_ranges.items[self.draw_ranges.items.len - 1];
+            if (last.kind == kind and last.offset + last.count == offset) {
+                last.count += count;
+                return;
+            }
+        }
+        // 실패하면 그 구간은 이 프레임에 안 보인다 — 다음 프레임이 다시 담는다.
+        self.draw_ranges.append(self.alloc, .{ .kind = kind, .offset = offset, .count = count }) catch {};
+    }
+
+    /// 열린 구간을 지금까지로 닫고 같은 종류를 다시 연다 — 안전망이 프레임 중간에 pass 를
+    /// 제출하기 직전에 부른다. 닫는 순서는 text → bg (text pass 의 최종 순서와 같다).
+    fn splitOpenRanges(self: *MetalRenderer) void {
+        const had_text = self.open_text_start != null;
+        const text_kind = self.open_text_kind;
+        const had_bg = self.open_bg_start != null;
+        if (had_text) self.closeRange(text_kind);
+        if (had_bg) self.closeRange(.bg);
+        if (had_text) self.openRange(text_kind);
+        if (had_bg) self.openRange(.bg);
+    }
+
+    // ── #591 — atlas 가 찼을 때 ──────────────────────────────────────────────────────────
+
+    /// atlas 가 찼다. **먼저 키운다** (#584 ② — ghostty 방식. 픽셀 좌표가 보존되고 셰이더가
+    /// 새 크기로 정규화하므로 이미 담은 인스턴스의 UV 도 그대로 맞는다). 상한이면 ① 안전망 —
+    /// 지금까지 담은 것을 pass 로 제출해 화면에 남기고 (`submitPassEarly`) 비운다. 그래야 비운
+    /// 뒤의 새 글리프가 앞서 담은 인스턴스의 자리를 덮어도 그림이 어긋나지 않는다.
+    /// true 면 다시 넣어 볼 수 있다.
+    fn recoverFromAtlasFull(self: *MetalRenderer) bool {
+        if (self.atlas.grow()) {
+            self.atlas.is_full = false;
+            return true;
+        }
+        self.splitOpenRanges();
+        if (!self.submitPassEarly()) return false;
+        self.atlas.resetFull();
+        return true;
+    }
+
+    /// 글리프 하나를 atlas 에 넣는다 — 차면 `recoverFromAtlasFull` 로 복구하고 다시 넣는다.
+    /// 최대 세 번 (2048 → 4096 → 8192 → 안전망). 모든 글리프 삽입이 이 함수를 지난다 — 전에는
+    /// ligature 경로만 복구가 없어 atlas 가 차면 조용히 버렸다.
+    fn insertGlyphOrRecover(self: *MetalRenderer, font: ct.CTFontRef, font_id: u64, index: ct.CGGlyph) ?macos_glyph_atlas.AtlasEntry {
+        var entry = self.atlas.getOrInsert(font, font_id, index);
+        var tries: u8 = 0;
+        while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
+            if (!self.recoverFromAtlasFull()) break;
+            entry = self.atlas.getOrInsert(font, font_id, index);
+        }
+        return entry;
+    }
+
+    /// `insertGlyphOrRecover` 의 cluster (#401 합성 비트맵) 판.
+    fn insertClusterOrRecover(self: *MetalRenderer, result: mac_font.GlyphResult) ?macos_glyph_atlas.AtlasEntry {
+        var entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+        var tries: u8 = 0;
+        while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
+            if (!self.recoverFromAtlasFull()) break;
+            entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+        }
+        return entry;
+    }
+
+    // ── #591 — pass ─────────────────────────────────────────────────────────────────────
+
+    /// atlas 를 올리고 encoder 를 열어 기록된 구간을 순서대로 그린다. **encoder 를 여는 것이
+    /// 마지막이다** — blit 은 render encoder 밖이어야 한다 (Metal 은 command buffer 당 encoder
+    /// 하나). 첫 pass 는 Clear, 안전망이 앞서 제출했으면 Load 로 이어받는다. `updateConstants`
+    /// 도 여기서 한 번 — `grow` 가 프레임 중간에 크기를 바꿔도 이 pass 의 모든 인스턴스는
+    /// 픽셀 좌표 UV 라 최종 크기 하나로 맞다. 구간 목록은 비운다. 실패하면 null.
+    fn beginPassWithRanges(self: *MetalRenderer) objc.id {
+        const cmd_buf = self.current_cmd_buf;
+        const drawable = self.current_drawable;
+        if (cmd_buf == null or drawable == null) return null;
+
+        self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
+        self.updateConstants();
+        if (self.atlas.dirty) {
+            self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
+            self.atlas.dirty = false;
+        }
+        self.syncAtlasTexture(&self.tab_atlas, &self.tab_atlas_texture, &self.tab_atlas_texture_size);
+        self.uploadTabAtlasIfDirty();
+
+        const texture = objc.msgSend(drawable, objc.sel("texture"));
+        const rpd_class = objc.getClass("MTLRenderPassDescriptor");
+        const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
+        const attachments = objc.msgSend(rpd, objc.sel("colorAttachments"));
+        const att0 = objc.msgSend1(attachments, objc.sel("objectAtIndexedSubscript:"), @as(objc.NSUInteger, 0));
+        objc.msgSendVoid1(att0, objc.sel("setTexture:"), texture);
+        // 2 = Clear · 1 = Load. 앞 pass 가 그린 것을 이어받으려면 Load (Clear 면 지워진다).
+        const load: objc.NSUInteger = if (self.passes_submitted == 0) 2 else 1;
+        objc.msgSendVoid1(att0, objc.sel("setLoadAction:"), load);
+        objc.msgSendVoid1(att0, objc.sel("setStoreAction:"), @as(objc.NSUInteger, 1)); // Store
+        if (self.passes_submitted == 0) {
+            const ClearColor = extern struct { r: f64, g: f64, b: f64, a: f64 };
+            const clear = ClearColor{ .r = self.frame_clear[0], .g = self.frame_clear[1], .b = self.frame_clear[2], .a = self.frame_clear[3] };
+            const setClearColorFn: *const fn (objc.id, objc.SEL, ClearColor) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+            setClearColorFn(att0, objc.sel("setClearColor:"), clear);
+        }
+
+        const encoder = objc.msgSend1(cmd_buf, objc.sel("renderCommandEncoderWithDescriptor:"), rpd);
+        if (encoder == null) return null;
+        self.current_encoder = encoder;
+
+        for (self.draw_ranges.items) |r| {
+            switch (r.kind) {
+                .bg => self.encodeBgRange(encoder, r.offset, r.count),
+                .text => self.encodeTextRange(encoder, r.offset, r.count, self.atlas_texture),
+                .tab_text => self.encodeTextRange(encoder, r.offset, r.count, self.tab_atlas_texture),
+            }
+        }
+        self.draw_ranges.clearRetainingCapacity();
+        return encoder;
+    }
+
+    /// #584 ① 안전망 — atlas 상한에서 **프레임 중간에** pass 를 제출한다: 지금까지 담은 것을
+    /// 그리고, GPU 가 끝나기를 기다린 뒤, 새 command buffer 로 이어간다. 기다리는 이유 —
+    /// Metal 은 CPU 쓰기와 GPU 읽기의 순서를 대신 지켜 주지 않는다. 비운 뒤 새 글리프를 담으면
+    /// staging 과 atlas 픽셀이 덮이는데, 앞 pass 가 텍스처를 다 읽기 전에 덮으면 앞 pass 가
+    /// 뒤 내용을 본다 (#585 실측 23~38 % 어긋남). Apple 문서가 요구하는 그대로다 — *"ensure
+    /// these operations complete"*. Windows · Linux 는 드라이버가 이 순서를 만들고 (SPEC §12.6
+    /// ①) macOS 는 우리가 만든다. 비용은 GPU 대기 한 번이고 상한에 닿은 프레임에만 있다.
+    /// drawable 에 그린 것은 Store 로 남고 present 는 `endFrame` 의 마지막 pass 가 한다.
+    fn submitPassEarly(self: *MetalRenderer) bool {
+        const encoder = self.beginPassWithRanges();
+        if (encoder == null) return false;
+        objc.msgSendVoid(encoder, objc.sel("endEncoding"));
+        self.current_encoder = null;
+        const old_cmd_buf = self.current_cmd_buf;
+        objc.msgSendVoid(old_cmd_buf, objc.sel("commit"));
+        objc.msgSendVoid(old_cmd_buf, objc.sel("waitUntilCompleted"));
+
+        const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
+        if (cmd_buf == null) {
+            self.current_cmd_buf = null;
+            return false;
+        }
+        self.current_cmd_buf = cmd_buf;
+        self.passes_submitted += 1;
+        return true;
+    }
+
+    /// 기록된 bg 구간 하나를 encoder 에 그린다 (복사는 이미 됐다).
+    fn encodeBgRange(self: *MetalRenderer, encoder: objc.id, offset: u32, count: u32) void {
+        if (count == 0) return;
+        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, offset) * @sizeOf(BgInstance);
+        objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.bg_pipeline);
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.bg_buffer, offset_bytes, @as(objc.NSUInteger, 0));
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
+        // MTLPrimitiveTypeTriangleStrip = 4.
+        objc.msgSendVoid4(
+            encoder,
+            objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
+            @as(objc.NSUInteger, 4),
+            @as(objc.NSUInteger, 0),
+            @as(objc.NSUInteger, 4),
+            @as(objc.NSUInteger, count),
+        );
+    }
+
+    fn encodeTextRange(self: *MetalRenderer, encoder: objc.id, offset: u32, count: u32, texture: objc.id) void {
+        if (count == 0) return;
+        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, offset) * @sizeOf(TextInstance);
+        objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
+        // #584 ② — 탭 atlas 는 크기가 따로라 constants 도 따로다.
+        const consts = if (texture == self.tab_atlas_texture) self.tab_constants_buffer else self.constants_buffer;
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), consts, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), texture, @as(objc.NSUInteger, 0));
+        objc.msgSendVoid4(
+            encoder,
+            objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
+            @as(objc.NSUInteger, 4), // TriangleStrip
+            @as(objc.NSUInteger, 0),
+            @as(objc.NSUInteger, 4),
+            @as(objc.NSUInteger, count),
+        );
+    }
+
+    /// #591 — **담기만 한다.** 인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에. draw 는
+    /// `endFrame` 이 atlas 를 올린 뒤 한다. atlas 가 차면 `insert*OrRecover` 가 키우거나
+    /// (상한이면) 지금까지 담은 것을 pass 로 제출하고 비운다.
+    fn renderTerminalContent(self: *MetalRenderer, pane: pane_draw.PaneDraw) void {
         const terminal = pane.terminal;
         const state = pane.state;
         const cell_w: i32 = pane.cell_w;
@@ -774,13 +1084,8 @@ pub const MetalRenderer = struct {
         const dbg_g = colorF(colors.background.g);
         const dbg_b = colorF(colors.background.b);
 
-        const MAX_CELLS = 4096;
-        var bg_buf: [MAX_CELLS]BgInstance = undefined;
-        var bg_count: u32 = 0;
-        var text_buf: [MAX_CELLS]TextInstance = undefined;
-        var text_count: u32 = 0;
-
         // --- Background pass ---
+        self.openRange(.bg);
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
             const cell_slice = all_cells[y].slice();
@@ -817,17 +1122,12 @@ pub const MetalRenderer = struct {
                 const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
                 if (is_custom_bg) {
-                    if (bg_count >= MAX_CELLS) {
-                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-                        bg_count = 0;
-                    }
                     const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
-                    bg_buf[bg_count] = .{
+                    self.pushBg(.{
                         .pos = .{ fx, fy },
                         .size = .{ width, ch },
                         .color = .{ cell_bg[0], cell_bg[1], cell_bg[2], 1 },
-                    };
-                    bg_count += 1;
+                    });
                 }
 
                 if (has_deco) {
@@ -842,12 +1142,6 @@ pub const MetalRenderer = struct {
                         if (raw.wide == .wide) 2 else 1,
                         &deco,
                     );
-                    // 셀 하나가 최대 4 개를 만들므로 남은 자리를 미리 확인한다 —
-                    // box drawing 이 같은 이유로 `bg_count + bn` 을 검사한다.
-                    if (bg_count + dn > MAX_CELLS) {
-                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-                        bg_count = 0;
-                    }
                     // #374 — 물결은 곡선이라 가장자리 픽셀의 `cov` 가 1 미만이다.
                     // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
                     // **미리** 합성해 알파 1.0 solid 로 그린다 (#353). `cov == 1` 인
@@ -859,22 +1153,23 @@ pub const MetalRenderer = struct {
                             .{ deco_bg.r, deco_bg.g, deco_bg.b },
                             d.cov,
                         );
-                        bg_buf[bg_count] = .{
+                        self.pushBg(.{
                             .pos = .{ fx + d.x, fy + d.y },
                             .size = .{ d.w, d.h },
                             .color = .{ colorF(blended[0]), colorF(blended[1]), colorF(blended[2]), 1 },
-                        };
-                        bg_count += 1;
+                        });
                     }
                 }
             }
         }
 
-        if (bg_count > 0) self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-        // bg pass 끝났으니 block element pass 가 같은 buffer 재사용 (Windows 동등).
-        bg_count = 0;
+        self.closeRange(.bg);
 
         // --- Text pass (block element 도 여기서 처리) ---
+        // 글리프는 text 버퍼에, block · box 는 bg 버퍼에 섞여 담긴다 — 두 구간을 함께 열고 끝에
+        // 글리프 → block · box 순서로 닫는다 (전의 최종 flush 순서와 같다).
+        self.openRange(.text);
+        self.openRange(.bg);
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
             const cell_slice = all_cells[y].slice();
@@ -911,10 +1206,6 @@ pub const MetalRenderer = struct {
                 // rectangle (#155). Windows d3d11 와 동일 path. 폰트 의존 제거 +
                 // 인접 셀 사이 갭 없음.
                 if (block_element.isBlockElement(cp)) {
-                    if (bg_count >= MAX_CELLS) {
-                        self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-                        bg_count = 0;
-                    }
                     const style_b = cell_color.applyBlinkPhase(if (raw.style_id != 0) styles[x] else ghostty.Style{}, blink_faint);
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
@@ -941,13 +1232,12 @@ pub const MetalRenderer = struct {
                         .{ block_bg.r, block_bg.g, block_bg.b },
                         rect.alpha,
                     );
-                    bg_buf[bg_count] = .{
+                    self.pushBg(.{
                         .pos = .{ block_x + rect.x0 * block_w, fy + rect.y0 * ch },
                         .size = .{ (rect.x1 - rect.x0) * block_w, (rect.y1 - rect.y0) * ch },
                         .color = .{ colorF(blended[0]), colorF(blended[1]), colorF(blended[2]), 1 },
                         .shade = rect.shade,
-                    };
-                    bg_count += 1;
+                    });
                     x += 1;
                     continue;
                 }
@@ -959,10 +1249,6 @@ pub const MetalRenderer = struct {
                     const box_w: f32 = if (raw.wide == .wide) 2.0 * cw else cw;
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, box_w, ch, &box_rects)) |bn| {
-                        if (bg_count + bn > MAX_CELLS) {
-                            self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-                            bg_count = 0;
-                        }
                         const style_x = cell_color.applyBlinkPhase(if (raw.style_id != 0) styles[x] else ghostty.Style{}, blink_faint);
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
@@ -981,13 +1267,12 @@ pub const MetalRenderer = struct {
                                 .{ box_bg.r, box_bg.g, box_bg.b },
                                 br.cov,
                             );
-                            bg_buf[bg_count] = .{
+                            self.pushBg(.{
                                 .pos = .{ box_x + br.x, fy + br.y },
                                 .size = .{ br.w, br.h },
                                 .color = .{ colorF(cov_blend[0]), colorF(cov_blend[1]), colorF(cov_blend[2]), 1 },
                                 .shade = 0,
-                            };
-                            bg_count += 1;
+                            });
                         }
                         x += 1;
                         continue;
@@ -1052,17 +1337,13 @@ pub const MetalRenderer = struct {
                             const sel = if (sel_range) |sr| (cell_x >= sr[0] and cell_x <= sr[1]) else false;
                             const fg = resolveFg(st, &rr, &colors, sel, inv);
 
-                            if (text_count >= MAX_CELLS) {
-                                self.drawTextInstances(encoder, text_buf[0..text_count]);
-                                text_count = 0;
-                            }
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
-                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                            const entry_opt = self.insertClusterOrRecover(result);
                             mac_font.releaseCluster(result);
                             if (entry_opt) |entry| {
                                 if (entry.w > 0 and entry.h > 0) {
-                                    emitTextInstance(text_buf[0..], &text_count, entry, cell_x, fy, cw, x_pad, self.font.ascent_px, fg, glyphCenterDx(entry, rr.wide == .wide, cw), 0);
+                                    self.pushText(makeTextInstance(entry, cell_x, fy, cw, x_pad, self.font.ascent_px, fg, glyphCenterDx(entry, rr.wide == .wide, cw), 0));
                                 }
                             }
                         }
@@ -1071,10 +1352,6 @@ pub const MetalRenderer = struct {
                     }
 
                     // 개별 경로 — 런이 1 개거나 배칭이 실패했을 때. 렌더가 틀리느니 느린 게 낫다.
-                    if (text_count >= MAX_CELLS) {
-                        self.drawTextInstances(encoder, text_buf[0..text_count]);
-                        text_count = 0;
-                    }
                     var cluster: [16]u21 = undefined;
                     cluster[0] = cp;
                     const extras = graphemes[x];
@@ -1083,11 +1360,11 @@ pub const MetalRenderer = struct {
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |result| {
                         // #401 — 위 배칭 경로와 같은 이유로 multi-glyph 를 합성해 그린다.
-                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                        const entry_opt = self.insertClusterOrRecover(result);
                         mac_font.releaseCluster(result);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {
-                                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0);
+                                self.pushText(makeTextInstance(entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0));
                             }
                         }
                         x += 1;
@@ -1108,7 +1385,7 @@ pub const MetalRenderer = struct {
                         next2.style_id == raw.style_id and isLigatureCandidate(next2.codepoint()))
                     {
                         if (self.font.ligatureTriple(cp, next.codepoint(), next2.codepoint())) |lm| {
-                            emitLigatureMatch(self, encoder, text_buf[0..], &text_count, x, 3, lm, fy, cw, x_pad, fg_rgb);
+                            emitLigatureMatch(self, x, lm, fy, cw, x_pad, fg_rgb);
                             x += 3;
                             continue;
                         }
@@ -1120,16 +1397,11 @@ pub const MetalRenderer = struct {
                         next.style_id == raw.style_id and isLigatureCandidate(next.codepoint()))
                     {
                         if (self.font.ligaturePair(cp, next.codepoint())) |lm| {
-                            emitLigatureMatch(self, encoder, text_buf[0..], &text_count, x, 2, lm, fy, cw, x_pad, fg_rgb);
+                            emitLigatureMatch(self, x, lm, fy, cw, x_pad, fg_rgb);
                             x += 2;
                             continue;
                         }
                     }
-                }
-
-                if (text_count >= MAX_CELLS) {
-                    self.drawTextInstances(encoder, text_buf[0..text_count]);
-                    text_count = 0;
                 }
 
                 const result = self.font.resolveGlyph(
@@ -1141,7 +1413,8 @@ pub const MetalRenderer = struct {
                     x += 1;
                     continue;
                 };
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                const single_opt = self.insertGlyphOrRecover(result.font, result.font_id, result.index);
+                const entry = single_opt orelse {
                     mac_font.releaseCluster(result);
                     x += 1;
                     continue;
@@ -1153,17 +1426,14 @@ pub const MetalRenderer = struct {
                     continue;
                 }
 
-                emitTextInstance(text_buf[0..], &text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0);
+                self.pushText(makeTextInstance(entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, glyphCenterDx(entry, raw.wide == .wide, cw), 0));
                 x += 1;
             }
         }
 
-        if (text_count > 0) self.drawTextInstances(encoder, text_buf[0..text_count]);
-        // Block element pass flush — text pass 안에서 bg_buf 재사용해 누적된 것.
-        if (bg_count > 0) {
-            self.drawBgInstances(encoder, bg_buf[0..bg_count]);
-            bg_count = 0;
-        }
+        // 글리프 → block · box 순서로 닫는다 (block · box 가 글리프 위 — 전과 같다).
+        self.closeRange(.text);
+        self.closeRange(.bg);
 
         // --- Cursor (#297 — 세로 막대 bar, 세 platform 공통) ---
         // 셀 좌측에 opaque bar. wide char 는 wide_tail 보정으로 글자 시작
@@ -1179,12 +1449,13 @@ pub const MetalRenderer = struct {
                 if (colors.cursor) |cc| {
                     cursor_color = .{ colorF(cc.r), colorF(cc.g), colorF(cc.b), 1.0 };
                 }
-                const cursor_inst = [1]BgInstance{.{
+                self.openRange(.bg);
+                self.pushBg(.{
                     .pos = .{ cx0, cy0 },
                     .size = .{ ui_metrics.cursorBarWidthPx(self.scale), ch },
                     .color = cursor_color,
-                }};
-                self.drawBgInstances(encoder, &cursor_inst);
+                });
+                self.closeRange(.bg);
             }
         }
 
@@ -1211,8 +1482,9 @@ pub const MetalRenderer = struct {
             pane.scrollbar_w,
             .{ colors.background.r, colors.background.g, colors.background.b },
         )) |r| {
-            const scrollbar_inst = [1]BgInstance{bgFromChrome(r)};
-            self.drawBgInstances(encoder, &scrollbar_inst);
+            self.openRange(.bg);
+            self.pushBg(bgFromChrome(r));
+            self.closeRange(.bg);
         }
 
         // --- IME preedit (조합 중) overlay ---
@@ -1225,10 +1497,10 @@ pub const MetalRenderer = struct {
             const pre_row: f32 = @floatFromInt(vp.y);
             const pre_y = pre_row * ch + y_off;
 
-            var pre_bg_buf: [16]BgInstance = undefined;
-            var pre_text_buf: [16]TextInstance = undefined;
-            var pre_bg_n: usize = 0;
-            var pre_text_n: usize = 0;
+            // 배경 → 글자 순서로 닫는다 (글자가 배경 위). 최대 16 글자.
+            self.openRange(.bg);
+            self.openRange(.text);
+            var pre_n: usize = 0;
             const fg = colors.foreground;
             const fg_color: [4]f32 = .{ colorF(fg.r), colorF(fg.g), colorF(fg.b), 1 };
             // preedit 배경 색 — 약간 진한 회색 / 강조.
@@ -1237,9 +1509,9 @@ pub const MetalRenderer = struct {
             // UTF-8 codepoint iteration.
             var utf8_iter = std.unicode.Utf8Iterator{ .bytes = preedit_utf8, .i = 0 };
             while (utf8_iter.nextCodepoint()) |cp| {
-                if (pre_bg_n >= pre_bg_buf.len) break;
+                if (pre_n >= 16) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                     mac_font.releaseCluster(result);
                     continue;
                 };
@@ -1248,34 +1520,34 @@ pub const MetalRenderer = struct {
                 const w_cells: f32 = @floatFromInt(display_width.codepointWidth(cp));
 
                 const cell_x = pre_col * cw + x_pad;
-                pre_bg_buf[pre_bg_n] = .{
+                self.pushBg(.{
                     .pos = .{ cell_x, pre_y },
                     .size = .{ w_cells * cw, ch },
                     .color = pre_bg_color,
-                };
-                pre_bg_n += 1;
+                });
+                pre_n += 1;
 
-                if (entry.w > 0 and entry.h > 0 and pre_text_n < pre_text_buf.len) {
+                if (entry.w > 0 and entry.h > 0) {
                     // #299 — 강조 블록(w_cells 셀) 안 가운데 정렬 (본문과 동일 정책).
                     const gx = cell_x + glyphCenterDx(entry, w_cells >= 2.0, cw) + @as(f32, @floatFromInt(entry.bearing_x));
                     const gy = pre_y + self.font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h));
-                    pre_text_buf[pre_text_n] = .{
+                    self.pushText(.{
                         .pos = .{ gx, gy },
                         .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                         .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                         .fg_color = fg_color,
                         .color_flag = if (entry.is_color) 1 else 0,
-                    };
-                    pre_text_n += 1;
+                    });
                 }
 
                 pre_col += w_cells;
             }
 
-            if (pre_bg_n > 0) self.drawBgInstances(encoder, pre_bg_buf[0..pre_bg_n]);
-            // atlas 가 dirty 면 다음 frame 에 업로드 — 한 frame 늦은 표시.
-            if (pre_text_n > 0) self.drawTextInstances(encoder, pre_text_buf[0..pre_text_n]);
+            // #591 — 담은 글리프는 이 프레임의 pass 앞에 올라가므로 같은 프레임에 보인다
+            // (전에는 한 프레임 늦었다).
+            self.closeRange(.bg);
+            self.closeRange(.text);
         }
     }
 
@@ -1285,9 +1557,8 @@ pub const MetalRenderer = struct {
     ///     회색 띠. 활성 탭은 하단 amber 밑줄로만 구분.
     ///   - 탭 사이 경계는 세로 구분선(TAB_SEPARATOR_COLOR) — 슬롯(world) 기준
     ///     고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지.
-    fn drawTabBar(
+    fn emitTabBar(
         self: *MetalRenderer,
-        encoder: objc.id,
         tab_titles: []const []const u8,
         active_tab: usize,
         drag_view: ?tab_interaction.DragView,
@@ -1304,16 +1575,10 @@ pub const MetalRenderer = struct {
         const tab_pad_px = ui_metrics.scaledPxF(ui_metrics.TAB_PADDING_PT, self.scale);
         const tab_gap = ui_metrics.tabGapPx(self.scale);
 
-        const MAX_BG: usize = 64;
-        const MAX_TEXT: usize = 512;
-        var bg_buf: [MAX_BG]BgInstance = undefined;
-        var bg_n: usize = 0;
-        var text_buf: [MAX_TEXT]TextInstance = undefined;
-        var text_n: usize = 0;
-
         // #343 — rect 목록과 그 순서는 공통 `tab_chrome` 이 만든다. 여기서는
         // `BgInstance` 로 옮기고, 사이사이에 이 renderer 고유인 텍스트 / 아이콘
-        // batch 를 끼운다 (`before_titles` 경계).
+        // 구간을 끼운다 (`before_titles` 경계). #591 — 담기만 한다 (`pushBg` · `pushText` +
+        // `openRange` / `closeRange`), draw 는 `endFrame` 의 pass 가 순서대로 한다.
         const chrome_in = tab_chrome.Inputs{
             .viewport_w = @floatFromInt(self.vp_width),
             .tab_bar_h = tab_bar_h_px,
@@ -1334,11 +1599,9 @@ pub const MetalRenderer = struct {
         };
         var chrome_rects: [tab_chrome.maxRects(session_core.MAX_TABS)]tab_chrome.Rect = undefined;
         const built = tab_chrome.build(&chrome_rects, chrome_in);
-        for (built.rects[0..built.before_titles]) |r| {
-            if (bg_n >= MAX_BG) break;
-            bg_buf[bg_n] = bgFromChrome(r);
-            bg_n += 1;
-        }
+        self.openRange(.bg);
+        for (built.rects[0..built.before_titles]) |r| self.pushBg(bgFromChrome(r));
+        self.closeRange(.bg);
 
         const tab_area_end = layout.tab_area_x + layout.tab_area_w;
 
@@ -1354,8 +1617,6 @@ pub const MetalRenderer = struct {
         // batch, 세로선 뒤). 후자는 공통 계약 `Chrome.deferred_title` 이 정한다.
         const TitleCtx = struct {
             self: *MetalRenderer,
-            text_buf: *[MAX_TEXT]TextInstance,
-            text_n: *usize,
             text_y_top: f32,
             viewport_left: f32,
             tab_area_end: f32,
@@ -1371,8 +1632,6 @@ pub const MetalRenderer = struct {
                 cw_: f32,
                 max_w: f32,
                 y_top: f32,
-                buf: *[MAX_TEXT]TextInstance,
-                n: *usize,
             ) void {
                 const text_x_start = tab_x + pad;
                 // #343 — glyph clip 을 **명시** 로 통일했다. 이전에는 좌측만 보고
@@ -1382,17 +1641,14 @@ pub const MetalRenderer = struct {
                 const total_text_w = @as(f32, @floatFromInt(display_width.stringWidth(title))) * cw_;
                 const ctx = TitleCtx{
                     .self = rself,
-                    .text_buf = buf,
-                    .text_n = n,
                     .text_y_top = y_top,
                     .viewport_left = area_x,
                     .tab_area_end = area_end,
                 };
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
-                        if (c.text_n.* >= MAX_TEXT) return;
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-                        const entry = c.self.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                        const entry = c.self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                             mac_font.releaseCluster(result);
                             return;
                         };
@@ -1403,20 +1659,20 @@ pub const MetalRenderer = struct {
                         // #343 A-2 — glyph 를 `tab_area` 에서 **잘라** 안쪽만 그린다.
                         // quad 와 atlas UV 를 같은 양만큼 민다 (텍셀 1:1).
                         const cl = ui_rect.clipX(gx, @floatFromInt(entry.w), c.viewport_left, c.tab_area_end) orelse return;
-                        c.text_buf[c.text_n.*] = .{
+                        c.self.pushText(.{
                             .pos = .{ cl.x, gy },
                             .size = .{ cl.w, @floatFromInt(entry.h) },
                             .uv_pos = .{ @as(f32, @floatFromInt(entry.x)) + cl.cut_left, @floatFromInt(entry.y) },
                             .uv_size = .{ cl.w, @floatFromInt(entry.h) },
                             .fg_color = c.self.chrome.tab_text,
                             .color_flag = if (entry.is_color) 1 else 0,
-                        };
-                        c.text_n.* += 1;
+                        });
                     }
                 }.cb);
             }
         }.f;
 
+        self.openRange(.tab_text);
         for (tab_titles, 0..) |title, i| {
             // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
             if (built.deferred_title) |d| if (d == i) continue;
@@ -1426,26 +1682,19 @@ pub const MetalRenderer = struct {
                 .stop => break,
                 .draw => {},
             }
-            emitTitle(self, title, tab_x, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top, &text_buf, &text_n);
+            emitTitle(self, title, tab_x, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top);
         }
-
-        // 1차 batch — 탭 BG / 텍스트 그림.
-        if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
-        if (text_n > 0) {
-            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
-        }
+        // 1차 구간 끝 — 탭 BG (위) · 제목 (여기).
+        self.closeRange(.tab_text);
 
         // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선.
-        // 별도 batch 로 그리는 이유는 그대로다 (#117) — 탭 텍스트 *후* 에 그려야
+        // 별도 구간인 이유는 그대로다 (#117) — 탭 텍스트 *후* 에 그려야
         // 컨트롤 영역이 온전하다. 다만 어떤 rect 를 어떤 순서로 놓을지는 이제
         // 공통 `tab_chrome` 이 정한다 (세 renderer 정본 순서).
-        bg_n = 0;
-        text_n = 0;
-        for (built.rects[built.before_titles..]) |r| {
-            if (bg_n >= MAX_BG) break;
-            bg_buf[bg_n] = bgFromChrome(r);
-            bg_n += 1;
-        }
+        self.openRange(.bg);
+        for (built.rects[built.before_titles..]) |r| self.pushBg(bgFromChrome(r));
+        self.closeRange(.bg);
+        self.openRange(.tab_text);
 
         // #343 — 드래그 중인 탭의 제목을 2차 batch 에 넣는다 — 세로선·다른 탭 제목
         // **위**로 온다 (집어 든 탭이 맨 위 layer, 2026-07-31 사용자 결정).
@@ -1454,7 +1703,7 @@ pub const MetalRenderer = struct {
             if (di < tab_titles.len) {
                 const dx = tab_chrome.tabX(di, chrome_in);
                 if (tab_chrome.tabClip(dx, tab_w_px, layout.tab_area_x, tab_area_end, true) == .draw) {
-                    emitTitle(self, tab_titles[di], dx, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top, &text_buf, &text_n);
+                    emitTitle(self, tab_titles[di], dx, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top);
                 }
             }
         }
@@ -1466,50 +1715,44 @@ pub const MetalRenderer = struct {
         const icon_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.scale);
         const more_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.scale);
         const drawIcon = struct {
-            fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *usize) void {
-                if (n.* >= buf.len) return;
+            fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32) void {
                 if (box_w <= 0 or isz == 0) return;
                 const entry = rself.tab_atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
                 const gx = box_x + (box_w - fsz) * 0.5;
                 const gy = (tbh - fsz) * 0.5;
-                buf[n.*] = .{
+                rself.pushText(.{
                     .pos = .{ gx, gy },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = color,
                     .color_flag = 0,
-                };
-                n.* += 1;
+                });
             }
         }.run;
 
         if (layout.arrows_visible) {
             const left_color = if (layout.left_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
             const right_color = if (layout.right_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
-            drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, left_color, &text_buf, &text_n);
-            drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, right_color, &text_buf, &text_n);
+            drawIcon(self, .chevron_left, layout.left_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, left_color);
+            drawIcon(self, .chevron_right, layout.right_arrow_x, layout.arrow_w, tab_bar_h_px, icon_size, icon_stroke, right_color);
         }
         // #329 — MAX_TABS 도달 시 `+` 는 자리 유지 + 비활성 색 (arrow 동일 관례).
         const plus_color = if (layout.plus_enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled;
-        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, plus_color, &text_buf, &text_n);
+        drawIcon(self, .plus, layout.plus_x, layout.plus_w, tab_bar_h_px, icon_size, icon_stroke, plus_color);
         // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
-        drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, self.chrome.ctrl_active, &text_buf, &text_n);
-        drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, self.chrome.ctrl_active, &text_buf, &text_n);
-
-        if (bg_n > 0) self.drawBgInstances(encoder, bg_buf[0..bg_n]);
-        if (text_n > 0) {
-            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
-        }
+        drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, self.chrome.ctrl_active);
+        drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, self.chrome.ctrl_active);
+        // 2차 구간 끝 — 컨트롤 BG (위) · 드래그 제목 + 아이콘 (여기).
+        self.closeRange(.tab_text);
     }
 
     /// #329 — 단일 탭 terminal 위에 우측 `[+][×][…]`만 최종 합성한다.
     /// 전체 tabbar 배경은 그리지 않아 terminal grid/y-offset을 그대로 유지한다.
-    fn drawSingleControlStrip(
+    fn emitSingleControlStrip(
         self: *MetalRenderer,
-        encoder: objc.id,
         layout: TabBarLayout,
         hover: tab_layout.Area,
     ) void {
@@ -1534,49 +1777,38 @@ pub const MetalRenderer = struct {
             .palette = &self.chrome,
         };
         var chrome_rects: [tab_chrome.maxRects(0)]tab_chrome.Rect = undefined;
-        var bg: [tab_chrome.maxRects(0)]BgInstance = undefined;
-        var bg_n: usize = 0;
-        for (tab_chrome.buildControlsOnly(&chrome_rects, chrome_in)) |r| {
-            bg[bg_n] = bgFromChrome(r);
-            bg_n += 1;
-        }
-        if (bg_n > 0) self.drawBgInstances(encoder, bg[0..bg_n]);
+        self.openRange(.bg);
+        for (tab_chrome.buildControlsOnly(&chrome_rects, chrome_in)) |r| self.pushBg(bgFromChrome(r));
+        self.closeRange(.bg);
 
-        var text_buf: [3]TextInstance = undefined;
-        var text_n: usize = 0;
         const icon_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, self.scale);
         const icon_stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, self.scale);
         const more_stroke = ui_metrics.strokePx(ui_metrics.TAB_MORE_DOT_DIAMETER_PT, self.scale);
         const emit = struct {
-            fn icon(rself: *MetalRenderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, size: u32, stroke: f32, out: []TextInstance, count: *usize) void {
-                if (w <= 0 or count.* >= out.len) return;
+            fn icon(rself: *MetalRenderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, size: u32, stroke: f32) void {
+                if (w <= 0) return;
                 const entry = rself.tab_atlas.getOrInsertIcon(kind, size, stroke) orelse return;
                 const size_f: f32 = @floatFromInt(size);
-                out[count.*] = .{
+                rself.pushText(.{
                     .pos = .{ x + (w - size_f) * 0.5, (bar_h - size_f) * 0.5 },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = rself.chrome.ctrl_active,
                     .color_flag = 0,
-                };
-                count.* += 1;
+                });
             }
         }.icon;
-        emit(self, .plus, layout.plus_x, layout.plus_w, h, icon_size, icon_stroke, &text_buf, &text_n);
-        emit(self, .close, layout.close_x, layout.close_w, h, icon_size, icon_stroke, &text_buf, &text_n);
-        emit(self, .more, layout.more_x, layout.more_w, h, icon_size, more_stroke, &text_buf, &text_n);
-        if (text_n > 0) {
-            // 여기서 uploadTabAtlasIfDirty 를 부르면 안 된다 — 같은 encoder 의
-            // insert/upload/sample 은 정적 첫 frame 에서 icon 이 투명하게 남고
-            // (실기 확정), dirty 를 지워 host 의 tabAtlasDirty() 후속-frame
-            // 요청까지 꺼진다. 새 항목은 drawPane 시작의 2-frame upload
-            // 가 다음 frame 에 반영한다 (main glyph atlas 와 같은 정책).
-            self.drawTextInstancesWithTexture(encoder, text_buf[0..text_n], self.tab_atlas_texture);
-        }
+        // #591 — 여기서 담은 아이콘은 `endFrame` 의 pass 가 tab atlas 를 올린 **뒤에** 그리므로
+        // 같은 프레임에 보인다 (전에는 encoder 안에서 그려 다음 프레임에야 올라갔다).
+        self.openRange(.tab_text);
+        emit(self, .plus, layout.plus_x, layout.plus_w, h, icon_size, icon_stroke);
+        emit(self, .close, layout.close_x, layout.close_w, h, icon_size, icon_stroke);
+        emit(self, .more, layout.more_x, layout.more_w, h, icon_size, more_stroke);
+        self.closeRange(.tab_text);
     }
 
-    fn drawCommandMenu(self: *MetalRenderer, encoder: objc.id, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    fn emitCommandMenu(self: *MetalRenderer, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
         const scale = self.scale;
         // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
         // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
@@ -1593,13 +1825,12 @@ pub const MetalRenderer = struct {
         // 공통 `command_menu.rects` 한 곳이 만든다. 여기 남은 것은 텍스트와 스크롤
         // 표시 아이콘 (이 renderer 고유) 뿐이다.
         var menu_rects: [command_menu.MAX_RECTS]tab_chrome.Rect = undefined;
-        var menu_bg: [command_menu.MAX_RECTS]BgInstance = undefined;
-        var menu_n: usize = 0;
-        for (command_menu.rects(&menu_rects, v, ui, scale, &self.chrome)) |r| {
-            menu_bg[menu_n] = bgFromChrome(r);
-            menu_n += 1;
-        }
-        self.drawBgInstances(encoder, menu_bg[0..menu_n]);
+        self.openRange(.bg);
+        for (command_menu.rects(&menu_rects, v, ui, scale, &self.chrome)) |r| self.pushBg(bgFromChrome(r));
+        self.closeRange(.bg);
+
+        // 스크롤 표시 chevron 과 라벨 · 힌트 글리프는 한 tab_text 구간이다 (겹치지 않는다).
+        self.openRange(.tab_text);
 
         // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
         // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
@@ -1614,49 +1845,41 @@ pub const MetalRenderer = struct {
                 .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
                 .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
             };
-            var ind: [2]TextInstance = undefined;
-            var ind_n: usize = 0;
             for (pairs) |p| {
                 const entry = self.tab_atlas.getOrInsertIcon(p.kind, ind_size, ind_stroke) orelse continue;
-                ind[ind_n] = .{
+                self.pushText(.{
                     .pos = .{ ind_cx, p.y },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .fg_color = if (p.enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
                     .color_flag = 0,
-                };
-                ind_n += 1;
+                });
             }
-            if (ind_n > 0) self.drawTextInstancesWithTexture(encoder, ind[0..ind_n], self.tab_atlas_texture);
         }
 
-        var glyphs: [512]TextInstance = undefined;
-        var glyph_n: usize = 0;
         const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
         const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
         const emit = struct {
-            fn text(r: *MetalRenderer, bytes: []const u8, start_x: f32, text_top: f32, color: [4]f32, out: []TextInstance, n: *usize) void {
+            fn text(r: *MetalRenderer, bytes: []const u8, start_x: f32, text_top: f32, color: [4]f32) void {
                 var x = start_x;
                 var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
                 while (iter.nextCodepoint()) |cp| {
-                    if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                    const entry = r.tab_atlas.getOrInsert(result.font, @intCast(result.index)) orelse {
+                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
                         mac_font.releaseCluster(result);
                         continue;
                     };
                     mac_font.releaseCluster(result);
                     if (entry.w > 0 and entry.h > 0) {
-                        out[n.*] = .{
+                        r.pushText(.{
                             .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), text_top + r.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
                             .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                             .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                             .fg_color = color,
                             .color_flag = if (entry.is_color) 1 else 0,
-                        };
-                        n.* += 1;
+                        });
                     }
                     x += @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp)))) * @as(f32, @floatFromInt(r.tab_font.cell_width_px));
                 }
@@ -1670,7 +1893,7 @@ pub const MetalRenderer = struct {
             const iw = item.w * scale;
             const ih = item.h * scale;
             const text_top = iy + (ih - ch) * 0.5;
-            emit(self, command_menu.label(command), ix + 8 * scale, text_top, self.chrome.menu_label, &glyphs, &glyph_n);
+            emit(self, command_menu.label(command), ix + 8 * scale, text_top, self.chrome.menu_label);
             const hint = command_menu.shortcut(command, true, toggle_hotkey, ui.fullscreen_workarea);
             if (hint.len > 0) {
                 const hint_w = @as(f32, @floatFromInt(display_width.stringWidth(hint))) * cw;
@@ -1678,114 +1901,137 @@ pub const MetalRenderer = struct {
                 // #329 — 좁은 메뉴 / 긴 configured hotkey 에서 label 과 겹치면
                 // hint 를 먼저 숨긴다 (label 우선 정책, 세 renderer 공통).
                 if (command_menu.hintFits(item.w, label_w / scale, hint_w / scale)) {
-                    emit(self, hint, ix + iw - 8 * scale - hint_w, text_top, self.chrome.menu_hint, &glyphs, &glyph_n);
+                    emit(self, hint, ix + iw - 8 * scale - hint_w, text_top, self.chrome.menu_hint);
                 }
             }
         }
-        if (glyph_n > 0) {
-            self.drawTextInstancesWithTexture(encoder, glyphs[0..glyph_n], self.tab_atlas_texture);
-        }
-    }
-
-    pub fn tabAtlasDirty(self: *const MetalRenderer) bool {
-        return self.tab_atlas.dirty;
+        self.closeRange(.tab_text);
     }
 
     fn updateConstants(self: *MetalRenderer) void {
-        const contents_ptr = objc.msgSend(self.constants_buffer, objc.sel("contents")) orelse return;
-        const data: *[4]f32 = @ptrCast(@alignCast(contents_ptr));
-        data.* = .{
-            @floatFromInt(self.vp_width),
-            @floatFromInt(self.vp_height),
-            @floatFromInt(ATLAS_SIZE),
-            @floatFromInt(ATLAS_SIZE),
-        };
+        if (objc.msgSend(self.constants_buffer, objc.sel("contents"))) |ptr| {
+            const data: *[4]f32 = @ptrCast(@alignCast(ptr));
+            data.* = .{
+                @floatFromInt(self.vp_width),
+                @floatFromInt(self.vp_height),
+                @floatFromInt(self.atlas.size),
+                @floatFromInt(self.atlas.size),
+            };
+        }
+        // #584 ② — 탭 atlas 는 크기가 따로다 (`grow` 는 본문만 커진다). 셰이더가 UV 를 크기로
+        // 정규화하므로 버퍼도 따로 둔다.
+        if (objc.msgSend(self.tab_constants_buffer, objc.sel("contents"))) |ptr| {
+            const data: *[4]f32 = @ptrCast(@alignCast(ptr));
+            data.* = .{
+                @floatFromInt(self.vp_width),
+                @floatFromInt(self.vp_height),
+                @floatFromInt(self.tab_atlas.size),
+                @floatFromInt(self.tab_atlas.size),
+            };
+        }
     }
 
-    fn uploadAtlas(_: *MetalRenderer, atlas: *GlyphAtlas, texture: objc.id) void {
-        const Region = extern struct { ox: usize, oy: usize, oz: usize, sx: usize, sy: usize, sz: usize };
-        const region = Region{ .ox = 0, .oy = 0, .oz = 0, .sx = ATLAS_SIZE, .sy = ATLAS_SIZE, .sz = 1 };
+    /// #584 ② — `grow` 로 atlas 가 커졌으면 Metal 텍스처를 **새로 만든다** (ghostty 의
+    /// `syncAtlasTexture` 와 같은 자리다). 픽셀 좌표는 `grow` 가 보존하므로, 셰이더가 새
+    /// 크기로 정규화하면 이미 emit 한 인스턴스의 UV 도 그대로 맞는다.
+    fn syncAtlasTexture(self: *MetalRenderer, atlas: *GlyphAtlas, texture: *objc.id, texture_size: *u32) void {
+        if (atlas.size <= texture_size.*) return;
+        const new_tex = createAtlasTexture(self.device, atlas.size);
+        if (new_tex == null) return; // 못 만들면 옛 텍스처를 그대로 쓴다 (그림이 잘릴 수 있다)
+        objc.msgSendVoid(texture.*, objc.sel("release"));
+        texture.* = new_tex;
+        texture_size.* = atlas.size;
+        atlas.dirty = true; // 새 텍스처는 비어 있다 — 전체를 다시 올린다
+        atlas.dirty_min_y = 0;
+        atlas.dirty_max_y = atlas.size;
+    }
 
-        const f: *const fn (objc.id, objc.SEL, Region, objc.NSUInteger, [*]const u8, objc.NSUInteger) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+    /// #585 — atlas 픽셀을 텍스처로 올린다. **blit encoder 를 쓴다.**
+    ///
+    /// 예전에는 `MTLTexture.replaceRegion` 이었는데 그것은 **즉시 CPU 복사이고 GPU 작업과
+    /// 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize
+    /// against GPU accesses"*). 그래서 프레임 중간에 올려도 **모든 render pass 가 최종
+    /// 텍스처를 읽었다** — 안전망 (SPEC §12.6 ①) 이 macOS 에서 동작하지 못한 이유다.
+    ///
+    /// blit 은 복사를 **command buffer 안**에 넣으므로 앞뒤 pass 와 순서가 지켜진다. 그리고
+    /// 영역 지정이 자연스러워 **dirty 구간만** 올린다 — Windows (`UpdateSubresource`) ·
+    /// Linux (`glTexSubImage2D`) 가 글리프 단위로 올리는 것과 같은 방향이다.
+    ///
+    /// 실패하면 조용히 지나간다 (그 프레임은 옛 텍스처를 쓴다) — 다음 프레임이 다시 올린다.
+    fn uploadAtlas(
+        self: *MetalRenderer,
+        atlas: *GlyphAtlas,
+        texture: objc.id,
+        /// ⚠️ **atlas 마다 따로** — 위 필드 주석의 이유다.
+        staging: *objc.id,
+        staging_bytes: *u32,
+    ) void {
+        const cmd_buf = self.current_cmd_buf;
+        if (cmd_buf == null) return;
+
+        // dirty 구간만 — 줄 단위다 (`packRow` 가 줄로 채우므로 x 는 늘 전폭이 맞다).
+        const y0 = @min(atlas.dirty_min_y, atlas.size);
+        const y1 = @min(atlas.dirty_max_y, atlas.size);
+        if (y1 <= y0) return;
+        const row_bytes: usize = @as(usize, atlas.size) * 4;
+        const rows: usize = y1 - y0;
+        const bytes = rows * row_bytes;
+
+        // staging 이 작으면 키운다 (`grow` 뒤).
+        if (staging_bytes.* < atlas.size * atlas.size * 4) {
+            const new_buf = createBuffer(self.device, atlas.size * atlas.size * 4);
+            if (new_buf == null) return;
+            objc.msgSendVoid(staging.*, objc.sel("release"));
+            staging.* = new_buf;
+            staging_bytes.* = atlas.size * atlas.size * 4;
+        }
+
+        const dst = objc.msgSend(staging.*, objc.sel("contents")) orelse return;
+        const dst_ptr: [*]u8 = @ptrCast(dst);
+        @memcpy(dst_ptr[0..bytes], atlas.pixels[y0 * row_bytes ..][0..bytes]);
+
+        const blit = objc.msgSend(cmd_buf, objc.sel("blitCommandEncoder"));
+        if (blit == null) return;
+
+        const MTLSize = extern struct { w: usize, h: usize, d: usize };
+        const MTLOrigin = extern struct { x: usize, y: usize, z: usize };
+        const f: *const fn (
+            objc.id,
+            objc.SEL,
+            objc.id, // sourceBuffer
+            usize, // sourceOffset
+            usize, // sourceBytesPerRow
+            usize, // sourceBytesPerImage
+            MTLSize, // sourceSize
+            objc.id, // destinationTexture
+            usize, // destinationSlice
+            usize, // destinationLevel
+            MTLOrigin, // destinationOrigin
+        ) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         f(
-            texture,
-            objc.sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"),
-            region,
+            blit,
+            objc.sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+            staging.*,
             0,
-            atlas.pixels.ptr,
-            ATLAS_SIZE * 4, // BGRA8 = 4 bytes per pixel.
+            row_bytes,
+            bytes,
+            MTLSize{ .w = atlas.size, .h = rows, .d = 1 },
+            texture,
+            0,
+            0,
+            MTLOrigin{ .x = 0, .y = y0, .z = 0 },
         );
+        objc.msgSendVoid(blit, objc.sel("endEncoding"));
+
+        // 올린 구간은 깨끗해졌다.
+        atlas.dirty_min_y = atlas.size;
+        atlas.dirty_max_y = 0;
     }
 
     fn uploadTabAtlasIfDirty(self: *MetalRenderer) void {
         if (!self.tab_atlas.dirty) return;
-        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture);
+        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture, &self.tab_staging_buffer, &self.tab_staging_bytes);
         self.tab_atlas.dirty = false;
-    }
-
-    fn drawBgInstances(self: *MetalRenderer, encoder: objc.id, instances: []const BgInstance) void {
-        if (instances.len == 0) return;
-        // 이번 frame 의 총 수요 누적 (drop 돼도 셈) — frame 시작에서 buffer 확대 판단용.
-        self.bg_needed += @intCast(instances.len);
-        // 현재 용량 초과면 이 호출만 drop. 다음 frame 시작에서 buffer 가 커져 복구.
-        if (self.bg_used + instances.len > self.bg_capacity) return;
-
-        const contents_ptr = objc.msgSend(self.bg_buffer, objc.sel("contents")) orelse return;
-        const contents: [*]BgInstance = @ptrCast(@alignCast(contents_ptr));
-        // 같은 frame 의 이전 호출들이 쓴 데이터 뒤에 append. 첫 selected cell
-        // 이 cursor / scrollbar 호출에 의해 instance[0] 위치에서 overwrite
-        // 되던 buffer race 해결.
-        @memcpy(contents[self.bg_used..][0..instances.len], instances);
-
-        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, self.bg_used) * @sizeOf(BgInstance);
-
-        objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.bg_pipeline);
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.bg_buffer, offset_bytes, @as(objc.NSUInteger, 0));
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-
-        // MTLPrimitiveTypeTriangleStrip = 4.
-        objc.msgSendVoid4(
-            encoder,
-            objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
-            @as(objc.NSUInteger, 4),
-            @as(objc.NSUInteger, 0),
-            @as(objc.NSUInteger, 4),
-            @as(objc.NSUInteger, instances.len),
-        );
-
-        self.bg_used += @intCast(instances.len);
-    }
-
-    fn drawTextInstances(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance) void {
-        self.drawTextInstancesWithTexture(encoder, instances, self.atlas_texture);
-    }
-
-    fn drawTextInstancesWithTexture(self: *MetalRenderer, encoder: objc.id, instances: []const TextInstance, texture: objc.id) void {
-        if (instances.len == 0) return;
-        self.text_needed += @intCast(instances.len);
-        if (self.text_used + instances.len > self.text_capacity) return;
-
-        const contents_ptr = objc.msgSend(self.text_buffer, objc.sel("contents")) orelse return;
-        const contents: [*]TextInstance = @ptrCast(@alignCast(contents_ptr));
-        @memcpy(contents[self.text_used..][0..instances.len], instances);
-
-        const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, self.text_used) * @sizeOf(TextInstance);
-
-        objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), texture, @as(objc.NSUInteger, 0));
-
-        objc.msgSendVoid4(
-            encoder,
-            objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
-            @as(objc.NSUInteger, 4), // TriangleStrip
-            @as(objc.NSUInteger, 0),
-            @as(objc.NSUInteger, 4),
-            @as(objc.NSUInteger, instances.len),
-        );
-
-        self.text_used += @intCast(instances.len);
     }
 
     // --- Helpers ---
@@ -1860,22 +2106,22 @@ pub const MetalRenderer = struct {
         }
     }
 
-    fn createAtlasTexture(device: objc.id) objc.id {
+    fn createAtlasTexture(device: objc.id, size: u32) objc.id {
         const desc_class = objc.getClass("MTLTextureDescriptor");
         const desc = objc.msgSend(objc.msgSend(desc_class, objc.sel("alloc")), objc.sel("init"));
 
         // BGRA8Unorm — atlas 가 premultiplied BGRA. 일반 글리프엔 (a,a,a,a) 가
         // 들어가고 컬러 글리프엔 본래 색이 들어감 (#132).
         objc.msgSendVoid1(desc, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
-        objc.msgSendVoid1(desc, objc.sel("setWidth:"), @as(objc.NSUInteger, ATLAS_SIZE));
-        objc.msgSendVoid1(desc, objc.sel("setHeight:"), @as(objc.NSUInteger, ATLAS_SIZE));
+        objc.msgSendVoid1(desc, objc.sel("setWidth:"), @as(objc.NSUInteger, size));
+        objc.msgSendVoid1(desc, objc.sel("setHeight:"), @as(objc.NSUInteger, size));
         objc.msgSendVoid1(desc, objc.sel("setUsage:"), @as(objc.NSUInteger, 1)); // ShaderRead
 
         return objc.msgSend1(device, objc.sel("newTextureWithDescriptor:"), desc);
     }
 };
 
-/// 한 cell 의 atlas entry 를 `text_buf` 에 instance 로 emit. base cell index `x`
+/// 한 cell 의 atlas entry 를 text instance 로 만든다 (`pushText` 로 담는다). base cell index `x`
 /// + 추가 dx/dy (`.spacer` 의 cell 별 offset 또는 `.single` 의 0). atlas entry
 /// 의 bearing 으로 glyph 의 cell 안 위치 계산.
 /// wide 글리프(한글/CJK/emoji)를 배정된 셀 영역(1 또는 2셀) 가운데로 (#299 —
@@ -1888,9 +2134,7 @@ fn glyphCenterDx(entry: macos_glyph_atlas.AtlasEntry, wide: bool, cw: f32) f32 {
     return @floor((span * cw - entry.advance) / 2.0);
 }
 
-fn emitTextInstance(
-    text_buf: []TextInstance,
-    text_count: *u32,
+fn makeTextInstance(
     entry: macos_glyph_atlas.AtlasEntry,
     x: usize,
     fy: f32,
@@ -1900,11 +2144,11 @@ fn emitTextInstance(
     fg_rgb: ghostty.color.RGB,
     dx: f32,
     dy: f32,
-) void {
+) TextInstance {
     const fx: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad + dx;
     const gx = fx + @as(f32, @floatFromInt(entry.bearing_x));
     const gy = fy + ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) + dy;
-    text_buf[text_count.*] = .{
+    return .{
         .pos = .{ gx, gy },
         .size = .{ @as(f32, @floatFromInt(entry.w)), @as(f32, @floatFromInt(entry.h)) },
         .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
@@ -1912,7 +2156,6 @@ fn emitTextInstance(
         .fg_color = .{ MetalRenderer.colorF(fg_rgb.r), MetalRenderer.colorF(fg_rgb.g), MetalRenderer.colorF(fg_rgb.b), 1 },
         .color_flag = if (entry.is_color) 1 else 0,
     };
-    text_count.* += 1;
 }
 
 /// `LigatureMatch` switch — `.single` 은 1 glyph 을 base cell 에 (font 의 자연
@@ -1921,40 +2164,28 @@ fn emitTextInstance(
 /// 로 atlas lookup.
 ///
 /// 호출자가 N 의 trailing cells 의 bg/selection 은 bg pass 에서 이미 그렸으니
-/// text pass 만 처리. text_buf overflow 면 flush.
+/// text pass 만 처리. #591 — atlas 가 차면 다른 경로와 같이 `insertGlyphOrRecover` 로
+/// 복구한다 (전에는 이 경로만 복구가 없어 조용히 버렸다).
 fn emitLigatureMatch(
     self: *MetalRenderer,
-    encoder: objc.id,
-    text_buf: []TextInstance,
-    text_count: *u32,
     x: usize,
-    count: usize,
     match: mac_font.LigatureMatch,
     fy: f32,
     cw: f32,
     x_pad: f32,
     fg_rgb: ghostty.color.RGB,
 ) void {
-    _ = count;
     switch (match) {
         .single => |lg| {
-            if (text_count.* >= text_buf.len) {
-                self.drawTextInstances(encoder, text_buf[0..text_count.*]);
-                text_count.* = 0;
-            }
-            const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(lg.glyph_index)) orelse return;
+            const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index)) orelse return;
             if (entry.w == 0 or entry.h == 0) return;
-            emitTextInstance(text_buf, text_count, entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset)));
+            self.pushText(makeTextInstance(entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset))));
         },
         .spacer => |sp| {
             for (0..sp.count) |i| {
-                if (text_count.* >= text_buf.len) {
-                    self.drawTextInstances(encoder, text_buf[0..text_count.*]);
-                    text_count.* = 0;
-                }
-                const entry = self.atlas.getOrInsert(self.font.primary_font, @intCast(sp.glyph_indices[i])) orelse continue;
+                const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i])) orelse continue;
                 if (entry.w == 0 or entry.h == 0) continue;
-                emitTextInstance(text_buf, text_count, entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i])));
+                self.pushText(makeTextInstance(entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i]))));
             }
         },
     }

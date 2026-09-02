@@ -427,12 +427,18 @@ Two consequences worth knowing before touching this code:
   simple policy: if any cluster in the run fails, the whole run falls back to the
   per-cluster path.
 - **Ownership is the trap.** Where the cached value owns a font handle (macOS, Windows),
-  the cache takes ownership and hands callers `owned = false` — otherwise the cell
-  loop's per-frame release kills the cached font. And since `ClusterCache.put` frees
-  values it cannot store (over the 8-codepoint key limit), callers must check
-  *before* handing ownership over. macOS needs that check in the run path too, because
-  it retains per cluster there; Windows does not, because its run results are chain
-  faces it never owned.
+  the cache and the caller each hold their **own** reference: on insert the cache
+  retains its share, and the caller keeps whatever `owned` it already had, releasing
+  it per frame as usual. Handing the caller's reference over instead — the old macOS
+  policy — breaks as soon as the cache empties mid-insert (capacity eviction, or the
+  same key overwritten): the run path collects a whole run before feeding it to the
+  atlas one cluster at a time, so the caller is still using fonts the cache just freed
+  ([#578](https://github.com/ensky0/tildaz/issues/578)). Values read back *out* of the
+  cache stay `owned = false` — those live in the cache while the caller uses them.
+  Clusters over the 8-codepoint key limit are never inserted, since `ClusterCache.put`
+  frees what it cannot store and that value is now the cache's share. Windows sidesteps
+  all of this because its run results are chain faces it never owned; Linux stores
+  indices with no ownership at all.
 
 ### Result
 
