@@ -84,6 +84,25 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 탭을 닫으면 창이 원래 크기로 돌아와요. 예전에는 격자만 고정되고 창은 그대로여서 맨 아래
 행이 창 밖으로 밀렸는데, 지금은 그렇지 않아요.
 
+## 자동 회차 (macOS) — 사람 손 없이 형식만 바꿔 돌릴 때
+
+[`mouse-auto-check.sh`](mouse-auto-check.sh) 가 위 프로브를 `--log` 로 띄우고 `cliclick` 으로 셀 영역을
+두 번 눌러 (첫 클릭은 비활성 창을 깨우는 데 쓰일 수 있어요) 받은 바이트를 형식별 기대와 대조해요.
+`?1005` · `?1015` · `?1016` 처럼 사람 검증 A~E 절에 없는 형식을 돌리는 용도예요 ([#583](https://github.com/ensky0/tildaz/issues/583) A4).
+
+```sh
+dist/mouse/mouse-auto-check.sh zig-out/TildaZ.app 1000 1005 1015 1016
+```
+
+- 창 위치는 `dist/macos/color-capture --list` 의 **위치 열** (pt · 좌상단 원점) 에서 읽어요 — Accessory
+  앱은 AX `position of window` 가 창을 못 찾아요.
+- **전제 둘을 스크립트가 먼저 확인해요.** 이 셸을 띄운 앱에 손쉬운 사용 권한이 있어야 `cliclick` 이
+  닿고 (없으면 `CGEventPost` 가 성공을 돌려주며 아무 일도 안 해요), **화면이 잠겨 있으면 클릭이
+  잠금 화면으로 가요** — 프로브는 떠 있고 로그만 비어서 원인을 못 짚어요 (2026-09-02 에 회차 하나를
+  통째로 버렸어요). 사용자가 자리를 비운 사이 잠길 수 있으니 회차 동안 `caffeinate -disu` 를 켜요.
+- 판정은 좌표 값이 아니라 **형태**예요 — `1015` 는 `^[[32;C;RM` `^[[35;C;RM` (Cb+32 · 뗌도 M),
+  `1005` 는 `^[[M` + 3 글자 (press `' '` · release `'#'`), `1016` 은 `1006` 과 같은 꼴에 픽셀 좌표.
+
 ## A. 공통 시나리오 (세 platform)
 
 | # | 동작 | 기대 |

@@ -68,12 +68,18 @@ static SCShareableContent *shareableContentOrDie(void) {
 /// 사람이 눈으로 읽을 때는 `app` 이 여전히 편하므로 **두 열을 같이 둔다.**
 static void listWindows(void) {
     SCShareableContent *content = shareableContentOrDie();
-    printf("%-8s %-28s %-24s %-12s %s\n", "id", "bundle", "app", "크기(pt)", "제목");
+    printf("%-8s %-28s %-24s %-12s %-12s %s\n", "id", "bundle", "app", "크기(pt)", "위치(pt)", "제목");
     for (SCWindow *w in content.windows) {
         if (!w.onScreen) continue;
-        char size[32];
+        char size[32], pos[32];
         snprintf(size, sizeof(size), "%.0fx%.0f", w.frame.size.width,
                  w.frame.size.height);
+        // 위치 (pt · 화면 좌상단 원점) — 합성 클릭 (`cliclick c:x,y`) 의 좌표를 창에서
+        // 계산하려면 필요하다. Accessory 앱은 AX `position of window` 가 창을 못 찾고
+        // (#583 A4 실측), JXA 의 `CGWindowListCopyWindowInfo` 는 CFArray 를 풀지 못했다.
+        // **열은 크기 뒤 · 제목 앞**에 둔다 — 앞 열로 읽는 스크립트 (`$1` id · `$2` bundle ·
+        // `$4` 크기) 가 그대로 맞는다.
+        snprintf(pos, sizeof(pos), "%.0f,%.0f", w.frame.origin.x, w.frame.origin.y);
         // **빈 문자열도 `-` 로 채운다.** `?:` 는 nil 만 걸러서, bundle identifier 가 빈
         // 문자열인 앱은 그대로 통과해 **공백만 찍힌다.** 그러면 이 줄을 공백으로 쪼개 읽는
         // 쪽 (`compare-terminals.sh` 의 awk) 에서 **열이 하나 통째로 밀려** 엉뚱한 값을 본다.
@@ -82,8 +88,8 @@ static void listWindows(void) {
         if (!bundle || !*bundle) bundle = "-";
         const char *app = w.owningApplication.applicationName.UTF8String;
         if (!app || !*app) app = "(?)";
-        printf("%-8u %-28s %-24s %-12s %s\n", (unsigned)w.windowID, bundle, app,
-               size, w.title.UTF8String ?: "");
+        printf("%-8u %-28s %-24s %-12s %-12s %s\n", (unsigned)w.windowID, bundle, app,
+               size, pos, w.title.UTF8String ?: "");
     }
 }
 
