@@ -1664,7 +1664,7 @@ glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 �
 |---|---|---|
 | macOS | `atlas_common.fontId` — **PostScript 이름의 FNV-1a 64bit 해시** | CoreText 가 CTLine 마다 새 객체를 준다. 같은 `Monaco` 가 주소 **50 개** (640 byte 간격 순차 할당). cluster 2,816 종 화면이 항목 5,600 개 = 정확히 2 배를 썼다 |
 | Windows | **같은 `atlas_common.fontId`** | DirectWrite system fallback (`tryClusterOnSystemFallback`) 이 `CreateFontFace` 로 매번 새 객체를 만든다. fallback 폰트 6 종 · cluster 7,560 종 화면에서 `MV Boli` 가 한 프로세스 안에서 주소 **2 개**로 나왔다 |
-| Linux | chain face **index** (`gl_atlas.Key.face`, `u8`) | 인덱스는 chain 배열의 자리라 **애초에 주소가 아니다.** 같은 계약을 다른 방식으로 지킨다 |
+| Linux | 합성 cluster 는 **내용 해시** (`font/linux/font.zig` 의 `composeCluster` — glyph_index · x_offset · y_offset · x_advance 의 Wyhash), 폰트 축은 chain face **index** (`gl_atlas.Key.face`, `u8`) | **애초에 주소가 없다.** 아래 「Linux 가 계약을 지키는 근거는 셋이다」 |
 
 **family 이름이 아니라 PostScript 이름이다.** `Menlo-Bold` 와 `Menlo-Regular` 는 family 가 둘 다 `"Menlo"` 라, family 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 — [#529](https://github.com/ensky0/tildaz/issues/529) 가 그것이었다.
 
@@ -1688,15 +1688,38 @@ macOS 실측 — 다국어 화면 (cluster 7,560 종) 에서 이 맵의 서로 �
 
 cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPACITY` = 2048) 는 **넘치면 통째로 비워지면서 face 를 놓는다** — 그것이 위 문제의 출발점이다.
 
+**Linux 가 계약을 지키는 근거는 셋이다** (2026-09-02 소스 판정 + 실기). 인덱스라는 것만으로는 부족하다 — 인덱스가 *재사용되면* 같은 키가 다른 폰트를 뜻하게 되고, 캐시가 *비워지면* 같은 그림이 새 키로 담긴다. 셋이 함께여야 위 사슬이 끊긴다.
+
+| # | 근거 | 어디 |
+|---|---|---|
+| 1 | 합성 cluster 키가 **내용 해시**라 같은 그림이면 항상 같은 키다 | `font/linux/font.zig` 의 `composeCluster` |
+| 2 | fallback face index 를 **재사용하지 않는다** — `MAX_FALLBACK` (8) 에 닿으면 퇴출이 아니라 그 자리에서 placeholder + 로그 | 같은 파일의 `loadFallbackForCp` |
+| 3 | 합성 비트맵 맵 `composed_glyphs` 에 **상한이 없다.** 폰트를 다시 로드할 때만 비운다 | 같은 파일의 `Context.composed_glyphs` |
+
+3 번이 macOS 를 부풀린 사슬을 끊는다. 그쪽은 *"`cluster_cache` 가 넘쳐 비워지면 face 를 놓고, 다시 shape 하면 CoreText 가 새 객체를 준다"* 였는데, Linux 는 `cluster_cache` 가 비워져도 다시 shape 한 **내용이 같으므로 해시가 같고 곧 같은 키**다. cluster 10,400 종 화면 (`CAPACITY` 의 5 배) 실측에서 face index 가 하나뿐이었고 같은 그림이 두 키로 담긴 흔적이 없었다.
+
 #### ① 찼을 때 — 이미 그린 것을 지킨다
 
-**셀 루프는 셀마다 atlas 에 넣고 그 자리에서 인스턴스를 emit 한 뒤 프레임 끝에 한 번 업로드한다.** 그래서 프레임 중간에 atlas 를 비우면 앞서 emit 한 인스턴스의 UV 가 빈 자리를 가리켜 **그 글자들이 사라진다.** 비우기 전에 flush 하는 것이 이를 막는 유일한 방법이다.
+**셀 루프는 셀마다 atlas 에 넣고 그 자리에서 인스턴스를 emit 한 뒤 나중에 그린다.** 그래서 프레임 중간에 atlas 를 비우면 앞서 emit 한 인스턴스의 UV 가 **이제 다른 것이 들어 있는 자리**를 가리킨다. 비우기 전에 flush 하는 것이 이를 막는 유일한 방법이다.
+
+**어긋난 것이 어떻게 보이는지는 비울 때 픽셀을 지우는지에 달렸다.**
+
+| 비울 때 | 앞서 emit 한 글자 | 어느 platform |
+|---|---|---|
+| 픽셀을 **0 으로 지운다** | **사라진다** (빈 칸) | macOS (`@memset(pixels, 0)`) |
+| 커서만 되돌린다 | **다른 글자로 바뀐다** — 그 자리에 새로 올라온 글리프가 보인다 | Linux · Windows |
+
+빈 칸이 눈에 더 잘 띄므로 **후자가 더 알아보기 어려운 실패다** — 그럴듯한 다른 글자는 "폰트가 이상한가" 로 읽힌다.
 
 | platform | 구현 | 상태 |
 |---|---|---|
 | **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
+| **Linux** | `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
 | **macOS** | 그 자리에서 `reset()` + `@memset(pixels, 0)` | **미구현** ([#584](https://github.com/ensky0/tildaz/issues/584)) |
-| **Linux** | 그 자리에서 `reset()` | **미구현** ([#584](https://github.com/ensky0/tildaz/issues/584)) |
+
+**Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
+
+**재시도는 한 번뿐이다** (세 platform 공통). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 
 **Windows 실측** (노트북 · Ryzen AI 7 350 · Windows 11 Pro 26200 · 2880x1800 120 Hz · 150 % · `cell 14x29` · Cascadia Code 15pt). `ATLAS_SIZE` 를 2048 → 256 (넓이로 1/64) 으로 임시로 줄여 강제로 채웠다.
 
@@ -1705,7 +1728,18 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | `atlas full` | 0 회 | 한 화면을 그리는 데 **15 회** |
 | 그림 | — | **두 판이 `0 / 1,258,008 px` — 완전 동일** |
 
-**실패 모양이 platform 마다 다르다.** macOS 는 매 프레임 다시 채우므로 **화면이 계속 깜빡인다.** Windows 는 화면이 바뀔 때만 다시 그리므로 (6 초 · 120 Hz 에서 `resets` 가 15 에서 멈춘다) 안전망이 없었다면 깜빡임이 아니라 **틀린 화면이 그대로 멈춰** 있었을 것이다 — 더 눈에 안 띄는 실패다.
+**Linux 실측** (노트북 · Ryzen AI 7 350 · CachyOS · KDE Plasma Wayland · 2880x1800 120 Hz · scale 1.6 · `render_path=gpu-gl` · `cell 14x31` · DejaVu Sans Mono 15pt). 결합 기호 cluster **10,400 종** 화면 (200 칸 × 52 줄) 이라 기본 `ATLAS_SIZE` 로도 찬다. **기준은 `ATLAS_SIZE=4096` 판**이다 — 그 화면으로 안 넘치므로 (`atlas full` 0 회) 그것이 온전한 그림이다.
+
+| | 안전망 전 | 안전망 후 |
+|---|---|---|
+| `ATLAS_SIZE=2048` · `atlas full` | 한 화면에 **4 회** (`glyphs` 8,971~9,156 · `filled_y` 2,042~2,047) | 같음 — 안전망은 *차는 것*을 막지 않는다 |
+| 2048 판과 4096 기준판의 그림 | **213,940 / 4,416,000 px 다름** (위쪽 6.22 줄) | **`0 px`** |
+| `ATLAS_SIZE=256` (강제) · `atlas full` | 한 화면에 **292 회** | 같음 |
+| 256 판과 4096 기준판의 그림 | **2,244,514 px 다름** (50.83 %) | **`0 px`** |
+
+어긋난 폭이 산술과 맞았다 — 마지막 프레임이 `glyphs=9,156` 에서 비웠고 화면이 10,400 셀이므로 남은 `1,244` 셀이 앞자리를 덮어써 `1,244 ÷ 200 = 6.22` 줄이다.
+
+**실패 모양이 platform 마다 다르다.** macOS 는 매 프레임 다시 채우므로 **화면이 계속 깜빡인다.** **Linux · Windows 는 화면이 바뀔 때만 다시 그리므로** (Windows 는 6 초 · 120 Hz 에서 `resets` 가 15 에서 멈췄고, Linux 는 두 회차의 그림이 `0 px` 로 같았다) 깜빡임이 아니라 **틀린 화면이 그대로 멈춘다** — 더 눈에 안 띄는 실패다. Windows 는 안전망이 있어 가정법이지만, Linux 는 안전망을 넣기 전까지 실제로 그랬다.
 
 #### ③ 로그 — 세 platform 이 같은 문구
 
@@ -1723,7 +1757,7 @@ atlas full — cleared and refilling (<kind>, resets=N, glyphs=N, clusters=N, fo
 | `filled_y` | 채운 높이 (px) |
 | `resets` | 비운 누적 횟수 |
 
-Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이다.
+Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이고, `glyphs` 는 **찬 surface 의 캐시 항목 수**다 (`kind` 와 같은 축이라 두 값이 짝이 맞는다).
 
 #### ② 용량 — 실측 기준선
 
@@ -1733,6 +1767,9 @@ Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리�
 |---|---|---|
 | Windows · Cascadia Code 15pt · `cell 14x29` (150 %) | 2048² | `glyphs 925` + `clusters 5,157` = **6,082** (`filled_y 2,037`) |
 | macOS · Monaco | 2048² | 약 **5,880** |
+| Linux · DejaVu Sans Mono 15pt · `cell 14x31` (scale 1.6) · gray | 2048² | **8,971 ~ 9,156** (`filled_y` 2,042~2,047) |
+
+Linux 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 
 **용량으로 막는 것은 포기한다.** 4K@2x 최악 (11,110 종) 은 4096² (약 11,000) 으로도 경계라, ① 이 받게 한다.
 
