@@ -9,6 +9,7 @@ const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
+const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
@@ -51,6 +52,14 @@ pub const GlyphResult = struct {
 
     /// 유효한 글리프 수. 1 이면 `index` 만 쓰면 된다.
     count: u8 = 1,
+
+    /// #584 — atlas 의 cluster 키가 쓰는 **안정된 폰트 식별자**. cluster 안 글리프들의
+    /// PostScript 이름 id (`atlas_common.fontId`) 를 순서대로 누적한 값이다.
+    ///
+    /// **폰트 객체 주소를 쓰면 안 된다** — CoreText 는 같은 폰트에 CTLine 마다 새 객체를 준다
+    /// (실측: 같은 `Monaco` 가 주소 50 개). 주소를 키에 실으면 같은 그림이 주소마다 새로 담겨
+    /// atlas 가 몇 배로 찬다.
+    font_id: u64 = 0,
 
     /// #401 — cluster 가 차지하는 가로 폭 (pt). 셀 안 가운데 정렬이 이 값을 쓴다.
     ///
@@ -192,6 +201,13 @@ fn normalizeFamily(name: []const u8, buf: []u8) []const u8 {
 }
 
 pub const CoreTextFontContext = struct {
+    /// ⚠️ **임시 진단** ([#584](https://github.com/ensky0/tildaz/issues/584)) — cluster 에 쓰인
+    /// 폰트 객체 주소를 처음 볼 때 family 이름을 로그에 한 번 남긴다. 같은 이름이 여러 주소로
+    /// 나오면 atlas 의 `ClusterKey.font_ptr` 이 같은 그림을 여러 번 담는다는 뜻이다.
+    /// **원인 규명이 끝나면 지운다.**
+    diag_font_seen: [64]usize = [_]usize{0} ** 64,
+    diag_font_n: u32 = 0,
+
     primary_font: ct.CTFontRef,
     font_em_size: f32,
     /// Retina scale factor — physical pixels per logical point. CoreText shape
@@ -661,6 +677,9 @@ pub const CoreTextFontContext = struct {
             const run_attrs = ct.CTRunGetAttributes(run);
             const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
             const run_font: ct.CTFontRef = @constCast(font_val);
+            self.diagClusterFont(run_font); // ⚠️ 임시 진단 (#584)
+            // #584 — **run 당 한 번만** 잰다. 이 run 의 글리프는 모두 이 폰트다.
+            const run_font_id = fontIdOf(run_font);
 
             const n: usize = @intCast(glyph_count);
             var glyphs_buf: [MAX_RUN_CLUSTERS * 2]ct.CGGlyph = undefined;
@@ -701,7 +720,7 @@ pub const CoreTextFontContext = struct {
                     g_hi[ci] = g;
                     // `index` 는 run 순서상 첫 글리프다 — 개별 경로와 같다. 폰트 retain 은
                     // **글리프를 담을 때마다** 한다 (`releaseCluster` 가 `count` 만큼 놓는다).
-                    out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0 };
+                    out[ci] = .{ .font = run_font, .index = glyph, .owned = true, .count = 0, .font_id = 0 };
                     count += 1;
                 } else if (!touched[ci]) {
                     // 앞선 run 이 이미 채운 cluster 다. 섞지 않는다.
@@ -715,6 +734,8 @@ pub const CoreTextFontContext = struct {
                     out[ci].positions[out[ci].count] = positions[g];
                     out[ci].fonts[out[ci].count] = run_font;
                     _ = ct.CFRetain(run_font);
+                    // #584 — 담는 순서대로 섞는다. atlas 키가 이 값으로 cluster 를 가른다.
+                    out[ci].font_id = mixFontId(out[ci].font_id, run_font_id);
                     out[ci].count += 1;
                 }
             }
@@ -820,6 +841,55 @@ pub const CoreTextFontContext = struct {
         return result;
     }
 
+    /// #584 — 폰트의 **PostScript 이름**으로 안정된 id 를 만든다.
+    ///
+    /// **run 당 한 번만 부른다** — 이름 조회가 `CFStringGetBytes` 를 타므로 cluster 마다
+    /// 부르면 비싸다. CTRun 하나는 폰트가 하나라 run 단위가 자연스러운 경계다.
+    ///
+    /// 이름을 못 읽으면 0 을 낸다. 그러면 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수
+    /// 있지만, **주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다** — 둘 중 덜 나쁜 쪽이다.
+    fn fontIdOf(f: ct.CTFontRef) u64 {
+        const name = ct.CTFontCopyPostScriptName(f);
+        defer ct.CFRelease(@ptrCast(name));
+        const len = ct.CFStringGetLength(name);
+        if (len <= 0) return 0;
+        var buf: [128]u8 = undefined;
+        var used: ct.CFIndex = 0;
+        _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = len }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
+        if (used <= 0) return 0;
+        return atlas_common.fontId(buf[0..@intCast(used)]);
+    }
+
+    /// cluster 의 폰트 id 를 누적한다. 순서가 반영돼야 한다 — 같은 폰트 두 개가 순서만 다른
+    /// cluster 는 그림이 다르다.
+    fn mixFontId(acc: u64, id: u64) u64 {
+        return (acc *% 0x100000001b3) ^ id;
+    }
+
+    /// ⚠️ **임시 진단** (#584). 처음 보는 폰트 주소면 family 이름을 로그에 남긴다.
+    /// **원인 규명이 끝나면 이 함수와 `diag_font_*` 필드를 함께 지운다.**
+    fn diagClusterFont(self: *CoreTextFontContext, f: ct.CTFontRef) void {
+        const p = @intFromPtr(f);
+        for (self.diag_font_seen[0..self.diag_font_n]) |seen| {
+            if (seen == p) return;
+        }
+        if (self.diag_font_n >= self.diag_font_seen.len) return;
+        self.diag_font_seen[self.diag_font_n] = p;
+        self.diag_font_n += 1;
+
+        const name = ct.CTFontCopyFamilyName(f);
+        defer ct.CFRelease(@ptrCast(name));
+        var buf: [128]u8 = undefined;
+        const len = ct.CFStringGetLength(name);
+        var used: ct.CFIndex = 0;
+        if (len > 0) {
+            _ = ct.CFStringGetBytes(name, ct.CFRange{ .location = 0, .length = len }, ct.kCFStringEncodingUTF8, 0, false, &buf, @intCast(buf.len), &used);
+        }
+        log.appendLine("gpu", "cluster font #{d}: ptr=0x{x} family=\"{s}\"", .{
+            self.diag_font_n, p, if (used > 0) buf[0..@intCast(used)] else "?",
+        });
+    }
+
     fn resolveGraphemeUncached(self: *CoreTextFontContext, cps: []const u21) ?GlyphResult {
         if (cps.len == 0) return null;
 
@@ -882,6 +952,8 @@ pub const CoreTextFontContext = struct {
         var fonts: [MAX_CLUSTER_GLYPHS]ct.CTFontRef = undefined;
         var take: usize = 0;
         var advance: f64 = 0;
+        // #584 — 담는 순서대로 섞은 폰트 id. atlas 키가 이 값으로 cluster 를 가른다.
+        var font_id_acc: u64 = 0;
 
         var r: ct.CFIndex = 0;
         while (r < run_count and take < MAX_CLUSTER_GLYPHS) : (r += 1) {
@@ -896,6 +968,8 @@ pub const CoreTextFontContext = struct {
             const run_attrs = ct.CTRunGetAttributes(run);
             const font_val = ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName)) orelse continue;
             const run_font: ct.CTFontRef = @constCast(font_val);
+            // #584 — **run 당 한 번만** 잰다. 이 run 의 글리프는 모두 이 폰트다.
+            const run_font_id = fontIdOf(run_font);
 
             const n: usize = @min(@as(usize, @intCast(glyph_count)), MAX_CLUSTER_GLYPHS - take);
             var gbuf: [MAX_CLUSTER_GLYPHS]ct.CGGlyph = undefined;
@@ -918,6 +992,7 @@ pub const CoreTextFontContext = struct {
                 positions[take] = pbuf[i];
                 fonts[take] = run_font;
                 _ = ct.CFRetain(run_font);
+                font_id_acc = mixFontId(font_id_acc, run_font_id);
                 take += 1;
             }
             // cluster 폭은 run 들의 폭을 더한다. run 이 하나면 곧 그 cluster 의 폭이다.
@@ -945,6 +1020,7 @@ pub const CoreTextFontContext = struct {
             .fonts = fonts,
             .count = @intCast(take),
             .advance = @floatCast(advance),
+            .font_id = font_id_acc,
         };
     }
 

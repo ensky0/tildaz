@@ -1058,7 +1058,7 @@ pub const MetalRenderer = struct {
                             }
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
-                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                            const entry_opt = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
                             mac_font.releaseCluster(result);
                             if (entry_opt) |entry| {
                                 if (entry.w > 0 and entry.h > 0) {
@@ -1083,7 +1083,7 @@ pub const MetalRenderer = struct {
                     const r_opt = self.font.resolveGrapheme(cluster[0 .. 1 + take]);
                     if (r_opt) |result| {
                         // #401 — 위 배칭 경로와 같은 이유로 multi-glyph 를 합성해 그린다.
-                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+                        const entry_opt = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
                         mac_font.releaseCluster(result);
                         if (entry_opt) |entry| {
                             if (entry.w > 0 and entry.h > 0) {

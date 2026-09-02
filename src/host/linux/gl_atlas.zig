@@ -285,13 +285,14 @@ pub const Atlas = struct {
             // 만들었을 수 있다. 그 프레임은 일부 글리프가 어긋나 보일 수 있고,
             // 다음 프레임부터 정상이다 — atlas 를 키우지 않는 한 근본 회피가
             // 불가능한 지점이라 정직하게 남긴다 (`resets` 로 빈도를 관찰한다).
+            // 비우기 **전에** 읽는다 — 그 값이 실제로 담을 수 있었던 양이다.
+            // Linux 는 cluster 를 별도 맵에 두지 않는다 (인덱스 캐시 하나다) — cluster 칸은 0.
+            const held = self.cache.count();
+            const filled_y = surface.cursor_y + surface.row_height;
             self.cache.clearRetainingCapacity();
             surface.reset();
-            // 사용자 로그에 남긴다 — 이 줄이 자주 보이면 `ATLAS_SIZE` 를 키울 근거다.
-            log.appendLine("gpu", "GL atlas {s} full — clearing and refilling (resets={d})", .{
-                if (is_color) "color" else "gray",
-                surface.resets,
-            });
+            // 사용자 로그에 남긴다 — 문구는 세 platform 공통 정의를 쓴다 (#576).
+            log.logAtlasFull(if (is_color) "color" else "gray", surface.resets, held, 0, 0, filled_y);
             break :blk atlas_common.packRow(
                 &surface.cursor_x,
                 &surface.cursor_y,

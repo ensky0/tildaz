@@ -16,6 +16,7 @@ const std = @import("std");
 const ct = @import("../../font/macos/coretext.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const atlas_common = @import("../glyph_atlas_common.zig");
+const log = @import("../../log.zig");
 
 pub const ATLAS_SIZE: u32 = 2048;
 
@@ -48,6 +49,11 @@ pub const GlyphAtlas = struct {
     // 아틀라스 픽셀 데이터 (BGRA8 — 4 bytes per pixel, premultiplied alpha).
     // 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는 (B*a, G*a, R*a, a).
     pixels: []u8,
+
+    /// 가득 차서 통째로 비운 횟수. **scale 변경으로 부르는 `reset` 은 세지 않는다** —
+    /// 그쪽은 정상 동작이다. 이 값이 프레임마다 늘면 한 화면이 요구하는 글리프가 용량을
+    /// 넘었다는 뜻이다 ([#584](https://github.com/ensky0/tildaz/issues/584)).
+    resets: u32 = 0,
 
     // Metal 업로드를 위한 dirty 영역 트래킹.
     dirty: bool = false,
@@ -107,6 +113,9 @@ pub const GlyphAtlas = struct {
     pub fn getOrInsertCluster(
         self: *GlyphAtlas,
         font: ct.CTFontRef,
+        /// #584 — cluster 안 글리프들의 폰트를 가리키는 **안정된 id** (`GlyphResult.font_id`).
+        /// 폰트 층이 PostScript 이름으로 만들어 넘긴다. **주소를 넣지 않는다.**
+        font_id: u64,
         glyphs: []const ct.CGGlyph,
         positions: []const ct.CGPoint,
         /// #420 — 글리프마다의 폰트. `가` + acute 처럼 CoreText 가 base 와 mark 를 다른 폰트로
@@ -119,22 +128,20 @@ pub const GlyphAtlas = struct {
         if (glyphs.len == 0) return null;
         if (glyphs.len == 1) return self.getOrInsert(font, glyphs[0]);
 
-        // 키는 글리프 인덱스들의 해시다. 같은 인덱스 조합이면 결과가 같다 (positions 는 그
-        // 조합에서 결정되므로 키에 안 넣는다). **폰트도 전부 넣는다** — 같은 인덱스가 폰트마다
-        // 다른 글리프를 가리키므로, 갈린 cluster 를 인덱스만으로 구분하면 남의 그림을 준다.
+        // 키는 글리프 인덱스들의 해시 + **폰트 id** 다. 같은 인덱스 조합이면 결과가 같다
+        // (positions 는 그 조합에서 결정되므로 키에 안 넣는다).
+        //
+        // **폰트는 `font_id` 로만 본다** (#584). 같은 인덱스가 폰트마다 다른 글리프를 가리키므로
+        // 폰트 식별은 반드시 필요하지만, 예전처럼 **주소**를 해시에 섞으면 안 된다 — CoreText 가
+        // 같은 폰트에 CTLine 마다 새 객체를 줘서 같은 그림이 주소마다 새로 담겼다. `font_id` 는
+        // cluster 안 글리프들의 폰트를 순서까지 담고 있어 갈린 cluster 도 구분된다.
         //
         // ⚠️ **해시를 자르지 않고, 일반 글리프와 다른 맵에 넣는다** (#529). 예전에는 `u16` 으로
         // 잘라 `cache` 에 넣었는데, 그 대역이 *진짜* glyph index 와 같은 자리라 값이 겹치면 먼저
         // 들어간 쪽의 비트맵이 나왔다 — 실기에서 `a̸` 자리에 `U` 가 그려졌다.
         var h = std.hash.Wyhash.init(0xC1_05_7E_47);
         for (glyphs) |g| h.update(std.mem.asBytes(&g));
-        if (fonts.len == glyphs.len) {
-            for (fonts) |f| {
-                const p = @intFromPtr(f);
-                h.update(std.mem.asBytes(&p));
-            }
-        }
-        const key = ClusterKey{ .font_ptr = @intFromPtr(font), .indices_hash = h.final() };
+        const key = ClusterKey{ .font_id = font_id, .indices_hash = h.final() };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         const entry = self.rasterizeCluster(font, glyphs, positions, fonts, cluster_advance_pt) orelse return null;
@@ -170,7 +177,7 @@ pub const GlyphAtlas = struct {
         }
 
         const pos = self.packGlyph(size, size) orelse blk: {
-            self.reset();
+            self.resetFull("icon");
             break :blk self.packGlyph(size, size) orelse return null;
         };
         const atlas_x = pos[0];
@@ -211,6 +218,43 @@ pub const GlyphAtlas = struct {
         self.dirty = true;
         self.dirty_min_y = 0;
         self.dirty_max_y = ATLAS_SIZE;
+    }
+
+    /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`resetFull` 에서만 부른다).
+    ///
+    /// 화면이 쓰는 폰트 수와 이 값이 맞아야 한다. 크게 벗어나면 같은 그림이 여러 키로 담긴다는
+    /// 뜻이다 ([#584](https://github.com/ensky0/tildaz/issues/584) — 예전에는 키에 폰트 **주소**가
+    /// 실려 CoreText 가 새 객체를 줄 때마다 새 칸을 썼다). 256 개까지만 세고 그 이상은 256 으로
+    /// 보고한다.
+    fn distinctClusterFonts(self: *const GlyphAtlas) u32 {
+        var seen: [256]u64 = undefined;
+        var n: u32 = 0;
+        var it = self.cluster_cache.keyIterator();
+        while (it.next()) |k| {
+            var found = false;
+            for (seen[0..n]) |s| {
+                if (s == k.font_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (n >= seen.len) return @intCast(seen.len);
+                seen[n] = k.font_id;
+                n += 1;
+            }
+        }
+        return n;
+    }
+
+    /// **가득 차서** 비운다 — `reset` 에 횟수 세기와 로그를 얹은 것이다. scale 변경 경로와
+    /// 갈라 두어야 로그가 "용량이 모자란다" 는 뜻으로만 읽힌다
+    /// ([#584](https://github.com/ensky0/tildaz/issues/584)).
+    fn resetFull(self: *GlyphAtlas, kind: []const u8) void {
+        self.resets += 1;
+        // `reset` 전에 읽는다 — 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
+        log.logAtlasFull(kind, self.resets, self.cache.count(), self.cluster_cache.count(), self.distinctClusterFonts(), self.cursor_y + self.row_height);
+        self.reset();
     }
 
     /// #401 — 여러 글리프를 `positions` 대로 한 비트맵에 그린다. `rasterize` 의 multi-glyph 판이라
@@ -360,7 +404,7 @@ pub const GlyphAtlas = struct {
         }
 
         const pos = self.packGlyph(gw, gh) orelse blk: {
-            self.reset();
+            self.resetFull("cluster");
             break :blk self.packGlyph(gw, gh) orelse return null;
         };
         const atlas_x = pos[0];
@@ -499,7 +543,7 @@ pub const GlyphAtlas = struct {
 
         // 아틀라스에 packing.
         const pos = self.packGlyph(gw, gh) orelse blk: {
-            self.reset();
+            self.resetFull("glyph");
             break :blk self.packGlyph(gw, gh) orelse return null;
         };
 

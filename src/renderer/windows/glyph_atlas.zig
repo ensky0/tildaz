@@ -18,6 +18,7 @@
 const std = @import("std");
 const dw = @import("../../font/windows/directwrite.zig");
 const dwrite_font = @import("../../font/windows/font.zig");
+const log = @import("../../log.zig");
 const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
@@ -97,6 +98,20 @@ pub const GlyphAtlas = struct {
 
     // Set to true when getOrInsert finds the atlas full; caller must flush, call reset(), then retry.
     is_full: bool = false,
+    /// #584 — 가득 차서 비운 횟수. `reset` 은 호출자가 `is_full` 을 보고서만 부르므로 이 값이
+    /// 곧 "용량이 모자라 다시 채운 횟수" 다.
+    resets: u32 = 0,
+    /// #584 — 어느 라스터 경로에서 찼는지. `icon` (탭바 아이콘) · `mono` (`rasterize` — 단일
+    /// 글리프와 합성 cluster 가 함께 온다) · `color` (`rasterizeColor` — 컬러 emoji). macOS 는
+    /// 단일과 cluster 가 함수부터 갈려 있어 라벨이 다르다.
+    full_kind: []const u8 = "unknown",
+    /// ⚠️ **임시 진단** ([#584](https://github.com/ensky0/tildaz/issues/584)) — cluster 에 쓰인
+    /// face 주소를 처음 볼 때 로그에 남긴다. chain face 수 (최대 8 + bold/italic 변종) 보다
+    /// 훨씬 많으면 DirectWrite 가 fallback face 를 **매번 새로 만든다**는 뜻이고, 그러면
+    /// `ClusterKey.font_id` 에 주소를 두는 지금 방식이 macOS 와 같은 증상을 낸다 (같은 그림이
+    /// 주소마다 새로 담겨 atlas 가 부풀고 화면이 깜빡임). **확인이 끝나면 지운다.**
+    diag_face_seen: [64]usize = [_]usize{0} ** 64,
+    diag_face_n: u32 = 0,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -347,8 +362,17 @@ pub const GlyphAtlas = struct {
         if (glyph_indices.len == 0) return null;
         if (glyph_indices.len == 1) return self.getOrInsert(face, glyph_indices[0]);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
+        self.diagFace(face); // ⚠️ 임시 진단 (#584)
 
-        const key = ClusterKey{ .font_ptr = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
+        // #584 — `font_id` 는 폰트를 가리키는 **안정된 값**이어야 한다. Windows 는 chain face 를
+        // `chain_faces` 배열에 담아 재사용하므로 그 주소가 안정적이고, 그래서 주소를 그대로
+        // 쓴다.
+        //
+        // ⚠️ **system fallback 경로는 확인하지 않았다.** DirectWrite 가 chain 밖 폰트의 face 를
+        // 매번 새로 만들어 주면 macOS 와 같은 증상 (같은 그림이 주소마다 새로 담겨 atlas 가
+        // 부풀고 화면이 깜빡임) 이 난다 — macOS 는 CoreText 가 그랬다 (같은 `Monaco` 가 주소
+        // 50 개). Windows 실기에서 `logAtlasFull` 의 `fonts` 값으로 확인한다.
+        const key = ClusterKey{ .font_id = @intFromPtr(face), .indices_hash = hashIndices(glyph_indices) };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         // #415 · #418 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
@@ -508,6 +532,7 @@ pub const GlyphAtlas = struct {
 
         const pos = self.packGlyph(size, size) orelse {
             self.is_full = true;
+            self.full_kind = "icon";
             return null;
         };
         const box = d3d.D3D11_BOX{
@@ -539,7 +564,56 @@ pub const GlyphAtlas = struct {
     }
 
     /// Reset the atlas (clear cache and packing state). Call only after flushing all pending draws.
+    /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`reset` 에서만 부른다).
+    ///
+    /// 화면이 쓰는 폰트 수와 맞아야 한다. 크게 벗어나면 같은 그림이 여러 키로 담긴다는 뜻이다
+    /// ([#584](https://github.com/ensky0/tildaz/issues/584)). 256 개까지만 센다.
+    fn distinctClusterFonts(self: *const GlyphAtlas) u32 {
+        var seen: [256]u64 = undefined;
+        var n: u32 = 0;
+        var it = self.cluster_cache.keyIterator();
+        while (it.next()) |k| {
+            var found = false;
+            for (seen[0..n]) |x| {
+                if (x == k.font_id) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (n >= seen.len) return @intCast(seen.len);
+                seen[n] = k.font_id;
+                n += 1;
+            }
+        }
+        return n;
+    }
+
+    /// ⚠️ **임시 진단** (#584). 처음 보는 face 주소를 로그에 남긴다.
+    /// **확인이 끝나면 이 함수와 `diag_face_*` 필드를 함께 지운다.**
+    fn diagFace(self: *GlyphAtlas, face: *dw.IDWriteFontFace) void {
+        const p = @intFromPtr(face);
+        for (self.diag_face_seen[0..self.diag_face_n]) |x| {
+            if (x == p) return;
+        }
+        if (self.diag_face_n >= self.diag_face_seen.len) return;
+        self.diag_face_seen[self.diag_face_n] = p;
+        self.diag_face_n += 1;
+        log.appendLine("gpu", "cluster face #{d}: ptr=0x{x}", .{ self.diag_face_n, p });
+    }
+
     pub fn reset(self: *GlyphAtlas) void {
+        // #584 — 비우기 **전에** 남긴다. 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
+        // 세 platform 이 같은 문구를 쓴다 (#576).
+        self.resets += 1;
+        log.logAtlasFull(
+            self.full_kind,
+            self.resets,
+            self.cache.count(),
+            self.cluster_cache.count(),
+            self.distinctClusterFonts(),
+            self.cursor_y + self.row_height,
+        );
         self.cache.clearRetainingCapacity();
         self.cluster_cache.clearRetainingCapacity();
         self.cursor_x = 0;
@@ -666,6 +740,7 @@ pub const GlyphAtlas = struct {
         // Pack into atlas; if full, signal caller to flush+reset+retry before we overwrite anything
         const pos = self.packGlyph(w, h) orelse {
             self.is_full = true;
+            self.full_kind = "mono";
             return null;
         };
 
@@ -834,6 +909,7 @@ pub const GlyphAtlas = struct {
 
         const pos = self.packGlyph(w, h) orelse {
             self.is_full = true;
+            self.full_kind = "color";
             return null;
         };
 
