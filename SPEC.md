@@ -1813,11 +1813,11 @@ macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow
 |---|---|
 | Windows | 삽입 즉시 `UpdateSubresource` → 그 프레임의 draw 가 본다 |
 | Linux | 삽입 즉시 `glTexSubImage2D` → 같음 |
-| macOS | 셀 루프는 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에), `endFrame` 이 **dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
+| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에 — 본문은 `.text`, 탭 atlas 는 `.tab_text`), `endFrame` 이 **두 atlas 의 dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
 
 macOS 가 그렇게 된 이유 — Metal 은 render encoder 가 열린 동안 텍스처를 갈 수 없다 (blit 은 encoder 밖). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을 끼울 수 없었고, **프레임 시작에 지난 프레임 것을 올리는** 2-frame 구조였다 — 새 글리프가 한 프레임 늦게 보였고 host 가 `atlas.dirty` 를 보고 한 프레임을 더 요청해야 했다. #591 에서 draw 를 셀 루프 뒤로 미루자 그 지연과 재요청이 함께 사라졌다. 실측 (한 줄 출력 화면 · 자연 종료 시 perf 덤프의 `render calls`): 전 **6 · 6 · 5** vs 후 **5 · 5 · 5** — 재요청 프레임 하나가 두 회차에서 보였고, 한 회차는 초기 프레임과 겹친 것으로 보이나 확정하지 않았다. 부수로 draw call 이 프레임당 구간 수만큼으로 줄고 (`MAX_CELLS` 4096 마다 하던 중간 flush 가 없다), 셀 루프의 지역 인스턴스 배열 (bg 48 B + text 64 B) × 4096 = 약 448 KiB 스택이 없어졌다. 그리기 순서는 구간을 닫는 순서로 지킨다 — 셀 bg · SGR 선 → 글리프 → block · box → 커서 → 스크롤바 → preedit 배경 → preedit 글자.
 
-**탭 atlas 는 아직 다음 프레임이다** — 탭바 · 스트립 · 메뉴는 `endFrame` 의 encoder 안에서 담고 그리므로 그 글리프는 다음 프레임 시작에 올라간다 (host 가 `tabAtlasDirty()` 로 한 프레임 더 요청). 같은 프레임으로 옮기는 것은 #591 2 단계다.
+**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 두 atlas 를 올리고 그린다. clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
 
 **비운 뒤 재시도는 한 번뿐이다** (세 platform 공통 — macOS 는 그 앞에 `grow` 가 최대 두 번 더 있어 `insert*OrRecover` 가 세 번까지 돈다). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 

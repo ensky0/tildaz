@@ -4500,11 +4500,9 @@ fn renderFrameTick() void {
         hotkey_hint,
     );
 
-    // #255 · #591 — 본문 atlas 는 이제 `endFrame` 이 draw **앞에** 올리므로 처음 본 글리프도
-    // 같은 frame 에 보이고, 프레임이 끝나면 `atlas.dirty` 는 늘 false 다 (조건은 안전을 위해
-    // 남긴다). **탭 atlas 만 아직 다음 frame 에 올라간다** — 탭바 · 메뉴는 encoder 안에서
-    // 담고 그리기 때문이다 (#591 2 단계). 그래서 그것이 dirty 면 한 frame 더 요청한다.
-    if (g_renderer.?.atlas.dirty or g_renderer.?.tabAtlasDirty()) g_needs_render = true;
+    // #255 · #591 — 예전에는 "이번 frame 에 처음 본 글리프는 다음 frame 에 올라간다" (2-frame)
+    // 라 atlas 가 dirty 면 한 frame 을 더 요청했다. 이제 `endFrame` 이 본문 · 탭 atlas 를 모두
+    // draw **앞에** 올리므로 처음 본 글리프도 같은 frame 에 보이고, 그 재요청은 필요 없다.
 }
 
 /// CGEventTap 생성 + run loop source 등록 + 활성화.
