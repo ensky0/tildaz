@@ -2217,6 +2217,23 @@ pub const Window = struct {
                     if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam));
                 }
 
+                // #606 — kitty `report_all` 의 **modifier 단독 누름** (`Shift` → `CSI 57441;2u`). Shift · Ctrl ·
+                // Win 은 `WM_KEYDOWN` 으로 온다 (Alt 는 `WM_SYSKEYDOWN` 이 글자 없이 인코더로 보내 이미 나가고,
+                // Ctrl 을 누른 채의 Alt 만 여기로 온다). 뗌은 `WM_KEYUP` 이 모든 키를 인코더로 보내 이미 나간다.
+                // `report_all` 이 아니면 인코더가 modifier 항목을 걸러 바이트 0 개 → `false` 로 돌아와 아래가
+                // 그대로 이어진다. 물리 자리는 `physical_key` 표의 modifier 8 행 (scan · extended) 이 준다.
+                // IME 조합 중에는 손대지 않는다 — Shift 가 한글 조합의 일부다. CapsLock · NumLock 도 넣는다 —
+                // kitty 는 lock 키도 modifier 로 보고하고 (57358 · 57360) Windows 는 그 둘도 누름 · 뗌 짝으로 준다
+                // (macOS 는 CapsLock 뗌이 없어 뺐다 — `tildazFlagsChanged`).
+                if (kitty_active and self.imePreeditSlice().len == 0) {
+                    const is_modifier_vk = switch (wParam) {
+                        @as(WPARAM, @intCast(VK_SHIFT)), @as(WPARAM, @intCast(VK_CONTROL)), @as(WPARAM, @intCast(VK_MENU)) => true,
+                        0x5B, 0x5C, 0x14, 0x90 => true, // VK_LWIN · VK_RWIN · VK_CAPITAL · VK_NUMLOCK
+                        else => false,
+                    };
+                    if (is_modifier_vk and self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam))) return 0;
+                }
+
                 // #533 — kitty protocol 이 켜져 있을 때만 `Ctrl`+글자도 인코더로 보낸다.
                 // 평소에는 `WM_CHAR` 가 배열이 반영된 제어문자를 주므로 손대지 않는다 (그
                 // 경로가 AZERTY 의 `Ctrl+A` 를 `^A` 로 정확히 낸다 — 실기 확인). kitty 에서는

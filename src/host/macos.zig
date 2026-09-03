@@ -1350,6 +1350,41 @@ fn tildazKeyUp(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     _ = sendEncodedKeyMac(tab, event, "", .release);
 }
 
+/// #606 — modifier 단독 누름 · 뗌. AppKit 은 Shift · Control · Option · Command 를 `keyDown:` 이 아니라
+/// `flagsChanged:` 로 준다 — 그래서 kitty `report_all` 을 켠 앱 (kitty 자체의 `kitten show-key -m kitty`,
+/// helix 등) 이 `CSI 57441 u` 를 못 받았다 (macOS 만 그랬던 것이 아니라 세 platform 다 — 표에 modifier 가
+/// 없었다). 어느 쪽인지는 keyCode 로, 누름인지 뗌인지는 그 키의 **device 비트** (`NX_DEVICELSHIFTKEYMASK`
+/// 등 — 양쪽 Shift 를 함께 누른 뒤 하나만 떼면 일반 비트는 그대로라 좌우 비트가 필요하다) 로 가른다.
+/// 글자 번역은 `macCharsApplying` 이 modifier keyCode 를 미리 걸러 `""` 를 주므로 `sendEncodedKeyMac`
+/// 을 그대로 쓴다. `report_all` 이 아니면 인코더가 걸러 바이트 0 개.
+///
+/// CapsLock (0x39) 은 뺀다 — 토글 키라 `flagsChanged:` 가 누름에만 오고 뗌이 없어 kitty 의 누름 · 뗌
+/// 짝을 못 맞춘다. `keyUp:` 과 같은 가드 (command menu · IME 조합 중).
+fn tildazFlagsChanged(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (event == null) return;
+    if (g_command_menu_open) return;
+    if (g_marked_len > 0) return;
+    const tab = g_session.activeTab() orelse return;
+    const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
+    const keycode = get_keycode(event, objc.sel("keyCode"));
+    const flags = get_flags(event, objc.sel("modifierFlags"));
+    // IOKit `IOLLEvent.h` 의 device-dependent 비트. `kVK_Shift` 0x38 … `kVK_RightCommand` 0x36.
+    const device_mask: c_ulong = switch (keycode) {
+        0x38 => 0x0002, // NX_DEVICELSHIFTKEYMASK
+        0x3C => 0x0004, // NX_DEVICERSHIFTKEYMASK
+        0x3B => 0x0001, // NX_DEVICELCTLKEYMASK
+        0x3E => 0x2000, // NX_DEVICERCTLKEYMASK
+        0x3A => 0x0020, // NX_DEVICELALTKEYMASK
+        0x3D => 0x0040, // NX_DEVICERALTKEYMASK
+        0x37 => 0x0008, // NX_DEVICELCMDKEYMASK
+        0x36 => 0x0010, // NX_DEVICERCMDKEYMASK
+        else => return,
+    };
+    const action: key_encode.Action = if ((flags & device_mask) != 0) .press else .release;
+    _ = sendEncodedKeyMac(tab, event, "", action);
+}
+
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
     requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
@@ -3654,6 +3689,9 @@ fn registerTildazViewClass() !objc.Class {
     if (!objc.class_addMethod(cls, objc.sel("keyDown:"), @ptrCast(&tildazKeyDown), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("keyUp:"), @ptrCast(&tildazKeyUp), "v@:@"))
+        return error.ViewSubclassAddMethodFailed;
+    // #606 — modifier 단독 (kitty `report_all`). AppKit 은 이것을 `keyDown:` 으로 주지 않는다.
+    if (!objc.class_addMethod(cls, objc.sel("flagsChanged:"), @ptrCast(&tildazFlagsChanged), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
     if (!objc.class_addMethod(cls, objc.sel("scrollWheel:"), @ptrCast(&tildazScrollWheel), "v@:@"))
         return error.ViewSubclassAddMethodFailed;
