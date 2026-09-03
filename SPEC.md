@@ -2165,9 +2165,13 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
   `measure-repeat.sh --panes N` — barrier 러너로 N 개 producer **동시** 시작 · `split-panes.ps1` 로 4 열 × 2 행 분할 ·
   `plain` 64 MiB/pane · 5 회 절사평균, [#551 댓글](https://github.com/ensky0/tildaz/issues/551)): `render/call` 이
   1 · 2 · 4 · 8 pane 에서 **0.655 · 0.494 · 0.431 · 1.373 ms**, drain 141 · 350 · 853 · 2150 ms (8 pane 의 5 회 폭 2 %),
-  손실은 pane 당 16 byte (ConPTY 종료) 뿐. 1 · 4 pane 은 #572 회차와 같은 값인데 **8 pane 은 1.373 vs 0.894 로 갈린다** —
-  #572 회차의 격자 · 분할 순서 · 시작 동시성이 기록에 없어 원인은 **확인 필요** (후보: barrier 동시 시작이 8 producer 의
-  폭포를 한 프레임에 겹치게 한다). 8 pane 흔들림 (#583 A11 의 하네스 이봉 분포) 은 실제 앱에서 재현되지 않았다.
+  손실은 pane 당 16 byte (ConPTY 종료) 뿐. 1 · 4 pane 은 #572 회차와 같은 값인데 8 pane 은 1.373 vs 0.894 로 갈렸고,
+  **원인은 시작 동시성이다 — 같은 도구에서 producer 를 500 ms 간격으로 하나씩 시작하면 (`--stagger 500`) 8 pane 이
+  `render/call` 0.181 ms (0.177~0.184) · drain 1217 ms · 손실 같은 128 byte** 다. 동시 시작은 여덟 폭포가 매 프레임
+  화면 전체를 바꿔 프레임당 렌더가 무겁고, 순차 시작은 한 번에 한두 pane 만 바뀐다. 즉 **프레임당 렌더는 pane 수가 아니라
+  그 프레임에 바뀐 셀 수 (와 pane 마다 따로 내는 draw 세트) 에 비례한다.** #572 회차의 0.894 는 손으로 분할해 시작이
+  부분적으로 겹친 조건으로 설명된다 (그 회차는 조건을 적지 않았다). 8 pane 흔들림 (#583 A11 의 하네스 이봉 분포) 은
+  실제 앱에서 재현되지 않았다 — 동시 · 순차 모두 5 회 폭 2 % 안.
 
 합계 처리량은 격자를 고정했는데도 pane 수가 늘면 내려간다 (pane 하나의 몫이 아니라 합계다) — 격자 변화가 아니라
 producer · PTY · ring 경쟁 때문이다. `frame` 층은 프레임마다 한 번만 드레인해 (사양 A 없음) 앱의 하한이다.

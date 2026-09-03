@@ -84,6 +84,9 @@ dist/stress/measure-repeat.sh --phase win-pane8 --panes 8 --workloads plain   # 
 아래 "120 열은 3 열 상태에서 더 못 갈라요" 의 순서 그대로) 하고 로그 `[pane] … has N panes` 로 수를 확인한 뒤, ③ barrier
 파일을 만들어 N 개가 함께 시작해요. 단축키가 살아야 해서 `config_9.toml` (config_0 복사 · `auto_start = false`) 을 만들고
 `--instance 9` 로 띄우며 끝나면 지워요. 덤프 라벨은 workload 라 **phase 이름에 pane 수를 넣어 조건마다 따로** 불러요.
+`--stagger <ms>` 를 주면 barrier 를 한 번에 열지 않고 러너가 얻은 슬롯 번호 순서로 그 간격을 두고 열어요 — **시작 동시성
+대조군**이에요. 8 pane 의 프레임당 렌더가 동시 시작 1.373 ms · 500 ms 순차 0.181 ms 로 갈리는 것을 이걸로 갈랐어요 (#551).
+러너가 뜨는 즉시 시작하게 두는 방식은 안 돼요 — 첫 pane 의 64 MiB 폭포가 분할 키가 닿기 전에 끝나 앱이 종료돼요.
 Linux · macOS 는 아직 손 절차예요 (합성 키 도구가 platform 별이에요 — #551 macOS 회차는 `mac-input` 으로 했어요).
 
 **`zig build stress` 를 한 번 더 불러야** 해요 — 기본 `zig build` 는 `tildaz-stress` 를

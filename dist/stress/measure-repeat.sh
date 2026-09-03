@@ -54,6 +54,10 @@ IGNORE_HYGIENE=0
 # 파일을 기다린 뒤 producer 를 띄운다 — N 개가 함께 시작한다. 단축키가 살아야 해서 `config_9.toml`
 # 을 만들고 (`--instance 9`) 끝나면 지운다.
 PANES=1
+# `--stagger <ms>` — 분할이 끝난 뒤 producer 를 **하나씩 그 간격으로** 시작한다 (순차 시작 대조군). 동시 시작
+# (기본) 과 견줘 8 pane `render/call` 차이의 원인을 가른다 (#551). 러너가 뜨는 즉시 시작하게 두는 방식은 안 된다 —
+# 첫 pane 의 64 MiB 폭포가 분할 키가 닿기 전에 끝나 앱이 종료된다 (2026-09-03 실측 · 5 회 전부 pane 1).
+STAGGER_MS=0
 
 usage() {
     cat <<'USAGE'
@@ -69,6 +73,7 @@ usage() {
   --out <디렉터리>     결과 위치 (기본 dist/stress/shots)
   --ignore-hygiene     위생 점검에 걸려도 강행 (동작 확인용 — 기록용 측정에는 쓰지 않는다)
   --panes <N>          실제 앱을 N (1 · 2 · 4 · 8) 개 pane 으로 갈라 pane 마다 producer (#551 A11). Windows 만.
+  --stagger <ms>       --panes 에서 producer 를 함께 시작하지 않고 그 간격으로 하나씩 시작 (동시성 대조군)
                        phase 이름에 pane 수를 넣어 조건별로 따로 부른다 (덤프 라벨은 workload 다)
 USAGE
 }
@@ -85,6 +90,7 @@ while [ $# -gt 0 ]; do
         --out) OUT="$2"; shift 2 ;;
         --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
         --panes) PANES="$2"; shift 2 ;;
+        --stagger) STAGGER_MS="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "모르는 옵션: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -221,7 +227,8 @@ while [ "$i" -le "$REPEAT" ]; do
             $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback "$SCROLLBACK" \
                 >/dev/null 2>&1 || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
         else
-            rm -f "$BARRIER"
+            rm -rf "$BARRIER" "$BARRIER".slots "$BARRIER"-[0-9]*
+            [ "$STAGGER_MS" != 0 ] && mkdir -p "$BARRIER.slots"   # 러너가 슬롯 번호를 얻어 barrier-k 를 기다린다
             _log_before=$(wc -c < "$LOG" 2>/dev/null | tr -d ' '); [ -n "$_log_before" ] || _log_before=0
             $RUN_TIMEOUT "$EXE" $INSTANCE_ARGS -e "$RUNNER_CMD $w $TILDAZ_STRESS_BYTES" -size 120x40 -scrollback "$SCROLLBACK" \
                 >/dev/null 2>&1 &
@@ -231,9 +238,13 @@ while [ "$i" -le "$REPEAT" ]; do
             _have=$(tail -c "+$((_log_before + 1))" "$LOG" 2>/dev/null | grep -o 'has [0-9]* panes' | tail -1 | awk '{print $2}')
             [ -n "$_have" ] || _have=1
             if [ "$_have" != "$PANES" ]; then echo "⚠ pane 수 $_have ≠ $PANES ($w $i/$REPEAT) — 이 회차는 버려요" >&2; fi
-            : > "$BARRIER"           # N 개 러너가 함께 시작한다
+            if [ "$STAGGER_MS" = 0 ]; then
+                : > "$BARRIER"           # N 개 러너가 함께 시작한다
+            else
+                _k=1; while [ "$_k" -le "$PANES" ]; do : > "$BARRIER-$_k"; _k=$((_k + 1)); sleep "$(awk -v ms="$STAGGER_MS" 'BEGIN{printf "%.3f", ms/1000}')"; done
+            fi
             wait "$_app_pid" || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
-            rm -f "$BARRIER"
+            rm -rf "$BARRIER" "$BARRIER".slots "$BARRIER"-[0-9]*
         fi
         sleep 1.5
     done
