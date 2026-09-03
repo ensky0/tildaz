@@ -10,9 +10,11 @@
 # 않으므로** 그 함수를 부르는 테스트를 넣기 전까지 native 빌드가 조용히 통과했다.
 # 6 타깃 compile-only 검사만이 그 부류를 잡는다.
 #
-# native Windows / macOS 빌드는 여기 없다 — #266 (ghostty tarball 심볼릭 링크) ·
-# cross-drive zig cache 등 러너별 걸림돌이 있고 `release.yml` 이 그 우회를 담고
-# 있다. step 을 복제하지 않고 재사용할 방법과 함께 별도로 본다 (#499 참고).
+# **native Windows / macOS 빌드도 여기서 돈다** (#607 ①). `check` 는 compile-only 라 링크 ·
+# 리소스 · 테스트를 보지 않으므로 `native` job 이 windows-2022 · macos-15 에서 `zig build`
+# 와 `zig build test` 까지 한다. 러너별 걸림돌 (Windows cross-drive zig cache · fetch 의
+# 일시적 HTTP 실패) 은 `.github/actions/setup-zig` 가 담고 `release.yml` 과 한 벌로 쓴다 —
+# step 을 복제하면 두 벌이 갈린다 (#499 가 남긴 이유).
 name: pr-verify
 
 on:
@@ -42,13 +44,8 @@ jobs:
         with:
           fetch-depth: 1
 
-      # `release.yml` 과 같은 action · 같은 버전을 쓴다. 버전은 `build.zig.zon` 의
-      # `.minimum_zig_version` 과 맞춰야 한다 — 두 곳에 적혀 있으므로 한쪽만 올리면
-      # 갈라진다 (#499 에 한 곳에서 읽는 방법을 남겨 뒀다).
-      - name: Setup Zig 0.16.0
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
+      # zig 버전은 `build.zig.zon` 한 곳 — action 이 읽는다 (#607 ②).
+      - uses: ./.github/actions/setup-zig
 
       # Zig 0.16 은 의존성을 글로벌 캐시가 아니라 build root 옆 `zig-pkg/` 에 푼다.
       # ghostty tarball 이 커서 이 캐시가 실행 시간을 지배한다. 키는 `build.zig.zon`
@@ -76,3 +73,34 @@ jobs:
       # 다르다.
       - name: Build (simd)
         run: zig build -Dsimd=true
+
+  # #607 ① — native 빌드 · 테스트. `check` 가 못 보는 것 (링크 · 리소스 · Windows · macOS 전용 테스트) 을 잡는다.
+  # 서명은 release 전용이라 여기서는 서명 없이 빌드만 한다. fetch 는 action 이 재시도로 돈다.
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: ./.github/actions/setup-zig
+        with:
+          fetch: 'true'
+
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      - name: Build (simd, native)
+        shell: bash
+        run: zig build -Dsimd=true
+
+      - name: Test (native)
+        shell: bash
+        run: zig build test

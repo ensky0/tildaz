@@ -8,8 +8,8 @@
 #
 # 사용: gh workflow run windows-fetch-check.yml
 #
-# step 구성은 release.yml 의 fetch 이전 단계와 동일하게 유지 (거기서 통과
-# = 릴리즈에서도 통과 를 보장하기 위함).
+# step 은 `release.yml` 과 **같은 composite action** (`.github/actions/setup-zig`) 이다 — 주석으로
+# "동일하게 유지" 를 약속하던 것을 한 벌로 바꿨다 (#607). 여기서 통과 = 릴리즈에서도 통과.
 name: windows-fetch-check
 
 on:
@@ -23,18 +23,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Zig 0.16.0
-        uses: mlugg/setup-zig@v2
+      # zig 설치 · Windows cache 드라이브 · fetch(재시도) 모두 action 안 (#607).
+      - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
-          use-cache: false
-
-      # release.yml 과 동일 — 크로스 드라이브 cache 문제 회피.
-      - name: "Set Zig global cache dir on D:"
-        shell: bash
-        run: |
-          echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
-
-      - name: Fetch pinned dependencies (symlink unpack check)
-        shell: bash
-        run: zig build -Dsimd=true --fetch
+          fetch: 'true'
