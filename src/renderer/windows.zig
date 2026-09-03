@@ -15,7 +15,6 @@ const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
 const AtlasEntry = @import("windows/glyph_atlas.zig").AtlasEntry;
 
-const ATLAS_SIZE = @import("windows/glyph_atlas.zig").ATLAS_SIZE;
 const perf = @import("../perf.zig");
 const log = @import("../log.zig");
 const display_width = @import("../font/display_width.zig");
@@ -1824,7 +1823,7 @@ pub const D3d11Renderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                const entry = self.insertOrGrow(result.face, result.font_id, result.index) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
@@ -2145,20 +2144,8 @@ pub const D3d11Renderer = struct {
         const rtvs = [1]?*d3d.ID3D11RenderTargetView{rtv};
         self.ctx.OMSetRenderTargets(1, &rtvs, null);
 
-        // Update constant buffer
-        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
-        if (self.ctx.Map(@ptrCast(self.cb), 0, d3d.D3D11_MAP_WRITE_DISCARD, 0, &mapped) >= 0) {
-            const cb_data: *Constants = @ptrCast(@alignCast(mapped.pData));
-            cb_data.* = .{
-                .screen_w = @floatFromInt(self.vp_width),
-                .screen_h = @floatFromInt(self.vp_height),
-                .atlas_w = @floatFromInt(ATLAS_SIZE),
-                .atlas_h = @floatFromInt(ATLAS_SIZE),
-                .enhanced_contrast = self.sys_enhanced_contrast,
-                .gamma_ratios = self.gamma_ratios,
-            };
-            self.ctx.Unmap(@ptrCast(self.cb), 0);
-        }
+        // Update constant buffer — 본문 atlas 크기로. text draw 는 자기 atlas 크기로 다시 쓴다 (`writeConstants`).
+        self.writeConstants(self.atlas.size);
 
         // Bind constant buffer to both VS and PS
         const cbs = [1]?*d3d.ID3D11Buffer{self.cb};
@@ -2171,6 +2158,26 @@ pub const D3d11Renderer = struct {
             .Height = @floatFromInt(self.vp_height),
         }};
         self.ctx.RSSetViewports(1, &vp);
+    }
+
+    /// #586 — 상수 버퍼를 다시 쓴다. `atlas_w/h` 는 **draw 가 쓰는 atlas 의 크기**여야 한다 — 본문 atlas 는
+    /// `grow` 로 커지고 탭 atlas 는 안 커지므로 값 하나로 둘을 못 맞춘다 (macOS 는 이 함정을 실측으로
+    /// 겪고 `tab_constants_buffer` 를 분리했다). 버퍼가 DYNAMIC + `WRITE_DISCARD` 라 매 Map 이 rename 되어
+    /// **앞서 기록된 draw 는 옛 값을 그대로 본다** (D3D11 계약) — 그래서 버퍼 둘 대신 draw 직전에 한 번 쓴다.
+    fn writeConstants(self: *D3d11Renderer, atlas_size: u32) void {
+        var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
+        if (self.ctx.Map(@ptrCast(self.cb), 0, d3d.D3D11_MAP_WRITE_DISCARD, 0, &mapped) >= 0) {
+            const cb_data: *Constants = @ptrCast(@alignCast(mapped.pData));
+            cb_data.* = .{
+                .screen_w = @floatFromInt(self.vp_width),
+                .screen_h = @floatFromInt(self.vp_height),
+                .atlas_w = @floatFromInt(atlas_size),
+                .atlas_h = @floatFromInt(atlas_size),
+                .enhanced_contrast = self.sys_enhanced_contrast,
+                .gamma_ratios = self.gamma_ratios,
+            };
+            self.ctx.Unmap(@ptrCast(self.cb), 0);
+        }
     }
 
     fn drawBgInstances(self: *D3d11Renderer, instances: []const BgInstance) void {
@@ -2201,8 +2208,21 @@ pub const D3d11Renderer = struct {
         self.drawTextInstancesWithAtlas(instances, &self.atlas);
     }
 
+    /// #586 — 본문 atlas 에 단일 글리프를 넣는다 — 차면 **키우고** 다시 넣는다. ① 비우기는 대기 중인
+    /// 인스턴스를 flush 할 수 있는 셀 루프 (`emitClusterInstance`) 만 한다 — preedit · split cluster 의
+    /// mark 처럼 그 버퍼가 없는 자리에서는 상한이면 그 글리프를 건너뛴다 (전과 같다).
+    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16) ?AtlasEntry {
+        var entry = self.atlas.getOrInsert(face, font_id, index);
+        while (entry == null and self.atlas.is_full and self.atlas.grow()) {
+            entry = self.atlas.getOrInsert(face, font_id, index);
+        }
+        return entry;
+    }
+
     fn drawTextInstancesWithAtlas(self: *D3d11Renderer, instances: []const TextInstance, atlas: *const GlyphAtlas) void {
         if (instances.len == 0) return;
+        // #586 — 이 atlas 의 크기로 UV 를 정규화한다 (`grow` 뒤 본문과 탭 atlas 크기가 갈린다).
+        self.writeConstants(atlas.size);
 
         // Upload instance data
         var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
@@ -2285,6 +2305,11 @@ pub const D3d11Renderer = struct {
             text_count.* = 0;
         }
         var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+        // #586 — **먼저 키운다** (macOS #584 ② 와 같다). 키우면 프레임 중간에 비우는 상황이 없어 이미
+        // emit 한 UV 가 무효화되지 않는다. 상한이면 아래 ① 안전망으로.
+        while (entry_opt == null and self.atlas.is_full and self.atlas.grow()) {
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+        }
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
                 self.drawTextInstances(text_buf[0..text_count.*]);
@@ -2367,7 +2392,7 @@ pub const D3d11Renderer = struct {
         const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
 
         for (split.marks[0..split.mark_count]) |m| {
-            const me = self.atlas.getOrInsert(m.face, m.font_id, m.index) orelse {
+            const me = self.insertOrGrow(m.face, m.font_id, m.index) orelse {
                 if (m.owned) _ = m.face.vtable.Release(m.face);
                 continue;
             };

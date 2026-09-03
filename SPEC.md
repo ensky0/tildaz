@@ -1719,7 +1719,7 @@ Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴�
 |---|---|
 | ⓿ **폰트 식별** | cluster 캐시 키는 폰트를 **주소가 아니라 안정된 id** 로 식별한다 |
 | ① **찼을 때** | **이미 그린 것을 먼저 flush 하고, 비우고, 재시도한다.** 그 프레임의 화면은 온전하다 |
-| ② **용량** | `ATLAS_SIZE` 는 **2048**. 산술이 아니라 ③ 의 실측으로 정한다 |
+| ② **용량** | macOS · Windows 는 `INITIAL_ATLAS_SIZE` **2048** 에서 시작해 차면 두 배로 키우고 (`MAX_ATLAS_SIZE` **8192**), Linux 는 아직 `ATLAS_SIZE` **2048** 고정. 산술이 아니라 ③ 의 실측으로 정한다 |
 | ③ **로그** | [`log.logAtlasFull`](src/log.zig) 한 문구를 세 platform 이 그대로 쓴다 |
 
 #### ⓿ 폰트 식별 — 주소를 키에 싣지 않는다
@@ -1779,7 +1779,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 
 | platform | 구현 | 상태 |
 |---|---|---|
-| **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — `drawTextInstances` · `drawBgInstances` 로 먼저 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)) | **사양대로.** 실기 확인 |
+| **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — **먼저 `grow`** ([#586](https://github.com/ensky0/tildaz/issues/586) · `emitClusterInstance` 와 `insertOrGrow`), 상한이면 `drawTextInstances` · `drawBgInstances` 로 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)). 빈 atlas 면 `is_full` 을 세우지 않는 가드 (`packOrMarkFull`) 도 #586 에서 붙였다 — 전에는 Windows 만 없었다 | **사양대로.** ① · `grow` 모두 실기 확인 (② 의 Windows 실측표) |
 | **Linux** | `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
 | **macOS** | `is_full` 을 세우고 호출자가 처리한다 (`insertGlyphOrRecover` · `insertClusterOrRecover` → `recoverFromAtlasFull`) — **먼저 ② 의 `grow`**, 상한이면 **지금까지 담은 구간을 pass 로 제출하고 GPU 가 끝나기를 기다린 뒤** (`submitPassEarly`) 비우고 재시도. cluster · 단일 · ligature **모든 삽입 경로가 같은 함수를 지난다** ([#591](https://github.com/ensky0/tildaz/issues/591) — 전에는 ligature 경로만 복구가 없어 조용히 버렸다) | **사양대로.** 실기 확인 |
 
@@ -1870,7 +1870,7 @@ atlas full — cleared and refilling (<kind>, resets=N, glyphs=N, clusters=N, fo
 
 Linux 는 cluster 를 별도 맵에 두지 않아 `clusters` · `fonts` 자리가 `0` 이고, `glyphs` 는 **찬 surface 의 캐시 항목 수**다 (`kind` 와 같은 축이라 두 값이 짝이 맞는다).
 
-**키울 때는 다른 줄을 남긴다** (macOS 만 — ② 의 `grow`).
+**키울 때는 다른 줄을 남긴다** (macOS · Windows — ② 의 `grow`).
 
 ```
 atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
@@ -1898,18 +1898,18 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 **컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
 
-#### ② 계속 — 차면 키운다 (macOS)
+#### ② 계속 — 차면 키운다 (macOS · Windows)
 
-**macOS 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), ① 도 완전하지만 구간마다 GPU 를 기다려야 하므로, **차기 전에 키우는 것이 주 경로**다 — ① 은 상한에서만 돈다.
+**macOS · Windows 는 차면 두 배로 키운다** (`GlyphAtlas.grow`). ghostty 가 쓰는 방식이고 (`font.Atlas.grow` + `syncAtlasTexture`), ① 도 완전하지만 구간마다 GPU 를 기다려야 하므로, **차기 전에 키우는 것이 주 경로**다 — ① 은 상한에서만 돈다.
 
 | | |
 |---|---|
 | 시작 크기 | `INITIAL_ATLAS_SIZE` = **2048** |
 | 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
 | 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
-| UV | 셰이더가 `atlas_w`/`atlas_h` uniform 으로 정규화하므로, 크기가 바뀌면 renderer 가 그 uniform 과 Metal 텍스처를 함께 갱신한다 (`syncAtlasTexture`) |
+| UV | 셰이더가 `atlas_w`/`atlas_h` uniform 으로 정규화하므로 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고, Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다) |
 
-**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다.
+**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).
 
 **검증** (MacBook Pro M5 Pro · macOS 26.6.2 · 5120x2880 60 Hz · Menlo 15pt · `cell 19x39`). mark 를 둘 쌓은 cluster **10,000 종** 화면 (200 칸 × 50 줄) 이라 2048² 을 넘긴다. **`INITIAL_ATLAS_SIZE` 만 바꾼 세 판**을 맞댔다 — `grow` 가 정확하면 **시작 크기와 무관하게 최종 그림이 같아야** 한다.
 
@@ -1922,9 +1922,26 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 **`atlas full` 이 0 회인 것이 핵심이다** — 차기 전에 커지므로 ① 이 발동하지 않는다.
 
-**Windows · Linux 는 아직 고정 크기 + ① 이다.** 그쪽은 ① 로 계약을 이미 만족하고 실측으로 `0 px` 을 확인했으므로, `grow` 로 갈아타면 그 검증이 무효가 된다. **세 platform 을 `grow` 로 통일하는 것은 후속 항목이다** ([#584](https://github.com/ensky0/tildaz/issues/584)) — 그때는 이미 검증된 ① 이 안전망으로 남아 있어 위험이 낮다.
+**Windows 실측** (노트북 LENOVO 83JY · AMD Ryzen AI 7 350 · Radeon 860M · Windows 11 Pro build 26200 · 내장 2880x1800 **120 Hz** · 배율 150 % · Cascadia Code 15pt · `cell 14x29` · 2026-09-03 · [#586](https://github.com/ensky0/tildaz/issues/586)). 같은 방법이다 — `INITIAL_ATLAS_SIZE` 만 바꾼 판을 [`dist/screens/clusters.py`](dist/screens/clusters.py) 의 세 화면으로 띄워 창 캡처를 [`dist/windows/render-ab-shot.ps1`](dist/windows/render-ab-shot.ps1) 로 견줬다. cell 이 macOS (`19x39`) 보다 작아 **`stack2` 6,000 종이 2048² 에 들어가므로** 기본 판의 `grow` 는 `overflow` (17 화면 누적) 에서 보인다.
 
-**용량으로 막는 것을 포기하는 것은 고정 크기 platform 에 해당한다.** Windows · Linux 는 4K@2x 최악 (11,110 종) 을 4096² (약 11,000) 으로도 못 담으므로 ① 이 받는다. macOS 는 8192 까지 키워 그 지점을 넘긴다.
+| 화면 · 판 | `grow` | `atlas full` | 4096 판과 다른 픽셀 |
+|---|---|---|---|
+| `many` 88x33 (2,912 종) · **2048** | 0 회 | 0 회 | **0** / 1,258,008 px |
+| `many` · **512** | 2 회 → 2048 | 0 회 | **0 px** |
+| `stack2` 150x40 (6,000 종) · **2048** | 0 회 | 0 회 | **0** / 2,550,880 px |
+| `stack2` · **512** | 2 회 → 2048 | 0 회 | **0 px** |
+| `stack2` · **8192** (시작부터 상한 — 8192² RGBA + `BIND_RENDER_TARGET` 을 이 내장 GPU 가 받는지) | 0 회 | 0 회 | **0 px** |
+| `overflow` 150x40 (17 화면 누적) · **2048** | 2 회 → 4096 → **8192** | **0 회** | **0** / 2,550,880 px |
+| `overflow` · **512** | 4 회 → 1024 → 2048 → 4096 → 8192 | 0 회 | **0 px** |
+| `overflow` + **탭 2 개** (`Ctrl+Shift+T`) · **2048** vs **main** (`8ccc8bc` — 고정 2048 + ① 만, `atlas full` **6 회**) | 2 회 → 8192 | 0 회 | **0** / 2,640,760 px |
+
+- **마지막 줄이 `writeConstants` 의 근거다.** 본문 atlas 8192 · 탭 atlas 2048 인 채 탭바 · 컨트롤 스트립을 그린 화면이 `grow` 가 없는 main 과 같다 — macOS 가 실측으로 겪은 아이콘 잘림이 Windows 에는 없다. 그리고 그 줄은 **① 만 쓰는 판과 `grow` 판이 같은 그림을 낸다**는 확인이기도 하다.
+- **8192² 텍스처는 이 내장 GPU 에서 만들어졌다** — `INITIAL = 8192` 판이 정상 기동했고 `overflow` 의 두 판이 8192 까지 자랐다. `CreateTexture2D` 실패 → ① 경로는 이 기기에서는 타지 않았다.
+- **누적 종 수는 회차마다 다르다** (`overflow` 에서 8192 로 커진 시점의 `clusters` 가 22,043 · 23,916 · 25,319). Windows 는 화면이 바뀔 때만 그리므로 (§13.4) 빠른 스크롤의 중간 화면을 건너뛰기 때문이다 — 4096 판은 같은 화면에서 `grow` 0 이었다 (누적이 4096² 안에 머문 회차). 그래서 **판정은 `grow` 회수가 아니라 최종 그림 `0 px` 과 `atlas full` 0** 이다. macOS 표의 `grow` 회수는 정적 화면 (`stack2`) 이라 판마다 고정이었다.
+
+**Linux 는 아직 고정 크기 + ① 이다.** ① 로 계약을 만족하고 실측으로 `0 px` 을 확인했으므로 `grow` 로 갈아타면 그 검증이 무효가 된다 — 그리고 Linux 는 UV 를 정점에 미리 나눠 넣어 (`gl_text.zig` 의 `inv_atlas`) `grow` 앞에 uniform 화가 먼저 필요하다. **Windows 는 [#586](https://github.com/ensky0/tildaz/issues/586) 으로 `grow` 를 얹고 실기로 확인했다** (위 Windows 실측표 — 다섯 판 `0 px` · `atlas full` 0 회). Linux 통일은 같은 이슈의 다음 단계다.
+
+**용량으로 막는 것을 포기하는 것은 고정 크기 platform 에 해당한다.** Linux 는 4K@2x 최악 (11,110 종) 을 4096² (약 11,000) 으로도 못 담으므로 ① 이 받는다. macOS · Windows 는 8192 까지 키워 그 지점을 넘긴다.
 
 ---
 

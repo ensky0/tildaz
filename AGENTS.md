@@ -647,6 +647,55 @@ clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
 
 **입력 소스 전환은 사용자가 직접 해야 해요.** 한국어 UI 는 설정 앱의 항목 이름이 영어 문서와 달라 보이니, `--list-sources` 로 **그 기기에 실제로 표시되는 이름**을 뽑아서 안내해요 (예: `Russian – Phonetic` 이 이 기기에서는 `Russian – QWERTY` 로 보였어요). 그리고 이 측정도 위 `# 실행 환경` 의 규칙대로 **시작 전에 알리고 확인을 받아요.**
 
+# Windows — 렌더 결과를 픽셀로 검증하는 법
+
+macOS (`dist/macos/render-ab-shot.sh`) · Linux (`dist/linux/render-ab-shot.sh`) 와 같은 일을 PowerShell 로 해요 —
+[`dist/windows/render-ab-shot.ps1`](dist/windows/render-ab-shot.ps1). 여러 판을 **같은 화면**으로 띄워 창을 찍고 최종
+그림을 픽셀 수로 견줘요. [#586](https://github.com/ensky0/tildaz/issues/586) Windows atlas `grow` 실기에서 만들었고,
+[#584](https://github.com/ensky0/tildaz/issues/584) Windows 계측이 밟은 함정을 피해 둔 상태예요.
+
+```powershell
+python dist\screens\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd   # 화면 (.cmd 래퍼 + UTF-8 본문)
+# 판마다 INITIAL_ATLAS_SIZE 만 바꿔 빌드하고 exe 를 한 폴더에 모아요 — **_internal 폴더도 그 옆에 복사**해요 (아래)
+dist\windows\render-ab-shot.ps1 -Screen $env:TEMP\stack2.cmd -Size 150x40 -Wait 8 -Tag stack2 `
+    -Bins $env:TEMP\bins\tildaz-4096.exe,$env:TEMP\bins\tildaz-2048.exe,$env:TEMP\bins\tildaz-512.exe
+dist\windows\render-ab-shot.ps1 … -NewTab        # Ctrl+Shift+T 를 합성 입력으로 보내 탭 2 개 화면 (탭바 · 아이콘) 을 찍어요
+```
+
+- **판 exe 를 다른 폴더로 옮기면 `_internal` (conpty.dll · OpenConsole.exe) 도 함께** 옮겨요. 없으면 앱이 `TildaZ — Cannot
+  Start` fatal 다이얼로그를 띄우고, 하네스는 **그 다이얼로그를 창으로 잡아 찍어요** (870x968 짜리 캡처가 나오면 이거예요).
+  하네스가 로그의 `[fatal]` 줄을 함께 찍어 주니 판 줄 아래를 봐요. 2026-09-03 첫 회차에서 걸렸어요.
+- **`clusters.py` 는 `--cmd <본문.txt>` 로** 불러요 — Windows 에는 `sh` 가 없어요. 본문을 UTF-8 (BOM 없음) 로 쓰고
+  stdout 에 `.cmd` 래퍼 (`chcp 65001` → `type` → `timeout` 대기) 를 내요. 그 전에는 stdout 이 cp949 라 결합 기호에서
+  `UnicodeEncodeError` 로 죽었는데, 스크립트가 stdout 을 UTF-8 로 고정해 `PYTHONUTF8` 없이도 돌아요.
+- **`-e` 회차는 config 를 만들지도 hotkey 를 등록하지도 않아요** (`global hotkey not registered (stress run)`) — 사용자의
+  `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 예요. 단축키가
+  필요한 회차 (`-NewTab`) 만 `config_0.toml` 을 복사해 `config_9.toml` 을 잠깐 만들고 (`auto_start = false`) 끝나면 지워요.
+- **창은 `EnumWindows` + pid + 보이는 · 크기 있는 조건으로** 찾아요. `Process.MainWindowHandle` 은 `TildaZOwner` (0x0)
+  가 owner 로 달린 진짜 창을 건너뛰어 0 이고, `FindWindow(class)` 는 그 0x0 창을 집어요 (#584).
+- **PowerShell 은 DPI 비인식**이라 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 를 먼저 불러요. 안 하면
+  `GetWindowRect` 가 논리 좌표를 줘서 150 % 화면의 1272x989 창이 848x659 로 잡혀요.
+- **캡처는 `PrintWindow(PW_RENDERFULLCONTENT)`** 예요 — 가려져 있어도 되고 창 그림자가 안 들어가요. 단색이면 (아직 안
+  그렸거나 창이 닫혔거나) `CopyFromScreen` 으로 한 번 물러서고, 어느 쪽이었는지 판 줄에 적어요.
+- **픽셀 수는 `LockBits` 로 직접 세요.** ImageMagick 이 없어도 되고, 다른 픽셀의 **경계 상자**를 같이 찍어 주니 커서
+  자리 (`14x29`) 처럼 좁은 차이인지 한눈에 갈려요. 픽셀 대조에는 로그의 `atlas grew` · `atlas full` 회수도 같이 봐요.
+- 인스턴스 9 만 내려요 — `Win32_Process` 의 `CommandLine` 에 `--instance 9` 가 있는 `tildaz*` 만. 판 바이너리 이름이
+  `tildaz-4096.exe` 처럼 달라도 잡혀요.
+- 실기라서 `# 실행 환경` 대로 **시작 전에 창이 몇 번 뜨는지 알리고 동의를 받아요.** `-NewTab` 은 합성 키라 특히요.
+  그리고 **한 회차를 먼저 돌려** 창 크기 (1272x989 @ 88x33 · 150 %) · `render_path=hardware` · 캡처가 실제 그림인지
+  (PNG 을 열어 봐요) 를 확인하고 전체를 돌려요.
+- **`grow` 회수 기대표를 판정에 쓰지 말아요 — 최종 그림 `0 px` 과 `atlas full` 0 으로 판정해요.** 두 가지 이유예요.
+  ① 150 % 의 `cell 14x29` 에서는 `stack2` 6,000 종이 2048² 에 들어가 기본 판이 `grow` 0 이에요 (Linux `14x31` 과 같고
+  macOS `19x39` 와 달라요) — 기본 판의 `grow` 는 `overflow` (17 화면 누적 · `-Wait 15` 이상) 로 봐요. ② `overflow` 의
+  누적 종 수는 **회차마다 달라요** (8192 로 커진 시점의 `clusters` 가 22,043 · 23,916 · 25,319) — Windows 는 화면이 바뀔
+  때만 그려서 빠른 스크롤의 중간 화면을 건너뛰어요. 4096 판이 같은 화면에서 `grow` 0 인 회차가 실제로 있었어요.
+- **`-e` 회차의 새 탭도 같은 `-e` 명령을 다시 실행해요.** `-NewTab` 으로 `Ctrl+Shift+T` 를 보내면 Tab 2 가 화면을 처음부터
+  다시 뿌리고 (그동안 Tab 1 도 계속 출력), 캡처는 Tab 2 의 최종 화면 + 탭바예요. 대조에는 지장이 없지만 대기를 화면 출력
+  시간만큼 넉넉히 둬요 (`overflow` 는 18 초로 돌렸어요).
+- 탭 atlas 의 UV 정규화 (#586 W-a) 를 가르려면 **본문 atlas 가 탭 atlas (2048) 보다 커진 뒤 탭바를 그린 화면**이어야 해요 —
+  `stack2` 는 512 판도 2048 에서 멈춰 조건이 안 돼요. `overflow` + `-NewTab` 을 **main 판** (고정 2048 + 안전망) 과 견줘요.
+  grow 판끼리는 같은 코드라 함정을 스스로 못 가르니까요 (2026-09-03 실측 `0 / 2,640,760 px`).
+
 # Windows — 키보드 layout 조회 실측 방법
 
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`dist/windows/layout-probe.zig`](dist/windows/layout-probe.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
