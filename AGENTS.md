@@ -706,6 +706,7 @@ macOS 의 `deadkey-check.sh` 에 대응하는 도구 둘이에요 ([#583](https:
 |---|---|
 | [`dist/windows/deadkey-check.ps1`](dist/windows/deadkey-check.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`dist/windows/launcher-fatal-check.ps1`](dist/windows/launcher-fatal-check.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+| [`dist/windows/kitty-text-check.ps1`](dist/windows/kitty-text-check.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key 를 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
 dist\windows\deadkey-check.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -731,6 +732,19 @@ dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
   띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
   자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
   이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
+- **`deadkey-check.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
+  Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
+- **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
+  누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
+  감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
+- **다른 창이 tildaz 창을 덮고 있으면 `SetForegroundWindow` 도 창 중앙 클릭도 안 닿아요** — 사용자가 브라우저를 앞에 두고
+  머지하던 회차에서 포커스 가드가 막았어요. 도구들은 잠깐 `HWND_TOPMOST` 로 올려 활성화하고 끝나면 내려요.
+- **`ToUnicodeEx` 는 상태 불변 플래그 (bit 2) 로 부르면 dead key 에도 글자 (`'`) 를 돌려줘요** — 반환값으로 dead key 를
+  가를 수 없어요. 그래서 `report_all` 에서 dead key 누름도 인코더로 가 `CSI 39 u` 가 나가요 (kitty 도 dead key 누름을 보고하니
+  무해) — 다만 그때 세운 "짝꿍 `WM_CHAR` 삼킴" 은 `WM_DEADCHAR` 가 소비해야 다음 글자가 안 삼켜져요 (#602 2 회차에서 `é` 가
+  사라졌던 원인).
+- **화면 보호기가 켜져 있으면 foreground 창이 없고 합성 키는 화면 보호기로 가요.** 실기 전에 `SystemParametersInfo
+  (SPI_GETSCREENSAVERRUNNING)` 과 `GetForegroundWindow` 를 봐요 — 사용자 부재 중에는 돌리지 않아요.
 
 # Windows — 키보드 layout 조회 실측 방법
 
@@ -1245,6 +1259,13 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 는 `tail` 이 성공하면 "OK" 를 찍어요 — 빌드가 실패해도요. 통과를 보고하기 전에 **실제 성공 표식**을 봐요:
 `set -o pipefail`, 또는 `zig build check; echo "CHECK=$?"` 처럼 exit code 를 따로 찍기, 또는 `${PIPESTATUS[0]}`.
 `| tail && echo OK` 로 가짜 통과를 보고한 적이 있어요.
+
+**Bash 도구의 작업 디렉터리는 앞 호출의 `cd` 가 그대로 남아요 — 검증 명령은 저장소 경로를 명시해요.**
+2026-09-03 에 문서용 worktree 로 `cd` 한 호출 뒤에 `zig build check` · `zig build test` 를 돌렸는데, 그것이
+**검증하려던 브랜치가 아니라 그 worktree (다른 브랜치) 에서 돌았어요.** 출력만 보면 통과라 알아채지 못했고,
+그 worktree 에 `zig-out/test` 가 생긴 것으로 뒤늦게 드러났어요 (이슈 댓글 두 곳을 정정했어요). 검증 · 커밋 · push 처럼
+어디서 도는지가 결과를 바꾸는 명령은 `cd /c/Users/<user>/tildaz && …` 로 시작하거나 `git -C` 를 써요. 백그라운드
+호출은 cwd 를 바꾸지 않지만 (도구가 알려 줘요) 동기 호출의 `cd` 는 다음 호출까지 살아요.
 
 # 실행 환경
 
