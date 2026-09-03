@@ -21,8 +21,19 @@ param(
     # barrier 를 이만큼 기다려도 안 생기면 그냥 시작한다 — 분할이 실패한 회차가 조용히 걸려 있지 않게.
     [int]$TimeoutSec = 20
 )
+# 순차 시작 대조군 (`measure-repeat.sh --stagger <ms>`) — barrier 경로 옆에 `<barrier>.slots/` 가 있으면 러너는
+# 그 안에 `1` · `2` … 디렉터리를 만들어 보는 순서로 자기 번호 k 를 얻고 (`New-Item` 은 원자적이라 둘이 같은 번호를
+# 못 갖는다) `<barrier>-k` 를 기다린다. 호출자가 `-1` · `-2` … 를 간격을 두고 만들면 pane 이 하나씩 시작한다.
+# 앱이 pane 에 번호를 주지 않아 이렇게 얻는다.
+$slots = "$Barrier.slots"
+$wait = $Barrier
+if (Test-Path -LiteralPath $slots) {
+    for ($k = 1; $k -le 32; $k++) {
+        try { New-Item -ItemType Directory -Path (Join-Path $slots "$k") -ErrorAction Stop | Out-Null; $wait = "$Barrier-$k"; break } catch {}
+    }
+}
 $sw = [Diagnostics.Stopwatch]::StartNew()
-while (-not (Test-Path -LiteralPath $Barrier) -and $sw.Elapsed.TotalSeconds -lt $TimeoutSec) { Start-Sleep -Milliseconds 50 }
+while (-not (Test-Path -LiteralPath $wait) -and $sw.Elapsed.TotalSeconds -lt $TimeoutSec) { Start-Sleep -Milliseconds 50 }
 $env:TILDAZ_STRESS_WORKLOAD = $Workload
 $env:TILDAZ_STRESS_BYTES = $Bytes
 & $Stress
