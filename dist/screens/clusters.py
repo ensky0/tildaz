@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""atlas · cluster 렌더 검증용 화면을 만든다 — 세 platform 공용.
+r"""atlas · cluster 렌더 검증용 화면을 만든다 — 세 platform 공용.
 
 `tildaz -e` 는 실행 파일 하나만 받으므로, 이 생성기는 **stdout 에 실행 가능한 sh 스크립트**를 낸다.
 받아서 파일로 저장하고 `chmod +x` 한 뒤 `-e` 에 넘긴다. 각 화면은 서로 다른 cluster 를 겹치지 않게
@@ -12,6 +12,13 @@
     chmod +x /tmp/*.sh
     tildaz --instance 9 -e /tmp/many.sh -size 88x33
 
+**Windows 는 `--cmd <본문.txt>` 를 준다** (#586). `sh` 가 없으므로 본문을 그 경로에 UTF-8 (BOM 없음) 로 쓰고
+stdout 에는 그것을 `type` 하는 **`.cmd` 래퍼** (CRLF · `chcp 65001` · `timeout` 대기) 를 낸다. `-e` 가 `.cmd` 를
+받는 것은 #584 Windows 계측에서 확인했다.
+
+    python dist\screens\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd
+    tildaz --instance 9 -e $env:TEMP\stack2.cmd -size 150x40
+
 | 화면 | 무엇 | 왜 |
 |---|---|---|
 | `many` | 소문자 26 × 결합 기호 (U+0300~U+036F) 한 겹 | 일반 화면 회귀 — atlas 가 커지지 않아야 한다 |
@@ -23,12 +30,24 @@
 """
 import sys
 
+# Windows 콘솔은 stdout 인코딩이 ANSI 코드페이지 (한국어는 cp949) 라 결합 기호에서 `UnicodeEncodeError` 로
+# 죽는다 (2026-09-03 Windows 실기 — #586). 세 platform 이 같은 바이트를 내도록 UTF-8 로 고정한다.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
 ABOVE = [chr(c) for c in range(0x0300, 0x0315)] + [chr(c) for c in range(0x033D, 0x0345)]   # 위 mark 29
 BELOW = [chr(c) for c in range(0x0316, 0x0334)]                                              # 아래 mark 30
 ALL = [chr(c) for c in range(0x0300, 0x0370)]                                                # 112
 
 
+CMD_TXT = None  # `--cmd <경로>` — Windows 용 .cmd 래퍼를 낼 때 본문을 쓸 텍스트 파일
+
+
 def emit(lines, tail="sleep 3600", head=""):
+    if CMD_TXT:
+        with open(CMD_TXT, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        sys.stdout.write("@echo off\r\nchcp 65001>nul\r\ntype \"%s\"\r\ntimeout /t 3600 /nobreak >nul\r\n" % CMD_TXT)
+        return
     out = ["#!/bin/sh", head] if head else ["#!/bin/sh"]
     out += ["cat <<'S'"] + lines + ["S", tail]
     sys.stdout.write("\n".join(out) + "\n")
@@ -66,8 +85,17 @@ def mini():
 
 
 if __name__ == "__main__":
-    which = sys.argv[1] if len(sys.argv) > 1 else "many"
-    cols = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    args = sys.argv[1:]
+    if "--cmd" in args:
+        k = args.index("--cmd")
+        if k + 1 >= len(args):
+            sys.exit("--cmd 뒤에 본문을 쓸 .txt 경로가 필요하다")
+        CMD_TXT = args[k + 1]
+        del args[k:k + 2]
+    which = args[0] if args else "many"
+    cols = int(args[1]) if len(args) > 1 else None
+    if which == "mini" and CMD_TXT:
+        sys.exit("mini 는 sh 전용이다 (perf 종료 덤프 계측) — --cmd 와 함께 쓸 수 없다")
     if which == "many":
         many(cols or 88)
     elif which == "stack2":
@@ -77,4 +105,4 @@ if __name__ == "__main__":
     elif which == "mini":
         mini()
     else:
-        sys.exit("사용법: clusters.py many|stack2|overflow|mini [cols]")
+        sys.exit("사용법: clusters.py many|stack2|overflow|mini [cols] [--cmd <본문.txt>]")
