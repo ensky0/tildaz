@@ -2,16 +2,16 @@
 # 실제 (nested 아닌) Wayland 세션에서 돌리는 회차 둘 — #583 A5 (Hyprland 배율) · A2 / GNOME scale 소스.
 #
 #   dist/linux/real-session-check.sh hypr-scale [1.25 ...]   # 다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 화면 전이 행 (foot 대조 포함)
-#   dist/linux/real-session-check.sh gnome                    # 실제 GNOME 세션 안에서: fractional-scale 광고 · 앱의 scale 소스 · #577 launcher fatal 다이얼로그 캡처
+#   dist/linux/real-session-check.sh no-layer-shell           # 실제 GNOME / Cinnamon (Wayland) 세션 안에서: fractional-scale 광고 · 앱의 scale 소스 · #577 launcher fatal 다이얼로그
 #
 # hypr-scale 은 KDE 세션의 셸에서 그대로 돌릴 수 있다 — Hyprland 가 같은 uid 의 /run/user/<uid>/hypr/<sig>/ 를 만들므로
-# 소켓과 서명을 거기서 읽는다. gnome 은 GNOME 세션 **안**의 셸에서 돌린다 (user bus · 스크린샷 D-Bus 가 그 세션 것이어야 한다).
+# 소켓과 서명을 거기서 읽는다. no-layer-shell 은 그 데스크톱 세션 **안**의 셸에서 돌린다 (user bus · 포털이 그 세션 것이어야 한다).
 # 둘 다 tildaz 의 config · 로그는 임시 XDG 경로로 격리하고, 세션 배율은 회차가 끝나면 원래 값으로 되돌린다.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TILDAZ=${TILDAZ:-$ROOT/zig-out/bin/tildaz}
 WORK=${TZRS_WORK:-${TMPDIR:-/tmp}/tildaz-real-session}
-mkdir -p $WORK/xdg/config/tildaz $WORK/xdg/state
+mkdir -p $WORK/xdg/config/tildaz $WORK/xdg/state/tildaz   # state/tildaz 까지 — 회차가 로그 파일을 비우려 할 때 앱이 아직 안 만들었다
 die() { echo "$*" >&2; exit 1; }
 [ -x "$TILDAZ" ] || die "빌드가 없다: $TILDAZ"
 [ -f $WORK/xdg/config/tildaz/config_0.toml ] || sed 's|^auto_start  *= .*|auto_start       = false|; s|^width_percent *= .*|width_percent   = 100.0|; s|^height_percent *= .*|height_percent  = 60.0|' \
@@ -79,9 +79,15 @@ for c in json.load(sys.stdin):
     set_scale "$name" "$scale0"; echo "세션 배율 복구 → $scale0"
 }
 
-cmd_gnome() {
-    [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] || die "GNOME 세션 안에서 돌린다 (XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP)"
-    echo "GNOME Shell $(gnome-shell --version 2>/dev/null) · WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+# GNOME (mutter) · Cinnamon (muffin) — layer-shell 이 없어 다이얼로그가 #231 의 xdg_toplevel fallback 으로 가는 데스크톱.
+# Cinnamon 은 **Wayland 세션** (`cinnamon-wayland.desktop`) 으로 로그인해야 한다 — 기본 세션은 X11 이라 tildaz 가 아예 안 뜬다.
+cmd_no_layer_shell() {
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*|*Cinnamon*|*X-Cinnamon*) ;;
+        *) die "GNOME 또는 Cinnamon (Wayland) 세션 안에서 돌린다 (XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset})" ;;
+    esac
+    [ "${XDG_SESSION_TYPE:-}" = wayland ] || die "Wayland 세션이 아니다 (XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unset}) — Cinnamon 은 'Cinnamon (Wayland)' 로 로그인한다"
+    echo "$XDG_CURRENT_DESKTOP · $(gnome-shell --version 2>/dev/null || cinnamon --version 2>/dev/null) · WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
     echo "== ① fractional-scale 광고 여부 (wayland-info)"
     wayland-info 2>/dev/null | grep -E "interface: '(wp_fractional_scale_manager_v1|wp_viewporter|zwlr_layer_shell_v1|wl_output)'" | sed 's/^/    /'
     echo "== ② 앱이 고른 scale 소스 (격리 config · -e 화면 5 초)"
@@ -94,16 +100,21 @@ cmd_gnome() {
     local L0=$XDG_STATE_HOME/tildaz/tildaz_0.log; : > $L0
     TILDAZ_VERBOSE=1 "$TILDAZ" >$WORK/launcher.out 2>&1 & local lp=$!; sleep 4
     grep -E 'fatal|dialog\] (open|configured|createDialogSurface)' $L0 | sed -E 's/^\[[^]]+\] /    /' | head -6
-    # GNOME 의 스크린샷 D-Bus — 세션 안이라 사용자 버스가 맞다. 실패하면 gnome-screenshot.
-    gdbus call --session --dest org.gnome.Shell.Screenshot --object-path /org/gnome/Shell/Screenshot \
-        --method org.gnome.Shell.Screenshot.Screenshot false false "$WORK/gnome-577.png" >/dev/null 2>&1 \
-        || gnome-screenshot -f $WORK/gnome-577.png 2>/dev/null || echo "    스크린샷 실패 — 손으로 (PrtSc) 찍어 $WORK/gnome-577.png 로"
-    [ -f $WORK/gnome-577.png ] && echo "    캡처: $WORK/gnome-577.png $(identify -format '%wx%h' $WORK/gnome-577.png 2>/dev/null) — 다이얼로그가 보이는지 눈으로 · 이슈에는 crop 만"
+    # 캡처 — 포털이 유일하게 남는 자동 경로다 (GNOME 은 screencopy 미노출 · Shell D-Bus 는 AccessDenied).
+    # GNOME 에서는 그 포털마저 `response=2` 로 끝났으니 (2026-09-03) 사용자가 PrtSc 로 찍어야 한다.
+    # Cinnamon 은 XApp 포털 (`xdg-desktop-portal-xapp`) 이라 될 수 있다 — 되면 그대로 쓰고, 안 되면 안내만 남긴다.
+    python3 "$ROOT/dist/linux/portal-screenshot.py" "$WORK/dialog.png" --timeout 90 2>&1 | sed 's/^/    /'
+    if [ -f $WORK/dialog.png ]; then
+        echo "    캡처: $WORK/dialog.png $(identify -format '%wx%h' $WORK/dialog.png 2>/dev/null) — 이슈에는 다이얼로그만 crop"
+    else
+        echo "    ⚠️ 자동 캡처 실패 — 다이얼로그를 띄워 둔 채 **사용자가 PrtSc** 로 찍는다 (아래 30 초 대기)"
+        sleep 30
+    fi
     kill -TERM $lp 2>/dev/null; rm -f $XDG_CONFIG_HOME/tildaz/config_9.toml
 }
 
 case ${1:-} in
     hypr-scale) shift; cmd_hypr_scale "${@:-1.25}" ;;
-    gnome) cmd_gnome ;;
+    no-layer-shell|gnome|cinnamon) cmd_no_layer_shell ;;
     *) sed -n '2,10p' "$0"; exit 2 ;;
 esac

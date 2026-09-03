@@ -307,10 +307,14 @@ scale source 는 platform 마다 다르지만 **단일 `scale` 값으로 수렴*
 | platform | scale source |
 |---|---|
 | macOS | `backingScaleFactor` |
-| Linux / KDE Plasma (KWin) | `wp_fractional_scale_v1` 의 `preferred_scale` (예 204/120 = 1.7x) |
-| Linux / GNOME (mutter) · fractional 미advertise | `wl_output` 정수 scale (event opcode 3) 로 fallback |
+| Linux (KWin · mutter · wlroots · cosmic-comp) | `wp_fractional_scale_v1` 의 `preferred_scale` (예 204/120 = 1.7x) |
+| Linux · `wp_fractional_scale_v1` 을 안 내주는 옛 compositor | `wl_output` 정수 scale (event opcode 3) 로 fallback |
 
 - 공통 상수: `src/ui_metrics.zig` (예 `TAB_BAR_HEIGHT_PT`) — platform 별로 다시 정의하지 않아요.
+- **fallback 은 이제 실측 대상이 아니에요 — 네 compositor 가 모두 fractional 을 내줘요** (2026-09-03 실측):
+  KWin 6.7.4 · **GNOME Shell 50.4 (mutter)** · sway 1.12 · Hyprland 0.56.2 · cosmic-comp 1.0.0. 예전 표는 mutter 를
+  미advertise 쪽에 두었는데 실제 GNOME 세션에서 `source=fractional/main` 으로 1.5x 를 받았어요. **그 차이가 큽니다** —
+  같은 화면의 `wl_output` 정수 scale 은 **2** 라 fallback 을 탔다면 33 % 크게 그렸을 거예요.
 - Linux 변환: `software_terminal.zig` 의 `self.scale` (단일 값). 새 scale source 가 생기면 이
   값 하나로 수렴시키고 `renderer.applyScale()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
 - 새 platform / compositor 포팅 시 **scale source 부터** 확인 — 배율 켜고 다른 환경 (mac / KDE)
@@ -1163,9 +1167,12 @@ grim shot.png                                                          # sway �
 - **Cinnamon nested (`cinnamon --nested --wayland`) 의 소켓은 `ss -xlp` 의 pid 로 찾아요.** 이름을 지정할 수 없고 로그에도
   안 남으며, 실제 runtime dir 의 **기존 `wayland-N` 파일을 재사용**하기도 해서 (`wayland-0.lock` 실패 뒤 `wayland-1` 을
   집었어요) "새로 생긴 소켓" 을 목록 비교로 찾는 방식은 빈손이에요. `ss -xlp | grep "pid=<cinnamon pid>,"` 로 봐요.
-- **GNOME 50.4 nested (mutter devkit) 는 `wp_fractional_scale_v1` 을 내줘요** — 다이얼로그 로그가 `source=fractional/dialog`
-  로 부모 KWin 의 1.7 을 받았어요. 위 `# 렌더링` 절의 scale 표 ("GNOME · fractional 미advertise → `wl_output` 정수
-  fallback") 는 그 이전 버전 기준이라, 실제 GNOME 세션에서도 그런지는 **확인 필요**예요 (nested 만 봤어요).
+- **GNOME 50.4 는 nested 든 실제 세션이든 `wp_fractional_scale_v1` 을 내줘요** — 실제 세션에서 `source=fractional/main`
+  으로 1.5x 를 받았어요 (2026-09-03 · 위 `# 렌더링` 절의 표를 그때 고쳤어요).
+- **GNOME 은 자동 캡처 경로가 전부 막혀 있어요** (같은 날 실측) — `zwlr_screencopy` · `ext_image_copy_capture` 를
+  client 에 노출하지 않아 `grim` 이 안 되고, `org.gnome.Shell.Screenshot` · `Introspect` 는 allowlist 밖 호출자에게
+  `AccessDenied`, xdg-desktop-portal 은 권한 창 뒤에 `response=2` 로 끝나요 (`dist/linux/portal-screenshot.py` 가 그
+  경로예요 — 다른 데스크톱에서는 쓸 수 있어요). **GNOME 의 픽셀 확인은 사용자가 `PrtSc` 로 찍어 주는 수밖에 없어요.**
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
 

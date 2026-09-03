@@ -64,7 +64,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 
 | 항목 | 값 (PT) | Windows scale | macOS scale | Linux scale |
 |---|---|---|---|---|
-| Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120`, 미advertise 시 `wl_output` 정수 scale fallback (#210/#238) |
+| Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120`, 미advertise 시 `wl_output` 정수 scale fallback (#210/#238). KWin · mutter · wlroots · cosmic-comp 은 모두 fractional 을 내주므로 (2026-09-03 실측) fallback 은 옛 compositor 용이다 |
 | Scale 재계산 시점 | — | `WM_DPICHANGED` + startup | `NSScreenDidChange` notification + 매 resize | `preferred_scale` event |
 | Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `applyScale(scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
@@ -142,10 +142,15 @@ atlas/cache를 소유한다. 따라서 terminal font 크기를 바꿔도 탭 제
 높이는 변하지 않는다. `tabBarHeightPx(scale)`는 fractional scale에서도 세 플랫폼이
 같은 physical pixel 높이를 쓰도록 최종값을 공통 반올림한다.
 
-**fallback**: Linux 는 `wp_fractional_scale_v1` 미advertise 환경 (mutter / wlroots) 이면
+**fallback**: Linux 는 `wp_fractional_scale_v1` 미advertise 환경이면
 `wl_output` 정수 scale (event opcode 3) 을 fallback 으로 적용한다 (#210/#238). 둘 다 없거나
 (정수 scale 도 안 옴) 첫 init 시점에만 `scale = 1.0` default, PT 값 그대로 사용 (기존 1x
 환경 동작 보존).
+
+지금 쓰는 데스크톱은 **모두 fractional 을 내준다** — KWin 6.7.4 · GNOME Shell 50.4 (mutter) ·
+sway 1.12 · Hyprland 0.56.2 · cosmic-comp 1.0.0 (2026-09-03 실측 · [#583](https://github.com/ensky0/tildaz/issues/583)).
+예전 서술은 mutter · wlroots 를 미advertise 예로 들었는데 그 시절 기준이었다. GNOME 실측에서 같은 화면의
+`wl_output` 정수 scale 은 2 였고 fractional 은 1.5 라, fallback 을 탔다면 33 % 크게 그렸을 것이다.
 
 **Linux mixed-output basis**: The client binds and tracks advertised `wl_output`
 objects, up to the fixed limit of eight, and records the set reported by the main
