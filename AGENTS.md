@@ -1042,6 +1042,95 @@ tildaz --instance 9 -e /bin/bash -size 88x33 &
 ⚠️ 이렇게 만든 `config_9.toml` 은 **끝나면 지워요** — 안 지우면 사용자 로그온 때 그 인스턴스가
 같이 떠요 (위 `# Windows — 키보드 layout 조회 실측 방법` 절의 같은 주의).
 
+# Linux — headless sway · nested compositor 로 합성 입력 · 다이얼로그 · 배율을 자동 검증하는 법
+
+macOS (`cliclick`) · Windows (`SendInput`) 절에 대응하는 Linux 몫이에요 ([#583](https://github.com/ensky0/tildaz/issues/583)
+A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 세션을 전혀 건드리지 않는 것**이에요 — `ydotool`
+은 `/dev/uinput` 이라 그 순간 포커스된 사용자 창에 타이핑되지만, headless sway 안의 가상 키보드는 그 sway 로만 가요.
+
+| 도구 | 무엇 |
+|---|---|
+| [`dist/linux/vkbd.py`](dist/linux/vkbd.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
+| [`dist/screens/clusters.py bands`](dist/screens/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
+| [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음) |
+| [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `launcher-fatal gnome\|cinnamon` |
+
+```sh
+R=/run/user/$(id -u)/tz583; mkdir -m 700 -p $R                       # ⚠️ 짧은 경로 — 아래
+env -u XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR=$R WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+    setsid sway -c sw.conf &                                          # sw.conf: output HEADLESS-1 resolution 1600x1000
+export XDG_RUNTIME_DIR=$R WAYLAND_DISPLAY=wayland-1 XDG_CURRENT_DESKTOP=sway SWAYSOCK=$(ls $R/sway-ipc.*.sock)
+export XDG_CONFIG_HOME=$T/xdg/config XDG_STATE_HOME=$T/xdg/state        # config_0.toml 은 사용자 것을 복사 (auto_start=false)
+python3 dist/linux/vkbd.py --fifo $R/vkbd.fifo &                      # ① 키보드를 먼저 꽂고
+TILDAZ_VERBOSE=1 ./zig-out/bin/tildaz --instance 0 &                  # ② 그다음 앱 — seat 에 keyboard 가 처음부터 있게
+echo "type touch /tmp/probe" > $R/vkbd.fifo; echo "key Return" > $R/vkbd.fifo   # 포커스 확인 — 파일이 생겨야 시작
+grim shot.png                                                          # sway 는 screencopy 를 내줘요
+```
+
+- **격리 `XDG_RUNTIME_DIR` 은 짧아야 해요.** scratchpad 경로 (90 자 남짓) 를 주면 sway 가 `Socket path won't fit into
+  ipc_sockaddr->sun_path` 로 **세그폴트**해요 (`sun_path` 108 바이트). `/run/user/<uid>/tz583` 처럼 실제 runtime dir 아래
+  짧은 디렉터리를 만들어요 — tmpfs 이고 사용자 소유라 lock · 소켓 격리도 그대로예요. tildaz 의 lock · toggle 소켓 · 앱이
+  붙는 `wayland-1` 이 전부 그 안에 생겨 사용자 instance 0 과 부딪히지 않아요 (그래서 `--instance 0` 을 써도 돼요 —
+  new-instance prompt 는 worker 0 만 처리하니 A7 prompt 회차에는 0 이 필요해요).
+- **sway 에 `timeout` 을 걸었으면 그 시간을 기억해요.** 30 분으로 걸어 둔 sway 가 회차 도중 내려가 뒤 회차가 전부
+  `ConnectFailed` 였어요 — 앱이 안 뜬 것이 아니라 compositor 가 없는 거예요. 길게 (4 시간) 걸고 끝나면 `swaymsg exit`.
+- **`wtype` 은 쓰지 말아요 — 두 가지가 실측으로 걸렸어요.** ① 새 글자가 나올 때마다 keymap 을 다시 올려서 그 사이의 키가
+  빠지거나 다른 글자로 읽혀요 (`touch …` 가 `ouch …` 로). ② 호출마다 가상 키보드를 꽂고 뽑아 두 번째 호출부터 키가 아예
+  안 닿아요 — seat 의 keyboard capability 가 빠졌다 붙는 왕복을 앱이 처리하지 않기 때문이에요 (아래 결함 후보).
+  `vkbd.py` 는 us keymap 을 연결 직후 한 번 올리고 프로세스가 살아 있는 동안 유지해요.
+- **modifier 는 `modifiers` 요청으로 보내야 해요.** 프로토콜이 modifier 상태를 client 책임으로 두고 wlroots 는 가상
+  키보드의 key 이벤트로 xkb 상태를 갱신하지 않아서, Shift 키 press 만 보내면 `Ctrl+Shift+T` 가 `t` 로 · `>` 가 `.` 로
+  들어가요. `vkbd.py` 가 mask (Shift 0 · Control 2 · Mod1 3 · Mod4 6 비트) 를 함께 보내요.
+- **⚠️ 결함 후보 (2026-09-03 발견 · #583 에 기록)** — [`wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의
+  `handleSeatEvent` 는 capability 가 바뀔 때 `keyboard_id == 0` 일 때만 `wl_keyboard` 를 만들고, capability 가 빠질 때
+  release 하는 코드가 없어요 (`keyboard_id = 0` 으로 되돌리는 자리가 없어요). wlroots 는 keyboard capability 가 빠지는
+  순간 그 client 의 keyboard 객체를 inert 로 만들므로, **유일한 키보드를 뽑았다 다시 꽂으면 sway · Hyprland 계열에서 키
+  입력이 영원히 죽어요.** 노트북 내장 키보드가 있으면 capability 가 안 빠져 드러나지 않아요.
+- **sway 는 layer-shell 을 우리가 일부러 안 써서** (#454) `-size` · dock 배치가 안 먹고 창은 tiling 으로 출력 전체예요. 그래도
+  xdg_toplevel · layer-surface · dialog 가 **같은 `logicalToPhysicalSize`** 를 쓰므로 배율 검증은 성립해요.
+- **단축키 판정은 파일로 해요.** 탭마다 `cat > tab_N.txt` 를 띄워 두고 `Alt+N` 뒤 글자를 보내면 어느 파일에 들어갔는지로
+  전환이 확정돼요 — 캡처의 탭 강조 위치를 읽는 것보다 확실해요. 새 탭은 `Ctrl+Shift+T` 뒤 bash 가 뜨는 2.5 초를 둬요.
+- **다이얼로그 펌프의 SIGTERM (#521) 은 로그 한 줄로 판정해요** — `[exit] SIGTERM received while a dialog pump was running
+  — leaving the pump`. confirm 은 `Alt+F4`, prompt 는 **worker 0 을 띄운 채 인자 없는 `tildaz` (launcher)** 를 같은 격리
+  환경에서 실행하면 launcher 가 worker 소켓에 new-instance 를 보내 핫키 캡처 다이얼로그가 떠요. `tail` 로 볼 때 그 줄이
+  `confirm result=Cancel` **앞**에 있어서 잘리기 쉬워요 — `grep` 으로 봐요. map 대기 펌프는 `mapped` 가 attach+commit
+  직후 참이 되고 compositor 를 `SIGSTOP` 하면 그 앞의 blocking `readAndDispatch` 에서 먼저 막히므로 **인위로 진입시킬
+  수 없어요** — 같은 헬퍼 한 줄이라 코드 판정으로 둬요.
+- **띠 화면은 시작 1.5 초 뒤에 그려요.** `-e` 프로세스는 세션 생성 직후 뜨고 창 크기는 그 뒤 configure 로 확정돼요
+  (`terminal session created cols=68 rows=21` → `terminal resized cols=86 rows=52`). 바로 `stty size` 를 읽으면 21 줄만
+  채워 아래가 배경으로 남고, 자동 기준값을 쓰는 판정이 배경을 띠로 오인해요. `bands` 는 기다린 뒤 그리고 `SIGWINCH` 에
+  다시 그려요. `bands-check.py` 는 기준을 230 / 20 으로 고정하고 띠가 아닌 행이 1/4 을 넘으면 경고해요.
+- **배율 검증 (#539) 은 sway 에서 세 가지를 맞춰야 성립해요** — 하나라도 어긋나면 *모든* client 가 리샘플되어 (foot 대조군도
+  같은 서명을 냈어요) 우리 buffer 가 스펙대로여도 "여러 종류" 가 나와요. 2026-09-03 에 셋을 차례로 밟았어요.
+  ① **출력 물리 해상도가 scale 로 정확히 나눠져야** 해요 (1.5 → `1500x999` · 1.7 → `1700x1020`). 안 나눠지면 sway 가 출력
+  논리 크기를 내림하고 프레임 전체를 늘려 그려요 — `grim` 캡처가 `1600x999` 처럼 1 px 작게 나오면 이거예요.
+  ② **창은 floating 으로 정수 논리 크기를 줘요** (`swaymsg '[app_id="^tildaz"] floating enable, resize set width 800 px
+  height 798 px'`). tiling 컨테이너는 논리 높이가 소수 (1000/1.5 = 666.67) 라 sway 가 창을 그 크기에 맞춰 늘려요.
+  `-e` 측정 인스턴스의 app_id 는 `tildaz.instance0` 이 아니라 역할별 이름이라 접두어 `^tildaz` 로 잡고, 창이 트리에
+  나타난 뒤 (`get_tree` 에 `"app_id": "tildaz`) 앱 자신의 `move position` IPC 뒤에 보내요.
+  ③ **floating 폭이 출력 논리 폭을 넘으면 clamp 되어 ② 가 무효**예요 (1.7 의 논리 폭 941 에 1200 을 주면 컨테이너가 출력
+  전체로 돌아가요). `get_tree` 의 rect 가 요청과 같은지 회차마다 확인해요.
+  셋을 맞추면 목적지 = `round(H × scale)` 이라, 논리 높이 H 를 골라 소수부를 .5 이상으로 만들면 (1.25 · H 798 → 997.5,
+  1.7 · H 585 → 994.5) 내림 (#539 이전) 과 반올림 (스펙) 이 갈리는 조합이 돼요. 소수부 0 인 회차를 대조로 함께 둬요.
+- **nested Hyprland 는 KWin 에서 창이 가려지면 프레임을 그리지 않아요** — `grim` 이 screencopy 를 영원히 기다려요
+  (`timeout 3 grim …` 이 124 로 끝나면 이거예요). 그 창이 앞에 보이는 동안만 캡처가 돼요. 사용자에게 알리지 않고 KWin
+  스크립트로 창을 올리면 사용자의 포커스를 빼앗아 타이핑이 nested 안으로 들어가니 하지 말아요.
+- **mutter devkit (`gnome-shell --devkit`) 은 runtime dir 을 격리하면 죽어요.** 화면을 pipewire 로 뷰어 창에 보내는데
+  `XDG_RUNTIME_DIR` 을 돌리면 pipewire 소켓을 못 찾아 (`Failed to connect pipewire context`) 셸이 곧 내려가요. 실제
+  runtime dir 을 쓰고 `--wayland-display=wayland-77` 처럼 특이한 소켓 이름으로 겹침을 피해요. tildaz 쪽 config · 로그만
+  `XDG_CONFIG_HOME` · `XDG_STATE_HOME` 으로 격리해요. 그리고 **`spectacle` 은 `dbus-run-session` 안에서 안 돼요** —
+  KWin 과 사용자 세션 버스로 말하니 바깥 셸에서 타이머로 찍어요. 다만 devkit 뷰어는 검게, Cinnamon nested 는 희게 찍혀서
+  (2026-09-03) **다이얼로그의 픽셀 증거는 못 얻었어요** — 판정은 로그의 `[dialog] configured logical=… physical=…` (configure
+  를 받고 buffer 를 만든 것) 과 `layer_shell=false` (= xdg_toplevel fallback 만 가능) 로 해요.
+- **Cinnamon nested (`cinnamon --nested --wayland`) 의 소켓은 `ss -xlp` 의 pid 로 찾아요.** 이름을 지정할 수 없고 로그에도
+  안 남으며, 실제 runtime dir 의 **기존 `wayland-N` 파일을 재사용**하기도 해서 (`wayland-0.lock` 실패 뒤 `wayland-1` 을
+  집었어요) "새로 생긴 소켓" 을 목록 비교로 찾는 방식은 빈손이에요. `ss -xlp | grep "pid=<cinnamon pid>,"` 로 봐요.
+- **GNOME 50.4 nested (mutter devkit) 는 `wp_fractional_scale_v1` 을 내줘요** — 다이얼로그 로그가 `source=fractional/dialog`
+  로 부모 KWin 의 1.7 을 받았어요. 위 `# 렌더링` 절의 scale 표 ("GNOME · fractional 미advertise → `wl_output` 정수
+  fallback") 는 그 이전 버전 기준이라, 실제 GNOME 세션에서도 그런지는 **확인 필요**예요 (nested 만 봤어요).
+- 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
+  사용자 instance 0 만 남았는지 봐요.
+
 # Linux — 글리프 · cluster 렌더 실기 검증 방법
 
 폰트 / shaping / cluster 관련 변경 (#401 등) 을 검증하는 절차예요. **소스 판정 → 드라이버로

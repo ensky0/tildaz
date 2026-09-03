@@ -68,6 +68,37 @@ def stack2(cols=150):
     emit(rows(items[:6000], cols))
 
 
+def bands():
+    """#539 — 밝은 띠 / 어두운 띠를 3 줄씩 번갈아 채운 화면. 글리프가 없어 안티에일리어싱이 판정에 안 섞인다.
+
+    compositor 가 창을 리샘플하면 (버퍼가 목적지보다 1 px 짧을 때 — `logicalToPhysicalSize` 의 반올림)
+    세로 단면에서 띠 경계의 전이 행 밝기가 창 위→아래로 흘러가고, 없으면 모든 경계가 같다.
+    `dist/linux/bands-check.py` 가 그 단면을 읽는다. 터미널 크기를 스크립트 안에서 `stty size` 로 읽으므로
+    Linux · macOS 의 `-e` 전용이다 (Windows `--cmd` 는 지원하지 않는다).
+    """
+    # `-e` 프로세스는 세션 생성 직후 뜨고 창 크기는 그 뒤 configure 로 확정된다 (로그: `terminal session created
+    # cols=68 rows=21` → 수 ms 뒤 `terminal resized cols=86 rows=52`). 시작하자마자 `stty size` 를 읽으면 옛 크기의
+    # 줄 수만 채워 아래가 배경으로 남는다 (2026-09-03 headless sway 회차 — 판정의 기준 밝기가 그것에 끌려갔다).
+    # 그래서 잠깐 기다린 뒤 그리고, 이후 크기가 바뀌면 (SIGWINCH) 다시 그린다.
+    head = "\n".join([
+        "draw() {",
+        "  size=$(stty size)",
+        "  rows=${size% *}; cols=${size#* }",
+        "  printf '\\033[H\\033[2J'",
+        "  i=0",
+        "  while [ $i -lt $((rows - 1)) ]; do",
+        "    if [ $(( (i / 3) % 2 )) -eq 0 ]; then printf '\\033[48;2;230;230;230m'; else printf '\\033[48;2;20;20;20m'; fi",
+        "    printf '%*s\\033[0m\\n' \"$cols\" ''",
+        "    i=$((i + 1))",
+        "  done",
+        "}",
+        "trap draw WINCH",
+        "sleep 1.5",
+        "draw",
+    ])
+    emit([], head=head, tail="while :; do sleep 1; done")
+
+
 def overflow(cols=150, screens=17):
     # 화면마다 base 를 바꿔 조합이 겹치지 않게 한다. 각 화면 5,692 종 (= 4 base × 29 × 30 × ... 를 cols 줄로).
     bases_all = [chr(c) for c in range(0x0100, 0x0100 + 4 * screens)]   # Ā Ă Ą Ć … 화면마다 4 개
@@ -104,5 +135,9 @@ if __name__ == "__main__":
         overflow(cols or 150)
     elif which == "mini":
         mini()
+    elif which == "bands":
+        if CMD_TXT:
+            sys.exit("bands 는 sh 전용이다 (stty size 로 터미널 크기를 읽는다) — --cmd 와 함께 쓸 수 없다")
+        bands()
     else:
-        sys.exit("사용법: clusters.py many|stack2|overflow|mini [cols] [--cmd <본문.txt>]")
+        sys.exit("사용법: clusters.py many|stack2|overflow|mini|bands [cols] [--cmd <본문.txt>]")
