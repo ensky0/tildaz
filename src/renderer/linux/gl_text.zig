@@ -20,10 +20,10 @@
 //! 텍셀을 그대로 낸다.
 
 const std = @import("std");
-const egl = @import("egl.zig");
+const egl = @import("../../host/linux/egl.zig");
 const gl_atlas = @import("gl_atlas.zig");
 
-/// 정점 — 위치(px) + atlas UV(0..1) + fg 색.
+/// 정점 — 위치(px) + atlas UV(**픽셀 좌표** · 셰이더가 `u_atlas_size` 로 정규화 — #586) + fg 색.
 const Vertex = extern struct {
     x: f32,
     y: f32,
@@ -41,6 +41,9 @@ const vertex_src: [*:0]const u8 =
     \\attribute vec2 a_uv;
     \\attribute vec4 a_color;
     \\uniform vec2 u_viewport;
+    \\// #586 — atlas 한 변 (px). 정점의 a_uv 는 **픽셀 좌표**고 여기서 정규화한다 — 그래야 atlas 가
+    \\// 커져도 (grow) 이미 쌓인 정점이 그대로 맞는다 (macOS · Windows 의 atlas_w/h uniform 과 같다).
+    \\uniform vec2 u_atlas_size;
     \\varying vec2 v_uv;
     \\varying vec4 v_color;
     \\void main() {
@@ -50,7 +53,7 @@ const vertex_src: [*:0]const u8 =
     \\    vec2 ndc = vec2(a_pos.x / u_viewport.x * 2.0 - 1.0,
     \\                    a_pos.y / u_viewport.y * 2.0 - 1.0);
     \\    gl_Position = vec4(ndc, 0.0, 1.0);
-    \\    v_uv = a_uv;
+    \\    v_uv = a_uv / u_atlas_size;
     \\    v_color = a_color;
     \\}
 ;
@@ -110,6 +113,7 @@ const Program = struct {
     id: u32,
     uniform_viewport: i32,
     uniform_atlas: i32,
+    uniform_atlas_size: i32,
 };
 
 pub const Batch = struct {
@@ -154,11 +158,12 @@ pub const Batch = struct {
         if (quad.w <= 0 or quad.h <= 0) return;
         const list = if (quad.entry.is_color) &self.color else &self.gray;
 
-        const inv_atlas: f32 = 1.0 / @as(f32, @floatFromInt(gl_atlas.ATLAS_SIZE));
-        const uv_x0 = @as(f32, @floatFromInt(quad.entry.x)) * inv_atlas;
-        const uv_y0 = @as(f32, @floatFromInt(quad.entry.y)) * inv_atlas;
-        const uv_x1 = @as(f32, @floatFromInt(quad.entry.x + quad.entry.w)) * inv_atlas;
-        const uv_y1 = @as(f32, @floatFromInt(quad.entry.y + quad.entry.h)) * inv_atlas;
+        // #586 — UV 는 **픽셀 좌표**로 굽고 정규화는 셰이더가 `u_atlas_size` 로 한다. 전에는 여기서
+        // `1 / ATLAS_SIZE` 를 곱해 넣어서, atlas 를 키우면 이미 쌓인 정점이 옛 크기로 굳어 있었다.
+        const uv_x0: f32 = @floatFromInt(quad.entry.x);
+        const uv_y0: f32 = @floatFromInt(quad.entry.y);
+        const uv_x1: f32 = @floatFromInt(quad.entry.x + quad.entry.w);
+        const uv_y1: f32 = @floatFromInt(quad.entry.y + quad.entry.h);
 
         const x0 = quad.x;
         const y0 = quad.y;
@@ -198,8 +203,9 @@ pub const Batch = struct {
         api.blendFunc(egl.GL_ONE, egl.GL_ONE_MINUS_SRC_ALPHA);
         api.activeTexture(egl.GL_TEXTURE0);
 
-        self.draw(api, self.gray_program, self.gray.items, atlas.grayTexture(), viewport_w, viewport_h);
-        self.draw(api, self.color_program, self.color.items, atlas.colorTexture(), viewport_w, viewport_h);
+        // surface 마다 크기가 다를 수 있다 (#586 — color 가 먼저 차서 먼저 커진다).
+        self.draw(api, self.gray_program, self.gray.items, atlas.grayTexture(), atlas.graySize(), viewport_w, viewport_h);
+        self.draw(api, self.color_program, self.color.items, atlas.colorTexture(), atlas.colorSize(), viewport_w, viewport_h);
 
         api.disable(egl.GL_BLEND);
     }
@@ -210,12 +216,15 @@ pub const Batch = struct {
         program: Program,
         vertices: []const Vertex,
         texture: u32,
+        atlas_size: u32,
         viewport_w: f32,
         viewport_h: f32,
     ) void {
         if (vertices.len == 0) return;
         api.useProgram(program.id);
         api.uniform2f(program.uniform_viewport, viewport_w, viewport_h);
+        const size_f: f32 = @floatFromInt(atlas_size);
+        api.uniform2f(program.uniform_atlas_size, size_f, size_f);
         api.uniform1i(program.uniform_atlas, 0);
         api.bindTexture(egl.GL_TEXTURE_2D, texture);
         api.bindBuffer(egl.GL_ARRAY_BUFFER, self.buffer);
@@ -257,6 +266,7 @@ fn link(api: *const egl.Api, vs: u32, fragment: [*:0]const u8) ?Program {
         .id = id,
         .uniform_viewport = api.getUniformLocation(id, "u_viewport"),
         .uniform_atlas = api.getUniformLocation(id, "u_atlas"),
+        .uniform_atlas_size = api.getUniformLocation(id, "u_atlas_size"),
     };
 }
 
@@ -276,8 +286,8 @@ fn compile(api: *const egl.Api, kind: u32, source: [*:0]const u8) ?u32 {
 
 test "컬러 글리프와 회색 글리프가 다른 목록에 쌓인다" {
     var batch = Batch{
-        .gray_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1 },
-        .color_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1 },
+        .gray_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1, .uniform_atlas_size = -1 },
+        .color_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1, .uniform_atlas_size = -1 },
         .buffer = 0,
     };
     defer {
@@ -294,8 +304,8 @@ test "컬러 글리프와 회색 글리프가 다른 목록에 쌓인다" {
 
 test "크기 0 글리프는 정점을 만들지 않는다" {
     var batch = Batch{
-        .gray_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1 },
-        .color_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1 },
+        .gray_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1, .uniform_atlas_size = -1 },
+        .color_program = .{ .id = 0, .uniform_viewport = -1, .uniform_atlas = -1, .uniform_atlas_size = -1 },
         .buffer = 0,
     };
     defer batch.gray.deinit(std.testing.allocator);

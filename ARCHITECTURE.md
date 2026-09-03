@@ -24,7 +24,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape — `renderTabBar` → `drawPane(PaneDraw)` per visible pane → `endFrame`. `src/renderer/pane_draw.zig` is the per-pane input all three renderers share ([#483](https://github.com/ensky0/tildaz/issues/483) step 2). Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
-| Renderer (Linux) | No — host-owned | `src/host/linux/software_terminal.zig`, `gl_*.zig` | `software_terminal.zig` owns the draw lists (`FrameLayer` — what to draw where) and the CPU rasterizer; `gl_atlas.zig` / `gl_text.zig` / `gl_rects.zig` consume the *same* lists on the GPU. Shares cross-platform pieces (`tab_layout`, `tab_chrome`, `block_element`, `ui_metrics`); `FrameInputs.panes` carries the same `PaneDraw` list the GPU renderers take |
+| Renderer (Linux) | No — host-owned draw lists + `src/renderer/linux/` GL | `src/host/linux/software_terminal.zig`, `src/renderer/linux/gl_*.zig` | `software_terminal.zig` owns the draw lists (`FrameLayer` — what to draw where) and the CPU rasterizer; `gl_atlas.zig` / `gl_text.zig` / `gl_rects.zig` consume the *same* lists on the GPU. Shares cross-platform pieces (`tab_layout`, `tab_chrome`, `block_element`, `ui_metrics`); `FrameInputs.panes` carries the same `PaneDraw` list the GPU renderers take |
 | Fonts | Per OS with shared sizing policy | `src/font/spec.zig`, `src/font/windows`, `src/font/macos`, `src/font/linux` | Native font lookup and fallback; separate terminal and fixed-size tab-label contexts/atlases |
 | OS services | Wrapper | `src/autostart.zig`, `src/log.zig`, `src/paths.zig` | Startup registration, logging, platform paths |
 
@@ -123,8 +123,8 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    `setsid`, `TIOCSCTTY` on Linux) behind the shared `terminal.zig` API.
 5. `host/linux/software_terminal.zig` builds the per-frame draw lists (cell
    backgrounds, glyphs, procedural rectangles, chrome) and rasterizes them on
-   the CPU into an ARGB8888 buffer. The GL path (`gl_rects.zig` / `gl_text.zig`
-   / `gl_atlas.zig`, via `egl.zig` + `gbm.zig`) consumes the *same* lists and
+   the CPU into an ARGB8888 buffer. The GL path (`renderer/linux/gl_rects.zig` / `gl_text.zig`
+   / `gl_atlas.zig`, via `host/linux/egl.zig` + `gbm.zig`) consumes the *same* lists and
    draws into a dma-buf, so the two paths cannot silently diverge. GL is the
    default; `TILDAZ_GL_RENDER=0` falls back to CPU rasterizing into the dma-buf
    and `TILDAZ_DISABLE_GPU=1` to `wl_shm`. Dialog surfaces are always `wl_shm`.
