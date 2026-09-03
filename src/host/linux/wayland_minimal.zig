@@ -109,6 +109,10 @@ const wl_pointer_axis_vertical: u32 = 0;
 // wl_seat opcodes (request side, used by `get_pointer` / `get_keyboard`).
 const wl_seat_request_get_pointer: u16 = 0;
 const wl_seat_request_get_keyboard: u16 = 1;
+// #347 — capability 를 잃은 객체를 놓는 destructor. 둘 다 `since="3"` 이라 bound seat 버전이
+// 3 미만이면 보낼 수 없다 (그때는 id 만 버린다 — 객체는 남지만 다시 붙을 때 새로 만든다).
+const wl_pointer_request_release: u16 = 1;
+const wl_keyboard_request_release: u16 = 0;
 
 // zwp_text_input_manager_v3 / zwp_text_input_v3 wire opcodes (v1 of unstable
 // protocol — https://wayland.app/protocols/text-input-unstable-v3). Wire-level
@@ -1380,6 +1384,9 @@ const Client = struct {
     // commit 송신 끝난 상태). 다음 toggle → flip + re-attach.
     surface_hidden: bool = false,
     seat_id: u32 = 0,
+    /// #347 — bind 한 `wl_seat` 버전. `wl_keyboard.release` · `wl_pointer.release` 는 v3 부터라
+    /// capability 를 잃은 객체를 놓을 수 있는지 이 값으로 가른다.
+    seat_version: u32 = 0,
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
     seat_capabilities: u32 = 0,
@@ -2126,6 +2133,7 @@ const Client = struct {
             //
             // v10 을 내주지 않는 compositor 는 `@min` 이 예전 동작을 그대로 유지한다.
             const seat_version = @min(self.caps.seat.version, 10);
+            self.seat_version = seat_version;
             try self.bind(self.caps.seat.name, "wl_seat", seat_version, self.seat_id);
             // 데스크톱마다 내주는 버전이 갈리므로 판정 근거를 남긴다. `bound=10` 이면
             // compositor 가 반복을 맡을 수 있고 (그때 `repeat rate=0` 이 뒤따른다),
@@ -2275,6 +2283,8 @@ const Client = struct {
 
         self.keyboard_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_keyboard, self.keyboard_id);
+        // #347 — 성공도 남긴다. 예전엔 무음이라 "언제 살아났는지" 를 사후에 알 수 없었다.
+        log.appendLine("wayland", "wl_keyboard id={d} created (seat capabilities {d})", .{ self.keyboard_id, self.seat_capabilities });
     }
 
     fn createPointerIfAvailable(self: *Client) !void {
@@ -2286,6 +2296,7 @@ const Client = struct {
 
         self.pointer_id = self.allocId();
         try self.sendNewId(self.seat_id, wl_seat_request_get_pointer, self.pointer_id);
+        log.appendLine("wayland", "wl_pointer id={d} created (seat capabilities {d})", .{ self.pointer_id, self.seat_capabilities });
 
         // #193 — cursor_shape_device 가 wl_pointer 와 1:1 매칭. manager advertise
         // 된 경우만. set_shape 는 last_serial (enter event) 필요해 이 시점엔 송신
@@ -5568,12 +5579,70 @@ const Client = struct {
 
     fn handleSeatEvent(self: *Client, opcode: u16, payload: []const u8) !void {
         if (opcode == 0 and payload.len >= 4) {
-            self.seat_capabilities = readU32(payload[0..4]);
+            const prev = self.seat_capabilities;
+            const caps = readU32(payload[0..4]);
+            self.seat_capabilities = caps;
+            // #347 — capability 를 **잃으면** 그 객체는 compositor 쪽에서 죽는다. spec (`wl_seat.capabilities`)
+            // 은 상실 시 `release` 를 요구하고, v5+ 객체는 *"added capability 통보 전에 만들어진 것은 이벤트를
+            // 보내면 안 된다"* 고 못박는다 — wlroots 는 그 자리에서 inert 로 만든다. 예전엔 `id != 0` 이라
+            // 다음 gain 에서 재생성을 건너뛰어, 키보드가 하나뿐인 데스크톱에서 USB 키보드를 뽑았다 꽂으면
+            // 입력이 영원히 죽었다 (headless sway 에서 가상 키보드 착탈로 재현 — #583). 잃을 때 놓고 id 를
+            // 0 으로 되돌리면 아래 create 가 새 객체를 만든다. 전이는 production 로그로 남긴다 — 재현이
+            // 장치 착탈 타이밍에 걸려 있어 verbose 를 켠 세션만 잡히면 놓친다.
+            const t = seatCapabilityTransition(prev, caps);
+            if (prev != caps) {
+                log.appendLine("wayland", "wl_seat capabilities {d} -> {d}: keyboard {s}, pointer {s} (#347)", .{ prev, caps, @tagName(t.keyboard), @tagName(t.pointer) });
+            }
+            if (t.keyboard == .lost) self.releaseKeyboard();
+            if (t.pointer == .lost) self.releasePointer();
             if (self.keyboard_id == 0) try self.createKeyboardIfAvailable();
             if (self.pointer_id == 0) try self.createPointerIfAvailable();
             if (self.data_device_id == 0) try self.createDataDeviceIfAvailable();
             return;
         }
+    }
+
+    /// #347 — keyboard capability 상실. `wl_keyboard.release` (v3+) 를 보내고 그 객체에 묶인 상태를
+    /// 접는다. keymap · xkb state 는 다음 `wl_keyboard` 의 `keymap` 이벤트가 다시 세우므로 여기서 건드리지
+    /// 않는다. focus 상실과 같은 정리 (repeat 타이머 · preedit · compose) 는 `wl_keyboard.leave` 와 맞춘다 —
+    /// 객체가 죽으면 `leave` 도 오지 않는다.
+    fn releaseKeyboard(self: *Client) void {
+        const id = self.keyboard_id;
+        if (self.seat_version >= 3) {
+            self.sendNoArgs(id, wl_keyboard_request_release) catch |err| {
+                log.appendLine("wayland", "wl_keyboard.release failed: {s}", .{@errorName(err)});
+            };
+        }
+        self.keyboard_id = 0;
+        self.key_repeat_keycode = 0;
+        self.last_keyboard_focus_surface_id = 0;
+        self.commitPendingInput();
+        self.resetCompose();
+        log.appendLine("wayland", "wl_keyboard id={d} released — seat lost keyboard capability; will recreate on gain (#347)", .{id});
+    }
+
+    /// #347 — pointer capability 상실. cursor_shape_device 는 `wl_pointer` 와 1:1 (#193) 이라 함께 놓는다.
+    fn releasePointer(self: *Client) void {
+        const id = self.pointer_id;
+        if (self.cursor_shape_device_id != 0) {
+            self.sendNoArgs(self.cursor_shape_device_id, wp_cursor_shape_device_v1_request_destroy) catch {};
+            self.cursor_shape_device_id = 0;
+        }
+        if (self.seat_version >= 3) {
+            self.sendNoArgs(id, wl_pointer_request_release) catch |err| {
+                log.appendLine("wayland", "wl_pointer.release failed: {s}", .{@errorName(err)});
+            };
+        }
+        self.pointer_id = 0;
+        self.pointer_inside = false;
+        self.pointer_x_px = -1;
+        self.pointer_y_px = -1;
+        self.last_pointer_enter_serial = 0;
+        self.last_pointer_enter_surface_id = 0;
+        self.pointer_left_down = false;
+        self.pointer_middle_down = false;
+        self.pointer_right_down = false;
+        log.appendLine("wayland", "wl_pointer id={d} released — seat lost pointer capability; will recreate on gain (#347)", .{id});
     }
 
     fn handleKeyboardEvent(self: *Client, opcode: u16, payload: []const u8) !void {
@@ -10571,6 +10640,45 @@ test "#552 포인터 좌표는 논리 정수로 자르지 않고 고정소수점
 /// 반올림은 **0 에서 먼 쪽** (half away from zero) 이다 — `fractional-scale-v1` 의
 /// 규정이자 compositor 가 목적지 사각형을 잡는 방식이라, 이것과 어긋나면 창이
 /// 그 축으로 리샘플된다 (#539).
+/// #347 — `wl_seat.capabilities` 전이. 한 비트가 `lost` 면 그 객체를 놓아야 하고 (`releaseKeyboard` ·
+/// `releasePointer`), `gained` 면 새로 만든다. 순수 함수라 테스트로 고정한다.
+const CapabilityChange = enum { absent, gained, kept, lost };
+const SeatCapabilityTransition = struct { keyboard: CapabilityChange, pointer: CapabilityChange };
+
+fn capabilityChange(prev: u32, next: u32, bit: u32) CapabilityChange {
+    const had = (prev & bit) != 0;
+    const has = (next & bit) != 0;
+    if (had and has) return .kept;
+    if (had) return .lost;
+    if (has) return .gained;
+    return .absent;
+}
+
+fn seatCapabilityTransition(prev: u32, next: u32) SeatCapabilityTransition {
+    return .{
+        .keyboard = capabilityChange(prev, next, wl_seat_capability_keyboard),
+        .pointer = capabilityChange(prev, next, wl_seat_capability_pointer),
+    };
+}
+
+test "#347 seat capability 전이 — 잃으면 lost, 다시 얻으면 gained" {
+    const kb = wl_seat_capability_keyboard;
+    const ptr = wl_seat_capability_pointer;
+    // 부팅: 둘 다 처음 받음.
+    try std.testing.expectEqual(CapabilityChange.gained, seatCapabilityTransition(0, kb | ptr).keyboard);
+    try std.testing.expectEqual(CapabilityChange.gained, seatCapabilityTransition(0, kb | ptr).pointer);
+    // 유일한 키보드를 뽑음: keyboard 만 lost, pointer 는 kept.
+    const unplug = seatCapabilityTransition(kb | ptr, ptr);
+    try std.testing.expectEqual(CapabilityChange.lost, unplug.keyboard);
+    try std.testing.expectEqual(CapabilityChange.kept, unplug.pointer);
+    // 다시 꽂음: keyboard 가 gained — 여기서 `keyboard_id == 0` 이어야 새 객체가 만들어진다.
+    try std.testing.expectEqual(CapabilityChange.gained, seatCapabilityTransition(ptr, kb | ptr).keyboard);
+    // 로그인 직후 둘 다 없는 seat (#347 본문 §1): absent 는 아무것도 놓지 않는다.
+    try std.testing.expectEqual(CapabilityChange.absent, seatCapabilityTransition(0, 0).keyboard);
+    // 같은 값이 다시 와도 (#347 §5 — capability 만 변할 때만 오지만) 전이는 없다.
+    try std.testing.expectEqual(CapabilityChange.kept, seatCapabilityTransition(kb, kb).keyboard);
+}
+
 fn physicalSizeForLogical(logical: i32, scale_num: u32) i32 {
     const num: i64 = @intCast(scale_num);
     const den: i64 = fractional_scale_denominator;
