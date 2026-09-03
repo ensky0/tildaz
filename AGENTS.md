@@ -1054,6 +1054,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`dist/screens/clusters.py bands`](dist/screens/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음) |
 | [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
+| [`dist/linux/real-session-check.sh`](dist/linux/real-session-check.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `gnome` (GNOME 세션 안에서 fractional-scale 광고 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
 R=/run/user/$(id -u)/tz583; mkdir -m 700 -p $R                       # ⚠️ 짧은 경로 — 아래
@@ -1130,6 +1131,13 @@ grim shot.png                                                          # sway �
     옛 work-area 로 뜬 회차 (60 % 인데 논리 높이 180) 가 있었어요. 그리고 **이 출력의 1.25 배율에서는 foot 도 리샘플
     서명**을 냈어요 (1.5 · 1.7 은 둘 다 깨끗) — 그 조건의 "여러 종류" 는 우리 결함이 아니고 실제 Hyprland 세션의 1.25 는
     따로 봐야 해요. **대조군 (foot) 없이 배율 판정을 내리지 않아요.**
+- **nested 로 못 가르는 것은 실제 세션에서 재요 — 두 방법이 달라요.** Hyprland 는 D-Bus 의존이 적어 **다른 TTY 에서
+  로그인해 `Hyprland` 를 띄우면** KDE 세션 (이 agent 가 도는 곳) 과 동시에 떠도 안전하고, 같은 uid 의 `/run/user/<uid>` 에
+  소켓이 생기므로 agent 가 거기 붙어 `real-session-check.sh hypr-scale` 을 돌릴 수 있어요 (사용자는 화면만 그 VT 에 두면
+  돼요 — 실제 출력이라 가려짐 문제가 없어요). **GNOME 은 그렇게 하지 말아요** — 세션 전체가 uid 당 하나인 user bus 를 써서
+  KDE 와 동시에 띄우면 이름이 충돌해요 (nested 때도 `name already taken` 이 났어요). KDE 를 로그아웃하고 GNOME 으로 로그인한
+  뒤 **그 세션 안의 새 agent 세션**에서 `real-session-check.sh gnome` 을 돌려요. 두 스크립트 모두 세션 배율을 바꾸면 끝에
+  원래 값으로 되돌리고 config 는 격리 경로예요.
 - **COSMIC nested (`cosmic-comp`) 는 `cosmic-randr mode X11-0 1280 800 --scale 1.25` 로 배율을 바꿔요.** 출력이 winit
   창 크기 (1280x800) 로 고정이라 배율은 그 둘을 나누는 값 (1.25 · 1.6 · 2.0) 만 돼요. `grim` 은 wlr-screencopy 가 아니라
   `ext_image_copy_capture_manager_v1` 로 돼요 (grim 1.5). runtime dir 은 격리해도 돼요 (pipewire 불필요).
