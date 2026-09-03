@@ -907,7 +907,7 @@ dead key (`^` `¨` `´` `` ` `` `~` — 프랑스어 · 독일어 · 스페인�
 | platform | 조합 주체 | 경로 |
 |---|---|---|
 | macOS | OS — 조합 중 `ˆ` 를 marked text 로 **보여 준다** (2026-08-27 실기: ABC + `Option+i`, `setMarkedText:` → preedit 렌더) | `interpretKeyEvents:` — AppKit 텍스트 입력 시스템이 dead key 상태를 든다 |
-| Windows | OS — 조합 중 표시 **없음** (`WM_DEADCHAR` 를 그리는 코드가 없다 — 코드 확정, 실기 미확인) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
+| Windows | OS — 조합 중 표시 **없음** (`WM_DEADCHAR` 를 그리는 코드가 없다 — 코드 확정). 조합 자체는 2026-09-03 실기로 확인 (US-International · `'`+`e` → `é`, `Shift+6`+`o` → `ô`, `'`+space → `'`, `'`+`x` → `'x` — 조합 불가도 dead key 를 삼키지 않는다) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
 | **Linux** | **tildaz** — #530 부터 조합 중 표시도 한다 | libxkbcommon **Compose** (`xkb_compose_state_feed`) — [`xkb.zig`](src/host/linux/xkb.zig) `Keyboard.composeFeed`. #494 전에는 `xkb_state_key_get_utf8` 만 있어 dead key 가 **빈 문자열** = 아무것도 보내지 않았다 |
 
 Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496 과 같은 뿌리). 규칙:
@@ -934,7 +934,7 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
 - 대조군 foot 1.27.0 은 `^` 뒤 Enter 를 삼키고 (`65` 만 나옴) `^`+Ctrl+C 를 `ĉ` 로 조합해 **SIGINT 를 삼킨다** — "Ctrl/Alt 제외 · 조합 버림" 두 규칙의 근거가 실기로 재현됐다.
 - `ko_KR.UTF-8` 의 Compose 파일은 `en_US.UTF-8` 을 include 하는 한 줄이라 fallback 없이 바로 로드된다.
 
-macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (위 표). **Windows 는 코드 판정이고 실기 미확인**이다 — OS 가 조합 주체라 코드 리뷰로는 드러나지 않으므로 따로 재야 한다.
+macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (위 표). **Windows 의 조합도 2026-09-03 실기로 확인했다** — OS 가 조합 주체라 코드 리뷰로는 드러나지 않아 따로 잰 것이다. [`dist/windows/deadkey-check.ps1`](dist/windows/deadkey-check.ps1) 이 US-International layout 을 세션에 잠깐 올리고 `WM_INPUTLANGCHANGEREQUEST` 로 tildaz 창의 스레드만 전환한 뒤 `SendInput` 으로 네 케이스를 쳐 자식 (`Read-Host`) 이 받은 UTF-8 바이트로 판정한다 (노트북 Ryzen AI 7 350 · Windows 11 Pro 26200 — `c3 a9 78` · `27 78` · `c3 b4 78` · `27 78` 모두 기대와 일치, [#494 댓글](https://github.com/ensky0/tildaz/issues/494)). 조합 중 표시가 없는 것은 그대로다 (#583 B4).
 
 조합 중 표시 (#530) 의 검증 (2026-08-27): lima headless sway (software 렌더) 에서 `grim` 캡처의 preedit 배경색 픽셀 151 → 0 과 스크린샷 확인, **COSMIC 1.6.0 실기 (GL 렌더 · 실제 `fr` 자판 · fcitx5 공존 포함) 7 케이스 전부 일치** ([#530 댓글](https://github.com/ensky0/tildaz/issues/530#issuecomment-5432460964)) — `^` 표시 · `e` 로 확정 · Enter / Ctrl+C / 단축키 / 포커스 이탈에서 지움 · `^´` 두 글자 덧붙임 · IME preedit 과 같은 프레임에 겹치지 않음. **KDE Plasma 6.7.4 (KWin · scale 1.6 · GL 렌더) 실기에서도 7 케이스 전부 일치** ([#530 댓글](https://github.com/ensky0/tildaz/issues/530#issuecomment-5434640115)) — 384 px = 151 × 1.6² 로 셀 면적까지 맞는다. KDE 고유 관측 둘, 표시 동작에는 영향이 없었다: KWin 은 등록된 layout 전부를 **한 keymap** 에 담아 준다 (`layouts=[English (US), French]` — COSMIC 은 layout 마다 새 keymap); fcitx5 가 떠 있으면 **layout 제어권이 fcitx5 로 넘어가** 앱은 단일 layout keymap 을 받고 KWin 의 `getLayout` 은 `0` 을 계속 보고하므로 layout 근거로 쓸 수 없다.
 
@@ -1060,8 +1060,11 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 - **launcher 의 기동 실패 안내도 세 platform 이 다이얼로그다** ([#577](https://github.com/ensky0/tildaz/issues/577)).
   launcher 는 `host.run` 을 거치지 않아 Linux 에서는 `Client` 가 아예 없고, 그래서 예전에는
   `log.userFacing` 으로 stderr + 로그에만 남겼다 — `.desktop` (메뉴 · autostart) 실행에서
-  stderr 는 어디에도 붙지 않으므로 **사용자는 아무것도 보지 못했다.** Windows
-  (`MessageBoxW`) · macOS (`NSAlert`) 는 OS 가 모달을 주므로 같은 자리에서 그냥 떴다.
+  stderr 는 어디에도 붙지 않으므로 **사용자는 아무것도 보지 못했다.** Windows (자체 다이얼로그
+  창 — window system 연결 없이도 `CreateWindow` 가 된다) · macOS (`NSAlert`) 는 같은 자리에서 그냥 떴다.
+  Windows 는 2026-09-03 실기로 확인했다 — 깨진 TOML 의 `config_9.toml` + 인자 없는 실행 (launcher 단독 실패) 에서
+  `TildaZ failed to start. / Error: CannotParseValue` 다이얼로그가 124 ms 에 뜨고 닫으면 exit 0
+  ([`dist/windows/launcher-fatal-check.ps1`](dist/windows/launcher-fatal-check.ps1) · [#577 댓글](https://github.com/ensky0/tildaz/issues/577)).
 
   Linux 는 창도 PTY 도 만들지 않고 **다이얼로그만** 세운다 (`showFatalStandalone`). dialog
   는 자기 layer-shell surface 이고 항상 `wl_shm` 이라 (GPU 불필요) Wayland 연결 + globals +
@@ -1528,7 +1531,7 @@ Configuration: missing required key "window" in (top-level).
 
 측정 인스턴스는 예외다 ([#382](https://github.com/ensky0/tildaz/issues/382)) — **일부러** 사용자 config 를 만들지 않으므로 안내도 없다.
 
-Windows는 짧은 본문을 기존 `MessageBoxW`로 표시하고 화면 또는 4096 UTF-16 변환 상한을 넘을 때만 read-only multiline EDIT window로 전환한다. macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
+Windows는 짧은 본문도 overflow 본문도 자체 다이얼로그 창 (`dialog/windows.zig` 의 `TildaZScrollableDialogWindow` — 아이콘 · 제목 · 구분선 · read-only EDIT 본문 · 버튼) 으로 표시하고, 본문이 화면을 넘을 때만 그 EDIT 에 세로 scroll 을 붙인다 (#540). 그 창을 만들 수 없을 때만 `MessageBoxW` 로 물러선다 (`showNative`). (#316 당시에는 짧은 본문이 `MessageBoxW` 였다 — 2026-09-03 #577 Windows 실기에서 launcher 실패 다이얼로그가 자체 창으로 뜨는 것을 보고 서술을 고쳤다.) macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
 
 ---
 

@@ -696,6 +696,42 @@ dist\windows\render-ab-shot.ps1 … -NewTab        # Ctrl+Shift+T 를 합성 입
   `stack2` 는 512 판도 2048 에서 멈춰 조건이 안 돼요. `overflow` + `-NewTab` 을 **main 판** (고정 2048 + 안전망) 과 견줘요.
   grow 판끼리는 같은 코드라 함정을 스스로 못 가르니까요 (2026-09-03 실측 `0 / 2,640,760 px`).
 
+# Windows — 합성 입력으로 dead key · launcher 실패를 자동 검증하는 법
+
+macOS 의 `deadkey-check.sh` 에 대응하는 도구 둘이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A2 · A3 의 Windows 몫).
+둘 다 `--instance 9` 또는 launcher 로 앱을 한 번 띄우고 끝나면 만든 것을 스스로 지워요. 실기라서 `# 실행 환경` 대로
+**시작 전에 알리고 동의를 받아요** — 합성 키가 나가고 세션 layout 목록 · `config_9.toml` 이 잠깐 바뀌어요.
+
+| 도구 | 무엇 |
+|---|---|
+| [`dist/windows/deadkey-check.ps1`](dist/windows/deadkey-check.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
+| [`dist/windows/launcher-fatal-check.ps1`](dist/windows/launcher-fatal-check.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+
+```powershell
+dist\windows\deadkey-check.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
+dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
+```
+
+- **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
+  `PostMessage` 하면 `DefWindowProc` 이 **그 스레드**의 layout 만 바꿔요. 우리 셸도 사용자의 다른 창도 그대로예요. 바뀌었는지
+  `GetKeyboardLayout(thread)` 로 확인하고 안 됐으면 키를 보내지 않아요. `LoadKeyboardLayoutW` 의 부작용 (세션 목록에 남아
+  `Win+Space` 에 나타남) 은 끝에 `UnloadKeyboardLayout` 으로 내리고 `GetKeyboardLayoutList` 를 전후로 찍어 확인해요 (위
+  `# Windows — 키보드 layout 조회 실측 방법` 의 같은 주의).
+- **자식은 `Read-Host` 로 줄을 받아요** — Windows 에는 `cat` 이 없어요. `-e` 가 명령줄을 통째로 `CreateProcessW` 에 넘기므로
+  `powershell -File <자식.ps1> <out> <N>` 처럼 인자도 그대로 가요 (#584 에서 확인). 자식이 N 줄을 받고 끝나면 앱도 끝나
+  정리가 자동이에요. 자식 PowerShell 이 `Read-Host` 에 닿기 전에 보낸 키는 콘솔 입력 버퍼에 남아 있다가 읽히지만, 2 초는 둬요.
+- **키마다 포커스 가드**예요 (`dist/stress/send-keys.ps1` 과 같은 규칙) — foreground 가 tildaz 창이 아니면 멈춰요. 합성 키는
+  포커스된 창으로 가니 회차 동안 사용자가 다른 창을 만지면 거기에 타이핑돼요.
+- **앱의 error 다이얼로그는 `MessageBox` (`#32770`) 가 아니에요** — `dialog/windows.zig` 의 자체 창
+  `TildaZScrollableDialogWindow` 이고 본문을 직접 그려 자식 컨트롤로는 제목 Static 과 OK Button 만 보여요. 본문 문구는
+  **캡처 (PrintWindow) 와 로그** (`tildaz_0.log` 의 `[fatal] run failed: <err>`) 로 확인해요. 첫 회차에 `#32770` 을 기대해
+  거짓 FAIL 이 났어요 (2026-09-03).
+- **launcher 단독 실패를 만드는 법은 "깨진 TOML 의 `config_9.toml` + 인자 없는 실행"** 이에요. `runLauncher` 가 spawn 전에
+  모든 index 의 config 를 `configAutoStart` 로 읽고 파서 오류를 그대로 전파하므로 worker 는 뜨지도 않아요 — worker 가 다이얼로그를
+  띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
+  자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
+  이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
+
 # Windows — 키보드 layout 조회 실측 방법
 
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`dist/windows/layout-probe.zig`](dist/windows/layout-probe.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
