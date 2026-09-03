@@ -630,6 +630,7 @@ Windows 실측).
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 영어/숫자/기호 길게 누름 → 반복 입력 | OS default | `ApplePressAndHoldEnabled = false` 우리 앱 도메인에 등록 — 안 등록하면 system 이 accent picker (à á â) 띄우려 repeat 막음 | client-side timer (compositor `wl_keyboard.repeat_info` 의 rate / delay 따름, [17937a9](https://github.com/ensky0/tildaz/commit/17937a9), L12-γ-5). focus 떠날 때 / key release 시 즉시 disarm. 반복을 내보내기 전에 입력 큐를 한 번 비워, 오래 걸린 핸들러 (pane 마다 500 ms 유예가 쌓이는 탭 닫기 등) 동안 도착한 release 를 먼저 반영한다 — 그래서 *이미 뗀 키* 로 반복이 나가지 않는다 ([#546](https://github.com/ensky0/tildaz/issues/546)) | ✅ | ✅ | ✅ |
+| **입력 장치 착탈** — 유일한 키보드 / 마우스를 뽑았다 다시 꽂음 ([#347](https://github.com/ensky0/tildaz/issues/347)) | OS 가 장치를 다시 붙인다 (앱 무관) | 같음 | `wl_seat.capabilities` 에서 keyboard / pointer 비트가 **빠지면** `wl_keyboard.release` / `wl_pointer.release` (v3+) 로 놓고 id 를 0 으로 되돌리며 (cursor_shape_device 도 함께), 비트가 **돌아오면** 새 객체를 만든다. spec 이 상실 시 release 를 요구하고 v5+ 옛 객체는 이벤트를 보내면 안 되기 때문 — wlroots 는 상실 순간 그 객체를 inert 로 만든다. 예전엔 `id != 0` 이라 재생성을 건너뛰어 키보드가 하나뿐인 데스크톱에서 입력이 영원히 죽었다 (headless sway · 가상 키보드 착탈로 재현). 전이 (`wl_seat capabilities A -> B`) · 생성 · 해제를 production 로그로 남긴다 — 재현이 착탈 타이밍에 걸려 verbose 세션만으로는 놓친다. 잃은 순간 focus 상실과 같은 정리 (repeat 타이머 · preedit commit · compose 버림) 를 한다 | ✅ | ✅ | ✅ |
 | 한글 자모 길게 누름 → 반복 입력 | (해당 없음) | IME 경로라 PressAndHold 영향 없음 (자동) | `wl_keyboard.key` 가 IME 로 라우팅됨 — fcitx5 / ibus 자체 key repeat 동작 (compositor `repeat_info` 가 IME 측에 적용). 사용자 일상 사용 OK 확인 (Cinnamon Wayland + fcitx5-hangul, KDE Plasma 6 + KWin). | — | ✅ | ✅ |
 
 ### 2.8 전체화면 토글 (윈도우 단위)
