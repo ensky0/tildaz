@@ -1988,7 +1988,21 @@ const Client = struct {
         // #386 ②). 유휴에서 첫 출력이 최대 16 ms 늦는 것은 별개 축이라 #439 에서 다룬다.
         var poll_timeout: i32 = frame_poll_ms;
         while (self.running) {
-            try self.pollAndDispatch(poll_timeout);
+            self.pollAndDispatch(poll_timeout) catch |err| switch (err) {
+                // #613 — compositor 가 먼저 끝났다 (로그아웃 · compositor 종료 · `swaymsg exit`).
+                // 실행 중 연결이 끊긴 것은 *시작 실패* 가 아니라 따라 끝날 일이다. 예전엔 이 오류가
+                // `host.run` 밖으로 나가 `showFatalRunError` 의 `TildaZ failed to start … WaylandConnectionClosed`
+                // 가 stderr · 로그에 남아, 로그를 읽는 사용자가 기동 실패로 오해했다. SIGTERM (#458) 과 같은
+                // 정상 종료 경로로 간다 — `deinit` 이 돌아 PTY 자식 정리 (#129). 그 뒤의 Wayland 요청은
+                // 닫힌 소켓에 써서 EPIPE 로 실패하는데 `deinit` 은 송신 실패를 무시하고, `sendmsg` 에
+                // `MSG_NOSIGNAL` 을 주어 SIGPIPE 로 죽지 않는다.
+                error.WaylandConnectionClosed => {
+                    log.appendLine("exit", "compositor closed the connection — shutting down", .{});
+                    self.running = false;
+                    break;
+                },
+                else => return err,
+            };
             // #203 Phase C — dialog dismiss 가 pending 이면 *여기서* 실제 처리.
             // pointer button / dialog key / layer-surface closed handler 들은
             // dispatchBuffered 의 reentrant context 안이라 inner roundtrip 시
@@ -10301,7 +10315,17 @@ pub fn runBaselineWindow(
     // custom keybinding (GSettings)
     // 으로 자동 등록. 그 외 DE 면 no-op.
     if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(rt, allocator, cfg);
-    try client.run();
+    client.run() catch |err| switch (err) {
+        // #613 — main loop 의 `pollAndDispatch` 는 이 오류를 안에서 잡지만, 종료를 **write 로 먼저** 만나면
+        // (`maybeRedraw` · `maybeRepeatKey` 등 `try` 로 올라오는 송신) 여기까지 온다. 어느 쪽이든 compositor 가
+        // 먼저 끝난 것이라 정상 종료다 — 위 `defer client.deinit()` 이 PTY 자식을 거둔다 (#129). 통합 회차
+        // `headless-check.sh compositor-exit` 가 이 경로를 잡아냈다 (가상 키보드가 붙은 채 `swaymsg exit`).
+        error.WaylandConnectionClosed => {
+            log.appendLine("exit", "compositor closed the connection — shutting down", .{});
+            return;
+        },
+        else => return err,
+    };
 }
 
 /// #577 — **창도 PTY 도 없이 fatal 다이얼로그 하나만 띄운다.**
@@ -10390,7 +10414,12 @@ const Msg = struct {
     }
 
     fn send(self: *Msg, wayland_fd: posix.fd_t) !void {
-        try unix_socket.writeAll(wayland_fd, self.finish());
+        unix_socket.writeAll(wayland_fd, self.finish()) catch |err| switch (err) {
+            // #613 — compositor 가 먼저 끝난 것을 read (poll 의 HUP) 가 아니라 write 로 먼저 만난 경우.
+            // 같은 이름으로 올려야 main loop · `runBaselineWindow` 의 정상 종료 판정이 한 자리에 모인다.
+            error.PeerClosed => return error.WaylandConnectionClosed,
+            error.WriteFailed => return error.WriteFailed,
+        };
     }
 
     fn sendWithFd(self: *Msg, wayland_fd: posix.fd_t, fd: posix.fd_t) !void {
@@ -10420,9 +10449,13 @@ const Msg = struct {
             .flags = 0,
         };
         // #451 — `posix.sendmsg` 도 없어졌다. `SCM_RIGHTS` 를 표현할 길이 `Io.net` 에
-        // 없으므로 (`unix_socket.zig`) raw syscall 로 내린다.
-        const rc = posix.system.sendmsg(wayland_fd, &msg, 0);
-        if (unix_socket.checkErr(rc) != null) return error.WaylandFdWriteFailed;
+        // 없으므로 (`unix_socket.zig`) raw syscall 로 내린다. `MSG_NOSIGNAL` 은 #613 — compositor 가
+        // 먼저 끝난 뒤의 송신이 SIGPIPE 로 프로세스를 죽이지 않게 (`unix_socket.writeAll` 과 같은 이유).
+        const rc = posix.system.sendmsg(wayland_fd, &msg, linux.MSG.NOSIGNAL);
+        if (unix_socket.checkErr(rc)) |e| switch (e) {
+            .PIPE, .CONNRESET => return error.WaylandConnectionClosed, // #613 — `Msg.send` 와 같은 판정
+            else => return error.WaylandFdWriteFailed,
+        };
         if (@as(usize, @intCast(rc)) != bytes.len) return error.WaylandShortFdWrite;
     }
 };
