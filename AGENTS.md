@@ -1093,6 +1093,43 @@ magick out.png -crop 130x62+3020+148 +repage -resize 500% one.png    # 글리프
 cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글자 (`é`)** 를 같은 화면에
 넣어요. 이 넷이 그대로면 흔한 경로에 회귀가 없다는 뜻이에요.
 
+## ⑥ atlas · 렌더 경로를 바꿨을 때 — 판을 맞대 픽셀로 (`render-ab-shot.sh`)
+
+위 `# macOS — 렌더 결과와 그리는 과정을 픽셀로 검증하는 법` 에 대응하는 Linux (KDE) 도구예요 —
+[`dist/linux/render-ab-shot.sh`](dist/linux/render-ab-shot.sh). [#586](https://github.com/ensky0/tildaz/issues/586)
+Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`INITIAL_ATLAS_SIZE` 등) 만 바꿔 **별도 worktree** 에서
+빌드해요 — 로컬 캐시는 `--cache-dir` 로 공유해도 돼요 (내용 해시라 섞이지 않아요). 스크립트가 md5 를 찍으니 판이 다른지 봐요.
+
+```sh
+python3 dist/screens/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
+git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 2048/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/linux/gl_atlas.zig
+(cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
+dist/linux/render-ab-shot.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
+```
+
+- **캡처는 `spectacle -b -n -f` 전체 화면**이라 사용자의 다른 창이 함께 담겨요. 판정은 **창 영역만**으로 하고 이슈에 올릴
+  때도 창만 crop 해요 (스크립트가 `crop_1.png` 를 만들어요). `-size` 창은 화면 **오른쪽 위**에 붙어요.
+- **창 영역은 로그로 계산해요** — `TILDAZ_VERBOSE=1` 의 `layer-surface configure logical_w=… logical_h=… scale=N/120`
+  마지막 줄과 `screen=WxH` 로 `W = round(logical_w × N/120)` · `X = screen_w − W`. 실측과 픽셀 단위로 맞았어요
+  (150x40 → `2136x1261+744+0`). 픽셀 스캔으로 검정 배경의 경계를 찾는 방식은 **글자 줄 · 스크롤바 트랙에 걸려** 틀렸어요.
+- **⚠️ ImageMagick 에서 두 이미지를 각각 crop 할 때는 괄호로 감싸요.** `magick A -crop G +repage B -crop G +repage
+  -compose difference …` 는 두 번째 `-crop` 이 **A 에도 다시** 걸려 크기가 다른 두 이미지를 견주게 돼요. 증상이 특이해요 —
+  **모든 쌍이 정확히 같은 픽셀 수로 다르고** (같은 프로세스의 두 캡처까지), 차이 히스토그램이 판이 달라도 똑같아요.
+  2026-09-03 에 이걸 "두 상태가 번갈아 보인다" 로 읽고 main 판까지 빌드해 재현하려 했어요. offset 이 crop 결과 밖이면
+  (88x33 창) `geometry does not contain image` 경고만 내고 무시돼 **우연히 맞으니** 더 헷갈려요.
+  `\( A -crop G +repage \) \( B -crop G +repage \)` 가 맞아요.
+- **양성 대조군을 하나 둬요** — 서로 다른 화면의 캡처를 같은 영역으로 견줘 큰 수가 나오는지 (`many` vs emoji 는 353,633 px).
+  `0 px` 만 보면 도구가 죽어 있어도 통과처럼 보여요.
+- **기대표는 기기마다 달라요.** Ryzen AI 7 350 노트북 (1.6x · DejaVu 15 · `cell 14x31` 대) 은 cell 이 작아 `stack2`
+  6,000 종이 2048² 에 다 들어가요 — 기본 2048 판의 `grow` 를 보려면 `overflow` (누적) 를 써요. macOS 의 기대표
+  (`stack2` 에서 grow 1) 를 그대로 옮기면 "grow 가 안 된다" 로 오독해요.
+- **⚠️ 판 바이너리에 다른 이름을 붙이면 `pgrep -x tildaz` 가 못 잡아요.** `tildaz-4096` · `tildaz-512` 처럼 복사해 두고
+  돌리면 comm 이 달라져서, `pgrep -x tildaz` 로 내리는 정리 함수가 **아무것도 안 죽인 채 조용히 통과**해요 — 2026-09-03 에
+  회차마다 창이 그대로 남아 17 개가 겹쳐 떠 있었고 사용자가 손으로 닫았어요 (그 사이 캡처는 맨 위 창이라 판정은 맞았지만
+  겹친 채 찍힌 거예요). 스크립트는 `/proc/<pid>/cmdline` 의 실행 파일 basename 이 `tildaz*` 이고 `--instance 9` 인 것을
+  골라요. **회차 뒤에 `pgrep -a tildaz` 로 0 인지 꼭 봐요** — `-x` 없이요.
+- 잠금 억제 (`systemd-inhibit`) · 인스턴스 9 · `pkill -f` 금지 · 시작 전 고지는 `# 실행 환경` · 위 절과 같아요.
+
 # Linux — 이 macOS 머신에서 lima VM 으로 Linux 를 돌려 보는 법 (software 경로만)
 
 macOS 작업 머신에 Linux 실동작을 볼 lima VM 이 있어요 — `tildaz-linux` (Ubuntu aarch64 · sway 1.11 · grim ·

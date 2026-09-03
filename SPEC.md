@@ -1780,7 +1780,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | platform | 구현 | 상태 |
 |---|---|---|
 | **Windows** | `is_full` 을 세우고 **호출자가 처리한다** — **먼저 `grow`** ([#586](https://github.com/ensky0/tildaz/issues/586) · `emitClusterInstance` 와 `insertOrGrow`), 상한이면 `drawTextInstances` · `drawBgInstances` 로 flush, `reset()`, 재시도 ([`renderer/windows.zig`](src/renderer/windows.zig)). 빈 atlas 면 `is_full` 을 세우지 않는 가드 (`packOrMarkFull`) 도 #586 에서 붙였다 — 전에는 Windows 만 없었다 | **사양대로.** ① · `grow` 모두 실기 확인 (② 의 Windows 실측표) |
-| **Linux** | `upload` 가 **먼저 surface 를 키우고** ([#586](https://github.com/ensky0/tildaz/issues/586) · `Surface.grow`), 상한이면 `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** 실기 확인 |
+| **Linux** | `upload` 가 **먼저 surface 를 키우고** ([#586](https://github.com/ensky0/tildaz/issues/586) · `Surface.grow`), 상한이면 `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** ① · `grow` 모두 실기 확인 (2026-09-03 KDE · 아래 "Linux `grow` 실측" 표) |
 | **macOS** | `is_full` 을 세우고 호출자가 처리한다 (`insertGlyphOrRecover` · `insertClusterOrRecover` → `recoverFromAtlasFull`) — **먼저 ② 의 `grow`**, 상한이면 **지금까지 담은 구간을 pass 로 제출하고 GPU 가 끝나기를 기다린 뒤** (`submitPassEarly`) 비우고 재시도. cluster · 단일 · ligature **모든 삽입 경로가 같은 함수를 지난다** ([#591](https://github.com/ensky0/tildaz/issues/591) — 전에는 ligature 경로만 복구가 없어 조용히 버렸다) | **사양대로.** 실기 확인 |
 
 **Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
@@ -1939,7 +1939,19 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 - **8192² 텍스처는 이 내장 GPU 에서 만들어졌다** — `INITIAL = 8192` 판이 정상 기동했고 `overflow` 의 두 판이 8192 까지 자랐다. `CreateTexture2D` 실패 → ① 경로는 이 기기에서는 타지 않았다.
 - **누적 종 수는 회차마다 다르다** (`overflow` 에서 8192 로 커진 시점의 `clusters` 가 22,043 · 23,916 · 25,319). Windows 는 화면이 바뀔 때만 그리므로 (§13.4) 빠른 스크롤의 중간 화면을 건너뛰기 때문이다 — 4096 판은 같은 화면에서 `grow` 0 이었다 (누적이 4096² 안에 머문 회차). 그래서 **판정은 `grow` 회수가 아니라 최종 그림 `0 px` 과 `atlas full` 0** 이다. macOS 표의 `grow` 회수는 정적 화면 (`stack2`) 이라 판마다 고정이었다.
 
-**Windows · Linux 는 [#586](https://github.com/ensky0/tildaz/issues/586) 으로 `grow` 를 얹었다 — Windows 는 실기로 확인했다** (위 Windows 실측표 — 다섯 판 `0 px` · `atlas full` 0 회), **Linux 는 실기 검증 대기다** (실제 GPU 가 있는 기기 — lima VM 은 GL 경로가 켜지지 않아 못 잰다, AGENTS.md 의 lima 절). 검증은 macOS 와 같은 방법 (`INITIAL` 만 바꾼 판을 기준판과 대조 · `dist/screens/clusters.py`) 이고, Linux 는 2048 vs 4096 · 256 을 `0 px` 로 확인한 선례가 있다 (① 검증). Linux 는 surface 마다 따로 커진다 — color 가 폰트 strike 크기로 담겨 gray 보다 훨씬 먼저 찬다 (2048² 에 emoji 210 종). CPU shadow 는 2048² 에서 gray 4 MB + color 16 MB, 4096² 에서 80 MB 다.
+**Windows · Linux 모두 [#586](https://github.com/ensky0/tildaz/issues/586) 으로 `grow` 를 얹고 실기로 확인했다** — Windows 는 위 실측표 (다섯 판 `0 px` · `atlas full` 0 회), Linux 는 아래 실측표. 검증은 macOS 와 같은 방법 — `INITIAL` 만 바꾼 판을 기준판과 대조 (`dist/screens/clusters.py` · Linux 는 [`dist/linux/render-ab-shot.sh`](dist/linux/render-ab-shot.sh)). lima VM 은 GL 경로가 켜지지 않아 못 잰다 (AGENTS.md 의 lima 절).
+
+**Linux `grow` 실측** (노트북 AMD Ryzen AI 7 350 · Radeon 860M · CachyOS · KDE Plasma 6.7.4 / KWin Wayland · 2880x1800 **120 Hz** · scale 1.6 · DejaVu Sans Mono 15 · GLES 3.2 Mesa 26.2.1 · `GL_MAX_TEXTURE_SIZE` 16384 → 상한 8192 · ReleaseFast+SIMD · 2026-09-03). `INITIAL_ATLAS_SIZE` 만 바꾼 세 판을 같은 화면으로 캡처해 **창 영역**을 견줬다.
+
+| 화면 (`clusters.py`) | 격자 | 4096 판 (기준) | **2048 판** (기본값) | **512 판** | 4096 판과 다른 픽셀 |
+|---|---|---|---|---|---|
+| `many` 2,912 종 | 88x33 | grow 0 | grow 0 | 1 회 → 1024 | **0 px** (창 1,323,570 px) |
+| `stack2` 6,000 종 · mark 둘 | 150x40 | grow 0 | grow 0 | 2 회 → 1024 → 2048 | **0 px** (창 2,692,240 px) |
+| emoji 112 종 (**color** surface) | 88x33 | grow 0 | grow 0 | 2 회 → 1024 → 2048 | **0 px** |
+| `overflow` 17 화면 누적 | 150x40 | grow 0 | **1 회 → 4096** (`glyphs=8037`) | — | **0 px** |
+| main (`8ccc8bc` · 고정 2048 + ①) vs 2048 판 · `stack2` | 150x40 | — | — | — | **0 px** |
+
+`atlas full` 은 **모든 회차 0 회**. 같은 프로세스를 4 · 8 · 12 · 20 초에 찍은 캡처도 서로 `0 px` (정적 화면이 안정적이다). 이 기기는 cell 이 작아 (`cell 14x31` 대) `stack2` 6,000 종이 2048² 에 다 들어가므로 **기본 2048 판은 한 화면으로는 커지지 않고** 누적 (`overflow`) 에서 4096 으로 한 번 커졌다 — macOS 의 기대표 (`stack2` 에서 grow 1) 를 그대로 옮기면 안 맞는다. Linux 는 surface 마다 따로 커진다 — color 가 폰트 strike 크기로 담겨 gray 보다 훨씬 먼저 찬다 (2048² 에 emoji 210 종 · 위 emoji 회차는 color 만 두 번 커졌다). CPU shadow 는 2048² 에서 gray 4 MB + color 16 MB, 4096² 에서 80 MB 다.
 
 **용량으로 막는 것을 포기한 자리는 이제 없다** — 세 platform 이 8192 (Linux 는 드라이버 상한과의 최소) 까지 키워 4K@2x 최악 (11,110 종) 을 넘기고, ① 은 그 상한에서만 받는다.
 

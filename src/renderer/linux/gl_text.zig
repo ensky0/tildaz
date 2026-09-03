@@ -23,7 +23,7 @@ const std = @import("std");
 const egl = @import("../../host/linux/egl.zig");
 const gl_atlas = @import("gl_atlas.zig");
 
-/// 정점 — 위치(px) + atlas UV(0..1) + fg 색.
+/// 정점 — 위치(px) + atlas UV(**픽셀 좌표** · 셰이더가 `u_atlas_size` 로 정규화 — #586) + fg 색.
 const Vertex = extern struct {
     x: f32,
     y: f32,
