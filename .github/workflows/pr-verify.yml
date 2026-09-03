@@ -10,9 +10,15 @@
 # 않으므로** 그 함수를 부르는 테스트를 넣기 전까지 native 빌드가 조용히 통과했다.
 # 6 타깃 compile-only 검사만이 그 부류를 잡는다.
 #
-# native Windows / macOS 빌드는 여기 없다 — #266 (ghostty tarball 심볼릭 링크) ·
-# cross-drive zig cache 등 러너별 걸림돌이 있고 `release.yml` 이 그 우회를 담고
-# 있다. step 을 복제하지 않고 재사용할 방법과 함께 별도로 본다 (#499 참고).
+# **세 platform 의 native 빌드 · 테스트도 여기서 돈다** (#607 ①). `check` 는 compile-only 라 링크 ·
+# 리소스 · platform 전용 테스트를 보지 않으므로 `verify` job 이 matrix 로 `verify (linux)` ·
+# `verify (macos)` · `verify (windows)` 를 돌려 각 러너에서 `zig build` 와 `zig build test` 까지
+# 한다 — 이름은 `release.yml` 의 `release-linux` · `release-macos` · `release-windows` 와 짝이다.
+# cross-compile `check` 와 `zig fmt --check` 는 platform 과 무관하므로 linux 에서만 돈다.
+# 러너별 걸림돌 (Windows cross-drive zig cache · fetch 의 일시적 HTTP 실패) 은
+# `.github/actions/setup-zig` 가 담고 `release.yml` 과 한 벌로 쓴다 — step 을 복제하면 두 벌이
+# 갈린다 (#499 가 남긴 이유). `main` 의 required check 는 `verify (linux)` — macOS · Windows 는
+# 안정된 뒤 더한다 (#607 ③).
 name: pr-verify
 
 on:
@@ -36,19 +42,25 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    name: verify (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-15 }
+          - { name: windows, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      # `release.yml` 과 같은 action · 같은 버전을 쓴다. 버전은 `build.zig.zon` 의
-      # `.minimum_zig_version` 과 맞춰야 한다 — 두 곳에 적혀 있으므로 한쪽만 올리면
-      # 갈라진다 (#499 에 한 곳에서 읽는 방법을 남겨 뒀다).
-      - name: Setup Zig 0.16.0
-        uses: mlugg/setup-zig@v2
+      # zig 버전은 `build.zig.zon` 한 곳 — action 이 읽는다 (#607 ②). fetch 는 action 이 재시도로 돈다
+      # (ziglang.org · GitHub tarball 의 일시적 HTTP 실패).
+      - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          fetch: 'true'
 
       # Zig 0.16 은 의존성을 글로벌 캐시가 아니라 build root 옆 `zig-pkg/` 에 푼다.
       # ghostty tarball 이 커서 이 캐시가 실행 시간을 지배한다. 키는 `build.zig.zon`
@@ -60,19 +72,24 @@ jobs:
           key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
 
       # 세 platform × 두 arch compile-only. **가장 먼저 돈다** — cross-platform
-      # 회귀가 이 workflow 의 주된 존재 이유이고, native 빌드보다 빠르다.
+      # 회귀가 이 workflow 의 주된 존재 이유이고, native 빌드보다 빠르다. platform 과
+      # 무관하므로 linux 에서만.
       - name: Compile-only verify (6 targets)
+        if: matrix.name == 'linux'
         run: zig build check
 
       # #583 B19 — fmt 어긋남이 main 에 들어와도 CI 가 잡지 못했다 (세 파일이 걸린 채 머지됐다).
       # `zig fmt --check` 는 수정하지 않고 어긋난 파일 이름만 내고 실패한다.
       - name: Format check
+        if: matrix.name == 'linux'
         run: zig fmt --check src/ build.zig
 
-      - name: Test
-        run: zig build test
-
       # 로컬 검증이 이 플래그로 돌므로 CI 도 같은 조합을 본다 — 기본값과 codegen 이
-      # 다르다.
+      # 다르다. 서명은 release 전용이라 여기서는 서명 없이 빌드만 한다.
       - name: Build (simd)
+        shell: bash
         run: zig build -Dsimd=true
+
+      - name: Test
+        shell: bash
+        run: zig build test

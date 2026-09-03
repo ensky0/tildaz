@@ -1,0 +1,81 @@
+# Zig 를 **`build.zig.zon` 의 `.minimum_zig_version` 하나**에서 읽어 설치한다 (#607 ②). 예전에는 그 값이
+# `build.zig.zon` · `pr-verify.yml` · `release.yml` · `windows-fetch-check.yml` · `macos-signing-check.yml` 에
+# 따로 적혀 있어 한쪽만 올리면 갈라졌다 (#499 가 남긴 것). 이 action 이 유일한 설치 경로다.
+#
+# Windows 러너의 걸림돌도 여기 담는다 (#607 ① — `release.yml` 이 갖고 있던 우회를 한 벌로):
+#   * zig 글로벌 캐시가 다른 드라이브면 (`C:\Users\runneradmin\AppData\Local\zig` vs checkout `D:\`)
+#     `std.fs.path.relative` 가 절대경로를 돌려 `convertPathArg` assert 로 죽는다 → `ZIG_GLOBAL_CACHE_DIR` 을
+#     `RUNNER_TEMP` (같은 드라이브) 로 둔다. 그래서 `mlugg/setup-zig` 의 `use-cache` 도 끈다 (그쪽 캐시 경로가
+#     같은 문제를 다시 만든다).
+#   * `fetch: 'true'` 면 `zig build -Dsimd=true --fetch` 를 최대 5 회 재시도한다 — ziglang.org · GitHub tarball 의
+#     일시적 HTTP 실패 (mid-transfer RST) 를 흡수한다. `-Dsimd=true` 는 package · 검증 step 과 같은 top-level
+#     option graph 를 평가하게 하려는 것이다.
+#
+# 검증 — `pr-verify.yml` 의 `verify (linux)` · `verify (macos)` · `verify (windows)` 가 PR 마다 이 action 을 지난다. `release.yml` 은 태그 push 로만
+# 돌므로 바꾼 뒤 `-dev.N` prerelease 태그로 한 번 돌려 확인한다 (AGENTS.md 릴리즈 절).
+name: Setup Zig (version from build.zig.zon)
+description: build.zig.zon 의 .minimum_zig_version 을 읽어 mlugg/setup-zig 를 부르고, Windows 는 zig 글로벌 캐시를 RUNNER_TEMP 로 둔다
+inputs:
+  fetch:
+    description: "'true' 면 zig build -Dsimd=true --fetch 를 재시도하며 돌린다"
+    required: false
+    default: 'false'
+outputs:
+  version:
+    description: 설치한 zig 버전 (build.zig.zon 의 값)
+    value: ${{ steps.ver.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - name: Read minimum_zig_version from build.zig.zon
+      id: ver
+      shell: bash
+      run: |
+        set -euo pipefail
+        v=$(sed -n 's/.*\.minimum_zig_version *= *"\([^"]*\)".*/\1/p' build.zig.zon | head -1)
+        if [[ -z "$v" ]]; then
+          echo "ERROR: .minimum_zig_version not found in build.zig.zon" >&2
+          exit 1
+        fi
+        echo "version=$v" >> "$GITHUB_OUTPUT"
+        echo "zig version from build.zig.zon: $v"
+
+    - name: Setup Zig ${{ steps.ver.outputs.version }}
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ steps.ver.outputs.version }}
+        use-cache: false
+
+    # windows-2022 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는 C:\ 라 크로스 드라이브 —
+    # 위 머리 주석. RUNNER_TEMP 는 checkout 과 같은 드라이브다.
+    - name: Keep zig global cache on the checkout drive (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global-cache" >> "$GITHUB_ENV"
+
+    - name: Verify Zig
+      shell: bash
+      run: |
+        set -euo pipefail
+        have=$(zig version)
+        want="${{ steps.ver.outputs.version }}"
+        echo "zig version: $have (want $want)"
+        [[ "$have" == "$want" ]] || { echo "ERROR: zig $have != $want" >&2; exit 1; }
+
+    - name: Prefetch dependencies (retry on transient HTTP fail)
+      if: inputs.fetch == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        for i in 1 2 3 4 5; do
+          if zig build -Dsimd=true --fetch; then
+            echo "All dependencies fetched (attempt $i)"
+            exit 0
+          fi
+          if [[ $i -eq 5 ]]; then
+            echo "ERROR: dependency fetch failed after 5 attempts" >&2
+            exit 1
+          fi
+          echo "Fetch attempt $i failed; retrying in 10s..."
+          sleep 10
+        done
