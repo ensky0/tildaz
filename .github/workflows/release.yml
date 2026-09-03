@@ -59,18 +59,12 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      # mlugg/setup-zig 는 community mirror list fallback 내장 (ziglang.org 가
-      # Actions runner 에서 mid-transfer RST 던지는 케이스를 흡수). 과거 v1 시점
-      # 에는 0.15.x 의 새 파일명 패턴 (`zig-x86_64-windows-...`) 미지원으로 깨졌으나
-      # v2.2.0+ 에서 fix 됨. action 의 use-cache 는 false — 우리가 ZIG_GLOBAL_CACHE_DIR
-      # 을 직접 D: 로 맞춰야 cross-drive convertPathArg assert 회피 가능 (아래 step).
+      # zig 설치는 `.github/actions/setup-zig` 한 벌 (#607) — 버전은 build.zig.zon 에서 읽고,
+      # Windows 는 ZIG_GLOBAL_CACHE_DIR 을 RUNNER_TEMP (checkout 과 같은 D:) 로 두어 cross-drive
+      # convertPathArg assert 를 피한다 (그래서 setup-zig 의 use-cache 도 action 이 끈다). mlugg/setup-zig
+      # 자체의 mirror fallback · v2.2.0+ 파일명 fix 이력은 action 파일 머리에 있다.
       - uses: ./.github/actions/setup-zig   # 버전은 build.zig.zon · Windows cache 드라이브 포함 (#607)
 
-      # windows-2022 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는
-      # C:\Users\runneradmin\AppData\Local\zig 라 크로스 드라이브.
-      # std.fs.path.relative(C:..., D:...) 가 상대경로를 못 만들고 absolute 리턴 →
-      # zig Run step (convertPathArg) assert. ZIG_GLOBAL_CACHE_DIR 을 RUNNER_TEMP
-      # (D:) 로 통일해 해결.
       - name: Verify Zig
         shell: bash
         run: zig version
