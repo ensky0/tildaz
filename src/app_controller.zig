@@ -800,8 +800,9 @@ pub const App = struct {
                             .scrollbar_min_thumb_h = @floatFromInt(self.SCROLLBAR_MIN_THUMB_H),
                             // 단일 탭의 컨트롤 스트립 (#329) 아래로 track 을 내린다 — 오른쪽 위 pane 만.
                             .scrollbar_top_inset = self.paneScrollbarTopInset(pr.rect, area),
-                            // IME 자모는 키보드가 가는 pane (활성) 의 cursor 옆에만 (#164).
-                            .preedit_utf8 = if (is_active) self.window.imePreeditSlice() else &.{},
+                            // IME 자모는 키보드가 가는 pane (활성) 의 cursor 옆에만 (#164). dead key 조합 중
+                            // 표시 (#530) 도 같은 자리 · 같은 모양 — IME 가 있으면 IME 가 우선이다.
+                            .preedit_utf8 = if (is_active) self.window.activePreeditSlice() else &.{},
                             // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
                             // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
                             .blink_faint = blink_phase_now,

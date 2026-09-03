@@ -177,8 +177,11 @@ too. If no Compose file is installed at all (the `libx11-data` package on Debian
 and Ubuntu), dead keys stay silent and the log says so: `compose table
 unavailable`.
 
-macOS and Windows are not affected — the OS combines dead keys before TildaZ
-sees the text.
+On macOS and Windows the OS combines dead keys before TildaZ sees the text, and
+both show the pending accent highlighted at the cursor the same way. One
+difference: on Windows the pending accent stays through a tab or pane switch,
+because Windows itself holds the dead-key state and will still combine it with
+the next letter.
 
 ### macOS
 

@@ -20,3 +20,6 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 ## Body candidates
+
+- Windows now shows the pending dead key (for example `´`) highlighted at the cursor until the next key, as macOS and Linux already did ([#530](https://github.com/ensky0/tildaz/issues/530)).
+- Windows: programs that enable the kitty keyboard protocol with "report all keys" now receive letters, Enter, Tab, Backspace and Escape as `CSI u` sequences, matching macOS and Linux ([#602](https://github.com/ensky0/tildaz/issues/602)).

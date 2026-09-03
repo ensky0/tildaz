@@ -51,6 +51,8 @@ const WM_PAINT: UINT = 0x000F;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_KEYUP: UINT = 0x0101;
 const WM_CHAR: UINT = 0x0102;
+const WM_DEADCHAR: UINT = 0x0103;
+const WM_SYSDEADCHAR: UINT = 0x0107;
 const WM_HOTKEY: UINT = 0x0312;
 pub const WM_NEW_INSTANCE_REQUEST: UINT = 0x8000 + 267;
 pub const WM_HOTKEY_CAPTURE_BEGIN: UINT = 0x8000 + 268;
@@ -596,6 +598,13 @@ pub const Window = struct {
     /// 안에서 동기 처리해 action보다 먼저 원래 입력 대상에 반영한다 (#313).
     preedit_buf: [256]u8 = undefined,
     preedit_len: usize = 0,
+    /// #530 — dead key 를 누른 직후 OS 가 조합을 들고 있는 동안 커서 자리에 보여 주는 그 dead key 의
+    /// 문자 (UTF-8). `WM_DEADCHAR` 가 채우고 다음 `WM_CHAR` 가 지운다. IME 의 `preedit_buf` 와 **다른
+    /// 저장소**다 — `imePreeditSlice` 는 `Ctrl+C` · deferred result 정책의 판정 근거라 섞이면 IME 정책이
+    /// 흔들린다 (Linux 의 `compose_preview` 가 `preedit_text` 와 갈라진 것과 같은 이유). 렌더는
+    /// `activePreeditSlice` 로 둘을 합쳐 받는다 (IME 우선). #602 는 이 길이로 "dead key 대기 중" 을 판정한다.
+    compose_preview_buf: [8]u8 = undefined,
+    compose_preview_len: usize = 0,
     /// `imeCompleteComposition`의 ImmNotifyIME가 nested WM_IME_COMPOSITION을
     /// 동기 발생시켰는지 확인한다. 결과를 동기 처리하지 못하면 caller가 action을
     /// 보류해 queued WM_CHAR가 새 탭/새 prompt로 이동하지 않게 한다.
@@ -2024,7 +2033,31 @@ pub const Window = struct {
                 self.preedit_len = 0;
                 return 0;
             },
+            WM_DEADCHAR, WM_SYSDEADCHAR => {
+                // #530 — dead key 를 누른 직후. OS (`TranslateMessage`) 가 조합을 들고 있는 동안 그 dead key 의
+                // 문자를 커서 자리에 보여 준다 — macOS 의 marked text · Linux 의 `compose_preview` 와 같은 자리 ·
+                // 같은 모양. `wParam` 이 그 문자 (UTF-16 한 단위 — dead key 문자는 BMP 다) 라 Linux 의
+                // keysym → spacing 문자 표가 필요 없다. 다음 `WM_CHAR` (조합 결과든 조합 불가의 두 글자든) 가
+                // 지우고, 새 dead key 가 오면 바꾼다.
+                //
+                // **탭 · pane 전환 · 포커스 이탈에는 지우지 않는다 — Linux 와 다른 자리다.** Windows 의 dead key
+                // 상태는 OS (스레드 키보드 상태) 가 들고 있어 그 뒤 글자와 조합되므로, 표시가 그 상태를 따른다.
+                // Linux 는 앱이 조합 주체라 상태와 표시를 함께 버릴 수 있다 (SPEC §5.3).
+                const dead_cp: u21 = @intCast(@as(u16, @intCast(wParam)));
+                self.compose_preview_len = std.unicode.utf8Encode(dead_cp, &self.compose_preview_buf) catch 0;
+                // #602 — 이 메시지가 dead key 의 `WM_KEYDOWN` 이 세운 "짝꿍 `WM_CHAR` 삼킴" 의 짝이다. kitty
+                // `report_all` 에서 그 KEYDOWN 은 인코더로 갔는데 (`ToUnicodeEx` 가 상태 불변 플래그로는 dead
+                // key 에도 `'` 같은 글자를 돌려준다 — 2026-09-03 실측), dead key 는 `WM_CHAR` 가 아니라 이것을
+                // 만들므로 플래그가 남아 **다음 글자 (`é`) 의 `WM_CHAR` 를 삼켰다.** 여기서 소비한다.
+                self.swallow_next_wm_char = false;
+                // #282 A11 — IME 조합 시작과 같은 규칙: 스크롤백을 올린 채면 표시가 안 보인다.
+                if (self.scroll_to_bottom_fn) |f| f(self.userdata);
+                return 0;
+            },
             WM_CHAR => {
+                // #530 — 조합 결과 (또는 조합 불가의 글자) 가 왔다 — dead key 표시는 여기서 끝난다. 삼키는
+                // 경우도 같다 (그 `WM_CHAR` 를 만든 키가 OS 의 dead key 상태를 소비했다).
+                self.compose_preview_len = 0;
                 // KEYDOWN 가 같은 키를 소비했으면 짝꿍 WM_CHAR 도 swallow.
                 // (menu Enter / Escape 소비 후 PTY 로 \r / \x1b 새는
                 // 사고 방지 — 소비자 입장에선 한 번의 keypress.)
@@ -2205,6 +2238,44 @@ pub const Window = struct {
                     if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, keyActionFromLParam(lParam))) {
                         // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR`(제어문자) 를 삼킨다 —
                         // 그러지 않으면 `CSI u` 와 `\x03` 이 둘 다 나간다.
+                        self.swallow_next_wm_char = true;
+                        return 0;
+                    }
+                }
+
+                // #602 — kitty `report_all` 이면 글자 키도 인코더로 보낸다 (macOS · Linux 는 늘 그랬다 —
+                // Windows 만 글자를 `WM_CHAR` 로 따로 받아 인코더를 건너뛰었다). `report_all` 이 **꺼진**
+                // kitty 에서는 인코더가 수식키 없는 인쇄 글자를 텍스트 그대로 내므로 (`plain_text` 분기)
+                // `WM_CHAR` 경로와 결과가 같다 — 그 경우는 손대지 않는다 (#533 실기 — fish · zellij ·
+                // AZERTY `Ctrl+A` — 를 보존한다).
+                //
+                // 제외 — IME 조합 중 (글자는 `WM_IME_COMPOSITION` 으로 확정된다) · **dead key 대기 중**
+                // (`ToUnicodeEx` 는 상태 불변 플래그라 대기 중인 dead key 를 반영하지 않아 `e` 를 `e` 로
+                // 낸다 — 실제 `WM_CHAR` 는 `é` 다. #530 의 표시 길이가 그 상태다) · 글자가 없는 키 (dead key
+                // 자체 — `ToUnicodeEx` 가 음수) · 제어문자 (위 `Ctrl` 블록과 nav 경로의 몫). Alt 조합은
+                // `WM_SYSKEYDOWN` 이 이미 인코더로 보낸다.
+                if (kitty_active and
+                    self.keyEncodeOptions().kitty_flags.report_all and
+                    GetKeyState(VK_CONTROL) >= 0 and
+                    self.imePreeditSlice().len == 0 and
+                    self.compose_preview_len == 0)
+                {
+                    var text_buf: [8]u8 = undefined;
+                    const text = winCharWithoutCtrlAlt(@intCast(wParam), kd_scan, GetKeyState(VK_SHIFT) < 0, &text_buf);
+                    // Enter · Tab · Backspace · Escape 는 `WM_CHAR` 로 제어문자가 오는 키다. `report_all` 에서는
+                    // 이것도 `CSI 13 u` 같은 시퀀스여야 하므로 (인코더가 키 이름으로 만든다 — 2026-09-03 실측에서
+                    // 뗌은 `CSI 13;1:3 u` 인데 누름이 CR (`0x0d`) 로 갈려 드러났다) 글자 없이 인코더로 보낸다. 위
+                    // `maybe_key` dispatch 가 소비했으면 (command menu 등) 여기 오지 않는다.
+                    const control_key = switch (wParam) {
+                        0x0D, 0x09, 0x08, 0x1B => true,
+                        else => false,
+                    };
+                    const printable = text.len > 0 and text[0] >= 0x20 and text[0] != 0x7f;
+                    if ((printable or control_key) and
+                        self.sendEncodedKeyWin(@intCast(wParam), lParam, if (printable) text else "", keyActionFromLParam(lParam)))
+                    {
+                        // 짝꿍 `WM_CHAR` (같은 글자 · 제어문자) 를 삼킨다 — 안 그러면 `CSI u` 와 글자가 둘 다 나간다.
+                        // dead key 는 `WM_CHAR` 대신 `WM_DEADCHAR` 를 만들므로 그쪽이 이 플래그를 소비한다.
                         self.swallow_next_wm_char = true;
                         return 0;
                     }
@@ -2650,6 +2721,18 @@ pub const Window = struct {
     /// renderer 가 매 frame 호출 — 현재 IME preedit (UTF-8). 빈 slice 면 비활성.
     pub fn imePreeditSlice(self: *const Window) []const u8 {
         return self.preedit_buf[0..self.preedit_len];
+    }
+
+    /// #530 — 조합 중인 dead key 의 표시 문자 (UTF-8). 빈 slice 면 없음.
+    pub fn composePreviewSlice(self: *const Window) []const u8 {
+        return self.compose_preview_buf[0..self.compose_preview_len];
+    }
+
+    /// 렌더러에 넘길 커서 자리 표시 — IME preedit 이 있으면 그것, 없으면 dead key 표시 (#530).
+    /// Linux 의 `preedit_text` → `compose_preview` 우선 규칙과 같다 — IME 가 주인이다.
+    pub fn activePreeditSlice(self: *const Window) []const u8 {
+        const ime = self.imePreeditSlice();
+        return if (ime.len > 0) ime else self.composePreviewSlice();
     }
 
     /// IME composition / candidate window 위치 갱신 — IME 가 한자 후보 list 등

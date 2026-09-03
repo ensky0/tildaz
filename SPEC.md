@@ -621,6 +621,8 @@ Windows 실측).
 손대지 않는다** — 그 규격은 주 키 코드가 배열의 코드포인트이고 US 기준 키는 `report_alternates`
 를 요청한 앱에만 alternate 로 준다 (실측: `^[[12618;5u`, 플래그 5 면 `^[[12618::99;5u`).
 
+**Windows 의 글자 키는 kitty `report_all` 에서만 인코더를 지난다** ([#602](https://github.com/ensky0/tildaz/issues/602), 2026-09-03). Windows 는 글자를 `WM_CHAR` 로 따로 받아 그 경로가 legacy 텍스트를 내는데, `report_all` 이 꺼진 kitty 에서는 인코더도 수식키 없는 인쇄 글자를 텍스트 그대로 내므로 (ghostty `kitty()` 의 `plain_text` 분기) 결과가 같다 — #533 이 검증한 `disambiguate` 모드는 그대로다. `report_all` 이면 `WM_KEYDOWN` 에서 글자 (와 Enter · Tab · Backspace · Escape) 를 인코더로 보내고 짝꿍 `WM_CHAR` 를 삼킨다. 실측 (노트북 Ryzen AI 7 350 · flags 11): `a` → `CSI 97 u` · `Shift+a` → `CSI 97;2 u` · `Space` → `CSI 32 u` · `Enter` → `CSI 13 u` — 뗌은 `CSI <cp>;<mods>:3 u`. dead key 는 누름이 `CSI 39 u` 로 보고되고 조합 결과 `é` 는 텍스트 (`c3 a9`) 로 온다 (`ToUnicodeEx` 는 상태 불변 플래그로 dead key 에도 글자를 돌려주므로 누름을 가를 수 없다 — kitty 자체도 dead key 누름을 보고한다; 그때 세운 `WM_CHAR` 삼킴은 `WM_DEADCHAR` 가 소비한다). 제외 — IME 조합 중 · dead key 대기 중 (#530 의 표시 상태) · `Ctrl` (위 블록). **modifier 단독 누름 (`Shift` 만) 은 Windows 가 보고하지 않는다** — Linux 는 모든 키가 인코더를 지나 `CSI 57441 u` 를 낸다. 넣을지는 결정 대기. 검증 도구 [`dist/windows/kitty-text-check.ps1`](dist/windows/kitty-text-check.ps1).
+
 ### 2.7 Key repeat (길게 누름 반복)
 
 | 항목 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -907,7 +909,7 @@ dead key (`^` `¨` `´` `` ` `` `~` — 프랑스어 · 독일어 · 스페인�
 | platform | 조합 주체 | 경로 |
 |---|---|---|
 | macOS | OS — 조합 중 `ˆ` 를 marked text 로 **보여 준다** (2026-08-27 실기: ABC + `Option+i`, `setMarkedText:` → preedit 렌더) | `interpretKeyEvents:` — AppKit 텍스트 입력 시스템이 dead key 상태를 든다 |
-| Windows | OS — 조합 중 표시 **없음** (`WM_DEADCHAR` 를 그리는 코드가 없다 — 코드 확정). 조합 자체는 2026-09-03 실기로 확인 (US-International · `'`+`e` → `é`, `Shift+6`+`o` → `ô`, `'`+space → `'`, `'`+`x` → `'x` — 조합 불가도 dead key 를 삼키지 않는다) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
+| Windows | OS — 조합 중 `´` 를 **보여 준다** ([#530](https://github.com/ensky0/tildaz/issues/530) 2026-09-03: `WM_DEADCHAR` 의 `wParam` 을 IME preedit 과 같은 자리 · 같은 모양으로. 실기 — 표시 중 preedit 색 픽셀 374 → 조합 뒤 0). 조합 자체는 2026-09-03 실기로 확인 (US-International · `'`+`e` → `é`, `Shift+6`+`o` → `ô`, `'`+space → `'`, `'`+`x` → `'x` — 조합 불가도 dead key 를 삼키지 않는다) | `TranslateMessage` → `WM_CHAR`. `ToUnicode` 가 상태를 든다 |
 | **Linux** | **tildaz** — #530 부터 조합 중 표시도 한다 | libxkbcommon **Compose** (`xkb_compose_state_feed`) — [`xkb.zig`](src/host/linux/xkb.zig) `Keyboard.composeFeed`. #494 전에는 `xkb_state_key_get_utf8` 만 있어 dead key 가 **빈 문자열** = 아무것도 보내지 않았다 |
 
 Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496 과 같은 뿌리). 규칙:
@@ -920,7 +922,10 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
     - **키보드도 같은 결과다.** `processKeyEvent` 의 `defer` 가 compose 를 거치지 않은 키마다 이미 버리므로 (위 · 아래 규칙), 마우스와 갈리지 않는다. 그래서 *바뀌지 않는* 경우까지 대칭이다 — 이미 활성인 탭을 클릭해도 (`Alt+1` 을 그 탭에서 누른 것과 같이) 버리고, 새 탭이 32 개 한도에 걸려 dialog 로 되돌아가도 (`Ctrl+Shift+T` 와 같이) 버린다.
     - **활성 pane 안을 클릭하는 것은 해당 없다** — 셸이 그대로다 (`focusPaneUnderPointer` 가 같은 pane 이면 `false` 로 빠진다). 커서를 놓으려는 평범한 터미널 클릭이 조합을 깨지 않는다.
     - **자식 셸이 스스로 끝나서 활성 pane 이 바뀌는 경우 (`drainExitedTabs`) 는 이 규칙 밖이다 — 확인 필요.** 사용자 동작이 아니라 PTY 종료가 원인이고, 그 자리에서는 IME preedit 을 *확정* 하는 것이 옳은지부터 갈린다 (확정 대상 셸이 이미 죽었다). 조합 중에 활성 pane 의 셸이 스스로 끝나면 조합이 형제 pane 으로 따라갈 수 있다 — 미검증.
-    - **macOS · Windows 는 해당 없음** — 조합 주체가 OS 라 앱이 들고 있는 상태가 없다 (`grep -c compose` = 0).
+    - **macOS 는 해당 없음** — 조합 주체가 OS 라 앱이 들고 있는 상태가 없다. **Windows 는 표시만 들고 있다** (#530 — `compose_preview`)
+      **— 상태는 OS (스레드 키보드 상태) 가 들므로 탭 · pane 전환 · 포커스 이탈에 표시를 지우지 않는다.** 지우면 상태와 어긋난다
+      (전환 뒤 다음 글자가 그대로 조합된다). 표시는 다음 `WM_CHAR` (조합 결과든 조합 불가의 두 글자든) 가 지우고, 새 dead key 가
+      바꾼다. OS 상태까지 버릴지 (`ToUnicodeEx` 를 상태 변경으로 한 번 불러 소비) 는 결정 대기.
 - **compose 를 거치지 않은 키가 끼면 조합을 버린다** (`composeReset`). `^` → Enter → `e` 는 `\r` `e` 다. modifier 키 자체 (Shift 를 누르는 것) 는 libxkbcommon 이 IGNORED 로 받아 상태를 지킨다 — `^` → Shift+`e` → `Ê`.
 - 상태별 동작: `NOTHING` → 기존 utf8 경로 · `COMPOSING` → 아무것도 안 보냄 · `COMPOSED` → 결과 바이트 · `CANCELLED` (`^` 다음 `x`) → **둘 다 버림**. X11 · xterm 관례다 — GTK 만 `^x` 를 내는데 Compose 표 밖의 별도 규칙이라 채택하지 않았다.
 - key repeat 은 press 와 같은 경로라 `^` 를 누르고 있으면 `<dead_circumflex><dead_circumflex>` → `^` 가 두 번마다 하나 — X 앱과 같다.
