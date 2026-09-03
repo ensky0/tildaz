@@ -1138,6 +1138,18 @@ grim shot.png                                                          # sway �
   KDE 와 동시에 띄우면 이름이 충돌해요 (nested 때도 `name already taken` 이 났어요). KDE 를 로그아웃하고 GNOME 으로 로그인한
   뒤 **그 세션 안의 새 agent 세션**에서 `real-session-check.sh gnome` 을 돌려요. 두 스크립트 모두 세션 배율을 바꾸면 끝에
   원래 값으로 되돌리고 config 는 격리 경로예요.
+- **Hyprland 0.56 의 설정 파서는 Lua 예요 — `hyprctl keyword` 가 `keyword can't work with non-legacy parsers. Use eval.` 로
+  거부돼요.** 배율은 `hyprctl eval 'hl.monitor({ output = "DP-3", mode = "preferred", position = "auto", scale = 1.25 })'`
+  로 바꾸고, 끝나면 `scale = "auto"` (사용자 설정의 규칙) 로 되돌려요. legacy `.conf` 세션 (nested 회차의 제 설정) 은
+  keyword 가 그대로 먹어요 — `real-session-check.sh` 의 `set_scale` 이 응답을 보고 갈라요. 첫 라운드는 이걸 몰라 세 회차가
+  전부 세션 배율 (1.5) 로 측정됐어요 — **배율을 바꾼 뒤 `hyprctl monitors` 로 반영을 확인하지 않은 회차는 무효**예요.
+- **foot 대조군은 `hyprctl dispatch fullscreen` 으로 키우지 말아요** — 그 디스패치는 포커스 창에 걸려 사용자의 kitty 를
+  전체화면으로 만들 수 있어요. `hyprctl -j clients` 에서 `class == "foot"` 의 `at` · `size` (논리) 를 읽어 물리로 곱해 crop 해요.
+- **실제 Hyprland 세션에서는 tildaz 창의 가로 경계가 세로로 반 픽셀 혼합돼요** ([#619](https://github.com/ensky0/tildaz/issues/619)
+  · 2026-09-03) — 1.25 · 1.5 · 2.0 모두, 1.0 은 깨끗, foot 은 1.25 · 2.0 에서 깨끗, software · GL 동일. #539 의 서명 (창
+  위→아래로 흘러가는 비율) 이 아니라 위치와 무관한 일정 비율이라 **`bands-check` 의 "여러 종류" 를 곧 #539 재발로 읽지
+  말아요** — 순서 (`위→아래 순서:` 줄) 가 단조인지, 값이 절반 (125) 근처로 일정한지 봐요. nested headless 출력에서는 이게
+  안 나와서 실제 출력 회차가 필요했어요.
 - **COSMIC nested (`cosmic-comp`) 는 `cosmic-randr mode X11-0 1280 800 --scale 1.25` 로 배율을 바꿔요.** 출력이 winit
   창 크기 (1280x800) 로 고정이라 배율은 그 둘을 나누는 값 (1.25 · 1.6 · 2.0) 만 돼요. `grim` 은 wlr-screencopy 가 아니라
   `ext_image_copy_capture_manager_v1` 로 돼요 (grim 1.5). runtime dir 은 격리해도 돼요 (pipewire 불필요).

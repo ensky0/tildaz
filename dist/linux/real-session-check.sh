@@ -24,6 +24,13 @@ measure() {   # $1 tag  $2 grim 출력 이름  $3 crop geometry (빈 문자열�
     else python3 "$ROOT/dist/linux/bands-check.py" $WORK/$1.png --x $4 --w 100 | sed 's/^/    /'; fi
 }
 
+# Hyprland 0.56 의 Lua 설정 파서는 `hyprctl keyword` 를 거부한다 (`keyword can't work with non-legacy parsers. Use eval.`)
+# — 그때는 `hyprctl eval 'hl.monitor({...})'` 로 같은 규칙을 넣는다. legacy (.conf) 세션은 keyword 그대로.
+set_scale() {   # $1 output  $2 scale
+    local r; r=$(hyprctl keyword monitor "$1,preferred,auto,$2" 2>&1)
+    case "$r" in *non-legacy*|*eval*) hyprctl eval "hl.monitor({ output = \"$1\", mode = \"preferred\", position = \"auto\", scale = $2 })" >/dev/null ;; esac
+}
+
 cmd_hypr_scale() {
     # 살아 있는 인스턴스는 `hyprctl -j instances` 가 안다 — /run/user/<uid>/hypr/ 에는 죽은 세션의 서명 디렉터리가 남아
     # 있을 수 있어 그것을 고르면 안 된다. 여럿이면 가장 최근 것.
@@ -43,7 +50,7 @@ print(L[-1]["instance"], L[-1]["wl_socket"]) if L else None' 2>/dev/null)
     local LOG=$XDG_STATE_HOME/tildaz/tildaz_stress.log
     for s in "$@"; do
         echo "===== scale $s"
-        hyprctl keyword monitor "$name,preferred,auto,$s" >/dev/null; sleep 3
+        set_scale "$name" "$s"; sleep 3
         hyprctl -j monitors | python3 -c 'import json,sys; m=json.load(sys.stdin)[0]; print("    출력 배율 →", m["scale"], "·", m["width"], "x", m["height"])'
         # ① tildaz (layer-shell dock · height 60 %)
         : > $LOG
@@ -57,12 +64,19 @@ print(L[-1]["instance"], L[-1]["wl_socket"]) if L else None' 2>/dev/null)
             measure tz-$s "$name" "${W}x${H}+0+0" $px
         else echo "    tildaz: configure 로그 없음"; tail -3 $LOG; fi
         kill -TERM $pid 2>/dev/null; sleep 1
-        # ② foot 대조군 (전체 화면 창) — 같은 서명이 나오면 compositor 요인
-        foot sh $WORK/bands.sh >/dev/null 2>&1 & local fp=$!; sleep 1; hyprctl dispatch fullscreen 1 >/dev/null; sleep 4
-        echo "    foot (대조군):"; measure foot-$s "$name" "" $(python3 -c "print(round($w/2)-50)")
+        # ② foot 대조군 — 같은 서명이 나오면 compositor 요인. 사용자 창을 건드리지 않게 (`dispatch fullscreen` 은
+        #    포커스 창에 걸린다 — 첫 회차에 사용자의 kitty 가 그랬을 수 있다) 창 위치 · 크기를 `clients` 에서 읽어 crop 한다.
+        foot sh $WORK/bands.sh >/dev/null 2>&1 & local fp=$!; sleep 4
+        local geo; geo=$(hyprctl -j clients | python3 -c "
+import json,sys; s=$s
+for c in json.load(sys.stdin):
+    if c.get('class')=='foot':
+        x,y=c['at']; w,h=c['size']; print(f'{round(w*s)}x{round(h*s)}+{round(x*s)}+{round(y*s)}', round(w*s/2)-50); break")
+        if [ -n "$geo" ]; then read -r fgeo fpx <<<"$geo"; echo "    foot (대조군 · crop $fgeo):"; measure foot-$s "$name" "$fgeo" $fpx
+        else echo "    foot 창을 clients 에서 못 찾았다"; fi
         kill $fp 2>/dev/null; sleep 1
     done
-    hyprctl keyword monitor "$name,preferred,auto,$scale0" >/dev/null; echo "세션 배율 복구 → $scale0"
+    set_scale "$name" "$scale0"; echo "세션 배율 복구 → $scale0"
 }
 
 cmd_gnome() {
