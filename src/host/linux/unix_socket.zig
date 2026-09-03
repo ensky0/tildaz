@@ -120,13 +120,22 @@ pub fn connect(fd: posix.fd_t, path: []const u8) error{ PathTooLong, ConnectFail
 }
 
 /// 버퍼 전체를 쓴다. 예전 `std.net.Stream.writeAll` 자리 — 짧은 쓰기를 이어서 마저 쓴다.
-pub fn writeAll(fd: posix.fd_t, bytes: []const u8) error{WriteFailed}!void {
+/// `PeerClosed` 는 상대가 소켓을 닫은 것 (EPIPE · ECONNRESET) — Wayland 쪽은 이것을 `WaylandConnectionClosed`
+/// 로 바꿔 compositor 종료를 read 가 아닌 write 로 먼저 만난 경우도 정상 종료로 보낸다 (#613 — 통합 회차에서
+/// 가상 키보드가 붙은 채 `swaymsg exit` 하면 poll 전에 write 가 먼저 실패했다).
+pub fn writeAll(fd: posix.fd_t, bytes: []const u8) error{ WriteFailed, PeerClosed }!void {
     var off: usize = 0;
     while (off < bytes.len) {
-        const rc = posix.system.write(fd, bytes.ptr + off, bytes.len - off);
+        // #613 — `write(2)` 는 peer 가 닫힌 소켓에 쓰면 EPIPE 와 함께 **SIGPIPE** 를 보내고, 기본 동작은
+        // 프로세스 종료다. compositor 가 먼저 끝난 뒤 `deinit` 이 destroy 요청을 보내는 그 순간이 바로 그
+        // 경우라, `deinit` 이 송신 실패를 무시해도 시그널로 죽어 PTY 자식 정리 (#129) 를 못 한다. unix
+        // stream 소켓에 주소 없는 `sendto` 는 `write` 와 같고 `MSG_NOSIGNAL` 로 시그널만 막는다 — 실패는
+        // EPIPE 로 돌아와 아래 `WriteFailed` 가 된다.
+        const rc = posix.system.sendto(fd, bytes.ptr + off, bytes.len - off, std.os.linux.MSG.NOSIGNAL, null, 0);
         if (checkErr(rc)) |e| switch (e) {
             // 시그널에 끊긴 것은 실패가 아니다 — 이어서 다시 쓴다.
             .INTR => continue,
+            .PIPE, .CONNRESET => return error.PeerClosed,
             else => return error.WriteFailed,
         };
         const n: usize = @intCast(rc);
