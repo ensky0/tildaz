@@ -7,6 +7,8 @@
 #   dist/linux/headless-check.sh confirm             # A7  — Alt+F4 확인 다이얼로그 펌프 중 SIGTERM (#521)
 #   dist/linux/headless-check.sh prompt              # A7  — 새 instance 핫키 캡처 다이얼로그 펌프 중 SIGTERM (#521)
 #   dist/linux/headless-check.sh scale               # A5  — 배율 1.25 · 1.5 · 2.0 · 1.7 의 띠 화면 전이 행 (#539)
+#   dist/linux/headless-check.sh seat-replug         # #347 — 가상 키보드를 뽑았다 꽂은 뒤에도 키가 닿는지 (wl_keyboard 재생성)
+#   dist/linux/headless-check.sh compositor-exit     # #613 — compositor 가 먼저 끝나면 정상 종료 (exit 0 · failed to start 없음). sway 를 내리니 마지막에
 #   dist/linux/headless-check.sh launcher-fatal gnome|cinnamon   # A2 — nested GNOME / Cinnamon 의 xdg_toplevel fatal 다이얼로그 (#577)
 #   dist/linux/headless-check.sh down                # 앱 · vkbd · sway 정리
 #
@@ -200,6 +202,45 @@ cmd_scale() {
     echo "RESULT scale: 위 회차의 '판정:' 줄이 전부 '리샘플 없음' 이어야 한다 (⚠️ 줄이 있으면 그 회차는 무효)"
 }
 
+vk_up() { setsid nohup python3 "$ROOT/dist/linux/vkbd.py" --fifo $FIFO >>$WORK/vkbd.log 2>&1 </dev/null & sleep 1.5; }
+vk_down() { [ -p $FIFO ] && echo quit > $FIFO; sleep 1; }
+wait_file() { local f=$1 i; for i in $(seq 16); do sleep 0.5; [ -f "$f" ] && return 0; done; return 1; }
+
+cmd_seat_replug() {   # #347 — seat 의 keyboard capability 가 빠졌다 붙어도 새 wl_keyboard 가 만들어지는지
+    env_sway; OUT=$WORK/seat-replug; rm -rf $OUT; mkdir -p $OUT
+    # 앱을 keyboard 없는 seat 에서 먼저 띄운다 — vkbd 가 떠 있으면 내린다.
+    pgrep -f "vkbd.py --fifo $FIFO" >/dev/null && vk_down
+    kill_tz
+    mark=$(wc -l < $LOG 2>/dev/null || echo 0)
+    TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 3
+    echo "① 꽂음"; vk_up; rm -f $OUT/p1; snd "type touch $OUT/p1" "key Return"; wait_file $OUT/p1 && echo "   키 도착" || echo "   키 없음"
+    echo "② 뽑음"; vk_down
+    echo "③ 다시 꽂음"; vk_up; rm -f $OUT/p2; snd "type touch $OUT/p2" "key Return"; wait_file $OUT/p2 && echo "   키 도착" || echo "   키 없음"
+    tail -n +$((mark+1)) $LOG | grep -E 'wl_seat capabilities|wl_keyboard id=' | sed -E 's/^\[[^]]+\] /   /'
+    if [ -f $OUT/p1 ] && [ -f $OUT/p2 ]; then echo "RESULT seat-replug: OK — 뽑았다 꽂은 뒤에도 키가 닿는다"; else echo "RESULT seat-replug: FAIL (p1=$([ -f $OUT/p1 ] && echo 1 || echo 0) p2=$([ -f $OUT/p2 ] && echo 1 || echo 0)) — 수정 전 판은 p2 가 0 이다 (#347)"; fi
+    kill -TERM $WPID; wait_exit $WPID >/dev/null
+}
+
+cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실패가 아니라 정상 종료. sway 를 내리므로 마지막에 돌린다.
+    env_sway; OUT=$WORK/compositor-exit; rm -rf $OUT; mkdir -p $OUT
+    kill_tz
+    TILDAZ_VERBOSE=1 "$TILDAZ" --instance 0 >$OUT/stderr.txt 2>&1 </dev/null & WPID=$!; sleep 4
+    kill -0 $WPID 2>/dev/null || die "앱이 뜨지 않았다 — $LOG"
+    local child; child=$(pgrep -P $WPID | tr '\n' ' ')
+    echo "swaymsg exit ($(date +%T.%N))"; swaymsg exit >/dev/null 2>&1
+    local r; r=$(wait_exit $WPID); wait $WPID; local rc=$?
+    local alive=0 c; for c in $child; do kill -0 $c 2>/dev/null && alive=1; done
+    echo "   $r · exit code $rc · 자식 셸 $([ $alive = 0 ] && echo 정리됨 || echo 남음)"
+    tail -4 $LOG | sed -E 's/^\[[^]]+\] /   /'
+    if [ $rc -eq 0 ] && grep -q 'compositor closed the connection' $LOG && ! grep -q 'failed to start' $LOG $OUT/stderr.txt; then
+        echo "RESULT compositor-exit: OK"
+    else
+        echo "RESULT compositor-exit: FAIL — exit $rc · stderr: $(head -c 120 $OUT/stderr.txt)"
+    fi
+    pkill -f "vkbd.py --fifo $FIFO" 2>/dev/null; rm -rf $R
+    echo "   (sway 를 내렸으니 다음 회차 전에 'up')"
+}
+
 cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devkit 은 pipewire 가 필요해 격리 불가) · 자기 세션 버스
     local de=$1 XCD COMP WD=wayland-77
     case $de in
@@ -250,6 +291,8 @@ case ${1:-} in
     confirm) cmd_confirm ;;
     prompt) cmd_prompt ;;
     scale) cmd_scale ;;
+    seat-replug) cmd_seat_replug ;;
+    compositor-exit) cmd_compositor_exit ;;
     launcher-fatal) cmd_launcher_fatal "${2:-}" ;;
     *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

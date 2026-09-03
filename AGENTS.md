@@ -1053,7 +1053,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`dist/linux/vkbd.py`](dist/linux/vkbd.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`dist/screens/clusters.py bands`](dist/screens/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음) |
-| [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `launcher-fatal gnome\|cinnamon` |
+| [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
 
 ```sh
 R=/run/user/$(id -u)/tz583; mkdir -m 700 -p $R                       # ⚠️ 짧은 경로 — 아래
@@ -1081,11 +1081,13 @@ grim shot.png                                                          # sway �
 - **modifier 는 `modifiers` 요청으로 보내야 해요.** 프로토콜이 modifier 상태를 client 책임으로 두고 wlroots 는 가상
   키보드의 key 이벤트로 xkb 상태를 갱신하지 않아서, Shift 키 press 만 보내면 `Ctrl+Shift+T` 가 `t` 로 · `>` 가 `.` 로
   들어가요. `vkbd.py` 가 mask (Shift 0 · Control 2 · Mod1 3 · Mod4 6 비트) 를 함께 보내요.
-- **⚠️ 결함 후보 (2026-09-03 발견 · #583 에 기록)** — [`wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의
-  `handleSeatEvent` 는 capability 가 바뀔 때 `keyboard_id == 0` 일 때만 `wl_keyboard` 를 만들고, capability 가 빠질 때
-  release 하는 코드가 없어요 (`keyboard_id = 0` 으로 되돌리는 자리가 없어요). wlroots 는 keyboard capability 가 빠지는
-  순간 그 client 의 keyboard 객체를 inert 로 만들므로, **유일한 키보드를 뽑았다 다시 꽂으면 sway · Hyprland 계열에서 키
-  입력이 영원히 죽어요.** 노트북 내장 키보드가 있으면 capability 가 안 빠져 드러나지 않아요.
+- **이 도구로 찾은 결함 — [#347](https://github.com/ensky0/tildaz/issues/347) (2026-09-03).** `wtype` 이 호출마다 가상
+  키보드를 꽂고 뽑는 바람에 seat 의 keyboard capability 가 빠졌다 붙는 왕복이 생겼고, 앱이 그때 `wl_keyboard` 를 놓고
+  다시 만들지 않아 두 번째부터 키가 영원히 닿지 않았어요 — 유일한 키보드를 뽑았다 꽂는 데스크톱과 같은 조건이에요.
+  `fix/347-seat-capability-release` 가 잃으면 `release` · 돌아오면 재생성으로 고쳤고, **`headless-check.sh seat-replug`**
+  (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
+  compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
+  **`headless-check.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
 - **sway 는 layer-shell 을 우리가 일부러 안 써서** (#454) `-size` · dock 배치가 안 먹고 창은 tiling 으로 출력 전체예요. 그래도
   xdg_toplevel · layer-surface · dialog 가 **같은 `logicalToPhysicalSize`** 를 쓰므로 배율 검증은 성립해요.
 - **단축키 판정은 파일로 해요.** 탭마다 `cat > tab_N.txt` 를 띄워 두고 `Alt+N` 뒤 글자를 보내면 어느 파일에 들어갔는지로
@@ -1113,8 +1115,24 @@ grim shot.png                                                          # sway �
   셋을 맞추면 목적지 = `round(H × scale)` 이라, 논리 높이 H 를 골라 소수부를 .5 이상으로 만들면 (1.25 · H 798 → 997.5,
   1.7 · H 585 → 994.5) 내림 (#539 이전) 과 반올림 (스펙) 이 갈리는 조합이 돼요. 소수부 0 인 회차를 대조로 함께 둬요.
 - **nested Hyprland 는 KWin 에서 창이 가려지면 프레임을 그리지 않아요** — `grim` 이 screencopy 를 영원히 기다려요
-  (`timeout 3 grim …` 이 124 로 끝나면 이거예요). 그 창이 앞에 보이는 동안만 캡처가 돼요. 사용자에게 알리지 않고 KWin
-  스크립트로 창을 올리면 사용자의 포커스를 빼앗아 타이핑이 nested 안으로 들어가니 하지 말아요.
+  (`timeout 3 grim …` 이 124 로 끝나면 이거예요). 사용자에게 알리지 않고 KWin 스크립트로 창을 올리면 포커스를 빼앗아
+  타이핑이 nested 안으로 들어가니 하지 말고, **headless 출력을 하나 더 만들어 거기서 재요** — 그 출력은 부모 창과 무관하게
+  그려요.
+
+    ```sh
+    hyprctl output create headless HL-1
+    hyprctl keyword monitor "HL-1,1500x999,2000x0,1.5"      # 해상도는 scale 의 배수 (아래 배율 검증 조건 ①)
+    hyprctl dispatch focusmonitor HL-1                       # layer surface 는 포커스된 모니터에 떠요
+    grim -o HL-1 shot.png
+    ```
+
+    배율을 바꾼 뒤 **3 초**는 두고, 회차마다 앱 로그의 `logical_h` 가 `height_percent` 와 맞는지 봐요 — 전환 직후에
+    옛 work-area 로 뜬 회차 (60 % 인데 논리 높이 180) 가 있었어요. 그리고 **이 출력의 1.25 배율에서는 foot 도 리샘플
+    서명**을 냈어요 (1.5 · 1.7 은 둘 다 깨끗) — 그 조건의 "여러 종류" 는 우리 결함이 아니고 실제 Hyprland 세션의 1.25 는
+    따로 봐야 해요. **대조군 (foot) 없이 배율 판정을 내리지 않아요.**
+- **COSMIC nested (`cosmic-comp`) 는 `cosmic-randr mode X11-0 1280 800 --scale 1.25` 로 배율을 바꿔요.** 출력이 winit
+  창 크기 (1280x800) 로 고정이라 배율은 그 둘을 나누는 값 (1.25 · 1.6 · 2.0) 만 돼요. `grim` 은 wlr-screencopy 가 아니라
+  `ext_image_copy_capture_manager_v1` 로 돼요 (grim 1.5). runtime dir 은 격리해도 돼요 (pipewire 불필요).
 - **mutter devkit (`gnome-shell --devkit`) 은 runtime dir 을 격리하면 죽어요.** 화면을 pipewire 로 뷰어 창에 보내는데
   `XDG_RUNTIME_DIR` 을 돌리면 pipewire 소켓을 못 찾아 (`Failed to connect pipewire context`) 셸이 곧 내려가요. 실제
   runtime dir 을 쓰고 `--wayland-display=wayland-77` 처럼 특이한 소켓 이름으로 겹침을 피해요. tildaz 쪽 config · 로그만
