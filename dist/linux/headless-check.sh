@@ -224,6 +224,7 @@ cmd_seat_replug() {   # #347 — seat 의 keyboard capability 가 빠졌다 붙�
 cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실패가 아니라 정상 종료. sway 를 내리므로 마지막에 돌린다.
     env_sway; OUT=$WORK/compositor-exit; rm -rf $OUT; mkdir -p $OUT
     kill_tz
+    local mark; mark=$(wc -l < $LOG 2>/dev/null || echo 0)     # 같은 로그 파일에 앞 회차 줄이 남아 있다 — 이 회차 줄만 본다
     TILDAZ_VERBOSE=1 "$TILDAZ" --instance 0 >$OUT/stderr.txt 2>&1 </dev/null & WPID=$!; sleep 4
     kill -0 $WPID 2>/dev/null || die "앱이 뜨지 않았다 — $LOG"
     local child; child=$(pgrep -P $WPID | tr '\n' ' ')
@@ -232,7 +233,7 @@ cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실�
     local alive=0 c; for c in $child; do kill -0 $c 2>/dev/null && alive=1; done
     echo "   $r · exit code $rc · 자식 셸 $([ $alive = 0 ] && echo 정리됨 || echo 남음)"
     tail -4 $LOG | sed -E 's/^\[[^]]+\] /   /'
-    if [ $rc -eq 0 ] && grep -q 'compositor closed the connection' $LOG && ! grep -q 'failed to start' $LOG $OUT/stderr.txt; then
+    if [ $rc -eq 0 ] && tail -n +$((mark+1)) $LOG | grep -q 'compositor closed the connection' && ! tail -n +$((mark+1)) $LOG | grep -q 'failed to start' && ! grep -q 'failed to start' $OUT/stderr.txt; then
         echo "RESULT compositor-exit: OK"
     else
         echo "RESULT compositor-exit: FAIL — exit $rc · stderr: $(head -c 120 $OUT/stderr.txt)"
