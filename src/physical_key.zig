@@ -43,8 +43,10 @@
 //!
 //! 담지 않는 것이 둘 있다.
 //!
-//!   - **modifier 자체** (`ShiftLeft` · `ControlLeft` · `MetaLeft` ...). 이 모델에서
-//!     modifier 는 비트이고 키 자리가 아니다. `ctrl+[ShiftLeft]` 는 뜻이 없다.
+//!   - **바인딩으로서의 modifier** (`[ShiftLeft]` · `[ControlLeft]` · `[MetaLeft]` ...). 이 모델에서
+//!     modifier 는 비트이고 키 자리가 아니다 — `ctrl+[ShiftLeft]` 는 뜻이 없어 `fromName` 이 거부한다.
+//!     표에는 있다 (`bindable = false`) — kitty keyboard protocol 의 `report_all` 이 modifier 단독
+//!     누름 · 뗌 (`CSI 57441 u`) 을 요구해 host 가 그 키의 물리 자리를 인코더에 넘겨야 한다 (#606).
 //!   - **media / browser 키** (`MediaPlayPause` · `BrowserBack` ...). 자판 위의
 //!     고정 자리가 아니고 (기능 키의 대체 기능이거나 전용 자판에만 있다) macOS 는
 //!     `keyDown` 으로 주지 않는다. 필요해지면 행을 더하면 된다.
@@ -184,6 +186,17 @@ pub const PhysicalCode = enum {
     /// JIS 자판의 `_` / `ろ`.
     intl_ro,
 
+    // ── Modifier ────────────────────────────────────────────────────────────
+    // #606 — 바인딩에는 못 쓴다 (`bindable = false`). kitty `report_all` 의 단독 보고 전용.
+    shift_left,
+    shift_right,
+    control_left,
+    control_right,
+    alt_left,
+    alt_right,
+    meta_left,
+    meta_right,
+
     // ── Functional ──────────────────────────────────────────────────────────
     space,
     tab,
@@ -247,6 +260,9 @@ const Entry = struct {
     scan: u16,
     /// Windows `0xE0` prefix (lParam bit 24). control pad 와 numpad 를 갈라 준다.
     extended: bool = false,
+    /// false = `[...]` 바인딩 이름으로는 못 쓴다 (`fromName` 이 거부). modifier 8 개가 그렇다 —
+    /// 역방향 조회 (`fromScanCode` 등) 와 `name` 은 그대로 준다 (#606).
+    bindable: bool = true,
     /// null = macOS 에 별 `kVK_*` 가 없다. 이유는 `mac_alias` 로 갈린다.
     mac: ?u16 = null,
     /// `mac` 이 null 인 이유가 **겹침**일 때 그 대체 자리. macOS 는 이 키를 저 자리로
@@ -359,6 +375,16 @@ const table = [_]Entry{
     // W3C 는 main block 의 return 키를 `Enter` 라 부른다 (`Return` 이 아니다).
     .{ .code = .enter, .name = "Enter", .evdev = 28, .scan = 0x1C, .mac = 0x24 },
     .{ .code = .backspace, .name = "Backspace", .evdev = 14, .scan = 0x0E, .mac = 0x33 },
+    // ── Modifier (#606) — `bindable = false`. Windows 는 좌우를 scan 이 아니라 extended 비트로 가른다
+    // (`ControlRight` · `AltRight` 는 `0xE0` prefix). macOS 는 `kVK_Shift` … `kVK_RightCommand`.
+    .{ .code = .shift_left, .name = "ShiftLeft", .evdev = 42, .scan = 0x2A, .mac = 0x38, .bindable = false },
+    .{ .code = .shift_right, .name = "ShiftRight", .evdev = 54, .scan = 0x36, .mac = 0x3C, .bindable = false },
+    .{ .code = .control_left, .name = "ControlLeft", .evdev = 29, .scan = 0x1D, .mac = 0x3B, .bindable = false },
+    .{ .code = .control_right, .name = "ControlRight", .evdev = 97, .scan = 0x1D, .extended = true, .mac = 0x3E, .bindable = false },
+    .{ .code = .alt_left, .name = "AltLeft", .evdev = 56, .scan = 0x38, .mac = 0x3A, .bindable = false },
+    .{ .code = .alt_right, .name = "AltRight", .evdev = 100, .scan = 0x38, .extended = true, .mac = 0x3D, .bindable = false },
+    .{ .code = .meta_left, .name = "MetaLeft", .evdev = 125, .scan = 0x5B, .extended = true, .mac = 0x37, .bindable = false },
+    .{ .code = .meta_right, .name = "MetaRight", .evdev = 126, .scan = 0x5C, .extended = true, .mac = 0x36, .bindable = false },
     .{ .code = .caps_lock, .name = "CapsLock", .evdev = 58, .scan = 0x3A, .mac = 0x39 },
     // PC 자판을 Mac 에 꽂으면 이 세 키가 F13 / F14 / F15 로 보고된다. 키가 없는 것이
     // 아니라 별 `kVK_*` 가 없는 것이다 — 그래서 대체 자리를 적어 안내에 쓴다.
@@ -414,6 +440,7 @@ const table = [_]Entry{
 /// `[...]` 안의 이름 → code. 대소문자 무관 — config 의 다른 토큰이 모두 그렇다.
 pub fn fromName(text: []const u8) ?PhysicalCode {
     for (table) |e| {
+        if (!e.bindable) continue; // modifier 는 비트다 — `ctrl+[ShiftLeft]` 는 뜻이 없다 (헤더).
         if (std.ascii.eqlIgnoreCase(text, e.name)) return e.code;
     }
     return null;
@@ -501,6 +528,24 @@ test "표가 enum 을 빠짐없이 정확히 한 번씩 덮는다" {
     }
 }
 
+test "#606 modifier 는 역방향 조회 · 이름은 주고 바인딩 이름으로는 거부한다" {
+    // host 가 kitty `report_all` 의 단독 보고를 위해 물리 자리를 찾는 경로 — 세 platform.
+    try std.testing.expectEqual(PhysicalCode.shift_left, fromScanCode(0x2A, false).?);
+    try std.testing.expectEqual(PhysicalCode.control_left, fromScanCode(0x1D, false).?);
+    try std.testing.expectEqual(PhysicalCode.control_right, fromScanCode(0x1D, true).?);
+    try std.testing.expectEqual(PhysicalCode.alt_right, fromScanCode(0x38, true).?);
+    try std.testing.expectEqual(PhysicalCode.meta_left, fromScanCode(0x5B, true).?);
+    try std.testing.expectEqual(PhysicalCode.shift_left, fromEvdev(42).?);
+    try std.testing.expectEqual(PhysicalCode.meta_right, fromEvdev(126).?);
+    try std.testing.expectEqual(PhysicalCode.shift_left, fromMacKeyCode(0x38).?);
+    try std.testing.expectEqual(PhysicalCode.meta_right, fromMacKeyCode(0x36).?);
+    try std.testing.expectEqualStrings("ControlRight", name(.control_right));
+    // 바인딩 파서 (`config.zig`) 가 쓰는 이름 조회는 거부 — modifier 는 비트다.
+    try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("controlright"));
+    try std.testing.expect(!entry(.alt_left).bindable);
+    try std.testing.expect(entry(.caps_lock).bindable);
+}
+
 test "세 platform 값이 각각 유일하다" {
     // 값이 겹치면 역방향 조회 (`fromEvdev` 등) 가 엉뚱한 code 를 준다.
     for (table, 0..) |a, i| {
@@ -549,6 +594,11 @@ test "extended 비트 없이는 Windows 열이 겹친다" {
 
 test "이름 왕복" {
     for (table) |e| {
+        // #606 — modifier 는 표에 있지만 바인딩 이름으로는 못 쓴다 (`bindable = false`).
+        if (!e.bindable) {
+            try std.testing.expectEqual(@as(?PhysicalCode, null), fromName(e.name));
+            continue;
+        }
         try std.testing.expectEqual(e.code, fromName(e.name).?);
         try std.testing.expectEqualStrings(e.name, name(e.code));
     }
@@ -566,7 +616,8 @@ test "이름 왕복" {
     try std.testing.expectEqual(PhysicalCode.f24, fromName("F24").?);
     try std.testing.expectEqual(PhysicalCode.intl_yen, fromName("IntlYen").?);
     try std.testing.expectEqual(PhysicalCode.context_menu, fromName("ContextMenu").?);
-    // 담지 않는 것 — modifier 자체와 media / browser 키. 오타도 여전히 거부한다.
+    // 바인딩 이름으로 거부하는 것 — modifier (표에는 있지만 `bindable = false` · #606) 와 media / browser 키.
+    // 오타도 여전히 거부한다.
     try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("ShiftLeft"));
     try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("MetaLeft"));
     try std.testing.expectEqual(@as(?PhysicalCode, null), fromName("MediaPlayPause"));
@@ -649,7 +700,11 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         const close = std.mem.indexOfPos(u8, source.js, open, "\n};").?;
         const block = source.js[open..close];
 
+        var bindable_rows: usize = 0;
         for (table) |e| {
+            // #606 — modifier 는 바인딩 자리가 아니라 (`bindable = false`) 확장의 위치 표에도 없어야 한다.
+            if (!e.bindable) continue;
+            bindable_rows += 1;
             var lower_buf: [32]u8 = undefined;
             const lower = std.ascii.lowerString(lower_buf[0..e.name.len], e.name);
             var needle_buf: [64]u8 = undefined;
@@ -667,6 +722,6 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         var js_rows: usize = 0;
         var offset: usize = 0;
         while (std.mem.indexOfPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
-        try std.testing.expectEqual(table.len, js_rows);
+        try std.testing.expectEqual(bindable_rows, js_rows);
     }
 }

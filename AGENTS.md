@@ -706,7 +706,7 @@ macOS 의 `deadkey-check.sh` 에 대응하는 도구 둘이에요 ([#583](https:
 |---|---|
 | [`dist/windows/deadkey-check.ps1`](dist/windows/deadkey-check.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`dist/windows/launcher-fatal-check.ps1`](dist/windows/launcher-fatal-check.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
-| [`dist/windows/kitty-text-check.ps1`](dist/windows/kitty-text-check.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key 를 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
+| [`dist/windows/kitty-text-check.ps1`](dist/windows/kitty-text-check.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
 dist\windows\deadkey-check.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -748,6 +748,10 @@ dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
   사라졌던 원인).
 - **화면 보호기가 켜져 있으면 foreground 창이 없고 합성 키는 화면 보호기로 가요.** 실기 전에 `SystemParametersInfo
   (SPI_GETSCREENSAVERRUNNING)` 과 `GetForegroundWindow` 를 봐요 — 사용자 부재 중에는 돌리지 않아요.
+- **자식 (PTY 안 python) 이 죽으면 창도 곧 사라져 "포커스 못 잡음" 으로 보여요.** 자식 코드를 heredoc · python 으로 편집하면 `
+` 이 실제 개행으로 바뀌어 문법이 깨질 수 있어요 (2026-09-03 — #606 도구 편집). 도구는 자식 코드를 `py_compile` 로 먼저 검사하고, 자식은 항목마다 파일을 다시 쓰며 예외를 `<out>.err` 에 남겨요 — "결과 파일 없음" 이 아니라 **어느 항목이 비었는지** 가 보여야 원인을 가를 수 있어요.
+- **`Start-Process -RedirectStandardError` 로 앱을 띄우면 새 창이 포커스를 못 받아요** (같은 날 실측 — 두 회차 모두 "포커스 못 잡음"). 앱 로그가 필요하면 `%APPDATA%	ildaz	ildaz_<instance>.log` (stress 인스턴스 9 는 `tildaz_stress.log`) 를 읽어요 — `log.appendLine` 이 거기 써요.
+- **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
 
 # Windows — 키보드 layout 조회 실측 방법
 

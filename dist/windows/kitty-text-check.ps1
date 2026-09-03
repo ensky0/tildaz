@@ -115,7 +115,7 @@ public static class TzKitty {
 }
 "@
 
-$VK = @{ a = 0x41; e = 0x45; Space = 0x20; Enter = 0x0D; Shift = 0x10; Apos = 0xDE }
+$VK = @{ a = 0x41; e = 0x45; Space = 0x20; Enter = 0x0D; Shift = 0x10; Ctrl = 0x11; Apos = 0xDE }
 $Out = Join-Path $env:TEMP "tildaz-kitty-text"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $child = Join-Path $Out "child.py"
@@ -124,27 +124,35 @@ $childBody = @'
 import sys, os, time, ctypes, msvcrt
 from ctypes import wintypes
 out, flags, n_items = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-k32 = ctypes.windll.kernel32
-h_in = k32.GetStdHandle(-10)
-mode = wintypes.DWORD()
-k32.GetConsoleMode(h_in, ctypes.byref(mode))
-# ENABLE_VIRTUAL_TERMINAL_INPUT (0x200) 켜고 ECHO (0x4) · LINE (0x2) · PROCESSED (0x1) 끈다.
-k32.SetConsoleMode(h_in, (mode.value | 0x200) & ~0x7)
-sys.stdout.write("\x1b[>%du" % flags); sys.stdout.flush()      # kitty 모드 켬
-items, cur, last = [], b"", None
-t_start = time.time()
-while len(items) < n_items and time.time() - t_start < 40:
-    if msvcrt.kbhit():
-        ch = msvcrt.getwch()
-        cur += ch.encode("utf-8", "surrogatepass"); last = time.time()
-    elif cur and last is not None and time.time() - last > 0.3:
-        items.append(cur); cur = b""
-    else:
-        time.sleep(0.01)
-if cur: items.append(cur)
-sys.stdout.write("\x1b[<u"); sys.stdout.flush()               # kitty 모드 내림
-with open(out, "w", encoding="utf-8") as f:
-    for it in items: f.write(" ".join("%02x" % b for b in it) + "\n")
+try:
+    k32 = ctypes.windll.kernel32
+    h_in = k32.GetStdHandle(-10)
+    mode = wintypes.DWORD()
+    k32.GetConsoleMode(h_in, ctypes.byref(mode))
+    # ENABLE_VIRTUAL_TERMINAL_INPUT (0x200) 켜고 ECHO (0x4) · LINE (0x2) · PROCESSED (0x1) 끈다.
+    k32.SetConsoleMode(h_in, (mode.value | 0x200) & ~0x7)
+    sys.stdout.write("\x1b[>%du" % flags); sys.stdout.flush()      # kitty 모드 켬
+    items, cur, last = [], b"", None
+    def flush():
+        # 항목마다 다시 쓴다 — 항목이 모자라 도구가 앱을 죽여도 받은 것은 남는다 (#606 진단).
+        with open(out, "w", encoding="utf-8") as f:
+            for it in items: f.write(" ".join("%02x" % b for b in it) + "\n")
+    flush()
+    t_start = time.time()
+    while len(items) < n_items and time.time() - t_start < 40:
+        if msvcrt.kbhit():
+            ch = msvcrt.getwch()
+            cur += ch.encode("utf-8", "surrogatepass"); last = time.time()
+        elif cur and last is not None and time.time() - last > 0.3:
+            items.append(cur); cur = b""; flush()
+        else:
+            time.sleep(0.01)
+    if cur: items.append(cur)
+    sys.stdout.write("\x1b[<u"); sys.stdout.flush()               # kitty 모드 내림
+    flush()
+except Exception:
+    import traceback
+    with open(out + ".err", "w", encoding="utf-8") as f: f.write(traceback.format_exc())
 '@
 [IO.File]::WriteAllText($child, $childBody, (New-Object System.Text.UTF8Encoding $false))
 
@@ -161,10 +169,14 @@ $rounds = @(
     # flags 11 은 `report_events` 를 포함하므로 누름 뒤에 뗌 (`CSI …;1:3 u`) 이 붙는다 — 기대는 정규식으로 둘을 다 받는다.
     @{ flags = 11; name = "report_all + report_events (11)"; keys = @(
         @{ n = "a";        k = @(,@($VK.a));                e = "RE:^1b 5b 39 37 75( 1b 5b 39 37 3b 31 3a 33 75)?$" },              # CSI 97 u
-        @{ n = "Shift+a";  k = @(,@($VK.Shift, $VK.a));     e = "RE:^1b 5b 39 37 3b 32 75( 1b 5b 39 37 3b 32 3a 33 75)?$" },          # CSI 97;2 u — `:65` 는 report_alternates (4) 에서만 붙는다
+        @{ n = "Shift+a";  k = @(,@($VK.Shift, $VK.a));     e = "RE:^(1b 5b 35 37 34 34 31 3b 32 75 )?1b 5b 39 37 3b 32 75( 1b 5b 39 37 3b 32 3a 33 75)?( 1b 5b 35 37 34 34 31 3b 31 3a 33 75)?$" }, # CSI 97;2 u — #606 뒤로 Shift 누름 · 뗌 (CSI 57441;2u · ;1:3u) 이 앞뒤에 붙는다. — `:65` 는 report_alternates (4) 에서만 붙는다
         @{ n = "Space";    k = @(,@($VK.Space));            e = "RE:^1b 5b 33 32 75( 1b 5b 33 32 3b 31 3a 33 75)?$" },              # CSI 32 u
         @{ n = "Enter";    k = @(,@($VK.Enter));            e = "RE:^1b 5b 31 33 75( 1b 5b 31 33 3b 31 3a 33 75)?$" },              # CSI 13 u
-        @{ n = "' e (dead)"; k = @(@($VK.Apos), @($VK.e));  e = "RE:c3 a9" }                                                        # 조합 결과 é 가 텍스트로 온다 (dead key 누름 CSI 39 u 는 앞에 붙는다)
+        @{ n = "' e (dead)"; k = @(@($VK.Apos), @($VK.e));  e = "RE:c3 a9" },                                                        # 조합 결과 é 가 텍스트로 온다 (dead key 누름 CSI 39 u 는 앞에 붙는다)
+        # #606 — modifier 단독. kitty 규약대로 누름의 mods 에는 그 modifier 자체가 든다 (`;2` · `;5`) 고 뗌은 `;1:3`.
+        # 왼쪽 Shift = 57441 · 왼쪽 Ctrl = 57442 (`SendInput` 의 VK_SHIFT · VK_CONTROL 은 scan 0x2A · 0x1D 비확장 = 왼쪽).
+        @{ n = "Shift 단독"; k = @(,@($VK.Shift));           e = "1b 5b 35 37 34 34 31 3b 32 75 1b 5b 35 37 34 34 31 3b 31 3a 33 75" },   # CSI 57441;2u · CSI 57441;1:3u
+        @{ n = "Ctrl 단독";  k = @(,@($VK.Ctrl));            e = "1b 5b 35 37 34 34 32 3b 35 75 1b 5b 35 37 34 34 32 3b 31 3a 33 75" }    # CSI 57442;5u · CSI 57442;1:3u
     ) },
     @{ flags = 1; name = "disambiguate (1)"; keys = @(
         @{ n = "a";        k = @(,@($VK.a));                e = "61" },
@@ -209,6 +221,7 @@ foreach ($r in $rounds) {
             if (-not $ok) { $allOk = $false }; $i++
         }
     } else { "❌ 결과 파일 없음"; $allOk = $false }
+    if (Test-Path "$result.err") { "  자식 예외:"; Get-Content "$result.err" | ForEach-Object { "    $_" } }
 }
 if ($loadedByUs) { "layout 내림: $([TzKitty]::UnloadKeyboardLayout($hkl))" }
 "세션 layout (후): " + (([TzKitty]::Layouts() | ForEach-Object { '0x{0:x8}' -f [int64]$_ }) -join ' ')
