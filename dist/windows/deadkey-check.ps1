@@ -40,15 +40,38 @@ param(
     [string]$Bin = "zig-out\bin\tildaz.exe",
     # 올릴 layout 의 KLID. 기본 US-International.
     [string]$Klid = "00020409",
-    [switch]$Keep
+    [switch]$Keep,
+    # #530 — 첫 케이스의 dead key 직후와 조합 직후 창을 찍어 preedit 색 (64,64,128) 픽셀을 센다.
+    [switch]$Capture
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
-Add-Type @"
+Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing @"
 using System;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 public static class TzDead {
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  public static void MakeDpiAware() { try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {} }
+  // 창을 찍어 저장하고 (r,g,b) ±tol 인 픽셀 수를 돌려준다 — preedit 배경 (0.25,0.25,0.5 → 64,64,128) 계수용.
+  public static long CaptureCount(IntPtr h, string png, int r, int g, int b, int tol) {
+    RECT rc; GetWindowRect(h, out rc);
+    using (var bmp = new Bitmap(rc.R - rc.L, rc.B - rc.T, PixelFormat.Format32bppArgb)) {
+      using (var gr = Graphics.FromImage(bmp)) { IntPtr hdc = gr.GetHdc(); PrintWindow(h, hdc, 2); gr.ReleaseHdc(hdc); }
+      bmp.Save(png, ImageFormat.Png);
+      var d = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+      try {
+        var px = new int[bmp.Width * bmp.Height]; Marshal.Copy(d.Scan0, px, 0, px.Length); long n = 0;
+        foreach (var v in px) { int pb = v & 0xff, pg = (v >> 8) & 0xff, pr = (v >> 16) & 0xff;
+          if (Math.Abs(pr - r) <= tol && Math.Abs(pg - g) <= tol && Math.Abs(pb - b) <= tol) n++; }
+        return n;
+      } finally { bmp.UnlockBits(d); }
+    }
+  }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
   public delegate bool EnumProc(IntPtr h, IntPtr l);
@@ -60,6 +83,7 @@ public static class TzDead {
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint c, uint t);
@@ -101,10 +125,18 @@ public static class TzDead {
     for (int k = vks.Length - 1; k >= 0; k--) a[n++] = Key(vks[k], 2);
     return SendInput((uint)a.Length, a, Marshal.SizeOf(typeof(INPUT)));
   }
+  // 다른 창이 덮고 있으면 SetForegroundWindow 도 클릭도 안 닿는다 (2026-09-03 실기 — 브라우저가 앞에 있던 회차).
+  // 잠깐 최상위로 올려 활성화하고, 끝나면 내린다 (compare-terminals 의 찍기 직전 TOPMOST 와 같은 수).
   public static bool Focus(IntPtr h) {
     if (GetForegroundWindow() == h) return true;
+    SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);   // TOPMOST · NOSIZE|NOMOVE|SHOWWINDOW
     SetForegroundWindow(h); System.Threading.Thread.Sleep(300);
-    if (GetForegroundWindow() == h) return true;
+    bool ok = GetForegroundWindow() == h;
+    if (!ok) ok = ClickCenter(h);
+    SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);  // NOTOPMOST · NOACTIVATE
+    return ok;
+  }
+  static bool ClickCenter(IntPtr h) {
     RECT r; GetClientRect(h, out r);
     var p = new POINT(); p.x = (r.R - r.L) / 2; p.y = (r.B - r.T) / 2; ClientToScreen(h, ref p);
     POINT before; bool hc = GetCursorPos(out before);
@@ -118,6 +150,7 @@ public static class TzDead {
   }
 }
 "@
+[TzDead]::MakeDpiAware()
 
 $VK = @{ Apos = 0xDE; e = 0x45; o = 0x4F; x = 0x58; Space = 0x20; Enter = 0x0D; Shift = 0x10; D6 = 0x36 }
 # 케이스 — 이름 · 키 목록 (chord 는 배열) · 기대 hex
@@ -176,6 +209,7 @@ $loadedByUs = -not ($before -contains $hkl)
 
 $ok = $true
 $sent = 0
+$capCounts = @()
 try {
     if (-not [TzDead]::Focus($h)) { throw "tildaz 창을 활성으로 못 만들었다 — 키를 보내지 않는다" }
     # 그 창의 스레드만 layout 전환. DefWindowProc 이 WM_INPUTLANGCHANGEREQUEST 를 받아 ActivateKeyboardLayout 한다.
@@ -186,10 +220,20 @@ try {
     if ($now -ne $hkl) { throw "창의 layout 이 바뀌지 않았다 — 키를 보내지 않는다" }
 
     foreach ($c in $cases) {
+        $ci = 0
         foreach ($chord in $c.keys) {
             if ([TzDead]::GetForegroundWindow() -ne $h) { throw "포커스를 잃었다 (케이스 '$($c.name)') — 중단" }
             [void][TzDead]::Chord([uint16[]]$chord)
             Start-Sleep -Milliseconds 120
+            if ($Capture -and $sent -eq 0 -and $ci -le 1) {
+                Start-Sleep -Milliseconds 400
+                $png = Join-Path $Out ("dead_" + $ci + ".png")
+                $n = [TzDead]::CaptureCount($h, $png, 64, 64, 128, 2)
+                $label = if ($ci -eq 0) { "dead key 직후 (표시 중 · >0 기대)" } else { "조합 직후 (0 기대)" }
+                "캡처 $label preedit 색 픽셀 = $n · $png"
+                $script:capCounts += $n
+            }
+            $ci++
         }
         [void][TzDead]::Chord([uint16[]]@($VK.Enter))
         $sent++
@@ -226,4 +270,9 @@ if (Test-Path $result) {
     "❌ 자식이 결과 파일을 남기지 않았다 ($result)"; $ok = $false
 }
 "보낸 줄 $sent / $($cases.Count) · 결과: $result · 로그: $env:APPDATA\tildaz\tildaz_stress.log"
+if ($Capture -and $capCounts.Count -eq 2) {
+    $capOk = ($capCounts[0] -gt 0) -and ($capCounts[1] -eq 0)
+    "표시 판정: dead key 직후 $($capCounts[0]) px · 조합 직후 $($capCounts[1]) px → $(if ($capOk) { 'OK' } else { 'FAIL' })"
+    if (-not $capOk) { $ok = $false }
+}
 if ($ok) { "결과: 전부 OK" } else { "결과: 실패 있음" }
