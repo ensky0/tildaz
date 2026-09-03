@@ -11,7 +11,7 @@
 #     일시적 HTTP 실패 (mid-transfer RST) 를 흡수한다. `-Dsimd=true` 는 package · 검증 step 과 같은 top-level
 #     option graph 를 평가하게 하려는 것이다.
 #
-# 검증 — `pr-verify.yml` 의 `verify` · `native` job 이 PR 마다 이 action 을 지난다. `release.yml` 은 태그 push 로만
+# 검증 — `pr-verify.yml` 의 `verify (linux)` · `verify (macos)` · `verify (windows)` 가 PR 마다 이 action 을 지난다. `release.yml` 은 태그 push 로만
 # 돌므로 바꾼 뒤 `-dev.N` prerelease 태그로 한 번 돌려 확인한다 (AGENTS.md 릴리즈 절).
 name: Setup Zig (version from build.zig.zon)
 description: build.zig.zon 의 .minimum_zig_version 을 읽어 mlugg/setup-zig 를 부르고, Windows 는 zig 글로벌 캐시를 RUNNER_TEMP 로 둔다
