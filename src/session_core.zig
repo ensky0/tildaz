@@ -2460,7 +2460,11 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     // 바로 아래 "without OSC keeps default title" 은 그 환경에서도 통과한다 — ConPTY 자체는 산다. 로컬 Windows
     // (이 머신들) 에서는 3 초 안에 늘 통과하므로 러너에서만 건너뛴다. 러너의 OpenConsole 이 제목 OSC 를 내지
     // 않는 이유는 따로 보지 않았다 (세션 0 · 대화형 콘솔 없음이 유력).
-    if (testRuntime().envHas("GITHUB_ACTIONS")) return error.SkipZigTest;
+    //
+    // `testRuntime().environ` 은 `.empty` 다 (테스트는 환경을 안 본다 — #451) — 그래서 처음 넣은
+    // `testRuntime().envHas(...)` 는 러너에서도 늘 false 였다. 실제 환경은 Windows 의 전역 블록 (PEB) 으로 읽는다.
+    const os_env: std.process.Environ = .{ .block = if (builtin.os.tag == .windows) .global else .empty };
+    if (os_env.containsConstant("GITHUB_ACTIONS")) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
