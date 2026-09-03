@@ -49,6 +49,11 @@ HOLD_MS=0
 LEAD_IN=8
 OUT=""
 IGNORE_HYGIENE=0
+# #551 A11 — 실제 앱을 N 개 pane 으로 갈라 pane 마다 producer 하나. **Windows 만** (합성 키 분할이
+# `split-panes.ps1`). 앱은 pane 에 barrier 환경변수를 넣지 않으므로 `pane-runner.ps1` 이 barrier
+# 파일을 기다린 뒤 producer 를 띄운다 — N 개가 함께 시작한다. 단축키가 살아야 해서 `config_9.toml`
+# 을 만들고 (`--instance 9`) 끝나면 지운다.
+PANES=1
 
 usage() {
     cat <<'USAGE'
@@ -63,6 +68,8 @@ usage() {
   --lead-in <초>       측정 시작 전 가라앉히는 시간 (기본 8)
   --out <디렉터리>     결과 위치 (기본 dist/stress/shots)
   --ignore-hygiene     위생 점검에 걸려도 강행 (동작 확인용 — 기록용 측정에는 쓰지 않는다)
+  --panes <N>          실제 앱을 N (1 · 2 · 4 · 8) 개 pane 으로 갈라 pane 마다 producer (#551 A11). Windows 만.
+                       phase 이름에 pane 수를 넣어 조건별로 따로 부른다 (덤프 라벨은 workload 다)
 USAGE
 }
 
@@ -77,6 +84,7 @@ while [ $# -gt 0 ]; do
         --lead-in) LEAD_IN="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
+        --panes) PANES="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "모르는 옵션: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -122,6 +130,10 @@ case "$HYG_PLATFORM" in
 esac
 
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }
+case "$PANES" in 1|2|4|8) ;; *) echo "--panes 는 1 · 2 · 4 · 8 만" >&2; exit 2 ;; esac
+if [ "$PANES" != 1 ] && [ "$HYG_PLATFORM" != windows ]; then
+    echo "--panes 는 아직 Windows 만 돌아요 (합성 키 분할이 split-panes.ps1) — Linux · macOS 는 #551 회차의 손 절차" >&2; exit 2
+fi
 [ -x "$STRESS" ] || { echo "tildaz-stress 없음: $STRESS  (먼저 zig build stress)" >&2; exit 1; }
 
 # 이름을 미리 검증한다. 오타 하나로 회차 전부가 날아가지 않게 — 모르는 이름은
@@ -149,8 +161,24 @@ hygiene_check || {
 
 # 복원은 어떤 경로로 끝나든 돌아야 한다 (Ctrl+C 포함) — 안 그러면 CPU 가 performance 인
 # 채로, 창이 내려간 채로 남는다.
-trap hygiene_end EXIT INT TERM
+PANE_CLEANUP=""
+pane_cleanup() { [ -n "$PANE_CLEANUP" ] && rm -f $PANE_CLEANUP; PANE_CLEANUP=""; }
+trap 'hygiene_end; pane_cleanup' EXIT INT TERM
 hygiene_begin
+INSTANCE_ARGS=""
+RUNNER_CMD=""
+BARRIER=""
+if [ "$PANES" != 1 ]; then
+    # config_9 — config_0 복사 · auto_start 끔 · hotkey 는 등록되지 않지만 (stress run) 충돌 여지를 없앤다.
+    _cfgdir="$(cygpath -u "$APPDATA")/tildaz"
+    if [ -f "$_cfgdir/config_9.toml" ]; then echo "config_9.toml 이 이미 있어요 — 사용자 설정일 수 있어 덮지 않아요" >&2; exit 1; fi
+    sed -e 's/^hotkey *=.*/hotkey = "shift+f11"/' -e 's/^auto_start *=.*/auto_start = false/' "$_cfgdir/config_0.toml" > "$_cfgdir/config_9.toml"
+    PANE_CLEANUP="$_cfgdir/config_9.toml $_cfgdir/tildaz_9.log"
+    INSTANCE_ARGS="--instance 9"
+    mkdir -p "$OUT"
+    BARRIER="$OUT/pane-barrier"
+    RUNNER_CMD="powershell -NoProfile -ExecutionPolicy Bypass -File $(native_path "$REPO_ROOT/dist/stress/pane-runner.ps1") $(native_path "$BARRIER") $(native_path "$STRESS")"
+fi
 
 mkdir -p "$OUT"
 
@@ -189,8 +217,24 @@ while [ "$i" -le "$REPEAT" ]; do
         export TILDAZ_STRESS_WORKLOAD
         # 실패해도 남은 회차는 계속 돈다 — 한 회차가 죽었다고 나머지를 버리지 않는다.
         # 그 회차는 로그에 스냅숏을 안 남기므로 표의 회차 수로 드러난다.
-        $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback "$SCROLLBACK" \
-            >/dev/null 2>&1 || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
+        if [ "$PANES" = 1 ]; then
+            $RUN_TIMEOUT "$EXE" -e "$(native_path "$STRESS")" -size 120x40 -scrollback "$SCROLLBACK" \
+                >/dev/null 2>&1 || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
+        else
+            rm -f "$BARRIER"
+            _log_before=$(wc -c < "$LOG" 2>/dev/null | tr -d ' '); [ -n "$_log_before" ] || _log_before=0
+            $RUN_TIMEOUT "$EXE" $INSTANCE_ARGS -e "$RUNNER_CMD $w $TILDAZ_STRESS_BYTES" -size 120x40 -scrollback "$SCROLLBACK" \
+                >/dev/null 2>&1 &
+            _app_pid=$!
+            powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$REPO_ROOT/dist/stress/split-panes.ps1")" -Panes "$PANES" 2>&1 | tr -d '\r'
+            sleep 0.8
+            _have=$(tail -c "+$((_log_before + 1))" "$LOG" 2>/dev/null | grep -o 'has [0-9]* panes' | tail -1 | awk '{print $2}')
+            [ -n "$_have" ] || _have=1
+            if [ "$_have" != "$PANES" ]; then echo "⚠ pane 수 $_have ≠ $PANES ($w $i/$REPEAT) — 이 회차는 버려요" >&2; fi
+            : > "$BARRIER"           # N 개 러너가 함께 시작한다
+            wait "$_app_pid" || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
+            rm -f "$BARRIER"
+        fi
         sleep 1.5
     done
     i=$((i + 1))

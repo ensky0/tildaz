@@ -73,7 +73,18 @@ zig build -Doptimize=ReleaseFast -Dsimd=true
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser --mb 1
 dist/stress/measure-repeat.sh --phase before
 dist/stress/measure-repeat.sh --phase after --workloads zwj,plain
+dist/stress/measure-repeat.sh --phase win-pane8 --panes 8 --workloads plain   # 실제 앱 8 pane (Windows · 아래)
 ```
+
+**`--panes N` (Windows) 은 실제 앱을 N 개 pane 으로 갈라 pane 마다 producer 를 하나씩 띄워요** ([#551](https://github.com/ensky0/tildaz/issues/551) A11 · 2026-09-03).
+앱은 pane 을 만들 때 producer 에 barrier 환경변수 (`TILDAZ_STRESS_START_BARRIER` · `PANE_ID`) 를 넣지 않아서 (그건
+`frame --panes N` 하네스의 내부 TabGroup 몫이에요) `-e` 에 producer 를 직접 넘기면 첫 pane 의 폭포가 분할 전에 흘러요.
+그래서 셋으로 나눠요 — ① [`pane-runner.ps1`](pane-runner.ps1) 을 `-e` 로 넘겨 pane 마다 러너가 barrier 파일을 50 ms 로 기다리고,
+② [`split-panes.ps1`](split-panes.ps1) 이 `SendInput` 으로 분할 (`Ctrl+Shift+→/↓` · `Alt+방향` 포커스 · `Shift+Alt+0` 균등 —
+아래 "120 열은 3 열 상태에서 더 못 갈라요" 의 순서 그대로) 하고 로그 `[pane] … has N panes` 로 수를 확인한 뒤, ③ barrier
+파일을 만들어 N 개가 함께 시작해요. 단축키가 살아야 해서 `config_9.toml` (config_0 복사 · `auto_start = false`) 을 만들고
+`--instance 9` 로 띄우며 끝나면 지워요. 덤프 라벨은 workload 라 **phase 이름에 pane 수를 넣어 조건마다 따로** 불러요.
+Linux · macOS 는 아직 손 절차예요 (합성 키 도구가 platform 별이에요 — #551 macOS 회차는 `mac-input` 으로 했어요).
 
 **`zig build stress` 를 한 번 더 불러야** 해요 — 기본 `zig build` 는 `tildaz-stress` 를
 `zig-out/bin` 에 install 하지 않아서, 예전에 빌드해 둔 producer 가 남아 있으면 그게 그대로 쓰여요.
@@ -362,7 +373,9 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 
 현재는 [#572](https://github.com/ensky0/tildaz/issues/572) / [PR #575](https://github.com/ensky0/tildaz/pull/575)에서
 `closePane`도 제거 전에 남은 출력을 끝까지 드레인하도록 고쳤어요. 실제 앱의 Windows pane 4 · 8을
-각 5회 다시 측정해 모두 `push − drain = 0`을 확인했어요. 다만 scheduler 공정성 측정은 종료 callback을 완료
+각 5회 다시 측정해 모두 `push − drain = 0`을 확인했어요. 2026-09-03 에 `measure-repeat.sh --panes N` (위) 으로
+pane 1 · 2 · 4 · 8 을 5 회씩 다시 잰 회차도 손실이 pane 당 16 byte (ConPTY 종료) 뿐이었어요 — main `1f7d223` ·
+노트북 Ryzen AI 7 350 · 120 Hz · AC · 최고 성능 ([#551 댓글](https://github.com/ensky0/tildaz/issues/551)). 다만 scheduler 공정성 측정은 종료 callback을 완료
 시점으로 쓰지 않아요. `frame --panes N` producer는 마지막 OSC marker가 모든 pane에서 파싱될 때까지 살아 있고,
 그 marker의 `PaneId`별 반영 시점을 비교해 close-time drain이 측정 꼬리를 가리는 일을 막아요 (#574).
 
@@ -548,6 +561,8 @@ Intel i5-1240P · `--repeat 5` · 배경 정리).
 (`split right rejected: pane would be under 20x5`). 3 열에서 균등(`Shift+Alt+0` · `⇧⌘0`) 을 해도
 39 열이라 반으로 가르면 19 열이에요. **120 → 59|59 로 먼저 나누고 각 59 를 다시 갈라야** 29 열 넷이 돼요.
 pane 수는 앱이 남기는 `[pane] … has N panes` 로그로 확인해요 — 거부도 `[pane] … rejected` 로 남아요.
+Windows 는 [`split-panes.ps1`](split-panes.ps1) 이 이 순서 (2: `→` · 4: `→ ↓ Alt+← ↓` · 8: 그 뒤 `→ Alt+↑ → Alt+→ → Alt+↓ →` + 균등)
+를 자동으로 쳐요 — 새 pane 이 활성이 되는 규칙 (`session_core.splitActive`) 에 맞춘 순서라 8 pane 이 4 열 × 2 행 (30x20 근사) 이 돼요.
 
 [#362 에서 실제로 겪은 것들](https://github.com/ensky0/tildaz/issues/362#issuecomment-5154477404)
 이에요.

@@ -2161,6 +2161,13 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
   Linux 0.368 → 0.430 ms 로 pane 수에 비례하지 않는다. Windows 4 · 8 pane 은 중간 pane 종료 전
   ring 을 마저 소화하도록 고친 뒤 120 Hz 에서 다시 잰 유효값이다 ([#572](https://github.com/ensky0/tildaz/issues/572)).
   즉 pane 을 늘려도 밀리는 것은 렌더가 아니라 위의 드레인 공정성이다.
+  **2026-09-03 Windows 자동화 재측정** (main `1f7d223` · 노트북 Ryzen AI 7 350 · 120 Hz · AC · 최고 성능 ·
+  `measure-repeat.sh --panes N` — barrier 러너로 N 개 producer **동시** 시작 · `split-panes.ps1` 로 4 열 × 2 행 분할 ·
+  `plain` 64 MiB/pane · 5 회 절사평균, [#551 댓글](https://github.com/ensky0/tildaz/issues/551)): `render/call` 이
+  1 · 2 · 4 · 8 pane 에서 **0.655 · 0.494 · 0.431 · 1.373 ms**, drain 141 · 350 · 853 · 2150 ms (8 pane 의 5 회 폭 2 %),
+  손실은 pane 당 16 byte (ConPTY 종료) 뿐. 1 · 4 pane 은 #572 회차와 같은 값인데 **8 pane 은 1.373 vs 0.894 로 갈린다** —
+  #572 회차의 격자 · 분할 순서 · 시작 동시성이 기록에 없어 원인은 **확인 필요** (후보: barrier 동시 시작이 8 producer 의
+  폭포를 한 프레임에 겹치게 한다). 8 pane 흔들림 (#583 A11 의 하네스 이봉 분포) 은 실제 앱에서 재현되지 않았다.
 
 합계 처리량은 격자를 고정했는데도 pane 수가 늘면 내려간다 (pane 하나의 몫이 아니라 합계다) — 격자 변화가 아니라
 producer · PTY · ring 경쟁 때문이다. `frame` 층은 프레임마다 한 번만 드레인해 (사양 A 없음) 앱의 하한이다.

@@ -737,6 +737,9 @@ dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
 - **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
   누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
   감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
+  **`switch` 의 출력도 같아요** — `$seq = switch ($n) { 2 { @(,$chord) } }` 는 파이프라인을 지나며 풀려 `@(17, 16, 39)` 가
+  돼요 (2026-09-03 `split-panes.ps1` — pane 2 회차 5 회가 전부 분할 실패). 블록 안에서 `$seq = ,$chord` 로 **직접 대입**해요.
+  단항 콤마 · 직접 대입 뒤에는 `$seq.Count` 와 `$seq[0] -is [array]` 를 한 번 찍어 보고 시작해요.
 - **다른 창이 tildaz 창을 덮고 있으면 `SetForegroundWindow` 도 창 중앙 클릭도 안 닿아요** — 사용자가 브라우저를 앞에 두고
   머지하던 회차에서 포커스 가드가 막았어요. 도구들은 잠깐 `HWND_TOPMOST` 로 올려 활성화하고 끝나면 내려요.
 - **`ToUnicodeEx` 는 상태 불변 플래그 (bit 2) 로 부르면 dead key 에도 글자 (`'`) 를 돌려줘요** — 반환값으로 dead key 를
