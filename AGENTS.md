@@ -1163,6 +1163,26 @@ grim shot.png                                                          # sway �
   위→아래로 흘러가는 비율) 이 아니라 위치와 무관한 일정 비율이라 **`bands-check` 의 "여러 종류" 를 곧 #539 재발로 읽지
   말아요** — 순서 (`위→아래 순서:` 줄) 가 단조인지, 값이 절반 (125) 근처로 일정한지 봐요. nested headless 출력에서는 이게
   안 나와서 실제 출력 회차가 필요했어요.
+- **Cinnamon 은 `org.Cinnamon.Eval` 이 열려 있어요 — 전역 hotkey 측정이 사용자 손 없이 돼요** (2026-09-04 · #616).
+  GNOME 의 `org.gnome.Shell.Eval` 은 막혀 있지만 (`AccessDenied`) Cinnamon 은 그대로 답해요. 셸 내부 상태를 읽고
+  **Clutter 가상 입력 장치로 실제 키를 넣을 수 있어요** — compositor 가 잡는 전역 단축키도 이 경로로 발화해요.
+
+    ```sh
+    G() { gdbus call --session --dest org.Cinnamon --object-path /org/Cinnamon --method org.Cinnamon.Eval "$1"; }
+    G "[...Main.keybindingManager.bindings.entries()].map(([id,b])=>id+':'+b.name+'='+b.bindings).join(' | ')"
+    G "const C=imports.gi.Clutter; const d=C.get_default_backend().get_default_seat().create_virtual_device(C.InputDeviceType.KEYBOARD_DEVICE);
+       const t=global.get_current_time()*1000; d.notify_keyval(t,C.KEY_F9,C.KeyState.PRESSED); d.notify_keyval(t+20000,C.KEY_F9,C.KeyState.RELEASED); 'sent'"
+    G "imports.ui.extension.reloadExtension('tildaz@ensky0.github.io', imports.ui.extension.Type.EXTENSION); 'reloaded'"
+    ```
+
+  - **바인딩 등록 순서는 `bindings` Map 의 순서 (= action id 순)** 로 읽어요. 같은 조합이 둘이면 **먼저 등록된 쪽만
+    발화해요** (#616 실측 — 새 이름 두 쌍으로 순서를 뒤집어 확인). 이름이나 나중 등록이 아니라 **순서**예요.
+  - **경쟁자가 단독으로 발화하는지 먼저 확인해요.** 그 대조군이 없으면 "우리가 이겼다" 와 "경쟁자 배선이 고장" 을
+    못 갈라요 — 2026-09-04 에 그것 때문에 세 회차를 잘못 읽었어요 (dconf custom keybinding 을 경쟁자로 썼는데
+    그쪽이 발화하는지 따로 재지 않았어요).
+  - **테스트 잔재가 다음 회차를 오염시켜요.** `custom-list` 를 비워도 Cinnamon 이 이미 등록한 바인딩을 떼지 않는
+    경우가 있어요 (실측). 회차마다 `Main.keybindingManager.removeHotKey(<이름>)` 로 직접 떼고, `bindings` 목록으로
+    비었는지 확인하고 시작해요.
 - **⚠️ nested cosmic-comp 은 가상 키보드로 보낸 키를 *compositor 단축키*로 처리하지 않아요** (2026-09-04 실측).
   `zwp_virtual_keyboard_manager_v1` 을 내주고 그 키가 **창에는 정상으로 닿는데** (foot 에 타이핑됨),
   `Super+q` (기본 Close) 도 우리 `custom` Spawn 도 발화하지 않았어요. 그래서 **COSMIC 의 단축키 우선순위 같은
