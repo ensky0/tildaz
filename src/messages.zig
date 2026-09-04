@@ -239,8 +239,24 @@ pub const size_needs_layer_shell_msg =
 pub const size_error_fallback_msg =
     "tildaz: \"-size\" cannot be honored on this screen.";
 
+/// `runFailureMessage` 가 담긴 config 문구를 쓰는 상황인지. **판단을 여기 한 곳에 둔다** —
+/// host 는 이 답으로 "이미 나간 문구를 또 내지 않기" 를 결정한다. `publishFatalNotice` 가 담는
+/// 순간 stderr + 로그에 이미 냈으므로, host 가 다시 내면 사용자가 같은 문구를 **두 번** 본다
+/// (#583 B7 첫 실기에서 그랬다 — worker 경로는 예전부터 다시 내지 않는다).
+pub fn usesConfigNotice(err: anyerror, config_notice: ?[]const u8) bool {
+    return err == error.InvalidConfig and config_notice != null;
+}
+
 /// run/launcher 오류를 세 platform에서 같은 사용자 문구로 변환한다.
-pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
+///
+/// `config_notice` — `config.pendingFatalNotice()` 의 값 (없으면 `null`). config 오류로 죽은
+/// 것이면 그 문구가 **더 정확하다** (경로 · 줄 · 열 · 오류) 라서 그것을 그대로 보여 준다.
+/// #583 B7 전에는 launcher 가 이 자리에서 `TildaZ failed to start. Error: UnexpectedToken` 만
+/// 보여 줬는데, worker 는 같은 파일의 같은 오류에 `Line 12, column 3` 까지 알려 줬다.
+/// `error.InvalidConfig` 로만 좁힌 이유는, 담긴 문구가 있어도 그 뒤 다른 원인으로 죽었으면
+/// 그 원인을 가려서는 안 되기 때문이다.
+pub fn runFailureMessage(buf: []u8, err: anyerror, config_notice: ?[]const u8) []const u8 {
+    if (usesConfigNotice(err, config_notice)) return config_notice.?;
     return switch (err) {
         error.RequestEndpointUnavailable => request_endpoint_unavailable_msg,
         error.WorkerExitedBeforeEndpointReady => worker_exited_before_endpoint_ready_msg,
@@ -251,32 +267,50 @@ pub fn runFailureMessage(buf: []u8, err: anyerror) []const u8 {
     };
 }
 
+test "#583 B7 config 파싱 오류는 담긴 상세 문구를 그대로 보여 준다" {
+    var buf: [256]u8 = undefined;
+    // launcher 가 config 를 읽다 죽은 경우 — `recordTomlParseFatal` 이 담아 둔 문구다.
+    const notice = "Config: /home/user/.config/tildaz/config_0.toml\n\n" ++
+        "Failed to parse config file.\n\nLine 12, column 3\nError: UnexpectedToken";
+    try std.testing.expectEqualStrings(notice, runFailureMessage(&buf, error.InvalidConfig, notice));
+    // 담긴 것이 없으면 일반 문구 (파싱이 아닌 의미 오류로 `InvalidConfig` 가 오는 경로).
+    try std.testing.expectEqualStrings(
+        "TildaZ failed to start.\n\nError: InvalidConfig",
+        runFailureMessage(&buf, error.InvalidConfig, null),
+    );
+    // 다른 원인으로 죽었으면 담긴 config 문구가 그 원인을 **가리지 않는다.**
+    try std.testing.expectEqualStrings(
+        "TildaZ failed to start.\n\nError: ExampleFailure",
+        runFailureMessage(&buf, error.ExampleFailure, notice),
+    );
+}
+
 test "request endpoint run errors have specific user messages" {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings(
         request_endpoint_unavailable_msg,
-        runFailureMessage(&buf, error.RequestEndpointUnavailable),
+        runFailureMessage(&buf, error.RequestEndpointUnavailable, null),
     );
     try std.testing.expectEqualStrings(
         worker_exited_before_endpoint_ready_msg,
-        runFailureMessage(&buf, error.WorkerExitedBeforeEndpointReady),
+        runFailureMessage(&buf, error.WorkerExitedBeforeEndpointReady, null),
     );
     try std.testing.expectEqualStrings(
         request_endpoint_ready_timeout_msg,
-        runFailureMessage(&buf, error.RequestEndpointReadyTimeout),
+        runFailureMessage(&buf, error.RequestEndpointReadyTimeout, null),
     );
     // #577 — 첫 기동이 화면 없이 끝난 경우. 예전에는 generic
     // `"Error: WorkerStartTimeout"` 이었고 그것도 10 초 뒤였다.
     try std.testing.expectEqualStrings(
         worker_exited_during_startup_msg,
-        runFailureMessage(&buf, error.WorkerExitedDuringStartup),
+        runFailureMessage(&buf, error.WorkerExitedDuringStartup, null),
     );
     // 이 문구는 사용자에게 **무엇을 볼지** 말해야 한다 — 여기까지 온 실행은 화면에
     // 아무것도 남기지 않았으므로 단서가 로그뿐이다.
     try std.testing.expect(std.mem.indexOf(u8, worker_exited_during_startup_msg, "log") != null);
     try std.testing.expectEqualStrings(
         "TildaZ failed to start.\n\nError: ExampleFailure",
-        runFailureMessage(&buf, error.ExampleFailure),
+        runFailureMessage(&buf, error.ExampleFailure, null),
     );
 }
 
