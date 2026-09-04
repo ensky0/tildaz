@@ -1012,48 +1012,46 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo 👋🏻👋🏼👋🏽👋🏾👋🏿 && echo 👨‍👩‍👧👨‍👨‍👦‍👦 && echo ABCDEFG abcdefg 0123456789 && echo 한글 ABC 가나다라마바사 && echo ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏ && echo ▐░▒▓▔▕ && echo.
 ```
 
-# `config_N.toml` 이 없는 실행에는 창 안 단축키가 하나도 없어요
+# `config_N.toml` 이 없는 실행 — 예전엔 창 안 단축키가 0 개였어요 ([#620](https://github.com/ensky0/tildaz/issues/620) 에서 고쳤어요)
 
-**조건은 `-e` 가 아니라 "그 회차가 뜰 때 config 파일이 없었다" 예요.** `Ctrl+Shift+T` ·
-`Ctrl+Shift+W` · `Cmd+T` 같은 창 안 단축키가 **0 개**인 채로 돌아요. 세 platform 공통이고,
-버그가 아니라 두 규칙이 맞물린 결과예요.
+**2026-09-04 이후로는 파일이 없어도 기본 단축키가 그대로 들어요.** `Config.defaultOwned` 가
+`fillDefaultKeyBindings` 로 `parse` 와 **같은 기본값**을 채워요. 아래는 그 전에 무엇이 왜 안 됐는지의
+기록이에요 — 옛 빌드로 검증하거나 비슷한 증상을 만나면 여기를 보세요.
 
-- **config 파일이 없는 경로가 `[keys]` 를 채우지 않아요.** `Config.load` 는 파일이 없으면
-  `defaultOwned` 로 가는데 그 함수가 `key_bindings` · `key_binding_count` 를 건드리지 않아서
-  `Config{}` 의 기본값 `key_binding_count = 0` 이 그대로 남아요. 바인딩을 채우는 것은 `parse`
-  안의 루프뿐이고, 그 안의 `defaultBindings(action)` fallback 도 **파일을 파싱하는 경로에만**
-  있어요.
-- **측정 인스턴스 (`-e`) 가 대표 사례일 뿐이에요.** 그쪽은 *일부러* config 를 만들지 않아서
-  ([#382](https://github.com/ensky0/tildaz/issues/382) — *"측정이 사용자 설정을 만드는 주체가 되면
-  안 된다"*, `config.zig` 의 `Config.load` 주석) 매번 걸려요.
+<details>
+<summary>고치기 전 동작 (#620 · 2026-09-04 이전 빌드)</summary>
 
-**⚠️ `-e` 없이 새 인스턴스를 처음 띄우는 회차도 그대로 걸려요.** 앱이 파일을 *만들기는* 하지만
-**그 회차의 메모리 config 는 이미 빈 채**예요. 그래서 **한 번 띄웠다 내리고 다시 띄우면** 그때부터
-정상이에요. 2026-08-29 [#483](https://github.com/ensky0/tildaz/issues/483) macOS 회차에서 이것으로
-걸렸어요 — `⌘T` 조차 안 먹는데 문자 키 (`h` → `ㅗ`) 는 정상이라 포커스 문제도 아니어서 한참 갈랐어요.
-그 전까지 이 절의 제목이 `-e` 로 좁혀져 있어서 해당 없다고 읽혔던 것이 원인이에요.
+**조건은 `-e` 가 아니라 "그 회차가 뜰 때 config 파일이 없었다" 였어요.** `Ctrl+Shift+T` ·
+`Ctrl+Shift+W` · `Cmd+T` 같은 창 안 단축키가 **0 개**인 채로 돌았어요. 세 platform 공통이었어요.
 
-**그래서 단축키를 쓰는 검증은 config 를 먼저 만들어 두고 시작해요** (아래 `# 실행 환경` 의 `--instance 9`
-절차). 파일이 있으면 `-e` 여도 정상이에요 — `-e` 가 config 를 *읽는* 것은 막지 않아요.
+- **config 파일이 없는 경로가 `[keys]` 를 채우지 않았어요.** `Config.load` 는 파일이 없으면
+  `defaultOwned` 로 가는데 그 함수가 `key_bindings` · `key_binding_count` 를 건드리지 않아
+  `key_binding_count = 0` 이 그대로 남았어요. 바인딩을 채우는 것은 `parse` 안의 루프뿐이었고,
+  그 안의 `defaultBindings(action)` fallback 도 **파일을 파싱하는 경로에만** 있었어요.
+- **`-e` 없이 새 인스턴스를 처음 띄우는 회차도 걸렸어요.** 앱이 파일을 *만들기는* 하지만 **그 회차의
+  메모리 config 는 이미 빈 채**였어요. 그래서 **한 번 띄웠다 내리고 다시 띄우면** 그때부터 정상이었어요.
+- **합성 입력 문제로 오진하기 쉬웠어요.** 2026-08-26 [#506](https://github.com/ensky0/tildaz/issues/506)
+  Windows 검증에서 `SendInput` 을 세 방식으로 보내도 무반응이라 injection 을 의심하며 시간을 썼고,
+  같은 회차의 macOS 에서도 `Cmd+T` 가 안 먹어 사용자가 `+` 를 클릭했어요. 2026-08-29
+  [#483](https://github.com/ensky0/tildaz/issues/483) macOS 회차도 같은 자리에서 걸렸어요 — `⌘T` 조차
+  안 먹는데 문자 키는 정상이라 포커스 문제도 아니어서 한참 갈랐어요.
 
-**합성 입력 문제로 오진하기 쉬워요.** 2026-08-26 [#506](https://github.com/ensky0/tildaz/issues/506)
-Windows 검증에서 VK-only · VK+scancode · scancode-only 세 방식으로 `SendInput` 을 보내도
-무반응이라 injection 을 의심하며 시간을 썼어요. 같은 회차의 macOS 에서도 `Cmd+T` 가 안 먹어
-사용자가 `+` 를 클릭했어요 — 원인은 같아요.
+</details>
 
-**탭 수를 바꾸는 다른 진입점이 있어요.** 창 오른쪽 위 컨트롤 스트립이 `+` (새 탭) · `×` (활성 탭
-닫기) · `⋯` (메뉴) 순서라, 마우스 클릭으로 탭을 만들고 닫을 수 있어요. 탭 수 변화를 보는 검증
-(예: `-size` 가 탭바만큼 창을 키우는지) 에는 단축키와 동등해요.
+**측정 인스턴스 (`-e`) 는 지금도 config 파일을 만들지 않아요** ([#382](https://github.com/ensky0/tildaz/issues/382)
+— *"측정이 사용자 설정을 만드는 주체가 되면 안 된다"*). 달라진 것은 **그 회차도 기본 단축키를 갖는다**는
+것뿐이라, 이제 `-e` 로 띄운 창에서도 `Ctrl+Shift+T` 가 먹어요.
 
-단축키 자체를 써야 하면 **`-e` 없이 한 번 띄워 config 를 만든 뒤** 측정 인스턴스를 띄워요.
+**회귀 검사는 [`dist/linux/headless-check.sh first-run`](dist/linux/headless-check.sh)** 이에요 — 빈
+`XDG_CONFIG_HOME` 으로 띄워 `Ctrl+Shift+T` 를 보내고 새 셸이 생기는지 봐요. 고치기 전 판은 탭이 1 개,
+고친 판은 2 개예요 (로그의 `[tab] shell exited` 수로도 갈려요).
 
-```sh
-tildaz --instance 9              # config_9.toml 생성 (뜬 뒤 바로 내려요)
-tildaz --instance 9 -e /bin/bash -size 88x33 &
-```
+⚠️ **그 회차의 마커 파일 경로는 짧게 잡아요.** 가상 키보드가 글자당 ~25 ms 라 90 자짜리 경로는 타이핑에
+2.3 초가 걸려요 — 고정 `sleep 2` 뒤에 판정하면 **새 탭이 열렸는데도** 파일이 아직 없어서 거짓 FAIL 이
+나요 (2026-09-04 에 실제로 그렇게 오판했다가 캡처의 탭 2 개를 보고 알았어요). 판정은 대기 루프로 해요.
 
-⚠️ 이렇게 만든 `config_9.toml` 은 **끝나면 지워요** — 안 지우면 사용자 로그온 때 그 인스턴스가
-같이 떠요 (위 `# Windows — 키보드 layout 조회 실측 방법` 절의 같은 주의).
+**탭 수를 바꾸는 다른 진입점도 있어요.** 창 오른쪽 위 컨트롤 스트립이 `+` (새 탭) · `×` (활성 탭 닫기) ·
+`⋯` (메뉴) 순서라 마우스 클릭으로도 탭을 만들고 닫을 수 있어요.
 
 # Linux — headless sway · nested compositor 로 합성 입력 · 다이얼로그 · 배율을 자동 검증하는 법
 
@@ -1265,8 +1263,9 @@ tildaz --instance 1 -e <zig-out/bin/render-test> -size 88x33 &
   그래서 출력할 내용을 담은 **스크립트 파일**을 만들어 넘겨요. 스크립트 끝에 `sleep` 을 둬야
   창이 남아요 (`-e` 로 띄운 프로세스가 끝나면 앱도 끝나요).
 - **`--instance 1` 을 써요.** 평소 쓰는 daily 인스턴스 (`--instance 0`) 를 건드리지 않아요.
-- **단축키는 안 먹어요** — 위 `# config_N.toml 이 없는 실행에는 창 안 단축키가 하나도 없어요` 절. 탭을
-  만들거나 닫아야 하면 컨트롤 스트립의 `+` / `×` 를 클릭해요.
+- **단축키는 이제 먹어요** ([#620](https://github.com/ensky0/tildaz/issues/620) · 2026-09-04) — config 파일이 없어도
+  기본 바인딩이 들어가요. 그 전 빌드에서는 0 개였어요 (위 `# config_N.toml 이 없는 실행` 절). 마우스로 하려면
+  컨트롤 스트립의 `+` / `×` 를 클릭해요.
 - 입력은 **`printf` 로 UTF-8 byte 를 직접** 내요 — 편집기 · 클립보드가 cluster 를 정규화해
   버리는 것을 피해요.
 - 화면 배치는 **`[cluster]` … `base [기본문자]` 좌우 대조**로 만들어요. **좌우가 같아 보이면

@@ -1017,6 +1017,36 @@ test "#496 위치 표기 파싱" {
     );
 }
 
+test "#620 config 파일이 없는 실행도 창 안 단축키를 갖는다" {
+    // 파일이 없거나 못 읽으면 `Config.load` 가 `defaultOwned` 로 떨어진다. 그 회차도 `parse` 와 **같은**
+    // 기본 바인딩을 가져야 한다 — 예전에는 0 개라 첫 실행에서 새 탭 · 복사 · 분할이 전부 안 먹었다.
+    const shell = try std.testing.allocator.dupe(u8, "/bin/bash");
+    var c = Config.defaultOwned(std.testing.allocator, shell);
+    defer c.deinit(std.testing.allocator);
+
+    // 위 테스트가 고정한 기본값 개수와 같아야 한다 — 두 길이 갈리면 여기서 걸린다.
+    var expected: usize = 0;
+    for (std.enums.values(KeyAction)) |action| expected += defaultBindings(action).len;
+    try std.testing.expectEqual(expected, @as(usize, c.key_binding_count));
+    try std.testing.expect(c.key_binding_count > 0);
+
+    // 대표 하나 — 새 탭이 실제로 들어 있고 액션이 맞는지 (개수만 보면 엉뚱한 값이 채워져도 통과한다).
+    const new_tab_text = defaultBindings(.new_tab)[0];
+    const parsed = switch (parseHotkeyString(new_tab_text, .app_binding)) {
+        .ok => |v| v,
+        else => return error.TestUnexpectedResult,
+    };
+    const want = Hotkey.fromParsed(parsed);
+    var found = false;
+    for (c.key_bindings[0..c.key_binding_count]) |b| {
+        if (std.meta.eql(b.hotkey, want)) {
+            try std.testing.expectEqual(KeyAction.new_tab, b.action);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "#493 default [keys] has no conflicting bindings" {
     // 액션 → 키 방향을 택한 대가로 충돌 감지가 우리 몫이다 (키 → 액션이면 TOML 이
     // 중복 키로 잡아 준다). 기본값끼리 충돌하면 첫 실행부터 fatal 이므로 고정한다.
@@ -2681,7 +2711,36 @@ pub const Config = struct {
         for (c.font_families[0..c.font_family_count]) |*f| {
             f.* = allocator.dupe(u8, f.*) catch f.*;
         }
+        fillDefaultKeyBindings(&c);
         return c;
+    }
+
+    /// [#620](https://github.com/ensky0/tildaz/issues/620) — 기본값 경로에도 **창 안 단축키**를 채운다.
+    ///
+    /// config 를 만드는 길이 둘인데 예전에는 한쪽만 채웠다. `parse` 는 액션마다 `[keys]` 에 있으면 그
+    /// 값을, 없으면 `defaultBindings(action)` 을 넣는다. `defaultOwned` 는 그 자리를 통째로 건너뛰어
+    /// `key_binding_count` 가 0 이었고, **config 파일이 없는 첫 실행은 새 탭 · 복사 · 붙여넣기 · 분할이
+    /// 하나도 안 먹었다** (전역 hotkey 는 따로 채워서 멀쩡했으므로 "창 안에서만 안 먹는" 증상이었다).
+    /// 조건은 `-e` 가 아니라 *파일이 있었는지*라 보통 사용자의 첫 실행도 걸렸고, 한 번 내렸다 다시
+    /// 띄우면 그때부터 정상이라 재현이 헷갈렸다 (#483 · #506 · #555 가 각각 여기 걸렸다).
+    ///
+    /// 파싱 실패를 조용히 건너뛰는 이유: 여기 오는 문자열은 우리 상수뿐이고
+    /// `test "#493 default [keys] has no conflicting bindings"` 가 40 개 전부 파싱되고 충돌하지 않음을
+    /// 고정한다. 사용자 입력이 아니므로 알릴 대상도 없다.
+    fn fillDefaultKeyBindings(config: *Config) void {
+        var count: usize = 0;
+        for (std.enums.values(KeyAction)) |action| {
+            for (defaultBindings(action)) |text| {
+                if (count >= MAX_KEY_BINDINGS) break;
+                const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                    .ok => |v| v,
+                    else => continue,
+                };
+                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+                count += 1;
+            }
+        }
+        config.key_binding_count = @intCast(count);
     }
 
     fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) LoadError!Config {
