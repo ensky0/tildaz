@@ -559,12 +559,6 @@ test "#619 전면 점유 축은 격자에 맞추지 않는다 (화면에 붙는 
     try std.testing.expectEqual(@as(u32, 1037), snapWantToDeviceGrid(1037, 0, s125, false));
 }
 
-/// #619 — 여백 (i32) 용 격자 맞춤. 내림이라 시작 여백이 커져 반대편이 음수가 되는 일이 없다.
-fn snapLogicalOffset(offset: i32, scale_num: u32) i32 {
-    if (offset <= 0) return offset;
-    return @intCast(snapLogicalToDeviceGrid(@intCast(offset), scale_num, false));
-}
-
 /// L8-β — cross-axis margin 계산. `remaining = screen_dim - surface_dim` 의
 /// `offset_percent` 비율만큼 한 쪽 (`anchor` 잡힌 edge) 에 띄움. 음수 방지.
 fn pxOffset(remaining: i32, off_pct: f32) i32 {
@@ -3042,12 +3036,21 @@ const Client = struct {
         const margin_h_extra = sw_i - want_w_i; // 남는 공간 (가로)
         const margin_v_extra = sh_i - want_h_i; // 남는 공간 (세로)
         // cross-axis (docked 축이 아닌 축) — 남는 공간을 offset_percent 로 분배.
-        // #619 — 여백도 격자 위여야 한다. 크기가 격자 위여도 시작 여백이 격자를 벗어나면 표면의 device
-        // *위치* 가 소수 픽셀에 걸려 같은 리샘플이 난다. 남는 공간 (`margin_*_extra`) 은 격자 위 값들의
-        // 차라 이미 격자 위이므로, 시작 쪽만 맞추면 반대쪽 (`extra - 시작`) 도 따라온다.
-        const ml = snapLogicalOffset(pxOffset(margin_h_extra, off_pct), self.preferred_scale);
+        // #619 — **여백은 격자에 맞추지 않는다.** 한때 맞췄는데 (표면의 device *위치* 도 격자 위여야
+        // 리샘플이 없다는 생각이었다) 두 가지가 실측으로 뒤집혔다 (2026-09-04 · KDE 6.7.4 · 1.7x ·
+        // `width_percent = 50` · `offset_percent = 100`):
+        //
+        //   ① **창이 화면 edge 에서 떨어졌다.** 남는 공간 1129 논리 px 가 격자 (10) 로 내려가 1120 이
+        //      되고 반대쪽에 9 논리 px (≈15 물리 px) 이 남았다 — `offset_percent = 100` 은 "오른쪽에
+        //      붙인다" 는 뜻이라 그 여백은 곧 어긋남이다 (사용자가 화면에서 바로 알아봤다).
+        //   ② **얻는 것이 없었다.** 붙인 회차의 띠 화면도 전이 행 0 개다 — buffer 크기가 목적지와
+        //      맞으면 (그것이 `snapWantToDeviceGrid` 의 일) 원점의 소수부는 리샘플을 만들지 않는다.
+        //
+        // 애초에 맞출 수도 없다 — KWin 의 논리 화면이 격자 위가 아니므로 (2259 × 1.7 = 3840.3) edge 에
+        // 붙은 창의 원점은 어떤 여백을 골라도 소수다.
+        const ml = pxOffset(margin_h_extra, off_pct);
         const mr = margin_h_extra - ml;
-        const mt = snapLogicalOffset(pxOffset(margin_v_extra, off_pct), self.preferred_scale);
+        const mt = pxOffset(margin_v_extra, off_pct);
         const mb = margin_v_extra - mt;
         // docked 축 — 붙는 edge 는 margin 0, 반대 edge 가 남는 공간 전부.
         return switch (cfg.dock_position) {
@@ -10865,10 +10868,6 @@ test "#619 논리 크기는 물리 픽셀 격자에 맞춰진다 (논리 × scal
     // 0 과 scale 없음은 그대로 (계산 전 구간에서도 안전해야 한다).
     try std.testing.expectEqual(@as(u32, 0), snapLogicalToDeviceGrid(0, s125, false));
     try std.testing.expectEqual(@as(u32, 1037), snapLogicalToDeviceGrid(1037, 0, false));
-    // 여백 래퍼는 내림이라 반대편 여백이 음수가 되지 않는다.
-    try std.testing.expectEqual(@as(i32, 1036), snapLogicalOffset(1037, s125));
-    try std.testing.expectEqual(@as(i32, 0), snapLogicalOffset(0, s125));
-    try std.testing.expectEqual(@as(i32, -5), snapLogicalOffset(-5, s125));
 }
 
 test "#539 buffer 크기는 0 에서 먼 쪽으로 반올림한다 (내림이 아니다)" {
