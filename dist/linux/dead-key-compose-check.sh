@@ -100,7 +100,8 @@ TZ_PID=\$!
 sleep 4
 echo "tildaz pid=\$TZ_PID alive=\$(kill -0 \$TZ_PID 2>/dev/null && echo yes || echo no)"
 # 단일 wtype 타임라인 — 기대 바이트는 아래 EXPECT.
-#   Ctrl+C (기준선) · ^e · ^space · ^^ · ^x (버림) · a · ^ Enter e (조합 버림) · ^ Ctrl+C e (조합 버림, 03 보존)
+#   Ctrl+C (기준선) · ^e · ^space · ^^ · ^x (버림) · a · ^ Enter e (조합 + Enter 까지 버림 · #626) ·
+#   ^ Ctrl+C e (Ctrl 키는 compose 를 안 거치므로 03 보존)
 #   dead_grave space · dead_acute e · dead_diaeresis u · Enter
 wtype -s 500 \\
   -M ctrl -k c -m ctrl -s 300 \\
@@ -263,7 +264,9 @@ else
 fi
 echo "--- PTY bytes (hex)"
 GOT=$(xxd -p "$T/pty.bin" 2>/dev/null | tr -d '\n')
-EXPECT="03c3aa5e5e610d65036560c3a9c3bc0dc3aa0d"
+# #626 — `^` 다음 Enter 는 **Enter 까지 삼킨다** (`CANCELLED`). libX11 · foot · kitty · GTK 와 같은
+# 관례이고 (2026-09-05 조사 · 같은 기기의 foot 실측으로 확인), 그래서 `a` (61) 다음에 `0d` 이 없다.
+EXPECT="03c3aa5e5e6165036560c3a9c3bc0dc3aa0d"
 echo "EXPECT $EXPECT"
 echo "GOT    ${GOT:-(empty)}"
 if [[ "$GOT" == "$EXPECT" && "$IME_LINES" == "0" && "$PREVIEW_OK" == "1" ]]; then

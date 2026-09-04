@@ -952,7 +952,11 @@ Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496
       **— 상태는 OS (스레드 키보드 상태) 가 들므로 탭 · pane 전환 · 포커스 이탈에 표시를 지우지 않는다.** 지우면 상태와 어긋난다
       (전환 뒤 다음 글자가 그대로 조합된다). 표시는 다음 `WM_CHAR` (조합 결과든 조합 불가의 두 글자든) 가 지우고, 새 dead key 가
       바꾼다. OS 상태까지 버릴지 (`ToUnicodeEx` 를 상태 변경으로 한 번 불러 소비) 는 결정 대기.
-- **compose 를 거치지 않은 키가 끼면 조합을 버린다** (`composeReset`). `^` → Enter → `e` 는 `\r` `e` 다. modifier 키 자체 (Shift 를 누르는 것) 는 libxkbcommon 이 IGNORED 로 받아 상태를 지킨다 — `^` → Shift+`e` → `Ê`.
+- **조합을 깨는 키는 그 키까지 삼킨다** ([#626](https://github.com/ensky0/tildaz/issues/626) 2026-09-05 확정). `^` 다음에 이어지지 않는 키가 오면 (`x` 든 Enter 든) libxkbcommon 이 `CANCELLED` 를 주고, 우리는 조합과 **그 키를 함께 버린다** — `^` → Enter → `e` 는 `e` 다 (Enter 를 한 번 더 눌러야 줄이 실행된다).
+
+    이 선택은 관례를 따른 것이다. `xkbcommon-compose.h` 는 세 방법 (삼킨다 · 흘려보낸다 · 시퀀스를 재생한다) 을 제시하고 *"사용자 기대에 맞는 것을 고르라"* 며 **libX11 은 삼킨다**고 적는다. 실제 구현도 그쪽이다 — [foot](https://codeberg.org/dnkl/foot/src/branch/master/input.c) 은 `if (compose_status == XKB_COMPOSE_CANCELLED) goto maybe_repeat;`, [kitty](https://github.com/kovidgoyal/kitty/blob/master/glfw/xkb_glfw.c) 는 `case XKB_COMPOSE_CANCELLED: return XKB_KEY_NoSymbol;` 뒤 early return, [GTK](https://github.com/GNOME/gtk/blob/main/gtk/gtkimcontextsimple.c) 는 부분 일치가 없으면 `handle_invalid_composition` 으로 삼킨다 (비프). **2026-09-05 실측**: 같은 기기의 foot 에 `^` Enter `e` Enter 를 넣으면 PTY 로 `65 0d` 만 간다 (Enter 삼킴).
+
+    예외는 **compose 를 아예 거치지 않는 키**다. Ctrl / Alt 가 붙은 키는 위 규칙대로 feed 하지 않으므로 조합 중에도 그대로 나간다 — `^` → `Ctrl+C` → `e` 는 `\x03` `e` 이고, 조합은 `processKeyEvent` 의 `defer` 가 버린다. modifier 키 자체 (Shift 를 누르는 것) 는 libxkbcommon 이 IGNORED 로 받아 상태를 지킨다 — `^` → Shift+`e` → `Ê`.
 - 상태별 동작: `NOTHING` → 기존 utf8 경로 · `COMPOSING` → 아무것도 안 보냄 · `COMPOSED` → 결과 바이트 · `CANCELLED` (`^` 다음 `x`) → **둘 다 버림**. X11 · xterm 관례다 — GTK 만 `^x` 를 내는데 Compose 표 밖의 별도 규칙이라 채택하지 않았다.
 - key repeat 은 press 와 같은 경로라 `^` 를 누르고 있으면 `<dead_circumflex><dead_circumflex>` → `^` 가 두 번마다 하나 — X 앱과 같다.
 - **locale** 은 `LC_ALL` → `LC_CTYPE` → `LANG` (libxkbcommon 규약). 그 표가 없으면 `en_US.UTF-8` 로 한 번 더 시도한다 — X11 `compose.dir` 이 거의 모든 UTF-8 locale 을 그 파일로 보낸다. libxkbcommon 1.12+ 의 자체 fallback 은 C 라이브러리가 아는 locale 에만 적용된다 (실측 1.13.1: 미설치 `xx_XX.UTF-8` 은 `XKB-679` 에러 + `NULL` — 우리 재시도가 있어야 조합이 살았다). 둘 다 없으면 (Compose 파일 미설치 — Debian 계열 `libx11-data`) 로그 한 줄 (`compose table unavailable`) 을 남기고 종전처럼 동작한다. 사용자 `~/.XCompose` · `$XDG_CONFIG_HOME/XCompose` 도 libxkbcommon 이 읽는다.
