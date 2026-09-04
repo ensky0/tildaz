@@ -231,8 +231,13 @@ function enable() {
   // (다음 로그인까지). 그건 원래 증상 ("hotkey 가 조용히 안 먹는다") 보다 나쁘다 — 사용자는 원인을
   // 고쳤는데 앱이 여전히 안 뜬다.
   //
-  // 남는 갭: **이미 있는 custom 단축키의 accel 을 제자리에서 고치는 것**은 이 세 스키마의 `changed`
-  // 로 오지 않아 (그 값은 개별 경로에 있다) 그 경우엔 재로그인이 필요하다.
+  // **개별 항목의 `binding` 은 감시하지 않는다 — Cinnamon 자신도 안 본다.** 그쪽 `KeybindingManager`
+  // 는 `changed::custom-list` 와 media-keys 만 듣는다 (`/usr/share/cinnamon/js/ui/keybindings.js`).
+  // 그래서 항목의 조합을 제자리에서 고쳐도 **데스크톱의 실제 상태는 그대로**이고 (옛 조합이 계속
+  // 잡혀 있다) 우리 `failed` 판정도 그대로 맞다. 그 신호를 우리만 따라가면 바뀐 것이 없는데 재판정만
+  // 도는 셈이라 넣지 않는다 (2026-09-04 실측 — 제자리 수정 뒤에도 Cinnamon 의 등록이 옛 조합이었다).
+  // dconf 를 거치지 않는 조합 (다른 extension 이 코드로 잡은 것) 도 여기서는 알 수 없다 — 그 두
+  // 경우의 답은 재로그인이고, hotkey 실패 다이얼로그가 그것을 안내한다 (`messages.zig`).
   for (const schema of [
     "org.cinnamon.desktop.keybindings",
     "org.cinnamon.desktop.keybindings.wm",

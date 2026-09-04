@@ -347,10 +347,13 @@ minimize/restore.
   (`cosmicSystemDefaultOverride` — `[cosmic] instance N hotkey overrides a COSMIC system shortcut …`).
 - **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
   `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
-- **Cinnamon 에서 남는 갭은 하나다** — *이미 있는* custom 단축키의 accel 을 **제자리에서 고치는**
-  경우. 그 값은 개별 dconf 경로에 있어 위 세 스키마의 `changed` 로 오지 않으므로, 그 방식으로 충돌을
-  만들거나 없앤 것은 다음 로그인 전까지 반영되지 않는다 (`custom-list` 추가 · 삭제와 시스템 단축키
-  변경은 반영된다).
+- **Cinnamon 의 재판정 범위는 Cinnamon 자신이 반응하는 범위와 같다.** 그쪽 `KeybindingManager` 는
+  `changed::custom-list` 와 media-keys 만 듣는다 (`keybindings.js`) — 그래서 *이미 있는* custom 항목의
+  조합을 제자리에서 고쳐도 **데스크톱의 실제 등록은 옛 조합 그대로**이고 (2026-09-04 실측) 우리
+  `failed` 판정도 그대로 맞다. 우리가 그 경로를 따로 감시하지 않는 이유다. 남는 것은 **dconf 를
+  거치지 않는 조합** (다른 extension 이 코드로 `addHotKey` 한 것) 이고, 그것이 사라진 것은 셸이 다시
+  등록해야 알 수 있다. 두 경우 모두 답이 재로그인이라 **hotkey 실패 다이얼로그 본문이 직접 안내한다**
+  (`hotkey_reason_grab_refused_msg` — "조합을 비웠는데도 거부하면 로그아웃 후 다시 로그인").
 
 ### 2.2 탭 관리
 
