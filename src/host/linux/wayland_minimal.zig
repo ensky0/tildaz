@@ -249,6 +249,10 @@ const fractional_scale_denominator: u32 = 120;
 /// 않도록 상한을 둔다.
 const max_grid_wait_configures: u8 = 8;
 
+/// #631 — work-area latch 가 낡았다고 보고 다시 받는 시도의 상한. 다시 받은 뒤에도 계속 어긋나는
+/// compositor 에서 무한 재생성이 되지 않게 둔다 (맞는 configure 가 한 번 오면 되돌아온다).
+const work_area_recheck_max: u8 = 3;
+
 // L8-β — wl_output 의 mode / done event. geometry / scale 은 아직 안 씀.
 const wl_output_event_geometry: u16 = 0;
 const wl_output_event_mode: u16 = 1;
@@ -1411,6 +1415,15 @@ const Client = struct {
     /// 의 종료 조건. 값이 안 바뀌는 100%(120→120) 케이스도 event 수신 자체로 확정
     /// 처리하려고 applyScaleChange 의 값 비교와 별개로 event handler 가 set 한다.
     preferred_scale_received: bool = false,
+    /// #631 — 마지막으로 보낸 layout 이 **함의하는 크기** (논리). 4-edge anchor + `size=0` 이면
+    /// compositor 가 주는 크기는 정의상 `work-area − (양쪽 여백)` 이다. 그것과 다른 configure 가
+    /// 오면 우리 latch 가 낡은 것이다 — 배율뿐 아니라 **패널의 exclusive zone 이 바뀔 때**도
+    /// work-area 가 달라지는데, 그 변화에는 우리에게 오는 직접 신호가 없다 (다른 client 의 zone 은
+    /// 프로토콜상 보이지 않는다). 0 이면 검사하지 않는다 (fullscreen · 초기 안전 commit).
+    expected_logical_w: i32 = 0,
+    expected_logical_h: i32 = 0,
+    /// 그 감지로 다시 받는 시도의 남은 횟수 (`work_area_recheck_max`).
+    work_area_recheck_left: u8 = work_area_recheck_max,
     /// #631 — `screen_logical_*` 를 latch 한 시점의 배율. 배율이 바뀌면 그 논리 크기는 옛 값이라
     /// 버려야 하는데 (compositor 의 논리 화면 = 물리 ÷ 배율), boot 처럼 *방금 그 배율로* 받은
     /// latch 까지 버리면 첫 layout 이 fallback 추정을 쓴다. 그래서 "값이 있는가" 가 아니라
@@ -2727,6 +2740,16 @@ const Client = struct {
         // 0 이다 — spec: 0 이면 compositor 가 정하고 configure 로 알려준다.)
         const logical_w: u32 = if (fullscreen) 0 else layout.width;
         const logical_h: u32 = if (fullscreen) 0 else layout.height;
+        // #631 — 이 layout 이 함의하는 크기를 기록해 둔다. configure 가 이것과 어긋나면 latch 가
+        // 낡은 것이다 (필드 주석 참고). 4-edge anchor + `size=0` 이고 latch 를 실제로 들고 있을
+        // 때만 뜻이 있다 — fullscreen · 초기 안전 commit · latch 를 버린 구간은 검사하지 않는다.
+        if (!fullscreen and logical_w == 0 and logical_h == 0 and self.screen_logical_w > 0 and self.screen_logical_h > 0) {
+            self.expected_logical_w = self.screen_logical_w - (layout.margin_left + layout.margin_right);
+            self.expected_logical_h = self.screen_logical_h - (layout.margin_top + layout.margin_bottom);
+        } else {
+            self.expected_logical_w = 0;
+            self.expected_logical_h = 0;
+        }
         try self.sendArgs(
             self.layer_surface_id,
             zwlr_layer_surface_v1_request_set_size,
@@ -5686,6 +5709,43 @@ const Client = struct {
                     // (boot 의 bringUpInitialSurface, #241/#295 의 swapMainSurfaceSeamless)
                     // 에서 실제 layout 송신을 보장하는 단일 위치다.
                     try self.sendLayerSurfaceLayout(false);
+                }
+                // #631 — **받은 크기가 우리가 보낸 layout 의 산술과 어긋나면 latch 가 낡았다.**
+                // 4-edge anchor + `size=0` 에서 compositor 가 주는 크기는 정의상 `work-area − 여백`
+                // 이므로, 그것과 다르면 work-area 가 우리 모르게 바뀐 것이다. 배율 변경은 위(#631 의
+                // `applyScaleChange` 훅)가 선제로 막지만, **패널이 생기거나 사라지거나 높이가 바뀌면**
+                // 신호가 없어 이 사후 검사만이 잡는다.
+                //
+                // 2026-09-05 실측 (KDE · 배율 1.6 · `height_percent = 60`): 패널 높이를 46 → 34 로
+                // 줄이자 work-area 가 1304 → 1316 이 됐는데 우리는 옛 여백 524 를 그대로 들고 있어
+                // compositor 가 `1316 − 524 = 792` 를 줬다 (60 % 가 아니라 60.2 %). 이 검사가 그
+                // 792 ≠ 780 을 보고 latch 를 다시 받는다.
+                //
+                // 1 px 은 봐준다 — compositor 의 반올림 차이를 재생성으로 되갚지 않는다. 상한
+                // (`work_area_recheck_max`) 을 둔 이유는 다시 받은 뒤에도 계속 어긋나는 환경에서
+                // 무한 재생성이 되지 않게 하기 위해서다.
+                if (self.configured and self.expected_logical_w > 0 and self.expected_logical_h > 0 and w > 0 and h > 0) {
+                    const dw = @abs(w_logical - self.expected_logical_w);
+                    const dh = @abs(h_logical - self.expected_logical_h);
+                    if (dw > 1 or dh > 1) {
+                        if (self.work_area_recheck_left > 0) {
+                            self.work_area_recheck_left -= 1;
+                            log.appendLine("wayland", "configure {}x{} differs from the layout we sent ({}x{}) — work-area latch is stale, re-latching ({d} left)", .{
+                                w_logical,
+                                h_logical,
+                                self.expected_logical_w,
+                                self.expected_logical_h,
+                                self.work_area_recheck_left,
+                            });
+                            try self.applyScreenDimsChange("work-area changed", false);
+                        } else {
+                            log.appendLine("wayland", "configure {}x{} still differs from the layout we sent ({}x{}) — following the compositor", .{
+                                w_logical, h_logical, self.expected_logical_w, self.expected_logical_h,
+                            });
+                        }
+                    } else {
+                        self.work_area_recheck_left = work_area_recheck_max;
+                    }
                 }
                 // 아래 크기 적용 / grid 생성 / `configured` 는 이 configure 로 그대로
                 // 진행한다 (#351 이 바꾸지 않음). `width_percent`=`height_percent`=100
