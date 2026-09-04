@@ -812,6 +812,23 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 
 `--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).
 
+⚠️ **도구를 안 쓰고 손으로 앱을 띄워 검증하면 그 정리가 안 돌아요.** 그러면 데스크톱의 단축키 목록에
+우리 항목이 **죽은 채로 남고, dconf 는 재부팅해도 살아남아요** — 다음 세션이 그것을 현재 설정으로 오해해요.
+2026-09-04 에 실제로 세 항목이 남아 있었어요 (Cinnamon `tildaz-0` F1 · `tildaz-6` F7 · GNOME `tildaz` F1)
+— 전부 명령이 `~/tildaz/zig-out/bin/tildaz` (**개발 빌드 경로**) 였고 `custom-list` 는 비어 있어 동작에는
+영향이 없었지만, 그래서 더 눈에 안 띄었어요. 손으로 검증한 뒤에는 **목록이 비어 있어도 항목 경로까지** 봐요.
+
+```sh
+dconf dump /org/cinnamon/desktop/keybindings/custom-keybindings/          # 항목 (목록과 별개로 남는다)
+dconf dump /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
+dconf reset -f /org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-<N>/
+ls /run/user/$(id -u)/tildaz/                                            # instance<N>.lock · .endpoint — 안 도는 N 은 죽은 것
+```
+
+`$XDG_RUNTIME_DIR/tildaz` 의 `instanceN.lock` · `instanceN.endpoint` 와 `tildaz-N.sock` 도 같이 봐요
+(재부팅하면 사라지지만, 그 전까지 "떠 있는 인스턴스" 로 오독돼요). `launcher.lock` 과 도는 인스턴스의
+`instance0.*` 는 남겨요.
+
 | 데스크톱 | 받는 것 | 기대값 (`[Backquote]`) |
 |---|---|---|
 | sway · Hyprland | **자리** | `49` = evdev 41 + 8 (`bindcode 49` · `keycode=49`) |
