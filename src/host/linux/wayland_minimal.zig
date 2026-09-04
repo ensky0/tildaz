@@ -244,6 +244,11 @@ const wp_fractional_scale_v1_request_destroy: u16 = 0;
 const wp_fractional_scale_v1_event_preferred_scale: u16 = 0;
 const fractional_scale_denominator: u32 = 120;
 
+/// #583 B12 — `-size` 의 요청 격자를 담은 configure 를 이만큼까지 기다린다. 실측은 두 번이면
+/// 오지만 (초기 안전 commit → 요청 layout), compositor 가 크기를 깎는 환경에서 PTY 없이 서 있지
+/// 않도록 상한을 둔다.
+const max_grid_wait_configures: u8 = 8;
+
 // L8-β — wl_output 의 mode / done event. geometry / scale 은 아직 안 씀.
 const wl_output_event_geometry: u16 = 0;
 const wl_output_event_mode: u16 = 1;
@@ -1411,6 +1416,9 @@ const Client = struct {
     /// 그대로일 때 compositor 가 configure 를 다시 보내지 않아 buffer 가 옛 배율의
     /// 물리 크기로 남는다 (그리고 compositor 가 그걸 새 배율 크기로 늘려 그린다).
     /// `applyScaleChange` 가 이 값으로 다시 계산한다.
+    /// #583 B12 — `-size` 회차에서 요청 격자를 담은 configure 를 기다린 횟수. 무한정 기다리면
+    /// PTY 가 영영 안 뜨므로 상한 (`max_grid_wait_configures`) 을 둔다.
+    grid_wait_configures: u8 = 0,
     last_configure_w_logical: i32 = 0,
     last_configure_h_logical: i32 = 0,
     /// #336 — 첫 frame(map) 이전에 layer-surface 가 closed 된 신호. boot 표시
@@ -3767,7 +3775,7 @@ const Client = struct {
     }
 
     fn ensureSessionGrid(self: *Client) !void {
-        var grid = self.gridSize();
+        const grid = self.gridSize();
         // #382 — 측정 모드는 격자를 `-size` 로 **고정한다.** 창 크기에서 뽑은 `gridSize()` 를
         // 그대로 쓰면 격자가 측정 중에 움직인다: 창 크기는 renderer 가 준비된 뒤에야 `-size` 로
         // 맞춰지므로 (`computeLayerLayout` 의 같은 이슈 주석) 그 전에 도착한 첫 configure
@@ -3781,17 +3789,42 @@ const Client = struct {
             self.guardRequestedGridFits(want);
             // #506 — 탭 수가 바뀌어 탭바 높이가 달라졌으면 창을 그만큼 다시 요청한다.
             try self.resendLayoutForGridIfTabBarChanged();
-            if (grid.cols < want.cols or grid.rows < want.rows) {
-                // 창이 아직 요청 격자를 담지 못한다 — configure 가 안 왔거나, 방금 보낸
-                // 크기 요청의 configure 를 기다리는 중이다 (#506 의 재송신). 격자는
-                // 요청값을 유지한다 (측정의 기준이 그 값이다). 요청이 화면보다 커서
-                // **영영** 못 담는 경우는 위 `guardRequestedGridFits` 가 이미 걸렀다.
-                log.appendLineVerbose("stress", "window fits {}x{} — keeping requested grid {}x{}", .{
-                    grid.cols, grid.rows, want.cols, want.rows,
+            if (grid.cols != want.cols or grid.rows != want.rows) {
+                // #583 B12 — **창이 요청 격자를 담을 때까지 세션을 건드리지 않는다.** "창을 요청
+                // 격자에 맞추고 격자는 창에서 나온다" (Windows · macOS 방식) 로 통일한 2026-09-04
+                // 결정이다. 예전에는 이 자리에서 격자를 요청값으로 **고정**했고, 그 고정이 `-size`
+                // 특례를 두 곳 (`computeLayerLayout` · 여기) 으로 갈랐다.
+                //
+                // 기다리는 이유는 #382 그대로다 — 격자가 측정 중에 움직이면 producer 가 SIGWINCH 를
+                // 더 받아 측정이 오염되는데, timing 파일은 시작과 끝만 남기므로 그 왕복이 보이지
+                // 않는다. 실측 (KDE 1.7x · 요청 120x40): 첫 configure 는 초기 안전 commit 의 것이라
+                // 작업 영역 전체 (237x62) 이고 요청 layout 의 configure 가 그다음에 온다. 기다리면
+                // 세션이 처음부터 120x40 으로 생겨 `terminal resized` 가 한 줄도 없다.
+                //
+                // 세션이 이미 있을 때도 같다 — 탭이 늘어 탭바가 생기면 창을 다시 요청하는데
+                // (`resendLayoutForGridIfTabBarChanged`), 그 사이의 한 행 모자란 격자를 셸에 주면
+                // 그것이 곧 오염이다. 그 configure 를 기다린다.
+                if (self.grid_wait_configures < max_grid_wait_configures) {
+                    self.grid_wait_configures += 1;
+                    log.appendLineVerbose("stress", "window holds {}x{} — waiting for the configure that gives the requested {}x{} ({}/{})", .{
+                        grid.cols,
+                        grid.rows,
+                        want.cols,
+                        want.rows,
+                        self.grid_wait_configures,
+                        max_grid_wait_configures,
+                    });
+                    return;
+                }
+                // 상한까지 기다려도 안 맞았다 (compositor 가 크기를 깎는 환경). PTY 없이 서 있거나
+                // 창과 어긋난 격자를 들고 있는 것보다 창을 따르는 것이 낫다 — 대신 로그로 남긴다.
+                log.appendLine("stress", "window holds {}x{} after {} configures — using the window grid (requested {}x{})", .{
+                    grid.cols, grid.rows, self.grid_wait_configures, want.cols, want.rows,
                 });
+            } else {
+                // 맞았다 — 다음 전이 (탭 추가 등) 가 같은 예산으로 기다릴 수 있게 되돌린다.
+                self.grid_wait_configures = 0;
             }
-            grid.cols = want.cols;
-            grid.rows = want.rows;
         }
         if (self.session) |*session| {
             const tab = session.activeTab() orelse return;
@@ -3807,16 +3840,13 @@ const Client = struct {
             // Windows · macOS 는 창 자체를 요청 격자에 맞추므로 이 갈래가 아예 없다. Linux 만
             // 위에서 `grid` 를 요청값으로 덮어쓰기 때문에 (측정 중 격자가 흔들리는 것을 막는 #382)
             // 여기서 조건을 둔다.
-            const has_split = session.totalPaneCount() > session.count();
-            if (self.run_opts.grid != null and !has_split) {
-                // #382 — 격자가 측정 중에 움직이면 producer 가 SIGWINCH 를 더 받아 측정이 오염된다.
-                // pane 이 하나인 동안에는 창이 아니라 `-size` 가 격자를 정한다.
-                if (before_cols != grid.cols or before_rows != grid.rows) session.resizeAll(grid.cols, grid.rows);
-            } else {
-                // #483 4b — pane 마다 격자가 다르다. 창 · 탭바 · metrics 로 layout 을 다시 펴서 모든 탭의
-                // pane 에 준다 (`applyLayouts` 는 같은 격자면 건너뛴다). pane 하나면 `gridSize` 와 같은 값.
-                session.applyLayouts(self.paneArea(), self.paneMetrics());
-            }
+            // #483 4b — pane 마다 격자가 다르다. 창 · 탭바 · metrics 로 layout 을 다시 펴서 모든 탭의
+            // pane 에 준다 (`applyLayouts` 는 같은 격자면 건너뛴다). pane 하나면 `gridSize` 와 같은 값.
+            //
+            // #583 B12 — `-size` 특례가 여기서 사라졌다. 예전에는 pane 이 하나면 `resizeAll` 로 요청
+            // 격자를 그대로 밀어넣었고 (#382 가 넣고 #555 가 `has_split` 로 좁힌 갈래다), 위에서 창이
+            // 요청 격자를 담을 때까지 기다리므로 창에서 나온 격자가 곧 요청 격자다.
+            session.applyLayouts(self.paneArea(), self.paneMetrics());
             if (tab.terminal.cols != before_cols or tab.terminal.rows != before_rows) {
                 log.appendLine("linux", "terminal resized cols={} rows={}", .{ tab.terminal.cols, tab.terminal.rows });
             }
