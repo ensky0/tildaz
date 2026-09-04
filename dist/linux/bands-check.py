@@ -33,6 +33,65 @@ def parse_geometry(g):
     return x, y, w, h
 
 
+def locate_bands(im, lo, hi, width=100, tol=8, gap=8):
+    """띠 화면이 있는 창 영역을 캡처에서 직접 찾는다 — 창 좌표를 밖에서 계산하지 않아도 되게.
+
+    2026-09-04 에 이 탐색이 없어서 회차 셋을 버렸다. Hyprland 의 타일 좌표를 배율로 곱해 crop 을 만들었는데
+    그 값이 화면 밖을 가리켜 (`+3834` · 화면 폭 3840) **전이 행 0 개가 "깨끗" 으로 오판**됐다. 창 위치는
+    compositor · 타일링 · 배율 · (전체화면이 걸렸는지) 에 따라 달라지므로 캡처에서 찾는 것이 유일하게 안전하다.
+
+    열은 **두 띠를 다 보는 정도** (`min(어두운 행 수, 밝은 행 수)`) 로 고른다. 단순히 "띠 색 픽셀이 가장 많은 열" 로
+    고르면 안 된다 — 어두운 띠 (20) 와 창 여백 · 테두리 · 검은 배경이 같은 밝기라서, 띠가 하나도 없는 여백 열이
+    점수를 독식하고 그 단면은 전이 행 0 개를 낸다. 즉 **또 거짓 "깨끗"** 이다. 두 띠를 다 보는 열만 통과시키면
+    여백 · 벽지 · 창 밖이 전부 걸러진다.
+
+    행은 그 열의 띠 색 행을 **간격 `gap` 까지 이어 붙여 묶고 가장 긴 덩어리**를 창으로 삼는다. 두 극단이 다 틀린다.
+    "연속 구간" 은 셀 경계의 전이 행 하나에서 끊겨 창의 일부만 잡고 (1296 행 창에서 232 행), "첫 행 ~ 끝 행" 은
+    띠와 밝기가 겹치는 벽지까지 삼켜 화면 전체를 잡는다 (2134 행 · 띠 아닌 행 935 개).
+    """
+    W, H = im.size
+    m_lo = im.point(lambda v: 255 if abs(v - lo) <= tol else 0)
+    m_hi = im.point(lambda v: 255 if abs(v - hi) <= tol else 0)
+    c_lo = list(m_lo.resize((W, 1), Image.BOX).tobytes())
+    c_hi = list(m_hi.resize((W, 1), Image.BOX).tobytes())
+    score = [min(a, b) for a, b in zip(c_lo, c_hi)]
+    best = max(score)
+    if best == 0:
+        return None
+    cx = max(range(W), key=lambda i: score[i])
+
+    # 점수가 최고의 절반 이상인 열까지 좌우로 넓혀 창의 가로 범위를 잡고, 그 안에서 단면을 가운데에 둔다.
+    need = best * 0.5
+    lx = cx
+    while lx > 0 and score[lx - 1] >= need:
+        lx -= 1
+    rx = cx
+    while rx + 1 < W and score[rx + 1] >= need:
+        rx += 1
+    span = rx - lx + 1
+    if span <= width:
+        sx0, sx1 = lx, rx + 1
+    else:
+        sx0 = lx + (span - width) // 2
+        sx1 = sx0 + width
+
+    strip = im.crop((sx0, 0, sx1, H))
+    rows = [sum(strip.crop((0, y, sx1 - sx0, y + 1)).tobytes()) / (sx1 - sx0) for y in range(H)]
+    band = [y for y, v in enumerate(rows) if abs(v - lo) <= tol or abs(v - hi) <= tol]
+    if not band:
+        return None
+    groups, cur = [], [band[0]]
+    for prev, y in zip(band, band[1:]):
+        if y - prev > gap:
+            groups.append(cur)
+            cur = [y]
+        else:
+            cur.append(y)
+    groups.append(cur)
+    pick = max(groups, key=len)
+    return (sx0, pick[0], sx1, pick[-1] + 1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("png")
@@ -44,9 +103,19 @@ def main():
     ap.add_argument("--lo", type=int, default=20, help="어두운 띠의 밝기 (기본 20 — bands 화면이 칠하는 값)")
     ap.add_argument("--hi", type=int, default=230, help="밝은 띠의 밝기 (기본 230)")
     ap.add_argument("--auto", action="store_true", help="기준값을 캡처에서 가장 흔한 두 밝기로 추정 (배경 행이 많으면 틀린다)")
+    ap.add_argument("--locate", action="store_true",
+                    help="띠 화면이 있는 **창 영역을 캡처에서 직접 찾는다** — 창 좌표를 계산하지 않아도 된다 (권장)")
     args = ap.parse_args()
 
     im = Image.open(args.png).convert("L")
+    if args.locate:
+        box = locate_bands(im, args.lo, args.hi)
+        if box is None:
+            raise SystemExit("띠 영역을 못 찾았다 — 화면에 띠 화면이 없거나 색이 다르다 (--lo/--hi 확인)")
+        x0, y0, x1, y1 = box
+        print(f"찾은 창 영역: {x1 - x0}x{y1 - y0}+{x0}+{y0}")
+        im = im.crop(box)
+        args.geometry = None
     if args.geometry:
         x, y, w, h = parse_geometry(args.geometry)
         im = im.crop((x, y, x + w, y + h))
