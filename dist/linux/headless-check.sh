@@ -6,6 +6,7 @@
 #   dist/linux/headless-check.sh tabs                # A8  — Alt+1~9 탭 전환 (탭마다 cat > tab_N.txt · 파일로 판정)
 #   dist/linux/headless-check.sh confirm             # A7  — Alt+F4 확인 다이얼로그 펌프 중 SIGTERM (#521)
 #   dist/linux/headless-check.sh prompt              # A7  — 새 instance 핫키 캡처 다이얼로그 펌프 중 SIGTERM (#521)
+#   dist/linux/headless-check.sh first-run           # #620 — config 없는 첫 실행에서 창 안 단축키가 먹는지
 #   dist/linux/headless-check.sh scale               # A5  — 배율 1.25 · 1.5 · 2.0 · 1.7 의 띠 화면 전이 행 (#539)
 #   dist/linux/headless-check.sh seat-replug         # #347 — 가상 키보드를 뽑았다 꽂은 뒤에도 키가 닿는지 (wl_keyboard 재생성)
 #   dist/linux/headless-check.sh compositor-exit     # #613 — compositor 가 먼저 끝나면 정상 종료 (exit 0 · failed to start 없음). sway 를 내리니 마지막에
@@ -183,6 +184,39 @@ print(f'logical {$rw}x{h} × {s:.4f} = {v:.2f} → buffer 반올림 {ra} / 내�
     sleep 1
 }
 
+cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 안 단축키가 먹는지
+    env_sway; OUT=$WORK/first-run; rm -rf $OUT; mkdir -p $OUT/xdg/config $OUT/xdg/state
+    kill_tz
+    # 빈 config 홈 — 앱이 이 회차에 config_0.toml 을 만들지만, 그 회차의 **메모리 config** 는 기본값 경로다.
+    export XDG_CONFIG_HOME=$OUT/xdg/config XDG_STATE_HOME=$OUT/xdg/state
+    local LOG0=$OUT/xdg/state/tildaz/tildaz_0.log
+    TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 4
+    kill -0 $WPID 2>/dev/null || die "worker 가 뜨지 않았다 — $LOG0"
+    focus_probe
+    # 판정 — 첫 탭에서 `cat > t1` 을 띄우고 Ctrl+Shift+T 뒤 `cat > t2` 를 친다.
+    #   새 탭이 열렸으면 새 셸이 그 줄을 **실행**해 t2 가 생긴다.
+    #   안 열렸으면 우리는 아직 첫 `cat` 안이라 그 줄이 t1 의 **내용**으로 들어가고 t2 는 없다.
+    # ⚠️ 마커 경로는 **짧게** — vkbd 가 글자당 ~25 ms 라 긴 경로 (90 자면 2.3 초) 를 타이핑하는 중에 판정하면
+    # 새 탭이 열렸는데도 파일이 아직 없다 (첫 회차에 그렇게 거짓 FAIL 이 났다). 판정도 고정 sleep 이 아니라 대기 루프다.
+    local M1=/tmp/tzfr-$$-1 M2=/tmp/tzfr-$$-2; rm -f $M1 $M2
+    snd "type cat > $M1" "key Return"; sleep 2
+    snd "key ctrl+shift+t"; sleep 2.5
+    snd "type cat > $M2" "key Return"
+    wait_file $M2 || true
+    grim $OUT/screen.png
+    local bindings; bindings=$(grep -oE 'key bindings=[0-9]+' $LOG0 | tail -1)
+    echo "   config: $(ls $OUT/xdg/config/tildaz/ | tr '\n' ' ') · $bindings"
+    # 로그의 `shell exited` 수 = 종료 시점의 탭 수 (보조 증거).
+    if [ -f $M2 ]; then
+        echo "RESULT first-run: OK — 첫 실행에서 Ctrl+Shift+T 가 새 탭을 열었다"
+    else
+        echo "RESULT first-run: FAIL — 새 탭이 안 열렸다 (#620)"
+    fi
+    rm -f $M1 $M2
+    kill -TERM $WPID; wait_exit $WPID >/dev/null
+    export XDG_CONFIG_HOME=$XDG/config XDG_STATE_HOME=$XDG/state
+}
+
 cmd_scale() {
     env_sway; OUT=$WORK/scale; rm -rf $OUT; mkdir -p $OUT $XDG/state/tildaz
     kill_tz
@@ -292,6 +326,7 @@ case ${1:-} in
     confirm) cmd_confirm ;;
     prompt) cmd_prompt ;;
     scale) cmd_scale ;;
+    first-run) cmd_first_run ;;
     seat-replug) cmd_seat_replug ;;
     compositor-exit) cmd_compositor_exit ;;
     launcher-fatal) cmd_launcher_fatal "${2:-}" ;;
