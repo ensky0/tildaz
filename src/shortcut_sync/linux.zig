@@ -634,6 +634,11 @@ fn appendCosmicEntries(
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         // #496 1-c — 위치 표기는 워커가 쓴다 (`cosmicDeferredToWorker` 주석).
         if (hotkey.code != null) continue;
+        // #616 — 시스템 기본과 겹치면 **우리가 이긴다.** 막지 않고 알리기만 한다 (위 함수 주석).
+        var override_buf: [256]u8 = undefined;
+        if (cosmicSystemDefaultOverride(rt, allocator, hotkey, &override_buf) catch null) |taken| {
+            log.appendLine("cosmic", "instance {d} hotkey overrides a COSMIC system shortcut — that default stops working while the entry exists: {s}", .{ index, taken });
+        }
         try output.appendSlice(allocator, "    (modifiers: [");
         var first = true;
         const mods = [_]struct { bit: u32, name: []const u8 }{
@@ -957,19 +962,107 @@ fn foreignHyprlandAccel(buf: []u8, binding: HyprlandBind) ?[]const u8 {
     return fbs.buffered();
 }
 
+test "#616 시스템 기본과 겹치는 줄을 찾는다 (조합만 보고 description 은 무시)" {
+    // 실제 `/usr/share/cosmic/…/v1/defaults` 의 형태 그대로.
+    const defaults =
+        \\{
+        \\    (modifiers: [Super, Alt], key: "Escape"): Terminate,
+        \\    (modifiers: [Super], key: "q"): Close,
+        \\    (modifiers: [Alt], key: "F4"): Close,
+        \\    (modifiers: [Super], key: "Left"): Focus(Left),
+        \\}
+    ;
+    const want = cosmicAccelOf(config.Hotkey.fromString("super+q").?).?;
+    const hit = findCosmicAccelLine(defaults, want) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("(modifiers: [Super], key: \"q\"): Close", hit);
+
+    // modifier 는 **집합**이라 순서가 달라도 같다.
+    const want2 = cosmicAccelOf(config.Hotkey.fromString("alt+super+escape").?).?;
+    try std.testing.expect(findCosmicAccelLine(defaults, want2) != null);
+
+    // 겹치지 않는 조합은 null — 같은 키라도 modifier 가 다르면 다른 항목이다.
+    const want3 = cosmicAccelOf(config.Hotkey.fromString("ctrl+q").?).?;
+    try std.testing.expect(findCosmicAccelLine(defaults, want3) == null);
+    const want4 = cosmicAccelOf(config.Hotkey.fromString("F1").?).?;
+    try std.testing.expect(findCosmicAccelLine(defaults, want4) == null);
+}
+
+pub fn cosmicSystemDefaultOverride(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    hotkey: config.Hotkey,
+    out_buf: []u8,
+) !?[]const u8 {
+    const want = cosmicAccelOf(hotkey) orelse return null;
+
+    // 기본값은 배포 데이터라 `XDG_DATA_DIRS` 를 따른다 (없으면 XDG 기본값).
+    const dirs = rt.environ.getPosix("XDG_DATA_DIRS") orelse "/usr/local/share:/usr/share";
+    var dir_it = std.mem.tokenizeScalar(u8, dirs, ':');
+    while (dir_it.next()) |dir| {
+        if (dir.len == 0 or dir[0] != '/') continue; // 상대 경로는 XDG 규범상 무시한다
+        const path = std.Io.Dir.path.join(allocator, &.{
+            dir, "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1", "defaults",
+        }) catch continue;
+        defer allocator.free(path);
+
+        const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch continue;
+        defer file.close(rt.io);
+        var file_reader = file.reader(rt.io, &.{});
+        const content = file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch continue;
+        defer allocator.free(content);
+
+        if (findCosmicAccelLine(content, want)) |line| {
+            return std.fmt.bufPrint(out_buf, "{s}", .{line}) catch
+                std.fmt.bufPrint(out_buf, "{s}", .{want.key()}) catch null;
+        }
+    }
+    return null;
+}
+
+/// RON 본문에서 `want` 와 같은 조합의 줄을 찾는다 (앞뒤 공백 · 쉼표는 떼고 돌려준다).
+/// 파일 입출력과 갈라 두어 테스트가 문자열만으로 돈다.
+fn findCosmicAccelLine(content: []const u8, want: CosmicAccel) ?[]const u8 {
+    var offset: usize = 0;
+    while (offset < content.len) {
+        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
+        const line = content[offset..end];
+        offset = if (end < content.len) end + 1 else content.len;
+
+        const got = parseCosmicAccel(line) orelse continue;
+        if (got.modifiers != want.modifiers) continue;
+        if (!std.mem.eql(u8, got.key(), want.key())) continue;
+        return std.mem.trim(u8, line, " \t\r,");
+    }
+    return null;
+}
+
 /// #510 — 이 accel 을 **우리 것이 아닌** COSMIC 단축키가 이미 쓰고 있는가.
 ///
 /// COSMIC 의 단축키 파일은 RON **map** 이고, 같은 키가 두 번 나오면 COSMIC 이 파일을
 /// 통째로 버린다 — 사용자 단축키까지 함께 사라지는 [#484](https://github.com/ensky0/tildaz/issues/484)
 /// 의 기전이다. 그래서 여기서의 충돌은 "우리 핫키가 안 먹는다" 보다 나쁘다.
 ///
-/// **사용자 `custom` 파일만 본다.** 시스템 기본값
-/// (`/usr/share/cosmic/…/v1/defaults`) 과 `custom` 사이의 우선순위를 확인하지 못했다
-/// (**확인 필요**). `custom` 이 기본값을 덮는다면 기본값과의 겹침은 *우리가 이기는* 상황
-/// 이므로, 그것을 충돌로 읽으면 **멀쩡한 설정에서 앱이 안 뜬다.** 잘못된 fatal 은 놓친
-/// 감지보다 나쁘므로 확인될 때까지 보지 않는다.
+/// **사용자 `custom` 파일만 본다.** 시스템 기본값 (`/usr/share/cosmic/…/v1/defaults`) 과의
+/// 겹침은 **충돌이 아니다 — 우리가 이긴다** (#616 · 2026-09-04 upstream 소스로 확정).
+/// `cosmic-settings-daemon` 의 `shortcuts()` 가 `defaults` 를 읽고 `extend(custom)` 로 덮으며,
+/// map 의 키인 `Binding` 은 `PartialEq` · `Hash` 를 `modifiers` · `key` 로만 구현한다. 그래서
+/// 그쪽은 막지 않고 `cosmicSystemDefaultOverride` 가 **로그로만** 알린다 (위 함수).
 ///
 /// 반환: 충돌하는 남의 항목 설명 (`out_buf` 에 담긴다). 없으면 `null`.
+/// #616 — 우리 항목이 **COSMIC 시스템 기본 단축키**와 겹치는지. 겹친 기본 항목 줄을 돌려준다.
+///
+/// **겹침은 충돌이 아니다 — 우리가 이긴다.** upstream `cosmic-settings-daemon` 의 `shortcuts()` 가
+/// `defaults` 를 읽은 뒤 `shortcuts.0.extend(custom_shortcuts.0)` 로 사용자 것을 덮고
+/// (*"Combine while overriding system shortcuts"*), 그 map 의 키인 `Binding` 은 `PartialEq` · `Hash` 를
+/// **`modifiers` 와 `key` 로만** 손으로 구현해 `description` · `keycode` 를 뺀다. 그래서 우리가
+/// `description: Some("TildaZ_N")` 을 달아도 조합이 같으면 기본값 자리를 그대로 차지한다.
+///
+/// 그러므로 이 함수의 결과로 **막지 않는다** (그러면 멀쩡한 설정에서 앱이 안 뜬다 — SPEC §2.1).
+/// 대신 로그로 알린다: 그 조합의 COSMIC 기본 동작이 우리 항목이 있는 동안 **조용히 사라지기** 때문이다.
+/// 예를 들어 `hotkey = "super+q"` 면 COSMIC 의 창 닫기가 안 먹는데, 지금까지는 어디에도 그 사실이 없었다.
+///
+/// 판정하지 못하면 (`defaults` 가 없거나 못 읽음 · 형식이 다름) `null` 이다 — 못 봤다는 것과 겹쳤다는
+/// 것은 다르다.
 pub fn cosmicForeignBinding(
     rt: Runtime,
     allocator: std.mem.Allocator,
