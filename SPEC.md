@@ -335,9 +335,15 @@ minimize/restore.
 **판정하지 못하는 경우는 통과시킨다.** 도구가 없거나 파일을 못 읽은 것은 충돌했다는 뜻이
 아니고, 잘못된 종료는 놓친 감지보다 나쁘다. 알려진 갭 셋을 여기 적어 둔다.
 
-- **COSMIC 의 시스템 기본 단축키** (`/usr/share/cosmic/…/v1/defaults`) 는 보지 않는다.
-  `custom` 이 기본값을 덮는지 **확인하지 못했다** — 덮는다면 겹침은 우리가 이기는 상황이라,
-  충돌로 읽으면 멀쩡한 설정에서 앱이 안 뜬다.
+- **COSMIC 의 시스템 기본 단축키** (`/usr/share/cosmic/…/v1/defaults`) 와 겹치는 것은 **충돌이
+  아니다 — `custom` 이 이긴다.** `cosmic-settings-daemon` 의 `shortcuts()` 가 `defaults` 를 읽어
+  `shortcuts.0.extend(custom_shortcuts.0)` 로 사용자 것을 덮고 (*"Combine while overriding system
+  shortcuts"*), 그 map 의 키인 `Binding` 은 `PartialEq` · `Hash` 를 **`modifiers` 와 `key` 로만**
+  구현해 `description` · `keycode` 를 제외한다. 그래서 우리가 `description: Some("TildaZ_N")` 을
+  달아도 같은 조합이면 기본값 자리를 그대로 차지한다 (2026-09-04 · upstream 소스 판정 ·
+  [#616](https://github.com/ensky0/tildaz/issues/616)). 감지할 것이 없으므로 보지 않는 것이 맞다.
+  **다만 그 겹침은 시스템 단축키를 조용히 빼앗는다** — 사용자가 `Super+q` 를 hotkey 로 쓰면 그동안
+  COSMIC 의 창 닫기가 안 먹는다. 이것을 알릴지는 미정이다.
 - **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
   `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
 - **Cinnamon 은 extension 이 켜져 있어도 accel 충돌을 못 본다** (위 표). 그래서 "다른 앱이 그

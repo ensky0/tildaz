@@ -1163,6 +1163,11 @@ grim shot.png                                                          # sway �
   위→아래로 흘러가는 비율) 이 아니라 위치와 무관한 일정 비율이라 **`bands-check` 의 "여러 종류" 를 곧 #539 재발로 읽지
   말아요** — 순서 (`위→아래 순서:` 줄) 가 단조인지, 값이 절반 (125) 근처로 일정한지 봐요. nested headless 출력에서는 이게
   안 나와서 실제 출력 회차가 필요했어요.
+- **⚠️ nested cosmic-comp 은 가상 키보드로 보낸 키를 *compositor 단축키*로 처리하지 않아요** (2026-09-04 실측).
+  `zwp_virtual_keyboard_manager_v1` 을 내주고 그 키가 **창에는 정상으로 닿는데** (foot 에 타이핑됨),
+  `Super+q` (기본 Close) 도 우리 `custom` Spawn 도 발화하지 않았어요. 그래서 **COSMIC 의 단축키 우선순위 같은
+  것은 nested 로 못 재요** — upstream 소스를 읽거나 실제 세션에서 사람이 눌러야 해요. nested Cinnamon 은
+  아예 `zwp_virtual_keyboard_manager_v1` 을 안 내줘요 (주입 자체가 불가).
 - **COSMIC nested (`cosmic-comp`) 는 `cosmic-randr mode X11-0 1280 800 --scale 1.25` 로 배율을 바꿔요.** 출력이 winit
   창 크기 (1280x800) 로 고정이라 배율은 그 둘을 나누는 값 (1.25 · 1.6 · 2.0) 만 돼요. `grim` 은 wlr-screencopy 가 아니라
   `ext_image_copy_capture_manager_v1` 로 돼요 (grim 1.5). runtime dir 은 격리해도 돼요 (pipewire 불필요).
