@@ -519,6 +519,9 @@ fn pctToPx(screen_dim: f32, pct: f32) u32 {
 ///
 /// `round_up` — 요청 격자 (`-size COLSxROWS`) 처럼 **줄이면 마지막 행이 잘리는** 값은 올린다. 퍼센트
 /// 점유는 내린다 (화면을 넘지 않게).
+///
+/// 전면 점유 (100 %) 축에는 **부르지 않는다** — 호출부 주석 참고. 그 축은 화면에 붙는 것이 계약이라
+/// 값을 고를 여지가 없다.
 fn snapLogicalToDeviceGrid(logical: u32, scale_num: u32, round_up: bool) u32 {
     if (logical == 0 or scale_num == 0) return logical;
     const step = fractional_scale_denominator / std.math.gcd(scale_num, fractional_scale_denominator);
@@ -526,6 +529,34 @@ fn snapLogicalToDeviceGrid(logical: u32, scale_num: u32, round_up: bool) u32 {
     const rem = logical % step;
     if (rem == 0) return logical;
     return if (round_up) logical + (step - rem) else logical - rem;
+}
+
+/// #619 — 점유 크기를 격자에 맞춘다. `snapLogicalToDeviceGrid` 에 **전면 점유 예외**를 씌운 것이다.
+///
+/// `want >= screen` 이면 그대로 둔다. 그 축은 "화면에 딱 붙는다" 가 계약이고 우리가 고를 수 있는
+/// 값도 compositor 가 알려준 논리 화면 하나뿐이다. 논리 화면이 격자 위가 아닌 compositor 가 있어서
+/// (KWin 6.7.4 · 1.7x: 논리 2259x1271 → 2259 × 1.7 = 3840.3) 예외 없이 맞추면 창이 edge 에서
+/// 떨어진다 — 2026-09-04 KDE 실기에서 width 100 % 인데 오른쪽 끝 20 px 에 벽지가 보였다
+/// (평균 밝기 16.2 → 예외를 넣은 뒤 0.0 = 창이 덮음).
+fn snapWantToDeviceGrid(want: u32, screen: u32, scale_num: u32, round_up: bool) u32 {
+    if (screen == 0 or want >= screen) return want;
+    return @min(snapLogicalToDeviceGrid(want, scale_num, round_up), screen);
+}
+
+test "#619 전면 점유 축은 격자에 맞추지 않는다 (화면에 붙는 것이 계약)" {
+    const s170: u32 = 204; // KWin 6.7.4 의 1.7x — 논리 화면이 격자 위가 아니다
+    const s125: u32 = 150;
+    // KDE 실측: 논리 화면 2259 · work-area 높이 1225. 100 % 면 그대로 둔다.
+    try std.testing.expectEqual(@as(u32, 2259), snapWantToDeviceGrid(2259, 2259, s170, false));
+    try std.testing.expectEqual(@as(u32, 1225), snapWantToDeviceGrid(1225, 1225, s170, false));
+    // 그 화면의 60 % 는 맞춘다 — 735 → 730 (= 1241 px 정확). #539 가 반올림으로 다룬 그 값이다.
+    try std.testing.expectEqual(@as(u32, 730), snapWantToDeviceGrid(735, 1225, s170, false));
+    // Hyprland 1.25x 의 그 회차 — 논리 1728 화면의 60 % 1037 → 1036.
+    try std.testing.expectEqual(@as(u32, 1036), snapWantToDeviceGrid(1037, 1728, s125, false));
+    // 맞춤 결과가 화면을 넘지 않는다 (올림 방향이어도).
+    try std.testing.expectEqual(@as(u32, 1728), snapWantToDeviceGrid(1727, 1728, s125, true));
+    // 화면 크기를 아직 모르는 구간 (0) 은 그대로 — 계산 전 구간에서도 안전해야 한다.
+    try std.testing.expectEqual(@as(u32, 1037), snapWantToDeviceGrid(1037, 0, s125, false));
 }
 
 /// #619 — 여백 (i32) 용 격자 맞춤. 내림이라 시작 여백이 커져 반대편이 음수가 되는 일이 없다.
@@ -2964,11 +2995,17 @@ const Client = struct {
             }
         }
         // #619 — 두 경로 (퍼센트 · 요청 격자) 가 끝난 뒤 **한 곳에서** 물리 픽셀 격자에 맞춘다.
-        // 화면 전체 점유 (100 %) 는 이 호출이 값을 바꾸지 않는다 — compositor 가 알려준 논리 화면은
-        // `논리 × scale = 물리` 가 정수라 이미 격자 위다. 격자를 벗어나는 것은 그 사이의 퍼센트 값이다.
+        //
+        // **전면 점유 축 (100 %) 은 건드리지 않는다.** "화면에 딱 붙는다" 가 더 강한 계약이고,
+        // 그 축은 애초에 우리가 고를 수 있는 값이 하나뿐이다 — compositor 가 알려준 논리 화면
+        // 그대로여야 붙는다. 논리 화면이 격자 위가 아닌 compositor 도 있어서 (KWin 6.7.4 · 1.7x:
+        // 논리 2259x1271 → 2259 × 1.7 = 3840.3) 맞춤을 그 축에도 걸면 창이 화면 edge 에서
+        // 떨어진다 — 2026-09-04 KDE 실기에서 width 100 % 인데 오른쪽에 15 px 이 남았다.
+        // 그때의 소수 device 사각형은 compositor 가 정하는 것이라 우리가 없앨 수 없다 (#539 가
+        // buffer 반올림으로 최선을 맞춘 자리다).
         const snap_up = self.run_opts.grid != null;
-        want_w = @min(snapLogicalToDeviceGrid(want_w, self.preferred_scale, snap_up), @as(u32, @intCast(@max(sw_i, 0))));
-        want_h = @min(snapLogicalToDeviceGrid(want_h, self.preferred_scale, snap_up), @as(u32, @intCast(@max(sh_i, 0))));
+        want_w = snapWantToDeviceGrid(want_w, @intCast(@max(sw_i, 0)), self.preferred_scale, snap_up);
+        want_h = snapWantToDeviceGrid(want_h, @intCast(@max(sh_i, 0)), self.preferred_scale, snap_up);
         const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
         const want_h_i: i32 = @intCast(@min(want_h, @as(u32, std.math.maxInt(i32))));
         // 점유율 100% 는 특수 분기가 필요 없다 (#351) — logical 로 계산하면
