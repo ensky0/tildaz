@@ -427,7 +427,7 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
         // 흡수한다. config 를 지운 인스턴스의 줄까지 지우면 판정 근거가 다시 넓어진다.
         const keep = if (tildazCosmicEntryIndex(line)) |idx|
             cosmicDeferredToWorker(rt, allocator, idx)
-        else if (legacyInstallScriptEntryIndex(line, exe)) |idx|
+        else if (legacyInstallScriptEntryIndex(line)) |idx|
             std.mem.findScalar(u32, indices, idx) == null
         else
             true;
@@ -499,106 +499,121 @@ fn tildazCosmicEntryIndex(line: []const u8) ?u32 {
 /// COSMIC 항목을 아예 쓰지 않으므로 (writer 는 이 파일 하나다), 남아 있는 옛 줄을 여기서
 /// 흡수한다.
 ///
-/// **완전 일치만 본다.** #484 의 교훈이 "명령 문자열의 *부분* 일치로 판정하지 말라" 였다.
-/// 조건이 하나라도 어긋나면 남의 항목으로 본다.
+/// **경로는 보지 않는다** (#583 B18 · 2026-09-05). 예전에는 *지금 실행 파일 경로* 와 바이트까지
+/// 같을 때만 흡수했는데, `install.sh` 는 압축을 푼 자리의 `realpath` 를 썼으므로 **새 버전을 다른
+/// 곳에 두면 그 줄이 영원히 남았다.** 그리고 남은 줄의 키 이름이 COSMIC 이 모르는 것이면
+/// cosmic-settings-daemon 이 custom 파일 **전체**를 무시해 (#484 의 그 증상) 사용자의 다른 단축키까지
+/// 죽는다 — v0.9.0 마감 댓글이 "그 줄을 손으로 지우세요" 로 남긴 자리다.
+///
+/// 대신 **명령의 모양**을 좁게 본다. #484 의 교훈 ("명령 문자열의 *부분* 일치로 판정하지 말라") 은
+/// 그대로 지킨다:
 ///
 /// - `description` 이 **아예 없다.** 사용자가 이름을 붙인 줄은 명령이 겹쳐도 남긴다.
-/// - `Spawn` 명령이 *지금 실행 파일 경로* + `--toggle <index>` 와 **바이트까지 같다.**
-///   경로가 다르면 (사용자가 옮겼거나 다른 빌드면) 건드리지 않는다. 래퍼 스크립트처럼
-///   명령이 더 붙은 줄도 여기서 걸린다.
+/// - 명령이 **공백 없는 실행 파일 경로 + `--toggle [N]`** 뿐이다. 앞에 래퍼가 붙은 줄
+///   (`/opt/wrap /…/tildaz --toggle 0`) 은 첫 토큰이 `wrap` 이라 걸러지고, `sh -c '…'` 도
+///   `sh` 라 걸러진다. 인자가 더 붙은 줄 (`--toggle 0 --extra`) 도 아니다.
+/// - 그 경로의 **basename 이 정확히 `tildaz`** 다. `tildaz-dev` 는 우리 것이 아니다.
 /// - 번호 없는 `--toggle` 도 받는다 — #230 의 첫 형태다 (인스턴스 번호가 생기기 전).
 ///
-/// 그래도 위험이 하나 남는다: 사용자가 **같은 명령으로 두 번째 단축키**를 손수 만들어
-/// 뒀다면 그것도 지워진다. 호출부 (`syncCosmic`) 가 "우리가 그 index 를 실제로 관리할
-/// 때만" 으로 한 번 더 좁힌다.
-fn legacyInstallScriptEntryIndex(line: []const u8, exe: []const u8) ?u32 {
+/// 공백이 든 경로 (`/home/my apps/tildaz`) 는 흡수하지 않는다 — 첫 토큰으로 자르는 규칙의 대가이고,
+/// 래퍼를 걸러내는 것이 그보다 중요하다. 그런 줄은 여전히 손으로 지운다.
+///
+/// 그래도 위험이 하나 남는다: 사용자가 **같은 모양의 단축키**를 손수 만들어 뒀다면 (표식 없이
+/// `<경로>/tildaz --toggle 0`) 그것도 우리 것으로 본다. 호출부 (`syncCosmic`) 가 "우리가 그 index 를
+/// 실제로 관리할 때만" 으로 한 번 더 좁힌다.
+fn legacyInstallScriptEntryIndex(line: []const u8) ?u32 {
     if (std.mem.find(u8, line, "description:") != null) return null;
     const open = "): Spawn(\"";
     const start = std.mem.find(u8, line, open) orelse return null;
     var buf: [std.Io.Dir.max_path_bytes + 64]u8 = undefined;
     const command = ronStringUnescape(line[start + open.len ..], &buf) orelse return null;
-    if (!std.mem.startsWith(u8, command, exe)) return null;
-    const tail = command[exe.len..];
+    const space = std.mem.findScalar(u8, command, ' ') orelse return null;
+    const path = command[0..space];
+    const args = command[space + 1 ..];
+    if (!std.mem.eql(u8, std.Io.Dir.path.basename(path), "tildaz")) return null;
     // #230 의 첫 형태 — 인스턴스 번호가 없던 때라 0 번이다.
-    if (std.mem.eql(u8, tail, " --toggle")) return 0;
-    const numbered = " --toggle ";
-    if (!std.mem.startsWith(u8, tail, numbered)) return null;
-    return std.fmt.parseInt(u32, tail[numbered.len..], 10) catch null;
+    if (std.mem.eql(u8, args, "--toggle")) return 0;
+    const numbered = "--toggle ";
+    if (!std.mem.startsWith(u8, args, numbered)) return null;
+    return std.fmt.parseInt(u32, args[numbered.len..], 10) catch null;
 }
 
-test "#514 legacy install.sh entries are absorbed only on an exact command match" {
-    const exe = "/home/u/.local/bin/tildaz";
-    // 옛 install.sh 가 쓴 형태 — 표식이 없고 명령이 정확히 우리 것이다.
+test "#514 · #583 B18 표식 없는 옛 install.sh 줄은 명령의 *모양* 으로만 흡수한다 (경로는 보지 않는다)" {
+    // 옛 install.sh 가 쓴 형태 — 표식이 없고 명령이 실행 파일 경로 + `--toggle N` 뿐이다.
     try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
-        exe,
     ));
     try std.testing.expectEqual(@as(?u32, 3), legacyInstallScriptEntryIndex(
         "    (modifiers: [Ctrl, Shift], key: \"grave\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 3\"),",
-        exe,
     ));
     // #230 의 첫 형태 — 번호가 없던 때. 0 번이다.
     try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle\"),",
-        exe,
+    ));
+    // #583 B18 — **경로가 달라도 흡수한다.** 이것이 예전에 `null` 이었고, 그래서 새 버전을 다른
+    // 곳에 두면 옛 줄이 영원히 남았다 (키 이름이 모르는 것이면 custom 파일 전체가 무시된다).
+    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+    ));
+    try std.testing.expectEqual(@as(?u32, 2), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F3\"): Spawn(\"/tmp/tildaz-0.8.0/tildaz --toggle 2\"),",
+    ));
+    // PATH 에 의존한 맨 이름도 우리 것이다.
+    try std.testing.expectEqual(@as(?u32, 1), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F2\"): Spawn(\"tildaz --toggle 1\"),",
     ));
 
     // 표식이 있으면 여기 소관이 아니다 — 우리 줄이든 사용자가 이름 붙인 줄이든.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
-        exe,
     ));
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\", description: Some(\"My toggle\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
-        exe,
     ));
 
-    // 경로가 다르면 우리 것이 아니다 — 부분 일치로 떨어지지 않는다 (#484).
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
-        "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
-        exe,
-    ));
-    // 명령 **앞**에 뭔가 붙은 줄 — 경로가 안에 들어 있을 뿐 우리 명령이 아니다.
-    // 부분 일치로 판정하면 이 줄이 통과한다 (#484 가 그랬다).
+    // #484 의 교훈 — 부분 일치로 판정하지 않는다. 아래 줄들은 명령에 우리 경로가 들어 있어도
+    // **첫 토큰이 우리 실행 파일이 아니거나** 인자가 더 붙어 있어 우리 것이 아니다.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/opt/wrap /home/u/.local/bin/tildaz --toggle 0\"),",
-        exe,
     ));
-    // 래퍼 — 명령이 더 붙었다.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"sh -c '/home/u/.local/bin/tildaz --toggle 0; notify-send hi'\"),",
-        exe,
     ));
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0 --extra\"),",
-        exe,
     ));
-    // 명령이 우리 것으로 시작하지만 다른 하위 명령이다.
+    // 이름이 다른 빌드 — `tildaz-dev` 는 우리 것이 아니다 (basename 정확 일치).
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz-dev --toggle 0\"),",
+    ));
+    // 다른 하위 명령.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --autostart\"),",
-        exe,
     ));
     // 번호 자리가 정수가 아니다.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle x\"),",
-        exe,
     ));
-    // 우리 항목이 아닌 남의 단축키.
+    // 공백이 든 경로는 흡수하지 않는다 — 첫 토큰으로 자르는 규칙의 대가다 (문서에 적었다).
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
-        "    (modifiers: [Super], key: \"e\"): Spawn(\"nautilus\"),",
-        exe,
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/my apps/tildaz --toggle 0\"),",
     ));
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex("{", exe));
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex("}", exe));
+    // 인자가 아예 없다.
+    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz\"),",
+    ));
 }
 
 test "#514 escaped paths in a legacy entry are matched after unescaping" {
     // `appendRonString` 이 `\\` 와 `"` 를 escape 한다. 읽는 쪽이 같은 규칙을 풀어야
     // 따옴표가 든 경로에서 판정이 갈리지 않는다.
-    const exe = "/home/u/my \"odd\" dir/tildaz";
+    //
+    // #583 B18 — 경로에 **공백**이 있으면 흡수하지 않는다 (첫 토큰으로 자른다). 그래서 이
+    // 회귀 테스트의 경로에서 공백을 뺐다 — 검증하려는 것은 escape 해제이고, 공백 경로는
+    // 위 테스트가 `null` 로 고정한다. 공백을 허용하면 앞에 래퍼가 붙은 줄
+    // (`/opt/wrap /…/tildaz --toggle 0`) 을 우리 것으로 오판한다 (#484 가 그 오판이었다).
     try std.testing.expectEqual(@as(?u32, 2), legacyInstallScriptEntryIndex(
-        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/my \\\"odd\\\" dir/tildaz --toggle 2\"),",
-        exe,
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/my\\\"odd\\\"dir/tildaz --toggle 2\"),",
     ));
 }
 
@@ -1087,10 +1102,6 @@ pub fn cosmicForeignBinding(
     const content = try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
-    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
-
     var offset: usize = 0;
     while (offset < content.len) {
         const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
@@ -1099,7 +1110,7 @@ pub fn cosmicForeignBinding(
 
         // 우리 줄은 충돌이 아니다 — 표식이 붙은 줄과, 옛 install.sh 가 쓴 표식 없는 줄.
         if (tildazCosmicEntryIndex(line) != null) continue;
-        if (legacyInstallScriptEntryIndex(line, exe) != null) continue;
+        if (legacyInstallScriptEntryIndex(line) != null) continue;
 
         const got = parseCosmicAccel(line) orelse continue;
         if (got.modifiers != want.modifiers) continue;
