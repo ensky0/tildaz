@@ -324,6 +324,13 @@ scale source 는 platform 마다 다르지만 **단일 `scale` 값으로 수렴*
   fallback 을 탔다면 33 % 크게 그렸을 거예요). 반대로 **Cinnamon 은 지금도 fallback 이고**, 그쪽 `scaling-factor` 가
   auto (4K 에서 2) 라 앱의 2.0 과 맞아요. **한 데스크톱에서 본 것을 다른 데스크톱으로 일반화하지 말아요** — 2026-09-03 에
   GNOME 결과만 보고 "이제 다 fractional" 로 문서를 고쳤다가 Cinnamon 회차에서 바로 뒤집혔어요.
+
+  **그 두 번째 실례 (2026-09-04 · [PR #624](https://github.com/ensky0/tildaz/pull/624)) — compositor 가 알려주는 논리
+  화면이 `물리 ÷ 배율` 로 딱 나눠진다고 가정하지 말아요.** Hyprland 는 정수였어요 (3840 ÷ 1.25 = 3072 · ÷ 1.5 = 2560 ·
+  ÷ 2.0 = 1920). 그것을 보고 "논리 화면은 이미 물리 픽셀 격자 위" 라고 코드 주석과 `SPEC.md` 에 적었는데, **KWin 6.7.4 는
+  1.7x 에서 논리 2259x1271 을 알려주고 `2259 × 1.7 = 3840.3` 이라 격자 위가 아니에요.** 그래서 #619 의 격자 맞춤이
+  KDE 에서 전면 점유 (100 %) 창을 화면 edge 에서 15 px 떼어 놨어요 — 실기 캡처에서 오른쪽 끝 20 px 의 평균 밝기가
+  16.2 (벽지) 였고, 예외를 넣은 뒤 0.0 (창) 이 됐어요. **창이 edge 에 붙는지는 캡처의 끝 열 밝기로 재요.**
 - Linux 변환: `software_terminal.zig` 의 `self.scale` (단일 값). 새 scale source 가 생기면 이
   값 하나로 수렴시키고 `renderer.applyScale()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
 - 새 platform / compositor 포팅 시 **scale source 부터** 확인 — 배율 켜고 다른 환경 (mac / KDE)
