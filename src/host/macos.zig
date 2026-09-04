@@ -63,7 +63,8 @@ pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerro
     _ = allocator;
     log.logRunFailed(err);
     var buf: [256]u8 = undefined;
-    const text = messages.runFailureMessage(&buf, err);
+    const config_notice = config.pendingFatalNotice();
+    const text = messages.runFailureMessage(&buf, err, config_notice);
     dialog.showError(rt, messages.error_title, text);
 }
 

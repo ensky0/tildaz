@@ -43,6 +43,28 @@ const vt_features_disabled = "-kitty-graphics,-glyph-protocol";
 //   zig build package -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 package + SHA256
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
+/// #520 후속 (#583 B8) — **Shell extension 리소스를 바이너리에 embed 한다.**
+///
+/// 예전에는 `shell_extension.syncForCurrentUser` 가 exe 옆 `../share/tildaz/` 에서 파일을 읽었다.
+/// 그 디렉터리가 없는 배치 (레포에서 바이너리만 옮겨 쓰기 · install.sh 가 이미 복사해 둔 portable
+/// 설치) 에서는 **설치본을 그대로 두고 "오래됐을 수 있다" 고만 로그에 남겼다** — 사용자가 고칠
+/// 방법이 없는 안내였다. embed 하면 배치와 무관하게 항상 갱신되고, extension 은 자기를 실은
+/// 바이너리와 늘 같은 버전이다 (extension 이 그 바이너리의 IPC 를 부르므로 이 짝이 맞아야 한다).
+///
+/// `@embedFile` 은 module 경로 (`src/`) 를 벗어나지 못하므로 익명 import 로 넘긴다. 앱 소스를
+/// 컴파일하는 module 은 모두 이 함수를 지나야 한다 — 하나라도 빠지면 그 module 만 컴파일이 깨진다.
+fn addShellExtensionResources(b: *std.Build, mod: *std.Build.Module) void {
+    const gnome = "dist/linux/gnome-extension/tildaz@ensky0.github.io/";
+    const cinnamon = "dist/linux/cinnamon-extension/tildaz@ensky0.github.io/";
+    mod.addAnonymousImport("gnome_extension_js", .{ .root_source_file = b.path(gnome ++ "extension.js") });
+    mod.addAnonymousImport("gnome_extension_metadata", .{ .root_source_file = b.path(gnome ++ "metadata.json") });
+    mod.addAnonymousImport("gnome_extension_gschema", .{
+        .root_source_file = b.path(gnome ++ "schemas/org.gnome.shell.extensions.tildaz.gschema.xml"),
+    });
+    mod.addAnonymousImport("cinnamon_extension_js", .{ .root_source_file = b.path(cinnamon ++ "extension.js") });
+    mod.addAnonymousImport("cinnamon_extension_metadata", .{ .root_source_file = b.path(cinnamon ++ "metadata.json") });
+}
+
 pub fn build(b: *std.Build) void {
     const target = preserveResolvedWindowsAbi(b.standardTargetOptions(.{}));
     const target_os = target.result.os.tag;
@@ -77,6 +99,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addShellExtensionResources(b, exe_mod);
 
     // 컴파일 타임 상수 — About 다이얼로그 / `--version` / tildaz.log 의 boot 엔트리에서
     // 사용. 세 값을 사람이 읽는 한 줄로 합치는 규칙은 `src/version.zig` 한 곳에 있다.
@@ -275,18 +298,17 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
-    // #520 — Linux 는 Shell extension 리소스를 exe 옆 `share/tildaz/` 에도 깐다.
+    // Linux 는 Shell extension 리소스를 exe 옆 `share/tildaz/` 에도 깐다.
     //
-    // worker 가 부팅할 때 `shell_extension.syncForCurrentUser` 가 그 경로에서 GNOME ·
-    // Cinnamon extension 을 사용자 홈으로 복사하는데 (`<exe_dir>/../share/tildaz/`),
-    // 여기가 비어 있으면 **설치본을 그대로 두고 조용히 넘어간다.** 그래서 `zig build` 로
-    // 개발하는 동안에는 레포의 extension 을 고쳐도 셸에는 옛 파일이 남았다 — 게다가
-    // 로그는 성공처럼 찍혀서 (`Shell extension synchronized and enabled`) 그 사실을
-    // 알아챌 근거가 없었다.
+    // **런타임 동기화의 소스는 더 이상 이 경로가 아니다** (#583 B8) — `shell_extension.zig` 가
+    // 같은 파일들을 바이너리에 embed 해 사용자 홈에 쓴다. #520 은 이 경로에서 읽게 두었는데,
+    // 그 디렉터리가 없는 배치 (바이너리만 옮기기 · portable 설치) 에서는 설치본을 그대로 두는
+    // 수밖에 없었다.
     //
-    // 경로 · 파일 구성은 `dist/linux/package.sh` 의 `install_extension_resources` 와
-    // 같다. 그쪽이 패키지에 넣는 것을 여기서는 `zig-out` 에 넣을 뿐이라, dev 빌드와
-    // 패키지가 같은 배치를 갖는다.
+    // 그래도 계속 깐다 — 패키지가 이 파일들을 담고 (`dist/linux/package.sh` 의
+    // `install_extension_resources` · `validate_extension_resources` 가 경로까지 검사한다)
+    // 셸에 손으로 넣으려는 사용자가 그 자리를 찾는다. 경로 · 파일 구성이 패키지와 같아
+    // dev 빌드와 패키지의 배치가 어긋나지 않는다.
     if (is_linux_target) {
         for ([_][]const u8{ "gnome-extension", "cinnamon-extension" }) |family| {
             b.installDirectory(.{
@@ -363,15 +385,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("toml"));
 
-    // #496 1-c — GNOME · Cinnamon Shell extension 의 위치 표를 `physical_key.zig` 와
-    // 견주는 test 가 원본을 읽어야 한다. `@embedFile` 은 package path 를 벗어나지
-    // 못하므로 (`src/` 밖) 익명 import 로 넘긴다.
-    test_mod.addAnonymousImport("gnome_extension_js", .{
-        .root_source_file = b.path("dist/linux/gnome-extension/tildaz@ensky0.github.io/extension.js"),
-    });
-    test_mod.addAnonymousImport("cinnamon_extension_js", .{
-        .root_source_file = b.path("dist/linux/cinnamon-extension/tildaz@ensky0.github.io/extension.js"),
-    });
+    // #496 1-c — GNOME · Cinnamon Shell extension 의 위치 표를 `physical_key.zig` 와 견주는 test 가
+    // 원본을 읽어야 한다. #583 B8 이후로는 `shell_extension.zig` 가 같은 파일들을 embed 해 사용자
+    // 홈에 쓰므로, 앱 소스를 컴파일하는 module 은 모두 이 호출이 필요하다.
+    addShellExtensionResources(b, test_mod);
     if (is_linux_target) test_mod.link_libc = true;
     if (is_macos_target) {
         test_mod.linkSystemLibrary("objc", .{});
@@ -459,6 +476,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addShellExtensionResources(b, stress_mod);
     stress_mod.addOptions("build_options", build_opts);
     if (b.lazyDependency("ghostty", .{
         .target = target,
@@ -545,6 +563,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addShellExtensionResources(b, render_test_mod);
     const render_test_exe = b.addExecutable(.{
         .name = "render-test",
         .root_module = render_test_mod,
@@ -596,6 +615,7 @@ pub fn build(b: *std.Build) void {
                 // type error 가 안 surface 되는 케이스 회피.
                 .optimize = .Debug,
             });
+            addShellExtensionResources(b, check_mod);
             check_mod.addOptions("build_options", build_opts);
             if (b.lazyDependency("ghostty", .{
                 .target = check_target,
@@ -651,6 +671,7 @@ pub fn build(b: *std.Build) void {
                 .target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query)),
                 .optimize = .ReleaseSafe,
             });
+            addShellExtensionResources(b, probe_mod);
             // 네 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
             probe_mod.link_libc = true;
             const probe_obj = b.addObject(.{

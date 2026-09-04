@@ -2750,33 +2750,7 @@ pub const Config = struct {
         // 틀렸는지" 가 파서의 일반 오류로 퇴화한다.
         var parser: toml.Parser(toml.Table) = .init(allocator);
         defer parser.deinit();
-        var parsed = parser.parseString(content) catch |err| {
-            // TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
-            // 사용자가 어디를 고쳐야 할지 알 수 있게 line / col 을 함께 보여 준다.
-            //
-            // #495 — 경로는 본문에 넣지 않는다. `showConfigFatalMsg` 가 모든 config
-            // 오류 앞에 한 번 붙이므로 여기서 넣으면 두 번 나온다. 그리고 그 함수를
-            // 지나는 것 자체가 요점이다 — 예전엔 이 경로만 `dialog.showFatal` 을 직접
-            // 불러 형식이 갈라졌다.
-            var buf: [256]u8 = undefined;
-            const msg = if (parser.error_info) |info| switch (info) {
-                .parse => |pos| std.fmt.bufPrint(
-                    &buf,
-                    messages.config_parse_failed_at_format,
-                    .{ pos.line, pos.pos, @errorName(err) },
-                ) catch messages.config_parse_failed_fallback_msg,
-                .struct_mapping => std.fmt.bufPrint(
-                    &buf,
-                    messages.config_parse_failed_format,
-                    .{@errorName(err)},
-                ) catch messages.config_parse_failed_fallback_msg,
-            } else std.fmt.bufPrint(
-                &buf,
-                messages.config_parse_failed_format,
-                .{@errorName(err)},
-            ) catch messages.config_parse_failed_fallback_msg;
-            return recordConfigFatalMsg(rt, config_path, msg);
-        };
+        var parsed = parser.parseString(content) catch |err| return recordTomlParseFatal(rt, config_path, &parser, err);
         defer parsed.deinit();
 
         // TOML 문서의 최상위는 **항상 테이블**이라 JSON 의 "top-level must be object"
@@ -3353,6 +3327,44 @@ fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u
         break :blk fatal_notice_buf[0..n];
     };
     return publishFatalNotice(written.len);
+}
+
+/// TOML 구문 오류를 사용자 문구로 만들어 담는다. TOML 파서는 오류의 **위치**를 주므로
+/// (JSON 은 오류 이름만 줬다 · #493) 어디를 고쳐야 하는지 함께 보여 준다.
+///
+/// #495 — 경로는 본문에 넣지 않는다. `recordConfigFatalMsg` 가 모든 config 오류 앞에 한 번
+/// 붙이므로 여기서 넣으면 두 번 나온다.
+///
+/// #583 B7 — **worker 와 launcher 가 같은 것을 쓴다.** 예전에는 이 조립이 `Config.parse` 안에만
+/// 있어서, launcher 가 config 를 읽는 세 자리 (`instances.zig` 의 `configAutoStart` ·
+/// `configHotkeyText` · `hotkeyOwner`) 는 파서 오류를 그대로 올렸다. 그러면 같은 파일의 같은
+/// 오류인데 worker 는 `Line 12, column 3` 까지 알려 주고 launcher 는
+/// `TildaZ failed to start. Error: UnexpectedToken` 만 보여 줬다 — 사용자가 첫 실행에서 보는
+/// 쪽이 후자다 (#577 후속).
+pub fn recordTomlParseFatal(
+    rt: Runtime,
+    config_path: []const u8,
+    parser: *const toml.Parser(toml.Table),
+    err: anyerror,
+) LoadError {
+    var buf: [256]u8 = undefined;
+    const msg = if (parser.error_info) |info| switch (info) {
+        .parse => |pos| std.fmt.bufPrint(
+            &buf,
+            messages.config_parse_failed_at_format,
+            .{ pos.line, pos.pos, @errorName(err) },
+        ) catch messages.config_parse_failed_fallback_msg,
+        .struct_mapping => std.fmt.bufPrint(
+            &buf,
+            messages.config_parse_failed_format,
+            .{@errorName(err)},
+        ) catch messages.config_parse_failed_fallback_msg,
+    } else std.fmt.bufPrint(
+        &buf,
+        messages.config_parse_failed_format,
+        .{@errorName(err)},
+    ) catch messages.config_parse_failed_fallback_msg;
+    return recordConfigFatalMsg(rt, config_path, msg);
 }
 
 fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) LoadError {

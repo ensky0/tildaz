@@ -62,11 +62,16 @@ pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerro
         },
         else => {
             var buf: [256]u8 = undefined;
-            const text = messages.runFailureMessage(&buf, err);
+            const config_notice = config_mod.pendingFatalNotice();
+            const text = messages.runFailureMessage(&buf, err, config_notice);
             // stderr + 로그를 **먼저** 남긴다 — 아래 다이얼로그는 사용자가 닫을 때까지
             // 돌아오지 않으므로, 뒤에 두면 창을 안 닫고 프로세스를 죽인 회차에 아무것도
             // 안 남는다 (`dialog.showFatal` 이 같은 순서를 쓰는 이유, #510).
-            log.userFacing("fatal", text);
+            //
+            // #583 B7 — 단, 담긴 config 문구는 **담을 때 이미 나갔다** (`publishFatalNotice`).
+            // 조건 없이 내면 사용자가 같은 여섯 줄을 두 번 본다 (첫 실기에서 그랬다).
+            // worker 경로 (`wayland_minimal.zig` 의 config fatal) 가 예전부터 쓰는 규칙과 같다.
+            if (!messages.usesConfigNotice(err, config_notice)) log.userFacing("fatal", text);
             // #577 — **여기가 이 이슈의 원인 ② 다.** 예전에는 위 한 줄로 끝이라, launcher
             // 가 기동 실패를 알려도 `.desktop` 실행에서는 stderr 가 어디에도 붙지 않아
             // 사용자가 아무것도 보지 못했다. Windows (`MessageBoxW`) · macOS (`NSAlert`) 는

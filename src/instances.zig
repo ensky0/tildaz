@@ -605,7 +605,7 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
     defer parser.deinit();
     // 파싱 오류는 **그대로 전파**한다. `error.InvalidConfig` 로 뭉개면 런처가
     // 보여 주는 문구가 "InvalidConfig" 하나로 줄어 원인을 못 알린다 (#495).
-    var parsed = try parser.parseString(content);
+    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
     defer parsed.deinit();
     const value = parsed.value.get("auto_start") orelse return error.InvalidConfig;
     if (value != .boolean) return error.InvalidConfig;
@@ -624,7 +624,7 @@ pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) !
     // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
     var parser: toml.Parser(toml.Table) = .init(allocator);
     defer parser.deinit();
-    var parsed = try parser.parseString(content);
+    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
     defer parsed.deinit();
     const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
     if (value != .string) return error.InvalidConfig;
@@ -643,7 +643,7 @@ pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u
         // #493 — TOML. 최상위는 문법상 항상 테이블이다.
         var parser: toml.Parser(toml.Table) = .init(allocator);
         defer parser.deinit();
-        var parsed = try parser.parseString(content);
+        var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
         defer parsed.deinit();
         const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
         if (value != .string) return error.InvalidConfig;
