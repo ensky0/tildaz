@@ -1080,9 +1080,9 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 |---|---|
 | [`dist/linux/vkbd.py`](dist/linux/vkbd.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`dist/screens/clusters.py bands`](dist/screens/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
-| [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음) |
+| [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
 | [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
-| [`dist/linux/real-session-check.sh`](dist/linux/real-session-check.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `gnome` (GNOME 세션 안에서 fractional-scale 광고 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
+| [`dist/linux/real-session-check.sh`](dist/linux/real-session-check.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
 R=/run/user/$(id -u)/tz583; mkdir -m 700 -p $R                       # ⚠️ 짧은 경로 — 아래
@@ -1171,13 +1171,26 @@ grim shot.png                                                          # sway �
   로 바꾸고, 끝나면 `scale = "auto"` (사용자 설정의 규칙) 로 되돌려요. legacy `.conf` 세션 (nested 회차의 제 설정) 은
   keyword 가 그대로 먹어요 — `real-session-check.sh` 의 `set_scale` 이 응답을 보고 갈라요. 첫 라운드는 이걸 몰라 세 회차가
   전부 세션 배율 (1.5) 로 측정됐어요 — **배율을 바꾼 뒤 `hyprctl monitors` 로 반영을 확인하지 않은 회차는 무효**예요.
+- **창 영역을 좌표로 계산하지 말고 캡처에서 찾아요** (`bands-check.py --locate`). 2026-09-04 에 `hyprctl -j clients` 의 타일
+  좌표를 배율로 곱해 crop 을 만들었는데 그 값이 화면 밖 (`+3834` · 화면 폭 3840) 을 가리켜 **전이 행 0 개가 "깨끗" 으로
+  오판**됐고, 그렇게 회차 셋을 버렸어요. 창 위치는 compositor · 타일링 · 배율 · 전체화면 여부로 다 달라져요. 자동 탐색은
+  **두 띠를 다 보는 열** (`min(어두운 행, 밝은 행)`) 로 단면을 고르는 게 핵심이에요 — "띠 색 픽셀이 가장 많은 열" 로 고르면
+  어두운 띠 (20) 와 같은 밝기인 창 여백 · 검은 배경이 점수를 독식해 **또 거짓 "깨끗"** 이 나와요.
 - **foot 대조군은 `hyprctl dispatch fullscreen` 으로 키우지 말아요** — 그 디스패치는 포커스 창에 걸려 사용자의 kitty 를
-  전체화면으로 만들 수 있어요. `hyprctl -j clients` 에서 `class == "foot"` 의 `at` · `size` (논리) 를 읽어 물리로 곱해 crop 해요.
-- **실제 Hyprland 세션에서는 tildaz 창의 가로 경계가 세로로 반 픽셀 혼합돼요** ([#619](https://github.com/ensky0/tildaz/issues/619)
-  · 2026-09-03) — 1.25 · 1.5 · 2.0 모두, 1.0 은 깨끗, foot 은 1.25 · 2.0 에서 깨끗, software · GL 동일. #539 의 서명 (창
-  위→아래로 흘러가는 비율) 이 아니라 위치와 무관한 일정 비율이라 **`bands-check` 의 "여러 종류" 를 곧 #539 재발로 읽지
-  말아요** — 순서 (`위→아래 순서:` 줄) 가 단조인지, 값이 절반 (125) 근처로 일정한지 봐요. nested headless 출력에서는 이게
-  안 나와서 실제 출력 회차가 필요했어요.
+  전체화면으로 만들 수 있어요. 크기를 바꾸지 않고 자동 탐색으로 재요.
+- **실제 Hyprland 세션의 띠 혼합 (#619) 은 원인이 둘이었고 둘 다 우리 쪽이었어요** (2026-09-04 확정 · 수정 완료).
+  ① **논리 크기가 물리 픽셀 격자를 벗어남** — `논리 × scale/120` 이 정수가 아니면 compositor 가 표면 전체를 리샘플해요.
+  ② **배율이 바뀔 때 buffer 크기를 다시 계산하지 않음** — 요청 layout 이 그대로면 configure 가 다시 안 오는데 buffer 계산이
+  configure 핸들러에만 있었어요 (그래서 `height_percent = 100` 이 늘 걸렸어요). 자세한 규칙은 `SPEC.md` 의 "Wayland surface
+  의 논리 크기는 물리 픽셀 격자에 맞춘다" 두 문단이에요.
+  - **원인 판정은 "밝기 종류가 몇 개" 가 아니라 "주기가 살아 있는가" 예요.** 격자 위 회차는 셀 경계 밝기가
+    `207 167 125 83 41` 처럼 짧은 주기로 **반복**하고 (앱이 그리는 셀 위상이 도는 것), 격자를 벗어난 회차는 그 주기가
+    깨져 값이 전부 달라요 (1.25 · 논리 1037 회차는 14 행이 14 종). 종류 수만 보면 둘을 못 갈라요.
+  - **②는 띠의 "주기" 로만 보여요 — 전이 행 수로는 안 보여요.** 앱은 셀 25 px 로 그렸는데 화면의 한 띠 (3 셀) 가 93 px
+    이면 buffer 가 1.25 배 늘어난 거예요 (75 → 93.75). 그래서 회차마다 **띠 구간 길이가 `3 × 셀 높이` 인지** 함께 재요
+    (앱 로그의 `[font] applied ratios cell_h=` 가 그 셀 높이예요).
+  - 수정 뒤 실측: 1.25 · 1.5 · 2.0 · `height_percent` 40/50/60/100 **모두 전이 행 0 개**. 같은 세션의 foot 대조군은
+    1.25 · 1.5 에서 5~6 행이 남아요 (foot 자기 그림) — 이제 우리가 대조군보다 깨끗해요.
 - **Cinnamon 은 `org.Cinnamon.Eval` 이 열려 있어요 — 전역 hotkey 측정이 사용자 손 없이 돼요** (2026-09-04 · #616).
   GNOME 의 `org.gnome.Shell.Eval` 은 막혀 있지만 (`AccessDenied`) Cinnamon 은 그대로 답해요. 셸 내부 상태를 읽고
   **Clutter 가상 입력 장치로 실제 키를 넣을 수 있어요** — compositor 가 잡는 전역 단축키도 이 경로로 발화해요.
@@ -1410,7 +1423,7 @@ limactl copy tildaz-linux:/tmp/tz-shot.png /tmp/tz-shot.png                # 회
 **⚠️ GL 경로 (atlas · `gl_*.zig`) 는 이 VM 에서 켜지지 않아요 — software (`wl_shm`) 경로만 검증돼요.**
 2026-09-03 #586 Linux atlas `grow` 를 재려다 확인했어요. VM 에 `/dev/dri` 가 없어 tildaz 가 *"software path —
 cannot open DRM render node"* 로 떨어지고, `sudo modprobe vkms` 는 `card0` 만 (렌더 노드 없음), `sudo modprobe vgem`
-+ `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` + `WLR_RENDERER=gles2` 로 렌더 노드 · dmabuf 광고까지 만들어도 tildaz 의
++ `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` + `WLR_RENDERER=gles2` 로 렌더 노드 · dmabuf 지원 통보까지 만들어도 tildaz 의
 GLES 가 *"all 1 advertised modifiers failed FBO"* · *"gbm 할당 실패"* 로 software 로 떨어졌어요. **atlas 관련
 변경의 Linux 실기는 실제 GPU 가 있는 Linux 기기 (`# 실행 환경` 의 듀얼부트 노트북) 에서** 해요 — 절차는
 `# Linux — 글리프 · cluster 렌더 실기 검증 방법` 과 SPEC §12.6 의 Linux 실측 표대로예요.
