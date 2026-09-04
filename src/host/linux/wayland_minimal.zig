@@ -1411,6 +1411,11 @@ const Client = struct {
     /// 의 종료 조건. 값이 안 바뀌는 100%(120→120) 케이스도 event 수신 자체로 확정
     /// 처리하려고 applyScaleChange 의 값 비교와 별개로 event handler 가 set 한다.
     preferred_scale_received: bool = false,
+    /// #631 — `screen_logical_*` 를 latch 한 시점의 배율. 배율이 바뀌면 그 논리 크기는 옛 값이라
+    /// 버려야 하는데 (compositor 의 논리 화면 = 물리 ÷ 배율), boot 처럼 *방금 그 배율로* 받은
+    /// latch 까지 버리면 첫 layout 이 fallback 추정을 쓴다. 그래서 "값이 있는가" 가 아니라
+    /// **어느 배율에서 받은 latch 인가**로 판단한다.
+    screen_logical_scale: u32 = 0,
     /// #619 — **마지막 layer-surface configure 의 논리 크기.** buffer 크기 계산이
     /// configure 핸들러 한 곳에만 있으면, 배율만 바뀌고 우리가 요청한 layout 이
     /// 그대로일 때 compositor 가 configure 를 다시 보내지 않아 buffer 가 옛 배율의
@@ -3117,6 +3122,27 @@ const Client = struct {
             (new_scale * 100 / 120) % 100,
             source,
         });
+        // #631 — **배율이 바뀌면 논리 화면 크기도 바뀐다** (compositor 의 논리 화면 = 물리 ÷ 배율).
+        // #351 의 work-area latch 는 한 번만 받으므로, 그대로 두면 이 함수가 **옛 배율 기준의
+        // 논리 화면**으로 layout 을 다시 계산해 보낸다. latch 를 버리는 `applyScreenDimsChange` 는
+        // `wl_output.mode` (물리 해상도) 와 basis output 전환에서만 불렸고 — 배율만 바뀌는 경로가
+        // 빠져 있었다 (`xdg_output` 도 bind 하지 않아 다른 갱신 경로가 없다).
+        //
+        // 2026-09-05 실측 (KDE 6.7.4 · `width_percent = 50`): 1.7 에서 뜬 창의 latch 는 2259 다.
+        // 사용자가 배율을 1.6 으로 바꾸면 논리 화면이 2400 이 되는데, 우리는 옛 2259 로 계산한
+        // 여백 1129 를 그대로 보내 compositor 가 `2400 − 1129 = 1271` 을 준다 — **50 % 요청이
+        // 53 % 로 뜬다** (사용자가 "너비가 늘어났다" 로 알아봤다). 새로 띄운 창은 그 배율로 latch
+        // 하므로 정상이라, 증상이 "배율을 바꾼 그때 켜져 있던 창" 에만 남는 것도 이 때문이다.
+        //
+        // 배율이 실제로 달라졌을 때만 버린다 — boot 는 배율 event 가 첫 configure 보다 **먼저**
+        // 오는 compositor 도 있고 (KWin 실측), 방금 그 배율로 받은 latch 를 버리면 첫 layout 이
+        // fallback 추정을 쓴다.
+        if (self.screen_logical_w != 0 and self.screen_logical_scale != new_scale) {
+            // 순서 주의 — latch 를 **먼저** 버려야 아래 layout 재송신이 옛 work-area 를 안 쓴다
+            // (`applyBasisOutput` 이 같은 순서다). `caller_resends_layout = true` 는 이 함수가
+            // 아래에서 다시 보내기 때문이다.
+            try self.applyScreenDimsChange("preferred_scale", true);
+        }
         // #619 — **buffer 크기를 새 배율로 다시 계산한다.** compositor 는 우리가 요청한 논리
         // layout 이 그대로면 configure 를 다시 보내지 않는다 (배율이 바뀌어도 논리 크기는
         // 안 바뀌므로 흔한 경우다 — `height_percent = 100` 이 늘 그렇다). 그런데 buffer
@@ -3203,6 +3229,7 @@ const Client = struct {
         //    그 사이의 layout 계산은 physical → logical 추정 fallback 을 쓴다.
         self.screen_logical_w = 0;
         self.screen_logical_h = 0;
+        self.screen_logical_scale = 0;
         // ② #241 판정 보정 — compositor 가 stale margin 으로 폭 0 을 계산해 `closed` 를
         //    보내면, 그 `closed` 는 **같은 dispatch batch** 안에 있다 (KWin 실기: mode /
         //    closed / drainQuitRequest 가 같은 ms). topology 플래그를 안 세우면 main
@@ -5652,6 +5679,7 @@ const Client = struct {
                     self.initial_safe_pending = false;
                     self.screen_logical_w = w_logical;
                     self.screen_logical_h = h_logical;
+                    self.screen_logical_scale = self.preferred_scale;
                     log.appendLineVerbose("wayland", "logical work-area latched {}x{} (initial-safe configure, #351)", .{ w_logical, h_logical });
                     // continuation — 보류했던 실제 layout 을 이제 정확한 work-area 로
                     // 보낸다. 이 지점이 초기 안전 commit 을 보내는 모든 경로
