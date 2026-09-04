@@ -1166,6 +1166,22 @@ grim shot.png                                                          # sway �
     옛 work-area 로 뜬 회차 (60 % 인데 논리 높이 180) 가 있었어요. 그리고 **이 출력의 1.25 배율에서는 foot 도 리샘플
     서명**을 냈어요 (1.5 · 1.7 은 둘 다 깨끗) — 그 조건의 "여러 종류" 는 우리 결함이 아니고 실제 Hyprland 세션의 1.25 는
     따로 봐야 해요. **대조군 (foot) 없이 배율 판정을 내리지 않아요.**
+- **격리 회차는 `XDG_RUNTIME_DIR` 까지 격리해요 — 안 그러면 launcher 가 사용자의 실제 인스턴스에 말을 걸어요.**
+  2026-09-05 에 `HOME` · `XDG_CONFIG_HOME` 만 격리하고 launcher (인자 없는 실행) 를 돌렸더니, 단일 인스턴스
+  소켓이 `XDG_RUNTIME_DIR` 에 있어서 그 launcher 가 **사용자의 살아 있는 인스턴스에 새-instance 요청**을
+  보냈어요 — 사용자 화면에 `Create TildaZ Instance` 다이얼로그가 떴어요 (Cancel 로 흔적 없이 끝났지만
+  Create 를 눌렀다면 `config_1.toml` 이 생겼어요). config 만 격리해도 **lock · 소켓은 공유**예요.
+
+    ```sh
+    R=/run/user/$(id -u)/tzcheck            # sun_path 108 바이트 — 짧은 경로여야 해요
+    mkdir -p $R && chmod 700 $R
+    ln -sf /run/user/$(id -u)/wayland-0 $R/wayland-0   # compositor 는 실제 것에 붙어요
+    env -i HOME=$W/home PATH=/usr/bin:/bin XDG_RUNTIME_DIR=$R WAYLAND_DISPLAY=wayland-0 \
+        XDG_CURRENT_DESKTOP=COSMIC tildaz --autostart
+    ```
+
+    **`--autostart` 로 불러요** — 그 경로는 새-instance prompt 를 건너뜁니다 (`runLauncher` 의
+    `autostart_launch`). 인자 없는 실행은 "사용자가 하나 더 띄우려 한다" 는 뜻이라 요청 gate 를 잡아요.
 - **nested 로 못 가르는 것은 실제 세션에서 재요 — 두 방법이 달라요.** Hyprland 는 D-Bus 의존이 적어 **다른 TTY 에서
   로그인해 `Hyprland` 를 띄우면** KDE 세션 (이 agent 가 도는 곳) 과 동시에 떠도 안전하고, 같은 uid 의 `/run/user/<uid>` 에
   소켓이 생기므로 agent 가 거기 붙어 `real-session-check.sh hypr-scale` 을 돌릴 수 있어요 (사용자는 화면만 그 VT 에 두면
