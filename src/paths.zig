@@ -408,6 +408,30 @@ test "#496 1-c the Shell extensions read the same config filename we write" {
     }
 }
 
+test "#616 the Cinnamon extension checks for a conflicting accelerator before registering" {
+    // Cinnamon 의 `addHotKey` 는 겹침에 실패하지 않고, 겹치면 **먼저 등록된 쪽만 발화한다** (실측 ·
+    // SPEC §2.1). 그래서 extension 이 등록 **전에** `Main.keybindingManager.bindings` 를 훑어 판정하고,
+    // 겹치면 `failed` 를 남긴다. 그 배선이 조용히 사라지면 증상이 다시 "hotkey 가 안 먹는다" 로만
+    // 보이므로 (원인 표시가 없어짐) 여기서 고정한다. 위 두 테스트와 같은 종류의 가드다.
+    const js = @embedFile("cinnamon_extension_js");
+    const required = [_][]const u8{
+        // 목록을 직접 훑는 판정 함수와 그 호출.
+        "conflictingHotkeyOwner",
+        "Main.keybindingManager.bindings.values()",
+        // 겹치면 실패로 남긴다 — worker 가 읽는 자리 (`instanceN.hotkey`).
+        "writeHotkeyState(index, cfg.hotkey, false)",
+        // 목록이 바뀌면 재판정 — 이것이 없으면 충돌을 없앤 뒤에도 `failed` 가 남아 앱이 계속 거부한다.
+        "org.cinnamon.desktop.keybindings.wm",
+        "scheduleHotkeyResync",
+    };
+    for (required) |needle| {
+        if (std.mem.indexOf(u8, js, needle) == null) {
+            std.debug.print("cinnamon extension 에 \"{s}\" 가 없다 — #616 겹침 판정이 빠졌다\n", .{needle});
+            return error.ExtensionHotkeyConflictCheckMissing;
+        }
+    }
+}
+
 test "#510 the Shell extensions record hotkey state where the worker reads it" {
     // 확장은 zig 를 안 거치고 파일을 쓴다. 그래서 **경로 규칙이 두 언어에 복제**돼 있고,
     // 한쪽만 바뀌면 worker 가 기록을 못 찾는다 — 증상은 "GNOME 에서 hotkey 실패가 다시

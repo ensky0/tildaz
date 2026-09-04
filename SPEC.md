@@ -327,7 +327,7 @@ minimize/restore.
 | macOS | Input Monitoring · Accessibility preflight + `CGEventTapCreate` | 권한이 없어도 멈춘다 — 그 상태로는 hotkey 가 영영 안 온다 |
 | KDE Plasma | KGlobalAccel 의 사전 소유자 조회 → 사용자 확인 → 인수 → 사후 검증 | Linux 에서 유일하게 *남이 쥐고 있다* 를 직접 안다 |
 | GNOME | Shell extension 이 `grab_accelerator` 결과를 `instanceN.hotkey` 에 남기고 worker 가 부팅 때 읽는다 | 셸 **안에서만** 답이 나오고, 그 답이 worker 탄생보다 먼저 확정된다 (실측: GNOME Shell 50.4 에서 grab 실패 → 파일 기록 → worker 종료까지 연쇄 확인) |
-| Cinnamon | 같은 배선이지만 **실질적으로는 감지되지 않는다** | `Main.keybindingManager.addHotKey` 가 **accel 충돌에 실패하지 않는다** — wm 키바인딩과 custom 키바인딩 양쪽으로 선점해 보아도 성공한다 (실측: Cinnamon 6.6.9). 배선 자체는 산다 — `addHotKey` 가 실제로 실패하는 경우 (표에 없는 위치 이름 등) 는 GNOME 과 같은 경로로 걸린다 |
+| Cinnamon | 같은 배선 + **extension 이 등록 전에 Cinnamon 의 단축키 목록을 직접 본다** ([#616](https://github.com/ensky0/tildaz/issues/616)) | `addHotKey` 는 accel 충돌에 **실패하지 않는다** (실측: Cinnamon 6.6.9). 그런데 겹치면 **먼저 등록된 쪽만 발화하고 나중 것은 조용히 죽는다** — 새 이름 두 쌍으로 등록 순서를 뒤집어 두 번 확인했고, Cinnamon 자체 바인딩은 extension 보다 먼저 등록된다 (같은 세션에서 자체 id 97~173 · 우리 것 168 = 71 개가 앞선다). 그래서 반환값이 아니라 `Main.keybindingManager.bindings` 를 훑어 같은 accel 을 쓰는 남의 항목을 찾고, 있으면 등록하지 않고 `instanceN.hotkey` 에 `failed` 를 남긴다. **목록이 바뀌면 다시 판정한다** — `org.cinnamon.desktop.keybindings{,.wm,.media-keys}` 의 `changed` 로 재등록하므로 사용자가 충돌을 없애면 그때 `ok` 로 바뀐다 |
 | sway | `RUN_COMMAND` 응답의 `success` (거절 사유 문자열 포함) | 등록 실패는 알려 준다. **중복은 알 수 없고 알 필요도 없다** — sway 는 기존 binding 을 조용히 밀어내고 우리 등록이 항상 이긴다 (실측: sway 1.12 가 `Overwriting binding` 을 자기 로그에만 남기고 `success: true` 를 준다) |
 | Hyprland | `hyprctl -j binds` 로 **전체 목록을 읽어** 우리 accel 을 쓰는 남의 binding 을 찾는다 | 중복 bind 가 `ok` 를 돌려주고 **둘 다 살아 함께 발화한다** (실측: Hyprland 0.56.2) |
 | COSMIC | 사용자 `custom` RON 을 읽어 우리 accel 을 쓰는 남의 항목을 찾는다 | 파일 쓰기라 되먹임이 없다. 같은 키가 두 번 들어가면 COSMIC 이 파일을 통째로 버린다 (#484) |
@@ -343,11 +343,14 @@ minimize/restore.
   달아도 같은 조합이면 기본값 자리를 그대로 차지한다 (2026-09-04 · upstream 소스 판정 ·
   [#616](https://github.com/ensky0/tildaz/issues/616)). 감지할 것이 없으므로 보지 않는 것이 맞다.
   **다만 그 겹침은 시스템 단축키를 조용히 빼앗는다** — 사용자가 `Super+q` 를 hotkey 로 쓰면 그동안
-  COSMIC 의 창 닫기가 안 먹는다. 이것을 알릴지는 미정이다.
+  COSMIC 의 창 닫기가 안 먹는다. 막지는 않고 **등록할 때 로그 한 줄로 알린다**
+  (`cosmicSystemDefaultOverride` — `[cosmic] instance N hotkey overrides a COSMIC system shortcut …`).
 - **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
   `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
-- **Cinnamon 은 extension 이 켜져 있어도 accel 충돌을 못 본다** (위 표). 그래서 "다른 앱이 그
-  조합을 쓰고 있다" 는 Cinnamon 에서 유일하게 남는 미검출 경로다.
+- **Cinnamon 에서 남는 갭은 하나다** — *이미 있는* custom 단축키의 accel 을 **제자리에서 고치는**
+  경우. 그 값은 개별 dconf 경로에 있어 위 세 스키마의 `changed` 로 오지 않으므로, 그 방식으로 충돌을
+  만들거나 없앤 것은 다음 로그인 전까지 반영되지 않는다 (`custom-list` 추가 · 삭제와 시스템 단축키
+  변경은 반영된다).
 
 ### 2.2 탭 관리
 
