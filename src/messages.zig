@@ -664,8 +664,18 @@ pub const hotkey_reason_taken_by_format =
     "That combination is already bound to another action:\n\n  \u{2022} {s}";
 pub const hotkey_reason_taken_unnamed_msg =
     "That combination is already bound to another action on this desktop.";
+/// #616 — 이 사유는 **GNOME · Cinnamon 의 Shell extension 이 보고한 실패**에만 쓴다. 그쪽은
+/// 판정이 셸 안에서 나고 그 기록 (`instanceN.hotkey`) 을 worker 가 부팅 때 읽으므로, 사용자가
+/// 조합을 비운 것을 셸이 **알아차려야** 기록이 갱신된다. extension 은 데스크톱의 단축키 목록을
+/// 감시해 대개 즉시 갱신하지만 (Cinnamon 은 `custom-list` · 항목별 `binding` · `wm` ·
+/// `media-keys`), 다른 extension 이 코드로 직접 잡은 조합처럼 **감시에 걸리지 않는 경로**가 남는다.
+/// 그때는 셸이 다시 등록해야 하니 재로그인이 답이다 — 그 두 갈래를 본문이 직접 말한다. 안 적으면
+/// "조합을 비웠는데 앱이 계속 거부한다" 에서 사용자가 막힌다.
 pub const hotkey_reason_grab_refused_msg =
-    "The desktop refused the grab. Another application or the desktop itself holds the combination.";
+    \\The desktop refused the grab. Another application or the desktop itself holds the combination.
+    \\
+    \\If you free that combination in your desktop's shortcut settings, TildaZ takes it on the next start. If it still refuses right after you freed it, log out and back in — some shortcuts are only re-checked when the desktop shell starts.
+;
 /// #510 — 인수를 **사용자가 거절한** 경우. 이것을 `hotkey_reason_backend_failed_format` 으로
 /// 흘리면 본문에 `KGlobalAccelTakeoverDeclined` 라는 내부 에러 이름이 그대로 찍힌다 (실측).
 /// 게다가 그것은 "등록이 실패했다" 가 아니라 **사용자가 고른 결과**라 서술 자체가 틀렸다.

@@ -156,6 +156,9 @@ function enable() {
     configReloadId: 0,
     monitorsChangedId: 0, // #373 해상도 / 모니터 구성 변경 시 재배치
     workAreasChangedId: 0, // #373 work-area 확정 시점의 재계산
+    keybindingSettings: [], // #616 Cinnamon 단축키 목록 감시 (겹침 재판정)
+    keybindingSettingIds: [],
+    hotkeyResyncId: 0,
   };
 
   // 패널 window-list / workspace-switcher 는 Main.isInteresting → C
@@ -220,6 +223,33 @@ function enable() {
     });
   } catch (e) {
     global.logError("[tildaz] config monitor failed: " + e);
+  }
+
+  // #616 — Cinnamon 의 단축키 목록이 바뀌면 겹침 판정을 **다시** 한다.
+  //
+  // 이것이 없으면 사용자가 충돌하는 단축키를 *없앤 뒤에도* `failed` 기록이 남아 앱이 계속 거부한다
+  // (다음 로그인까지). 그건 원래 증상 ("hotkey 가 조용히 안 먹는다") 보다 나쁘다 — 사용자는 원인을
+  // 고쳤는데 앱이 여전히 안 뜬다.
+  //
+  // **개별 항목의 `binding` 은 감시하지 않는다 — Cinnamon 자신도 안 본다.** 그쪽 `KeybindingManager`
+  // 는 `changed::custom-list` 와 media-keys 만 듣는다 (`/usr/share/cinnamon/js/ui/keybindings.js`).
+  // 그래서 항목의 조합을 제자리에서 고쳐도 **데스크톱의 실제 상태는 그대로**이고 (옛 조합이 계속
+  // 잡혀 있다) 우리 `failed` 판정도 그대로 맞다. 그 신호를 우리만 따라가면 바뀐 것이 없는데 재판정만
+  // 도는 셈이라 넣지 않는다 (2026-09-04 실측 — 제자리 수정 뒤에도 Cinnamon 의 등록이 옛 조합이었다).
+  // dconf 를 거치지 않는 조합 (다른 extension 이 코드로 잡은 것) 도 여기서는 알 수 없다 — 그 두
+  // 경우의 답은 재로그인이고, hotkey 실패 다이얼로그가 그것을 안내한다 (`messages.zig`).
+  for (const schema of [
+    "org.cinnamon.desktop.keybindings",
+    "org.cinnamon.desktop.keybindings.wm",
+    "org.cinnamon.desktop.keybindings.media-keys",
+  ]) {
+    try {
+      const settings = new Gio.Settings({ schema_id: schema });
+      st.keybindingSettingIds.push(settings.connect("changed", () => scheduleHotkeyResync()));
+      st.keybindingSettings.push(settings);
+    } catch (e) {
+      global.logError(`[tildaz] keybinding watch failed for ${schema}: ${e}`);
+    }
   }
 
   // Worker 배치에는 app_id가 확정된 map을 사용한다. Dialog는 hidden parent 때문에
@@ -291,6 +321,12 @@ function disable() {
   if (st?.configMonitorId) st.configMonitor.disconnect(st.configMonitorId);
   if (st?.configMonitor) st.configMonitor.cancel();
   if (st?.configReloadId) GLib.source_remove(st.configReloadId);
+  // #616 — 단축키 목록 감시도 함께 거둔다.
+  (st?.keybindingSettings || []).forEach((settings, i) => {
+    try { settings.disconnect(st.keybindingSettingIds[i]); } catch (_e) {}
+  });
+  if (st) { st.keybindingSettings = []; st.keybindingSettingIds = []; }
+  if (st?.hotkeyResyncId) GLib.source_remove(st.hotkeyResyncId);
   if (st && st.mapId) {
     global.window_manager.disconnect(st.mapId);
     st.mapId = 0;
@@ -383,6 +419,80 @@ function readConfigs() {
   return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
 }
 
+/** #616 — 겹침 판정을 다시 돌린다. Cinnamon 자신이 같은 신호로 목록을 재등록하므로 그 뒤에 재야 한다.
+ *
+ * 이미 성공한 항목은 `registerHotkey` 의 `st.hotkeys.get(name) === cfg.accel` 조기 반환에 걸려
+ * 건너뛴다 — 실패로 남아 있던 것만 다시 시도한다.
+ */
+function scheduleHotkeyResync() {
+  if (st?.hotkeyResyncId) GLib.source_remove(st.hotkeyResyncId);
+  if (!st) return;
+  st.hotkeyResyncId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+    st.hotkeyResyncId = 0;
+    for (const [index, cfg] of st.configs) registerHotkey(index, cfg);
+    return GLib.SOURCE_REMOVE;
+  });
+}
+
+/** GTK accelerator 를 비교용으로 정규화 — 수식키를 **집합**으로 보고 별칭 · 순서 · 대소문자를 없앤다.
+ *
+ * 우리가 만드는 형식 (`toAccel`) 은 `<Control><Shift>t` 처럼 고정 순서지만, Cinnamon 자신의 바인딩은
+ * `<Primary>` (GTK 에서 `<Control>` 의 별칭) 를 쓰고 순서도 다르다. 문자열을 그대로 비교하면 같은
+ * 조합을 다른 것으로 읽는다.
+ */
+function normalizeAccel(accel) {
+  const raw = String(accel || "").trim();
+  if (!raw) return null;
+  const mods = new Set();
+  const modRe = /<([A-Za-z0-9]+)>/g;
+  let m;
+  while ((m = modRe.exec(raw)) !== null) {
+    const t = m[1].toLowerCase();
+    if (t === "control" || t === "ctrl" || t === "primary") mods.add("control");
+    else if (t === "shift") mods.add("shift");
+    else if (t === "alt" || t === "mod1") mods.add("alt");
+    else if (t === "super" || t === "meta" || t === "mod4" || t === "hyper") mods.add("super");
+    else mods.add(t); // 모르는 수식키는 그대로 — 다르면 다른 조합으로 남는다
+  }
+  const key = raw.replace(modRe, "").trim();
+  if (!key) return null;
+  // GTK 는 한 글자 키의 대소문자를 구분하지 않는다. keycode 표기 (`0x31`) 도 소문자로 모은다.
+  const norm = key.length === 1 || /^0[xX][0-9a-fA-F]+$/.test(key) ? key.toLowerCase() : key;
+  return [...mods].sort().join("+") + "|" + norm;
+}
+
+/** #616 — 이 accel 을 **우리 것이 아닌** Cinnamon 단축키가 이미 잡고 있는가. 잡은 쪽 이름을 돌려준다.
+ *
+ * **왜 등록 전에 직접 보는가.** `addHotKey` 는 조합이 겹쳐도 실패하지 않는다 (#510 실측). 그런데
+ * 2026-09-04 실기에서 그 다음이 갈렸다 — 같은 조합을 둘이 등록하면 muffin 은 두 등록을 모두 받아
+ * 주지만 **먼저 등록된 쪽만 발화하고 나중 것은 조용히 죽는다** (새 이름 두 쌍 · 등록 순서를 뒤집어
+ * 두 번 확인). 그리고 Cinnamon 자신의 바인딩은 extension 보다 **먼저** 등록된다 (같은 세션에서
+ * 자체 바인딩 id 97~173 · 우리 것 168 — 71 개가 앞선다). 즉 겹치면 **우리 hotkey 가 안 먹는다.**
+ *
+ * 반환값이 있으면 호출처가 `writeHotkeyState(..., false)` 로 남기고, worker 가 부팅 때 그것을 읽어
+ * 안내 후 종료한다 (#510 의 경로 그대로) — "부를 수 없는 창" 으로 남기지 않는다.
+ *
+ * 판정할 수 없으면 (`bindings` 를 못 읽음 · accel 을 정규화 못 함) `null` 이다. 못 봤다는 것과
+ * 겹쳤다는 것은 다르고, 잘못된 종료는 놓친 감지보다 나쁘다 (SPEC §2.1).
+ */
+function conflictingHotkeyOwner(index, accel) {
+  const want = normalizeAccel(accel);
+  if (!want) return null;
+  const mine = `tildaz-toggle-${index}`;
+  try {
+    for (const b of Main.keybindingManager.bindings.values()) {
+      if (!b || b.name === mine) continue; // 우리 자신의 재등록은 충돌이 아니다
+      for (const one of b.bindings || []) {
+        if (normalizeAccel(one) === want) return b.name;
+      }
+    }
+  } catch (e) {
+    global.logError(`[tildaz] hotkey conflict scan failed: ${e}`);
+    return null;
+  }
+  return null;
+}
+
 function registerHotkey(index, cfg) {
   const name = `tildaz-toggle-${index}`;
   if (!cfg.accel) {
@@ -395,6 +505,14 @@ function registerHotkey(index, cfg) {
   if (st.hotkeys.get(name) === cfg.accel) return;
   if (st.hotkeys.has(name)) {
     try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}
+  }
+  // #616 — 겹침은 `addHotKey` 가 알려 주지 않으므로 **등록 전에** 목록을 본다 (위 함수 주석).
+  // 우리 자신의 옛 바인딩은 바로 위에서 뗐으므로 여기서 자기 자신에 걸리지 않는다.
+  const taken = conflictingHotkeyOwner(index, cfg.accel);
+  if (taken) {
+    global.logError(`[tildaz] hotkey already claimed by "${taken}" — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+    writeHotkeyState(index, cfg.hotkey, false);
+    return;
   }
   // **실패가 조용하면 진단이 안 된다.** #496 1-c 검증에서 GNOME 쪽 같은 자리가
   // 위치 표기를 못 받아 grab 이 실패했는데 로그가 없어 원인이 안 보였다. 실패한
