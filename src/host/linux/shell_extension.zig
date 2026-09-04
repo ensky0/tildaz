@@ -11,52 +11,38 @@ const uuid = "tildaz@ensky0.github.io";
 
 const Resource = struct {
     relative_path: []const u8,
+    /// #583 B8 — 파일 **내용을 바이너리가 싣는다.** 익명 import 는 `build.zig` 의
+    /// `addShellExtensionResources` 가 넘긴다 (`@embedFile` 이 `src/` 밖을 못 읽는다).
+    content: []const u8,
 };
 
 const gnome_resources = [_]Resource{
-    .{ .relative_path = "extension.js" },
-    .{ .relative_path = "metadata.json" },
-    .{ .relative_path = "schemas/org.gnome.shell.extensions.tildaz.gschema.xml" },
+    .{ .relative_path = "extension.js", .content = @embedFile("gnome_extension_js") },
+    .{ .relative_path = "metadata.json", .content = @embedFile("gnome_extension_metadata") },
+    .{
+        .relative_path = "schemas/org.gnome.shell.extensions.tildaz.gschema.xml",
+        .content = @embedFile("gnome_extension_gschema"),
+    },
 };
 
 const cinnamon_resources = [_]Resource{
-    .{ .relative_path = "extension.js" },
-    .{ .relative_path = "metadata.json" },
+    .{ .relative_path = "extension.js", .content = @embedFile("cinnamon_extension_js") },
+    .{ .relative_path = "metadata.json", .content = @embedFile("cinnamon_extension_metadata") },
 };
 
-/// #520 — 동기화 결과. 예전에는 `bool` 이라 **"복사했다" 와 "소스가 없어 손대지 않았다"
-/// 가 같은 값**이었고, 호출자가 둘 다 `Shell extension synchronized and enabled` 로
-/// 찍었다. 그래서 dev 빌드에서 extension 이 갱신되지 않는 것을 로그로 알아챌 수 없었다.
-pub const SyncOutcome = enum {
-    /// 소스에서 대상으로 반영했다 (내용이 같아 실제 쓰기가 없었던 경우도 포함).
-    synced,
-    /// **소스가 없어 손대지 않았다.** 설치본이 이미 있어서 진행은 가능하지만, 지금 레포의
-    /// extension 이 아닐 수 있다.
-    kept_installed,
-    /// 소스도 설치본도 없다.
-    unavailable,
-};
-
-/// Package resources live at <prefix>/share/tildaz. AppImage uses the same
-/// layout below AppDir/usr, so every packaged Linux format follows this path.
-/// `zig build` 도 #520 이후 같은 배치를 `zig-out/share/tildaz` 에 만든다.
+/// 패키지 리소스를 현재 사용자의 Shell extension 디렉터리에 반영한다.
 ///
-/// 그래도 그 디렉터리가 없을 수 있다 — 레포에서 바이너리만 옮겨 쓰거나, install.sh 가
-/// 이미 복사해 둔 portable 설치가 그렇다. 그때는 설치본을 그대로 두고 `kept_installed`
-/// 를 돌려준다.
-pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !SyncOutcome {
-    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
-    const exe_dir = std.Io.Dir.path.dirname(exe) orelse return error.ExecutableDirectoryNotFound;
-    const resource_root = try std.Io.Dir.path.join(allocator, &.{ exe_dir, "..", "share", "tildaz" });
-    defer allocator.free(resource_root);
-
-    const source_family = switch (kind) {
-        .gnome => "gnome-extension",
-        .cinnamon => "cinnamon-extension",
-    };
+/// #520 은 이 함수가 exe 옆 `../share/tildaz/` 에서 파일을 읽게 두고, 그 디렉터리가 없으면
+/// 설치본을 그대로 두고 `kept_installed` 를 돌려주게 했다. 그런데 그 결과를 받은 쪽이 할 수
+/// 있는 일이 **"오래됐을 수 있다" 고 로그에 남기는 것뿐**이었다 (#583 B8) — 레포에서 바이너리만
+/// 옮겨 쓰거나 install.sh 로 깐 portable 설치는 계속 옛 extension 으로 돌았고, 사용자가 그것을
+/// 고칠 방법을 안내받지 못했다.
+///
+/// 그래서 리소스를 **바이너리가 싣는다.** 배치와 무관하게 항상 반영되고, extension 은 자기를
+/// 실은 바이너리와 늘 같은 버전이다 — extension 이 그 바이너리의 IPC 를 부르므로 이 짝이
+/// 어긋나면 안 된다. 결과 종류 (`synced` · `kept_installed` · `unavailable`) 도 함께 사라졌다:
+/// 이제 실패는 오류이고 성공은 한 가지다.
+pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !void {
     const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     const destination_dir = switch (kind) {
@@ -64,19 +50,6 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         .cinnamon => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "cinnamon", "extensions", uuid }),
     };
     defer allocator.free(destination_dir);
-
-    const source_dir = try std.Io.Dir.path.join(allocator, &.{ resource_root, source_family, uuid });
-    defer allocator.free(source_dir);
-    // #451 — `fs.accessAbsolute` ➡️ `std.Io.Dir.accessAbsolute` (릴리즈 노트 upgrade guide).
-    std.Io.Dir.accessAbsolute(rt.io, source_dir, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            const installed_entry = try std.Io.Dir.path.join(allocator, &.{ destination_dir, "extension.js" });
-            defer allocator.free(installed_entry);
-            std.Io.Dir.accessAbsolute(rt.io, installed_entry, .{}) catch return .unavailable;
-            return .kept_installed;
-        },
-        else => return err,
-    };
 
     // #451 — `fs.Dir.makePath` ➡️ `Io.Dir.createDirPath`. 공통 helper 를 쓴다 (#282 G7).
     try paths.ensureDir(rt, destination_dir);
@@ -87,12 +60,10 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         .cinnamon => cinnamon_resources[0..],
     };
     for (resources) |resource| {
-        const source = try std.Io.Dir.path.join(allocator, &.{ source_dir, resource.relative_path });
-        defer allocator.free(source);
         const destination = try std.Io.Dir.path.join(allocator, &.{ destination_dir, resource.relative_path });
         defer allocator.free(destination);
         if (std.Io.Dir.path.dirname(destination)) |parent| try paths.ensureDir(rt, parent);
-        changed = (try syncFile(rt, allocator, source, destination)) or changed;
+        changed = (try paths.writeFileIfChanged(rt, allocator, destination, resource.content)) or changed;
     }
 
     if (kind == .gnome) {
@@ -104,9 +75,10 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         };
         if (changed or !compiled_exists) try compileGnomeSchemas(rt, allocator, destination_dir);
     }
-    return .synced;
 }
 
+/// disk → disk 복사. #583 B8 이후 쓰임이 하나 남았다 — `glib-compile-schemas` 가 임시
+/// 디렉터리에 낸 `gschemas.compiled` 를 제자리로 옮기는 것 (그 파일은 embed 대상이 아니다).
 fn syncFile(rt: Runtime, allocator: std.mem.Allocator, source_path: []const u8, destination_path: []const u8) !bool {
     const source = try std.Io.Dir.openFileAbsolute(rt.io, source_path, .{});
     defer source.close(rt.io);
@@ -153,4 +125,20 @@ test "shell extension manifests contain required runtime files" {
     try std.testing.expectEqualStrings("metadata.json", gnome_resources[1].relative_path);
     try std.testing.expect(std.mem.startsWith(u8, gnome_resources[2].relative_path, "schemas/"));
     try std.testing.expectEqual(@as(usize, 2), cinnamon_resources.len);
+}
+
+test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 실리면 사용자 홈을 비운다)" {
+    // 내용이 비면 `writeFileIfChanged` 가 사용자 홈의 extension 을 **빈 파일로 덮는다** —
+    // 익명 import 가 잘못된 경로를 가리켜도 컴파일은 되므로 여기서 잡는다.
+    for (gnome_resources ++ cinnamon_resources) |resource| {
+        try std.testing.expect(resource.content.len > 0);
+    }
+    // 파일이 서로 바뀌지 않았는지 — 각 종류의 표식을 본다.
+    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[0].content, "imports.gi") != null or
+        std.mem.indexOf(u8, gnome_resources[0].content, "import ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[1].content, uuid) != null);
+    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[2].content, "<schemalist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cinnamon_resources[1].content, uuid) != null);
+    // GNOME 과 Cinnamon 의 extension.js 는 다른 셸 API 를 쓰는 다른 파일이다.
+    try std.testing.expect(!std.mem.eql(u8, gnome_resources[0].content, cinnamon_resources[0].content));
 }
