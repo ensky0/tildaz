@@ -5889,10 +5889,22 @@ const Client = struct {
     /// 활성 탭 PTY 로 **commit** (cancel 아님). Escape 만 명시적 cancel —
     /// macOS Cocoa quirk (#175) 동등 정책.
     fn commitPendingInput(self: *Client) void {
+        self.settlePendingInput(.commit);
+    }
+
+    /// #583 B14 — 진행 중인 입력을 **PTY 로 보내지 않고 버린다.** 확정 대상 셸이 이미 죽은
+    /// 자리 (`drainExitedTabs`) 를 위해 있다 — 자세한 근거는 `abandonShell` 주석.
+    fn discardPendingInput(self: *Client) void {
+        self.settlePendingInput(.abandon);
+    }
+
+    /// 두 모드의 차이는 **cell preedit 을 PTY 로 보내는지 하나뿐**이다. IME 쪽 정리 (아래 3)) 는
+    /// 양쪽 다 필요하므로 한 함수에 둔다 — 나누면 fcitx5 자모 buffer 를 비우는 절차가 복제된다.
+    fn settlePendingInput(self: *Client, mode: enum { commit, abandon }) void {
         const had_preedit = self.preedit_text.items.len > 0 or self.pending_preedit.items.len > 0;
         // 1) Cell preedit (terminal IME 조합 중) — PTY 로 직접 송신.
         if (self.preedit_text.items.len > 0) {
-            self.queueInput(self.preedit_text.items);
+            if (mode == .commit) self.queueInput(self.preedit_text.items);
             self.preedit_text.clearRetainingCapacity();
             self.renderer.preedit_text = "";
         }
@@ -6091,6 +6103,15 @@ const Client = struct {
         return true;
     }
 
+    /// #583 B14 — 지금 키를 받는 셸의 식별자 (`pending_close_buf` 의 원소와 같은 표현). 세션이
+    /// 없거나 활성 탭이 없으면 0 이라 어떤 close 와도 같지 않다.
+    fn activeShellPtr(self: *Client) usize {
+        if (self.session) |*session| {
+            if (session.activeTab()) |tab| return @intFromPtr(tab);
+        }
+        return 0;
+    }
+
     /// L12-β — read thread 가 `pending_close_buf` 에 쌓아둔 ptr 들 main thread
     /// 에서 일괄 처리. `tab_actions.closeByPtr` 의 outcome 가 `.ended` (마지막
     /// 탭) 면 shell_exited true → main loop 종료. `.changed` 면 redraw.
@@ -6104,14 +6125,22 @@ const Client = struct {
 
         var host = self.buildTabActionsHost();
         var any_changed = false;
-        for (closes) |ptr| switch (tab_actions.closeByPtr(&host, ptr) orelse continue) {
-            .ended => {
-                log.appendLine("tab", "last tab exited — shutting down", .{});
-                self.shell_exited.store(true, .release);
-                return;
-            },
-            .changed => any_changed = true,
-        };
+        for (closes) |ptr| {
+            // #583 B14 — 이 close 가 **활성 셸**을 치우는지 먼저 본다. 닫은 뒤에는 형제 pane 이
+            // 활성이라 구별할 수 없고, 그 상태로 조합을 확정하면 그 형제 셸로 샌다.
+            const closing_active = ptr == self.activeShellPtr();
+            switch (tab_actions.closeByPtr(&host, ptr) orelse continue) {
+                .ended => {
+                    log.appendLine("tab", "last tab exited — shutting down", .{});
+                    self.shell_exited.store(true, .release);
+                    return;
+                },
+                .changed => {
+                    any_changed = true;
+                    if (closing_active) self.abandonShell();
+                },
+            }
+        }
         if (any_changed) {
             // #127 — 탭 카운트 변화 시 cell 영역 동기화. 2 → 1 전환이면
             // 탭바 사라짐 → 남은 탭 grid 확장.
@@ -6513,6 +6542,22 @@ const Client = struct {
     /// 도는 것은 무해하다 — `resetCompose` 는 idempotent 다.
     fn leaveShell(self: *Client) void {
         self.commitPendingInput();
+        self.resetCompose();
+    }
+
+    /// #583 B14 — **활성 셸이 스스로 죽어서 떠나는 자리의 입력 정리.** `leaveShell` 과 달리 IME
+    /// preedit 도 확정하지 않고 버린다.
+    ///
+    /// 2026-09-04 결정 (사용자). 확정할 대상이 없다 — 그 셸의 PTY 는 이미 닫혔으므로 확정한
+    /// 바이트는 사라지고, 닫은 *뒤에* 확정하면 형제 pane 의 셸로 샌다. 그것이 #536 이 사용자
+    /// 조작 경로에서 고친 바로 그 오입력이다 (그때는 `^` 를 띄운 채 옆 pane 을 클릭하니 `ê` 가
+    /// 그 셸에 들어갔다). 이 경로는 사용자 조작이 아니라 PTY 종료가 원인이라 #536 의 handler
+    /// 목록에 없었고, `drainExitedTabs` 가 `leaveShell` 을 부르지 않아 조합이 남아 있었다.
+    ///
+    /// **활성 pane · 탭이 실제로 바뀔 때만** 부른다 — 백그라운드 탭의 셸이 끝나는 것은 활성
+    /// 셸을 바꾸지 않으므로 그때 버리면 멀쩡한 조합을 이유 없이 깬다.
+    fn abandonShell(self: *Client) void {
+        self.discardPendingInput();
         self.resetCompose();
     }
 

@@ -8,6 +8,7 @@
 #   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz                     # LANG 은 현재 값
 #   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz --lang xx_XX.UTF-8  # 없는 locale → en_US.UTF-8 fallback
 #   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz --strace            # tildaz 의 write() 까지 기록
+#   ./dist/linux/dead-key-compose-check.sh --bin ./zig-out/bin/tildaz --case pane-exit    # #583 B14 — 활성 pane 의 셸이 스스로 끝날 때 조합을 버리는지
 #
 # 필요: sway · wtype · python3 · xxd · grim, 그리고 조합 중 표시 판정 (#530) 에 imagemagick 또는
 # python3-pil (없으면 그 판정만 건너뛰고 스크린샷을 남긴다). 사용자의 세션은 건드리지 않는다 —
@@ -29,14 +30,17 @@ set -uo pipefail
 BIN=""
 LANG_VALUE="${LANG:-C.UTF-8}"
 USE_STRACE=0
+CASE=dead-key
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --bin) BIN="$2"; shift 2 ;;
         --lang) LANG_VALUE="$2"; shift 2 ;;
         --strace) USE_STRACE=1; shift ;;
+        --case) CASE="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
+case "$CASE" in dead-key|pane-exit) ;; *) echo "--case 는 dead-key 또는 pane-exit 예요 (받은 값: $CASE)" >&2; exit 2 ;; esac
 [[ -n "$BIN" && -x "$BIN" ]] || { echo "--bin <tildaz 실행 파일> 이 필요해요 (예: --bin ./zig-out/bin/tildaz)" >&2; exit 2; }
 BIN="$(realpath "$BIN")"
 for tool in sway wtype python3 xxd; do
@@ -49,6 +53,7 @@ rm -rf "$T"
 mkdir -p "$T/home" "$T/xdg" "$T/state" "$T/run"
 chmod 700 "$T/run"
 
+setup_dead_key() {
 # ── 수신자 (python): raw 로 두고 바이트 단위로 기록. termios 플래그를 시점별로 남긴다 ──
 cat > "$T/rec.sh" <<EOF
 #!/bin/bash
@@ -127,6 +132,65 @@ sleep 1
 swaymsg exit
 EOF
 chmod +x "$T/drive.sh"
+}
+
+setup_pane_exit() {
+    # #583 B14 — pane 이 둘이고 **활성 pane 의 셸이 스스로 끝나는** 자리를 만든다. 새 pane 도 같은
+    # `-e` 명령을 띄우므로 (`SessionCore.shell_command`) 수신자가 자기가 몇 번째인지 표식 파일로
+    # 알고, 두 번째만 6.5 s 뒤 스스로 끝난다 — 사용자 조작이 아니라 PTY 종료가 원인인 경로다.
+    cat > "$T/rec.sh" <<EOF
+#!/bin/bash
+exec python3 $T/rec.py
+EOF
+    chmod +x "$T/rec.sh"
+    cat > "$T/rec.py" <<EOF
+import os, threading, time, tty
+T = "$T"
+marker = T + "/second-pane"
+if os.path.exists(marker):
+    which = "2"
+else:
+    open(marker, "w").close()
+    which = "1"
+tty.setraw(0)
+out = open(f"{T}/pty-{which}.bin", "wb", buffering=0)
+if which == "2":
+    # 스스로 끝난다. os._exit 이라 atexit / flush 없이 즉시 — 셸이 죽는 것과 같은 모양이다.
+    threading.Thread(target=lambda: (time.sleep(6.5), os._exit(0)), daemon=True).start()
+while True:
+    b = os.read(0, 1)
+    if not b:
+        break
+    out.write(b)
+EOF
+    cat > "$T/drive.sh" <<EOF
+#!/bin/bash
+set -u
+exec > "$T/drive.log" 2>&1
+echo "drive start (pane-exit): WAYLAND_DISPLAY=\${WAYLAND_DISPLAY:-} LANG=\${LANG:-}"
+env -u XDG_CURRENT_DESKTOP TILDAZ_VERBOSE=1 HOME=$T/home XDG_CONFIG_HOME=$T/xdg XDG_STATE_HOME=$T/state \\
+    "$BIN" --instance 9 -e $T/rec.sh &
+TZ_PID=\$!
+sleep 4
+echo "tildaz pid=\$TZ_PID alive=\$(kill -0 \$TZ_PID 2>/dev/null && echo yes || echo no)"
+# 타임라인 (wtype 은 세션당 1 회라 한 호출에 다 넣는다):
+#   Ctrl+Shift+→ 로 분할 (새 pane 이 활성) → 1.2 s 뒤 dead_circumflex (그 pane 에서 조합 시작)
+#   → 7 s 대기 (그 사이 6.5 s 에 새 pane 의 수신자가 스스로 끝나 pane 이 닫히고 형제가 활성)
+#   → e → Return. 형제 pane 이 받는 바이트가 판정이다: 'e' 면 버린 것, 'ê' 면 조합이 따라온 것.
+wtype -s 800 \\
+  -M ctrl -M shift -k Right -m ctrl -m shift -s 1200 \\
+  -k dead_circumflex -s 7000 \\
+  -k e -s 800 \\
+  -k Return -s 500 &
+WTYPE_PID=\$!
+wait \$WTYPE_PID; echo "wtype exit=\$?"
+sleep 1
+swaymsg exit
+EOF
+    chmod +x "$T/drive.sh"
+}
+
+"setup_${CASE//-/_}"
 printf 'exec %s/drive.sh\n' "$T" > "$T/sway.cfg"
 
 echo "=== LANG=$LANG_VALUE bin=$BIN — headless sway 시작 (최대 40 s)"
@@ -136,7 +200,7 @@ env -i PATH="$PATH" HOME="$T/home" LANG="$LANG_VALUE" \
 echo "sway exit=$?"
 
 echo "--- drive.log"; cat "$T/drive.log" 2>/dev/null
-echo "--- rec.diag (PTY termios)"; cat "$T/rec.diag" 2>/dev/null || echo "(no rec.diag — 수신자가 뜨지 않았어요)"
+[[ $CASE == dead-key ]] && { echo "--- rec.diag (PTY termios)"; cat "$T/rec.diag" 2>/dev/null || echo "(no rec.diag — 수신자가 뜨지 않았어요)"; }
 if [[ $USE_STRACE = 1 ]]; then
     echo "--- strace: tildaz write() of key bytes"
     grep -E 'write\([0-9]+, "(\\x03|\\x0d|\\xc3|\\x5e|\\x61|\\x60|\\x65)' "$T/strace.log" 2>/dev/null | sed 's/^[0-9]* *//' | head -24
@@ -146,6 +210,28 @@ grep -h -i 'compose\|keyboard keymap loaded' "$T"/state/tildaz/*.log 2>/dev/null
 echo "--- composition owner (text_input lines in app log — must be 0: an IME in the path means we did not measure tildaz)"
 IME_LINES=$(grep -h 'text_input \(preedit\|commit\)' "$T"/state/tildaz/*.log 2>/dev/null | wc -l | tr -d ' ')
 echo "text_input preedit/commit lines: $IME_LINES"
+if [[ $CASE == pane-exit ]]; then
+    # #583 B14 — 형제 pane 이 받은 바이트가 판정이다. 조합을 버렸으면 'e' (65) 가 그대로,
+    # 조합이 따라왔으면 'ê' (c3aa) 다. 죽은 pane (2) 은 dead key 뿐이라 바이트가 없어야 한다.
+    echo "--- PTY bytes (hex) — pane 1 = 형제 (살아 있는 쪽) · pane 2 = 스스로 끝난 쪽"
+    GOT1=$(xxd -p "$T/pty-1.bin" 2>/dev/null | tr -d '\n')
+    GOT2=$(xxd -p "$T/pty-2.bin" 2>/dev/null | tr -d '\n')
+    echo "pane 1 EXPECT 650d (e CR)   GOT ${GOT1:-(empty)}"
+    echo "pane 2 EXPECT (empty)       GOT ${GOT2:-(empty)}"
+    echo "--- 탭 close 로그 (활성 pane 이 실제로 바뀌었는지)"
+    grep -h "exited\|pane" "$T"/state/tildaz/*.log 2>/dev/null | tail -5
+    if [[ "$GOT1" == "650d" && "$IME_LINES" == "0" ]]; then
+        echo "##### PASS ##### (활성 pane 의 셸이 스스로 끝날 때 조합을 버린다)"
+        exit 0
+    fi
+    if [[ "$GOT1" == "c3aa0d" ]]; then
+        echo "조합이 형제 pane 으로 따라갔다 — 그 셸에 'ê' 가 들어갔다 (#583 B14 가 고치려는 그 증상)"
+    fi
+    [[ "$IME_LINES" != "0" ]] && echo "an IME composed instead of tildaz (text_input lines=$IME_LINES) — this run does not measure the app path"
+    echo "##### FAIL ##### (산출물: $T — drive.log · sway.log · pty-1.bin · pty-2.bin)"
+    exit 1
+fi
+
 # #530 — 조합 중 표시 판정. preedit 배경색 RGB(64,64,128) 은 코드에 고정된 값이고 (software_terminal.zig
 # `collectPreedit`), grim 은 렌더 픽셀을 그대로 담으므로 정확 일치로 센다. 도구가 없으면 -1 (미판정).
 count_preedit_px() {
