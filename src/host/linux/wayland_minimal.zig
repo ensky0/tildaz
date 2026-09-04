@@ -497,6 +497,43 @@ fn pctToPx(screen_dim: f32, pct: f32) u32 {
     return @round(v);
 }
 
+/// #619 — **논리 크기를 물리 픽셀 격자에 맞춘다.** fractional scale 에서 논리 × scale/120 이 정수가
+/// 아니면 surface 의 device 사각형이 소수 픽셀에 걸린다 (실측: 논리 높이 1037 × 150/120 = 1296.25 px).
+/// 그러면 우리가 보내는 buffer (반올림한 1296 px) 와 compositor 가 놓을 자리 (1296.25 px) 가 어긋나
+/// compositor 가 표면 전체를 리샘플한다 — 창 위에서 아래로 조금씩 밀리는 흐릿함이다.
+///
+/// 격자 간격은 `120 / gcd(scale, 120)` 논리 픽셀이다. 1.25x (150/120) 는 4, 1.5x (180/120) 는 2,
+/// 2.0x (240/120) 는 1 — 정수 배율에 격자가 없는 이유가 이것이고, #619 가 Hyprland 1.25x 에서만
+/// 보였던 이유도 이것이다 (KDE 1.7x = 204/120 → gcd 12 → 간격 10).
+///
+/// 2026-09-04 실측 (Hyprland 0.56.2 · DP-3 3840x2160 · 배율 1.25 · 띠 화면 전이 행):
+///
+/// | height_percent | 논리 높이 | × 1.25    | 전이 행 밝기            |
+/// | -------------- | --------- | --------- | ----------------------- |
+/// | 50 %           | 864       | 1080 ✓    | `207 167 125 83 41` 반복 |
+/// | 60 %           | 1037      | 1296.25 ✗ | 14 행이 전부 다른 값     |
+/// | 40 %           | 691       | 863.75 ✗  | 반복이 깨진 5 종         |
+///
+/// 정수인 회차만 주기가 살아 있다 — 그 주기는 앱이 그리는 셀 경계 (셀 높이가 소수라 위상이 도는 것) 라
+/// 남아도 되는 값이고, 주기를 깨는 쪽이 이 함수가 없앤 표면 전체 리샘플이다.
+///
+/// `round_up` — 요청 격자 (`-size COLSxROWS`) 처럼 **줄이면 마지막 행이 잘리는** 값은 올린다. 퍼센트
+/// 점유는 내린다 (화면을 넘지 않게).
+fn snapLogicalToDeviceGrid(logical: u32, scale_num: u32, round_up: bool) u32 {
+    if (logical == 0 or scale_num == 0) return logical;
+    const step = fractional_scale_denominator / std.math.gcd(scale_num, fractional_scale_denominator);
+    if (step <= 1) return logical;
+    const rem = logical % step;
+    if (rem == 0) return logical;
+    return if (round_up) logical + (step - rem) else logical - rem;
+}
+
+/// #619 — 여백 (i32) 용 격자 맞춤. 내림이라 시작 여백이 커져 반대편이 음수가 되는 일이 없다.
+fn snapLogicalOffset(offset: i32, scale_num: u32) i32 {
+    if (offset <= 0) return offset;
+    return @intCast(snapLogicalToDeviceGrid(@intCast(offset), scale_num, false));
+}
+
 /// L8-β — cross-axis margin 계산. `remaining = screen_dim - surface_dim` 의
 /// `offset_percent` 비율만큼 한 쪽 (`anchor` 잡힌 edge) 에 띄움. 음수 방지.
 fn pxOffset(remaining: i32, off_pct: f32) i32 {
@@ -1344,6 +1381,13 @@ const Client = struct {
     /// 의 종료 조건. 값이 안 바뀌는 100%(120→120) 케이스도 event 수신 자체로 확정
     /// 처리하려고 applyScaleChange 의 값 비교와 별개로 event handler 가 set 한다.
     preferred_scale_received: bool = false,
+    /// #619 — **마지막 layer-surface configure 의 논리 크기.** buffer 크기 계산이
+    /// configure 핸들러 한 곳에만 있으면, 배율만 바뀌고 우리가 요청한 layout 이
+    /// 그대로일 때 compositor 가 configure 를 다시 보내지 않아 buffer 가 옛 배율의
+    /// 물리 크기로 남는다 (그리고 compositor 가 그걸 새 배율 크기로 늘려 그린다).
+    /// `applyScaleChange` 가 이 값으로 다시 계산한다.
+    last_configure_w_logical: i32 = 0,
+    last_configure_h_logical: i32 = 0,
     /// #336 — 첫 frame(map) 이전에 layer-surface 가 closed 된 신호. boot 표시
     /// 경로가 이걸 보고 quit 이 아니라 destroy + 재생성(상한)으로 처리한다. map
     /// 이후의 pending_quit_request(Alt+F4 / output re-home, #241)와 구분된다.
@@ -2919,6 +2963,12 @@ const Client = struct {
                 want_h = @ceil(@min(sh_f, @as(f32, @floatFromInt(vp.h)) / scale_f));
             }
         }
+        // #619 — 두 경로 (퍼센트 · 요청 격자) 가 끝난 뒤 **한 곳에서** 물리 픽셀 격자에 맞춘다.
+        // 화면 전체 점유 (100 %) 는 이 호출이 값을 바꾸지 않는다 — compositor 가 알려준 논리 화면은
+        // `논리 × scale = 물리` 가 정수라 이미 격자 위다. 격자를 벗어나는 것은 그 사이의 퍼센트 값이다.
+        const snap_up = self.run_opts.grid != null;
+        want_w = @min(snapLogicalToDeviceGrid(want_w, self.preferred_scale, snap_up), @as(u32, @intCast(@max(sw_i, 0))));
+        want_h = @min(snapLogicalToDeviceGrid(want_h, self.preferred_scale, snap_up), @as(u32, @intCast(@max(sh_i, 0))));
         const want_w_i: i32 = @intCast(@min(want_w, @as(u32, std.math.maxInt(i32))));
         const want_h_i: i32 = @intCast(@min(want_h, @as(u32, std.math.maxInt(i32))));
         // 점유율 100% 는 특수 분기가 필요 없다 (#351) — logical 로 계산하면
@@ -2955,9 +3005,12 @@ const Client = struct {
         const margin_h_extra = sw_i - want_w_i; // 남는 공간 (가로)
         const margin_v_extra = sh_i - want_h_i; // 남는 공간 (세로)
         // cross-axis (docked 축이 아닌 축) — 남는 공간을 offset_percent 로 분배.
-        const ml = pxOffset(margin_h_extra, off_pct);
+        // #619 — 여백도 격자 위여야 한다. 크기가 격자 위여도 시작 여백이 격자를 벗어나면 표면의 device
+        // *위치* 가 소수 픽셀에 걸려 같은 리샘플이 난다. 남는 공간 (`margin_*_extra`) 은 격자 위 값들의
+        // 차라 이미 격자 위이므로, 시작 쪽만 맞추면 반대쪽 (`extra - 시작`) 도 따라온다.
+        const ml = snapLogicalOffset(pxOffset(margin_h_extra, off_pct), self.preferred_scale);
         const mr = margin_h_extra - ml;
-        const mt = pxOffset(margin_v_extra, off_pct);
+        const mt = snapLogicalOffset(pxOffset(margin_v_extra, off_pct), self.preferred_scale);
         const mb = margin_v_extra - mt;
         // docked 축 — 붙는 edge 는 margin 0, 반대 edge 가 남는 공간 전부.
         return switch (cfg.dock_position) {
@@ -3016,6 +3069,29 @@ const Client = struct {
             (new_scale * 100 / 120) % 100,
             source,
         });
+        // #619 — **buffer 크기를 새 배율로 다시 계산한다.** compositor 는 우리가 요청한 논리
+        // layout 이 그대로면 configure 를 다시 보내지 않는다 (배율이 바뀌어도 논리 크기는
+        // 안 바뀌므로 흔한 경우다 — `height_percent = 100` 이 늘 그렇다). 그런데 buffer
+        // 크기는 configure 핸들러에서만 계산해 왔으니, 그 경우 buffer 가 옛 배율의 물리
+        // 크기로 남고 viewport 목적지 (논리) 는 새 배율의 물리 크기를 뜻하게 되어
+        // compositor 가 옛 buffer 를 늘려 그린다.
+        //
+        // 2026-09-04 실측 (Hyprland 0.56.2 · 1.25x · height_percent 50 → 논리 864):
+        // 앱은 셀 25 px 로 그렸는데 화면의 띠 한 칸 (3 셀) 이 93 px 였다 — 75 px 를
+        // 1.25 배 늘린 값이다. 격자 맞춤 (#619 첫 수정) 이 논리 크기를 바꾸는 회차에서는
+        // 새 configure 가 와서 가려졌고, 이미 격자 위였던 회차에서만 드러났다.
+        if (self.layer_surface_id != 0 and self.last_configure_w_logical > 0 and self.last_configure_h_logical > 0) {
+            self.pending_width = self.logicalToPhysicalSize(self.last_configure_w_logical);
+            self.pending_height = self.logicalToPhysicalSize(self.last_configure_h_logical);
+            self.applyPendingSize();
+            log.appendLineVerbose("wayland", "buffer resized for scale {d}/120 from last configure (logical {}x{} → {}x{})", .{
+                new_scale,
+                self.last_configure_w_logical,
+                self.last_configure_h_logical,
+                self.window_width,
+                self.window_height,
+            });
+        }
         // renderer scale apply — paint 가 1x layout 그리면 큰 buffer 안 작은
         // content (#210). 실패해도 default scale 로 진행.
         const renderer_scale_applied = blk: {
@@ -5520,6 +5596,11 @@ const Client = struct {
                 // 신호로 계속 써야 한다 (안 그러면 그 config 에서 boot 가 멈춘다).
                 if (w > 0) self.pending_width = self.logicalToPhysicalSize(w_logical);
                 if (h > 0) self.pending_height = self.logicalToPhysicalSize(h_logical);
+                // #619 — 배율이 나중에 바뀔 때 buffer 를 다시 계산할 근거. 이 핸들러가
+                // buffer 크기 계산의 유일한 지점이면 configure 가 안 오는 배율 변경에서
+                // 옛 크기가 그대로 남는다 (`applyScaleChange` 의 재계산이 짝이다).
+                if (w > 0) self.last_configure_w_logical = w_logical;
+                if (h > 0) self.last_configure_h_logical = h_logical;
                 self.applyPendingSize();
                 // viewport.set_destination — compositor 가 우리 buffer (physical)
                 // 를 logical surface size 안에 1:1 매핑하게. 호출 안 하면 buffer
@@ -10722,6 +10803,35 @@ fn physicalSizeForLogical(logical: i32, scale_num: u32) i32 {
     else
         -@divFloor(-scaled + half, den);
     return @intCast(rounded);
+}
+
+test "#619 논리 크기는 물리 픽셀 격자에 맞춰진다 (논리 × scale 이 정수)" {
+    const s125: u32 = 150; // 1.25x — 격자 간격 4
+    const s150: u32 = 180; // 1.5x  — 격자 간격 2
+    const s170: u32 = 204; // 1.7x  — gcd 12 → 격자 간격 10
+    const s200: u32 = 240; // 2.0x  — 격자 없음
+    // 실측 회차의 값 — 논리 1037 이 1296.25 px 를 만들어 표면 전체가 리샘플됐다.
+    try std.testing.expectEqual(@as(u32, 1036), snapLogicalToDeviceGrid(1037, s125, false));
+    try std.testing.expectEqual(@as(u32, 1040), snapLogicalToDeviceGrid(1037, s125, true));
+    // 맞춘 값은 물리 픽셀이 정수다 — buffer 와 compositor 의 device 사각형이 같아진다.
+    try std.testing.expectEqual(@as(i32, 1295), physicalSizeForLogical(1036, s125));
+    try std.testing.expectEqual(@as(i32, 1295), @divExact(1036 * 150, 120));
+    // 이미 격자 위면 그대로. 논리 화면 (3072 = 3840÷1.25) 이 그 경우라 100 % 점유는 안 줄어든다.
+    try std.testing.expectEqual(@as(u32, 1036), snapLogicalToDeviceGrid(1036, s125, false));
+    try std.testing.expectEqual(@as(u32, 3072), snapLogicalToDeviceGrid(3072, s125, false));
+    // 배율마다 간격이 다르다 — 1.5x 는 짝수, 1.7x 는 10 의 배수, 2.0x 는 제약 없음.
+    try std.testing.expectEqual(@as(u32, 1036), snapLogicalToDeviceGrid(1037, s150, false));
+    try std.testing.expectEqual(@as(u32, 864), snapLogicalToDeviceGrid(864, s150, false));
+    try std.testing.expectEqual(@as(u32, 730), snapLogicalToDeviceGrid(735, s170, false));
+    try std.testing.expectEqual(@as(u32, 1037), snapLogicalToDeviceGrid(1037, s200, false));
+    try std.testing.expectEqual(@as(u32, 1037), snapLogicalToDeviceGrid(1037, fractional_scale_denominator, false));
+    // 0 과 scale 없음은 그대로 (계산 전 구간에서도 안전해야 한다).
+    try std.testing.expectEqual(@as(u32, 0), snapLogicalToDeviceGrid(0, s125, false));
+    try std.testing.expectEqual(@as(u32, 1037), snapLogicalToDeviceGrid(1037, 0, false));
+    // 여백 래퍼는 내림이라 반대편 여백이 음수가 되지 않는다.
+    try std.testing.expectEqual(@as(i32, 1036), snapLogicalOffset(1037, s125));
+    try std.testing.expectEqual(@as(i32, 0), snapLogicalOffset(0, s125));
+    try std.testing.expectEqual(@as(i32, -5), snapLogicalOffset(-5, s125));
 }
 
 test "#539 buffer 크기는 0 에서 먼 쪽으로 반올림한다 (내림이 아니다)" {
