@@ -1761,9 +1761,11 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들고 GitHu
    자리가 없었어요). **반대 방향도 규칙이에요** — 업그레이드 주의를 만드는 PR 은 그 파일에
    한 줄을 **같은 PR 에서** 추가해요. 코드와 문서를 같은 PR 에 담는 규칙과 같은 이유예요.
 3. 커밋하고 `git push origin main` 해요.
-4. Windows PowerShell에서 아래 두 명령으로 태그를 push해 Actions를 트리거해요.
+4. 아래 두 명령으로 태그를 push해 Actions를 트리거해요. 어느 OS 의 어느 기기에서 해도 같아요 —
+   빌드는 전부 runner 가 하고 로컬은 태그만 올려요 (2026-09-05 까지 "Windows PowerShell 에서" 로
+   적혀 있었는데 이유가 없는 관례였어요).
 
-   ```powershell
+   ```sh
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
