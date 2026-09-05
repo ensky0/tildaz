@@ -140,6 +140,8 @@ pub fn markInput() void {
     _ = pending_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
     // #473 — 게이트 구간은 present 가 아니라 **프레임 진입**에서 닫힌다 (`noteFrameTick`).
     _ = gate_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #481 — 키 → PTY write 구간. `markPtyWrite` 에서 닫힌다.
+    _ = pending_itw_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
 }
 
 /// present 가 끝난 자리에서 부른다. 대기 중인 키가 있으면 지연을 적고 비운다.
@@ -238,7 +240,24 @@ pub fn markPtyWrite() void {
     const t = now() orelse return;
     if (t == 0) return;
     _ = pending_write_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #481 — 키가 여기까지 오는 데 걸린 시간. 아래 `input_to_write` 주석 참고.
+    const k = pending_itw_ns.swap(0, .acq_rel);
+    if (k != 0 and t > k) recordLatency(&input_to_write, &itw_hist, t - k);
 }
+
+/// #481 — **키를 받은 순간부터 그 바이트를 PTY 에 쓰기 직전까지.** 큐에 넣고 write thread 가
+/// 깨어나 꺼내 갈 때까지가 여기 들어간다.
+///
+/// 왜 필요한가. 튄 표본을 잡아 보니 두 종류였다 — 하나는 `in_gate` 가 프레임 하나를 통째로
+/// 기다린 것 (설명됨) 이고, 다른 하나는 **`input` 이 10~11.7 ms 인데 `in_gate` 1.3~1.5 ·
+/// `pty_rt` 0.6 미만 · `render` · `present` 1 ms 대로 네 조각을 다 합쳐도 3 ms 가 안 되는** 것이었다.
+/// 그 차이가 숨을 수 있는 자리는 **키 → write 큐 → write thread 기상** 뿐이라 그 구간을 연다.
+///
+/// 이러면 지연이 빈틈 없이 분해된다:
+/// `input = input_to_write + pty_rt + in_gate + (렌더 · present)`.
+pub var input_to_write: Counter = .{};
+pub var itw_hist: Histogram = .{};
+var pending_itw_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
 /// 프레임을 그리기 시작하는 자리에서 부른다 — Windows `renderFrameTick`, macOS
 /// `renderFrameTick`, Linux `maybeRedraw`. 대기 중인 입력 · 출력이 있으면 그 대기를 적고 비운다.
@@ -355,11 +374,13 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const ig = snapshot(&input_gate);
     const og = snapshot(&output_gate);
     const prt = snapshot(&pty_roundtrip);
+    const itw = snapshot(&input_to_write);
     const ih = input_hist.take();
     const oh = output_hist.take();
     const igh = input_gate_hist.take();
     const ogh = output_gate_hist.take();
     const prth = pty_rt_hist.take();
+    const itwh = itw_hist.take();
     // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
     // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
     _ = pending_input_ns.swap(0, .acq_rel);
@@ -367,6 +388,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     _ = gate_input_ns.swap(0, .acq_rel);
     _ = gate_output_ns.swap(0, .acq_rel);
     _ = pending_write_ns.swap(0, .acq_rel);
+    _ = pending_itw_ns.swap(0, .acq_rel);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -442,7 +464,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             "histgate in={any} out={any}\n" ++
             // #481 — PTY write → 그 뒤 첫 출력 도착. `input` 에서 게이트 · 렌더 · present 를
             // 빼고 남던 몫이 **자식 셸 왕복인지**를 뺄셈이 아니라 관측으로 가른다.
-            "pty_rt   samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n",
+            "pty_rt   samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n" ++
+            // #481 — 키 → PTY write. 네 조각을 합쳐도 `input` 에 못 미치던 표본이 어디서
+            // 늦었는지를 이 값이 메운다 (`input = itw + pty_rt + in_gate + 렌더 · present`).
+            "itw      samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n",
         .{
             ig[0],
             @as(f64, @floatFromInt(ig[1])) / 1_000_000.0,
@@ -458,6 +483,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             @as(f64, @floatFromInt(prt[1])) / 1_000_000.0,
             @as(f64, @floatFromInt(prt[3])) / 1_000_000.0,
             prth,
+            itw[0],
+            @as(f64, @floatFromInt(itw[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(itw[3])) / 1_000_000.0,
+            itwh,
         },
     ) catch return;
 
