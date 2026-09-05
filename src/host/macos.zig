@@ -1638,6 +1638,19 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
     }
 
+    // #636 — kitty `report_all` 이 켜져 있으면 **글자 키와 Return 도 인코더로** 보낸다 (Windows #602 와 같다).
+    // 그러지 않으면 아래 `interpretKeyEvents:` 가 글자는 `imeInsertText` 로, Return 은 `insertNewline:` 으로
+    // 원바이트를 내서 — 놓을 때는 `keyUp:` 이 인코더로 직행해 `CSI u` 인데 **누를 때만 옛 바이트**가 됐다 (실측:
+    // `a` → `61` + `CSI 97;1:3 u`). 조합 중 (`g_marked_len > 0`) 에는 들어오지 않는다 — IME 가 키를 소비해야
+    // 하고, 확정된 글자는 지금처럼 텍스트로 나간다 (Windows 의 dead key `é` 와 같은 처리). `report_all` 이
+    // 꺼진 앱에서는 이 분기에 들어오지 않아 평소 동작 (IME 경로) 그대로다. Return 의 `isNavOrFunction` 이
+    // false 인 것도 그대로다 — 한글 조합의 Return 확정이 그 경로다.
+    if (g_marked_len == 0 and keyEncodeOptionsMac(optionActsAsAlt(flags)).kitty_flags.report_all) {
+        var report_all_buf: [16]u8 = undefined;
+        const text = macCharsApplying(event, flags, keycode, &report_all_buf);
+        if (sendEncodedKeyMac(tab, event, text, macKeyAction(event))) return;
+    }
+
     interpretSingleKeyEvent(self_view, event);
 }
 

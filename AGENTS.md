@@ -649,6 +649,14 @@ dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   합성 입력 전달 (`cliclick m:` 뒤 `p` 로 위치 확인) 을 먼저 봐요. 회차 동안 `caffeinate -disu` 를 켜요.
 - 비활성 창의 **첫 클릭은 창을 깨우는 데 쓰일 수 있어** (`acceptsFirstMouse`) 두 번 눌러요 — 두 번째가
   판정 대상이에요. 키는 창을 클릭해 key window 로 만든 뒤, 무해한 `arrow-right` 하나를 먼저 보내요.
+- **`cliclick kp:return` · `kp:enter` 는 앱에 개행이 안 닿아요 — Return 은 `dist/stress/mac-input` 으로 보내요**
+  (`/tmp/mac-input send return`, 2026-09-05 실측 · #583 B20). 앱은 Return 을 인코더가 아니라 IME 경로
+  (`interpretKeyEvents:` → `insertNewline:`) 로 받는데 (`isNavOrFunction(.enter)` 가 의도적으로 false — 한글 조합의
+  Return 확정이 그 경로다), AppKit 은 그 selector 를 이벤트의 `characters` 로 고르므로 `characters` 가 빈 합성
+  Return 은 아무 selector 도 안 만들어요. 화살표 · 글자 (`t:`) 는 keyCode 로 가서 cliclick 도 닿아요.
+- **입력 소스가 한국어 (2벌식) 면 `cliclick t:` 글자가 IME 에 먹혀 안 닿아요** — `mac-input ime-get` 으로 먼저
+  보고, ASCII 가 필요하면 `mac-input ime-ascii` 로 바꾼 뒤 끝나면 되돌려요 (사용자 입력 소스를 바꾸는 일이라
+  알리고). `deadkey-check.sh` 는 ABC 가 아니면 스스로 멈춰요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
