@@ -178,6 +178,9 @@ pub fn markOutput() void {
     _ = pending_output_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
     // #481 ② — 위와 같은 이유로 게이트 구간을 따로 연다.
     _ = gate_output_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #481 — 셸 왕복은 **여기서 닫힌다.** 우리가 쓴 뒤 자식이 되돌려 준 첫 바이트가 이것이다.
+    const w = pending_write_ns.swap(0, .acq_rel);
+    if (w != 0 and t > w) recordLatency(&pty_roundtrip, &pty_rt_hist, t - w);
 }
 
 /// present 가 끝난 자리에서 부른다 (`completeInput` 과 같은 자리).
@@ -212,6 +215,30 @@ pub var output_gate_hist: Histogram = .{};
 /// 소비되는데 이쪽은 프레임 진입에서 소비되므로, 하나를 나눠 쓰면 둘 중 하나가 표본을 잃는다.
 var gate_input_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 var gate_output_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// #481 — **PTY 에 쓴 순간부터 그 뒤 첫 출력이 도착할 때까지.** 자식 셸의 왕복이다.
+///
+/// 왜 필요한가. `input_latency` 에서 게이트 · `render` · `present` 를 빼면 유휴 최악 회차에서
+/// **7 ms 가량이 남는데 그 구간에는 우리 코드가 없다.** 자식 프로세스 스케줄링이 유력하지만
+/// 그것은 *뺄셈으로 좁힌 것*이지 관측이 아니었다 — 이 카운터가 그 구간을 직접 잰다.
+///
+/// 이러면 응답 지연이 네 조각으로 완전히 분해된다:
+/// `input = (키 → PTY write 큐) + pty_rt + in_gate + (렌더 · present)`.
+///
+/// **폭포 중에는 표본이 거의 안 잡힌다** — 쓰지 않아도 출력이 쏟아져 `markOutput` 이 먼저
+/// 닫히기 때문이다. 유휴 입력 회차가 이 값의 무대이고, 그게 우리가 보려던 자리다.
+pub var pty_roundtrip: Counter = .{};
+pub var pty_rt_hist: Histogram = .{};
+var pending_write_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// PTY 에 바이트를 쓰기 직전에 부른다 (`session_core` 의 write 루프). **write thread 에서
+/// 불린다** — CAS 하나뿐이라 안전하다. 이미 대기 중이면 덮지 않는다 (앞선 write 의 왕복이
+/// 아직 안 닫혔다는 뜻이고, 그것이 더 오래 기다린 쪽이다).
+pub fn markPtyWrite() void {
+    const t = now() orelse return;
+    if (t == 0) return;
+    _ = pending_write_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+}
 
 /// 프레임을 그리기 시작하는 자리에서 부른다 — Windows `renderFrameTick`, macOS
 /// `renderFrameTick`, Linux `maybeRedraw`. 대기 중인 입력 · 출력이 있으면 그 대기를 적고 비운다.
@@ -327,16 +354,19 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const ol = snapshot(&output_latency);
     const ig = snapshot(&input_gate);
     const og = snapshot(&output_gate);
+    const prt = snapshot(&pty_roundtrip);
     const ih = input_hist.take();
     const oh = output_hist.take();
     const igh = input_gate_hist.take();
     const ogh = output_gate_hist.take();
+    const prth = pty_rt_hist.take();
     // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
     // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
     _ = pending_input_ns.swap(0, .acq_rel);
     _ = pending_output_ns.swap(0, .acq_rel);
     _ = gate_input_ns.swap(0, .acq_rel);
     _ = gate_output_ns.swap(0, .acq_rel);
+    _ = pending_write_ns.swap(0, .acq_rel);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -409,7 +439,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             // 버킷 (ms): <1 · 1-2 · 2-4 · 4-8 · 8-16 · >16 — 60 Hz 의 반 프레임 (8.3) 과
             // 한 프레임 (16.67) 이 경계에 온다.
             "hist     in={any} out={any}\n" ++
-            "histgate in={any} out={any}\n",
+            "histgate in={any} out={any}\n" ++
+            // #481 — PTY write → 그 뒤 첫 출력 도착. `input` 에서 게이트 · 렌더 · present 를
+            // 빼고 남던 몫이 **자식 셸 왕복인지**를 뺄셈이 아니라 관측으로 가른다.
+            "pty_rt   samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n",
         .{
             ig[0],
             @as(f64, @floatFromInt(ig[1])) / 1_000_000.0,
@@ -421,6 +454,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             oh,
             igh,
             ogh,
+            prt[0],
+            @as(f64, @floatFromInt(prt[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(prt[3])) / 1_000_000.0,
+            prth,
         },
     ) catch return;
 
