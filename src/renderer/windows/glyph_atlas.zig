@@ -28,8 +28,8 @@ const atlas_common = @import("../glyph_atlas_common.zig");
 /// 키운다** (`grow`) 그리고 상한에서만 ① 안전망 (비우기) 으로 물러선다. 지금 크기는 `size` 필드다.
 /// 8192² 는 BGRA8 로 256 MB 다 (`BIND_RENDER_TARGET` 까지 붙는다) — 실제 상한은 `CreateTexture2D` 가
 /// 실패하는 지점이고, 그러면 `grow` 가 `false` 를 돌려 ① 로 간다 (feature level 은 조회하지 않는다).
-pub const INITIAL_ATLAS_SIZE: u32 = 2048;
-pub const MAX_ATLAS_SIZE: u32 = 8192;
+pub const INITIAL_ATLAS_SIZE: u32 = atlas_common.INITIAL_ATLAS_SIZE;
+pub const MAX_ATLAS_SIZE: u32 = atlas_common.MAX_ATLAS_SIZE;
 
 /// cluster 하나가 가질 수 있는 글리프 수 — shaping 쪽 상한과 같은 값을 쓴다.
 const MAX_CLUSTER_GLYPHS = dwrite_font.MAX_CLUSTER_GLYPHS;
@@ -56,12 +56,8 @@ pub const GlyphAtlas = struct {
     cache: std.AutoHashMap(GlyphKey, AtlasEntry),
     cluster_cache: std.AutoHashMap(ClusterKey, AtlasEntry),
 
-    // Atlas packing state (simple row-based)
-    cursor_x: u32 = 0,
-    cursor_y: u32 = 0,
-    row_height: u32 = 0,
-    /// #586 — 지금 한 변. `grow` 가 두 배로 키운다.
-    size: u32 = INITIAL_ATLAS_SIZE,
+    /// #604 — 패킹 상태 + 지금 크기 (`size`). 세 platform 공통 (`atlas_common.Packer`).
+    pack: atlas_common.Packer = .{},
     /// #586 — 키운 횟수 (진단).
     grows: u32 = 0,
 
@@ -355,11 +351,10 @@ pub const GlyphAtlas = struct {
     ///
     /// 상한 (`MAX_ATLAS_SIZE`) 이거나 텍스처 생성이 실패하면 `false` — 호출자가 ① 안전망으로 물러선다.
     pub fn grow(self: *GlyphAtlas) bool {
-        if (self.size >= MAX_ATLAS_SIZE) return false;
-        const new_size = self.size * 2;
+        const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
         const gpu = createGpu(self.d3d_device, new_size, self.d2d_factory, self.rendering_params, self.pixels_per_dip) catch return false;
 
-        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = self.size, .bottom = self.size };
+        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = self.pack.size, .bottom = self.pack.size };
         self.d3d_ctx.CopySubresourceRegion(@ptrCast(gpu.texture), 0, 0, 0, 0, @ptrCast(self.texture), 0, &box);
 
         // 옛 객체는 command list 가 참조를 들고 있어 지연 파괴는 드라이버가 처리한다.
@@ -371,10 +366,10 @@ pub const GlyphAtlas = struct {
         self.atlas_dc = gpu.dc;
         self.atlas_dc4 = gpu.dc4;
         self.atlas_brush = gpu.brush;
-        self.size = new_size;
+        self.pack.size = new_size;
         self.grows += 1;
         self.is_full = false;
-        log.logAtlasGrew(new_size, self.grows, self.cache.count(), self.cluster_cache.count());
+        log.logAtlasGrew("main", new_size, self.grows, self.cache.count(), self.cluster_cache.count());
         return true;
     }
 
@@ -685,13 +680,11 @@ pub const GlyphAtlas = struct {
             self.cache.count(),
             self.cluster_cache.count(),
             self.distinctClusterFonts(),
-            self.cursor_y + self.row_height,
+            self.pack.filledY(),
         );
         self.cache.clearRetainingCapacity();
         self.cluster_cache.clearRetainingCapacity();
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.row_height = 0;
+        self.pack.rewind();
         self.is_full = false;
     }
 
@@ -1083,24 +1076,17 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// #282 G5 — 공통 row-based packing 에 위임.
-    fn packGlyph(self: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        return atlas_common.packRow(&self.cursor_x, &self.cursor_y, &self.row_height, self.size, w, h);
-    }
-
-    /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#586 — macOS `packOrMarkFull` ·
-    /// Linux `glAddGlyph` 와 같은 규칙, 전에는 Windows 만 이 가드가 없었다).
-    ///
-    /// 1. **판정은 호출 *전* 값으로 한다.** `packRow` 는 실패할 때도 커서를 움직인다.
-    /// 2. **이미 빈 atlas 인데 안 들어가면 세우지 않는다.** 그림 하나가 atlas 보다 크다는 뜻이라 비워도
-    ///    (키워도) 소용없고, 세우면 호출자가 글리프마다 헛되게 flush + reset 을 돈다.
+    /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통
+    /// `Packer.tryPack` 에 있다 (#604 — 세 platform 이 같은 규칙. #586 전에는 Windows 만 빈 atlas 가드가 없었다).
     fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
-        const was_empty = self.cursor_x == 0 and self.cursor_y == 0 and self.row_height == 0;
-        if (self.packGlyph(w, h)) |pos| return pos;
-        if (!was_empty) {
-            self.is_full = true;
-            self.full_kind = kind;
+        switch (self.pack.tryPack(w, h)) {
+            .placed => |pos| return pos,
+            .full => {
+                self.is_full = true;
+                self.full_kind = kind;
+                return null;
+            },
+            .too_big => return null,
         }
-        return null;
     }
 };

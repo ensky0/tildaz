@@ -95,27 +95,84 @@ pub const ClusterKey = struct {
     indices_hash: u64,
 };
 
-/// 단순 row-based atlas packing. cursor / row_height 상태를 포인터로 받아
-/// 갱신하고 배치 좌표 (x, y) 를 반환. 현재 row 에 안 들어가면 다음 row 로,
-/// atlas 가 가득 차면 null (caller 가 reset 후 재시도).
-pub fn packRow(cursor_x: *u32, cursor_y: *u32, row_height: *u32, atlas_size: u32, w: u32, h: u32) ?[2]u32 {
-    const pad = 1; // 글리프 간 1px padding.
+/// #586 — 시작 크기와 상한. 세 platform 이 같은 값 · 같은 정책이다 — **차면 두 배로 키운다** (`Packer.grownSize`),
+/// 상한에서만 ① 안전망 (비우기). 8192² 는 BGRA8 로 256 MB 다. 실제 상한은 platform 이 더 낮출 수 있다 (Linux 는
+/// 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소, Windows 는 텍스처 생성 실패).
+pub const INITIAL_ATLAS_SIZE: u32 = 2048;
+pub const MAX_ATLAS_SIZE: u32 = 8192;
 
-    if (cursor_x.* + w + pad > atlas_size) {
-        cursor_x.* = 0;
-        cursor_y.* += row_height.* + pad;
-        row_height.* = 0;
+/// #604 — row-based packing 상태 + 지금 크기. 세 platform 의 atlas (Linux 는 surface 마다) 가 이 struct 하나를
+/// 들고 `pack` · `tryPack` · `rewind` · `grownSize` 를 쓴다. 예전에는 세 파일이 `cursor_x` · `cursor_y` · `row_height`
+/// 세 필드와 "찼음 표시" 규칙을 각자 들고 있어서 (`packRow` 가 포인터 세 개를 받는 시그니처였다) Windows 만 빈
+/// atlas 가드가 빠져 있던 식의 누락이 났다 (#586). 픽셀을 어디에 어떻게 두는지 (CPU 사본 · D3D 텍스처 · GL
+/// shadow) 는 여기 없다 — platform 몫이다.
+pub const Packer = struct {
+    cursor_x: u32 = 0,
+    cursor_y: u32 = 0,
+    row_height: u32 = 0,
+    /// 지금 한 변 (px).
+    size: u32 = INITIAL_ATLAS_SIZE,
+
+    pub const pad: u32 = 1; // 글리프 간 1px padding.
+
+    /// 자리를 잡고 배치 좌표 (x, y) 를 돌려준다. 현재 row 에 안 들어가면 다음 row 로, atlas 가 가득 차면 null.
+    /// **실패할 때도 커서를 움직인다** (줄바꿈 분기가 높이 검사보다 앞이다) — 그래서 "빈 atlas 였나" 는
+    /// 호출 **전** 값으로 판정해야 한다 (`tryPack` 이 그렇게 한다).
+    pub fn pack(self: *Packer, w: u32, h: u32) ?[2]u32 {
+        if (self.cursor_x + w + pad > self.size) {
+            self.cursor_x = 0;
+            self.cursor_y += self.row_height + pad;
+            self.row_height = 0;
+        }
+        if (self.cursor_y + h > self.size) return null;
+        const x = self.cursor_x;
+        const y = self.cursor_y;
+        self.cursor_x += w + pad;
+        if (h > self.row_height) self.row_height = h;
+        return .{ x, y };
     }
 
-    if (cursor_y.* + h > atlas_size) return null;
+    /// 아무것도 담지 않은 상태인가.
+    pub fn isEmpty(self: *const Packer) bool {
+        return self.cursor_x == 0 and self.cursor_y == 0 and self.row_height == 0;
+    }
 
-    const x = cursor_x.*;
-    const y = cursor_y.*;
-    cursor_x.* += w + pad;
-    if (h > row_height.*) row_height.* = h;
+    pub const PackResult = union(enum) {
+        placed: [2]u32,
+        /// 찼다 — 비울 (또는 키울) 가치가 있다.
+        full,
+        /// **이미 빈 atlas 인데 안 들어간다** — 그림 하나가 atlas 보다 크다. 비워도 소용없고, 이것을 "찼다" 로
+        /// 세우면 호출자가 글리프마다 헛되게 flush + reset 을 돈다 (#584 ①).
+        too_big,
+    };
 
-    return .{ x, y };
-}
+    /// `pack` + "찼음 표시" 규칙 (macOS `packOrMarkFull` · Linux `glAddGlyph` · Windows #586 가 같은 두 조건).
+    pub fn tryPack(self: *Packer, w: u32, h: u32) PackResult {
+        const was_empty = self.isEmpty();
+        if (self.pack(w, h)) |pos| return .{ .placed = pos };
+        return if (was_empty) .too_big else .full;
+    }
+
+    /// 커서를 처음으로 되돌린다. 픽셀은 건드리지 않는다 — 다음에 담기는 글리프가 그 위를 덮어쓴다.
+    pub fn rewind(self: *Packer) void {
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.row_height = 0;
+    }
+
+    /// 로그용 — 지금까지 채운 높이 (`atlas full` 의 `filled_y`).
+    pub fn filledY(self: *const Packer) u32 {
+        return self.cursor_y + self.row_height;
+    }
+
+    /// #586 — 두 배로 키울 때의 다음 크기. 상한 (`max`) 을 넘으면 null — 호출자가 ① 안전망으로 물러선다.
+    /// 좌표는 그대로 유효하다 (row-based packing 이라 (x, y) 가 보존되고 커서도 이어 쓴다) — 픽셀을 옮기는
+    /// 것은 platform 이 한다.
+    pub fn grownSize(self: *const Packer, max: u32) ?u32 {
+        const next = self.size * 2;
+        return if (next > max) null else next;
+    }
+};
 
 const std = @import("std");
 
@@ -140,6 +197,36 @@ test "fontId — 빈 이름도 값을 낸다 (이름을 못 읽은 경우)" {
     // 그림이 섞일 수 있지만 atlas 를 부풀리지는 않는다.
     try std.testing.expectEqual(fontId(""), fontId(""));
     try std.testing.expect(fontId("") != fontId("Menlo-Regular"));
+}
+
+test "Packer — 한 줄에 안 들어가면 다음 줄로, 다 차면 null (커서는 실패 뒤에도 움직인다)" {
+    var p = Packer{ .size = 10 };
+    try std.testing.expectEqual([2]u32{ 0, 0 }, p.pack(4, 3).?);
+    try std.testing.expectEqual([2]u32{ 5, 0 }, p.pack(4, 3).?); // 4 + pad 1
+    try std.testing.expectEqual([2]u32{ 0, 4 }, p.pack(4, 3).?); // 줄바꿈 — 3 + pad 1
+    try std.testing.expectEqual([2]u32{ 0, 8 }, p.pack(9, 2).?); // 넓은 것 — 다음 줄
+    try std.testing.expect(p.pack(1, 3) == null); // 8 + 3 > 10
+    try std.testing.expectEqual(@as(u32, 10), p.filledY());
+}
+
+test "Packer.tryPack — 빈 atlas 에도 안 들어가면 too_big, 아니면 full" {
+    var p = Packer{ .size = 8 };
+    try std.testing.expect(p.tryPack(9, 1) == .too_big);
+    p.rewind();
+    try std.testing.expect(p.tryPack(4, 4) == .placed);
+    try std.testing.expect(p.tryPack(4, 4) == .placed);
+    try std.testing.expect(p.tryPack(4, 4) == .full);
+    p.rewind();
+    try std.testing.expect(p.isEmpty());
+}
+
+test "Packer.grownSize — 두 배씩, 상한을 넘으면 null" {
+    var p = Packer{ .size = 2048 };
+    try std.testing.expectEqual(@as(?u32, 4096), p.grownSize(8192));
+    p.size = 8192;
+    try std.testing.expectEqual(@as(?u32, null), p.grownSize(8192));
+    p.size = 4096;
+    try std.testing.expectEqual(@as(?u32, null), p.grownSize(4096)); // 드라이버 상한이 더 낮은 경우 (Linux)
 }
 
 test "ClusterKey — 폰트만 다르면 다른 키다" {

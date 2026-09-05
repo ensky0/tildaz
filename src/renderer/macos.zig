@@ -279,7 +279,7 @@ pub const MetalRenderer = struct {
     staging_bytes: u32 = 0,
     tab_staging_buffer: objc.id,
     tab_staging_bytes: u32 = 0,
-    /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.size` 가 이보다 커지면
+    /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.pack.size` 가 이보다 커지면
     /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
     atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
     tab_atlas_texture: objc.id,
@@ -1914,8 +1914,8 @@ pub const MetalRenderer = struct {
             data.* = .{
                 @floatFromInt(self.vp_width),
                 @floatFromInt(self.vp_height),
-                @floatFromInt(self.atlas.size),
-                @floatFromInt(self.atlas.size),
+                @floatFromInt(self.atlas.pack.size),
+                @floatFromInt(self.atlas.pack.size),
             };
         }
         // #584 ② — 탭 atlas 는 크기가 따로다 (`grow` 는 본문만 커진다). 셰이더가 UV 를 크기로
@@ -1925,8 +1925,8 @@ pub const MetalRenderer = struct {
             data.* = .{
                 @floatFromInt(self.vp_width),
                 @floatFromInt(self.vp_height),
-                @floatFromInt(self.tab_atlas.size),
-                @floatFromInt(self.tab_atlas.size),
+                @floatFromInt(self.tab_atlas.pack.size),
+                @floatFromInt(self.tab_atlas.pack.size),
             };
         }
     }
@@ -1935,15 +1935,15 @@ pub const MetalRenderer = struct {
     /// `syncAtlasTexture` 와 같은 자리다). 픽셀 좌표는 `grow` 가 보존하므로, 셰이더가 새
     /// 크기로 정규화하면 이미 emit 한 인스턴스의 UV 도 그대로 맞는다.
     fn syncAtlasTexture(self: *MetalRenderer, atlas: *GlyphAtlas, texture: *objc.id, texture_size: *u32) void {
-        if (atlas.size <= texture_size.*) return;
-        const new_tex = createAtlasTexture(self.device, atlas.size);
+        if (atlas.pack.size <= texture_size.*) return;
+        const new_tex = createAtlasTexture(self.device, atlas.pack.size);
         if (new_tex == null) return; // 못 만들면 옛 텍스처를 그대로 쓴다 (그림이 잘릴 수 있다)
         objc.msgSendVoid(texture.*, objc.sel("release"));
         texture.* = new_tex;
-        texture_size.* = atlas.size;
+        texture_size.* = atlas.pack.size;
         atlas.dirty = true; // 새 텍스처는 비어 있다 — 전체를 다시 올린다
         atlas.dirty_min_y = 0;
-        atlas.dirty_max_y = atlas.size;
+        atlas.dirty_max_y = atlas.pack.size;
     }
 
     /// #585 — atlas 픽셀을 텍스처로 올린다. **blit encoder 를 쓴다.**
@@ -1970,20 +1970,20 @@ pub const MetalRenderer = struct {
         if (cmd_buf == null) return;
 
         // dirty 구간만 — 줄 단위다 (`packRow` 가 줄로 채우므로 x 는 늘 전폭이 맞다).
-        const y0 = @min(atlas.dirty_min_y, atlas.size);
-        const y1 = @min(atlas.dirty_max_y, atlas.size);
+        const y0 = @min(atlas.dirty_min_y, atlas.pack.size);
+        const y1 = @min(atlas.dirty_max_y, atlas.pack.size);
         if (y1 <= y0) return;
-        const row_bytes: usize = @as(usize, atlas.size) * 4;
+        const row_bytes: usize = @as(usize, atlas.pack.size) * 4;
         const rows: usize = y1 - y0;
         const bytes = rows * row_bytes;
 
         // staging 이 작으면 키운다 (`grow` 뒤).
-        if (staging_bytes.* < atlas.size * atlas.size * 4) {
-            const new_buf = createBuffer(self.device, atlas.size * atlas.size * 4);
+        if (staging_bytes.* < atlas.pack.size * atlas.pack.size * 4) {
+            const new_buf = createBuffer(self.device, atlas.pack.size * atlas.pack.size * 4);
             if (new_buf == null) return;
             objc.msgSendVoid(staging.*, objc.sel("release"));
             staging.* = new_buf;
-            staging_bytes.* = atlas.size * atlas.size * 4;
+            staging_bytes.* = atlas.pack.size * atlas.pack.size * 4;
         }
 
         const dst = objc.msgSend(staging.*, objc.sel("contents")) orelse return;
@@ -2015,7 +2015,7 @@ pub const MetalRenderer = struct {
             0,
             row_bytes,
             bytes,
-            MTLSize{ .w = atlas.size, .h = rows, .d = 1 },
+            MTLSize{ .w = atlas.pack.size, .h = rows, .d = 1 },
             texture,
             0,
             0,
@@ -2024,7 +2024,7 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid(blit, objc.sel("endEncoding"));
 
         // 올린 구간은 깨끗해졌다.
-        atlas.dirty_min_y = atlas.size;
+        atlas.dirty_min_y = atlas.pack.size;
         atlas.dirty_max_y = 0;
     }
 

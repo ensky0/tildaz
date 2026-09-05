@@ -39,8 +39,8 @@ pub const AtlasEntry = atlas_common.AtlasEntry;
 /// #586 — 시작 크기와 상한. macOS · Windows 와 같은 값 · 같은 정책 — **차면 두 배로 키운다** (`Surface.grow`),
 /// 상한에서만 ① 안전망 (비우기). 실제 상한은 `MAX_ATLAS_SIZE` 와 드라이버의 `GL_MAX_TEXTURE_SIZE` 중 작은 쪽이다
 /// (`Atlas.max_size`). surface 마다 크기가 따로다 — color 는 폰트 strike 크기로 담겨 gray 보다 훨씬 먼저 찬다.
-pub const INITIAL_ATLAS_SIZE: u32 = 2048;
-pub const MAX_ATLAS_SIZE: u32 = 8192;
+pub const INITIAL_ATLAS_SIZE: u32 = atlas_common.INITIAL_ATLAS_SIZE;
+pub const MAX_ATLAS_SIZE: u32 = atlas_common.MAX_ATLAS_SIZE;
 
 /// 글리프 캐시 키. Linux 폰트 경로는 codepoint lookup 과 glyph_index lookup 두
 /// 갈래가 있어 (`Context.glyph` / `Context.glyphByIndex`) 어느 쪽인지 구분해야
@@ -96,13 +96,10 @@ const composed_source: u8 = 0xFD;
 /// 한 텍스처와 그 패킹 상태.
 const Surface = struct {
     texture: u32 = 0,
-    cursor_x: u32 = 0,
-    cursor_y: u32 = 0,
-    row_height: u32 = 0,
+    /// #604 — 패킹 상태 + 지금 크기 (`size`). 세 platform 공통 (`atlas_common.Packer`).
+    pack: atlas_common.Packer = .{},
     /// atlas 가 가득 차 초기화된 횟수. 진단용 (자주 일어나면 크기를 늘려야 한다).
     resets: u32 = 0,
-    /// #586 — 지금 한 변 (px). `grow` 가 두 배로 키운다.
-    size: u32 = INITIAL_ATLAS_SIZE,
     /// #586 — 키운 횟수 (진단).
     grows: u32 = 0,
     format: i32,
@@ -117,7 +114,7 @@ const Surface = struct {
     shadow: []u8 = &.{},
 
     fn create(api: *const egl.Api, allocator: std.mem.Allocator, format: i32, filter: i32, bpp: u32, size: u32) Surface {
-        var self: Surface = .{ .format = format, .filter = filter, .bpp = bpp, .size = size };
+        var self: Surface = .{ .format = format, .filter = filter, .bpp = bpp, .pack = .{ .size = size } };
         self.shadow = allocator.alloc(u8, @as(usize, size) * size * bpp) catch &.{};
         if (self.shadow.len > 0) @memset(self.shadow, 0);
         self.texture = self.makeTexture(api);
@@ -146,8 +143,8 @@ const Surface = struct {
             egl.GL_TEXTURE_2D,
             0,
             self.format,
-            @intCast(self.size),
-            @intCast(self.size),
+            @intCast(self.pack.size),
+            @intCast(self.pack.size),
             0,
             @bitCast(self.format),
             egl.GL_UNSIGNED_BYTE,
@@ -163,18 +160,17 @@ const Surface = struct {
     /// 상한 (`max_size`) · shadow 없음 · 할당 실패면 `false`.
     fn grow(self: *Surface, api: *const egl.Api, allocator: std.mem.Allocator, max_size: u32) bool {
         if (self.shadow.len == 0) return false;
-        if (self.size * 2 > max_size) return false;
-        const new_size = self.size * 2;
+        const new_size = self.pack.grownSize(max_size) orelse return false;
         const new_shadow = allocator.alloc(u8, @as(usize, new_size) * new_size * self.bpp) catch return false;
         @memset(new_shadow, 0);
-        const old_row = @as(usize, self.size) * self.bpp;
+        const old_row = @as(usize, self.pack.size) * self.bpp;
         const new_row = @as(usize, new_size) * self.bpp;
-        for (0..self.size) |y| {
+        for (0..self.pack.size) |y| {
             @memcpy(new_shadow[y * new_row ..][0..old_row], self.shadow[y * old_row ..][0..old_row]);
         }
         allocator.free(self.shadow);
         self.shadow = new_shadow;
-        self.size = new_size;
+        self.pack.size = new_size;
         var old_tex = self.texture;
         self.texture = self.makeTexture(api);
         api.deleteTextures(1, @ptrCast(&old_tex));
@@ -186,7 +182,7 @@ const Surface = struct {
     /// 같은 순서 (color 는 이미 RGBA 로 바뀐 것) 다.
     fn writeShadow(self: *Surface, x: u32, y: u32, w: u32, h: u32, pixels: [*]const u8) void {
         if (self.shadow.len == 0) return;
-        const row = @as(usize, self.size) * self.bpp;
+        const row = @as(usize, self.pack.size) * self.bpp;
         const src_row = @as(usize, w) * self.bpp;
         for (0..h) |r| {
             const dst = (y + r) * row + @as(usize, x) * self.bpp;
@@ -196,9 +192,7 @@ const Surface = struct {
 
     /// 패킹 커서를 처음으로 되돌린다. 텍스처 내용은 그대로 두고 덮어쓴다.
     fn rewind(self: *Surface) void {
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.row_height = 0;
+        self.pack.rewind();
     }
 
     /// 가득 차서 비우는 경우 — 진단 카운터를 올린다. 폰트가 바뀌어 비우는
@@ -352,7 +346,7 @@ pub const Atlas = struct {
         // 로그 값은 **비우기 전에** 읽는다 — 그것이 이 surface 가 실제로 담을 수 있었던 양이다.
         // Linux 는 cluster 를 별도 맵에 두지 않는다 (인덱스 캐시 하나다) — cluster · fonts 칸은 0.
         const held = cache.count();
-        const filled_y = surface.cursor_y + surface.row_height;
+        const filled_y = surface.pack.filledY();
         cache.clearRetainingCapacity();
         surface.reset();
         // 사용자 로그에 남긴다 — 문구는 세 platform 공통 정의를 쓴다 (#576).
@@ -396,42 +390,29 @@ pub const Atlas = struct {
         }
 
         const surface = self.surfaceFor(is_color);
-        // `packRow` 는 **실패할 때도 커서를 움직인다** (줄바꿈 분기가 높이 검사보다 앞이다).
-        // 그래서 "비우면 들어갈 여지가 있었나" 는 호출 **전** 값으로 판정해야 한다.
-        const before_x = surface.cursor_x;
-        const before_y = surface.cursor_y;
+        // #604 — "빈 surface 였나" 는 호출 **전** 값으로 판정한다 (`Packer.pack` 은 실패할 때도 커서를 움직인다).
+        const was_empty = surface.pack.isEmpty();
 
-        const placed = atlas_common.packRow(
-            &surface.cursor_x,
-            &surface.cursor_y,
-            &surface.row_height,
-            surface.size,
-            bmp.w,
-            bmp.h,
-        ) orelse blk: {
+        const placed = surface.pack.pack(bmp.w, bmp.h) orelse blk: {
             // #586 — **먼저 키운다** (macOS #584 ② · Windows 와 같다). 키우면 프레임 중간에 비우는 상황이
             // 없어 이미 쌓인 정점의 UV 가 무효화되지 않는다 — UV 는 픽셀 좌표고 셰이더가 `u_atlas_size`
-            // 로 정규화한다 (`gl_text`). `packRow` 가 실패하며 옮긴 커서는 그대로 두고 (더 큰 atlas 안에서
+            // 로 정규화한다 (`gl_text`). `pack` 이 실패하며 옮긴 커서는 그대로 두고 (더 큰 atlas 안에서
             // 여전히 유효한 자리다) 이어서 담는다. 상한이면 아래 ① 로.
             while (surface.grow(api, allocator, self.max_size)) {
-                log.logAtlasGrew(surface.size, surface.grows, cache.count(), 0);
-                if (atlas_common.packRow(&surface.cursor_x, &surface.cursor_y, &surface.row_height, surface.size, bmp.w, bmp.h)) |p| break :blk p;
+                log.logAtlasGrew(if (is_color) "color" else "gray", surface.pack.size, surface.grows, cache.count(), 0);
+                if (surface.pack.pack(bmp.w, bmp.h)) |p| break :blk p;
             }
             // #584 ① — 가득 찼다. **그 자리에서 비우지 않는다.**
             //
-            // 이 프레임이 이미 emit 한 정점들이 이 atlas 좌표를 가리키고 있고, UV 는
-            // `gl_text.Batch.add` 시점에 굽는다. 여기서 rewind 하면 뒤이어 올라오는
-            // 글리프가 그 자리를 덮어써서 **앞의 글자들이 다른 글자로 바뀐다** (Linux 는
-            // 텍스처를 0 으로 지우지 않으므로 사라지는 대신 바뀐다). 2026-09-02 KDE 실기에서
-            // 화면 위쪽 6.22 줄이 그렇게 어긋나는 것을 확인했다.
+            // 이 프레임이 이미 emit 한 정점들이 이 atlas 좌표를 가리키고 있고, 여기서 rewind 하면 뒤이어
+            // 올라오는 글리프가 그 자리를 덮어써서 **앞의 글자들이 다른 글자로 바뀐다** (Linux 는 텍스처를
+            // 0 으로 지우지 않으므로 사라지는 대신 바뀐다). 2026-09-02 KDE 실기에서 화면 위쪽 6.22 줄이
+            // 그렇게 어긋나는 것을 확인했다. 그래서 표시만 하고 돌아간다 — 호출자가 batch 를 flush 해
+            // 그린 뒤 `resetFull` 을 부르고 한 번만 재시도한다 (SPEC §12.6 ①).
             //
-            // 그래서 표시만 하고 돌아간다. 호출자가 batch 를 flush 해 그린 뒤 `resetFull`
-            // 을 부르고 한 번만 재시도한다 (SPEC §12.6 ①).
-            //
-            // **이미 빈 surface 인데도 안 들어가면 표시하지 않는다** — 비워도 못 담는다는
-            // 뜻이라 (그림 하나가 atlas 보다 크다), 표시하면 호출자가 글리프마다 헛되게
-            // flush + reset 을 한다.
-            if (before_x != 0 or before_y != 0) {
+            // **이미 빈 surface 인데도 안 들어가면 표시하지 않는다** (`Packer.tryPack` 의 `too_big` 과 같은
+            // 규칙) — 비워도 못 담는다는 뜻이라, 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
+            if (!was_empty) {
                 self.full = if (is_color) .color else .gray;
             }
             return null;
@@ -492,11 +473,11 @@ pub const Atlas = struct {
 
     /// #586 — 셰이더의 `u_atlas_size` 에 줄 지금 크기 (surface 별).
     pub fn graySize(self: *const Atlas) u32 {
-        return self.gray.size;
+        return self.gray.pack.size;
     }
 
     pub fn colorSize(self: *const Atlas) u32 {
-        return self.color.size;
+        return self.color.pack.size;
     }
 
     /// 진단용 — atlas 가 몇 번 가득 차 비워졌는지. `grow` 가 상한에 닿은 뒤에만 일어난다.

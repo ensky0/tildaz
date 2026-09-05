@@ -2145,7 +2145,7 @@ pub const D3d11Renderer = struct {
         self.ctx.OMSetRenderTargets(1, &rtvs, null);
 
         // Update constant buffer — 본문 atlas 크기로. text draw 는 자기 atlas 크기로 다시 쓴다 (`writeConstants`).
-        self.writeConstants(self.atlas.size);
+        self.writeConstants(self.atlas.pack.size);
 
         // Bind constant buffer to both VS and PS
         const cbs = [1]?*d3d.ID3D11Buffer{self.cb};
@@ -2222,7 +2222,7 @@ pub const D3d11Renderer = struct {
     fn drawTextInstancesWithAtlas(self: *D3d11Renderer, instances: []const TextInstance, atlas: *const GlyphAtlas) void {
         if (instances.len == 0) return;
         // #586 — 이 atlas 의 크기로 UV 를 정규화한다 (`grow` 뒤 본문과 탭 atlas 크기가 갈린다).
-        self.writeConstants(atlas.size);
+        self.writeConstants(atlas.pack.size);
 
         // Upload instance data
         var mapped: d3d.D3D11_MAPPED_SUBRESOURCE = .{};
