@@ -294,9 +294,11 @@ pub fn logPrimaryFont(family: []const u8, cell_w: anytype, cell_h: anytype, asce
 ///
 /// 비우고 재사용하는 대신 키우면 **프레임 중간에 비우는 상황 자체가 없어진다** — 이미 그린
 /// 것의 UV 가 무효화될 일이 없다. 이 줄이 자주 보이면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
-pub fn logAtlasGrew(new_size: anytype, grows: anytype, glyphs: anytype, clusters: anytype) void {
-    appendLine("gpu", "atlas grew to {d}x{d} (grows={d}, glyphs={d}, clusters={d})", .{
-        new_size, new_size, grows, glyphs, clusters,
+pub fn logAtlasGrew(kind: []const u8, new_size: anytype, grows: anytype, glyphs: anytype, clusters: anytype) void {
+    // #604 — `kind` 는 `logAtlasFull` 과 같은 자리다. Linux 는 gray · color surface 가 따로 커지므로 어느 쪽인지
+    // 없으면 `glyphs` 수로 유추해야 했다 (실측에서 `glyphs=9` 가 color 였다). macOS · Windows 는 `main`.
+    appendLine("gpu", "atlas grew to {d}x{d} ({s}, grows={d}, glyphs={d}, clusters={d})", .{
+        new_size, new_size, kind, grows, glyphs, clusters,
     });
 }
 
