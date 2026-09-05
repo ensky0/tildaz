@@ -119,6 +119,9 @@ pub const Packer = struct {
     /// **실패할 때도 커서를 움직인다** (줄바꿈 분기가 높이 검사보다 앞이다) — 그래서 "빈 atlas 였나" 는
     /// 호출 **전** 값으로 판정해야 한다 (`tryPack` 이 그렇게 한다).
     pub fn pack(self: *Packer, w: u32, h: u32) ?[2]u32 {
+        // 너비가 atlas 보다 크면 어느 줄에도 못 들어간다 — 옛 `packRow` 는 이것을 검사하지 않아 줄바꿈 뒤 x=0
+        // 에 놓고 오른쪽으로 넘쳤다 (글리프가 256 px 이하라 실제로는 걸리지 않던 잠재 결함 · #604 테스트가 드러냈다).
+        if (w + pad > self.size) return null;
         if (self.cursor_x + w + pad > self.size) {
             self.cursor_x = 0;
             self.cursor_y += self.row_height + pad;
@@ -205,17 +208,21 @@ test "Packer — 한 줄에 안 들어가면 다음 줄로, 다 차면 null (커
     try std.testing.expectEqual([2]u32{ 5, 0 }, p.pack(4, 3).?); // 4 + pad 1
     try std.testing.expectEqual([2]u32{ 0, 4 }, p.pack(4, 3).?); // 줄바꿈 — 3 + pad 1
     try std.testing.expectEqual([2]u32{ 0, 8 }, p.pack(9, 2).?); // 넓은 것 — 다음 줄
-    try std.testing.expect(p.pack(1, 3) == null); // 8 + 3 > 10
-    try std.testing.expectEqual(@as(u32, 10), p.filledY());
+    try std.testing.expect(p.pack(1, 3) == null); // 줄바꿈 (y 8 → 11) 뒤 11 + 3 > 10
+    try std.testing.expectEqual(@as(u32, 11), p.filledY()); // 실패한 호출도 커서를 옮겼다
+    try std.testing.expect(p.pack(11, 1) == null); // 너비가 atlas 보다 크면 어느 줄에도 못 들어간다
 }
 
 test "Packer.tryPack — 빈 atlas 에도 안 들어가면 too_big, 아니면 full" {
-    var p = Packer{ .size = 8 };
-    try std.testing.expect(p.tryPack(9, 1) == .too_big);
+    var p = Packer{ .size = 10 };
+    try std.testing.expect(p.tryPack(11, 1) == .too_big); // 너비
+    try std.testing.expect(p.tryPack(1, 11) == .too_big); // 높이 — 빈 atlas 라 full 이 아니다
     p.rewind();
-    try std.testing.expect(p.tryPack(4, 4) == .placed);
-    try std.testing.expect(p.tryPack(4, 4) == .placed);
-    try std.testing.expect(p.tryPack(4, 4) == .full);
+    try std.testing.expect(p.tryPack(4, 4) == .placed); // (0,0)
+    try std.testing.expect(p.tryPack(4, 4) == .placed); // (5,0)
+    try std.testing.expect(p.tryPack(4, 4) == .placed); // (0,5)
+    try std.testing.expect(p.tryPack(4, 4) == .placed); // (5,5)
+    try std.testing.expect(p.tryPack(4, 4) == .full); // 줄바꿈 뒤 10 + 4 > 10 — 담긴 것이 있으니 full
     p.rewind();
     try std.testing.expect(p.isEmpty());
 }
