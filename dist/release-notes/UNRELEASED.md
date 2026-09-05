@@ -25,3 +25,4 @@ Internal changes belong in neither.
 - Windows: programs that enable the kitty keyboard protocol with "report all keys" now receive letters, Enter, Tab, Backspace and Escape as `CSI u` sequences, matching macOS and Linux ([#602](https://github.com/ensky0/tildaz/issues/602)).
 - Linux: unplugging the only keyboard or mouse and plugging it back in no longer leaves TildaZ without input on wlroots-based compositors (sway, Hyprland) — the seat's keyboard and pointer objects are released and recreated with the device ([#347](https://github.com/ensky0/tildaz/issues/347)).
 - Linux: when the compositor exits first (logout, `swaymsg exit`), TildaZ shuts down cleanly instead of reporting `TildaZ failed to start … WaylandConnectionClosed` ([#613](https://github.com/ensky0/tildaz/issues/613)).
+- Windows: closing a tab right after opening it no longer freezes TildaZ, and no longer leaves an `OpenConsole.exe` process behind ([#611](https://github.com/ensky0/tildaz/issues/611)).

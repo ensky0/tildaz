@@ -231,6 +231,14 @@ extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.c) BOOL;
 
 extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.c) DWORD;
 
+// #611 — teardown 에서만 쓴다. `deinit` 주석에 왜 필요한지 적어 두었다.
+extern "kernel32" fn TerminateProcess(hProcess: HANDLE, uExitCode: c_uint) callconv(.c) BOOL;
+extern "kernel32" fn CancelIoEx(hFile: HANDLE, lpOverlapped: ?*OVERLAPPED) callconv(.c) BOOL;
+/// 회귀 테스트 전용 — `deinit` 이 자기 프로세스 핸들을 닫으므로 자식 종료를 밖에서 확인하려면
+/// 별도 핸들이 필요하다.
+extern "kernel32" fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) callconv(.c) ?HANDLE;
+const SYNCHRONIZE: DWORD = 0x00100000;
+
 extern "kernel32" fn GetLastError() callconv(.c) DWORD;
 
 extern "kernel32" fn CreateNamedPipeW(
@@ -288,6 +296,20 @@ const GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
 const WAIT_OBJECT_0: DWORD = 0;
 const ERROR_IO_PENDING: DWORD = 997;
+
+/// `ClosePseudoConsole` 이 보낸 `CTRL_CLOSE_EVENT` 를 자식이 처리할 시간 (#611).
+///
+/// Windows 는 콘솔 창을 닫을 때 핸들러에 5 초를 주지만 ([`HandlerRoutine`](https://learn.microsoft.com/en-us/windows/console/handlerroutine)),
+/// 그때는 창이 이미 사라져 **아무도 기다리지 않는다.** 우리는 UI 스레드가 `deinit` 안에서
+/// 기다리므로 그 값을 그대로 쓸 수 없다. 그리고 이벤트를 *놓친* 자식은 더 기다려도 끝나지
+/// 않는다 — 전달 자체가 안 된 것이라 시간 문제가 아니다. 그래서 이 값의 근거는 "종료 훅을
+/// 도는 셸에게 주는 시간" 하나뿐이고, 그 몫으로 1 초를 둔다. 정상 경로는 자식이 곧바로 죽어
+/// 이 상한에 닿지 않는다.
+const CHILD_EXIT_GRACE_MS: DWORD = 1000;
+
+/// `TerminateProcess` 뒤 커널이 프로세스를 내리는 것을 기다리는 상한. 강제 종료라 즉시
+/// 끝나지만, 그래도 안 끝나면 기다려도 소용없으므로 짧게 둔다.
+const CHILD_TERMINATE_WAIT_MS: DWORD = 500;
 const READ_BUF_SIZE: usize = 128 * 1024;
 
 pub const ConPty = struct {
@@ -675,8 +697,37 @@ pub const ConPty = struct {
     /// 호출이 자식 정리까지 OS API 추상화. macOS 는 fd 직접 다루므로 시그널
     /// (`kill(-pid, SIGHUP)`) 로 자식 종료를 직접 trigger 해야 함.
     pub fn deinit(self: *ConPty) void {
-        // ClosePseudoConsole 가 output pipe 를 끊어주므로 readLoop 가 빠져나옴
+        // `ClosePseudoConsole` 은 **아직 연결된 클라이언트에게 `CTRL_CLOSE_EVENT` 를 보낼
+        // 뿐**이다. 자식이 끊기면 conpty 가 자기 쪽 pipe 를 닫아 readLoop 이 EOF 로 빠져나온다.
+        // ([문서](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole) Remarks —
+        // 부르는 쪽은 ① 미리 output pipe 를 닫거나 ② 반환한 뒤에도 계속 읽어야 한다. 우리는 ② 다.)
         conpty_close_fn.?(self.hpc);
+
+        // ⚠️ 자식이 **막 시작해 콘솔 컨트롤 핸들러를 세우기 전**이면 그 이벤트를 놓치고 계속
+        // 연결된 채 남는다. 그러면 conpty 가 pipe 를 닫지 않아 readLoop 의 overlapped read 가
+        // 끝나지 않고, 아래 두 join 이 **영원히** 안 풀린다 ([#611](https://github.com/ensky0/tildaz/issues/611)).
+        // 실기에서 탭 생성 직후 닫기로 재현했다 — UI 스레드가 여기서 멈춰 앱 전체가 얼어붙었다
+        // (`WM_NULL` 40 초 무응답). Windows 11 24H2 부터 `ClosePseudoConsole` 자체는 즉시
+        // 반환하므로 그 호출이 아니라 **join** 에서 막힌다.
+        //
+        // 그래서 자식이 실제로 끝났는지 확인하고, 유예 안에 안 끝나면 강제로 끝낸다. 자식이
+        // 끝나야 conpty 가 pipe 를 닫고 readLoop 도 `processWaitLoop` 도 스스로 풀린다.
+        // **정상 경로에서는 자식이 곧바로 죽으므로 이 대기가 사실상 0 이다.**
+        if (WaitForSingleObject(self.process_info.hProcess, CHILD_EXIT_GRACE_MS) != WAIT_OBJECT_0) {
+            log.appendLine(
+                "conpty",
+                "child still attached {d}ms after CTRL_CLOSE_EVENT — terminating (pid={d})",
+                .{ CHILD_EXIT_GRACE_MS, self.process_info.dwProcessId },
+            );
+            _ = TerminateProcess(self.process_info.hProcess, 1);
+            _ = WaitForSingleObject(self.process_info.hProcess, CHILD_TERMINATE_WAIT_MS);
+        }
+
+        // 자식이 끝나면 conpty 가 pipe 를 닫아 readLoop 이 스스로 나오지만, 그 시점에 걸려
+        // 있던 overlapped read 는 명시로 깨워 준다 — Windows Terminal 의 `ConptyConnection::Close`
+        // 도 출력 스레드를 `CancelIoEx` 로 깨운다. 취소된 read 는 `GetOverlappedResult` 실패로
+        // 돌아와 readLoop 의 `break` 를 탄다.
+        if (self.read_thread != null) _ = CancelIoEx(self.pipe_out_read, null);
 
         if (self.read_thread) |t| {
             t.join();
@@ -880,4 +931,31 @@ test "conpty create and destroy" {
     };
     defer pty.deinit();
     try std.testing.expect(pty.isProcessAlive());
+}
+
+// #611 — `deinit` 이 **자식을 남기지 않는다.** 이 테스트가 원래 증상이 나오던 자리다:
+// `init` 직후 곧바로 `deinit` 하면 자식이 `CTRL_CLOSE_EVENT` 를 놓칠 수 있고, 그러면
+// 예전 코드는 `zig build test` 회차마다 `OpenConsole.exe` 를 하나씩 남기거나 (read
+// thread 가 없는 이 경로) 아예 join 에서 멈췄다 (앱 경로).
+//
+// 자식 핸들은 `deinit` 이 닫으므로 **미리 따로 열어 두고** 그것으로 종료를 확인한다.
+// `deinit` 이 유한 시간에 반환하는 것 자체도 이 테스트가 검사한다 — 회귀하면 테스트가
+// 끝나지 않는다.
+test "#611 conpty deinit leaves no attached client" {
+    const shell = std.unicode.utf8ToUtf16LeStringLiteral("cmd.exe");
+    var pty = ConPty.init(std.testing.allocator, 80, 24, shell, null, null) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
+    const child = OpenProcess(SYNCHRONIZE, .FALSE, pty.process_info.dwProcessId);
+    defer if (child) |h| {
+        _ = CloseHandle(h);
+    };
+
+    pty.deinit(); // 대기 없이 곧바로 — 자식이 아직 핸들러를 못 세운 창이다
+
+    if (child) |h| {
+        // `deinit` 이 돌아왔다면 자식은 이미 끝났어야 한다 (스스로 끝났든 강제로 끝났든).
+        try std.testing.expectEqual(WAIT_OBJECT_0, WaitForSingleObject(h, 2000));
+    }
 }
