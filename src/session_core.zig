@@ -503,6 +503,10 @@ pub const Tab = struct {
                 if (tab.write_queue.isClosed()) break;
                 const n = tab.write_queue.pop(&buf);
                 if (n == 0) break;
+                // #481 — 셸 왕복 구간의 시작. 닫는 자리는 `perf.markOutput` (read thread) 이다.
+                // `input_latency` 에서 게이트 · 렌더 · present 를 빼고 남던 몫이 자식 쪽인지를
+                // 뺄셈이 아니라 관측으로 가르려고 둔다.
+                perf.markPtyWrite();
                 _ = tab.backend.write(buf[0..n]) catch break;
             }
             if (tab.write_queue.isClosed()) break;

@@ -1541,6 +1541,10 @@ pub const Window = struct {
     /// #439 — `WM_PTY_OUTPUT` (출력 통보) 도 여기로 들어온다.
     fn renderFrameTick(self: *Window) void {
         if (!self.visible or self.layout_transition_active) return;
+        // #473 · #481 ② — 대기 중이던 키 · 출력이 **여기까지 기다린 시간**을 적는다.
+        // Windows 는 입력이 와도 게이트만 열고 (`requestRender`) 실제 렌더는 이 tick 이
+        // 하므로, 그 대기가 응답 지연에 얼마나 얹히는지는 이 자리에서만 잴 수 있다.
+        perf.noteFrameTick();
         if (self.render_fn) |render_fn| render_fn(self);
     }
 
