@@ -1340,9 +1340,13 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` 한 호출 | 공통 `Pty.deinit`: `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
-| Polling sleep 회피 | join 직접 동기화 | (OS API 자동) | wait_thread blocking `waitpid` 으로 즉시 깨어남 | 동일 (`waitpid` blocking + `child_exited` atomic 으로 grace loop break) | ✅ | ✅ | ✅ |
-| SIGHUP 무시 셸 fallback | SIGKILL 강제 | (자동) | 공통 `Pty.deinit`: 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
+| 탭 닫기 시 자식 정리 | 즉시 종료 + read thread join | `ClosePseudoConsole(hpc)` → 자식 종료 확인 (1초 유예) → 안 끝나면 `TerminateProcess` → `CancelIoEx` → `read_thread.join()` + `wait_thread.join()` | 공통 `Pty.deinit`: `kill(-pid, SIGHUP)` + `wait_thread.join()` + `read_thread.join()` | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
+| Polling sleep 회피 | join 직접 동기화 | 자식 종료는 `WaitForSingleObject` 블로킹 대기 (polling 없음) | wait_thread blocking `waitpid` 으로 즉시 깨어남 | 동일 (`waitpid` blocking + `child_exited` atomic 으로 grace loop break) | ✅ | ✅ | ✅ |
+| SIGHUP 무시 셸 fallback | SIGKILL 강제 | `CTRL_CLOSE_EVENT` 를 놓친 자식은 1초 유예 뒤 `TerminateProcess` ([#611](https://github.com/ensky0/tildaz/issues/611)) | 공통 `Pty.deinit`: 500ms grace (5ms polling, `child_exited` atomic) → SIGKILL | macOS와 같은 [`terminal/posix/pty.zig`](src/terminal/posix/pty.zig)의 `Pty.deinit` | ✅ | ✅ | ✅ |
+
+**Windows — `ClosePseudoConsole` 하나로는 자식이 정리되지 않는다** ([#611](https://github.com/ensky0/tildaz/issues/611) · 2026-09-05 확정). 그 API 는 [문서](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole)대로 **연결된 클라이언트에게 `CTRL_CLOSE_EVENT` 를 보낼 뿐**이고, 자식이 **막 시작해 콘솔 컨트롤 핸들러를 세우기 전**이면 그 이벤트를 놓쳐 계속 연결된 채 남는다. 그러면 conpty 가 출력 pipe 를 닫지 않아 `readLoop` 의 overlapped read 가 끝나지 않고, `deinit` 의 `read_thread.join()` · `wait_thread.join()` 이 **영원히** 안 풀린다 — 탭 닫기가 UI 스레드에서 멈춰 앱 전체가 얼어붙는다 (실기 재현: 탭 생성 직후 닫기, `WM_NULL` 40초 무응답). Windows 11 24H2 부터 `ClosePseudoConsole` 자체는 즉시 반환하므로 그 호출이 아니라 **join** 에서 막힌다.
+
+그래서 Windows 도 macOS · Linux 와 **같은 모양**이 됐다 — 정상 종료를 기다리고, 유예 안에 안 끝나면 강제로 끝낸다 (POSIX 의 `SIGHUP` → 500ms → `SIGKILL` 에 대응). 유예가 1초인 근거는 [`pty.zig`](src/terminal/windows/pty.zig) 의 `CHILD_EXIT_GRACE_MS` 주석에 있다 — 이벤트를 *놓친* 자식은 더 기다려도 끝나지 않으므로, 값의 근거는 "종료 훅을 도는 셸에게 주는 시간" 뿐이다. 참고로 Windows Terminal (`ConptyConnection::Close`) 은 자식을 강제 종료하지 않는 대신 출력 스레드를 `CancelIoEx` + 타임아웃 루프로 깨우고, WezTerm 은 스레드 join 자체를 하지 않는다. 우리는 join 을 하므로 자식 정리까지 책임져야 한다.
 
 ---
 
