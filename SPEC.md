@@ -2187,7 +2187,8 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
   올라간다. 예산 검사가 청크 *사이*에만 있어 마지막 청크가 넘기 때문이고, macOS · Windows 는 16 pane 에서도
   초과 폭이 0.6 ms 안 (청크 하나) 에 머문다.
 - **Linux 만 16 pane 에서 상한이 깨진다** (6.98~11.27 ms). 원인 코드는 공통 `drainFrame` 이지만
-  **발현은 host 에서 갈린다** — macOS · Windows 는 같은 조건에서 묶였다. Linux host 의 드레인 구조로 따로 추적한다.
+  **발현은 host 에서 갈린다** — macOS · Windows 는 같은 조건에서 묶였다. Linux host 의 드레인 구조로 따로 추적한다
+  ([#639](https://github.com/ensky0/tildaz/issues/639) · 원인 미확정 — 스케줄링 포화인지 `poll` timeout 0 드레인인지 Linux 에서 perf 로 가른 뒤 정한다).
 - **수정 전 공정성은 pane 2 개부터 나빠지고 host 마다 크게 달랐다.** `drainFrame` 이 매 호출 `group.panes` 를
   **처음부터** 도는데 (숨은 탭에는 `inactive_drain_cursor` 가 있지만 **보이는 pane 에는 커서가 없다**)
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는
