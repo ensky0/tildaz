@@ -3621,6 +3621,10 @@ const Client = struct {
 
     fn maybeRedraw(self: *Client) !void {
         if (!self.needs_redraw) return;
+        // #473 · #481 ② — Windows · macOS 의 frame tick 과 같은 자리다. Linux 는 tick 을
+        // 기다리지 않고 **같은 poll 반복에서 바로** 그리므로 이 값이 0 에 가까워야 한다 —
+        // 그래서 이 host 가 계측 자체의 대조군이 된다 (#473 본문 표).
+        perf.noteFrameTick();
         if (try self.redraw()) {
             self.needs_redraw = false;
         }

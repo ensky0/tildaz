@@ -4392,6 +4392,11 @@ fn idleDrainObserver(_: CFRunLoopObserverRef, _: CFOptionFlags, _: ?*anyopaque) 
 /// render tick. 윈도우 hidden 이거나 renderer 미초기화면 skip. cell_w/h 는
 /// font 가 측정한 pixel 단위 (Retina backing scale 이미 적용됨).
 fn renderFrameTick() void {
+    // #473 · #481 ② — 대기 중이던 키 · 출력이 이 프레임까지 기다린 시간 (Windows 의
+    // 같은 자리와 대응). macOS 는 구조가 Windows 와 같은데 (게이트 → CADisplayLink)
+    // 실측 값이 반 프레임을 안 따라서, 그 이유를 이 계측이 가른다 (#473 코멘트).
+    perf.noteFrameTick();
+
     // Per-tab PTY exit 처리 — 마지막 탭이 정리되면 NSApp.terminate (이번 frame
     // 은 더 진행 안 함).
     if (drainExitedTabs()) return;

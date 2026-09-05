@@ -51,6 +51,57 @@ pub const Counter = struct {
     extra: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 };
 
+/// #481 ① — 지연의 **분포**. `calls` · `ns` · `extra` (최악) 셋만으로는 20 표본 중
+/// *하나만* 튄 것인지 *여럿이 퍼진* 것인지 구분되지 않는다 — 원인 가설을 세우기 전에
+/// 그것부터 갈라야 한다는 것이 그 이슈의 첫 항목이다.
+///
+/// 버킷은 `<1 · 1~2 · 2~4 · 4~8 · 8~16 · >16 ms` 다. 60 Hz 한 프레임 (16.67 ms) 과
+/// 반 프레임 (8.3 ms) 이 경계에 오도록 2 의 거듭제곱으로 잡았다 — 프레임 주기가 상한이라는
+/// 주장을 버킷 하나로 읽을 수 있어야 하기 때문이다. 기록은 원자 덧셈 하나라 read 경로
+/// 비용이 그대로다 (`markOutput` 이 read thread 에서 불린다).
+pub const Histogram = struct {
+    pub const bucket_count = 6;
+    /// 각 버킷의 상한 (ns). 마지막은 그 위 전부.
+    pub const edges_ns = [_]u64{
+        1 * std.time.ns_per_ms,
+        2 * std.time.ns_per_ms,
+        4 * std.time.ns_per_ms,
+        8 * std.time.ns_per_ms,
+        16 * std.time.ns_per_ms,
+    };
+    pub const labels = [bucket_count][]const u8{ "<1", "1-2", "2-4", "4-8", "8-16", ">16" };
+
+    b: [bucket_count]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
+
+    fn add(self: *Histogram, delta_ns: u64) void {
+        for (edges_ns, 0..) |edge, i| {
+            if (delta_ns < edge) {
+                _ = self.b[i].fetchAdd(1, .monotonic);
+                return;
+            }
+        }
+        _ = self.b[bucket_count - 1].fetchAdd(1, .monotonic);
+    }
+
+    /// 덤프용 스냅샷 — 읽으면서 비운다 (`snapshot` 과 같은 규칙).
+    pub fn take(self: *Histogram) [bucket_count]u64 {
+        var out: [bucket_count]u64 = undefined;
+        for (&self.b, 0..) |*slot, i| out[i] = slot.swap(0, .monotonic);
+        return out;
+    }
+};
+
+/// 한 지연 표본을 카운터와 히스토그램에 함께 적는다. 최악값 갱신은 경합해도 더 큰 값이 이긴다.
+fn recordLatency(c: *Counter, h: *Histogram, delta: u64) void {
+    _ = c.calls.fetchAdd(1, .monotonic);
+    _ = c.ns.fetchAdd(delta, .monotonic);
+    h.add(delta);
+    var cur = c.extra.load(.monotonic);
+    while (delta > cur) {
+        cur = c.extra.cmpxchgWeak(cur, delta, .monotonic, .monotonic) orelse break;
+    }
+}
+
 pub var readloop: Counter = .{}; // ReadFile from ConPTY pipe
 pub var push: Counter = .{}; // ring.push — extra = yield spins (full)
 pub var drain: Counter = .{}; // drainOutput — ns covers whole loop, bytes = popped
@@ -87,6 +138,8 @@ pub fn markInput() void {
     const t = now() orelse return;
     if (t == 0) return;
     _ = pending_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #473 — 게이트 구간은 present 가 아니라 **프레임 진입**에서 닫힌다 (`noteFrameTick`).
+    _ = gate_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
 }
 
 /// present 가 끝난 자리에서 부른다. 대기 중인 키가 있으면 지연을 적고 비운다.
@@ -95,14 +148,7 @@ pub fn completeInput() void {
     if (start == 0) return;
     const t = now() orelse return;
     if (t <= start) return;
-    const delta = t - start;
-    _ = input_latency.calls.fetchAdd(1, .monotonic);
-    _ = input_latency.ns.fetchAdd(delta, .monotonic);
-    // 최악값 갱신. 경합해도 더 큰 값이 이긴다.
-    var cur = input_latency.extra.load(.monotonic);
-    while (delta > cur) {
-        cur = input_latency.extra.cmpxchgWeak(cur, delta, .monotonic, .monotonic) orelse break;
-    }
+    recordLatency(&input_latency, &input_hist, t - start);
 }
 
 /// #439 — **PTY 출력이 도착한 순간부터 그 뒤 첫 present 가 끝날 때까지.**
@@ -130,6 +176,8 @@ pub fn markOutput() void {
     const t = now() orelse return;
     if (t == 0) return;
     _ = pending_output_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #481 ② — 위와 같은 이유로 게이트 구간을 따로 연다.
+    _ = gate_output_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
 }
 
 /// present 가 끝난 자리에서 부른다 (`completeInput` 과 같은 자리).
@@ -138,13 +186,43 @@ pub fn completeOutput() void {
     if (start == 0) return;
     const t = now() orelse return;
     if (t <= start) return;
-    const delta = t - start;
-    _ = output_latency.calls.fetchAdd(1, .monotonic);
-    _ = output_latency.ns.fetchAdd(delta, .monotonic);
-    var cur = output_latency.extra.load(.monotonic);
-    while (delta > cur) {
-        cur = output_latency.extra.cmpxchgWeak(cur, delta, .monotonic, .monotonic) orelse break;
-    }
+    recordLatency(&output_latency, &output_hist, t - start);
+}
+
+/// #473 · #481 ② — **도착부터 그 뒤 첫 프레임 진입까지.** 위 두 지연에서 *"깨우기가 늦었나"*
+/// 만 떼어 낸 값이다.
+///
+/// 왜 필요한가. `input_latency` 는 `게이트 대기 + 렌더 + present + 셸 왕복` 을 합쳐 재므로,
+/// [#473](https://github.com/ensky0/tildaz/issues/473) 이 주장하는 *"Windows 는 키가 와도 다음
+/// frame tick 을 기다려 반 프레임 (8.3 ms) 이 얹힌다"* 를 그 값 하나로는 확인할 수 없다.
+/// 이 카운터가 그 몫만 따로 재서, 실측 9.79 ms 중 게이트가 얼마인지를 숫자로 만든다.
+/// [#481](https://github.com/ensky0/tildaz/issues/481) ② 의 *"늦은 곳이 깨우기인가 깨어난
+/// 뒤인가"* 도 같은 값이 가른다 — `output_latency − output_gate` 가 깨어난 뒤 몫이다.
+///
+/// **Linux 는 대조군이다.** 그쪽은 poll 반복에서 곧바로 그리므로 (tick 을 안 기다린다) 이
+/// 값이 0 에 가까워야 하고, 그렇지 않으면 이 계측 자체가 틀린 것이다.
+pub var input_gate: Counter = .{};
+pub var output_gate: Counter = .{};
+pub var input_hist: Histogram = .{};
+pub var output_hist: Histogram = .{};
+pub var input_gate_hist: Histogram = .{};
+pub var output_gate_hist: Histogram = .{};
+
+/// 게이트 구간용 대기 시각. `pending_input_ns` 와 **따로 둔다** — 그쪽은 present 에서
+/// 소비되는데 이쪽은 프레임 진입에서 소비되므로, 하나를 나눠 쓰면 둘 중 하나가 표본을 잃는다.
+var gate_input_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+var gate_output_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+
+/// 프레임을 그리기 시작하는 자리에서 부른다 — Windows `renderFrameTick`, macOS
+/// `renderFrameTick`, Linux `maybeRedraw`. 대기 중인 입력 · 출력이 있으면 그 대기를 적고 비운다.
+///
+/// 프레임마다 원자 load 두 번이라 (대기가 없으면 그걸로 끝) 프레임 예산에 영향이 없다.
+pub fn noteFrameTick() void {
+    const t = now() orelse return;
+    const in_start = gate_input_ns.swap(0, .acq_rel);
+    if (in_start != 0 and t > in_start) recordLatency(&input_gate, &input_gate_hist, t - in_start);
+    const out_start = gate_output_ns.swap(0, .acq_rel);
+    if (out_start != 0 and t > out_start) recordLatency(&output_gate, &output_gate_hist, t - out_start);
 }
 
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
@@ -247,10 +325,18 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const sw = snapshot(&swapwait);
     const il = snapshot(&input_latency);
     const ol = snapshot(&output_latency);
+    const ig = snapshot(&input_gate);
+    const og = snapshot(&output_gate);
+    const ih = input_hist.take();
+    const oh = output_hist.take();
+    const igh = input_gate_hist.take();
+    const ogh = output_gate_hist.take();
     // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
     // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
     _ = pending_input_ns.swap(0, .acq_rel);
     _ = pending_output_ns.swap(0, .acq_rel);
+    _ = gate_input_ns.swap(0, .acq_rel);
+    _ = gate_output_ns.swap(0, .acq_rel);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -308,7 +394,37 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
         },
     ) catch return;
 
-    log.appendBlock(text);
+    // #473 · #481 — **두 번째 조각.** 한 `bufPrint` 로 합치지 않는 이유는 인자 상한이다
+    // (`std.Io.Writer` 가 호출당 32 개까지인데 위 표만으로 이미 30 개다). 같은 버퍼에 이어
+    // 써서 로그에는 **한 블록**으로 나간다 — `appendBlock` 을 두 번 하면 다른 스레드의
+    // 블록이 사이에 끼어 표가 갈라진다.
+    const tail = std.fmt.bufPrint(
+        buf[text.len..],
+        // 위 둘에서 **깨우기 몫만** 떼어 낸 값 (도착 → 프레임 진입). `input − in_gate` 가
+        // 깨어난 뒤 몫이다. Linux 는 tick 을 안 기다리므로 0 에 가까워야 한다 — 그렇지
+        // 않으면 이 계측 자체가 틀린 것이다.
+        "in_gate  samples={d} ms={d:.3} max_ms={d:.3}\n" ++
+            "out_gate samples={d} ms={d:.3} max_ms={d:.3}\n" ++
+            // #481 ① — 분포. 평균 · 최악만으로는 '하나가 튀었나 여럿이 퍼졌나' 를 못 가른다.
+            // 버킷 (ms): <1 · 1-2 · 2-4 · 4-8 · 8-16 · >16 — 60 Hz 의 반 프레임 (8.3) 과
+            // 한 프레임 (16.67) 이 경계에 온다.
+            "hist     in={any} out={any}\n" ++
+            "histgate in={any} out={any}\n",
+        .{
+            ig[0],
+            @as(f64, @floatFromInt(ig[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(ig[3])) / 1_000_000.0,
+            og[0],
+            @as(f64, @floatFromInt(og[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(og[3])) / 1_000_000.0,
+            ih,
+            oh,
+            igh,
+            ogh,
+        },
+    ) catch return;
+
+    log.appendBlock(buf[0 .. text.len + tail.len]);
 }
 
 /// #396 — 측정 인스턴스는 종료 직전에 스냅숏을 **자동으로 한 번** 남긴다. 손으로
