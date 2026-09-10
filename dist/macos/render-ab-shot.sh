@@ -27,8 +27,13 @@ i=0
 for app in "$A" "$B"; do
   i=$((i+1)); bin="$app/Contents/MacOS/tildaz"; [ -x "$bin" ] || { echo "앱 없음: $bin"; exit 1; }
   pkill -f "tildaz --instance 9" 2>/dev/null; sleep 0.5
+  # 다른 인스턴스 (사용자의 instance 0 등) 가 떠 있으면 "첫 tildaz 창" 이 그 창이라 두 판이 같은 그림을
+  # 찍고 0 px 가짜 통과가 난다 (2026-09-05 실측). 띄우기 전 목록에 없던 tildaz 창만 잡는다.
+  before=$("$CAP" --list 2>/dev/null | awk '$2 ~ /tildaz/ {print $1}' | tr '\n' ' ')
   "$bin" --instance 9 -e "$TARGET" -size "$SIZE" >/dev/null 2>&1 & disown
-  wid=""; for _ in $(seq 1 40); do sleep 0.2; wid=$("$CAP" --list 2>/dev/null | awk '$2 ~ /tildaz/ {print $1; exit}'); [ -n "$wid" ] && break; done
+  wid=""; for _ in $(seq 1 40); do sleep 0.2
+    wid=$("$CAP" --list 2>/dev/null | awk -v b=" $before" '$2 ~ /tildaz/ && index(b, " " $1 " ") == 0 {print $1; exit}')
+    [ -n "$wid" ] && break; done
   [ -z "$wid" ] && { echo "창 못 찾음 ($app)"; pkill -f "tildaz --instance 9"; exit 1; }
   sleep "$WAIT"; "$CAP" --window "$wid" "$OUT/shot_$i.png" >/dev/null 2>&1
   pkill -f "tildaz --instance 9" 2>/dev/null; sleep 0.3
