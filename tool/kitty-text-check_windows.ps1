@@ -23,7 +23,7 @@
 #    dead key 는 누름이 `CSI 39 u` 로 보고되고 조합 결과 `é` 는 텍스트 (`c3 a9`) 로 온다. `disambiguate` 만이면 글자는 텍스트 그대로.
 #
 # 실기라서 **시작 전에 알리고 동의를 받는다** — 창이 두 번 뜨고 합성 키가 나간다. 키마다 포커스 가드 (foreground 가 tildaz
-# 창이 아니면 멈춤). dead key 회차는 US-International 을 잠깐 올린다 (`deadkey-check.ps1` 과 같은 방법 · 끝나면 내림).
+# 창이 아니면 멈춤). dead key 회차는 US-International 을 잠깐 올린다 (`deadkey-check_windows.ps1` 과 같은 방법 · 끝나면 내림).
 #
 # ⚠️ 이 파일은 UTF-8 **BOM** 으로 저장한다 (Windows PowerShell 5.1 이 BOM 없는 `.ps1` 을 cp949 로 읽는다). Python 3 이
 # `python` 으로 PATH 에 있어야 한다 (이 기기는 3.14).

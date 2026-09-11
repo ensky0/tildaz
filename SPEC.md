@@ -2199,7 +2199,7 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
   ring 을 마저 소화하도록 고친 뒤 120 Hz 에서 다시 잰 유효값이다 ([#572](https://github.com/ensky0/tildaz/issues/572)).
   즉 pane 을 늘려도 밀리는 것은 렌더가 아니라 위의 드레인 공정성이다.
   **2026-09-03 Windows 자동화 재측정** (main `1f7d223` · 노트북 Ryzen AI 7 350 · 120 Hz · AC · 최고 성능 ·
-  `measure-repeat.sh --panes N` — barrier 러너로 N 개 producer **동시** 시작 · `split-panes.ps1` 로 4 열 × 2 행 분할 ·
+  `measure-repeat.sh --panes N` — barrier 러너로 N 개 producer **동시** 시작 · `split-panes_windows.ps1` 로 4 열 × 2 행 분할 ·
   `plain` 64 MiB/pane · 5 회 절사평균, [#551 댓글](https://github.com/ensky0/tildaz/issues/551)): `render/call` 이
   1 · 2 · 4 · 8 pane 에서 **0.655 · 0.494 · 0.431 · 1.373 ms**, drain 141 · 350 · 853 · 2150 ms (8 pane 의 5 회 폭 2 %),
   손실은 pane 당 16 byte (ConPTY 종료) 뿐. 1 · 4 pane 은 #572 회차와 같은 값인데 8 pane 은 1.373 vs 0.894 로 갈렸고,

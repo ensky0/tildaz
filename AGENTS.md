@@ -691,7 +691,7 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   Return 은 아무 selector 도 안 만들어요. 화살표 · 글자 (`t:`) 는 keyCode 로 가서 cliclick 도 닿아요.
 - **입력 소스가 한국어 (2벌식) 면 `cliclick t:` 글자가 IME 에 먹혀 안 닿아요** — `mac-input ime-get` 으로 먼저
   보고, ASCII 가 필요하면 `mac-input ime-ascii` 로 바꾼 뒤 끝나면 되돌려요 (사용자 입력 소스를 바꾸는 일이라
-  알리고). `deadkey-check.sh` 는 ABC 가 아니면 스스로 멈춰요.
+  알리고). `deadkey-check_macos.sh` 는 ABC 가 아니면 스스로 멈춰요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
@@ -733,7 +733,7 @@ macOS (`tool/render-ab-shot/render-ab-shot_macos.sh`) · Linux (`tool/render-ab-
 [#584](https://github.com/ensky0/tildaz/issues/584) Windows 계측이 밟은 함정을 피해 둔 상태예요.
 
 ```powershell
-python dist\screens\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd   # 화면 (.cmd 래퍼 + UTF-8 본문)
+python tool\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd   # 화면 (.cmd 래퍼 + UTF-8 본문)
 # 판마다 INITIAL_ATLAS_SIZE 만 바꿔 빌드하고 exe 를 한 폴더에 모아요 — **_internal 폴더도 그 옆에 복사**해요 (아래)
 tool\render-ab-shot\render-ab-shot_windows.ps1 -Screen $env:TEMP\stack2.cmd -Size 150x40 -Wait 8 -Tag stack2 `
     -Bins $env:TEMP\bins\tildaz-4096.exe,$env:TEMP\bins\tildaz-2048.exe,$env:TEMP\bins\tildaz-512.exe
@@ -776,7 +776,7 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
 
 # Windows — 합성 입력으로 dead key · launcher 실패를 자동 검증하는 법
 
-macOS 의 `deadkey-check.sh` 에 대응하는 도구 둘이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A2 · A3 의 Windows 몫).
+macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A2 · A3 의 Windows 몫).
 둘 다 `--instance 9` 또는 launcher 로 앱을 한 번 띄우고 끝나면 만든 것을 스스로 지워요. 실기라서 `# 실행 환경` 대로
 **시작 전에 알리고 동의를 받아요** — 합성 키가 나가고 세션 layout 목록 · `config_9.toml` 이 잠깐 바뀌어요.
 
@@ -810,13 +810,13 @@ tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
   띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
   자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
   이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
-- **`deadkey-check.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
+- **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
 - **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
   누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
   감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
   **`switch` 의 출력도 같아요** — `$seq = switch ($n) { 2 { @(,$chord) } }` 는 파이프라인을 지나며 풀려 `@(17, 16, 39)` 가
-  돼요 (2026-09-03 `split-panes.ps1` — pane 2 회차 5 회가 전부 분할 실패). 블록 안에서 `$seq = ,$chord` 로 **직접 대입**해요.
+  돼요 (2026-09-03 `split-panes_windows.ps1` — pane 2 회차 5 회가 전부 분할 실패). 블록 안에서 `$seq = ,$chord` 로 **직접 대입**해요.
   단항 콤마 · 직접 대입 뒤에는 `$seq.Count` 와 `$seq[0] -is [array]` 를 한 번 찍어 보고 시작해요.
 - **다른 창이 tildaz 창을 덮고 있으면 `SetForegroundWindow` 도 창 중앙 클릭도 안 닿아요** — 사용자가 브라우저를 앞에 두고
   머지하던 회차에서 포커스 가드가 막았어요. 도구들은 잠깐 `HWND_TOPMOST` 로 올려 활성화하고 끝나면 내려요.
@@ -978,7 +978,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 
     - 상대 이동으로 버티려 하면 **포인터 가속에 왜곡돼요.** KDE 에서는 그 장치의 가속을 D-Bus 로 끌 수 있어요 (`org.kde.KWin.InputDevice` 의 `pointerAccelerationProfileFlat`) — 다만 그건 `kcminputrc` 에 `[Libinput][…][ydotoold virtual device]` 섹션으로 **남으니 끝나면 지워요.**
     - **좌표는 클릭 전에 hover 로 검증해요.** 메뉴 항목은 `menu_hover_bg` 가 있어서 캡처 한 장으로 어느 줄에 닿았는지 확정돼요. 컨트롤 스트립 (`+` · `×` · `⋯`) 은 hover 가 캡처에 안 잡힐 수 있어, 커서를 포함해 찍고 (`spectacle -p`) 커서 끝 위치로 봐요.
-- **`fcitx5` 같은 text-input-v3 IME 가 떠 있으면 키가 앱의 xkb 경로로 오지 않아요.** IME 가 가로채 **자기 구현으로 조합한 뒤 commit** 하므로, 재고 있는 것이 앱 코드가 아니에요. **`fcitx5-remote -c` 로 영문 모드로 바꿔도 경로에서 빠지지 않아요** (fcitx5 에도 자체 Compose 가 있어요). 결과가 우연히 같아 보이는 케이스가 많아 눈치채기 어려워요 — [#494](https://github.com/ensky0/tildaz/issues/494) dead key 검증에서 이 때문에 세 케이스가 거짓 FAIL 로 나왔고, `pkill -x fcitx5` 뒤 전부 통과했어요 (끝나면 `setsid nohup fcitx5 -d &` 로 되돌려요). 판정은 앱 로그의 **`text_input preedit` · `text_input commit` 줄 개수**예요 — 케이스 구간에서 **0 이어야** 앱 자신의 경로를 잰 것이에요. IME 공존 자체를 보는 케이스는 반대로 띄운 채 재고, *조합 주체가 누구인지* 를 결과에 같이 적어요. **입력기에 따라 갈려요** — fcitx5 의 키보드 IM (`keyboard-us` · `keyboard-fr`) 은 fcitx5 가 조합하고, `hangul` 은 조합 중이던 한글을 확정한 뒤 **키를 앱으로 넘겨요** ([#530](https://github.com/ensky0/tildaz/issues/530) COSMIC · KDE 회차). 그 `text_input preedit/commit` 줄은 **`TILDAZ_VERBOSE=1` 게이트**라, verbose 없이 띄운 회차의 "0 줄" 은 IME 부재의 증거가 아니라 그냥 로그가 없는 거예요 — 조합 주체를 갈라야 하면 verbose 로 띄워요 (`dead-key-compose-check.sh` 는 켜 줘요). 그리고 **fcitx5 는 종료할 때 `~/.config/fcitx5/profile` 을 자기 메모리 상태로 덮어써요** — 켜진 채 파일을 고치고 나중에 내리면 편집이 되돌아가요. 순서는 내리기 → 고치기 → 띄우기, 복구도 같아요.
+- **`fcitx5` 같은 text-input-v3 IME 가 떠 있으면 키가 앱의 xkb 경로로 오지 않아요.** IME 가 가로채 **자기 구현으로 조합한 뒤 commit** 하므로, 재고 있는 것이 앱 코드가 아니에요. **`fcitx5-remote -c` 로 영문 모드로 바꿔도 경로에서 빠지지 않아요** (fcitx5 에도 자체 Compose 가 있어요). 결과가 우연히 같아 보이는 케이스가 많아 눈치채기 어려워요 — [#494](https://github.com/ensky0/tildaz/issues/494) dead key 검증에서 이 때문에 세 케이스가 거짓 FAIL 로 나왔고, `pkill -x fcitx5` 뒤 전부 통과했어요 (끝나면 `setsid nohup fcitx5 -d &` 로 되돌려요). 판정은 앱 로그의 **`text_input preedit` · `text_input commit` 줄 개수**예요 — 케이스 구간에서 **0 이어야** 앱 자신의 경로를 잰 것이에요. IME 공존 자체를 보는 케이스는 반대로 띄운 채 재고, *조합 주체가 누구인지* 를 결과에 같이 적어요. **입력기에 따라 갈려요** — fcitx5 의 키보드 IM (`keyboard-us` · `keyboard-fr`) 은 fcitx5 가 조합하고, `hangul` 은 조합 중이던 한글을 확정한 뒤 **키를 앱으로 넘겨요** ([#530](https://github.com/ensky0/tildaz/issues/530) COSMIC · KDE 회차). 그 `text_input preedit/commit` 줄은 **`TILDAZ_VERBOSE=1` 게이트**라, verbose 없이 띄운 회차의 "0 줄" 은 IME 부재의 증거가 아니라 그냥 로그가 없는 거예요 — 조합 주체를 갈라야 하면 verbose 로 띄워요 (`deadkey-check_linux.sh` 는 켜 줘요). 그리고 **fcitx5 는 종료할 때 `~/.config/fcitx5/profile` 을 자기 메모리 상태로 덮어써요** — 켜진 채 파일을 고치고 나중에 내리면 편집이 되돌아가요. 순서는 내리기 → 고치기 → 띄우기, 복구도 같아요.
 - **`xkbcli interactive-wayland` 는 포커스를 훔치고 안 돌려줘요.** 그 자체가 Wayland client 라, 측정 중에 띄우면 tildaz 의 **layer-shell 표면으로 포커스가 돌아오지 않아** 이후 케이스가 전부 "바이트 없음" 이 돼요 (dead key 가 아니라 평범한 문자 키까지요). 받은 keymap 을 밖에서 확인하는 데는 좋은 도구지만 **tildaz 를 띄우기 전에만** 써요. 띄운 뒤에는 앱 로그의 `keyboard keymap loaded … layouts=[…]` 와 **인앱 가드 키**로 확인해요 — `KEY_Q` 는 fr 에서 `a`, us 에서 `q` 라 한 키로 layout 이 되돌아갔는지 케이스마다 갈려요. 이미 걸렸으면 `tildaz --toggle 9` 두 번으로 회복돼요. **`xkbcli dump-keymap-wayland` 는 안 훔쳐요** — 붙자마자 keymap 을 뱉고 끝나서 tildaz 를 띄운 채로도 안전해요 (KDE 회차 실측). 배열 관련 케이스는 **재기 전에 이걸로 그룹별 기대값을 먼저 뽑아 둬요** — `key <AE02>` 의 `symbols[2]` 가 `[eacute, 2, asciitilde, oneeighth]` 처럼 나오니, 무엇이 나와야 맞는지를 측정 전에 확정할 수 있어요. 기대값 없이 재면 결과를 보고 나서 해석하게 돼 거짓 판정이 섞여요 ([#483 KDE 회차](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149)).
 - **실기 전에 유휴 잠금을 막아요** — `systemd-inhibit --what=idle:sleep --mode=block sleep infinity &` 를 먼저 걸고, 끝나면 그 PID 를 `kill` 해요. "기기를 건드리지 말아 달라" 는 부탁이 세션을 유휴로 만들어 **KDE 잠금 화면이 떴고 주입한 키가 암호 입력란으로 들어갔어요** ([#530 KDE 회차](https://github.com/ensky0/tildaz/issues/530#issuecomment-5434640115)). layout 이 fr 인 채로 잠기면 사용자가 암호를 제대로 못 치니 해제 전에 `setLayout 0` 으로 되돌려요. 자동 잠금 설정 자체 (`kscreenlockerrc`) 는 건드리지 않아요.
 - **⚠️ 주입한 키는 "그때 포커스를 가진 창" 으로 가요 — 대상 창을 고를 수 없어요.** 측정 중에 사용자가 다른 창을 만지면 **그 창에 그대로 타이핑돼요**. [#483 KDE 회차](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149) 에서 배열을 추가받는 동안 포커스가 옮겨간 걸 모르고 쳐서, 사용자의 대화창에 `cat -v > ~/kfr.txt` 와 `€` · `é` 가 들어갔어요 (위 잠금 화면 항목과 같은 뿌리예요). 그래서 **타이핑 전에 두 가지를 해요** — ① 창 안을 클릭해 포커스를 잡고, ② `touch ~/probe` 를 보내 **파일이 생기는지로 포커스를 확인**해요. 확인이 안 되면 한 글자도 보내지 않고 멈춰요. 그리고 **단계마다 앱이 살아 있는지 다시 봐요** — `Ctrl+Shift+W` 를 pane 수보다 많이 보내 앱이 스스로 끝난 뒤에도 계속 키를 보내다 타임아웃까지 갔어요 (`pgrep` 으로 확인하고, 죽었으면 중단해요).
@@ -1171,17 +1171,17 @@ grim shot.png                                                          # sway �
 - **`wtype` 은 쓰지 말아요 — 두 가지가 실측으로 걸렸어요.** ① 새 글자가 나올 때마다 keymap 을 다시 올려서 그 사이의 키가
   빠지거나 다른 글자로 읽혀요 (`touch …` 가 `ouch …` 로). ② 호출마다 가상 키보드를 꽂고 뽑아 두 번째 호출부터 키가 아예
   안 닿아요 — seat 의 keyboard capability 가 빠졌다 붙는 왕복을 앱이 처리하지 않기 때문이에요 (아래 결함 후보).
-  `vkbd.py` 는 us keymap 을 연결 직후 한 번 올리고 프로세스가 살아 있는 동안 유지해요.
+  `vkbd_linux.py` 는 us keymap 을 연결 직후 한 번 올리고 프로세스가 살아 있는 동안 유지해요.
 - **modifier 는 `modifiers` 요청으로 보내야 해요.** 프로토콜이 modifier 상태를 client 책임으로 두고 wlroots 는 가상
   키보드의 key 이벤트로 xkb 상태를 갱신하지 않아서, Shift 키 press 만 보내면 `Ctrl+Shift+T` 가 `t` 로 · `>` 가 `.` 로
-  들어가요. `vkbd.py` 가 mask (Shift 0 · Control 2 · Mod1 3 · Mod4 6 비트) 를 함께 보내요.
+  들어가요. `vkbd_linux.py` 가 mask (Shift 0 · Control 2 · Mod1 3 · Mod4 6 비트) 를 함께 보내요.
 - **이 도구로 찾은 결함 — [#347](https://github.com/ensky0/tildaz/issues/347) (2026-09-03).** `wtype` 이 호출마다 가상
   키보드를 꽂고 뽑는 바람에 seat 의 keyboard capability 가 빠졌다 붙는 왕복이 생겼고, 앱이 그때 `wl_keyboard` 를 놓고
   다시 만들지 않아 두 번째부터 키가 영원히 닿지 않았어요 — 유일한 키보드를 뽑았다 꽂는 데스크톱과 같은 조건이에요.
-  `fix/347-seat-capability-release` 가 잃으면 `release` · 돌아오면 재생성으로 고쳤고, **`headless-check.sh seat-replug`**
+  `fix/347-seat-capability-release` 가 잃으면 `release` · 돌아오면 재생성으로 고쳤고, **`headless-check_linux.sh seat-replug`**
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
-  **`headless-check.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
+  **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
 - **sway 는 layer-shell 을 우리가 일부러 안 써서** (#454) `-size` · dock 배치가 안 먹고 창은 tiling 으로 출력 전체예요. 그래도
   xdg_toplevel · layer-surface · dialog 가 **같은 `logicalToPhysicalSize`** 를 쓰므로 배율 검증은 성립해요.
 - **단축키 판정은 파일로 해요.** 탭마다 `cat > tab_N.txt` 를 띄워 두고 `Alt+N` 뒤 글자를 보내면 어느 파일에 들어갔는지로
@@ -1250,15 +1250,15 @@ grim shot.png                                                          # sway �
     `autostart_launch`). 인자 없는 실행은 "사용자가 하나 더 띄우려 한다" 는 뜻이라 요청 gate 를 잡아요.
 - **nested 로 못 가르는 것은 실제 세션에서 재요 — 두 방법이 달라요.** Hyprland 는 D-Bus 의존이 적어 **다른 TTY 에서
   로그인해 `Hyprland` 를 띄우면** KDE 세션 (이 agent 가 도는 곳) 과 동시에 떠도 안전하고, 같은 uid 의 `/run/user/<uid>` 에
-  소켓이 생기므로 agent 가 거기 붙어 `real-session-check.sh hypr-scale` 을 돌릴 수 있어요 (사용자는 화면만 그 VT 에 두면
+  소켓이 생기므로 agent 가 거기 붙어 `real-session-check_linux.sh hypr-scale` 을 돌릴 수 있어요 (사용자는 화면만 그 VT 에 두면
   돼요 — 실제 출력이라 가려짐 문제가 없어요). **GNOME 은 그렇게 하지 말아요** — 세션 전체가 uid 당 하나인 user bus 를 써서
   KDE 와 동시에 띄우면 이름이 충돌해요 (nested 때도 `name already taken` 이 났어요). KDE 를 로그아웃하고 GNOME 으로 로그인한
-  뒤 **그 세션 안의 새 agent 세션**에서 `real-session-check.sh gnome` 을 돌려요. 두 스크립트 모두 세션 배율을 바꾸면 끝에
+  뒤 **그 세션 안의 새 agent 세션**에서 `real-session-check_linux.sh gnome` 을 돌려요. 두 스크립트 모두 세션 배율을 바꾸면 끝에
   원래 값으로 되돌리고 config 는 격리 경로예요.
 - **Hyprland 0.56 의 설정 파서는 Lua 예요 — `hyprctl keyword` 가 `keyword can't work with non-legacy parsers. Use eval.` 로
   거부돼요.** 배율은 `hyprctl eval 'hl.monitor({ output = "DP-3", mode = "preferred", position = "auto", scale = 1.25 })'`
   로 바꾸고, 끝나면 `scale = "auto"` (사용자 설정의 규칙) 로 되돌려요. legacy `.conf` 세션 (nested 회차의 제 설정) 은
-  keyword 가 그대로 먹어요 — `real-session-check.sh` 의 `set_scale` 이 응답을 보고 갈라요. 첫 라운드는 이걸 몰라 세 회차가
+  keyword 가 그대로 먹어요 — `real-session-check_linux.sh` 의 `set_scale` 이 응답을 보고 갈라요. 첫 라운드는 이걸 몰라 세 회차가
   전부 세션 배율 (1.5) 로 측정됐어요 — **배율을 바꾼 뒤 `hyprctl monitors` 로 반영을 확인하지 않은 회차는 무효**예요.
 - **창 영역을 좌표로 계산하지 말고 캡처에서 찾아요** (`bands-check.py --locate`). 2026-09-04 에 `hyprctl -j clients` 의 타일
   좌표를 배율로 곱해 crop 을 만들었는데 그 값이 화면 밖 (`+3834` · 화면 폭 3840) 을 가리켜 **전이 행 0 개가 "깨끗" 으로
@@ -1439,7 +1439,7 @@ magick out.png -crop 130x62+3020+148 +repage -resize 500% one.png    # 글리프
 cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글자 (`é`)** 를 같은 화면에
 넣어요. 이 넷이 그대로면 흔한 경로에 회귀가 없다는 뜻이에요.
 
-## ⑥ atlas · 렌더 경로를 바꿨을 때 — 판을 맞대 픽셀로 (`render-ab-shot.sh`)
+## ⑥ atlas · 렌더 경로를 바꿨을 때 — 판을 맞대 픽셀로 (`render-ab-shot`)
 
 위 `# macOS — 렌더 결과와 그리는 과정을 픽셀로 검증하는 법` 에 대응하는 Linux (KDE) 도구예요 —
 [`tool/render-ab-shot/render-ab-shot_linux.sh`](tool/render-ab-shot/render-ab-shot_linux.sh). [#586](https://github.com/ensky0/tildaz/issues/586)

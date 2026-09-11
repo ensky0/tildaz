@@ -86,7 +86,7 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 
 ## 자동 회차 (macOS) — 사람 손 없이 형식만 바꿔 돌릴 때
 
-[`mouse-auto-check.sh`](mouse-auto-check.sh) 가 위 프로브를 `--log` 로 띄우고 `cliclick` 으로 셀 영역을
+[`mouse-auto-check_macos.sh`](mouse-auto-check_macos.sh) 가 위 프로브를 `--log` 로 띄우고 `cliclick` 으로 셀 영역을
 두 번 눌러 (첫 클릭은 비활성 창을 깨우는 데 쓰일 수 있어요) 받은 바이트를 형식별 기대와 대조해요.
 `?1005` · `?1015` · `?1016` 처럼 사람 검증 A~E 절에 없는 형식을 돌리는 용도예요 ([#583](https://github.com/ensky0/tildaz/issues/583) A4).
 

@@ -1,4 +1,4 @@
-// layout-probe.m — 활성 키보드 layout 을 조회하는 세 경로를 나란히 재는 진단 도구
+// layout-probe_macos.m — 활성 키보드 layout 을 조회하는 세 경로를 나란히 재는 진단 도구
 // ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2 의 전제 조사).
 //
 // ## 왜 필요한가

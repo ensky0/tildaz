@@ -1,6 +1,6 @@
 ﻿# 실제 앱의 pane 마다 하나씩 뜨는 **producer 러너** (Windows · `measure-repeat.sh --panes N` 이 `-e` 로 넘긴다).
 #
-#   tildaz.exe --instance 9 -e "powershell -NoProfile -ExecutionPolicy Bypass -File pane-runner.ps1 <barrier> <stress.exe> <workload> <bytes>" -size 120x40
+#   tildaz.exe --instance 9 -e "powershell -NoProfile -ExecutionPolicy Bypass -File pane-runner_windows.ps1 <barrier> <stress.exe> <workload> <bytes>" -size 120x40
 #
 # **왜 러너인가** — `frame --panes N` 하네스는 내부 TabGroup 에 producer 를 만들고 파일 barrier 로 함께 시작하지만,
 # 실제 앱은 pane 을 만들 때 producer 에 `TILDAZ_STRESS_START_BARRIER` · `PANE_ID` 를 넣지 않는다. 그래서 `-e` 에

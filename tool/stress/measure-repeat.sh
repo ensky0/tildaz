@@ -50,7 +50,7 @@ LEAD_IN=8
 OUT=""
 IGNORE_HYGIENE=0
 # #551 A11 — 실제 앱을 N 개 pane 으로 갈라 pane 마다 producer 하나. **Windows 만** (합성 키 분할이
-# `split-panes.ps1`). 앱은 pane 에 barrier 환경변수를 넣지 않으므로 `pane-runner.ps1` 이 barrier
+# `split-panes_windows.ps1`). 앱은 pane 에 barrier 환경변수를 넣지 않으므로 `pane-runner_windows.ps1` 이 barrier
 # 파일을 기다린 뒤 producer 를 띄운다 — N 개가 함께 시작한다. 단축키가 살아야 해서 `config_9.toml`
 # 을 만들고 (`--instance 9`) 끝나면 지운다.
 PANES=1
@@ -138,7 +138,7 @@ esac
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }
 case "$PANES" in 1|2|4|8) ;; *) echo "--panes 는 1 · 2 · 4 · 8 만" >&2; exit 2 ;; esac
 if [ "$PANES" != 1 ] && [ "$HYG_PLATFORM" != windows ]; then
-    echo "--panes 는 아직 Windows 만 돌아요 (합성 키 분할이 split-panes.ps1) — Linux · macOS 는 #551 회차의 손 절차" >&2; exit 2
+    echo "--panes 는 아직 Windows 만 돌아요 (합성 키 분할이 split-panes_windows.ps1) — Linux · macOS 는 #551 회차의 손 절차" >&2; exit 2
 fi
 [ -x "$STRESS" ] || { echo "tildaz-stress 없음: $STRESS  (먼저 zig build stress)" >&2; exit 1; }
 

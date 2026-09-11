@@ -10607,7 +10607,7 @@ pub fn runBaselineWindow(
         // #613 — main loop 의 `pollAndDispatch` 는 이 오류를 안에서 잡지만, 종료를 **write 로 먼저** 만나면
         // (`maybeRedraw` · `maybeRepeatKey` 등 `try` 로 올라오는 송신) 여기까지 온다. 어느 쪽이든 compositor 가
         // 먼저 끝난 것이라 정상 종료다 — 위 `defer client.deinit()` 이 PTY 자식을 거둔다 (#129). 통합 회차
-        // `headless-check.sh compositor-exit` 가 이 경로를 잡아냈다 (가상 키보드가 붙은 채 `swaymsg exit`).
+        // `headless-check_linux.sh compositor-exit` 가 이 경로를 잡아냈다 (가상 키보드가 붙은 채 `swaymsg exit`).
         error.WaylandConnectionClosed => {
             log.appendLine("exit", "compositor closed the connection — shutting down", .{});
             return;

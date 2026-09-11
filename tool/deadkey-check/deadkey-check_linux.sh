@@ -1,5 +1,5 @@
 #!/bin/bash
-# dead-key-compose-check.sh — #494 dead key (Compose) 조합 자동 검증.
+# deadkey-check_linux.sh — #494 dead key (Compose) 조합 자동 검증.
 #
 # headless sway 를 격리된 XDG 경로로 띄우고, tildaz 를 `--instance 9 -e <수신자>` 로 실행한 뒤
 # wtype 으로 keysym 을 직접 주입한다 (layout 무관 — 가상 키보드가 자기 keymap 을 올린다).

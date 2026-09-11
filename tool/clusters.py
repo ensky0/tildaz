@@ -16,7 +16,7 @@ r"""atlas · cluster 렌더 검증용 화면을 만든다 — 세 platform 공�
 stdout 에는 그것을 `type` 하는 **`.cmd` 래퍼** (CRLF · `chcp 65001` · `timeout` 대기) 를 낸다. `-e` 가 `.cmd` 를
 받는 것은 #584 Windows 계측에서 확인했다.
 
-    python dist\screens\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd
+    python tool\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd
     tildaz --instance 9 -e $env:TEMP\stack2.cmd -size 150x40
 
 | 화면 | 무엇 | 왜 |

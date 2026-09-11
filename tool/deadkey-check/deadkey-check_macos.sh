@@ -11,7 +11,7 @@
 # - 창을 먼저 클릭해 key window 로 만든다 (Accessory 앱은 frontmost 가 못 되어 `osascript keystroke`
 #   가 안 닿는다 — `cliclick` 키 이벤트는 key window 로 간다). 첫 키는 레이아웃 동기화에 먹힐 수
 #   있어 무해한 `arrow-right` 를 먼저 보낸다.
-# - `mouse-auto-check.sh` 와 같은 전제 — 손쉬운 사용 권한 · 화면 잠금 아님.
+# - `mouse-auto-check_macos.sh` 와 같은 전제 — 손쉬운 사용 권한 · 화면 잠금 아님.
 set -u
 APP="${1:?앱 .app}"; # `open -a` 는 상대 경로를 앱 *이름*으로 해석해 못 찾는다 — 절대 경로로 바꾼다.
 APP="$(cd "$(dirname "$APP")" 2>/dev/null && pwd)/$(basename "$APP")"

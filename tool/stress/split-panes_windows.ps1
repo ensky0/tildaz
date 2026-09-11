@@ -1,8 +1,8 @@
 ﻿# 떠 있는 측정 인스턴스 (`TildaZ-stress` 창) 의 활성 탭을 **합성 키로 N 개 pane 으로 가른다** (Windows ·
 # `measure-repeat.sh --panes N` 이 부른다). 앱은 pane 을 만들 때 producer 의 barrier 환경변수를 넣지 않으므로
-# 실제 앱 회차는 이렇게 분할한 뒤 `pane-runner.ps1` 의 barrier 파일을 만들어 N 개 producer 를 함께 시작한다.
+# 실제 앱 회차는 이렇게 분할한 뒤 `pane-runner_windows.ps1` 의 barrier 파일을 만들어 N 개 producer 를 함께 시작한다.
 #
-#   split-panes.ps1 -Panes 8            # 2 · 4 · 8
+#   split-panes_windows.ps1 -Panes 8            # 2 · 4 · 8
 #
 # 분할 순서 — 새 pane 이 활성이 된다 (`session_core.splitActive`). 포커스 이동은 기하 기반 이웃 (SPEC §? pane 표).
 #   2: →                           → [L | R]
@@ -13,7 +13,7 @@
 # 단축키는 기본 바인딩 (`config.zig` Linux · Windows 기본값 — `ctrl+shift+방향` 분할 · `alt+방향` 포커스 ·
 # `shift+alt+0` 균등) 이고 **`config_9.toml` 이 있어야 산다** — `measure-repeat.sh` 가 만들고 지운다.
 #
-# 규칙 — 키마다 foreground 가 그 창인지 확인하고 어긋나면 멈춘다 (`send-keys.ps1` 과 같다). 덮인 창은 잠깐 TOPMOST
+# 규칙 — 키마다 foreground 가 그 창인지 확인하고 어긋나면 멈춘다 (`send-keys_windows.ps1` 과 같다). 덮인 창은 잠깐 TOPMOST
 # 로 올려 활성화한다. chord 는 `,@(…)` 로 감싼다 (PowerShell 이 원소 하나인 배열을 평탄화한다 — AGENTS.md).
 # pane 수는 호출자가 앱 로그 `[pane] split … — tab 0 has N panes` 로 확인한다.
 #

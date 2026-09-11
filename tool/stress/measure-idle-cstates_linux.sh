@@ -11,7 +11,7 @@
 #
 # ⚠ **core-idle 지표는 패키지 전력이 아니다.** i5-1240P 실측에서 62 회/s 깨우기가 이
 #   지표로는 잡음 아래였지만 (시스템 전체 유휴 진입 ~700-830 회/s 의 요동이 더 크다),
-#   패키지 수준 (RAPL) 에서는 시스템 +0.2 W 로 뚜렷했다 — 판정은 `measure-idle-power.sh`
+#   패키지 수준 (RAPL) 에서는 시스템 +0.2 W 로 뚜렷했다 — 판정은 `measure-idle-power_linux.sh`
 #   (sudo 필요) 로 한다. 이 스크립트는 root 없이 경향을 볼 때만 쓴다.
 #   https://github.com/ensky0/tildaz/issues/439#issuecomment-5305627637
 #

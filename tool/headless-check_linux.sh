@@ -76,7 +76,7 @@ cmd_up() {
         echo "sway: headless 1600x1000 · $R/wayland-1 (timeout 4 h)"
     fi
     env_sway
-    if ! pgrep -f "vkbd.py --fifo $FIFO" >/dev/null; then
+    if ! pgrep -f "vkbd_linux.py --fifo $FIFO" >/dev/null; then
         rm -f $FIFO
         setsid nohup python3 "$ROOT/tool/vkbd_linux.py" --fifo $FIFO >$WORK/vkbd.log 2>&1 </dev/null &
         sleep 1.5; head -1 $WORK/vkbd.log
@@ -88,7 +88,7 @@ cmd_down() {
     env_sway 2>/dev/null || true
     kill_tz
     [ -p $FIFO ] && echo quit > $FIFO
-    pkill -f "vkbd.py --fifo $FIFO" 2>/dev/null
+    pkill -f "vkbd_linux.py --fifo $FIFO" 2>/dev/null
     [ -n "${SWAYSOCK:-}" ] && swaymsg exit >/dev/null 2>&1
     sleep 1; rm -rf $R
     echo "남은 tildaz: $(pgrep -a tildaz | tr '\n' ';')"
@@ -243,7 +243,7 @@ wait_file() { local f=$1 i; for i in $(seq 16); do sleep 0.5; [ -f "$f" ] && ret
 cmd_seat_replug() {   # #347 — seat 의 keyboard capability 가 빠졌다 붙어도 새 wl_keyboard 가 만들어지는지
     env_sway; OUT=$WORK/seat-replug; rm -rf $OUT; mkdir -p $OUT
     # 앱을 keyboard 없는 seat 에서 먼저 띄운다 — vkbd 가 떠 있으면 내린다.
-    pgrep -f "vkbd.py --fifo $FIFO" >/dev/null && vk_down
+    pgrep -f "vkbd_linux.py --fifo $FIFO" >/dev/null && vk_down
     kill_tz
     mark=$(wc -l < $LOG 2>/dev/null || echo 0)
     TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 3
@@ -272,7 +272,7 @@ cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실�
     else
         echo "RESULT compositor-exit: FAIL — exit $rc · stderr: $(head -c 120 $OUT/stderr.txt)"
     fi
-    pkill -f "vkbd.py --fifo $FIFO" 2>/dev/null; rm -rf $R
+    pkill -f "vkbd_linux.py --fifo $FIFO" 2>/dev/null; rm -rf $R
     echo "   (sway 를 내렸으니 다음 회차 전에 'up')"
 }
 

@@ -43,9 +43,9 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
 | [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
-| [`check-input-loss.sh`](check-input-loss.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
+| [`check-input-loss_linux_macos.sh`](check-input-loss_linux_macos.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
 | [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · macOS · Windows (Git Bash) |
-| [`send-keys.ps1`](send-keys.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
+| [`send-keys_windows.ps1`](../send-keys_windows.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
 | [`hygiene.sh`](hygiene.sh) | 위 다섯이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
@@ -79,8 +79,8 @@ tool/stress/measure-repeat.sh --phase win-pane8 --panes 8 --workloads plain   # 
 **`--panes N` (Windows) 은 실제 앱을 N 개 pane 으로 갈라 pane 마다 producer 를 하나씩 띄워요** ([#551](https://github.com/ensky0/tildaz/issues/551) A11 · 2026-09-03).
 앱은 pane 을 만들 때 producer 에 barrier 환경변수 (`TILDAZ_STRESS_START_BARRIER` · `PANE_ID`) 를 넣지 않아서 (그건
 `frame --panes N` 하네스의 내부 TabGroup 몫이에요) `-e` 에 producer 를 직접 넘기면 첫 pane 의 폭포가 분할 전에 흘러요.
-그래서 셋으로 나눠요 — ① [`pane-runner.ps1`](pane-runner.ps1) 을 `-e` 로 넘겨 pane 마다 러너가 barrier 파일을 50 ms 로 기다리고,
-② [`split-panes.ps1`](split-panes.ps1) 이 `SendInput` 으로 분할 (`Ctrl+Shift+→/↓` · `Alt+방향` 포커스 · `Shift+Alt+0` 균등 —
+그래서 셋으로 나눠요 — ① [`pane-runner_windows.ps1`](pane-runner_windows.ps1) 을 `-e` 로 넘겨 pane 마다 러너가 barrier 파일을 50 ms 로 기다리고,
+② [`split-panes_windows.ps1`](split-panes_windows.ps1) 이 `SendInput` 으로 분할 (`Ctrl+Shift+→/↓` · `Alt+방향` 포커스 · `Shift+Alt+0` 균등 —
 아래 "120 열은 3 열 상태에서 더 못 갈라요" 의 순서 그대로) 하고 로그 `[pane] … has N panes` 로 수를 확인한 뒤, ③ barrier
 파일을 만들어 N 개가 함께 시작해요. 단축키가 살아야 해서 `config_9.toml` (config_0 복사 · `auto_start = false`) 을 만들고
 `--instance 9` 로 띄우며 끝나면 지워요. 덤프 라벨은 workload 라 **phase 이름에 pane 수를 넣어 조건마다 따로** 불러요.
@@ -564,7 +564,7 @@ Intel i5-1240P · `--repeat 5` · 배경 정리).
 (`split right rejected: pane would be under 20x5`). 3 열에서 균등(`Shift+Alt+0` · `⇧⌘0`) 을 해도
 39 열이라 반으로 가르면 19 열이에요. **120 → 59|59 로 먼저 나누고 각 59 를 다시 갈라야** 29 열 넷이 돼요.
 pane 수는 앱이 남기는 `[pane] … has N panes` 로그로 확인해요 — 거부도 `[pane] … rejected` 로 남아요.
-Windows 는 [`split-panes.ps1`](split-panes.ps1) 이 이 순서 (2: `→` · 4: `→ ↓ Alt+← ↓` · 8: 그 뒤 `→ Alt+↑ → Alt+→ → Alt+↓ →` + 균등)
+Windows 는 [`split-panes_windows.ps1`](split-panes_windows.ps1) 이 이 순서 (2: `→` · 4: `→ ↓ Alt+← ↓` · 8: 그 뒤 `→ Alt+↑ → Alt+→ → Alt+↓ →` + 균등)
 를 자동으로 쳐요 — 새 pane 이 활성이 되는 규칙 (`session_core.splitActive`) 에 맞춘 순서라 8 pane 이 4 열 × 2 행 (30x20 근사) 이 돼요.
 
 [#362 에서 실제로 겪은 것들](https://github.com/ensky0/tildaz/issues/362#issuecomment-5154477404)
@@ -798,8 +798,8 @@ tool/stress/measure-input-latency.sh --mode idle --presses 50
 | | 합성 입력 | 창 포커스 | 덤프 · 종료 키 | 한/영 |
 |---|---|---|---|---|
 | **Linux** | `ydotool` (uinput) | 새 창이 자동으로 받아요 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | `fcitx5-remote` (전역) |
-| **macOS** | `CGEvent` ([`mac-input.m`](mac-input.m)) — 스크립트가 `clang` 으로 그 자리에서 빌드해요 | **클릭이 필요해요** (CGEvent 로 눌러요) | `Shift+Cmd+F12` · **`Cmd+W`** | `TISSelectInputSource` (전역) |
-| **Windows** | `SendInput` ([`send-keys.ps1`](send-keys.ps1)) | 키마다 확인 + 클릭으로 회수 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | 창별 IME conversion mode |
+| **macOS** | `CGEvent` ([`input_macos.m`](../input_macos.m)) — 스크립트가 `clang` 으로 그 자리에서 빌드해요 | **클릭이 필요해요** (CGEvent 로 눌러요) | `Shift+Cmd+F12` · **`Cmd+W`** | `TISSelectInputSource` (전역) |
+| **Windows** | `SendInput` ([`send-keys_windows.ps1`](../send-keys_windows.ps1)) | 키마다 확인 + 클릭으로 회수 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | 창별 IME conversion mode |
 
 **계측 자체도 세 platform 에 다 있어요** (`perf.input_latency`).
 
@@ -996,7 +996,7 @@ macOS 실측 (`a` × 10, 같은 조건). **에코까지 정상이라 폐기 장�
 Windows 실측: 한국어 IME (`hkl=0x04120412`) 를 conversion mode 1 (한글) 로 두고 `a` 10 회를 보냈더니
 `input samples=11` 로 **그대로 잡혔어요.** 그러니 Windows 에서 표본이 비면 원인은 입력기가 아니에요.
 
-**그래도 `send-keys.ps1` 은 영문으로 맞추고 끝나면 되돌려요** (`-KeepImeMode` 로 끌 수 있어요).
+**그래도 `send-keys_windows.ps1` 은 영문으로 맞추고 끝나면 되돌려요** (`-KeepImeMode` 로 끌 수 있어요).
 표본이 잡히더라도 **재는 경로가 달라지기 때문**이에요 — 한글 모드에서는 셸 에코 왕복이 아니라
 preedit overlay 를 그리는 시간을 재게 돼서 영문 회차와 나란히 둘 수 없어요.
 
@@ -1038,7 +1038,7 @@ Linux · Windows 로 넓히지 않은 이유는 **기대 표본이 바뀌기 때
 
 #### ⚠ Windows — **알림 토스트가 뜨면 회차가 통째로 폐기돼요**
 
-`send-keys.ps1` 은 키 하나마다 `GetForegroundWindow()` 를 확인하고 어긋나면 **키를 안 보내요**
+`send-keys_windows.ps1` 은 키 하나마다 `GetForegroundWindow()` 를 확인하고 어긋나면 **키를 안 보내요**
 (안 그러면 사용자가 보던 창에 그대로 타이핑돼요 — 예전 시연에서 실제로 일어났어요). 그런데 Windows
 알림 (`Windows.UI.Core.CoreWindow` · "새 알림") 이 foreground 를 쥐면 `SetForegroundWindow` 가 **조용히
 거부**돼서, 첫 측정에서 회차가 세 번 연속 폐기됐어요. 앱은 정상으로 떴는데 **활성이 못 된 것**이에요.
@@ -1422,7 +1422,7 @@ sudo tool/stress/measure-idle-power_linux.sh           # 패키지 전력 (RAPL�
 | Pkg%pc8 | 4.08 · 3.71 % | 1.68 · 1.85 % | **잔류율 절반** |
 | IRQ | 1,619~1,635 /s | 1,711~1,717 /s | +82~85 /s (≈ 깨우기 61 /s) |
 
-**core-idle 지표 (`measure-idle-cstates.sh`) 로는 이 대가가 잡음 아래예요** — 시스템 전체
+**core-idle 지표 (`measure-idle-cstates_linux.sh`) 로는 이 대가가 잡음 아래예요** — 시스템 전체
 유휴 진입 (~700~830 회/s) 의 요동이 TildaZ 몫 (61 회/s) 보다 커요. 패키지 수준에서만 보여요.
 상세와 배터리 환산 (~시간당 완충의 0.3 %p) 은 [#439 의 확정 코멘트](https://github.com/ensky0/tildaz/issues/439#issuecomment-5306404629)에 있어요.
 

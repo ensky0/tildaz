@@ -12,7 +12,7 @@
 # turbostat 이 PkgWatt · Pkg%pc* 를 못 얹는다). 측정용 TildaZ 는 root 로 띄우면 사용자의
 # Wayland 세션에 못 붙으므로 **`SUDO_USER` 계정으로** 띄운다.
 #
-# `measure-idle-cstates.sh` (root 불필요) 는 core-idle 잔류율만 본다 — i5-1240P 실측에서
+# `measure-idle-cstates_linux.sh` (root 불필요) 는 core-idle 잔류율만 본다 — i5-1240P 실측에서
 # 62 회/s 깨우기가 core-idle 로는 잡음 아래였지만 이 스크립트로는 뚜렷했다 (시스템
 # +0.19~0.24 W ≈ 유휴 소비의 +2 %, Pkg%pc8 잔류율 절반). **판정은 이쪽이다.**
 # https://github.com/ensky0/tildaz/issues/439#issuecomment-5306404629

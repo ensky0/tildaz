@@ -1,4 +1,4 @@
-// color-capture.m — 창을 sRGB 색공간으로 캡처하는 색 실측용 도구 (#349).
+// color-capture_macos.m — 창을 sRGB 색공간으로 캡처하는 색 실측용 도구 (#349).
 //
 // macOS 는 layer 내용을 sRGB 로 보고 **디스플레이 색공간으로 변환해** 합성한다.
 // `screencapture` 는 출력 색공간을 고를 수 없어서 (`man screencapture` — 관련

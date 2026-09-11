@@ -1,7 +1,7 @@
 #!/bin/sh
 # 응답 **시간** 측정 (#441 축 ②).
 #
-# `check-input-loss.sh` 가 *"먹었나"* 를 본다면 이쪽은 **"얼마나 늦게 반영되나"** 를 잰다.
+# `check-input-loss_linux_macos.sh` 가 *"먹었나"* 를 본다면 이쪽은 **"얼마나 늦게 반영되나"** 를 잰다.
 # 예산 4 ms (SPEC §13.3) 가 최악 지연 상한이라는 주장은 지금까지 한 번도 숫자로 확인된 적이
 # 없다. 그리고 [#439](https://github.com/ensky0/tildaz/issues/439) 의 *"유휴에서 첫 출력이 한
 # 프레임 늦는다"* 도 가설로만 있다 — 이 도구가 그 둘을 숫자로 만든다.
@@ -27,8 +27,8 @@
 # ## 어디서 도는가 — **Linux · macOS · Windows**
 #
 # 합성 입력이 platform 마다 다르다. Linux 는 `ydotool` (uinput), macOS 는 `CGEvent`
-# ([`mac-input.m`](mac-input.m) — 스크립트가 `clang` 으로 그 자리에서 빌드한다), Windows 는
-# `SendInput` ([`send-keys.ps1`](send-keys.ps1)) 이다. 계측 자체 (`perf.input_latency`) 도
+# ([`input_macos.m`](../input_macos.m) — 스크립트가 `clang` 으로 그 자리에서 빌드한다), Windows 는
+# `SendInput` ([`send-keys_windows.ps1`](../send-keys_windows.ps1)) 이다. 계측 자체 (`perf.input_latency`) 도
 # 세 platform 에 다 있다.
 #
 # **Windows 는 Git Bash 에서 돌린다** (`compare-terminals.sh` · `measure-repeat.sh` 와 같은
@@ -127,7 +127,7 @@ native_path() {
 EXE_SUFFIX=""
 [ "$HYG_PLATFORM" = windows ] && EXE_SUFFIX=".exe"
 EXE="$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
-# macOS 는 서명된 번들 안 바이너리를 먼저 본다 (`check-input-loss.sh` 와 같은 규칙). `-e` ·
+# macOS 는 서명된 번들 안 바이너리를 먼저 본다 (`check-input-loss_linux_macos.sh` 와 같은 규칙). `-e` ·
 # `-size` 인자가 필요해서 `open` 이 아니라 직접 띄우는데, 전역 핫키를 안 쓰므로 권한이
 # 없어도 된다 (AGENTS.md 의 macOS `open` 절).
 if [ "$HYG_PLATFORM" = macos ] && [ -x "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" ]; then
@@ -185,7 +185,7 @@ if [ "$HYG_PLATFORM" = linux ]; then
     # 그래서 "IME 는 단축키에 영향이 없다" 는 사실과 여기 제약은 서로 모순이 아니다.
     #
     # Windows 는 이 자리가 없다 — 한/영이 keyboard layout 이 아니라 **창별 IME conversion
-    # mode** 라서, 측정 창이 뜬 뒤에 `send-keys.ps1` 이 그 창을 상대로 처리한다.
+    # mode** 라서, 측정 창이 뜬 뒤에 `send-keys_windows.ps1` 이 그 창을 상대로 처리한다.
     if command -v fcitx5-remote >/dev/null 2>&1; then
         if [ "$(fcitx5-remote 2>/dev/null)" = "2" ]; then
             fcitx5-remote -c >/dev/null 2>&1      # deactivate = 영문
@@ -196,10 +196,10 @@ if [ "$HYG_PLATFORM" = linux ]; then
         echo "  ⚠ fcitx5-remote 가 없어요 — 입력기가 한글이면 표본이 안 잡혀요. 영문인지 확인하세요." >&2
     fi
 elif [ "$HYG_PLATFORM" = macos ]; then
-    # `mac-input.m` 을 그 자리에서 컴파일한다. 저장소에 바이너리를 두지 않는 것은
+    # `input_macos.m` 을 그 자리에서 컴파일한다. 저장소에 바이너리를 두지 않는 것은
     # `tool/color-capture_macos.m` 과 같은 방식이다.
     command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
-    [ -f "$MACINPUT_SRC" ] || { echo "mac-input.m 없음: $MACINPUT_SRC" >&2; exit 1; }
+    [ -f "$MACINPUT_SRC" ] || { echo "input_macos.m 없음: $MACINPUT_SRC" >&2; exit 1; }
     MAC_INPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tildaz-macinput-XXXXXX")
     MAC_INPUT="$MAC_INPUT_DIR/mac-input"
     clang -O2 -Wno-deprecated-declarations \
@@ -220,7 +220,7 @@ elif [ "$HYG_PLATFORM" = macos ]; then
     fi
 else
     command -v powershell >/dev/null 2>&1 || { echo "powershell 없음 — SendInput 합성 입력에 필요해요." >&2; exit 1; }
-    [ -f "$SENDKEYS" ] || { echo "send-keys.ps1 없음: $SENDKEYS" >&2; exit 1; }
+    [ -f "$SENDKEYS" ] || { echo "send-keys_windows.ps1 없음: $SENDKEYS" >&2; exit 1; }
 fi
 
 APP=""
@@ -257,14 +257,14 @@ fi
 # **키가 실제로 나가는지 먼저 확인한다.** 안 나가면 회차를 도는 의미가 없다.
 # 화면을 바꾸지 않는 modifier 한 번으로 왕복만 본다.
 #
-# Windows 에는 이 사전 확인이 없다 — `send-keys.ps1` 은 **측정 창을 찾고 그 창이 활성일
+# Windows 에는 이 사전 확인이 없다 — `send-keys_windows.ps1` 은 **측정 창을 찾고 그 창이 활성일
 # 때만** 키를 보내므로 (사용자 창으로 새는 것을 막는 가드), 창이 뜨기 전에는 부를 대상이
 # 없다. 대신 그 스크립트가 창 없음 / 포커스 없음 / 전송 중단을 각각 다른 종료 코드로
 # 알려서 회차가 조용히 비는 일이 없다.
 #
 # macOS 는 키를 보내 보는 것으로는 판정이 안 된다 — 권한이 없어도 `CGEventPost` 가 성공을
 # 반환한다. 그래서 `AXIsProcessTrusted()` 를 **키를 보내는 그 프로세스 안에서** 부른다
-# (`mac-input.m` 의 `requireTrusted`). 권한은 자식이 아니라 **부모 (터미널 앱)** 에 붙으므로
+# (`input_macos.m` 의 `requireTrusted`). 권한은 자식이 아니라 **부모 (터미널 앱)** 에 붙으므로
 # 판정과 전송이 같은 프로세스여야 답이 맞는다.
 if [ "$HYG_PLATFORM" = linux ]; then
     if ! ydotool key 42:1 42:0 >/dev/null 2>&1; then

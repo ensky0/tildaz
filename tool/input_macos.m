@@ -1,7 +1,7 @@
 // macOS 합성 입력 — `measure-input-latency.sh` 가 쓰는 CGEvent 전송 도구 (#441 축 ②).
 //
 //   clang -O2 -Wno-deprecated-declarations \
-//         -framework ApplicationServices -framework Carbon -o /tmp/mac-input mac-input.m
+//         -framework ApplicationServices -framework Carbon -o /tmp/mac-input input_macos.m
 //
 //   /tmp/mac-input check                    # 손쉬운 사용 권한이 있나
 //   /tmp/mac-input focus <pid>              # 그 pid 의 창을 클릭해 key window 로
