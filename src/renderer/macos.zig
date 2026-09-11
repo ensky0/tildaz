@@ -39,6 +39,8 @@ const tab_icons = @import("../tab_icons.zig");
 const session_core = @import("../session_core.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
+const search_bar = @import("../search_bar.zig");
+const messages = @import("../messages.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
@@ -746,7 +748,12 @@ pub const MetalRenderer = struct {
 
     /// #483 2단계 ② — 프레임 끝: 보류한 탭바 (또는 단일 탭 스트립) · command menu → endEncoding →
     /// present + commit. `drawPane` 이 0 번이어도 프레임은 끝낸다.
-    pub fn endFrame(self: *MetalRenderer, menu_ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    pub fn endFrame(
+        self: *MetalRenderer,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
+        search_ui: search_bar.Ui,
+    ) void {
         if (self.current_cmd_buf == null) return;
 
         // #591 2 단계 — 탭바 · 스트립 · 메뉴도 **먼저 담는다** (blit 앞). pane 들 뒤에 담으니
@@ -758,6 +765,9 @@ pub const MetalRenderer = struct {
                 self.emitSingleControlStrip(t.layout, t.hover);
             }
         }
+        // #646 — 검색바는 터미널 위 · 메뉴 아래다. 메뉴가 열려 있으면 그것이 최상위이고,
+        // 검색바는 창 아래에 붙어 있어 서로 겹치지 않는다.
+        if (search_ui.open) self.emitSearchBar(search_ui);
         if (menu_ui.open) self.emitCommandMenu(menu_ui, toggle_hotkey);
 
         // #591 — 두 atlas 를 올리고 encoder 를 열어 담은 것을 전부 순서대로 그린다. 여기가 이
@@ -1825,6 +1835,141 @@ pub const MetalRenderer = struct {
         emit(self, .plus, layout.plus_x, layout.plus_w, h, icon_size, icon_stroke);
         emit(self, .close, layout.close_x, layout.close_w, h, icon_size, icon_stroke);
         emit(self, .more, layout.more_x, layout.more_w, h, icon_size, more_stroke);
+        self.closeRange(.tab_text);
+    }
+
+    /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
+    /// caret 만 그린다 (`emitCommandMenu` 와 같은 분담).
+    fn emitSearchBar(self: *MetalRenderer, ui: search_bar.Ui) void {
+        const scale = self.scale;
+        const v = search_bar.view(
+            @as(f32, @floatFromInt(self.vp_width)) / scale,
+            @as(f32, @floatFromInt(self.vp_height)) / scale,
+        );
+
+        var bar_rects: [search_bar.MAX_RECTS]ui_rect.Rect = undefined;
+        self.openRange(.bg);
+        for (search_bar.rects(&bar_rects, v, ui, scale, &self.chrome)) |r| self.pushBg(bgFromChrome(r));
+
+        // caret 은 텍스트 자리에 의존하므로 여기서 만든다 (공통 모듈은 폰트를 모른다).
+        // bg 구간에 담아 글리프보다 먼저 그린다 — 텍스트 앞에 서는 얇은 막대다.
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
+        const field_x = v.field.x * scale;
+        const field_y = v.field.y * scale;
+        const field_h = v.field.h * scale;
+        const text_top = field_y + (field_h - ch) * 0.5;
+
+        if (ui.focused) {
+            const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
+            const preedit_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.preedit))) * cw;
+            const caret_x = field_x + before_w + preedit_w;
+            // 입력칸을 벗어나면 그리지 않는다 — 긴 검색어에서 카운터 위로 삐져나가지 않게.
+            if (caret_x < field_x + v.field.w * scale) {
+                self.pushBg(.{
+                    .pos = .{ @round(caret_x), @round(text_top) },
+                    .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(ch) },
+                    .color = self.chrome.menu_label,
+                });
+            }
+        }
+        self.closeRange(.bg);
+
+        self.openRange(.tab_text);
+
+        // 돋보기 — 탭바 컨트롤과 같은 rasterizer · 같은 stroke.
+        if (v.icon.w > 0) {
+            const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
+            const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+            if (self.tab_atlas.getOrInsertIcon(.search, isz, istroke)) |entry| {
+                self.pushText(.{
+                    .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = self.chrome.menu_hint,
+                    .color_flag = 0,
+                });
+            }
+        }
+
+        const emit = struct {
+            fn text(r: *MetalRenderer, bytes: []const u8, start_x: f32, top: f32, color: [4]f32, clip_right: f32) void {
+                var x = start_x;
+                var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+                while (iter.nextCodepoint()) |cp| {
+                    const adv = @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp)))) * @as(f32, @floatFromInt(r.tab_font.cell_width_px));
+                    if (x + adv > clip_right) break; // 입력칸 밖으로 넘치지 않는다.
+                    const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse {
+                        x += adv;
+                        continue;
+                    };
+                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                        mac_font.releaseCluster(result);
+                        x += adv;
+                        continue;
+                    };
+                    mac_font.releaseCluster(result);
+                    if (entry.w > 0 and entry.h > 0) {
+                        r.pushText(.{
+                            .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), top + r.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = color,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        });
+                    }
+                    x += adv;
+                }
+            }
+        }.text;
+
+        const field_right = field_x + v.field.w * scale;
+        if (ui.needle.len == 0 and ui.preedit.len == 0) {
+            emit(self, messages.search_placeholder, field_x, text_top, self.chrome.menu_hint, field_right);
+        } else {
+            emit(self, ui.needle, field_x, text_top, self.chrome.menu_label, field_right);
+            if (ui.preedit.len > 0) {
+                const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
+                emit(self, ui.preedit, field_x + before_w, text_top, self.chrome.ctrl_active, field_right);
+            }
+        }
+
+        // 카운터 — 오른쪽 정렬.
+        if (v.count.w > 0) {
+            var cbuf: [24]u8 = undefined;
+            const txt = search_bar.countText(ui, &cbuf);
+            const tw = @as(f32, @floatFromInt(display_width.stringWidth(txt))) * cw;
+            const cx = v.count.x * scale + v.count.w * scale - tw;
+            const color = if (ui.total == 0 and !ui.searching) self.chrome.arrow_disabled else self.chrome.menu_hint;
+            emit(self, txt, cx, text_top, color, cx + tw + 1);
+        }
+
+        // 컨트롤 — 매치가 없으면 흐리게 (탭바 화살표 관례).
+        if (v.prev.w > 0) {
+            const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
+            const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+            const enabled = ui.total > 0;
+            for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
+                const r = search_bar.controlRect(v, c);
+                const entry = self.tab_atlas.getOrInsertIcon(search_bar.controlIcon(c), isz, istroke) orelse continue;
+                const size_f: f32 = @floatFromInt(isz);
+                self.pushText(.{
+                    .pos = .{
+                        @round(r.x * scale + (r.w * scale - size_f) * 0.5),
+                        @round(r.y * scale + (r.h * scale - size_f) * 0.5),
+                    },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    // 닫기는 늘 쓸 수 있다 — 매치가 없어도 바를 닫아야 한다.
+                    .fg_color = if (c == .close or enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
+                    .color_flag = 0,
+                });
+            }
+        }
+
         self.closeRange(.tab_text);
     }
 

@@ -44,6 +44,7 @@ const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const command_menu = @import("../command_menu.zig");
+const search_bar = @import("../search_bar.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
@@ -4738,6 +4739,9 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
+        // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
+        // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+        search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
     );
 
     // #255 · #591 — 예전에는 "이번 frame 에 처음 본 글리프는 다음 frame 에 올라간다" (2-frame)

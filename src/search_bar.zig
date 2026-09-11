@@ -18,6 +18,7 @@ const chrome_palette = @import("chrome_palette.zig");
 // 상호 참조 (`ui_rect.zig` 머리 주석이 경계하는 것) 에 해당하지 않는다. 컨트롤이 셋이라
 // 매핑을 세 renderer 에 복사하는 것보다 여기 한 곳에 두는 편이 낫다.
 const tab_icons = @import("tab_icons.zig");
+const search = @import("search.zig");
 
 /// 바 높이 — 탭바와 같다. 위아래로 짝을 이뤄 앱이 한 덩어리로 읽힌다.
 pub const HEIGHT_PT: f32 = @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT);
@@ -87,6 +88,29 @@ pub const Ui = struct {
     /// pointer 가 올라간 컨트롤.
     hover: ?Control = null,
 };
+
+/// pane 의 검색 상태에서 그리기용 상태를 만든다. **세 host 가 이 함수 하나를 쓴다** — 같은
+/// 변환을 셋이 각자 적으면 카운터 규칙 같은 것이 조용히 갈린다.
+///
+/// `preedit` 과 `focused` · `hover` 는 검색 상태가 아니라 *입력* 쪽 사정이라 host 가 준다.
+pub fn uiFrom(
+    ps: *const search.PaneSearch,
+    preedit: []const u8,
+    focused: bool,
+    hover: ?Control,
+) Ui {
+    return .{
+        .open = ps.is_open,
+        .needle = ps.needle.items,
+        .preedit = preedit,
+        .caret = ps.needle.items.len, // 편집 caret 은 4 단계에서 움직인다 — 지금은 끝.
+        .current = ps.currentIndex(),
+        .total = ps.matchCount(),
+        .searching = ps.isSearching(),
+        .focused = focused,
+        .hover = hover,
+    };
+}
 
 /// 계산된 배치. 모든 rect 는 logical pt 이고 viewport 좌상단 기준이다.
 pub const View = struct {

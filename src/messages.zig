@@ -33,6 +33,10 @@ pub const command_full_screen = "Toggle Full Screen";
 pub const command_open_config = "Open Config";
 pub const command_keyboard_shortcuts = "Keyboard Shortcuts";
 pub const command_about = "About TildaZ";
+
+/// #646 — 검색바 입력칸이 비어 있을 때의 안내문. **앱 UI 라 영어다** (AGENTS.md 의
+/// "프로그램 안에서 사용자에게 직접 표시되는 메시지는 영어").
+pub const search_placeholder = "Find";
 pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md";
 pub const shortcut_new_tab = "Ctrl+Shift+T";
 pub const shortcut_new_tab_macos = "Cmd+T";

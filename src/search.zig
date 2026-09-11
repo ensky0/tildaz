@@ -211,6 +211,26 @@ pub const PaneSearch = struct {
         return moved;
     }
 
+    /// 선택된 매치의 **1-based 번호** (`3/17` 의 `3`). 선택이 없으면 `0`.
+    ///
+    /// ghostty 의 `selected.idx` 는 *목록 끝에서부터* 세는 0-based 다 (`0` = 가장 최근 매치).
+    /// 사용자는 위에서부터 세므로 뒤집어서 보여준다.
+    pub fn currentIndex(self: *const PaneSearch) usize {
+        const engine: *const ghostty.search.Screen = if (self.engine) |*e| e else return 0;
+        const sel = engine.selected orelse return 0;
+        const total = engine.matchesLen();
+        if (sel.idx >= total) return 0; // 결과가 줄어드는 중이면 표시하지 않는다.
+        return total - sel.idx;
+    }
+
+    /// 아직 훑는 중인가 — 카운터를 수 대신 `…` 로 보여줄 조건이다. 디바운스 대기 (엔진이
+    /// 아직 없음) 와 증분 진행 (엔진이 있고 미완) 을 모두 포함한다.
+    pub fn isSearching(self: *const PaneSearch) bool {
+        if (!self.is_open) return false;
+        if (self.needle.items.len == 0) return false;
+        return if (self.engine == null) true else !self.complete;
+    }
+
     /// 지금 선택된 매치. 없으면 `null`.
     pub fn selectedMatch(self: *const PaneSearch) ?ghostty.highlight.Flattened {
         const engine: *const ghostty.search.Screen = if (self.engine) |*e| e else return null;
