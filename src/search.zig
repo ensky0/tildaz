@@ -100,6 +100,12 @@ pub const PaneSearch = struct {
     /// 검색바를 닫는다. **needle 과 결과까지 버린다** — 닫기는 사용자가 명시적으로
     /// 하는 행동이고, 다시 열었을 때 옛 검색어가 남아 있으면 그게 어느 시점 것인지
     /// 알 수 없다.
+    ///
+    /// **화면의 강조는 여기서 지워지지 않는다.** 이 함수는 `highlights_dirty` 만 세우고,
+    /// 실제로 지우는 것은 다음 렌더의 `applyHighlights` 다 (`RenderState` 는 렌더 루프
+    /// 안에서만 만진다). 그 렌더가 돌도록 `session_core.drainFrame` 이 "닫혔는데 dirty"
+    /// 상태를 보고 렌더를 한 번 요청한다 — 없으면 화면이 안 바뀌어 게이트 (#388) 에
+    /// 걸리고 강조가 칠해진 채로 남는다.
     pub fn close(self: *PaneSearch, alloc: std.mem.Allocator) void {
         self.dropEngine();
         self.needle.clearAndFree(alloc);
@@ -385,4 +391,77 @@ test "#646 대상 screen 이 바뀌면 엔진을 다시 만든다" {
 
     _ = try s.step(alloc, alt, 0);
     try std.testing.expectEqual(alt, s.engine_screen.?);
+}
+
+test "#646 검색을 닫으면 강조가 사라진다 — 셀은 평소 색으로 돌아간다" {
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 100,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+    try term.printString("hello FINDME world\r\n");
+
+    var state: ghostty.RenderState = .empty;
+    defer state.deinit(alloc);
+    try state.update(alloc, &term);
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    s.applyHighlights(alloc, &state);
+
+    // 칠해졌는지 먼저 확인 — 이게 0 이면 아래 단언이 의미가 없다.
+    try std.testing.expect(countHighlights(&state) > 0);
+
+    // 닫으면 그 다음 프레임에 지워져야 한다. `close` 자체는 `state` 를 만지지 않고
+    // `highlights_dirty` 만 세우므로, 지우는 일은 다음 `applyHighlights` 가 한다.
+    s.close(alloc);
+    s.applyHighlights(alloc, &state);
+    try std.testing.expectEqual(@as(usize, 0), countHighlights(&state));
+}
+
+test "#646 needle 을 바꾸면 옛 매치가 남지 않는다" {
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 100,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+    try term.printString("aaa FINDME bbb OTHER ccc\r\n");
+
+    var state: ghostty.RenderState = .empty;
+    defer state.deinit(alloc);
+    try state.update(alloc, &term);
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    s.applyHighlights(alloc, &state);
+    const first = countHighlights(&state);
+    try std.testing.expect(first > 0);
+
+    // 다른 needle 로 바꾸면 옛 강조가 지워지고 새 것만 남아야 한다 — 지우지 않으면
+    // 행에 계속 쌓여 지워진 검색어의 자리가 그대로 칠해진 채로 남는다.
+    try s.setNeedle(alloc, "OTHER", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    s.applyHighlights(alloc, &state);
+    try std.testing.expectEqual(first, countHighlights(&state));
+}
+
+fn countHighlights(state: *ghostty.RenderState) usize {
+    var n: usize = 0;
+    const rd = state.row_data.slice();
+    for (rd.items(.highlights)) |h| n += h.items.len;
+    return n;
 }

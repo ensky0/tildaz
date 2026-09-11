@@ -1791,6 +1791,15 @@ pub const SessionCore = struct {
                 if (!progressed) break;
                 result.search_progressed = true;
             }
+        } else if (active.search.highlights_dirty) {
+            // 검색을 **닫았는데 지울 강조가 남아 있는** 경우다. 강조를 실제로 지우는 것은
+            // 렌더 루프 안의 `applyHighlights` 인데, 닫기만으로는 화면이 바뀌지 않아
+            // "안 바뀌면 안 그린다" 게이트 (#388) 에 걸려 렌더가 돌지 않는다. 그러면 지운
+            // 결과가 화면에 영영 안 나오고 매치가 칠해진 채로 남는다.
+            //
+            // 그래서 여기서 렌더를 한 번 요청한다. 다음 프레임의 `applyHighlights` 가
+            // 지우고 `highlights_dirty` 를 내리므로 이 요청은 한 번으로 끝난다.
+            result.search_progressed = true;
         }
 
         for (group.panes) |p| {
