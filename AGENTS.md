@@ -824,11 +824,13 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 |---|---|
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+| [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
 tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
+tool\key-bytes-check_windows.ps1                                    # 창 3 회 (legacy · kitty · mok2) · 합성 키
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
