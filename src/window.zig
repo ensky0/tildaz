@@ -150,6 +150,8 @@ const COLOR_WINDOW: c_int = 5;
 // 요구 제거.
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const IDC_IBEAM: ?*const anyopaque = @ptrFromInt(32513);
+/// #647 — 링크 위의 손 커서. CSS `pointer` · macOS `pointingHandCursor` 와 같은 뜻이다.
+const IDC_HAND: ?*const anyopaque = @ptrFromInt(32649);
 // #483 — 분할선 리사이즈 커서 (winuser.h: IDC_SIZEWE 32644 · IDC_SIZENS 32645).
 const IDC_SIZEWE: ?*const anyopaque = @ptrFromInt(32644);
 const IDC_SIZENS: ?*const anyopaque = @ptrFromInt(32645);
@@ -426,7 +428,9 @@ pub const Window = struct {
     /// `WM_SETCURSOR` (#193) — client 영역 안의 위치별 cursor 분류. 결정은
     /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
     /// #483 5단계 — 분할선 위는 좌우 / 상하 리사이즈 커서 (`IDC_SIZEWE` / `IDC_SIZENS`).
-    pub const CursorRegion = enum { cell, other, separator_v, separator_h };
+    /// #647 — `link` 는 포인터 아래가 클릭 가능한 링크일 때. 밑줄과 같은 규칙으로
+    /// **수식키를 보지 않는다** (여는 데만 `Ctrl` 이 필요하다).
+    pub const CursorRegion = enum { cell, other, separator_v, separator_h, link };
 
     /// #451 — `Io` · 환경변수 묶음. host 의 `run(rt, …)` 이 창을 만들 때 넣는다.
     rt: Runtime,
@@ -517,6 +521,7 @@ pub const Window = struct {
     /// `WM_SETCURSOR` 마다 LoadCursorW 호출 비용 피하려 init 에서 캐시 (#193).
     cursor_arrow: HCURSOR = null,
     cursor_ibeam: HCURSOR = null,
+    cursor_hand: HCURSOR = null,
     cursor_sizewe: HCURSOR = null,
     cursor_sizens: HCURSOR = null,
     shell_exited: bool = false,
@@ -660,6 +665,7 @@ pub const Window = struct {
         // LoadCursorW(null, IDC_*) 는 system shared resource — DestroyCursor 불필요.
         self.cursor_arrow = LoadCursorW(null, IDC_ARROW);
         self.cursor_ibeam = LoadCursorW(null, IDC_IBEAM);
+        self.cursor_hand = LoadCursorW(null, IDC_HAND);
         self.cursor_sizewe = LoadCursorW(null, IDC_SIZEWE);
         self.cursor_sizens = LoadCursorW(null, IDC_SIZENS);
 
@@ -2600,6 +2606,7 @@ pub const Window = struct {
                                 .other => self.cursor_arrow,
                                 .separator_v => self.cursor_sizewe,
                                 .separator_h => self.cursor_sizens,
+                                .link => self.cursor_hand,
                             };
                             _ = SetCursor(handle);
                             return 1; // TRUE — 우리가 처리 (DefWindowProcW 안 부름)

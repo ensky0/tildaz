@@ -245,15 +245,20 @@ fn logicalRow(state: *const ghostty.RenderState, y: u16) RowSpan {
 /// 세 host 가 이 상태 기계 하나를 공유한다. host 가 하는 일은 좌표를 셀로 바꿔 `update` 를
 /// 부르고, 반환이 `true` 면 다시 그리는 것뿐이다.
 ///
-/// **표시와 활성화를 가른다 — 여기는 수식키를 보지 않는다.** 포인터가 링크 위에 있기만 하면
-/// 밑줄이 뜨고 (그래야 *클릭할 수 있는 것인지* 를 알 수 있다), 실제로 여는 데만
-/// `Ctrl` / `⌘` 가 필요하다 (host 의 `tryOpenLink`). 수식키를 눌러야 밑줄이 뜨면 링크인 줄
-/// 모르는 사람은 수식키를 누를 이유가 없어서 영영 발견하지 못한다 (2026-09-11 사용자 지적).
+/// **보이는 것과 되는 것을 일치시킨다 — 밑줄이 있으면 클릭하면 열린다.**
 ///
-/// 이것이 Windows Terminal 의 동작이다 — *"URLs to underline on hover and be clickable by
-/// pressing Ctrl"* ([Microsoft Learn](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/interaction)).
-/// ghostty 는 기본이 *수식키를 눌러야 표시* 지만 (`hover_mods`), 그쪽 `Link.Highlight` 에도
-/// 수식키 없는 `hover` 가 유효한 선택지로 있다.
+/// 두 번의 사용자 지적으로 여기까지 왔다 (2026-09-11).
+///
+/// 1. *"ctrl 을 안 눌러도 밑줄은 보여야 하는 거 아냐? 우선 click 가능한 건지 알아야 클릭할
+///    생각을 하지"* — 수식키를 눌러야 밑줄이 뜨면 링크인 줄 모르는 사람은 수식키를 누를
+///    이유가 없다 (순환). 그래서 hover 만으로 밑줄을 켰다.
+/// 2. *"밑줄이 보이니까 바로 클릭하면 링크가 열릴 것 같은데 안 열려. cmd 를 눌러야만 열려.
+///    이거 이상해"* — 밑줄은 "클릭하면 열린다" 는 신호인데 수식키를 요구하면 어긋난다.
+///
+/// 그래서 **kitty 의 모델**을 따른다 — 기본 `mouse_map left click ungrabbed …` 이 수식키
+/// 없이 좌클릭으로 링크를 열고, `ungrabbed` (앱이 마우스를 잡지 않았을 때) 라는 조건이 붙는다.
+/// 그 조건을 `Probe.active` 가 담는다. Windows Terminal · VS Code 는 수식키를 요구하는 대신
+/// *툴팁* 으로 어긋남을 메우는데, 우리에겐 툴팁 자리가 없다.
 pub const Hover = struct {
     hit: ?Hit = null,
     /// 마지막 판정 입력. 같으면 다시 판정하지 않는다 — motion 은 픽셀마다 오지만 판정이
@@ -268,11 +273,18 @@ pub const Hover = struct {
     pub const Probe = struct {
         /// 포인터가 있는 셀. 셀 영역 밖 (탭바 · padding · 스크롤바 · 창 밖) 이면 `null`.
         cell: ?Coord,
+        /// **지금 이 클릭이 링크로 갈 수 있는가.** 아니면 링크로 치지 않는다 — 밑줄도 손
+        /// 커서도 없고 클릭도 앱에 간다.
+        ///
+        /// host 가 `앱이 마우스를 잡지 않았다 or 수식키가 눌렸다` 로 계산한다. 앱이
+        /// mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
+        /// 또 "보이는데 안 열리는" 어긋남이 된다 (#647 · kitty 의 `ungrabbed` 조건).
+        active: bool,
         /// 어느 pane 의 화면인가. 같은 셀 좌표여도 pane 이 다르면 다른 글자다.
         pane: u64,
 
         fn eql(self: Probe, other: Probe) bool {
-            if (self.pane != other.pane) return false;
+            if (self.active != other.active or self.pane != other.pane) return false;
             if (self.cell == null and other.cell == null) return true;
             const a = self.cell orelse return false;
             const b = other.cell orelse return false;
@@ -318,7 +330,9 @@ pub const Hover = struct {
         self.probe = probe;
 
         var found: ?Hit = null;
-        if (probe.cell) |c| found = try hitTest(alloc, state, c);
+        if (probe.active) {
+            if (probe.cell) |c| found = try hitTest(alloc, state, c);
+        }
 
         // 같은 링크면 그리기가 달라지지 않는다 — 한 링크 안에서 칸을 옮길 때가 그렇다.
         if (self.hit) |*old| {
@@ -400,7 +414,11 @@ pub const Hover = struct {
         self.painted = true;
     }
 
-    /// 그 셀에서 열 URL. 클릭이 링크 위인지 판정한다.
+    /// 그 셀에서 열 URL. 클릭 · 커서 판정이 함께 쓴다.
+    ///
+    /// `null` 이 아니면 **밑줄이 그려져 있다는 뜻**이기도 하다 — 그래서 이것만 보면 "보이는
+    /// 것과 되는 것" 이 저절로 맞는다. 앱이 마우스를 잡았는데 수식키를 안 누른 상태는
+    /// `Probe.active` 가 false 라 `hit` 자체가 없다.
     ///
     /// **지금 hover 중인 링크만 본다.** 다시 `hitTest` 하지 않는 이유는 두 가지다 — ① 사용자가
     /// *본* 것 (밑줄이 그려진 것) 과 여는 것이 같아야 한다. ② 클릭 시점에 다시 판정하면 그 사이
@@ -592,11 +610,11 @@ test "#647 hover — 수식키 없이도 링크를 잡는다 (표시와 활성�
 
     // 수식키를 누르지 않아도 포인터가 링크 위면 잡힌다 — 그래야 *클릭할 수 있는 것인지* 를
     // 알 수 있다. 여는 데만 수식키가 필요하고 그 판정은 host 에 있다.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 }));
     try testing.expectEqualStrings("https://example.com", hover.hit.?.url);
 
     // 링크 밖으로 나가면 풀린다.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .active = true, .pane = 0 }));
     try testing.expect(hover.hit == null);
 }
 
@@ -610,20 +628,20 @@ test "#647 hover — 같은 링크 안에서 칸을 옮기면 다시 그리지 �
     var hover: Hover = .{};
     defer hover.deinit(alloc);
 
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 4, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 4, .y = 0 }, .active = true, .pane = 0 }));
     // 같은 링크의 다른 칸 — 판정은 다시 하지만 그림은 그대로다.
-    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 10, .y = 0 }, .pane = 0 }));
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 10, .y = 0 }, .active = true, .pane = 0 }));
     try testing.expectEqualStrings("https://example.com", hover.hit.?.url);
 
     // 다른 링크로 옮기면 다시 그린다.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 30, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 30, .y = 0 }, .active = true, .pane = 0 }));
     try testing.expectEqualStrings("https://other.example", hover.hit.?.url);
 
     // 링크 밖으로 나가면 풀린다.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .active = true, .pane = 0 }));
     try testing.expect(hover.hit == null);
     // 링크 밖에서 칸만 옮기는 것은 변화가 아니다.
-    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 2, .y = 0 }, .pane = 0 }));
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 2, .y = 0 }, .active = true, .pane = 0 }));
 }
 
 test "#647 hover — 셀 영역 밖과 pane 전환" {
@@ -636,25 +654,25 @@ test "#647 hover — 셀 영역 밖과 pane 전환" {
     var hover: Hover = .{};
     defer hover.deinit(alloc);
 
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 }));
     // 탭바 · padding 처럼 셀이 없는 자리 → 해제.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = null, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = null, .active = true, .pane = 0 }));
     try testing.expect(hover.hit == null);
 
     // 같은 입력을 다시 주면 판정을 건너뛴다.
-    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 }));
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 }));
     const before = hover.probe.?;
     try testing.expect(!try hover.update(alloc, &f.state, before));
 
     // 셀과 수식키가 같아도 **pane 이 다르면 다른 입력**이다 — 같은 좌표의 다른 화면이라
     // 캐시가 먹으면 안 된다.
-    const p0: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 };
-    const p1: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .pane = 1 };
+    const p0: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 };
+    const p1: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 1 };
     try testing.expect(p0.eql(p0));
     try testing.expect(!p0.eql(p1));
     // 셀 없음끼리는 같고, 한쪽만 없으면 다르다.
-    const none: Hover.Probe = .{ .cell = null, .pane = 0 };
-    try testing.expect(none.eql(.{ .cell = null, .pane = 0 }));
+    const none: Hover.Probe = .{ .cell = null, .active = true, .pane = 0 };
+    try testing.expect(none.eql(.{ .cell = null, .active = true, .pane = 0 }));
     try testing.expect(!none.eql(p0));
     try testing.expect(!p0.eql(none));
 }
@@ -669,7 +687,7 @@ test "#647 hover — invalidate 는 같은 자리를 다시 판정하게 한다"
     var hover: Hover = .{};
     defer hover.deinit(alloc);
 
-    const at: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 };
+    const at: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 };
     try testing.expect(try hover.update(alloc, &f.state, at));
     try testing.expect(!try hover.update(alloc, &f.state, at)); // 캐시 hit
 
@@ -695,7 +713,7 @@ test "#647 hover — urlAt 은 보고 있는 링크만 연다" {
     // hover 가 없으면 아무 셀도 안 연다.
     try testing.expect(hover.urlAt(.{ .x = 6, .y = 0 }) == null);
 
-    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 });
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 });
     try testing.expectEqualStrings("https://example.com", hover.urlAt(.{ .x = 6, .y = 0 }).?);
     try testing.expectEqualStrings("https://example.com", hover.urlAt(.{ .x = 4, .y = 0 }).?);
     // 링크 밖 셀은 열지 않는다.
@@ -714,7 +732,7 @@ test "#647 hover — clear 는 창을 떠날 때" {
     defer hover.deinit(alloc);
 
     try testing.expect(!hover.clear(alloc)); // 원래 없으면 변화 없음
-    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 });
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 });
     try testing.expect(hover.clear(alloc));
     try testing.expect(hover.hit == null);
     try testing.expect(!hover.clear(alloc));
@@ -742,7 +760,7 @@ test "#647 applyHighlights — hover 를 행 강조로 칠하고, 풀면 지운�
     try testing.expectEqual(@as(usize, 0), rowHls(&f.state, 0).len);
 
     // 링크 위에 올리면 그 구간이 `link_hover` 로 칠해진다 (`see ` 뒤 4..22).
-    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .pane = 0 });
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 });
     hover.applyHighlights(alloc, &f.state);
     const hls = rowHls(&f.state, 0);
     try testing.expectEqual(@as(usize, 1), hls.len);
@@ -756,7 +774,7 @@ test "#647 applyHighlights — hover 를 행 강조로 칠하고, 풀면 지운�
     try testing.expectEqual(@as(usize, 1), rowHls(&f.state, 0).len);
 
     // 링크를 벗어나면 지워진다.
-    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .pane = 0 });
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .active = true, .pane = 0 });
     hover.applyHighlights(alloc, &f.state);
     try testing.expectEqual(@as(usize, 0), rowHls(&f.state, 0).len);
 
@@ -774,7 +792,7 @@ test "#647 applyHighlights — 접힌 URL 은 행마다 구간이 하나씩" {
     var hover: Hover = .{};
     defer hover.deinit(alloc);
 
-    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 0, .y = 0 }, .pane = 0 });
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 0, .y = 0 }, .active = true, .pane = 0 });
     hover.applyHighlights(alloc, &f.state);
 
     const slice = f.state.row_data.slice();
@@ -787,4 +805,28 @@ test "#647 applyHighlights — 접힌 URL 은 행마다 구간이 하나씩" {
     try testing.expectEqual(@as(u16, 15), slice.items(.highlights)[1].items[0].range[1]);
     // 셋째 행은 링크가 아니다.
     try testing.expectEqual(@as(usize, 0), slice.items(.highlights)[2].items.len);
+}
+
+test "#647 hover — 앱이 마우스를 잡으면 (active=false) 링크로 치지 않는다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    // `active = false` — 앱이 mouse tracking 을 켰고 수식키도 안 눌린 상태.
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = false, .pane = 0 }));
+    try testing.expect(hover.hit == null);
+    try testing.expect(hover.urlAt(.{ .x = 6, .y = 0 }) == null);
+
+    // 수식키를 누르면 (active = true) 그때 잡힌다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = true, .pane = 0 }));
+    try testing.expectEqualStrings("https://example.com", hover.urlAt(.{ .x = 6, .y = 0 }).?);
+
+    // 다시 놓으면 풀린다 — 밑줄도 사라지고 클릭도 앱에 간다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .active = false, .pane = 0 }));
+    try testing.expect(hover.hit == null);
 }
