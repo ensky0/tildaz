@@ -3119,9 +3119,12 @@ pub const Window = struct {
         }, self.keyEncodeOptions()) catch return false;
 
         const bytes = writer.buffered();
-        // #648 — macOS 와 같은 이유다. 억제는 "처리했다" 이지 "낼 것이 없다" 가 아니다.
-        if (outcome == .suppressed) return true;
-        if (bytes.len == 0) return false;
+        // #648 — macOS 와 같은 판정 함수를 쓴다.
+        switch (key_encode.hostAction(outcome, bytes)) {
+            .consume => return true,
+            .fallback => return false,
+            .write => {},
+        }
         // Ctrl+C 의 큐 우회는 `App.onKeyInput` 이 판정한다 (macOS · Linux 와 달리 이
         // host 는 write 통로가 하나다).
         write_fn(bytes, self.userdata);

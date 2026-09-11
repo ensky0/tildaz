@@ -1013,11 +1013,14 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8, action: key
     }, keyEncodeOptionsMac(option_as_alt)) catch return false;
 
     const bytes = writer.buffered();
-    // #648 — **일부러 억제한 키는 "처리했다" 로 돌려준다.** `false` 를 주면 호출부의
-    // 안전망 (`characters` 직송 · 아래 `interpretKeyEvents:`) 이 그 키를 되살린다 —
-    // 실기에서 `Ctrl+Shift+F` 가 macOS 가 만든 `^F` 로 나갔다 (2026-09-11).
-    if (outcome == .suppressed) return true;
-    if (bytes.len == 0) return false;
+    // #648 — 판정은 `key_encode.hostAction` 한 곳에 있다. 세 host 가 같은 함수를 쓴다
+    // — 여기서 조건을 다시 적었다가 억제와 "낼 것이 없음" 이 섞여 `Ctrl+Shift+F` 가
+    // `characters` 직송으로 `^F` 가 됐다 (2026-09-11 실기).
+    switch (key_encode.hostAction(outcome, bytes)) {
+        .consume => return true,
+        .fallback => return false,
+        .write => {},
+    }
     // #282 A8 — Ctrl+C(ETX) 만 write queue 를 우회해 즉시 보낸다. 대량 paste 로 큐가
     // 차 있으면 SIGINT 가 뒤에 밀려 "Ctrl+C 가 안 먹는다" 로 보인다.
     if (bytes.len == 1 and bytes[0] == 0x03) {

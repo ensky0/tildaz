@@ -165,6 +165,29 @@ pub const Outcome = enum {
     suppressed,
 };
 
+/// #648 — 인코딩 결과를 받은 host 가 **무엇을 해야 하는가.**
+///
+/// 세 host 가 각자 `if` 를 적고 있으면 또 갈린다. 실제로 그래서 `Ctrl+Shift+F` 가
+/// macOS 에서만 `^F` 로 나갔다 — 그때 판정이 "0 바이트면 안전망" 한 줄이었고, 억제가
+/// 0 바이트라는 사실이 거기 반영돼 있지 않았다. 판정을 여기 한 곳에 두고 셋이 같이 쓴다.
+pub const HostAction = enum {
+    /// `bytes` 를 PTY 로 보낸다.
+    write,
+    /// **아무것도 보내지 않고, 이 키는 처리된 것으로 친다.** host 의 안전망
+    /// (macOS `characters` 직송 · Windows `DefWindowProcW` → `WM_CHAR`) 으로
+    /// 넘기면 안 된다 — 일부러 억제한 키가 되살아난다.
+    consume,
+    /// 인코더가 낼 것이 없다. host 는 예전 경로 그대로 — 우리가 모르는 keycode 의
+    /// 조합이 조용히 사라지지 않게 하는 안전망이다.
+    fallback,
+};
+
+/// `encode` 의 결과 한 쌍을 `HostAction` 으로 옮긴다.
+pub fn hostAction(outcome: Outcome, bytes: []const u8) HostAction {
+    if (outcome == .suppressed) return .consume;
+    return if (bytes.len == 0) .fallback else .write;
+}
+
 /// `event` 를 `writer` 에 인코딩한다. 출력이 없는 키도 있다 (modifier 키 등) —
 /// 호출부가 쓰인 바이트 수와 `Outcome` 을 함께 보고 판단한다.
 pub fn encode(
@@ -730,6 +753,110 @@ test "#648 억제와 \"낼 것이 없음\" 은 다른 결과다" {
     }, .{});
     try testing.expectEqual(Outcome.encoded, normal);
     try testing.expectEqualStrings("\x03", normal_bytes);
+}
+
+// ── host 배선 계약 ──────────────────────────────────────────────────────────
+//
+// #648 · #650 의 결함 둘은 **인코더가 아니라 host 배선**에서 났고, 인코더만 재는
+// 테스트가 둘 다 놓쳤다.
+//
+//   1. `Ctrl+Shift+F` → `^F` — 억제(0 바이트)를 host 안전망이 "낼 것이 없다" 로 읽고
+//      `characters` 를 직송했다.
+//   2. `Ctrl+[` → `^[^[` — 누름만 재느라 뗌에서 한 번 더 나가는 것을 못 봤다.
+//
+// 그래서 여기서는 host 가 실제로 하는 것을 그대로 흉내낸다 — 누름과 뗌을 각각 인코더에
+// 넘기고, `hostAction` 이 `.write` 라고 한 것만 모은다. 그 합이 PTY 가 보는 전부다.
+
+/// 키 하나를 누르고 떼었을 때 PTY 로 나가는 바이트 전부.
+///
+/// `os_fallback` 은 **host 안전망이 `.fallback` 에서 보내는 것**이다 — macOS 는
+/// `NSEvent.characters`, Windows 는 `WM_CHAR`. 이것을 모델에 넣어야 "억제를
+/// `.fallback` 으로 잘못 읽으면 OS 가 만든 바이트가 샌다" 를 잡는다. 넣지 않으면
+/// `Ctrl+Shift+F` → `^F` 회귀가 테스트를 그대로 통과한다.
+fn pressAndRelease(buf: []u8, event: Event, opts: Options, os_fallback: []const u8) ![]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    for ([_]Action{ .press, .release }) |action| {
+        var step_buf: [64]u8 = undefined;
+        var step: std.Io.Writer = .fixed(&step_buf);
+        var e = event;
+        e.action = action;
+        const outcome = try encode(&step, e, opts);
+        switch (hostAction(outcome, step.buffered())) {
+            .write => try w.writeAll(step.buffered()),
+            // 뗌은 안전망을 타지 않는다 — 세 host 모두 뗌은 인코더 전용 경로다.
+            .fallback => if (action == .press) try w.writeAll(os_fallback),
+            .consume => {},
+        }
+    }
+    return w.buffered();
+}
+
+test "host 배선 — 억제 · 무출력 · 출력 세 갈래를 가른다" {
+    // `.consume` 과 `.fallback` 이 **둘 다 0 바이트**라는 것이 요점이다. 바이트 수만
+    // 보면 구분되지 않아 `Ctrl+Shift+F` 가 되살아났다.
+    try testing.expectEqual(HostAction.consume, hostAction(.suppressed, ""));
+    try testing.expectEqual(HostAction.fallback, hostAction(.encoded, ""));
+    try testing.expectEqual(HostAction.write, hostAction(.encoded, "\x03"));
+}
+
+test "host 배선 — 누름 + 뗌 한 벌이 정확히 한 번만 나간다" {
+    const Case = struct {
+        name: []const u8,
+        event: Event,
+        want: []const u8,
+        /// host 안전망이 낼 바이트 (macOS `characters`). 억제 판정이 무너지면 이것이 샌다.
+        os_fallback: []const u8 = "",
+    };
+    const ctrl: Mods = .{ .ctrl = true };
+    const ctrl_shift: Mods = .{ .ctrl = true, .shift = true };
+
+    for ([_]Case{
+        // #650 회귀 — 이 셋이 누름 · 뗌 두 번씩 나갔다.
+        .{ .name = "ctrl+[", .event = .{ .code = .bracket_left, .mods = ctrl, .utf8 = "[", .unshifted_codepoint = '[' }, .want = "\x1b", .os_fallback = "\x1b" },
+        .{ .name = "ctrl+i", .event = .{ .code = .key_i, .mods = ctrl, .utf8 = "i", .unshifted_codepoint = 'i' }, .want = "\x09", .os_fallback = "\x09" },
+        .{ .name = "ctrl+m", .event = .{ .code = .key_m, .mods = ctrl, .utf8 = "m", .unshifted_codepoint = 'm' }, .want = "\x0d", .os_fallback = "\x0d" },
+
+        // #648 회귀 — 억제한 키가 host 안전망으로 되살아났다.
+        .{ .name = "ctrl+shift+f", .event = .{ .code = .key_f, .mods = ctrl_shift, .consumed_mods = .{ .shift = true }, .utf8 = "F", .unshifted_codepoint = 'f' }, .want = "", .os_fallback = "\x06" },
+        .{ .name = "ctrl+shift+enter", .event = .{ .code = .enter, .mods = ctrl_shift }, .want = "", .os_fallback = "\x0d" },
+
+        // 건드리지 않은 이웃들 — 한 벌에 정확히 한 번.
+        .{ .name = "ctrl+a", .event = .{ .code = .key_a, .mods = ctrl, .utf8 = "a", .unshifted_codepoint = 'a' }, .want = "\x01" },
+        .{ .name = "ctrl+c", .event = .{ .code = .key_c, .mods = ctrl, .utf8 = "c", .unshifted_codepoint = 'c' }, .want = "\x03" },
+        .{ .name = "ctrl+h", .event = .{ .code = .key_h, .mods = ctrl, .utf8 = "h", .unshifted_codepoint = 'h' }, .want = "\x08" },
+        .{ .name = "a", .event = .{ .code = .key_a, .utf8 = "a", .unshifted_codepoint = 'a' }, .want = "a" },
+        .{ .name = "shift+tab", .event = .{ .code = .tab, .mods = .{ .shift = true } }, .want = "\x1b[Z" },
+        .{ .name = "ctrl+left", .event = .{ .code = .arrow_left, .mods = ctrl }, .want = "\x1b[1;5D" },
+    }) |c| {
+        var buf: [64]u8 = undefined;
+        const out = try pressAndRelease(&buf, c.event, .{}, c.os_fallback);
+        testing.expectEqualStrings(c.want, out) catch |err| {
+            std.debug.print("실패한 조합: {s}\n", .{c.name});
+            return err;
+        };
+    }
+}
+
+test "host 배선 — kitty 를 켠 앱의 뗌 보고를 삼키지 않는다" {
+    // 반대 방향 회귀 감시다. #648 · #650 의 필터가 넓어지면 `report_events` 를 켠 앱의
+    // 뗌이 사라진다 — 그쪽은 누름 · 뗌 짝으로 상태를 세는 앱이라 조용히 어긋난다.
+    const event: Event = .{
+        .code = .bracket_left,
+        .mods = .{ .ctrl = true },
+        .utf8 = "[",
+        .unshifted_codepoint = '[',
+    };
+    var press_only: [64]u8 = undefined;
+    const press = try encodeToBuf(&press_only, event, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("\x1b[91;5u", press);
+
+    var both: [64]u8 = undefined;
+    const pair = try pressAndRelease(&both, event, .{
+        .kitty_flags = .{ .disambiguate = true, .report_events = true },
+    }, "");
+    // 누름만일 때보다 반드시 길다 = 뗌도 나갔다.
+    try testing.expect(pair.len > press.len);
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, pair, "u"));
 }
 
 test "기존 세 host 의 escape 매핑과 한 바이트도 다르지 않다" {
