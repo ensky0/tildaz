@@ -268,7 +268,6 @@ pub const PaneSearch = struct {
     }
 };
 
-
 test "#646 needle 이 비면 검색을 시작하지 않는다" {
     const alloc = std.testing.allocator;
     var s: PaneSearch = .{};

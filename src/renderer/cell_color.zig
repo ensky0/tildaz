@@ -29,7 +29,6 @@ pub fn resolveFrameBackground(background: ?ghostty.color.RGB, fallback: [3]f32) 
     };
 }
 
-
 /// 검색 강조가 걸린 셀의 fg / bg. `null` 이면 강조가 없다 (평소 경로).
 pub const HighlightColors = struct {
     bg: ghostty.color.RGB,

@@ -1778,6 +1778,11 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
 - 단위 테스트: `zig build test`.
 - 순수 모듈만 빠르게: `zig test src/<module>.zig` (ghostty 의존성 없는 모듈 한정, 예: `src/scrollbar.zig`).
+- **포맷 검사**: `zig fmt --check src/ build.zig` — **CI 의 required check 라 어기면 머지가 막혀요**
+  (`.github/workflows/pr-verify.yml` 의 `verify (linux)` 안 Format check 스텝). 위의 `zig build check` ·
+  `zig build test` 는 **포맷을 보지 않으므로 따로 돌려야 해요.** 2026-09-11
+  [#651](https://github.com/ensky0/tildaz/pull/651) 이 빈 줄 둘 때문에 CI 에서 떨어졌어요 — 로컬
+  검증 (`check` 6 타겟 · `test`) 은 전부 통과한 상태였습니다. 어긋났으면 `zig fmt src/ build.zig` 로 고쳐요.
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
