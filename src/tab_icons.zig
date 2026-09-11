@@ -39,10 +39,19 @@ const MCH: f32 = 0.14; // menu chevron 반높이 (폭 0.84 × 높이 0.28)
 // (rasterize 는 선분만 안다). 손잡이 끝점을 다른 아이콘과 같은 R 원 위에 두고,
 // 렌즈의 반대편 끝(좌상단)도 같은 원에 닿게 중심을 잡아 `+` · `×` 와 광학 크기를
 // 맞춘다 — 렌즈만 키우면 같은 box 에서 돋보기가 더 커 보인다.
-const SEARCH_LENS_SIDES: usize = 16; // 10~14 pt 실사용 크기에서 각이 안 보이는 최소 변 수
-const SEARCH_LENS_R: f32 = 0.25; // 렌즈 반지름
-/// 렌즈 중심 — 좌상단 끝 `C − R/√2` 가 `0.5 − D` (다른 아이콘의 reach) 에 놓이게.
-const SEARCH_LENS_C: f32 = 0.5 - D + SEARCH_LENS_R * 0.70710678;
+const SEARCH_LENS_SIDES: usize = 20; // 14 pt @2x 에서 변 하나가 ~2.6 px — 각이 안 보인다
+const SEARCH_LENS_R: f32 = 0.30; // 렌즈 반지름 (지름이 box 의 60 %)
+
+/// 돋보기의 reach — **다른 아이콘 (`R` = 0.42) 보다 크다.**
+///
+/// `×` 는 대각선 *획* 둘이라 같은 reach 에서도 시원해 보이지만, 돋보기는 렌즈가 **덩어리**
+/// (닫힌 원) 라 같은 reach 로 그리면 눈에 띄게 작아 보인다. 검색바에서는 13 pt 글자 옆에
+/// 놓이므로 그 차이가 그대로 드러난다 — 그래서 광학 보정을 반대 방향으로 한 번 더 준다.
+const SEARCH_REACH: f32 = 0.48;
+const SEARCH_D: f32 = SEARCH_REACH * 0.70710678;
+
+/// 렌즈 중심 — 좌상단 끝 `C − R/√2` 가 `0.5 − SEARCH_D` 에 놓이게.
+const SEARCH_LENS_C: f32 = 0.5 - SEARCH_D + SEARCH_LENS_R * 0.70710678;
 
 /// 아이콘별 선분 정의 (정규화 [0,1]², 중심 0.5). 두께는 rasterize 의 stroke.
 fn segsFor(icon: Icon) []const Seg {
@@ -106,8 +115,8 @@ const search_segs: [SEARCH_LENS_SIDES + 1]Seg = blk: {
     out[SEARCH_LENS_SIDES] = .{
         .x0 = SEARCH_LENS_C + k,
         .y0 = SEARCH_LENS_C + k,
-        .x1 = 0.5 + D,
-        .y1 = 0.5 + D,
+        .x1 = 0.5 + SEARCH_D,
+        .y1 = 0.5 + SEARCH_D,
     };
     break :blk out;
 };
@@ -269,16 +278,18 @@ test "#646 rasterize — 돋보기는 렌즈 속이 비고 손잡이가 우하�
     try std.testing.expect(at(&buf, size, 0.5 + D, 0.5 - D) < 40);
 }
 
-test "#646 돋보기는 × 와 같은 reach 를 쓴다 — 광학 크기 일관" {
+test "#646 돋보기 reach 는 × 보다 크다 — 덩어리라 같은 값이면 작아 보인다" {
     // 손잡이 끝점이 `×` 대각선 끝점과 같은 자리여야 한다 (둘 다 R 원 위).
     const handle = search_segs[SEARCH_LENS_SIDES];
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + D), handle.x1, 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + D), handle.y1, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + SEARCH_D), handle.x1, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + SEARCH_D), handle.y1, 1e-6);
 
     // 렌즈의 좌상단 끝도 같은 원에 닿는다 — 중심 잡기의 근거.
     try std.testing.expectApproxEqAbs(
-        @as(f32, 0.5 - D),
+        @as(f32, 0.5 - SEARCH_D),
         SEARCH_LENS_C - SEARCH_LENS_R * 0.70710678,
         1e-6,
     );
+    // 그리고 그 reach 는 `×` 보다 크다 — 덩어리라 같은 값이면 작아 보인다.
+    try std.testing.expect(SEARCH_REACH > R);
 }

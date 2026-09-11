@@ -1336,6 +1336,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         .zoom_pane => handleZoomPane(),
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
         .close_pane => handleClosePane(),
+        .open_search => handleOpenSearch(),
     }
     return true;
 }
@@ -3755,6 +3756,14 @@ fn handleCloseActiveTab() void {
 /// #544 — `Shift+Cmd+X` (`close_pane`). 활성 pane 하나를 닫는다 — 마지막 pane 이면 탭,
 /// 마지막 탭이면 앱 종료 (`tab_actions.closeActivePane` 이 정책을 든다). 사후 처리는
 /// `handleCloseActiveTab` 과 같다. `Cmd+W` 는 탭 통째로다.
+/// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않고 그대로 둔다
+/// (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
+fn handleOpenSearch() void {
+    const tab = g_session.activeTab() orelse return;
+    tab.search.open();
+    requestRender();
+}
+
 fn handleClosePane() void {
     if (tab_actions.closeActivePane(&g_host) == .changed) {
         syncGeometryAfterTabCountChange();
@@ -4741,7 +4750,15 @@ fn renderFrameTick() void {
         hotkey_hint,
         // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
         // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
-        search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
+        search_bar.uiFrom(
+            &group.activeTab().search,
+            &.{},
+            true,
+            null,
+            @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / r_scale,
+            @as(f32, @floatFromInt(g_renderer.?.vp_width)) / r_scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+        ),
     );
 
     // #255 · #591 — 예전에는 "이번 frame 에 처음 본 글리프는 다음 frame 에 올라간다" (2-frame)

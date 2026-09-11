@@ -57,6 +57,11 @@ pub const PaneSearch = struct {
     /// `search_matches_dirty` 를 둔다 (`renderer/generic.zig`).
     highlights_dirty: bool = false,
 
+    /// #646 — 입력칸 가로 스크롤 (logical pt). `search_bar.fieldScrollOffset` 이 매 프레임
+    /// 갱신해 여기 써 둔다. **상태로 남겨야** caret 이 보이는 동안 스크롤을 바꾸지 않는
+    /// hysteresis 가 성립한다 (탭 rename 이 `RenameState` 에 같은 값을 뒀다).
+    field_scroll_px: f32 = 0,
+
     /// 이 pane 의 검색이 더 진행할 일이 남았는가. `false` 면 `step` 을 부르지 않는다.
     pub fn isRunning(self: *const PaneSearch) bool {
         return self.engine != null and !self.complete;

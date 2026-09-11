@@ -856,7 +856,15 @@ pub const App = struct {
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
                         // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 ·
                         // hover) 은 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
-                        search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
+                        search_bar.uiFrom(
+                            &group.activeTab().search,
+                            &.{},
+                            true,
+                            null,
+                            @as(f32, @floatFromInt(r.tab_font.cell_width_px)) / r.pixels_per_dip,
+                            @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
+                            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+                        ),
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
@@ -1500,6 +1508,7 @@ pub const App = struct {
             .equalize_panes => .equalize_panes,
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
+            .open_search => .open_search,
         };
     }
 
@@ -1717,6 +1726,15 @@ pub const App = struct {
                     },
                     .zoom_pane => {
                         self.handleZoomPane();
+                        return true;
+                    },
+                    // #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않는다
+                    // (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
+                    .open_search => {
+                        if (self.session.activeTab()) |tab| {
+                            tab.search.open();
+                            self.window.requestRender();
+                        }
                         return true;
                     },
                     // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).

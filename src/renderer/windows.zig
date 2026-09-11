@@ -2092,12 +2092,14 @@ pub const D3d11Renderer = struct {
 
         const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
         const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+        const search_sz: u32 = ui_metrics.scaledPx(u32, search_bar.ICON_PT, scale);
+        const search_stroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale);
 
         // 돋보기 + 컨트롤 아이콘.
         var icons: [4]TextInstance = undefined;
         var icon_n: u32 = 0;
         if (v.icon.w > 0) {
-            if (self.tab_atlas.getOrInsertIcon(.search, isz, istroke)) |entry| {
+            if (self.tab_atlas.getOrInsertIcon(.search, search_sz, search_stroke)) |entry| {
                 icons[icon_n] = .{
                     .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },

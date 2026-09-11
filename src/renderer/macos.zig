@@ -1838,13 +1838,33 @@ pub const MetalRenderer = struct {
         self.closeRange(.tab_text);
     }
 
+    /// #646 — 입력칸 glyph 하나. `search_bar.iterFieldText` 가 보이는 것만 넘겨주므로
+    /// 여기서는 클립을 다시 보지 않는다.
+    fn emitFieldGlyph(self: *MetalRenderer, g: search_bar.Glyph, x0: f32, top: f32, color: [4]f32) void {
+        const result = self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
+        const entry = self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+            mac_font.releaseCluster(result);
+            return;
+        };
+        mac_font.releaseCluster(result);
+        if (entry.w == 0 or entry.h == 0) return;
+        self.pushText(.{
+            .pos = .{ x0 + g.x + @as(f32, @floatFromInt(entry.bearing_x)), top + self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
+            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .fg_color = color,
+            .color_flag = if (entry.is_color) 1 else 0,
+        });
+    }
+
     /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
     /// caret 만 그린다 (`emitCommandMenu` 와 같은 분담).
     fn emitSearchBar(self: *MetalRenderer, ui: search_bar.Ui) void {
         const scale = self.scale;
         const v = search_bar.view(
             @as(f32, @floatFromInt(self.vp_width)) / scale,
-            @as(f32, @floatFromInt(self.vp_height)) / scale,
+            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
         );
 
         var bar_rects: [search_bar.MAX_RECTS]ui_rect.Rect = undefined;
@@ -1861,14 +1881,15 @@ pub const MetalRenderer = struct {
         const text_top = field_y + (field_h - ch) * 0.5;
 
         if (ui.focused) {
-            const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-            const preedit_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.preedit))) * cw;
-            const caret_x = field_x + before_w + preedit_w;
+            const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw);
+            const preedit_w = search_bar.textWidthPx(ui.preedit, cw);
+            const caret_x = field_x + before_w + preedit_w - ui.scroll_px * scale;
+            const vert = search_bar.caretVertical(text_top, ch);
             // 입력칸을 벗어나면 그리지 않는다 — 긴 검색어에서 카운터 위로 삐져나가지 않게.
-            if (caret_x < field_x + v.field.w * scale) {
+            if (caret_x >= field_x and caret_x < field_x + v.field.w * scale) {
                 self.pushBg(.{
-                    .pos = .{ @round(caret_x), @round(text_top) },
-                    .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(ch) },
+                    .pos = .{ @round(caret_x), @round(vert.y) },
+                    .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(vert.height) },
                     .color = self.chrome.menu_label,
                 });
             }
@@ -1879,8 +1900,8 @@ pub const MetalRenderer = struct {
 
         // 돋보기 — 탭바 컨트롤과 같은 rasterizer · 같은 stroke.
         if (v.icon.w > 0) {
-            const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
-            const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+            const isz: u32 = ui_metrics.scaledPx(u32, search_bar.ICON_PT, scale);
+            const istroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale);
             if (self.tab_atlas.getOrInsertIcon(.search, isz, istroke)) |entry| {
                 self.pushText(.{
                     .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
@@ -1929,10 +1950,35 @@ pub const MetalRenderer = struct {
         if (ui.needle.len == 0 and ui.preedit.len == 0) {
             emit(self, messages.search_placeholder, field_x, text_top, self.chrome.menu_hint, field_right);
         } else {
-            emit(self, ui.needle, field_x, text_top, self.chrome.menu_label, field_right);
+            // #159 · #163 과 같은 이유로 **공통 helper** 를 쓴다 — 잘림 · 스크롤 산술을 세
+            // renderer 에 복사하면 같은 fix 를 세 번 해야 하고 한 곳을 빠뜨린다.
+            const FieldCtx = struct {
+                r: *MetalRenderer,
+                x0: f32,
+                top: f32,
+                color: [4]f32,
+                fn put(c: @This(), g: search_bar.Glyph) void {
+                    c.r.emitFieldGlyph(g, c.x0, c.top, c.color);
+                }
+            };
+            search_bar.iterFieldText(
+                ui.needle,
+                cw,
+                v.field.w * scale,
+                ui.scroll_px * scale,
+                FieldCtx{ .r = self, .x0 = field_x, .top = text_top, .color = self.chrome.menu_label },
+                FieldCtx.put,
+            );
             if (ui.preedit.len > 0) {
-                const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-                emit(self, ui.preedit, field_x + before_w, text_top, self.chrome.ctrl_active, field_right);
+                const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw);
+                search_bar.iterFieldText(
+                    ui.preedit,
+                    cw,
+                    @max(0, v.field.w * scale - (before_w - ui.scroll_px * scale)),
+                    0,
+                    FieldCtx{ .r = self, .x0 = field_x + before_w - ui.scroll_px * scale, .top = text_top, .color = self.chrome.ctrl_active },
+                    FieldCtx.put,
+                );
             }
         }
 

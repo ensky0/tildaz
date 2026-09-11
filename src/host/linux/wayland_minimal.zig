@@ -5172,7 +5172,15 @@ const Client = struct {
             .blink_faint = self.last_blink_phase,
             // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
             // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
-            .search_ui = search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
+            .search_ui = search_bar.uiFrom(
+                &group.activeTab().search,
+                &.{},
+                true,
+                null,
+                @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_width_px)) / self.renderer.scale,
+                @as(f32, @floatFromInt(width)) / self.renderer.scale,
+                @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            ),
         };
     }
 
@@ -6108,6 +6116,14 @@ const Client = struct {
     /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (pane 이 마지막이면 탭, 마지막 탭이면 앱
     /// 종료 — `tab_actions.closeActivePane` 이 정책을 든다). 셸에 `exit` 를 치는 것과 결과가
     /// 같다 (`closeTabByPtr` 와 같은 규칙). `handleCloseTab` 은 탭 통째로다.
+    /// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않는다.
+    fn handleOpenSearch(self: *Client) void {
+        const session = &(self.session orelse return);
+        const tab = session.activeTab() orelse return;
+        tab.search.open();
+        self.needs_redraw = true;
+    }
+
     fn handleClosePane(self: *Client) void {
         if (self.session == null) return;
         self.leaveShell();
@@ -7195,6 +7211,7 @@ const Client = struct {
             .zoom_pane => self.handleZoomPane(),
             // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
             .close_pane => self.handleClosePane(),
+            .open_search => self.handleOpenSearch(),
         }
     }
 

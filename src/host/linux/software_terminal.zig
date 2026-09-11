@@ -1770,10 +1770,12 @@ pub const Renderer = struct {
         const icon_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
 
         if (v.icon.w > 0) {
+            const search_sz_i: i32 = scaledPt(search_bar.ICON_PT, scale);
+            const search_sz: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), search_sz_i)));
             list.append(allocator, .{ .icon = .{
                 .kind = .search,
-                .size = icon_size,
-                .stroke = icon_stroke,
+                .size = search_sz,
+                .stroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale),
                 .x = @round(v.icon.x * scale),
                 .y = @round(v.icon.y * scale),
                 .color = rgbFromMetrics(self.chrome.menu_hint),
