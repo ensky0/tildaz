@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
+const cell_highlight = @import("cell_highlight.zig");
 
 /// needle 이 이 길이 미만이면 입력이 멈출 때까지 검색을 미룬다. 한 글자마다 전수
 /// 검색을 새로 시작하면 타이핑 중 예산을 계속 먹는다 — ghostty 의 macOS 앱도 같은
@@ -227,25 +228,17 @@ pub const PaneSearch = struct {
         if (!self.highlights_dirty and state.dirty == .false) return;
         self.highlights_dirty = false;
 
-        // ghostty 에 highlight 를 지우는 API 가 없어 직접 비운다 (본체도 같다).
-        // 지운 행은 dirty 로 표시해야 renderer 가 그 행을 다시 그린다.
-        const row_data = state.row_data.slice();
-        var any_cleared = false;
-        for (row_data.items(.highlights), row_data.items(.dirty)) |*hls, *dirty| {
-            if (hls.items.len == 0) continue;
-            hls.clearRetainingCapacity();
-            dirty.* = true;
-            any_cleared = true;
-        }
-        if (any_cleared and state.dirty == .false) state.dirty = .partial;
+        // **우리 tag 만** 지운다 — 같은 행에 링크 hover (#647) 등 다른 기능의 강조가
+        // 함께 있을 수 있다. 계약은 `cell_highlight.zig` 에 있다.
+        _ = cell_highlight.clear(state, &.{ .search_current, .search_match });
 
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return;
 
-        // **순서가 곧 우선순위다** — 먼저 넣은 highlight 가 앞에 오고, renderer 는 행의
-        // 첫 highlight 를 채택한다. 그래서 선택된 매치를 먼저 넣어야 그 자리가 나머지
-        // 매치 색에 덮이지 않는다.
+        // 우선순위는 **tag 값**이 정한다 (`cell_highlight.Tag` — 작을수록 위). 넣는 순서에
+        // 기대지 않는 이유는 두 기능이 서로 다른 프레임에 자기 강조를 다시 칠해서 목록 안
+        // 순서가 프레임마다 달라지기 때문이다.
         if (engine.selectedMatch()) |m| {
-            state.updateHighlightsFlattened(alloc, @intFromEnum(Tag.current), &.{m}) catch {
+            state.updateHighlightsFlattened(alloc, cell_highlight.Tag.search_current.value(), &.{m}) catch {
                 // 칠하지 못해도 검색 자체는 유효하다 — 이번 프레임만 표시가 빠진다.
                 self.highlights_dirty = true;
             };
@@ -258,35 +251,13 @@ pub const PaneSearch = struct {
             engine.active_results.items,
         }) |list| {
             if (list.len == 0) continue;
-            state.updateHighlightsFlattened(alloc, @intFromEnum(Tag.match), list) catch {
+            state.updateHighlightsFlattened(alloc, cell_highlight.Tag.search_match.value(), list) catch {
                 self.highlights_dirty = true;
             };
         }
     }
 };
 
-/// `RenderState.Highlight.tag` 값. renderer 가 이 값으로 색을 고른다.
-///
-/// **tag 공간은 기능들이 나눠 쓴다.** `RenderState` 에게 이 값은 불투명하고 (ghostty 는
-/// 그대로 돌려줄 뿐이다) 한 행의 highlight 목록에 여러 기능이 섞일 수 있으므로, 값이
-/// 겹치면 서로의 것을 자기 색으로 그린다. 배분은 아래와 같다 (2026-09-11 세션 간 합의).
-///
-/// | tag | 쓰는 곳 |
-/// |---|---|
-/// | 0 | **링크 hover — [#647](https://github.com/ensky0/tildaz/issues/647) 몫으로 비워 둔다** |
-/// | 1 · 2 | 검색 매치 (이 파일) |
-///
-/// 세 renderer 의 "행의 highlight 를 읽어 tag 로 가르는" 진입 루프는 **먼저 머지되는
-/// 쪽이 깔고** 늦는 쪽이 분기만 더한다.
-pub const Tag = enum(u8) {
-    /// 지금 선택된 매치 — `TAB_ACCENT_COLOR` (앱의 "활성" 색과 같다).
-    ///
-    /// **`match` 보다 작은 값이어야 하는 것은 아니다** — 우선순위는 값이 아니라
-    /// `applyHighlights` 가 넣는 순서가 정한다.
-    current = 1,
-    /// 찾았지만 지금 보고 있는 것은 아닌 매치 — `MENU_HOVER_BG`.
-    match = 2,
-};
 
 test "#646 needle 이 비면 검색을 시작하지 않는다" {
     const alloc = std.testing.allocator;
