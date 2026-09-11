@@ -112,6 +112,27 @@ pub fn add(
     if (state.dirty == .false) state.dirty = .partial;
 }
 
+/// 링크 hover 는 **색이 아니라 밑줄**로 표시한다. 그 칸이 링크면 밑줄을 켠 style 을 준다.
+///
+/// `cell_color.highlightColors` 가 `.link_hover => null` 인 이유가 이것이다 — 셀 색을 바꾸지
+/// 않고 SGR 밑줄과 **같은 선**을 하나 켠다. 그러면 두께 · 위치 · 색이 `cell_decoration` 의
+/// 기존 계산을 그대로 타서 폰트 · 배율이 달라져도 따로 맞출 것이 없다. 밑줄인 것은 웹과 터미널
+/// 양쪽의 관례이고 ghostty 도 같다.
+///
+/// **이미 밑줄이 있으면 그대로 둔다.** `.double` · `.curly` 를 `.single` 로 덮으면 원래 내용의
+/// 뜻 (SGR 4:3 등) 이 사라지는데, 링크 표시로는 어느 밑줄이든 충분하다.
+pub fn withLinkUnderline(
+    style: ghostty.Style,
+    hls: []const ghostty.RenderState.Highlight,
+    x: u16,
+) ghostty.Style {
+    if (at(hls, x) != .link_hover) return style;
+    if (style.flags.underline != .none) return style;
+    var out = style;
+    out.flags.underline = .single;
+    return out;
+}
+
 /// 열 `x` 를 덮는 강조 중 **우선순위가 가장 높은 것** (= tag 값이 가장 작은 것).
 /// 없으면 `null`.
 ///

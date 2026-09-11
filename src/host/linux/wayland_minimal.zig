@@ -5126,6 +5126,8 @@ const Client = struct {
                 .preedit_utf8 = if (!is_active) "" else if (self.renderer.preedit_text.len > 0) self.renderer.preedit_text else self.renderer.compose_preview,
                 .blink_faint = self.last_blink_phase,
                 .search = &t.search,
+                // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+                .link_hover = if (is_active) &self.link_hover else null,
                 .is_active = is_active,
             };
         }

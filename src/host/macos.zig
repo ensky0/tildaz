@@ -4602,6 +4602,8 @@ fn renderFrameTick() void {
             // IME 조합 글자는 키보드가 가는 pane (활성) 에만.
             .preedit_utf8 = if (is_active) cell_preedit else &.{},
             .search = &t.search,
+            // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+            .link_hover = if (is_active) &g_link_hover else null,
             .is_active = is_active,
             // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
             // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.

@@ -812,6 +812,8 @@ pub const App = struct {
                             // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
                             .blink_faint = blink_phase_now,
                             .search = &t.search,
+                            // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+                            .link_hover = if (is_active) &self.link_hover else null,
                             .is_active = is_active,
                         });
                     }
