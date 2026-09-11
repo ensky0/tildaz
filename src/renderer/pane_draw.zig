@@ -10,6 +10,7 @@
 
 const ghostty = @import("ghostty-vt");
 const pane_layout = @import("../pane_layout.zig");
+const search = @import("../search.zig");
 
 pub const PaneDraw = struct {
     terminal: *ghostty.Terminal,
@@ -35,6 +36,13 @@ pub const PaneDraw = struct {
     preedit_utf8: []const u8,
     /// #376 — 프레임 단위 blink 위상. host 의 게이트가 구한 값을 그대로 내린다.
     blink_faint: bool,
+    /// #646 — 이 pane 의 검색 상태. renderer 가 `state.update` 직후에
+    /// `applyHighlights` 를 불러 매치를 `state` 의 per-row 강조로 칠한다.
+    ///
+    /// **검색 중이 아니어도 넘긴다** — 검색을 막 껐을 때 남아 있는 강조를 지우는 것도
+    /// 그 함수의 일이라, 여기서 `null` 로 바꾸면 강조가 화면에 남는다. host 가 pane 을
+    /// 그릴 수 없는 경우 (테스트 하네스 등) 만 `null` 이다.
+    search: ?*search.PaneSearch,
     /// #483 5단계 — 키보드가 가는 pane 인가. 렌더러가 pane 마다 달라야 하는 부수 효과 (Windows 의 IME 조합
     /// 창 위치 `last_cursor_px`) 를 활성 pane 에만 적용하는 데 쓴다. 그리기 자체는 이 값을 보지 않는다.
     is_active: bool,

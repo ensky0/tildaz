@@ -806,6 +806,7 @@ pub const App = struct {
                             // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
                             // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
                             .blink_faint = blink_phase_now,
+                            .search = &t.search,
                             .is_active = is_active,
                         });
                     }

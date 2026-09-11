@@ -5121,6 +5121,7 @@ const Client = struct {
                 // (`compose_preview`) 를 같은 자리에 (둘 다 있으면 IME 가 우선).
                 .preedit_utf8 = if (!is_active) "" else if (self.renderer.preedit_text.len > 0) self.renderer.preedit_text else self.renderer.compose_preview,
                 .blink_faint = self.last_blink_phase,
+                .search = &t.search,
                 .is_active = is_active,
             };
         }

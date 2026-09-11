@@ -1364,6 +1364,8 @@ pub const D3d11Renderer = struct {
         const preedit_utf8 = pane.preedit_utf8;
         const blink_faint = pane.blink_faint;
         state.update(self.alloc, terminal) catch return;
+        // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
+        if (pane.search) |ps| ps.applyHighlights(self.alloc, state);
 
         const rows = state.rows;
         const cols = state.cols;

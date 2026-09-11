@@ -704,6 +704,8 @@ pub const Renderer = struct {
             self.layer.clear();
             return .{ .background = in.theme.background, .layer = &self.layer };
         };
+        // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
+        for (in.panes) |p| if (p.search) |ps| ps.applyHighlights(allocator, p.state);
         const t_updated = if (timing_enabled) timingNowNs() else 0;
         defer if (timing_enabled) {
             last_update_ns = @intCast(t_updated - t_start);
@@ -1670,6 +1672,8 @@ pub const Renderer = struct {
             fill(memory, width, height, stride, in.theme.background);
             return;
         };
+        // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
+        for (in.panes) |p| if (p.search) |ps| ps.applyHighlights(allocator, p.state);
 
         fill(memory, width, height, stride, frameBackground(in));
 
