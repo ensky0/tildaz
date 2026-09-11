@@ -70,6 +70,10 @@ pub const Shortcut = enum {
     /// #544 — 활성 pane 하나 닫기. `close_tab` 과 정책이 같다 (상태를 바꾸므로 preedit 은
     /// commit 후 실행).
     close_pane,
+    /// #646 — 버퍼 안 검색바를 연다. 상태를 바꾸므로 (키보드 포커스가 터미널에서 바로 옮겨간다)
+    /// 다른 상태 변경 단축키와 같이 preedit 을 먼저 commit 한다 — 조합 중이던 자모가 검색어로
+    /// 흘러 들어가면 안 된다.
+    open_search,
 };
 
 /// 진행 중 입력(terminal preedit)을 어떻게 처리할지.
