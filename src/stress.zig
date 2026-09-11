@@ -68,7 +68,7 @@ const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
 /// 준다 (#381). producer 가 끝나면 터미널이 곧바로 창을 닫아서, 이게 없으면 찍을 창이
 /// 없다. **Windows 는 `sh -c "…; sleep 3"` 으로 대신할 수 없다** — alacritty · wezterm 이
 /// MSYS sh 를 ConPTY 로 띄우지 못해 하네스가 producer 를 직접 실행하기 때문이다
-/// (`dist/stress/compare-terminals.sh` 의 `run_terminal_win` 주석). 그래서 producer 안에 둔다.
+/// (`tool/stress/compare-terminals.sh` 의 `run_terminal_win` 주석). 그래서 producer 안에 둔다.
 ///
 /// 기다리는 것은 **timing 파일을 쓴 뒤**다. 하네스는 timing 파일을 보고 측정이 끝난 것을
 /// 알고 캡처를 시작하므로, 순서가 반대면 하네스가 창이 닫힌 뒤에 찍으러 온다.

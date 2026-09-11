@@ -502,6 +502,26 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
    - `launchctl kickstart -k` 로 재현할 수 있어요. 단 `minimum runtime = 10` throttle 때문에 재시작이 10초 늦어질 수 있어요 — 실제 로그인에는 없는 지연이니 결론에 넣지 않아요.
    - 로그인 직후 `pending spawn, domain in on-demand-only mode` 로 20~30초 늦게 뜨는 건 **정상**이에요. launchd 가 로그인 세션이 열릴 때까지 기다리는 구간이에요.
 
+# 레포 구조 — 배포물은 `dist/`, 검증 도구는 `tool/` ([#644](https://github.com/ensky0/tildaz/issues/644))
+
+아래 절들이 쓰는 검증 · 진단 · 측정 도구는 전부 [`tool/`](tool) 에 있어요. `dist/` 에는 배포물만
+둬요 — 설치 · 패키징 · 서명 · 릴리즈 노트 · 아이콘 · 데스크톱 확장 · git 훅.
+
+이름 규칙이에요 (2026-09-11 사용자 결정).
+
+1. **도구 이름이 먼저**예요 — `tool/<도구>/` 또는 `tool/<도구>.<확장자>`. OS 로 먼저 나누지
+   **않아요.** 같은 도구의 세 platform 판이 흩어지면 하나를 고칠 때 나머지를 놓쳐요 —
+   [#641](https://github.com/ensky0/tildaz/pull/641) 이 `render-ab-shot` 의 macOS 판만 고쳤고
+   Linux · Windows 판에 같은 결함이 있는지 아무도 안 봤어요. 지금은 세 판이 한 디렉터리에 있어요.
+2. **파일이 하나뿐이면 디렉터리를 만들지 않아요.**
+3. **OS 에 의존하면 `_linux` · `_macos` · `_windows` 를 붙여요.** 밑줄이 **없으면 OS 무관**이에요.
+4. 여러 OS 면 `Linux · macOS · Windows` 순서로 이어 붙여요 (`_linux_macos`). 셋 다면 밑줄 없음.
+5. OS 접미사는 **항상 이름 끝**이에요 (`osc-title-probe-prompt_windows.md`).
+
+[`tool/README.md`](tool/README.md) 가 도구 목록 · OS · 한 줄 용도 · **이 문서의 어느 절을 볼지**를
+담은 색인이에요. **절차는 그 색인이 아니라 이 문서가 단일 출처예요** — 새 도구를 더하면 색인에
+한 줄, 쓰는 법은 이 문서의 해당 절에 적어요.
+
 # macOS — emoji 입력 테스트 방법
 
 macOS 의 Show Emoji & Symbols (Apple default `Ctrl+Cmd+Space`) 는 tildaz 안에서
@@ -526,12 +546,12 @@ macOS 는 Metal layer 내용을 **sRGB 로 보고 디스플레이 색공간으�
 
 **하지 말 것 — 캡처를 사후에 sRGB 로 역변환.** ImageMagick `-profile` 과 `sips --matchTo` 가 결과가 갈려서 신뢰할 수 없어요 ([#335](https://github.com/ensky0/tildaz/issues/335#issuecomment-5113614333) 에서 7건이 1비트씩 어긋나 보였고, 어느 도구도 전부 맞추지 못했어요).
 
-**할 것 — 출력 색공간을 sRGB 로 지정해 캡처.** [`dist/macos/color-capture.m`](dist/macos/color-capture.m) 이 `SCStreamConfiguration.colorSpaceName` 을 sRGB 로 두고 창을 캡처해요. 캡처 파이프라인이 출력 버퍼를 sRGB 로 만들어 주니, 다 찍은 PNG 을 사후에 변환하는 8-bit 왕복이 없어요.
+**할 것 — 출력 색공간을 sRGB 로 지정해 캡처.** [`tool/color-capture_macos.m`](tool/color-capture_macos.m) 이 `SCStreamConfiguration.colorSpaceName` 을 sRGB 로 두고 창을 캡처해요. 캡처 파이프라인이 출력 버퍼를 sRGB 로 만들어 주니, 다 찍은 PNG 을 사후에 변환하는 8-bit 왕복이 없어요.
 
 ```sh
 clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit \
       -framework ImageIO -framework UniformTypeIdentifiers \
-      -o /tmp/color-capture dist/macos/color-capture.m
+      -o /tmp/color-capture tool/color-capture_macos.m
 /tmp/color-capture --list                              # windowID 찾기
 /tmp/color-capture --window <id> out.png               # 출력 색공간 = sRGB
 magick out.png -format "%[pixel:p{40,40}]\n" info:     # 값 읽기
@@ -553,15 +573,15 @@ Linux 는 software renderer + 프로파일 없는 캡처라 이 절차가 아예
 
 # macOS — 실행마다 화면이 흔들리는지 보는 법
 
-같은 바이너리를 여러 번 띄워 캡처를 견주는 도구예요 ([`dist/macos/repeat-render-check.sh`](dist/macos/repeat-render-check.sh)).
+같은 바이너리를 여러 번 띄워 캡처를 견주는 도구예요 ([`tool/repeat-render-check_macos.sh`](tool/repeat-render-check_macos.sh)).
 회차 사이에 다른 것이 없으니, 캡처가 회차마다 다르면 그 차이는 **실행 간 비결정**이에요.
 [#529](https://github.com/ensky0/tildaz/issues/529) 에서 atlas 의 cluster 키가 일반 글리프와
 자리를 나눠 쓰던 결함을 이걸로 잡았어요 — 24 회 중 1 회에서 `a̸` 자리에 `U` 가 그려졌어요.
 
 ```sh
-dist/macos/repeat-render-check.sh                       # render-test 화면 24 회
-dist/macos/repeat-render-check.sh 40                    # 회차만 바꿔서
-dist/macos/repeat-render-check.sh 24 6 /path/show.sh    # 다른 화면으로
+tool/repeat-render-check_macos.sh                       # render-test 화면 24 회
+tool/repeat-render-check_macos.sh 40                    # 회차만 바꿔서
+tool/repeat-render-check_macos.sh 24 6 /path/show.sh    # 다른 화면으로
 ```
 
 - **A/B 는 반드시 같은 화면에서 찍어요.** `color-capture` 가 출력 색공간을 sRGB 로 잡아도
@@ -588,16 +608,16 @@ dist/macos/repeat-render-check.sh 24 6 /path/show.sh    # 다른 화면으로
 
 | 도구 | 무엇 |
 |---|---|
-| [`dist/macos/render-ab-shot.sh`](dist/macos/render-ab-shot.sh) | 두 앱 판을 같은 화면으로 찍어 **최종 그림**을 픽셀 수로 견줘요 |
-| [`dist/macos/render-process-check.sh`](dist/macos/render-process-check.sh) | 기동 직후부터 촘촘히 찍어 **이웃 프레임 차이 · 최종 대비 차이**를 내요 — 과정이 단계적으로 채워지면 여기서 보여요 |
-| [`dist/screens/clusters.py`](dist/screens/clusters.py) | 검증 화면 생성기 — `many` (일반 · grow 0) · `stack2` (좁은 atlas 를 채움) · `overflow` (17 화면 누적 · 8192² 상한) · `mini` (프레임 수 계측) |
+| [`tool/render-ab-shot/render-ab-shot_macos.sh`](tool/render-ab-shot/render-ab-shot_macos.sh) | 두 앱 판을 같은 화면으로 찍어 **최종 그림**을 픽셀 수로 견줘요 |
+| [`tool/render-process-check_macos.sh`](tool/render-process-check_macos.sh) | 기동 직후부터 촘촘히 찍어 **이웃 프레임 차이 · 최종 대비 차이**를 내요 — 과정이 단계적으로 채워지면 여기서 보여요 |
+| [`tool/clusters.py`](tool/clusters.py) | 검증 화면 생성기 — `many` (일반 · grow 0) · `stack2` (좁은 atlas 를 채움) · `overflow` (17 화면 누적 · 8192² 상한) · `mini` (프레임 수 계측) |
 
 ```sh
-python3 dist/screens/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
+python3 tool/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
 git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=ReleaseFast -Dsimd=true)   # 기준판
 zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true                             # 수정판
-dist/macos/render-ab-shot.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ.app zig-out/TildaZ.app      # 정적 → 0 px
-dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
+tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ.app zig-out/TildaZ.app      # 정적 → 0 px
+tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
 ```
 
 - **기준판은 별도 worktree 에서 빌드해요.** `.zig-cache` 를 나누지 않으면 두 판의 바이너리가 같아져
@@ -636,10 +656,10 @@ dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 
 | 도구 | 무엇 |
 |---|---|
-| [`dist/mouse/mouse-auto-check.sh`](dist/mouse/mouse-auto-check.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
-| [`dist/macos/deadkey-check.sh`](dist/macos/deadkey-check.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
+| [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
+| [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
 
-- **창 위치는 `dist/macos/color-capture --list` 의 위치 열**에서 읽어요 — Accessory 앱은 AX 의
+- **창 위치는 `tool/color-capture_macos --list` 의 위치 열**에서 읽어요 — Accessory 앱은 AX 의
   `position of window` 가 창을 못 찾고 (`유효하지 않은 인덱스`), JXA 의 `CGWindowListCopyWindowInfo`
   는 CFArray 를 풀지 못했어요. 그래서 우리 도구에 열을 더했어요 (크기 뒤 · 제목 앞 — 앞 열로 읽는
   스크립트가 그대로 맞아요).
@@ -649,7 +669,7 @@ dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   합성 입력 전달 (`cliclick m:` 뒤 `p` 로 위치 확인) 을 먼저 봐요. 회차 동안 `caffeinate -disu` 를 켜요.
 - 비활성 창의 **첫 클릭은 창을 깨우는 데 쓰일 수 있어** (`acceptsFirstMouse`) 두 번 눌러요 — 두 번째가
   판정 대상이에요. 키는 창을 클릭해 key window 로 만든 뒤, 무해한 `arrow-right` 하나를 먼저 보내요.
-- **`cliclick kp:return` · `kp:enter` 는 앱에 개행이 안 닿아요 — Return 은 `dist/stress/mac-input` 으로 보내요**
+- **`cliclick kp:return` · `kp:enter` 는 앱에 개행이 안 닿아요 — Return 은 `tool/input_macos` 으로 보내요**
   (`/tmp/mac-input send return`, 2026-09-05 실측 · #583 B20). 앱은 Return 을 인코더가 아니라 IME 경로
   (`interpretKeyEvents:` → `insertNewline:`) 로 받는데 (`isNavOrFunction(.enter)` 가 의도적으로 false — 한글 조합의
   Return 확정이 그 경로다), AppKit 은 그 selector 를 이벤트의 `characters` 로 고르므로 `characters` 가 빈 합성
@@ -660,11 +680,11 @@ dist/macos/render-process-check.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 
 # macOS — 키보드 layout 조회 실측 방법
 
-단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`dist/macos/layout-probe.m`](dist/macos/layout-probe.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
+단축키를 **라벨**로 매칭할지 **위치**로 매칭할지 ([#496](https://github.com/ensky0/tildaz/issues/496) 항목 2) 를 다룰 때, 활성 keyboard layout 이 **어느 키에 어느 글자를 두는지** 실기로 재는 도구예요. [`tool/layout-probe/layout-probe_macos.m`](tool/layout-probe/layout-probe_macos.m) 이 keycode `0..127` 을 네 방식으로 번역해 나란히 덤프해요.
 
 ```sh
 clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
-      -framework CoreFoundation -o /tmp/layout-probe dist/macos/layout-probe.m
+      -framework CoreFoundation -o /tmp/layout-probe tool/layout-probe/layout-probe_macos.m
 /tmp/layout-probe                          # 현재 layout 전체 표 + dlopen 판정
 /tmp/layout-probe --list-sources French    # 설치된 입력 소스의 표시 이름 · ID · 추가 여부
 /tmp/layout-probe --watch-runloop 15 24    # 한 프로세스로 24 회 — 그 사이 입력 소스를 바꿔요
@@ -692,17 +712,17 @@ clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
 
 # Windows — 렌더 결과를 픽셀로 검증하는 법
 
-macOS (`dist/macos/render-ab-shot.sh`) · Linux (`dist/linux/render-ab-shot.sh`) 와 같은 일을 PowerShell 로 해요 —
-[`dist/windows/render-ab-shot.ps1`](dist/windows/render-ab-shot.ps1). 여러 판을 **같은 화면**으로 띄워 창을 찍고 최종
+macOS (`tool/render-ab-shot/render-ab-shot_macos.sh`) · Linux (`tool/render-ab-shot/render-ab-shot_linux.sh`) 와 같은 일을 PowerShell 로 해요 —
+[`tool/render-ab-shot/render-ab-shot_windows.ps1`](tool/render-ab-shot/render-ab-shot_windows.ps1). 여러 판을 **같은 화면**으로 띄워 창을 찍고 최종
 그림을 픽셀 수로 견줘요. [#586](https://github.com/ensky0/tildaz/issues/586) Windows atlas `grow` 실기에서 만들었고,
 [#584](https://github.com/ensky0/tildaz/issues/584) Windows 계측이 밟은 함정을 피해 둔 상태예요.
 
 ```powershell
 python dist\screens\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd   # 화면 (.cmd 래퍼 + UTF-8 본문)
 # 판마다 INITIAL_ATLAS_SIZE 만 바꿔 빌드하고 exe 를 한 폴더에 모아요 — **_internal 폴더도 그 옆에 복사**해요 (아래)
-dist\windows\render-ab-shot.ps1 -Screen $env:TEMP\stack2.cmd -Size 150x40 -Wait 8 -Tag stack2 `
+tool\render-ab-shot\render-ab-shot_windows.ps1 -Screen $env:TEMP\stack2.cmd -Size 150x40 -Wait 8 -Tag stack2 `
     -Bins $env:TEMP\bins\tildaz-4096.exe,$env:TEMP\bins\tildaz-2048.exe,$env:TEMP\bins\tildaz-512.exe
-dist\windows\render-ab-shot.ps1 … -NewTab        # Ctrl+Shift+T 를 합성 입력으로 보내 탭 2 개 화면 (탭바 · 아이콘) 을 찍어요
+tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T 를 합성 입력으로 보내 탭 2 개 화면 (탭바 · 아이콘) 을 찍어요
 ```
 
 - **판 exe 를 다른 폴더로 옮기면 `_internal` (conpty.dll · OpenConsole.exe) 도 함께** 옮겨요. 없으면 앱이 `TildaZ — Cannot
@@ -747,13 +767,13 @@ macOS 의 `deadkey-check.sh` 에 대응하는 도구 둘이에요 ([#583](https:
 
 | 도구 | 무엇 |
 |---|---|
-| [`dist/windows/deadkey-check.ps1`](dist/windows/deadkey-check.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
-| [`dist/windows/launcher-fatal-check.ps1`](dist/windows/launcher-fatal-check.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
-| [`dist/windows/kitty-text-check.ps1`](dist/windows/kitty-text-check.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
+| [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
+| [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+| [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
-dist\windows\deadkey-check.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
-dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
+tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
+tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -764,7 +784,7 @@ dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
 - **자식은 `Read-Host` 로 줄을 받아요** — Windows 에는 `cat` 이 없어요. `-e` 가 명령줄을 통째로 `CreateProcessW` 에 넘기므로
   `powershell -File <자식.ps1> <out> <N>` 처럼 인자도 그대로 가요 (#584 에서 확인). 자식이 N 줄을 받고 끝나면 앱도 끝나
   정리가 자동이에요. 자식 PowerShell 이 `Read-Host` 에 닿기 전에 보낸 키는 콘솔 입력 버퍼에 남아 있다가 읽히지만, 2 초는 둬요.
-- **키마다 포커스 가드**예요 (`dist/stress/send-keys.ps1` 과 같은 규칙) — foreground 가 tildaz 창이 아니면 멈춰요. 합성 키는
+- **키마다 포커스 가드**예요 (`tool/send-keys_windows.ps1` 과 같은 규칙) — foreground 가 tildaz 창이 아니면 멈춰요. 합성 키는
   포커스된 창으로 가니 회차 동안 사용자가 다른 창을 만지면 거기에 타이핑돼요.
 - **앱의 error 다이얼로그는 `MessageBox` (`#32770`) 가 아니에요** — `dialog/windows.zig` 의 자체 창
   `TildaZScrollableDialogWindow` 이고 본문을 직접 그려 자식 컨트롤로는 제목 Static 과 OK Button 만 보여요. 본문 문구는
@@ -798,10 +818,10 @@ dist\windows\launcher-fatal-check.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼�
 
 # Windows — 키보드 layout 조회 실측 방법
 
-위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`dist/windows/layout-probe.zig`](dist/windows/layout-probe.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
+위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`tool/layout-probe/layout-probe_windows.zig`](tool/layout-probe/layout-probe_windows.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
 
 ```powershell
-zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
+zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
 .\layout-probe.exe                       # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
 .\layout-probe.exe --watch 60            # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
 .\layout-probe.exe --only 0000040c       # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
@@ -835,9 +855,9 @@ zig build-exe dist/windows/layout-probe.zig -O ReleaseSafe --cache-dir C:/ziglan
 `hotkey = "ctrl+[Backquote]"` 같은 **위치 표기** ([#496](https://github.com/ensky0/tildaz/issues/496) 1-c) 는 데스크톱마다 등록 방식이 갈려요. 자리를 그대로 받는 곳, 그 자리가 *지금 내는 글자* 로 바꿔야 하는 곳, VK 로 바꿔야 하는 곳이 있어서 **한 환경에서 통과해도 다른 환경을 보장하지 못해요.** 그래서 어느 머신에서든 같은 절차로 돌리는 도구를 뒀어요.
 
 ```sh
-./dist/hotkey/position-hotkey-check.sh                  # 기본 ctrl+[Backquote]
-./dist/hotkey/position-hotkey-check.sh --hotkey 'ctrl+[KeyT]'
-./dist/hotkey/position-hotkey-check.sh --keep           # 남겨 두고 직접 눌러 볼 때
+./tool/position-hotkey-check_linux.sh                  # 기본 ctrl+[Backquote]
+./tool/position-hotkey-check_linux.sh --hotkey 'ctrl+[KeyT]'
+./tool/position-hotkey-check_linux.sh --keep           # 남겨 두고 직접 눌러 볼 때
 ```
 
 `--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).
@@ -1089,7 +1109,7 @@ chcp 65001 >nul && echo. && echo 🎉❤️🌈🎨🌞🍎🚀💎✨ && echo �
 — *"측정이 사용자 설정을 만드는 주체가 되면 안 된다"*). 달라진 것은 **그 회차도 기본 단축키를 갖는다**는
 것뿐이라, 이제 `-e` 로 띄운 창에서도 `Ctrl+Shift+T` 가 먹어요.
 
-**회귀 검사는 [`dist/linux/headless-check.sh first-run`](dist/linux/headless-check.sh)** 이에요 — 빈
+**회귀 검사는 [`tool/headless-check_linux.sh first-run`](tool/headless-check_linux.sh)** 이에요 — 빈
 `XDG_CONFIG_HOME` 으로 띄워 `Ctrl+Shift+T` 를 보내고 새 셸이 생기는지 봐요. 고치기 전 판은 탭이 1 개,
 고친 판은 2 개예요 (로그의 `[tab] shell exited` 수로도 갈려요).
 
@@ -1108,11 +1128,11 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 
 | 도구 | 무엇 |
 |---|---|
-| [`dist/linux/vkbd.py`](dist/linux/vkbd.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
-| [`dist/screens/clusters.py bands`](dist/screens/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
-| [`dist/linux/bands-check.py`](dist/linux/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
-| [`dist/linux/headless-check.sh`](dist/linux/headless-check.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
-| [`dist/linux/real-session-check.sh`](dist/linux/real-session-check.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
+| [`tool/vkbd_linux.py`](tool/vkbd_linux.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
+| [`tool/clusters.py bands`](tool/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
+| [`tool/bands-check.py`](tool/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
+| [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
+| [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
 R=/run/user/$(id -u)/tz583; mkdir -m 700 -p $R                       # ⚠️ 짧은 경로 — 아래
@@ -1120,7 +1140,7 @@ env -u XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR=$R WLR_BACKENDS=headless WLR_LIBINPUT
     setsid sway -c sw.conf &                                          # sw.conf: output HEADLESS-1 resolution 1600x1000
 export XDG_RUNTIME_DIR=$R WAYLAND_DISPLAY=wayland-1 XDG_CURRENT_DESKTOP=sway SWAYSOCK=$(ls $R/sway-ipc.*.sock)
 export XDG_CONFIG_HOME=$T/xdg/config XDG_STATE_HOME=$T/xdg/state        # config_0.toml 은 사용자 것을 복사 (auto_start=false)
-python3 dist/linux/vkbd.py --fifo $R/vkbd.fifo &                      # ① 키보드를 먼저 꽂고
+python3 tool/vkbd_linux.py --fifo $R/vkbd.fifo &                      # ① 키보드를 먼저 꽂고
 TILDAZ_VERBOSE=1 ./zig-out/bin/tildaz --instance 0 &                  # ② 그다음 앱 — seat 에 keyboard 가 처음부터 있게
 echo "type touch /tmp/probe" > $R/vkbd.fifo; echo "key Return" > $R/vkbd.fifo   # 포커스 확인 — 파일이 생겨야 시작
 grim shot.png                                                          # sway 는 screencopy 를 내줘요
@@ -1290,7 +1310,7 @@ grim shot.png                                                          # sway �
   화면에 함께 찍히니 다이얼로그 위치를 따로 찾아 crop 해요 (구분선의 주황 픽셀 줄을 찾으면 폭이 로그의 `wrap_px` 와 맞아요).
 - **GNOME 은 자동 캡처 경로가 전부 막혀 있어요** (같은 날 실측) — `zwlr_screencopy` · `ext_image_copy_capture` 를
   client 에 노출하지 않아 `grim` 이 안 되고, `org.gnome.Shell.Screenshot` · `Introspect` 는 allowlist 밖 호출자에게
-  `AccessDenied`, xdg-desktop-portal 은 권한 창 뒤에 `response=2` 로 끝나요 (`dist/linux/portal-screenshot.py` 가 그
+  `AccessDenied`, xdg-desktop-portal 은 권한 창 뒤에 `response=2` 로 끝나요 (`tool/portal-screenshot_linux.py` 가 그
   경로예요 — 다른 데스크톱에서는 쓸 수 있어요). **GNOME 의 픽셀 확인은 사용자가 `PrtSc` 로 찍어 주는 수밖에 없어요.**
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
@@ -1407,15 +1427,15 @@ cluster 경로를 건드리면 **한글 · ASCII · emoji ZWJ · precomposed 글
 ## ⑥ atlas · 렌더 경로를 바꿨을 때 — 판을 맞대 픽셀로 (`render-ab-shot.sh`)
 
 위 `# macOS — 렌더 결과와 그리는 과정을 픽셀로 검증하는 법` 에 대응하는 Linux (KDE) 도구예요 —
-[`dist/linux/render-ab-shot.sh`](dist/linux/render-ab-shot.sh). [#586](https://github.com/ensky0/tildaz/issues/586)
+[`tool/render-ab-shot/render-ab-shot_linux.sh`](tool/render-ab-shot/render-ab-shot_linux.sh). [#586](https://github.com/ensky0/tildaz/issues/586)
 Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`INITIAL_ATLAS_SIZE` 등) 만 바꿔 **별도 worktree** 에서
 빌드해요 — 로컬 캐시는 `--cache-dir` 로 공유해도 돼요 (내용 해시라 섞이지 않아요). 스크립트가 md5 를 찍으니 판이 다른지 봐요.
 
 ```sh
-python3 dist/screens/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
+python3 tool/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
 git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 2048/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/linux/gl_atlas.zig
 (cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
-dist/linux/render-ab-shot.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
+tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
 ```
 
 - **캡처는 `spectacle -b -n -f` 전체 화면**이라 사용자의 다른 창이 함께 담겨요. 판정은 **창 영역만**으로 하고 이슈에 올릴
@@ -1464,7 +1484,7 @@ limactl copy tildaz-linux:/tmp/tz-shot.png /tmp/tz-shot.png                # 회
 
 - **격리**는 `env -i` + `/tmp/tz-*` 홈 · config · state 로 해요. 로그는 `/tmp/tz-state/tildaz/tildaz_*.log`
   (`-e` 화면은 측정 역할이라 `tildaz_stress.log`). `-e` 는 인자를 못 받으니 화면은 스크립트 파일로
-  (`dist/screens/clusters.py` 가 만들어 줘요).
+  (`tool/clusters.py` 가 만들어 줘요).
 - **창은 화면 오른쪽 절반 (x 640~1280 · 640×800)** 이에요 — tildaz 가 sway IPC 로 `resize set width 50 ppt`
   를 등록해요. `-size` 는 sway 에서 창에 영향을 못 줘요 (layer-shell 을 일부러 안 써요, #454). 좌우 3분할은
   20 열 최소에 걸려 안 되니 세로축으로 짜요.
@@ -1565,7 +1585,7 @@ UNC 경로를 사용해요. distro 이름을 `Debian`으로 가정하거나 `\\w
 기본값으로 쓰지 않아요.
 
 **예외 — 터미널 비교 측정은 Windows 에서 Git Bash, Linux 에서 KDE Plasma 로 해요.**
-[`dist/stress/compare-terminals.sh`](dist/stress/compare-terminals.sh) 는 위의 "기본 셸은
+[`tool/stress/compare-terminals.sh`](tool/stress/compare-terminals.sh) 는 위의 "기본 셸은
 PowerShell" 규칙이 적용되지 않는 유일한 도구예요.
 
 | platform | 어디서 | 안 지키면 |
@@ -1576,7 +1596,7 @@ PowerShell" 규칙이 적용되지 않는 유일한 도구예요.
 
 `zig build stress` **자체는 이 제약이 없어요** — Windows PowerShell 에서 그대로 돌아가요.
 Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 스크립트예요. 자세한 내용은
-[`dist/stress/README.md`](dist/stress/README.md) 의 "돌리는 환경" 절에 있어요.
+[`tool/stress/README.md`](tool/stress/README.md) 의 "돌리는 환경" 절에 있어요.
 
 **실기 검증은 무엇이든 시작 전에 말하고 사용자 동의를 받아요** (2026-08-05 사용자 지시:
 *"테스트 하기 전에 말하고 해. 좀 전에도 내가 키보드 쳐서 오염되었어"*, 2026-08-26 범위 확대).
@@ -1637,7 +1657,7 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 
 **측정 때 종료한 평소 쓰는 TildaZ worker 는 다시 띄우지 않아요** (2026-08-05 사용자 지시:
 *"측정 위생 때문에 종료한 TildaZ를 다시 띄울 필요는 없어. 다시 묻지 마"*). 처리량 측정은
-[`dist/stress/README.md`](dist/stress/README.md) 의 "측정 위생" 대로 worker 를 내려야 하는데,
+[`tool/stress/README.md`](tool/stress/README.md) 의 "측정 위생" 대로 worker 를 내려야 하는데,
 측정이 끝난 뒤 **다시 띄울지 묻지도 말고 띄우지도 말아요** — 사용자가 필요할 때 직접 띄워요.
 worker 를 내리는 것 자체는 측정 절차의 일부라 그대로 진행해요.
 

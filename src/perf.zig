@@ -499,7 +499,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
 /// 1. 측정 창에 키 입력을 넣어야 한다 — AGENTS.md 의 "측정 중 기기를 건드리지 않는다"
 ///    와 정면으로 어긋난다.
 /// 2. `dumpAndReset` 이 읽으면서 리셋하므로 두 번 누르면 `parse ms=0.000` 껍데기가 나온다.
-/// 3. 무엇보다 `dist/stress/README.md` 의 5 회 반복을 사람이 지킬 수 없어서, 배분 측정이
+/// 3. 무엇보다 `tool/stress/README.md` 의 5 회 반복을 사람이 지킬 수 없어서, 배분 측정이
 ///    지금까지 전부 1 회였다 (#389 macOS · #395 Linux 둘 다).
 ///
 /// worker 에서는 no-op 이다. 게이트가 *프로세스 역할* 이라 `RunOptions` 를 들고 다니지

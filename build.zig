@@ -658,10 +658,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "windows-aarch64", .query = .{ .os_tag = .windows, .cpu_arch = .aarch64 } },
     };
     const probe_roots = [_]struct { name: []const u8, path: []const u8, os: std.Target.Os.Tag }{
-        .{ .name = "dmabuf", .path = "dist/linux/dmabuf-probe.zig", .os = .linux },
-        .{ .name = "osc-title", .path = "dist/linux/osc-title-probe.zig", .os = .linux },
-        .{ .name = "osc-title", .path = "dist/windows/osc-title-probe.zig", .os = .windows },
-        .{ .name = "layout", .path = "dist/windows/layout-probe.zig", .os = .windows },
+        .{ .name = "dmabuf", .path = "tool/dmabuf-probe_linux.zig", .os = .linux },
+        .{ .name = "osc-title", .path = "tool/osc-title-probe/osc-title-probe_linux.zig", .os = .linux },
+        .{ .name = "osc-title", .path = "tool/osc-title-probe/osc-title-probe_windows.zig", .os = .windows },
+        .{ .name = "layout", .path = "tool/layout-probe/layout-probe_windows.zig", .os = .windows },
     };
     for (probe_check_targets) |c| {
         for (probe_roots) |root| {

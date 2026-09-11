@@ -1,7 +1,7 @@
 //! 측정용 실행 옵션 ([#382](https://github.com/ensky0/tildaz/issues/382)).
 //!
 //! **내부용이다.** `README` · `CONFIG.md` · `KEYBINDINGS.md` 에 넣지 않고, 쓰는 곳은
-//! `dist/stress/compare-terminals.sh` 하나다. 사용자 기능으로 만들려면 "이미 떠 있는
+//! `tool/stress/compare-terminals.sh` 하나다. 사용자 기능으로 만들려면 "이미 떠 있는
 //! 인스턴스와의 관계", "drop-down 을 어떻게 표시하나", "탭을 더 열면 그 탭은 무엇인가"
 //! 를 다 정해야 하는데, 측정용으로 한정하면 그것들이 필요 없다.
 //!
