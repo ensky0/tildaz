@@ -90,7 +90,15 @@ cmd_no_layer_shell() {
         *) die "GNOME 또는 Cinnamon (Wayland) 세션 안에서 돌린다 (XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-unset})" ;;
     esac
     [ "${XDG_SESSION_TYPE:-}" = wayland ] || die "Wayland 세션이 아니다 (XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unset}) — Cinnamon 은 'Cinnamon (Wayland)' 로 로그인한다"
-    echo "$XDG_CURRENT_DESKTOP · $(gnome-shell --version 2>/dev/null || cinnamon --version 2>/dev/null) · WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+    # 판을 **세션으로 고른다.** `gnome-shell --version || cinnamon --version` 로 두면 gnome-shell 이
+    # 깔려 있기만 해도 그쪽이 먼저 성공해, Cinnamon 세션에서 `X-Cinnamon · GNOME Shell 50.4` 가 찍힌다
+    # (2026-09-11 실측 — 한 기기에 둘 다 깔고 세션만 바꿔 돌리니 드러났다). 기록이 세션을 오인하게 만든다.
+    local _ver
+    case "$XDG_CURRENT_DESKTOP" in
+        *Cinnamon*) _ver=$(cinnamon --version 2>/dev/null) ;;
+        *)          _ver=$(gnome-shell --version 2>/dev/null) ;;
+    esac
+    echo "$XDG_CURRENT_DESKTOP · ${_ver:-판 모름} · WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
     echo "== ① fractional-scale 지원 통보 여부 (wayland-info)"
     wayland-info 2>/dev/null | grep -E "interface: '(wp_fractional_scale_manager_v1|wp_viewporter|zwlr_layer_shell_v1|wl_output)'" | sed 's/^/    /'
     echo "== ② 앱이 고른 scale 소스 (격리 config · -e 화면 5 초)"
