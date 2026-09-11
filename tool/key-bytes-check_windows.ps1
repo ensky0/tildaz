@@ -21,9 +21,9 @@
 # 기대값의 근거는 [#650 의 Windows 실측](https://github.com/ensky0/tildaz/issues/650) 이다. **mac · Linux 와
 # 다른 칸이 셋 있고 전부 Windows 쪽이 원래 그런 것**이다 (main 판과 바이트가 같은 것을 대조로 확인했다).
 #
-#   - `Ctrl+H` → `7f` — `window.zig` 의 `WM_CHAR` 가 `cp == 8` 을 DEL 로 바꾼다. Backspace 관례인데
-#     `Ctrl+H` 가 만드는 BS 와 코드포인트가 같아 구별되지 않는다.
-#   - `Shift+Tab` → `09` — back-tab (`ESC[Z`) 을 만드는 자리가 없다.
+#   - ~~`Ctrl+H` → `7f`~~ · ~~`Shift+Tab` → `09`~~ — [#653](https://github.com/ensky0/tildaz/issues/653) 에서 고쳤다. Backspace 와
+#     Tab 을 `WM_CHAR` 가 아니라 **인코더**로 보내면서 `Ctrl+H` = `08` · `Shift+Tab` = `ESC[Z` 가 되고,
+#     `Ctrl+Backspace` (`08`) · `Ctrl+Tab` (`ESC[27;5;9~`) 까지 mac · Linux 와 같아졌다.
 #   - `mok2` 에서도 `Ctrl+[` 가 `1b` — Windows 는 legacy 에서 글자 키를 인코더로 안 보내고 `WM_CHAR` 로
 #     받으므로 앱이 modifyOtherKeys 를 켜도 그 경로가 안 바뀐다.
 #
@@ -127,7 +127,7 @@ public static class TzKeyBytes {
 [void][TzKeyBytes]::SetProcessDpiAwarenessContext([IntPtr](-4))   # PER_MONITOR_AWARE_V2
 
 $VK = @{
-    Ctrl = 0x11; Shift = 0x10; Enter = 0x0D; Tab = 0x09; Left = 0x25
+    Ctrl = 0x11; Shift = 0x10; Enter = 0x0D; Tab = 0x09; Left = 0x25; Back = 0x08   # #653 — VK_BACK
     A = 0x41; C = 0x43; F = 0x46; H = 0x48; I = 0x49; M = 0x4D
     LBracket = 0xDB                                               # VK_OEM_4
 }
@@ -142,10 +142,13 @@ $rounds = @(
         @{ n = "Ctrl+Shift+Enter"; k = ,@($VK.Ctrl, $VK.Shift, $VK.Enter);    e = "" }            # #648 — 억제
         @{ n = "Ctrl+A";           k = ,@($VK.Ctrl, $VK.A);                   e = "01" }          # 회귀 감시
         @{ n = "Ctrl+C";           k = ,@($VK.Ctrl, $VK.C);                   e = "03" }          # 회귀 감시 (raw 라 SIGINT 아님)
-        @{ n = "Ctrl+H";           k = ,@($VK.Ctrl, $VK.H);                   e = "7f" }          # Windows 만 — 머리 주석
-        @{ n = "Shift+Tab";        k = ,@($VK.Shift, $VK.Tab);                e = "09" }          # Windows 만 — 머리 주석
+        @{ n = "Ctrl+H";           k = ,@($VK.Ctrl, $VK.H);                   e = "08" }          # #653 — 전에는 7f (Backspace 와 합쳐졌다)
+        @{ n = "Backspace";        k = ,@($VK.Back);                          e = "7f" }          # #653 — 인코더로 옮긴 뒤에도 그대로여야 한다
+        @{ n = "Ctrl+Backspace";   k = ,@($VK.Ctrl, $VK.Back);               e = "08" }          # #653 — 전에는 7f
+        @{ n = "Tab";              k = ,@($VK.Tab);                          e = "09" }          # #653 — 그대로
+        @{ n = "Shift+Tab";        k = ,@($VK.Shift, $VK.Tab);                e = "1b 5b 5a" }    # #653 — 전에는 09 (back-tab 이 없었다)
         @{ n = "Ctrl+Left";        k = ,@($VK.Ctrl, $VK.Left);                e = "1b 5b 31 3b 35 44" }
-        @{ n = "Ctrl+Tab";         k = ,@($VK.Ctrl, $VK.Tab);                 e = "" }            # #650 미결 항목의 답
+        @{ n = "Ctrl+Tab";         k = ,@($VK.Ctrl, $VK.Tab);                 e = "1b 5b 32 37 3b 35 3b 39 7e" }  # #653 — 전에는 0 바이트. mac · Linux 와 같아졌다
         @{ n = "Ctrl+Enter";       k = ,@($VK.Ctrl, $VK.Enter);               e = "0a" }          # #650 미결 항목의 답
     ) },
     # 경계 ① — 앱이 kitty 를 켜면 예전 그대로 나가야 한다. 삼키면 nvim · helix · zellij 가 깨진다.
@@ -155,6 +158,8 @@ $rounds = @(
         @{ n = "Ctrl+M";       k = ,@($VK.Ctrl, $VK.M);               e = "1b 5b 31 30 39 3b 35 75" }     # CSI 109;5u
         @{ n = "Ctrl+Shift+F"; k = ,@($VK.Ctrl, $VK.Shift, $VK.F);    e = "1b 5b 31 30 32 3b 36 75" }     # CSI 102;6u
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "1b 5b 39 37 3b 35 75" }        # CSI 97;5u — 01 이 아니다
+        @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 39 3b 32 75" }           # #653 — kitty 는 CSI 9;2u (legacy 의 ESC[Z 와 다르다)
+        @{ n = "Backspace";    k = ,@($VK.Back);                      e = "7f" }
     ) },
     # 경계 ② — modifyOtherKeys=2. Windows 는 mac · Linux 와 갈린다 (머리 주석).
     @{ mode = "mok2"; enable = "[char]27+'[>4;2m'"; keys = @(
@@ -162,6 +167,7 @@ $rounds = @(
         @{ n = "Ctrl+I";       k = ,@($VK.Ctrl, $VK.I);               e = "09" }
         @{ n = "Ctrl+Shift+F"; k = ,@($VK.Ctrl, $VK.Shift, $VK.F);    e = "" }
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "01" }
+        @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 32 37 3b 32 3b 39 7e" }  # #653 — mok2 는 CSI 27;2;9~
     ) }
 )
 

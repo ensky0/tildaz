@@ -1479,6 +1479,10 @@ pub const App = struct {
                         .down => .down,
                         .home => .home,
                         .end => .end,
+                        // #653 — Tab 이 `text_input` 이 아니라 여기로 온다. Shift 는
+                        // 메시지에 없어서 host 에 묻는다 (아래 `text_input` 의 `0x09`
+                        // 와 같은 방법 — 그쪽은 IME 조합 중의 fallback 으로 남는다).
+                        .tab => if (self.window.isShiftDown()) command_menu.MenuKey.shift_tab else .tab,
                         else => command_menu.MenuKey.other,
                     });
                     return true;

@@ -2103,9 +2103,15 @@ pub const Window = struct {
                     return 0;
                 }
                 if (self.write_fn) |write_fn| {
-                    // Backspace: send DEL (0x7F) instead of BS (0x08)
+                    // #653 — 코드포인트 8 은 Backspace 와 `Ctrl+H` 둘 다 만든다. 이 메시지에는
+                    // 물리 키가 없어 구별할 수 없으므로 Ctrl 로 가른다.
+                    //
+                    // **Backspace 는 위 `WM_KEYDOWN` 이 인코더로 보내고 짝꿍을 삼킨다** — 여기
+                    // 오는 것은 IME 조합 중이라 그 경로를 건너뛴 때뿐이다. 그때도 DEL 이어야
+                    // 하므로 (터미널 관례) 남겨 둔다. `Ctrl+H` 는 글자 키라 원래 이 경로이고,
+                    // 예전에는 이 분기에 같이 걸려 `7f` 로 나가 Backspace 와 구별되지 않았다.
                     if (cp == 8) {
-                        write_fn("\x7f", self.userdata);
+                        write_fn(if (GetKeyState(VK_CONTROL) < 0) "\x08" else "\x7f", self.userdata);
                         return 0;
                     }
                     var buf: [4]u8 = undefined;
@@ -2161,6 +2167,7 @@ pub const Window = struct {
                     0x0D => .enter,
                     0x1B => .escape,
                     0x08 => .backspace,
+                    0x09 => .tab,
                     0x25 => .left,
                     0x27 => .right,
                     0x24 => .home,
@@ -2182,7 +2189,7 @@ pub const Window = struct {
                         // 짝꿍 WM_CHAR 를 큐에 넣는다 — 소비된 keydown 의 의도가
                         // PTY 로 새지 않도록 다음 WM_CHAR 1 회 swallow.
                         switch (wParam) {
-                            0x0D, 0x1B, 0x08 => self.swallow_next_wm_char = true,
+                            0x0D, 0x1B, 0x08, 0x09 => self.swallow_next_wm_char = true,
                             else => {},
                         }
                         return 0;
@@ -2218,7 +2225,29 @@ pub const Window = struct {
                 const kd_scan: u32 = @intCast((@as(usize, @bitCast(lParam)) >> 16) & 0xFF);
                 const kd_extended = ((@as(usize, @bitCast(lParam)) >> 24) & 1) != 0;
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
-                    if (key_encode.isNavOrFunction(code)) _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam));
+                    if (key_encode.isNavOrFunction(code)) {
+                        _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam));
+                    } else if ((code == .backspace or code == .tab) and
+                        self.imePreeditSlice().len == 0 and self.compose_preview_len == 0)
+                    {
+                        // #653 — **Backspace · Tab 도 인코더로 보낸다.** `isNavOrFunction` 이
+                        // 이 둘을 빼는 것은 macOS 가 그것들을 IME 의 `doCommandBySelector:` 로
+                        // 받기 때문이고 (그 함수 주석), Windows 에는 해당하지 않는다.
+                        //
+                        // `WM_CHAR` 로 받으면 그 메시지에 **물리 키도 Shift 도 없어서** 두 가지를
+                        // 잃는다 — Backspace 와 `Ctrl+H` 가 코드포인트 8 로 합쳐져 둘 다 `7f` 가
+                        // 되고, `Shift+Tab` 의 back-tab (`ESC[Z`) 이 사라져 `09` 가 나간다.
+                        // 인코더를 태우면 Linux 와 같은 표를 쓰게 되어 `Ctrl+Backspace` (`08`) ·
+                        // `Ctrl+Tab` (`ESC[27;5;9~`) · DECBKM (`?67`) 까지 함께 맞는다.
+                        //
+                        // IME 조합 중에는 손대지 않는다 — 자모 지우기 · 후보 이동이 IME 의
+                        // 몫이다. 그때는 아래 `WM_CHAR` 가 예전처럼 받는다.
+                        if (self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam))) {
+                            // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR` (`08` · `09`) 를 삼킨다.
+                            self.swallow_next_wm_char = true;
+                            return 0;
+                        }
+                    }
                 }
 
                 // #606 — kitty `report_all` 의 **modifier 단독 누름** (`Shift` → `CSI 57441;2u`). Shift · Ctrl ·
