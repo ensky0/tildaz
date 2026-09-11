@@ -231,6 +231,10 @@ pub const PaneSearch = struct {
         alloc: std.mem.Allocator,
         state: *ghostty.RenderState,
     ) void {
+        // 검색을 쓴 적이 없으면 할 일이 없다. 이 줄이 없으면 **검색을 안 켠 사용자도**
+        // 화면이 바뀌는 프레임마다 전체 행을 순회한다 (`state.dirty` 가 아래 조건에
+        // 들어 있어서다) — 지울 강조도 칠할 매치도 없는데.
+        if (self.engine == null and !self.highlights_dirty) return;
         if (!self.highlights_dirty and state.dirty == .false) return;
         self.highlights_dirty = false;
 
