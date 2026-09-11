@@ -157,14 +157,71 @@ pub fn encode(
     event: Event,
     opts: Options,
 ) std.Io.Writer.Error!void {
-    return ghostty.input.encodeKey(writer, .{
+    const ghostty_event: ghostty.input.KeyEvent = .{
         .action = event.action,
         .key = toGhosttyKey(event.code),
         .mods = event.mods,
         .consumed_mods = event.consumed_mods,
         .utf8 = event.utf8,
         .unshifted_codepoint = event.unshifted_codepoint,
-    }, opts);
+    };
+
+    // #648 — legacy 인 Ctrl+Shift 조합만 결과를 들여다본다. 나머지는 그대로 흘려
+    // 보낸다 (버퍼 한 번을 더 쓰지 않는다).
+    if (mayDropExtended(event, opts)) {
+        var buf: [64]u8 = undefined;
+        var probe: std.Io.Writer = .fixed(&buf);
+        if (ghostty.input.encodeKey(&probe, ghostty_event, opts)) {
+            const bytes = probe.buffered();
+            if (isUnrequestedExtended(bytes, opts)) return;
+            return writer.writeAll(bytes);
+        } else |_| {
+            // legacy 경로가 64 바이트를 넘는 일은 없다 (가장 긴 것이 `ESC[27;…;…~`).
+            // 넘었다면 우리가 모르는 모양이므로 규칙을 적용하지 않고 원래대로 보낸다.
+        }
+    }
+
+    return ghostty.input.encodeKey(writer, ghostty_event, opts);
+}
+
+/// #648 — 이 이벤트에 "요청되지 않은 확장 인코딩은 버린다" 규칙이 걸릴 수 있는가.
+///
+/// **kitty flags 가 있으면 걸리지 않는다.** 그때는 앱이 `CSI > flags u` 로 프로토콜을
+/// 명시적으로 켠 상태이고, 그런 앱 (nvim · helix · zellij) 은 `Ctrl+Shift+<글자>` 를
+/// 정말로 원한다. 여기서 삼키면 그쪽이 통째로 깨진다.
+///
+/// Shift 가 없는 `Ctrl+<글자>` 도 대상이 아니다 — `^C` · `^F` 는 C0 바이트로 잘 나간다.
+/// Alt · Cmd 가 섞인 조합은 각자 규칙 (ESC prefix · macOS super) 이 있어 건드리지 않는다.
+fn mayDropExtended(event: Event, opts: Options) bool {
+    if (opts.kitty_flags.int() != 0) return false;
+    if (!event.mods.ctrl or !event.mods.shift) return false;
+    if (event.mods.alt or event.mods.super) return false;
+    return true;
+}
+
+/// #648 — 이 바이트열이 **앱이 요청한 적 없는** 확장 인코딩인가.
+///
+/// ghostty 의 legacy 경로는 두 가지로 폴백한다. 둘 다 터미널 상태가 legacy 인데도 나간다.
+///
+/// 1. **fixterms `CSI <cp>;<mods> u`** — `ctrlSeq()` 가 Shift 가 끼면 늘 `null` 을 주고
+///    (ctrl+M 과 ctrl+shift+M 을 앱이 구분할 수 있게 한 upstream 의 의도적 분기다),
+///    그 뒤 `if (event.mods.ctrl) csiu:` 블록이 kitty flags 와 무관하게 찍는다.
+///    **이 인코딩은 앱이 켤 방법이 아예 없다** — 그래서 legacy 면 언제나 요청 밖이다.
+/// 2. **xterm modifyOtherKeys `CSI 27;<mods>;<cp> ~`** — Enter · Tab 은 `function_keys`
+///    표에 modifier 조합이 무조건 항목으로 박혀 있어 모드와 상관없이 나간다. 다만 앱이
+///    `CSI > 4;2m` 으로 켰다면 그건 **요청된** 것이므로 남긴다.
+///
+/// `ESC[1;6D` (Ctrl+Shift+←) · `ESC[5;6~` (Ctrl+Shift+PgUp) 같은 표준 CSI modifier 는
+/// 확장이 아니다 — 모든 터미널이 예전부터 보내던 모양이라 그대로 둔다. 그래서 `~` 는
+/// `ESC[27;` 로 시작할 때만 본다.
+fn isUnrequestedExtended(bytes: []const u8, opts: Options) bool {
+    if (bytes.len < 4) return false;
+    if (bytes[0] != 0x1b or bytes[1] != '[') return false;
+    if (bytes[bytes.len - 1] == 'u') return true;
+    if (bytes[bytes.len - 1] == '~' and
+        !opts.modify_other_keys_state_2 and
+        std.mem.startsWith(u8, bytes, "\x1b[27;")) return true;
+    return false;
 }
 
 /// 우리 `PhysicalCode` → ghostty `input.Key`.
@@ -329,6 +386,112 @@ test "DEC mode 1036 을 끄면 ESC 가 붙지 않는다" {
         .unshifted_codepoint = 'a',
     }, .{ .alt_esc_prefix = false, .macos_option_as_alt = .true });
     try testing.expectEqualStrings("a", out);
+}
+
+// ── #648 — 요청되지 않은 확장 인코딩은 보내지 않는다 ─────────────────────────
+//
+// 증상은 macOS 의 `Ctrl+Shift+F` 가 bash 프롬프트에 `2;6u` 를 찍는 것이었다. 터미널은
+// `CSI ? u` 질의에 `^[[?0u` (legacy) 라고 답하는데 인코더는 `ESC[102;6u` 를 보내고 있었다.
+// Windows 는 `WM_CHAR` 에서 Ctrl+Shift 를 통째로 삼켜 이미 아무것도 내지 않았다 —
+// 그 규칙을 세 host 공통 자리인 여기로 올려 셋을 맞춘다.
+
+test "#648 legacy 의 Ctrl+Shift+<글자> 는 아무것도 보내지 않는다" {
+    // mac · Linux host 가 채우는 모양 그대로다 — Ctrl 을 뺀 글자(`F`) 와 수식키를 다 뺀
+    // 코드포인트(`f`). 고치기 전에는 `ESC[102;6u` 가 나갔다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_f,
+        .mods = .{ .ctrl = true, .shift = true },
+        .consumed_mods = .{ .shift = true },
+        .utf8 = "F",
+        .unshifted_codepoint = 'f',
+    }, .{});
+    try testing.expectEqualStrings("", out);
+}
+
+test "#648 Shift 없는 Ctrl+<글자> 는 그대로 C0 로 나간다" {
+    // 규칙이 `Ctrl+C` 의 SIGINT 를 건드리면 안 된다 — 그것이 이 변경의 가장 큰 위험이다.
+    var buf: [16]u8 = undefined;
+    const sigint = try encodeToBuf(&buf, .{
+        .code = .key_c,
+        .mods = .{ .ctrl = true },
+        .utf8 = "c",
+        .unshifted_codepoint = 'c',
+    }, .{});
+    try testing.expectEqualStrings("\x03", sigint);
+
+    var buf2: [16]u8 = undefined;
+    const ack = try encodeToBuf(&buf2, .{
+        .code = .key_f,
+        .mods = .{ .ctrl = true },
+        .utf8 = "f",
+        .unshifted_codepoint = 'f',
+    }, .{});
+    try testing.expectEqualStrings("\x06", ack);
+}
+
+test "#648 kitty 를 켠 앱에는 CSI u 가 그대로 간다" {
+    // **이 테스트가 규칙의 경계다.** nvim · helix · zellij 는 `CSI > flags u` 로 프로토콜을
+    // 켜고 `Ctrl+Shift+<글자>` 를 실제로 쓴다. 요청한 앱에까지 삼키면 그쪽이 통째로 깨진다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_f,
+        .mods = .{ .ctrl = true, .shift = true },
+        .consumed_mods = .{ .shift = true },
+        .utf8 = "F",
+        .unshifted_codepoint = 'f',
+    }, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("\x1b[102;6u", out);
+}
+
+test "#648 modifyOtherKeys=2 를 켠 앱에는 CSI 27 이 그대로 간다" {
+    // 앱이 `CSI > 4;2m` 으로 켠 프로토콜이라 요청된 것이다. 끈 상태에서만 버린다.
+    var buf: [16]u8 = undefined;
+    const on = try encodeToBuf(&buf, .{
+        .code = .key_f,
+        .mods = .{ .ctrl = true, .shift = true },
+        .consumed_mods = .{ .shift = true },
+        .utf8 = "F",
+        .unshifted_codepoint = 'f',
+    }, .{ .modify_other_keys_state_2 = true });
+    try testing.expectEqualStrings("\x1b[27;6;70~", on);
+}
+
+test "#648 legacy 의 Ctrl+Shift+Enter 도 보내지 않는다" {
+    // Enter 는 CSI u 가 아니라 `function_keys` 표의 `ESC[27;6;13~` 로 나간다 — 그 항목은
+    // modifyOtherKeys 와 무관하게 무조건이라 legacy 에서도 샜다. Windows 는 이것도 삼킨다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .enter,
+        .mods = .{ .ctrl = true, .shift = true },
+    }, .{});
+    try testing.expectEqualStrings("", out);
+
+    // Shift 없는 `Ctrl+Enter` 는 규칙 밖이다 — 지금까지대로 나간다.
+    var buf2: [16]u8 = undefined;
+    const ctrl_only = try encodeToBuf(&buf2, .{
+        .code = .enter,
+        .mods = .{ .ctrl = true },
+    }, .{});
+    try testing.expectEqualStrings("\x1b[27;5;13~", ctrl_only);
+}
+
+test "#648 표준 CSI modifier 는 확장이 아니라 그대로 둔다" {
+    // `ESC[1;6D` · `ESC[5;6~` 는 모든 터미널이 예전부터 보내던 모양이다. Ctrl+Shift 라는
+    // 이유만으로 버리면 화살표 · PgUp 이 죽는다 — `~` 를 `ESC[27;` 일 때만 보는 이유다.
+    var buf: [16]u8 = undefined;
+    const arrow = try encodeToBuf(&buf, .{
+        .code = .arrow_left,
+        .mods = .{ .ctrl = true, .shift = true },
+    }, .{});
+    try testing.expectEqualStrings("\x1b[1;6D", arrow);
+
+    var buf2: [16]u8 = undefined;
+    const pgup = try encodeToBuf(&buf2, .{
+        .code = .page_up,
+        .mods = .{ .ctrl = true, .shift = true },
+    }, .{});
+    try testing.expectEqualStrings("\x1b[5;6~", pgup);
 }
 
 test "기존 세 host 의 escape 매핑과 한 바이트도 다르지 않다" {
