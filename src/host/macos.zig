@@ -996,7 +996,7 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8, action: key
 
     var out_buf: [64]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&out_buf);
-    key_encode.encode(&writer, .{
+    const outcome = key_encode.encode(&writer, .{
         .code = physical_key.fromMacKeyCode(keycode),
         .mods = .{ .shift = shift, .ctrl = ctrl, .alt = option, .super = cmd },
         // #533 — macOS 는 "문자를 만드는 데 쓴 modifier" 를 정확히 알려 주는 API 가
@@ -1013,6 +1013,10 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8, action: key
     }, keyEncodeOptionsMac(option_as_alt)) catch return false;
 
     const bytes = writer.buffered();
+    // #648 — **일부러 억제한 키는 "처리했다" 로 돌려준다.** `false` 를 주면 호출부의
+    // 안전망 (`characters` 직송 · 아래 `interpretKeyEvents:`) 이 그 키를 되살린다 —
+    // 실기에서 `Ctrl+Shift+F` 가 macOS 가 만든 `^F` 로 나갔다 (2026-09-11).
+    if (outcome == .suppressed) return true;
     if (bytes.len == 0) return false;
     // #282 A8 — Ctrl+C(ETX) 만 write queue 를 우회해 즉시 보낸다. 대량 paste 로 큐가
     // 차 있으면 SIGINT 가 뒤에 밀려 "Ctrl+C 가 안 먹는다" 로 보인다.

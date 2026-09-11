@@ -3106,7 +3106,7 @@ pub const Window = struct {
         }
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
-        key_encode.encode(&writer, .{
+        const outcome = key_encode.encode(&writer, .{
             .code = physical_key.fromScanCode(scan, extended),
             .mods = .{ .shift = shift, .ctrl = ctrl, .alt = alt },
             // #533 정책 ③ — Windows 의 AltGr 은 `Ctrl+Alt` 로 도착하고, 그 조합이 글자를
@@ -3119,6 +3119,8 @@ pub const Window = struct {
         }, self.keyEncodeOptions()) catch return false;
 
         const bytes = writer.buffered();
+        // #648 — macOS 와 같은 이유다. 억제는 "처리했다" 이지 "낼 것이 없다" 가 아니다.
+        if (outcome == .suppressed) return true;
         if (bytes.len == 0) return false;
         // Ctrl+C 의 큐 우회는 `App.onKeyInput` 이 판정한다 (macOS · Linux 와 달리 이
         // host 는 write 통로가 하나다).

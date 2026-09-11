@@ -150,13 +150,28 @@ pub fn usAscii(code: ?physical_key.PhysicalCode) ?u8 {
     return std.math.cast(u8, cp);
 }
 
+/// #648 — 인코딩 결과의 성격. **0 바이트가 두 가지 뜻이라 갈라야 한다.**
+///
+/// host 에는 "인코더가 낼 것이 없으면 예전 경로로 보낸다" 는 안전망이 있다 (macOS 의
+/// `characters` 직송 · Windows 의 `WM_CHAR`). 우리가 모르는 keycode 의 Ctrl 조합이
+/// 조용히 사라지지 않게 하는 장치라 그대로 둬야 한다. 그런데 #648 · #650 의 억제도
+/// 0 바이트라서, 구분이 없으면 **일부러 안 보낸 키를 안전망이 되살린다** — 실기에서
+/// `Ctrl+Shift+F` 가 `^F` 로 나갔다 (2026-09-11).
+pub const Outcome = enum {
+    /// ghostty 인코더 결과를 그대로 썼다. 0 바이트일 수 있다 (modifier 단독 누름 등)
+    /// — 그때는 host 의 안전망이 예전처럼 동작해야 한다.
+    encoded,
+    /// 일부러 억제했다. **host 는 대체 경로로 가면 안 된다.**
+    suppressed,
+};
+
 /// `event` 를 `writer` 에 인코딩한다. 출력이 없는 키도 있다 (modifier 키 등) —
-/// 호출부가 쓰인 바이트 수를 보고 판단한다.
+/// 호출부가 쓰인 바이트 수와 `Outcome` 을 함께 보고 판단한다.
 pub fn encode(
     writer: *std.Io.Writer,
     event: Event,
     opts: Options,
-) std.Io.Writer.Error!void {
+) std.Io.Writer.Error!Outcome {
     const ghostty_event: ghostty.input.KeyEvent = .{
         .action = event.action,
         .key = toGhosttyKey(event.code),
@@ -167,7 +182,10 @@ pub fn encode(
     };
 
     // #650 — ghostty 가 fixterms 때문에 C0 표에서 뺀 세 키를 legacy 에서 되돌린다.
-    if (legacyC0Override(event, opts)) |byte| return writer.writeByte(byte);
+    if (legacyC0Override(event, opts)) |byte| {
+        try writer.writeByte(byte);
+        return .encoded;
+    }
 
     // #648 — legacy 인 Ctrl+Shift 조합만 결과를 들여다본다. 나머지는 그대로 흘려
     // 보낸다 (버퍼 한 번을 더 쓰지 않는다).
@@ -176,15 +194,17 @@ pub fn encode(
         var probe: std.Io.Writer = .fixed(&buf);
         if (ghostty.input.encodeKey(&probe, ghostty_event, opts)) {
             const bytes = probe.buffered();
-            if (isUnrequestedExtended(bytes, opts)) return;
-            return writer.writeAll(bytes);
+            if (isUnrequestedExtended(bytes, opts)) return .suppressed;
+            try writer.writeAll(bytes);
+            return .encoded;
         } else |_| {
             // legacy 경로가 64 바이트를 넘는 일은 없다 (가장 긴 것이 `ESC[27;…;…~`).
             // 넘었다면 우리가 모르는 모양이므로 규칙을 적용하지 않고 원래대로 보낸다.
         }
     }
 
-    return ghostty.input.encodeKey(writer, ghostty_event, opts);
+    try ghostty.input.encodeKey(writer, ghostty_event, opts);
+    return .encoded;
 }
 
 /// #650 — legacy 에서 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` 이 내야 할 C0 바이트.
@@ -314,8 +334,15 @@ const testing = std.testing;
 
 fn encodeToBuf(buf: []u8, event: Event, opts: Options) ![]const u8 {
     var w: std.Io.Writer = .fixed(buf);
-    try encode(&w, event, opts);
+    _ = try encode(&w, event, opts);
     return w.buffered();
+}
+
+/// #648 — 억제 여부까지 같이 재는 테스트용.
+fn encodeOutcome(buf: []u8, event: Event, opts: Options) !struct { Outcome, []const u8 } {
+    var w: std.Io.Writer = .fixed(buf);
+    const outcome = try encode(&w, event, opts);
+    return .{ outcome, w.buffered() };
 }
 
 test "이름이 같은 키는 그대로 이어진다" {
@@ -626,6 +653,44 @@ test "#650 이웃 키는 한 바이트도 달라지지 않는다" {
         }, .{});
         try testing.expectEqualStrings(c.want, out);
     }
+}
+
+test "#648 억제와 \"낼 것이 없음\" 은 다른 결과다" {
+    // host 의 안전망이 이 둘을 갈라야 한다. 같게 두면 일부러 안 보낸 키를 안전망이
+    // 되살린다 — macOS 실기에서 `Ctrl+Shift+F` 가 `^F` 로 나갔던 회귀다.
+    var buf: [16]u8 = undefined;
+    const dropped, const dropped_bytes = try encodeOutcome(&buf, .{
+        .code = .key_f,
+        .mods = .{ .ctrl = true, .shift = true },
+        .consumed_mods = .{ .shift = true },
+        .utf8 = "F",
+        .unshifted_codepoint = 'f',
+    }, .{});
+    try testing.expectEqual(Outcome.suppressed, dropped);
+    try testing.expectEqualStrings("", dropped_bytes);
+
+    // legacy 는 뗌을 인코딩하지 않는다 — 0 바이트지만 억제가 아니다. 이 경우 host 는
+    // 예전처럼 대체 경로로 가야 한다.
+    var buf2: [16]u8 = undefined;
+    const quiet, const quiet_bytes = try encodeOutcome(&buf2, .{
+        .code = .key_a,
+        .utf8 = "a",
+        .unshifted_codepoint = 'a',
+        .action = .release,
+    }, .{});
+    try testing.expectEqual(Outcome.encoded, quiet);
+    try testing.expectEqualStrings("", quiet_bytes);
+
+    // 평범한 키는 당연히 encoded.
+    var buf3: [16]u8 = undefined;
+    const normal, const normal_bytes = try encodeOutcome(&buf3, .{
+        .code = .key_c,
+        .mods = .{ .ctrl = true },
+        .utf8 = "c",
+        .unshifted_codepoint = 'c',
+    }, .{});
+    try testing.expectEqual(Outcome.encoded, normal);
+    try testing.expectEqualStrings("\x03", normal_bytes);
 }
 
 test "기존 세 host 의 escape 매핑과 한 바이트도 다르지 않다" {
