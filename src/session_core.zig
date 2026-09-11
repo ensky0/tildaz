@@ -8,6 +8,7 @@ const app_event = @import("app_event.zig");
 const terminal = @import("terminal.zig");
 const TerminalBackend = terminal.TerminalBackend;
 const terminal_interaction = @import("terminal_interaction.zig");
+const search = @import("search.zig");
 const themes = @import("themes.zig");
 const perf = @import("perf.zig");
 const log = @import("log.zig");
@@ -249,6 +250,12 @@ pub const Tab = struct {
     /// 독립 — 탭 전환 시 각자 selection / drag 상태를 보존하고, host 는 활성
     /// 탭의 interaction 을 event/render 시점에 참조한다.
     interaction: terminal_interaction.TerminalInteraction = .{},
+    /// #646 — 이 pane 의 버퍼 검색 상태. `interaction` 과 같은 per-pane 상태다 —
+    /// pane 을 옮겨도 각자 보존되고, 검색바는 활성 pane 의 것을 비춘다.
+    ///
+    /// **`terminal` 보다 먼저 해제해야 한다** (`Tab.deinit` 의 순서) — 안에 든
+    /// `ScreenSearch` 가 tracked pin 을 돌려주려고 screen 을 만진다.
+    search: search.PaneSearch = .{},
     /// [#483](https://github.com/ensky0/tildaz/issues/483) 2단계 ① — 이 터미널의 렌더
     /// 스냅숏. 이전에는 렌더러가 하나를 들고 활성 탭마다 갈아 끼웠는데, pane 이 둘 이상
     /// 보이면 그 하나가 프레임마다 pane 수만큼 전체 재구축을 하므로 (ghostty
@@ -370,6 +377,9 @@ pub const Tab = struct {
             tab.write_thread = null;
         }
         tab.render_state.deinit(alloc);
+        // #646 — terminal 보다 먼저다. `ScreenSearch.deinit` 이 tracked pin 을 돌려주며
+        // screen 을 만지므로, terminal 이 먼저 죽으면 죽은 메모리를 읽는다.
+        tab.search.deinit(alloc);
         tab.terminal.deinit(alloc);
         alloc.destroy(tab);
     }
@@ -1054,6 +1064,9 @@ pub const SessionCore = struct {
         active_output: bool = false,
         active_output_pending: bool = false,
         title_changed: bool = false,
+        /// #646 — 검색이 한 걸음 나아갔다. 매치 하이라이트가 달라질 수 있으므로
+        /// 출력과 같은 자격의 "화면이 바뀌었다" 신호다.
+        search_progressed: bool = false,
     };
 
     pub const TabExitNotify = *const fn (usize, ?*anyopaque) void;
@@ -1756,6 +1769,30 @@ pub const SessionCore = struct {
             if (completed_round != null and !completed_round.?) break;
         }
 
+        // #646 — **남은 예산으로만** 검색을 진행한다. 출력 드레인이 먼저고 검색이
+        // 나중인 이유는, 사용자가 친 명령의 출력이 검색 하이라이트보다 급하기 때문이다.
+        // 예산을 다 썼으면 이번 프레임은 건너뛰고 다음 프레임이 이어받는다 — `tick` 이
+        // 상태 기계라 중간에 멈춰도 진행이 보존된다.
+        //
+        // 활성 pane 하나만 돈다. 비활성 pane 의 하이라이트는 그리지 않기로 했으므로
+        // (#646 정책) 그쪽 검색을 진행시킬 이유가 없다.
+        if (active.search.is_open) {
+            while (active.title_clock.read() - started_ns < DRAIN_FRAME_BUDGET_NS) {
+                const now_ns = active.title_clock.read();
+                const progressed = active.search.step(
+                    self.allocator,
+                    active.terminal.screens.active,
+                    now_ns,
+                ) catch |err| switch (err) {
+                    // OOM 이면 이번 프레임만 포기한다 — 다음 프레임이 같은 자리에서
+                    // 다시 시도하고, 그때까지 기존 결과는 그대로 쓸 수 있다.
+                    error.OutOfMemory => false,
+                };
+                if (!progressed) break;
+                result.search_progressed = true;
+            }
+        }
+
         for (group.panes) |p| {
             const tab = p orelse continue;
             if (!tab.output_ring.isEmpty()) result.active_output_pending = true;
@@ -1795,7 +1832,8 @@ pub const SessionCore = struct {
     ///   frame-latency waitable + `_redraw` 플래그로 pacing 한다.
     pub fn drainOutputForRender(self: *SessionCore) bool {
         const drained = self.drainFrame();
-        return drained.active_output or drained.active_output_pending or drained.title_changed;
+        return drained.active_output or drained.active_output_pending or
+            drained.title_changed or drained.search_progressed;
     }
 
     /// 아직 파싱하지 않은 PTY 출력이 어느 탭에든 남아 있으면 true.
