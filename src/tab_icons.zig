@@ -13,7 +13,7 @@
 
 const std = @import("std");
 
-pub const Icon = enum { chevron_left, chevron_right, chevron_up, chevron_down, close, plus, more };
+pub const Icon = enum { chevron_left, chevron_right, chevron_up, chevron_down, close, plus, more, search };
 
 /// 정규화 좌표계 [0,1]² 의 선분. (0,0) = 좌상단, (1,1) = 우하단.
 const Seg = struct { x0: f32, y0: f32, x1: f32, y1: f32 };
@@ -34,6 +34,15 @@ const CW: f32 = 0.30; // chevron 반너비
 const CH: f32 = 0.34; // chevron 반높이 (폭 0.60 × 높이 0.68 — 살짝 세로 긴 꺾쇠)
 const MCW: f32 = 0.42; // menu chevron 반너비 — 납작하고 넓게 (#334 피드백)
 const MCH: f32 = 0.14; // menu chevron 반높이 (폭 0.84 × 높이 0.28)
+
+// #646 — 돋보기. 렌즈(원)는 `Seg` 로 표현할 수 없어 **정다각형으로 근사**한다
+// (rasterize 는 선분만 안다). 손잡이 끝점을 다른 아이콘과 같은 R 원 위에 두고,
+// 렌즈의 반대편 끝(좌상단)도 같은 원에 닿게 중심을 잡아 `+` · `×` 와 광학 크기를
+// 맞춘다 — 렌즈만 키우면 같은 box 에서 돋보기가 더 커 보인다.
+const SEARCH_LENS_SIDES: usize = 16; // 10~14 pt 실사용 크기에서 각이 안 보이는 최소 변 수
+const SEARCH_LENS_R: f32 = 0.25; // 렌즈 반지름
+/// 렌즈 중심 — 좌상단 끝 `C − R/√2` 가 `0.5 − D` (다른 아이콘의 reach) 에 놓이게.
+const SEARCH_LENS_C: f32 = 0.5 - D + SEARCH_LENS_R * 0.70710678;
 
 /// 아이콘별 선분 정의 (정규화 [0,1]², 중심 0.5). 두께는 rasterize 의 stroke.
 fn segsFor(icon: Icon) []const Seg {
@@ -71,8 +80,37 @@ fn segsFor(icon: Icon) []const Seg {
             .{ .x0 = 0.50, .y0 = 0.5, .x1 = 0.50, .y1 = 0.5 },
             .{ .x0 = 0.80, .y0 = 0.5, .x1 = 0.80, .y1 = 0.5 },
         },
+        // #646 — 렌즈(정다각형) + 우하단 45° 손잡이. comptime 에 만들어 두므로
+        // 런타임 비용은 다른 아이콘과 같다 (선분 목록을 순회할 뿐).
+        .search => &search_segs,
     };
 }
+
+/// 돋보기 선분 — 렌즈 원주 `SEARCH_LENS_SIDES` 변 + 손잡이 1 개.
+const search_segs: [SEARCH_LENS_SIDES + 1]Seg = blk: {
+    @setEvalBranchQuota(10_000);
+    var out: [SEARCH_LENS_SIDES + 1]Seg = undefined;
+    const n: f32 = @floatFromInt(SEARCH_LENS_SIDES);
+    for (0..SEARCH_LENS_SIDES) |i| {
+        const a0 = 2.0 * std.math.pi * @as(f32, @floatFromInt(i)) / n;
+        const a1 = 2.0 * std.math.pi * @as(f32, @floatFromInt(i + 1)) / n;
+        out[i] = .{
+            .x0 = SEARCH_LENS_C + SEARCH_LENS_R * @cos(a0),
+            .y0 = SEARCH_LENS_C + SEARCH_LENS_R * @sin(a0),
+            .x1 = SEARCH_LENS_C + SEARCH_LENS_R * @cos(a1),
+            .y1 = SEARCH_LENS_C + SEARCH_LENS_R * @sin(a1),
+        };
+    }
+    // 손잡이 — 렌즈 원주의 45° 지점에서 시작해 다른 아이콘과 같은 reach 로 나간다.
+    const k = SEARCH_LENS_R * 0.70710678;
+    out[SEARCH_LENS_SIDES] = .{
+        .x0 = SEARCH_LENS_C + k,
+        .y0 = SEARCH_LENS_C + k,
+        .x1 = 0.5 + D,
+        .y1 = 0.5 + D,
+    };
+    break :blk out;
+};
 
 /// 점 (px,py) 에서 선분 (ax,ay)-(bx,by) 까지의 최단 거리. 선분 밖 투영은 끝점
 /// 으로 clamp (둥근 cap). 모두 px 단위.
@@ -201,4 +239,46 @@ test "#329 rasterize — ellipsis 세 점은 대칭이고 사라지지 않아야
     while (x < size) : (x += 1) {
         try std.testing.expectEqual(buf[y * size + x], buf[y * size + (size - 1 - x)]);
     }
+}
+
+test "#646 rasterize — 돋보기는 렌즈 속이 비고 손잡이가 우하단으로 뻗는다" {
+    var buf: [MAX_SIZE * MAX_SIZE]u8 = undefined;
+    const size: u32 = 24;
+    rasterize(.search, size, 3.0, &buf);
+
+    const at = struct {
+        fn f(b: []const u8, s: u32, nx: f32, ny: f32) u8 {
+            const x: u32 = @intFromFloat(@round(nx * @as(f32, @floatFromInt(s - 1))));
+            const y: u32 = @intFromFloat(@round(ny * @as(f32, @floatFromInt(s - 1))));
+            return b[y * s + x];
+        }
+    }.f;
+
+    // 렌즈 중심은 뚫려 있어야 한다 — 채워진 원이 되면 돋보기로 안 보인다.
+    try std.testing.expect(at(&buf, size, SEARCH_LENS_C, SEARCH_LENS_C) < 40);
+
+    // 렌즈 원주 네 방향은 그려져 있어야 한다.
+    try std.testing.expect(at(&buf, size, SEARCH_LENS_C - SEARCH_LENS_R, SEARCH_LENS_C) > 150);
+    try std.testing.expect(at(&buf, size, SEARCH_LENS_C + SEARCH_LENS_R, SEARCH_LENS_C) > 150);
+    try std.testing.expect(at(&buf, size, SEARCH_LENS_C, SEARCH_LENS_C - SEARCH_LENS_R) > 150);
+    try std.testing.expect(at(&buf, size, SEARCH_LENS_C, SEARCH_LENS_C + SEARCH_LENS_R) > 150);
+
+    // 손잡이는 우하단에만 있다 — 좌하단 · 우상단 구석은 비어야 방향이 확정된다.
+    try std.testing.expect(at(&buf, size, 0.5 + D, 0.5 + D) > 150);
+    try std.testing.expect(at(&buf, size, 0.5 - D, 0.5 + D) < 40);
+    try std.testing.expect(at(&buf, size, 0.5 + D, 0.5 - D) < 40);
+}
+
+test "#646 돋보기는 × 와 같은 reach 를 쓴다 — 광학 크기 일관" {
+    // 손잡이 끝점이 `×` 대각선 끝점과 같은 자리여야 한다 (둘 다 R 원 위).
+    const handle = search_segs[SEARCH_LENS_SIDES];
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + D), handle.x1, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + D), handle.y1, 1e-6);
+
+    // 렌즈의 좌상단 끝도 같은 원에 닿는다 — 중심 잡기의 근거.
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.5 - D),
+        SEARCH_LENS_C - SEARCH_LENS_R * 0.70710678,
+        1e-6,
+    );
 }
