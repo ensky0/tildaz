@@ -43,6 +43,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("root.zig");
     _ = @import("runtime.zig");
     _ = @import("search.zig");
+    _ = @import("search_bar.zig");
     _ = @import("scrollbar.zig");
     _ = @import("session_core.zig");
     _ = @import("shell_integration.zig");
