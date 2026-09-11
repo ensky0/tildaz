@@ -1753,6 +1753,9 @@ pub const SessionCore = struct {
                 .pane => |id| pane: {
                     const tab = group.panes[id] orelse break :pane false;
                     const drained = tab.drainOutputChunk() > 0;
+                    // #646 — 새 출력이 들어왔으면 그 pane 의 검색이 따라잡아야 한다. 검색이
+                    // 이미 끝난 상태여도 마찬가지다 (끝난 뒤 찍힌 내용도 찾아야 한다).
+                    if (drained) tab.search.markTerminalDirty();
                     result.active_output = result.active_output or drained;
                     break :pane drained;
                 },

@@ -62,6 +62,10 @@ pub const PaneSearch = struct {
     /// hysteresis 가 성립한다 (탭 rename 이 `RenameState` 에 같은 값을 뒀다).
     field_scroll_px: f32 = 0,
 
+    /// #646 — 마지막 검색 이후 터미널에 새 출력이 들어왔는가. `session_core` 가 그 pane 을
+    /// 드레인할 때마다 세운다. `step` 이 이것을 보고 `reloadActive` 로 따라잡는다.
+    terminal_dirty: bool = false,
+
     /// 이 pane 의 검색이 더 진행할 일이 남았는가. `false` 면 `step` 을 부르지 않는다.
     pub fn isRunning(self: *const PaneSearch) bool {
         return self.engine != null and !self.complete;
@@ -183,8 +187,30 @@ pub const PaneSearch = struct {
             return true;
         }
 
-        if (self.complete) return false;
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return false;
+
+        // **검색이 끝난 뒤에도 터미널은 계속 자란다.** 새 출력이 들어왔으면 active 영역을
+        // 다시 훑는다 — 이것이 없으면 `complete` 이후에 찍힌 내용은 영영 검색되지 않는다.
+        //
+        // 실제로 그 결함을 실기에서 만났다 (2026-09-11): 새 탭은 화면이 비어 있을 때 검색이
+        // 시작돼 `0 개 → complete` 가 되고, 그 뒤 셸이 프롬프트와 출력을 채워도 카운터가
+        // `0/0` 에 머물렀다. 같은 뿌리로 "검색을 열어 둔 채 명령을 실행하면 그 출력이 안
+        // 잡히는" 문제도 있었다.
+        //
+        // `reloadActive` 는 `complete` 상태에서도 안전하다 — active 결과를 비우고 다시 훑은
+        // 뒤 원래 state 를 되돌린다 (upstream `screen.zig` 의 `old_state` defer).
+        if (self.terminal_dirty) {
+            self.terminal_dirty = false;
+            engine.reloadActive() catch {
+                // 못 따라잡았으면 다음 프레임에 다시 시도한다.
+                self.terminal_dirty = true;
+                return false;
+            };
+            self.highlights_dirty = true;
+            return true;
+        }
+
+        if (self.complete) return false;
 
         engine.tick() catch |err| switch (err) {
             error.FeedRequired => {
@@ -200,6 +226,11 @@ pub const PaneSearch = struct {
         };
         self.highlights_dirty = true;
         return true;
+    }
+
+    /// #646 — 이 pane 에 새 출력이 들어왔다. 검색이 끝난 상태여도 다시 훑게 한다.
+    pub fn markTerminalDirty(self: *PaneSearch) void {
+        if (self.engine != null) self.terminal_dirty = true;
     }
 
     /// 지금까지 찾은 매치 수.
@@ -492,4 +523,45 @@ fn countHighlights(state: *ghostty.RenderState) usize {
     const rd = state.row_data.slice();
     for (rd.items(.highlights)) |h| n += h.items.len;
     return n;
+}
+
+test "#646 검색이 끝난 뒤 들어온 출력도 찾는다" {
+    // 실기에서 만난 결함의 회귀 검사다 (2026-09-11). 빈 화면에서 검색이 시작되면
+    // `0 개 → complete` 가 되는데, 그 뒤 셸이 출력을 채워도 카운터가 `0/0` 에 머물렀다.
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 200,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+
+    // 1. 화면이 비어 있을 때 검색을 연다 — 매치 0 으로 끝난다.
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expect(s.complete);
+    try std.testing.expectEqual(@as(usize, 0), s.matchCount());
+
+    // 2. 그 뒤에 출력이 들어온다.
+    try term.printString("hello FINDME world\r\n");
+    s.markTerminalDirty();
+
+    // 3. 다시 돌리면 새 내용을 찾아야 한다.
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expect(s.matchCount() > 0);
+}
+
+test "#646 markTerminalDirty 는 검색이 없을 때 아무 일도 하지 않는다" {
+    const alloc = std.testing.allocator;
+    var s: PaneSearch = .{};
+    defer s.deinit(alloc);
+
+    // 엔진이 없으면 따라잡을 것도 없다 — 플래그를 세워 두면 첫 검색이 헛돈다.
+    s.markTerminalDirty();
+    try std.testing.expect(!s.terminal_dirty);
 }
