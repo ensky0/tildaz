@@ -1399,14 +1399,13 @@ pub const App = struct {
 
     // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
 
-    /// Windows · Linux 의 링크 수식키는 `Ctrl` 이다 (macOS 는 `⌘`). ghostty 의
-    /// `ctrlOrSuper` 와 같다 — #647 결정 1.
-    fn linkProbe(self: *App, x: c_int, y: c_int, ctrl: bool) link.Hover.Probe {
+    /// 포인터가 있는 셀. **수식키를 보지 않는다** — 밑줄은 링크 위에 있기만 하면 그려지고
+    /// (`link.Hover` 머리 주석) 수식키는 *여는* 자리에서만 본다.
+    fn linkProbe(self: *App, x: c_int, y: c_int) link.Hover.Probe {
         const in_cell = App.cursorRegion(x, y, @ptrCast(self)) == .cell;
         const cell = self.mouseToCell(x, y);
         return .{
             .cell = if (in_cell) .{ .x = @intCast(cell.col), .y = @intCast(cell.row) } else null,
-            .mods = ctrl,
             // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
             .pane = if (self.activeTabPtr()) |t| @intFromPtr(t) else 0,
         };
@@ -1418,9 +1417,9 @@ pub const App = struct {
     /// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
     /// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 macOS 의
     /// `fillImeSnapshot` 과 같다 — 다음 프레임의 `update` 가 dirty 를 이어받는다.
-    fn updateLinkHover(self: *App, x: c_int, y: c_int, ctrl: bool) void {
+    fn updateLinkHover(self: *App, x: c_int, y: c_int) void {
         const tab = self.activeTabPtr() orelse return;
-        const probe = self.linkProbe(x, y, ctrl);
+        const probe = self.linkProbe(x, y);
         if (!self.link_hover.needsUpdate(probe)) return;
 
         tab.render_state.update(self.allocator, &tab.terminal) catch return;
@@ -1434,8 +1433,8 @@ pub const App = struct {
     /// `Ctrl+클릭` 은 그대로 앱에 간다.
     fn tryOpenLink(self: *App, x: c_int, y: c_int, ctrl: bool) bool {
         if (!ctrl) return false;
-        self.updateLinkHover(x, y, ctrl);
-        const probe_cell = self.linkProbe(x, y, ctrl).cell orelse return false;
+        self.updateLinkHover(x, y);
+        const probe_cell = self.linkProbe(x, y).cell orelse return false;
         const url = self.link_hover.urlAt(probe_cell) orelse return false;
         link.open(self.rt, self.allocator, url);
         return true;
@@ -1835,7 +1834,7 @@ pub const App = struct {
                 self.updateTabHover(mouse.x, mouse.y);
                 // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
                 // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
-                self.updateLinkHover(mouse.x, mouse.y, mouse.mods.ctrl);
+                self.updateLinkHover(mouse.x, mouse.y);
                 return true;
             },
             .mouse_up => |mouse| {

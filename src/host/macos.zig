@@ -2599,8 +2599,11 @@ fn reportGeometryMac() ?terminal_interaction.ReportGeometry {
 /// Windows `App.link_hover` · Linux `Client.link_hover` 와 같은 것이다.
 var g_link_hover: link.Hover = .{};
 
-/// macOS 의 링크 수식키는 `⌘` 다 (`NSEventModifierFlagCommand`). ghostty 의 `ctrlOrSuper`
-/// 와 같고, Linux · Windows 는 `Ctrl` 이다 (#647 결정 1).
+/// macOS 에서 링크를 **여는** 수식키는 `⌘` 다 (`NSEventModifierFlagCommand`). Linux · Windows
+/// 는 `Ctrl` 이고, ghostty 의 `ctrlOrSuper` 와 같다 (#647 결정 1).
+///
+/// **밑줄 표시는 이것을 보지 않는다** — 포인터가 링크 위에 있기만 하면 그려진다 (`link.Hover`
+/// 의 머리 주석). 여기는 여는 자리에서만 쓴다.
 ///
 /// `eventMouseMods` 를 쓰지 않는 이유는 그쪽이 **mouse reporting 인코더용**이라 xterm 이
 /// 인코딩하는 셋 (shift · alt · ctrl) 만 담기 때문이다 — `⌘` 자리가 아예 없다.
@@ -2614,7 +2617,6 @@ fn linkProbeMac(self_view: objc.id, event: objc.id) link.Hover.Probe {
     const cell = eventToCell(self_view, event);
     return .{
         .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
-        .mods = linkModsMac(event),
         // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
         .pane = if (g_session.activeTab()) |t| @intFromPtr(t) else 0,
     };

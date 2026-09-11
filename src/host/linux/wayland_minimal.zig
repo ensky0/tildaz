@@ -8216,13 +8216,12 @@ const Client = struct {
 
     // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
 
-    /// Linux · Windows 의 링크 수식키는 `Ctrl` 이다 (macOS 는 `⌘`). ghostty 의 `ctrlOrSuper`
-    /// 와 같다 — #647 결정 1.
+    /// 포인터가 있는 셀. **수식키를 보지 않는다** — 밑줄은 링크 위에 있기만 하면 그려지고
+    /// (`link.Hover` 머리 주석) 수식키 (`Ctrl`) 는 *여는* 자리에서만 본다.
     fn linkProbe(self: *Client) link.Hover.Probe {
         const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px);
         return .{
             .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
-            .mods = self.keyboard.ctrlActive(),
             // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
             .pane = if (self.session) |*sess| blk: {
                 const t = sess.activeTab() orelse break :blk 0;
