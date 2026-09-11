@@ -166,6 +166,9 @@ pub fn encode(
         .unshifted_codepoint = event.unshifted_codepoint,
     };
 
+    // #650 — ghostty 가 fixterms 때문에 C0 표에서 뺀 세 키를 legacy 에서 되돌린다.
+    if (legacyC0Override(event, opts)) |byte| return writer.writeByte(byte);
+
     // #648 — legacy 인 Ctrl+Shift 조합만 결과를 들여다본다. 나머지는 그대로 흘려
     // 보낸다 (버퍼 한 번을 더 쓰지 않는다).
     if (mayDropExtended(event, opts)) {
@@ -182,6 +185,45 @@ pub fn encode(
     }
 
     return ghostty.input.encodeKey(writer, ghostty_event, opts);
+}
+
+/// #650 — legacy 에서 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` 이 내야 할 C0 바이트.
+///
+/// ghostty 의 `ctrlSeq` C0 표는 이 셋을 **주석과 함께 일부러 비워 두었다** —
+/// *"These are purposely NOT handled here because of the fixterms specification …
+/// processed as CSI u"*. 앱이 `Tab` 과 `Ctrl+I` 를, `Enter` 와 `Ctrl+M` 을 구분할 수
+/// 있게 하려는 것이고 그 자체는 타당하다. 문제는 **앱이 그 프로토콜을 켜지 않았을 때도**
+/// 그렇게 나간다는 것이다 — bash 에서 `Ctrl+[` 가 ESC 가 아니라 `ESC[91;5u` 라서
+/// vi-mode 탈출이 안 됐다.
+///
+/// 그래서 legacy 일 때만 되돌린다. **kitty flags 나 modifyOtherKeys=2 가 켜져 있으면
+/// 손대지 않는다** — vim · emacs 는 후자를 켜고 `ESC[27;5;91~` 를 받아 이미 잘 동작하며,
+/// kitty 를 켠 앱은 정확히 그 구분을 원해서 켠 것이다.
+///
+/// Shift 가 눌린 조합은 #648 의 몫이라 여기서 뺀다 (`Ctrl+Shift+I` 는 계속 0 바이트 —
+/// Windows 동등). Alt 는 ESC prefix 규칙이 따로 있어 건드리지 않는다.
+///
+/// 글자를 고르는 순서는 `ctrlSeq` 와 같다 — 1 바이트 `utf8` 이 있으면 그것, 없으면
+/// **물리 키의 US 글자**. 러시아어 배열의 `Ctrl+I` (물리 `i` 자리, keysym `ш`) 가 그
+/// 되짚기로 `0x09` 를 낸다. CapsLock 으로 대문자가 와도 내려서 본다.
+fn legacyC0Override(event: Event, opts: Options) ?u8 {
+    if (opts.kitty_flags.int() != 0) return null;
+    if (opts.modify_other_keys_state_2) return null;
+    if (!event.mods.ctrl) return null;
+    if (event.mods.shift or event.mods.alt or event.mods.super) return null;
+
+    var char: u8 = if (event.utf8.len == 1)
+        event.utf8[0]
+    else
+        usAscii(event.code) orelse return null;
+    if (char >= 'A' and char <= 'Z') char = std.ascii.toLower(char);
+
+    return switch (char) {
+        '[' => 0x1b,
+        'i' => 0x09,
+        'm' => 0x0d,
+        else => null,
+    };
 }
 
 /// #648 — 이 이벤트에 "요청되지 않은 확장 인코딩은 버린다" 규칙이 걸릴 수 있는가.
@@ -492,6 +534,98 @@ test "#648 표준 CSI modifier 는 확장이 아니라 그대로 둔다" {
         .mods = .{ .ctrl = true, .shift = true },
     }, .{});
     try testing.expectEqualStrings("\x1b[5;6~", pgup);
+}
+
+// ── #650 — legacy 의 Ctrl+[ · Ctrl+I · Ctrl+M 은 C0 로 나간다 ────────────────
+//
+// ghostty 는 fixterms 를 따라 이 셋을 C0 표에서 빼고 `CSI u` 로 보낸다. 앱이 프로토콜을
+// 켰을 때는 맞지만 legacy 에서는 `Ctrl+[` 가 ESC 가 아니게 되어 bash vi-mode 탈출이
+// 깨졌다. Windows 는 `WM_CHAR` 로 OS 가 만든 C0 를 그대로 보내 이미 정상이었다.
+
+test "#650 legacy 에서 Ctrl+[ · Ctrl+I · Ctrl+M 이 C0 로 나간다" {
+    const Case = struct { code: physical_key.PhysicalCode, ch: []const u8, want: []const u8 };
+    for ([_]Case{
+        .{ .code = .bracket_left, .ch = "[", .want = "\x1b" },
+        .{ .code = .key_i, .ch = "i", .want = "\x09" },
+        .{ .code = .key_m, .ch = "m", .want = "\x0d" },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const out = try encodeToBuf(&buf, .{
+            .code = c.code,
+            .mods = .{ .ctrl = true },
+            .utf8 = c.ch,
+            .unshifted_codepoint = c.ch[0],
+        }, .{});
+        try testing.expectEqualStrings(c.want, out);
+    }
+}
+
+test "#650 프로토콜을 켠 앱에는 확장 인코딩이 그대로 간다" {
+    // **이 테스트가 규칙의 경계다.** kitty 를 켠 앱은 정확히 `Tab` 과 `Ctrl+I` 를
+    // 구분하려고 켰고, vim · emacs 는 modifyOtherKeys=2 로 이미 잘 받고 있다.
+    var buf: [16]u8 = undefined;
+    const kitty = try encodeToBuf(&buf, .{
+        .code = .bracket_left,
+        .mods = .{ .ctrl = true },
+        .utf8 = "[",
+        .unshifted_codepoint = '[',
+    }, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("\x1b[91;5u", kitty);
+
+    var buf2: [16]u8 = undefined;
+    const mok2 = try encodeToBuf(&buf2, .{
+        .code = .bracket_left,
+        .mods = .{ .ctrl = true },
+        .utf8 = "[",
+        .unshifted_codepoint = '[',
+    }, .{ .modify_other_keys_state_2 = true });
+    try testing.expectEqualStrings("\x1b[27;5;91~", mok2);
+}
+
+test "#650 Shift 가 끼면 #648 의 몫이라 계속 0 바이트다" {
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_i,
+        .mods = .{ .ctrl = true, .shift = true },
+        .consumed_mods = .{ .shift = true },
+        .utf8 = "I",
+        .unshifted_codepoint = 'i',
+    }, .{});
+    try testing.expectEqualStrings("", out);
+}
+
+test "#650 비라틴 배열도 물리 키의 US 글자로 되짚는다" {
+    // 러시아어 배열의 물리 `i` 자리는 keysym `ш` 다. `utf8` 이 1 바이트가 아니므로
+    // `usAscii` 가 `i` 를 주고, 그래서 `Ctrl+I` 가 Tab 을 잃지 않는다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .key_i,
+        .mods = .{ .ctrl = true },
+        .utf8 = "ш",
+        .unshifted_codepoint = 0x448,
+    }, .{});
+    try testing.expectEqualStrings("\x09", out);
+}
+
+test "#650 이웃 키는 한 바이트도 달라지지 않는다" {
+    // `Ctrl+H` · `Ctrl+]` · `Ctrl+\` 는 원래 C0 표에 있어 정상이었다. 되돌리는 과정에서
+    // 이것들을 건드리면 조용한 회귀가 된다.
+    const Case = struct { code: physical_key.PhysicalCode, ch: []const u8, want: []const u8 };
+    for ([_]Case{
+        .{ .code = .key_h, .ch = "h", .want = "\x08" },
+        .{ .code = .bracket_right, .ch = "]", .want = "\x1d" },
+        .{ .code = .backslash, .ch = "\\", .want = "\x1c" },
+        .{ .code = .key_c, .ch = "c", .want = "\x03" },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const out = try encodeToBuf(&buf, .{
+            .code = c.code,
+            .mods = .{ .ctrl = true },
+            .utf8 = c.ch,
+            .unshifted_codepoint = c.ch[0],
+        }, .{});
+        try testing.expectEqualStrings(c.want, out);
+    }
 }
 
 test "기존 세 host 의 escape 매핑과 한 바이트도 다르지 않다" {
