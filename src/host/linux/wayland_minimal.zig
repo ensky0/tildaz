@@ -61,6 +61,7 @@ const shell_validate = @import("../../shell_validate.zig");
 const font_linux = @import("../../font/linux/font.zig");
 const font_validate = @import("../../font/validate.zig");
 const system_open = @import("../../system_open.zig");
+const link = @import("../../link.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
 const instance_context = @import("../../instance_context.zig");
@@ -1618,6 +1619,9 @@ const Client = struct {
     /// + 탭 area 가장자리 auto-scroll, button release 에서 `finish` →
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
+    /// #647 — 지금 가리키는 링크. **창 하나에 하나** (포인터가 하나라서 pane 이 여럿이어도
+    /// 한 곳이다). Windows `App.link_hover` · macOS `g_link_hover` 와 같은 것이다.
+    link_hover: link.Hover = .{},
     /// #483 4c — 분할선 드래그. 누른 분할선의 노드 · 축과 지금 포인터의 분할 축 좌표. **놓을 때만**
     /// 트리에 적용한다 (확정 설계 축 2 — 드래그 중 PTY resize 폭풍 방지, Konsole 방식). 드래그 중엔
     /// `frameInputs` 가 스냅된 자리의 amber 고스트를 그린다.
@@ -7447,6 +7451,9 @@ const Client = struct {
             } else {
                 _ = self.routeMouseLinux(.motion, null, false);
             }
+            // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
+            // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
+            self.updateLinkHover();
             return;
         }
         // #245 — 경계 밖이어도 null 대신 clamp 된 cell 로 선택 연장 + 위/아래 경계면
@@ -7641,6 +7648,10 @@ const Client = struct {
                 // L12-γ-2 — cell 영역 클릭 진입 시 commitPendingInput.
                 // preedit 보존.
                 self.commitPendingInput();
+
+                // #647 — `Ctrl+클릭` 이 링크 위면 브라우저로 열고 끝낸다.
+                // `routeMouseLinux` 보다 **먼저** 보는 것이 결정 2 다.
+                if (self.tryOpenLink()) return;
 
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
 
@@ -8198,6 +8209,53 @@ const Client = struct {
                 .local, .swallow => {},
             }
         }
+        return true;
+    }
+
+    // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
+
+    /// Linux · Windows 의 링크 수식키는 `Ctrl` 이다 (macOS 는 `⌘`). ghostty 의 `ctrlOrSuper`
+    /// 와 같다 — #647 결정 1.
+    fn linkProbe(self: *Client) link.Hover.Probe {
+        const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px);
+        return .{
+            .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
+            .mods = self.keyboard.ctrlActive(),
+            // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
+            .pane = if (self.session) |*sess| blk: {
+                const t = sess.activeTab() orelse break :blk 0;
+                break :blk @intFromPtr(t);
+            } else 0,
+        };
+    }
+
+    /// 포인터 · 수식키가 바뀌었을 때 판정을 갱신한다.
+    ///
+    /// **`render_state.update` 를 여기서 부른다.** `link.hitTest` 가 `RenderState.Row.pin` 을
+    /// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
+    /// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 macOS 의
+    /// `fillImeSnapshot` 과 같다 — 다음 프레임의 `update` 가 dirty 를 이어받는다.
+    fn updateLinkHover(self: *Client) void {
+        const sess = if (self.session) |*sess| sess else return;
+        const tab = sess.activeTab() orelse return;
+        const probe = self.linkProbe();
+        if (!self.link_hover.needsUpdate(probe)) return;
+
+        tab.render_state.update(self.allocator, &tab.terminal) catch return;
+        const changed = self.link_hover.update(self.allocator, &tab.render_state, probe) catch return;
+        if (changed) self.needs_redraw = true;
+    }
+
+    /// 링크 위에서 누른 것이면 열고 `true`. 호출자는 그때 기존 처리를 건너뛴다.
+    ///
+    /// **앱이 mouse tracking 을 켰어도 링크가 먼저다** (#647 결정 2). 링크가 *아닌* 자리의
+    /// `Ctrl+클릭` 은 그대로 앱에 간다.
+    fn tryOpenLink(self: *Client) bool {
+        if (!self.keyboard.ctrlActive()) return false;
+        self.updateLinkHover();
+        const cell = self.linkProbe().cell orelse return false;
+        const url = self.link_hover.urlAt(cell) orelse return false;
+        system_open.openInDefaultApp(self.rt, self.allocator, url);
         return true;
     }
 

@@ -220,6 +220,117 @@ fn logicalRow(state: *const ghostty.RenderState, y: u16) RowSpan {
     return .{ .start = start, .end = end };
 }
 
+// ── hover 상태 ───────────────────────────────────────────────────────────────
+
+/// 지금 마우스가 가리키는 링크. **창마다 하나**다 — 포인터가 하나라서 pane 이 여럿이어도
+/// hover 는 한 곳이다 (검색이 pane 별 상태인 것과 다른 축이다, [#646](https://github.com/ensky0/tildaz/issues/646)).
+///
+/// 세 host 가 이 상태 기계 하나를 공유한다. host 가 하는 일은 좌표를 셀로 바꿔 `update` 를
+/// 부르고, 반환이 `true` 면 다시 그리는 것뿐이다.
+pub const Hover = struct {
+    hit: ?Hit = null,
+    /// 마지막 판정 입력. 같으면 다시 판정하지 않는다 — motion 은 픽셀마다 오지만 판정이
+    /// 달라지는 것은 셀 · 수식키 · pane 이 바뀔 때뿐이다.
+    probe: ?Probe = null,
+
+    pub const Probe = struct {
+        /// 포인터가 있는 셀. 셀 영역 밖 (탭바 · padding · 스크롤바 · 창 밖) 이면 `null`.
+        cell: ?Coord,
+        /// 링크 수식키 (`Ctrl` / `⌘`) 가 눌려 있는가. 안 눌렸으면 링크로 치지 않는다 —
+        /// #647 의 결정 1.
+        mods: bool,
+        /// 어느 pane 의 화면인가. 같은 셀 좌표여도 pane 이 다르면 다른 글자다.
+        pane: u64,
+
+        fn eql(self: Probe, other: Probe) bool {
+            if (self.mods != other.mods or self.pane != other.pane) return false;
+            if (self.cell == null and other.cell == null) return true;
+            const a = self.cell orelse return false;
+            const b = other.cell orelse return false;
+            return a.x == b.x and a.y == b.y;
+        }
+    };
+
+    pub fn deinit(self: *Hover, alloc: std.mem.Allocator) void {
+        if (self.hit) |*h| h.deinit(alloc);
+        self.* = .{};
+    }
+
+    /// 이 입력으로 판정을 다시 해야 하는가.
+    ///
+    /// host 가 `update` 를 부르기 **전에** 물어서, 필요 없으면 `RenderState.update` 까지
+    /// 건너뛴다. 포인터 motion 은 픽셀마다 오지만 판정이 달라지는 것은 셀 · 수식키 · pane 이
+    /// 바뀔 때뿐이라, 이게 없으면 마우스를 움직이는 내내 스냅숏을 갱신하게 된다.
+    pub fn needsUpdate(self: *const Hover, probe: Probe) bool {
+        const p = self.probe orelse return true;
+        return !p.eql(probe);
+    }
+
+    /// 화면 내용이 바뀌었으니 다음 `update` 는 반드시 다시 판정하라.
+    ///
+    /// 포인터가 가만히 있어도 그 자리의 **글자가** 바뀌면 (출력 · 스크롤) 판정이 달라진다.
+    /// host 는 드레인이 화면을 바꾼 프레임에 이것을 부른다.
+    pub fn invalidate(self: *Hover) void {
+        self.probe = null;
+    }
+
+    /// 판정을 갱신한다. **화면에 보이는 것이 달라졌으면 `true`** — host 는 그때만 다시 그린다.
+    ///
+    /// ⚠️ `state` 는 `update` 직후여야 한다 (모듈 머리 주석).
+    pub fn update(
+        self: *Hover,
+        alloc: std.mem.Allocator,
+        state: *const ghostty.RenderState,
+        probe: Probe,
+    ) std.mem.Allocator.Error!bool {
+        if (self.probe) |p| {
+            if (p.eql(probe)) return false;
+        }
+        self.probe = probe;
+
+        var found: ?Hit = null;
+        if (probe.mods) {
+            if (probe.cell) |c| found = try hitTest(alloc, state, c);
+        }
+
+        // 같은 링크면 그리기가 달라지지 않는다 — 한 링크 안에서 칸을 옮길 때가 그렇다.
+        if (self.hit) |*old| {
+            if (found) |*new| {
+                if (old.eql(new)) {
+                    new.deinit(alloc);
+                    return false;
+                }
+            }
+        } else if (found == null) return false;
+
+        if (self.hit) |*old| old.deinit(alloc);
+        self.hit = found;
+        return true;
+    }
+
+    /// hover 를 지운다 (포인터가 창을 떠남 · 창이 포커스를 잃음). 달라졌으면 `true`.
+    pub fn clear(self: *Hover, alloc: std.mem.Allocator) bool {
+        self.probe = null;
+        if (self.hit) |*h| {
+            h.deinit(alloc);
+            self.hit = null;
+            return true;
+        }
+        return false;
+    }
+
+    /// 그 셀에서 열 URL. 클릭이 링크 위인지 판정한다.
+    ///
+    /// **지금 hover 중인 링크만 본다.** 다시 `hitTest` 하지 않는 이유는 두 가지다 — ① 사용자가
+    /// *본* 것 (밑줄이 그려진 것) 과 여는 것이 같아야 한다. ② 클릭 시점에 다시 판정하면 그 사이
+    /// 출력이 화면을 밀었을 때 엉뚱한 링크가 열린다.
+    pub fn urlAt(self: *const Hover, at: Coord) ?[]const u8 {
+        const h = self.hit orelse return null;
+        if (!h.covers(at)) return null;
+        return h.url;
+    }
+};
+
 // ── 테스트 ───────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -386,4 +497,147 @@ test "#647 eql — 같은 링크인지로 hover 갱신을 가른다" {
     try testing.expect(a1.eql(&a2));
     // 다른 링크 → 다르다.
     try testing.expect(!a1.eql(&b));
+}
+
+test "#647 hover — 수식키를 눌러야 링크가 된다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    // 수식키 없이 링크 위 — 아무 일도 없다.
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = false, .pane = 0 }));
+    try testing.expect(hover.hit == null);
+
+    // 누르면 잡힌다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 }));
+    try testing.expectEqualStrings("https://example.com", hover.hit.?.url);
+
+    // 떼면 풀린다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = false, .pane = 0 }));
+    try testing.expect(hover.hit == null);
+}
+
+test "#647 hover — 같은 링크 안에서 칸을 옮기면 다시 그리지 않는다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com and https://other.example");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 4, .y = 0 }, .mods = true, .pane = 0 }));
+    // 같은 링크의 다른 칸 — 판정은 다시 하지만 그림은 그대로다.
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 10, .y = 0 }, .mods = true, .pane = 0 }));
+    try testing.expectEqualStrings("https://example.com", hover.hit.?.url);
+
+    // 다른 링크로 옮기면 다시 그린다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 30, .y = 0 }, .mods = true, .pane = 0 }));
+    try testing.expectEqualStrings("https://other.example", hover.hit.?.url);
+
+    // 링크 밖으로 나가면 풀린다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .mods = true, .pane = 0 }));
+    try testing.expect(hover.hit == null);
+    // 링크 밖에서 칸만 옮기는 것은 변화가 아니다.
+    try testing.expect(!try hover.update(alloc, &f.state, .{ .cell = .{ .x = 2, .y = 0 }, .mods = true, .pane = 0 }));
+}
+
+test "#647 hover — 셀 영역 밖과 pane 전환" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 }));
+    // 탭바 · padding 처럼 셀이 없는 자리 → 해제.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = null, .mods = true, .pane = 0 }));
+    try testing.expect(hover.hit == null);
+
+    // 같은 입력을 다시 주면 판정을 건너뛴다.
+    try testing.expect(try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 }));
+    const before = hover.probe.?;
+    try testing.expect(!try hover.update(alloc, &f.state, before));
+
+    // 셀과 수식키가 같아도 **pane 이 다르면 다른 입력**이다 — 같은 좌표의 다른 화면이라
+    // 캐시가 먹으면 안 된다.
+    const p0: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 };
+    const p1: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 1 };
+    try testing.expect(p0.eql(p0));
+    try testing.expect(!p0.eql(p1));
+    // 셀 없음끼리는 같고, 한쪽만 없으면 다르다.
+    const none: Hover.Probe = .{ .cell = null, .mods = true, .pane = 0 };
+    try testing.expect(none.eql(.{ .cell = null, .mods = true, .pane = 0 }));
+    try testing.expect(!none.eql(p0));
+    try testing.expect(!p0.eql(none));
+}
+
+test "#647 hover — invalidate 는 같은 자리를 다시 판정하게 한다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    const at: Hover.Probe = .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 };
+    try testing.expect(try hover.update(alloc, &f.state, at));
+    try testing.expect(!try hover.update(alloc, &f.state, at)); // 캐시 hit
+
+    // 그 자리의 글자가 바뀌면 (여기서는 화면을 밀어 링크를 지운다) 다시 판정해야 한다.
+    try f.term.printString("\r\n");
+    f.term.eraseDisplay(.complete, false);
+    try f.sync(alloc);
+    hover.invalidate();
+    try testing.expect(try hover.update(alloc, &f.state, at));
+    try testing.expect(hover.hit == null);
+}
+
+test "#647 hover — urlAt 은 보고 있는 링크만 연다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    // hover 가 없으면 아무 셀도 안 연다.
+    try testing.expect(hover.urlAt(.{ .x = 6, .y = 0 }) == null);
+
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 });
+    try testing.expectEqualStrings("https://example.com", hover.urlAt(.{ .x = 6, .y = 0 }).?);
+    try testing.expectEqualStrings("https://example.com", hover.urlAt(.{ .x = 4, .y = 0 }).?);
+    // 링크 밖 셀은 열지 않는다.
+    try testing.expect(hover.urlAt(.{ .x = 1, .y = 0 }) == null);
+    try testing.expect(hover.urlAt(.{ .x = 40, .y = 0 }) == null);
+}
+
+test "#647 hover — clear 는 창을 떠날 때" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    try testing.expect(!hover.clear(alloc)); // 원래 없으면 변화 없음
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 });
+    try testing.expect(hover.clear(alloc));
+    try testing.expect(hover.hit == null);
+    try testing.expect(!hover.clear(alloc));
 }

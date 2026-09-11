@@ -13,6 +13,7 @@ const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const link = @import("link.zig");
 const mouse_report = @import("mouse_report.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
@@ -57,6 +58,10 @@ pub const App = struct {
     /// 탭 drag-and-drop reorder state. cross-platform `tab_interaction.DragState`
     /// — macOS `g_drag` / Linux `tab_drag` 와 같은 모듈.
     tab_drag: tab_interaction.DragState = .{},
+    /// #647 — 지금 가리키는 링크. **창 하나에 하나** (포인터가 하나라서 pane 이 여럿이어도
+    /// 한 곳이다). macOS `g_link_hover` · Linux `Client.link_hover` 와 같은 것이다.
+    /// `App` 은 프로세스 수명과 같아 따로 해제하지 않는다.
+    link_hover: link.Hover = .{},
     // terminal_interaction (mouse selection / scrollbar drag) state 는 per-tab —
     // session_core.Tab.interaction (cross-platform field, macOS 와 동등) 사용.
     // App level 에는 더 이상 글로벌 state 없음. 탭 전환 시 자동으로 새 탭의
@@ -1390,6 +1395,50 @@ pub const App = struct {
         }
     }
 
+    // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
+
+    /// Windows · Linux 의 링크 수식키는 `Ctrl` 이다 (macOS 는 `⌘`). ghostty 의
+    /// `ctrlOrSuper` 와 같다 — #647 결정 1.
+    fn linkProbe(self: *App, x: c_int, y: c_int, ctrl: bool) link.Hover.Probe {
+        const in_cell = App.cursorRegion(x, y, @ptrCast(self)) == .cell;
+        const cell = self.mouseToCell(x, y);
+        return .{
+            .cell = if (in_cell) .{ .x = @intCast(cell.col), .y = @intCast(cell.row) } else null,
+            .mods = ctrl,
+            // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
+            .pane = if (self.activeTabPtr()) |t| @intFromPtr(t) else 0,
+        };
+    }
+
+    /// 포인터 · 수식키가 바뀌었을 때 판정을 갱신한다.
+    ///
+    /// **`render_state.update` 를 여기서 부른다.** `link.hitTest` 가 `RenderState.Row.pin` 을
+    /// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
+    /// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 macOS 의
+    /// `fillImeSnapshot` 과 같다 — 다음 프레임의 `update` 가 dirty 를 이어받는다.
+    fn updateLinkHover(self: *App, x: c_int, y: c_int, ctrl: bool) void {
+        const tab = self.activeTabPtr() orelse return;
+        const probe = self.linkProbe(x, y, ctrl);
+        if (!self.link_hover.needsUpdate(probe)) return;
+
+        tab.render_state.update(self.allocator, &tab.terminal) catch return;
+        const changed = self.link_hover.update(self.allocator, &tab.render_state, probe) catch return;
+        if (changed) self.window.requestRender();
+    }
+
+    /// 링크 위에서 누른 것이면 열고 `true`. 호출자는 그때 기존 처리를 건너뛴다.
+    ///
+    /// **앱이 mouse tracking 을 켰어도 링크가 먼저다** (#647 결정 2). 링크가 *아닌* 자리의
+    /// `Ctrl+클릭` 은 그대로 앱에 간다.
+    fn tryOpenLink(self: *App, x: c_int, y: c_int, ctrl: bool) bool {
+        if (!ctrl) return false;
+        self.updateLinkHover(x, y, ctrl);
+        const probe_cell = self.linkProbe(x, y, ctrl).cell orelse return false;
+        const url = self.link_hover.urlAt(probe_cell) orelse return false;
+        system_open.openInDefaultApp(self.rt, self.allocator, url);
+        return true;
+    }
+
     fn selectWordAt(self: *App, mouse_x: c_int, mouse_y: c_int) void {
         const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
@@ -1691,6 +1740,9 @@ pub const App = struct {
                 }
                 self.tab_drag.reset();
                 if (self.activeTabPtr()) |tab| tab.interaction.scrollbar.end();
+                // #647 — `Ctrl+클릭` 이 링크 위면 브라우저로 열고 끝낸다. `routeMouseToApp`
+                // 보다 **먼저** 보는 것이 결정 2 다. 링크가 아니면 아무것도 소비하지 않는다.
+                if (self.tryOpenLink(mouse.x, mouse.y, mouse.mods.ctrl)) return true;
                 // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다.
                 // Shift 를 누르면 우리 selection 으로 돌아온다 (bypass).
                 if (!self.routeMouseToApp(self.reportEvent(
@@ -1779,6 +1831,9 @@ pub const App = struct {
                     ));
                 }
                 self.updateTabHover(mouse.x, mouse.y);
+                // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
+                // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
+                self.updateLinkHover(mouse.x, mouse.y, mouse.mods.ctrl);
                 return true;
             },
             .mouse_up => |mouse| {
