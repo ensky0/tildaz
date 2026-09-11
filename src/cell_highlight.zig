@@ -74,6 +74,44 @@ fn contains(tags: []const Tag, raw: u8) bool {
     return false;
 }
 
+/// viewport 행 `y` 의 `[x0, x1]` (양끝 포함) 에 강조를 더한다.
+///
+/// **`updateHighlightsFlattened` 를 쓰지 않는 경우를 위한 것이다.** 검색은 ghostty 가 돌려준
+/// `highlight.Flattened` 를 그대로 넘기면 되지만 ([#646](https://github.com/ensky0/tildaz/issues/646)),
+/// 링크 hover ([#647](https://github.com/ensky0/tildaz/issues/647)) 는 판정 결과가 이미 **viewport
+/// 좌표**라 `Flattened` (page node · serial · chunk) 로 되돌렸다가 다시 행·열로 풀 이유가 없다.
+///
+/// 지운 뒤 다시 칠하는 쪽이 호출자 책임인 것은 `clear` 와 같다 — `RenderState` 는 강조를 스스로
+/// 지우지 않는다 (바뀐 행의 것만 리셋한다).
+///
+/// ⚠️ **강조는 행의 arena 로 할당한다 — general allocator 를 쓰면 샌다.**
+/// `RenderState.deinit` 은 `arena` · `cells` · `applied_styles` 만 해제하고 **`highlights` 는
+/// 해제하지 않는다** (`render.zig`). 행의 arena 가 그 몫을 맡기 때문이고, upstream 의
+/// `updateHighlightsFlattened` 도 같은 자리에서 `row_arena.promote(alloc)` 으로 arena 를 꺼내
+/// 쓴다. `alloc` 은 그 arena 를 promote 하는 데만 쓰인다.
+pub fn add(
+    state: *ghostty.RenderState,
+    alloc: std.mem.Allocator,
+    tag: Tag,
+    y: u16,
+    x0: u16,
+    x1: u16,
+) std.mem.Allocator.Error!void {
+    const row_data = state.row_data.slice();
+    if (y >= row_data.len) return;
+
+    const row_arena = &row_data.items(.arena)[y];
+    var arena = row_arena.promote(alloc);
+    defer row_arena.* = arena.state;
+
+    try row_data.items(.highlights)[y].append(arena.allocator(), .{
+        .tag = tag.value(),
+        .range = .{ x0, x1 },
+    });
+    row_data.items(.dirty)[y] = true;
+    if (state.dirty == .false) state.dirty = .partial;
+}
+
 /// 열 `x` 를 덮는 강조 중 **우선순위가 가장 높은 것** (= tag 값이 가장 작은 것).
 /// 없으면 `null`.
 ///

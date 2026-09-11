@@ -20,6 +20,7 @@ const url_scan = @import("url_scan.zig");
 const log = @import("log.zig");
 const system_open = @import("system_open.zig");
 const Runtime = @import("runtime.zig").Runtime;
+const cell_highlight = @import("cell_highlight.zig");
 
 /// 링크를 기본 브라우저로 연다. 세 host 가 이 함수 하나를 부른다.
 ///
@@ -248,6 +249,11 @@ pub const Hover = struct {
     /// 마지막 판정 입력. 같으면 다시 판정하지 않는다 — motion 은 픽셀마다 오지만 판정이
     /// 달라지는 것은 셀 · 수식키 · pane 이 바뀔 때뿐이다.
     probe: ?Probe = null,
+    /// 강조를 다시 칠해야 하는가. `update` · `clear` 가 세우고 `applyHighlights` 가 내린다.
+    highlights_dirty: bool = false,
+    /// 지금 `RenderState` 에 우리 강조가 올라가 있는가. 링크가 없어졌을 때 **지울 것이
+    /// 있는지**를 이걸로 알아서, 아무 일도 없는 프레임에 행을 순회하지 않는다.
+    painted: bool = false,
 
     pub const Probe = struct {
         /// 포인터가 있는 셀. 셀 영역 밖 (탭바 · padding · 스크롤바 · 창 밖) 이면 `null`.
@@ -321,6 +327,7 @@ pub const Hover = struct {
 
         if (self.hit) |*old| old.deinit(alloc);
         self.hit = found;
+        self.highlights_dirty = true;
         return true;
     }
 
@@ -330,9 +337,62 @@ pub const Hover = struct {
         if (self.hit) |*h| {
             h.deinit(alloc);
             self.hit = null;
+            self.highlights_dirty = true;
             return true;
         }
         return false;
+    }
+
+    /// hover 중인 링크를 `RenderState` 의 per-row 강조로 칠한다. **`state.update` 직후**에
+    /// 부른다 — row 가 재구축된 뒤라야 칠할 자리가 있다.
+    ///
+    /// 세 renderer 가 각자 계산하지 않고 이 한 함수를 쓴다 — 검색의
+    /// `search.PaneSearch.applyHighlights` 와 같은 자리 · 같은 규칙이다 (AGENTS.md 의 single
+    /// definition). renderer 는 결과 (`row_data.items(.highlights)`) 만 읽는다.
+    ///
+    /// **아무 일도 없는 프레임에는 행을 순회하지 않는다.** 링크는 마우스가 움직일 때마다 후보가
+    /// 바뀌어서 검색보다 자주 불린다 — 조기 반환이 없으면 hover 가 없는 사용자도 프레임마다
+    /// 전체 행을 훑는다 (#646 이 `d1b6b41` 에서 같은 것을 고쳤다).
+    pub fn applyHighlights(
+        self: *Hover,
+        alloc: std.mem.Allocator,
+        state: *ghostty.RenderState,
+    ) void {
+        if (self.hit == null and !self.painted) return;
+        if (!self.highlights_dirty and state.dirty == .false) return;
+        self.highlights_dirty = false;
+
+        // **우리 tag 만** 지운다 — 같은 행에 검색 매치가 함께 있을 수 있다. 계약은
+        // `cell_highlight.zig` 에 있다.
+        _ = cell_highlight.clear(state, &.{.link_hover});
+        self.painted = false;
+
+        const hit = self.hit orelse return;
+
+        // 셀 목록을 **행별 연속 구간**으로 묶어 칠한다. OSC 8 은 조각이 흩어질 수 있어
+        // (같은 `id` 로 묶인 링크의 사양) 구간이 여럿 나올 수 있다.
+        //
+        // 목록이 `(y, x)` 오름차순이라는 가정을 **하지 않는다** — 정렬돼 있지 않으면 구간이
+        // 잘게 쪼개질 뿐 결과는 같다. 지금 두 경로는 모두 오름차순이다.
+        var i: usize = 0;
+        while (i < hit.cells.len) {
+            const start = hit.cells[i];
+            var end_x = start.x;
+            var j = i + 1;
+            while (j < hit.cells.len and
+                hit.cells[j].y == start.y and
+                hit.cells[j].x == end_x + 1) : (j += 1)
+            {
+                end_x = hit.cells[j].x;
+            }
+            cell_highlight.add(state, alloc, .link_hover, start.y, start.x, end_x) catch {
+                // 이번 프레임만 표시가 빠진다 — 다음 프레임이 같은 자리에서 다시 시도한다.
+                self.highlights_dirty = true;
+                return;
+            };
+            i = j;
+        }
+        self.painted = true;
     }
 
     /// 그 셀에서 열 URL. 클릭이 링크 위인지 판정한다.
@@ -656,4 +716,73 @@ test "#647 hover — clear 는 창을 떠날 때" {
     try testing.expect(hover.clear(alloc));
     try testing.expect(hover.hit == null);
     try testing.expect(!hover.clear(alloc));
+}
+
+test "#647 applyHighlights — hover 를 행 강조로 칠하고, 풀면 지운다" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 60, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("see https://example.com now");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    const cell_highlight_mod = @import("cell_highlight.zig");
+    const rowHls = struct {
+        fn get(state: *ghostty.RenderState, y: usize) []const ghostty.RenderState.Highlight {
+            return state.row_data.slice().items(.highlights)[y].items;
+        }
+    }.get;
+
+    // hover 가 없으면 아무것도 칠하지 않고, 행을 순회하지도 않는다.
+    hover.applyHighlights(alloc, &f.state);
+    try testing.expectEqual(@as(usize, 0), rowHls(&f.state, 0).len);
+
+    // 링크 위에 올리면 그 구간이 `link_hover` 로 칠해진다 (`see ` 뒤 4..22).
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 6, .y = 0 }, .mods = true, .pane = 0 });
+    hover.applyHighlights(alloc, &f.state);
+    const hls = rowHls(&f.state, 0);
+    try testing.expectEqual(@as(usize, 1), hls.len);
+    try testing.expectEqual(cell_highlight_mod.Tag.link_hover.value(), hls[0].tag);
+    try testing.expectEqual(@as(u16, 4), hls[0].range[0]);
+    try testing.expectEqual(@as(u16, 22), hls[0].range[1]);
+    try testing.expectEqual(cell_highlight_mod.Tag.link_hover, cell_highlight_mod.at(hls, 10).?);
+
+    // 두 번 불러도 쌓이지 않는다.
+    hover.applyHighlights(alloc, &f.state);
+    try testing.expectEqual(@as(usize, 1), rowHls(&f.state, 0).len);
+
+    // 링크를 벗어나면 지워진다.
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 1, .y = 0 }, .mods = true, .pane = 0 });
+    hover.applyHighlights(alloc, &f.state);
+    try testing.expectEqual(@as(usize, 0), rowHls(&f.state, 0).len);
+
+    // 지운 뒤에는 다시 조기 반환한다 (칠한 것이 없으므로).
+    try testing.expect(!hover.painted);
+}
+
+test "#647 applyHighlights — 접힌 URL 은 행마다 구간이 하나씩" {
+    const alloc = testing.allocator;
+    var f = try Fixture.init(alloc, 20, 5);
+    defer f.deinit(alloc);
+    try f.term.printString("https://example.com/a/very/long/path");
+    try f.sync(alloc);
+
+    var hover: Hover = .{};
+    defer hover.deinit(alloc);
+
+    _ = try hover.update(alloc, &f.state, .{ .cell = .{ .x = 0, .y = 0 }, .mods = true, .pane = 0 });
+    hover.applyHighlights(alloc, &f.state);
+
+    const slice = f.state.row_data.slice();
+    // 36 글자 ÷ 20 열 = 첫 행이 꽉 차고 (0..19) 둘째 행에 나머지 16 글자 (0..15).
+    try testing.expectEqual(@as(usize, 1), slice.items(.highlights)[0].items.len);
+    try testing.expectEqual(@as(u16, 0), slice.items(.highlights)[0].items[0].range[0]);
+    try testing.expectEqual(@as(u16, 19), slice.items(.highlights)[0].items[0].range[1]);
+    try testing.expectEqual(@as(usize, 1), slice.items(.highlights)[1].items.len);
+    try testing.expectEqual(@as(u16, 0), slice.items(.highlights)[1].items[0].range[0]);
+    try testing.expectEqual(@as(u16, 15), slice.items(.highlights)[1].items[0].range[1]);
+    // 셋째 행은 링크가 아니다.
+    try testing.expectEqual(@as(usize, 0), slice.items(.highlights)[2].items.len);
 }
