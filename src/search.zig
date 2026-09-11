@@ -49,6 +49,13 @@ pub const PaneSearch = struct {
     /// 현재 terminal 상태 기준으로 검색이 끝났는가. 끝나도 결과는 유지된다.
     complete: bool = false,
 
+    /// 매치 목록이나 선택이 바뀌어 `RenderState` 의 highlight 를 다시 칠해야 하는가.
+    ///
+    /// 매 프레임 다시 칠하지 않는 이유는 비용이다 — 지우기는 행 수만큼, 칠하기는 매치
+    /// 수만큼 드는데 매치가 만 개인 화면이 실제로 있다. ghostty 본체도 같은 자리에
+    /// `search_matches_dirty` 를 둔다 (`renderer/generic.zig`).
+    highlights_dirty: bool = false,
+
     /// 이 pane 의 검색이 더 진행할 일이 남았는가. `false` 면 `step` 을 부르지 않는다.
     pub fn isRunning(self: *const PaneSearch) bool {
         return self.engine != null and !self.complete;
@@ -71,6 +78,7 @@ pub const PaneSearch = struct {
         self.engine = null;
         self.engine_screen = null;
         self.complete = false;
+        self.highlights_dirty = true;
     }
 
     /// 터미널이 먼저 해제된 뒤에 부르는 정리. `ScreenSearch` 가 screen 을 만지지
@@ -159,6 +167,7 @@ pub const PaneSearch = struct {
             self.engine_screen = screen;
             self.complete = false;
             self.debounce_deadline_ns = null;
+            self.highlights_dirty = true;
             return true;
         }
 
@@ -168,6 +177,7 @@ pub const PaneSearch = struct {
         engine.tick() catch |err| switch (err) {
             error.FeedRequired => {
                 try engine.feed();
+                self.highlights_dirty = true;
                 return true;
             },
             error.SearchComplete => {
@@ -176,6 +186,7 @@ pub const PaneSearch = struct {
             },
             else => |e| return e,
         };
+        self.highlights_dirty = true;
         return true;
     }
 
@@ -188,7 +199,9 @@ pub const PaneSearch = struct {
     /// 선택된 매치를 다음/이전으로 옮긴다. 옮겼으면 `true`.
     pub fn select(self: *PaneSearch, to: ghostty.search.Screen.Select) std.mem.Allocator.Error!bool {
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return false;
-        return try engine.select(to);
+        const moved = try engine.select(to);
+        if (moved) self.highlights_dirty = true;
+        return moved;
     }
 
     /// 지금 선택된 매치. 없으면 `null`.
@@ -196,6 +209,83 @@ pub const PaneSearch = struct {
         const engine: *const ghostty.search.Screen = if (self.engine) |*e| e else return null;
         return engine.selectedMatch();
     }
+
+    /// 매치를 `RenderState` 의 per-row highlight 로 칠한다. **`state.update` 직후**에
+    /// 부른다 — row 가 재구축된 뒤라야 칠할 자리가 있다.
+    ///
+    /// 세 renderer 가 각자 부르지 않고 이 한 함수를 쓴다 (AGENTS.md 의 single
+    /// definition 규칙). renderer 는 결과 (`row_data.items(.highlights)`) 만 읽는다.
+    ///
+    /// 다시 칠하는 조건은 **매치가 바뀌었거나 (`highlights_dirty`) row 가 바뀐 것
+    /// (`state.dirty`)** 둘 중 하나다. row 가 바뀌면 ghostty 가 그 행의 highlight 를
+    /// 지우므로 (`render.zig` 의 "dirty row resets highlights") 다시 칠해야 한다.
+    pub fn applyHighlights(
+        self: *PaneSearch,
+        alloc: std.mem.Allocator,
+        state: *ghostty.RenderState,
+    ) void {
+        if (!self.highlights_dirty and state.dirty == .false) return;
+        self.highlights_dirty = false;
+
+        // ghostty 에 highlight 를 지우는 API 가 없어 직접 비운다 (본체도 같다).
+        // 지운 행은 dirty 로 표시해야 renderer 가 그 행을 다시 그린다.
+        const row_data = state.row_data.slice();
+        var any_cleared = false;
+        for (row_data.items(.highlights), row_data.items(.dirty)) |*hls, *dirty| {
+            if (hls.items.len == 0) continue;
+            hls.clearRetainingCapacity();
+            dirty.* = true;
+            any_cleared = true;
+        }
+        if (any_cleared and state.dirty == .false) state.dirty = .partial;
+
+        const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return;
+
+        // **순서가 곧 우선순위다** — 먼저 넣은 highlight 가 앞에 오고, renderer 는 행의
+        // 첫 highlight 를 채택한다. 그래서 선택된 매치를 먼저 넣어야 그 자리가 나머지
+        // 매치 색에 덮이지 않는다.
+        if (engine.selectedMatch()) |m| {
+            state.updateHighlightsFlattened(alloc, @intFromEnum(Tag.current), &.{m}) catch {
+                // 칠하지 못해도 검색 자체는 유효하다 — 이번 프레임만 표시가 빠진다.
+                self.highlights_dirty = true;
+            };
+        }
+
+        // 결과 배열을 그대로 넘긴다 (`matches()` 는 새 배열을 할당한다 — 프레임마다
+        // 만 개를 복사할 이유가 없다).
+        for ([_][]const ghostty.highlight.Flattened{
+            engine.history_results.items,
+            engine.active_results.items,
+        }) |list| {
+            if (list.len == 0) continue;
+            state.updateHighlightsFlattened(alloc, @intFromEnum(Tag.match), list) catch {
+                self.highlights_dirty = true;
+            };
+        }
+    }
+};
+
+/// `RenderState.Highlight.tag` 값. renderer 가 이 값으로 색을 고른다.
+///
+/// **tag 공간은 기능들이 나눠 쓴다.** `RenderState` 에게 이 값은 불투명하고 (ghostty 는
+/// 그대로 돌려줄 뿐이다) 한 행의 highlight 목록에 여러 기능이 섞일 수 있으므로, 값이
+/// 겹치면 서로의 것을 자기 색으로 그린다. 배분은 아래와 같다 (2026-09-11 세션 간 합의).
+///
+/// | tag | 쓰는 곳 |
+/// |---|---|
+/// | 0 | **링크 hover — [#647](https://github.com/ensky0/tildaz/issues/647) 몫으로 비워 둔다** |
+/// | 1 · 2 | 검색 매치 (이 파일) |
+///
+/// 세 renderer 의 "행의 highlight 를 읽어 tag 로 가르는" 진입 루프는 **먼저 머지되는
+/// 쪽이 깔고** 늦는 쪽이 분기만 더한다.
+pub const Tag = enum(u8) {
+    /// 지금 선택된 매치 — `TAB_ACCENT_COLOR` (앱의 "활성" 색과 같다).
+    ///
+    /// **`match` 보다 작은 값이어야 하는 것은 아니다** — 우선순위는 값이 아니라
+    /// `applyHighlights` 가 넣는 순서가 정한다.
+    current = 1,
+    /// 찾았지만 지금 보고 있는 것은 아닌 매치 — `MENU_HOVER_BG`.
+    match = 2,
 };
 
 test "#646 needle 이 비면 검색을 시작하지 않는다" {
