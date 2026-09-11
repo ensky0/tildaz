@@ -12,6 +12,12 @@
 
 const std = @import("std");
 const ui_metrics = @import("ui_metrics.zig");
+const ui_rect = @import("ui_rect.zig");
+const chrome_palette = @import("chrome_palette.zig");
+// `tab_icons` 는 아이콘 rasterizer (std 만 의존하는 순수 모듈) 라 chrome 모듈끼리의
+// 상호 참조 (`ui_rect.zig` 머리 주석이 경계하는 것) 에 해당하지 않는다. 컨트롤이 셋이라
+// 매핑을 세 renderer 에 복사하는 것보다 여기 한 곳에 두는 편이 낫다.
+const tab_icons = @import("tab_icons.zig");
 
 /// 바 높이 — 탭바와 같다. 위아래로 짝을 이뤄 앱이 한 덩어리로 읽힌다.
 pub const HEIGHT_PT: f32 = @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT);
@@ -220,6 +226,91 @@ fn inside(r: Rect, x: f32, y: f32) bool {
     return r.w > 0 and r.h > 0 and x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h;
 }
 
+/// `rects` 가 내보낼 수 있는 최대 개수 — 배경 · 위쪽 선 · hover 강조.
+pub const MAX_RECTS: usize = 3;
+
+/// 검색바의 **색칠된 사각형 목록** (device px). 세 renderer 가 이 함수 하나를 부르고,
+/// 목록을 그린 뒤 자기 고유의 텍스트 (검색어 · 안내문 · 카운터) 와 아이콘 (돋보기 · ‹ › ×) ·
+/// caret 을 그린다 — `command_menu.rects` 와 같은 계약이다.
+///
+/// ## 그리는 순서 (정본)
+///
+/// ```
+///   바 배경 → 위쪽 선 (포커스면 amber) → hover 강조
+///   (renderer)  아이콘 · 텍스트 · caret
+/// ```
+///
+/// 위쪽 선은 **포커스 여부로 색과 두께가 함께 바뀐다** — 평소에는
+/// `TAB_SEPARATOR_COLOR` 1 pt 경계선이고, 키보드 포커스가 바에 있으면 `TAB_ACCENT_COLOR`
+/// 2 pt 다 (활성 탭 밑줄과 같은 두께 · 색). 두 상태가 *같은 자리* 를 쓰므로 경계선이
+/// 사라지고 amber 가 생기는 것이 아니라 그 띠가 두꺼워지며 색이 바뀌는 것으로 보인다.
+pub fn rects(
+    out: []ui_rect.Rect,
+    v: View,
+    ui: Ui,
+    scale: f32,
+    palette: *const chrome_palette.Palette,
+) []const ui_rect.Rect {
+    var n: usize = 0;
+
+    // 1. 바 배경 — 탭바와 같은 표면.
+    push(out, &n, .{
+        .x = v.rect.x * scale,
+        .y = v.rect.y * scale,
+        .w = v.rect.w * scale,
+        .h = v.rect.h * scale,
+        .color = palette.tab_bar_bg,
+    });
+
+    // 2. 위쪽 선. 포커스면 amber 가 더 두껍게 같은 자리를 덮는다.
+    const line_pt: f32 = if (ui.focused) FOCUS_LINE_PT else BORDER_PT;
+    push(out, &n, .{
+        .x = v.rect.x * scale,
+        .y = v.rect.y * scale,
+        .w = v.rect.w * scale,
+        .h = ui_metrics.linePx(line_pt, scale),
+        .color = if (ui.focused) ui_metrics.TAB_ACCENT_COLOR else palette.separator,
+    });
+
+    // 3. hover 한 컨트롤 강조 — 탭바 컨트롤과 같은 색.
+    if (ui.hover) |c| {
+        const r = controlRect(v, c);
+        if (r.w > 0) push(out, &n, .{
+            .x = r.x * scale,
+            .y = r.y * scale,
+            .w = r.w * scale,
+            .h = r.h * scale,
+            .color = palette.ctrl_hover_bg,
+        });
+    }
+
+    return out[0..n];
+}
+
+/// `command_menu.push` 와 같은 이유로 정수 격자에 맞춰 내보낸다 (#357 · `ui_rect.snapped`).
+fn push(out: []ui_rect.Rect, n: *usize, r: ui_rect.Rect) void {
+    if (n.* >= out.len) return; // 호출처 버퍼 상한 — `MAX_RECTS` 로 산정한다.
+    out[n.*] = ui_rect.snapped(r);
+    n.* += 1;
+}
+
+pub fn controlRect(v: View, c: Control) Rect {
+    return switch (c) {
+        .prev => v.prev,
+        .next => v.next,
+        .close => v.close,
+    };
+}
+
+/// 컨트롤에 그릴 아이콘 종류. renderer 가 `tab_icons.rasterize` 에 넘긴다.
+pub fn controlIcon(c: Control) tab_icons.Icon {
+    return switch (c) {
+        .prev => .chevron_left,
+        .next => .chevron_right,
+        .close => .close,
+    };
+}
+
 /// 카운터 문구를 만든다. `buf` 는 최소 24 바이트.
 ///
 /// - 훑는 중 → `…` (아직 모르는 것과 "없다" 를 구별한다)
@@ -325,4 +416,62 @@ test "#646 countText — 상태마다 다른 문구" {
 test "#646 reservedHeightPt — 열려 있을 때만 자리를 차지한다" {
     try std.testing.expectEqual(@as(f32, 0), reservedHeightPt(false));
     try std.testing.expectEqual(HEIGHT_PT, reservedHeightPt(true));
+}
+
+test "#646 rects — 배경과 위쪽 선이 나오고 정수 격자에 맞는다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const v = view(800, 600);
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+
+    const rs = rects(&buf, v, .{ .open = true }, 1.0, &chrome);
+    try std.testing.expectEqual(@as(usize, 2), rs.len); // 배경 + 선 (hover 없음)
+
+    // 배경은 탭바와 같은 색이다.
+    try std.testing.expectEqual(chrome.tab_bar_bg, rs[0].color);
+    // 평소 위쪽 선은 구분선 색이다.
+    try std.testing.expectEqual(chrome.separator, rs[1].color);
+
+    for (rs) |r| {
+        try std.testing.expectEqual(@round(r.x), r.x);
+        try std.testing.expectEqual(@round(r.y), r.y);
+        try std.testing.expectEqual(@round(r.w), r.w);
+        try std.testing.expectEqual(@round(r.h), r.h);
+    }
+}
+
+test "#646 rects — 포커스면 위쪽 선이 amber 로 두꺼워진다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const v = view(800, 600);
+    var a: [MAX_RECTS]ui_rect.Rect = undefined;
+    var b: [MAX_RECTS]ui_rect.Rect = undefined;
+
+    const plain = rects(&a, v, .{ .open = true, .focused = false }, 2.0, &chrome);
+    const focused = rects(&b, v, .{ .open = true, .focused = true }, 2.0, &chrome);
+
+    // 같은 자리를 쓴다 — 선이 사라지고 생기는 것이 아니라 색과 두께가 바뀐다.
+    try std.testing.expectEqual(plain[1].y, focused[1].y);
+    try std.testing.expect(focused[1].h > plain[1].h);
+    try std.testing.expectEqual(ui_metrics.TAB_ACCENT_COLOR, focused[1].color);
+}
+
+test "#646 rects — hover 한 컨트롤만 강조가 붙는다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const v = view(800, 600);
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+
+    const rs = rects(&buf, v, .{ .open = true, .hover = .close }, 1.0, &chrome);
+    try std.testing.expectEqual(@as(usize, 3), rs.len);
+    try std.testing.expectEqual(chrome.ctrl_hover_bg, rs[2].color);
+    // 강조가 그 컨트롤 자리에 있다.
+    try std.testing.expectEqual(@round(v.close.x), rs[2].x);
+}
+
+test "#646 rects — 컨트롤이 접힌 폭에서는 hover 강조를 만들지 않는다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const v = view(NEED_MINIMAL_PT, 600); // 컨트롤 접힘
+    var buf: [MAX_RECTS]ui_rect.Rect = undefined;
+
+    // 폭 0 인 컨트롤에 hover 가 남아 있어도 빈 rect 를 내보내지 않는다.
+    const rs = rects(&buf, v, .{ .open = true, .hover = .close }, 1.0, &chrome);
+    try std.testing.expectEqual(@as(usize, 2), rs.len);
 }
