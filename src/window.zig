@@ -2122,6 +2122,12 @@ pub const Window = struct {
             },
             WM_KEYDOWN => {
                 perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
+                // #653 — **이 플래그는 바로 다음 문자 메시지에만 유효하다.** 짝꿍 `WM_CHAR` 가
+                // 아예 오지 않는 키 (`Ctrl+Tab` 처럼 대응 글자가 없는 조합) 가 세우면 그대로
+                // 남아 *다음 키*의 `WM_CHAR` 를 삼킨다 — Windows 실기에서 `Ctrl+Tab` 뒤의
+                // `Ctrl+Enter` (`0a`) 가 통째로 사라졌다 (순서를 바꾸면 정상이라 확정했다).
+                // 다음 keydown 이 왔다는 것은 앞 키의 문자 메시지는 이미 지나갔다는 뜻이다.
+                self.swallow_next_wm_char = false;
                 // Ctrl keydown이 먼저 끝낸 composition result는 modifier keydown을
                 // 건너뛰어 실제 chord key까지 유지한다. leave 정책이 필요한
                 // C(copy/interrupt), Ctrl+Shift+V(paste), F12(perf)는 app resolver가
