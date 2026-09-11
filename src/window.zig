@@ -1742,6 +1742,30 @@ pub const Window = struct {
         // 다른 모드 → no-op (예: .monitor 상태에서 인자 .workarea).
     }
 
+    /// #647 — 포인터가 있는 자리의 커서를 **지금** 다시 지정한다.
+    ///
+    /// `WM_SETCURSOR` 는 마우스가 움직일 때만 오므로, 수식키만 누른 순간에는 커서가 따라오지
+    /// 않는다. 그때 이것을 불러 같은 판정 (`cursor_region_fn`) 을 한 번 더 태운다.
+    pub fn refreshCursor(self: *Window) void {
+        const region_fn = self.cursor_region_fn orelse return;
+        if (self.hwnd == null) return;
+        // **실패하면 좌표를 쓰지 않는다.** `pt` 는 `undefined` 라 실패한 값을 그대로 쓰면
+        // 엉뚱한 자리의 커서를 정한다. `BOOL` 은 non-exhaustive enum 이고 참값이 1 만이
+        // 아니므로 `.TRUE` 와 비교하지 않는다 — std 가 그 비교를 *"always a bug"* 로 적어
+        // 두었고 `toBool()` 이 그 자리다.
+        var pt: POINT = undefined;
+        if (!GetCursorPos(&pt).toBool()) return;
+        if (!ScreenToClient(self.hwnd, &pt).toBool()) return;
+        const handle: HCURSOR = switch (region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata)) {
+            .cell => self.cursor_ibeam,
+            .other => self.cursor_arrow,
+            .separator_v => self.cursor_sizewe,
+            .separator_h => self.cursor_sizens,
+            .link => self.cursor_hand,
+        };
+        _ = SetCursor(handle);
+    }
+
     fn dispatchAppEvent(self: *Window, event: app_event.Event) bool {
         if (self.app_event_fn) |f| {
             return f(event, self.userdata);
@@ -2134,6 +2158,13 @@ pub const Window = struct {
                 // `Ctrl+Enter` (`0a`) 가 통째로 사라졌다 (순서를 바꾸면 정상이라 확정했다).
                 // 다음 keydown 이 왔다는 것은 앞 키의 문자 메시지는 이미 지나갔다는 뜻이다.
                 self.swallow_next_wm_char = false;
+                // #647 — 링크 수식키를 누른 **그 순간** 판정을 다시 한다 (마우스가 가만히
+                // 있으면 motion 이 오지 않는다). auto-repeat 로 여러 번 와도 `needsUpdate`
+                // 가 걸러 낸다. 소비하지 않으므로 아래 기존 처리는 그대로 간다.
+                if (wParam == @as(WPARAM, @intCast(VK_CONTROL))) {
+                    _ = self.dispatchAppEvent(.{ .link_mods_changed = true });
+                    self.refreshCursor();
+                }
                 // Ctrl keydown이 먼저 끝낸 composition result는 modifier keydown을
                 // 건너뛰어 실제 chord key까지 유지한다. leave 정책이 필요한
                 // C(copy/interrupt), Ctrl+Shift+V(paste), F12(perf)는 app resolver가
@@ -2349,6 +2380,11 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYUP, WM_SYSKEYUP => {
+                // #647 — 링크 수식키를 뗀 순간에도 다시 판정한다 (위 `WM_KEYDOWN` 과 짝).
+                if (wParam == @as(WPARAM, @intCast(VK_CONTROL))) {
+                    _ = self.dispatchAppEvent(.{ .link_mods_changed = false });
+                    self.refreshCursor();
+                }
                 // preserve 요청 뒤 IME result가 전혀 오지 않은 IME에서는 chord가
                 // 끝날 때 요청만 해제. 예상 read-only result가 보류됐는데 action이
                 // 소비하지 못한 예외에는 결과를 확정해 입력 손실/가짜 overlay 방지.

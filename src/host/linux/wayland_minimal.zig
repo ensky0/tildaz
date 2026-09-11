@@ -7334,6 +7334,13 @@ const Client = struct {
             self.refreshKdePositionHotkey();
             self.writeCosmicPositionHotkey();
         }
+
+        // #647 — `Ctrl` 을 누르거나 뗀 그 순간 링크 판정을 다시 한다. 마우스가 가만히
+        // 있으면 motion 이 오지 않아서, 이것이 없으면 포인터를 흔들어야 밑줄 · 손 커서가
+        // 따라온다. 앱이 마우스를 잡은 동안에만 실제로 달라진다 — 평소에는 `active` 가
+        // 수식키와 무관해 `needsUpdate` 가 걸러 낸다.
+        self.updateLinkHover();
+        self.updateCursorShape() catch {};
     }
 
     fn handleKeyboardRepeatInfo(self: *Client, payload: []const u8) void {

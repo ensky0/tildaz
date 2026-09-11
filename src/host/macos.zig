@@ -2671,41 +2671,22 @@ fn refreshLinkHoverMac() void {
     applyLinkCursorMac();
 }
 
-/// `linkActiveMac` 의 이벤트 없는 판. 키 이벤트 경로가 쓴다.
+/// 지금 이 클릭이 링크로 갈 수 있는가 — 앱이 마우스를 잡지 않았거나 `⌘` 가 눌렸을 때.
+///
+/// 앱이 mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
+/// "보이는데 안 열리는" 어긋남이 된다. kitty 의 `ungrabbed` 조건과 같다 (#647).
 fn linkActiveNowMac() bool {
     const tab = g_session.activeTab() orelse return false;
     if (terminal_interaction.reportTracking(&tab.terminal) == .none) return true;
     return linkModsNowMac();
 }
 
-/// macOS 에서 링크를 **여는** 수식키는 `⌘` 다 (`NSEventModifierFlagCommand`). Linux · Windows
-/// 는 `Ctrl` 이고, ghostty 의 `ctrlOrSuper` 와 같다 (#647 결정 1).
-///
-/// **밑줄 표시는 이것을 보지 않는다** — 포인터가 링크 위에 있기만 하면 그려진다 (`link.Hover`
-/// 의 머리 주석). 여기는 여는 자리에서만 쓴다.
-///
-/// `eventMouseMods` 를 쓰지 않는 이유는 그쪽이 **mouse reporting 인코더용**이라 xterm 이
-/// 인코딩하는 셋 (shift · alt · ctrl) 만 담기 때문이다 — `⌘` 자리가 아예 없다.
-fn linkModsMac(event: objc.id) bool {
-    if (event == null) return false;
-    const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
-    return (get_flags(event, objc.sel("modifierFlags")) & (1 << 20)) != 0;
-}
-
-/// 지금 이 클릭이 링크로 갈 수 있는가 — 앱이 마우스를 잡지 않았거나 `⌘` 가 눌렸을 때.
-///
-/// 앱이 mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
-/// "보이는데 안 열리는" 어긋남이 된다. kitty 의 `ungrabbed` 조건과 같다 (#647).
-fn linkActiveMac(event: objc.id) bool {
-    _ = event;
-    return linkActiveNowMac();
-}
-
+/// 포인터가 있는 셀과 "지금 링크로 갈 수 있는가".
 fn linkProbeMac(self_view: objc.id, event: objc.id) link.Hover.Probe {
     const cell = eventToCell(self_view, event);
     return .{
         .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
-        .active = linkActiveMac(event),
+        .active = linkActiveNowMac(),
         // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
         .pane = if (g_session.activeTab()) |t| @intFromPtr(t) else 0,
     };

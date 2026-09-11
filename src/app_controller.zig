@@ -62,6 +62,9 @@ pub const App = struct {
     /// 한 곳이다). macOS `g_link_hover` · Linux `Client.link_hover` 와 같은 것이다.
     /// `App` 은 프로세스 수명과 같아 따로 해제하지 않는다.
     link_hover: link.Hover = .{},
+    /// #647 — 마지막으로 본 포인터 위치 (client px). **키 이벤트에는 마우스 좌표가 없어서**
+    /// `Ctrl` 을 눌렀을 때 "지금 포인터가 링크 위인가" 를 이 값으로 판정한다.
+    link_pointer: ?struct { x: c_int, y: c_int } = null,
     // terminal_interaction (mouse selection / scrollbar drag) state 는 per-tab —
     // session_core.Tab.interaction (cross-platform field, macOS 와 동등) 사용.
     // App level 에는 더 이상 글로벌 state 없음. 탭 전환 시 자동으로 새 탭의
@@ -1583,6 +1586,13 @@ pub const App = struct {
                 if (self.focusPaneUnderPointer(mouse.x, mouse.y)) return true;
                 return false;
             },
+            .link_mods_changed => |ctrl| {
+                // #647 — 수식키를 누르거나 뗀 순간의 재판정. 마지막 포인터 자리로 본다.
+                // 앱이 마우스를 잡은 동안에만 실제로 달라진다 — 평소에는 `active` 가
+                // 수식키와 무관해 `needsUpdate` 가 걸러 낸다.
+                if (self.link_pointer) |p| self.updateLinkHover(p.x, p.y, ctrl);
+                return false; // 키 처리를 막지 않는다
+            },
             .focus_lost => {
                 // #390 — 다른 앱으로 focus 가 넘어가면 열린 menu 를 닫는다
                 // (native menu 동등). 창 밖 클릭 자체는 우리에게 오지 않으므로
@@ -1849,6 +1859,7 @@ pub const App = struct {
                 self.updateTabHover(mouse.x, mouse.y);
                 // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
                 // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
+                self.link_pointer = .{ .x = mouse.x, .y = mouse.y };
                 self.updateLinkHover(mouse.x, mouse.y, mouse.mods.ctrl);
                 return true;
             },
