@@ -10,7 +10,8 @@
 #
 #   1. `WM_NULL` 이 돌아오는가 (= UI 스레드가 살아 있는가). 안 돌아오면 최대 40 초 재확인해
 #      **일시적 지연**과 **영구 정지**를 가른다.
-#   2. tildaz 경로의 `OpenConsole.exe` 가 쌓이는가 (자식이 안 죽으면 남는다).
+#   2. tildaz 경로의 `OpenConsole.exe` 가 쌓이는가 (자식이 안 죽으면 남는다). **이 회차가 띄운
+#      것만** 센다 — 시작 전부터 있던 것은 사용자의 다른 instance 몫이라 건드리지 않는다.
 #
 # 수정 전 판: 사이클 1 에서 UI 영구 무응답 · 앱 강제 종료 뒤에도 OpenConsole 1 잔존.
 # 수정 후 판: 전 사이클 UI 정상 · 앱 종료 뒤 0.
@@ -173,6 +174,13 @@ function Get-TzConsole {
     Get-CimInstance Win32_Process -Filter "Name='OpenConsole.exe'" | Where-Object { $_.ExecutablePath -like '*tildaz*' }
 }
 
+# 회차가 **시작되기 전부터 있던** 콘솔은 사용자의 다른 instance 몫이다 — 세지도 죽이지도 않는다.
+# 전에는 정리가 `Get-TzConsole` 전부를 자식까지 `Stop-Process` 해서, 떠 있던 instance 0 의 탭이
+# 함께 죽고 그 instance 가 사라졌다 (#645 Windows 회차에서 실제로 겪었다 — 기준선 6 개가 0 이 됐다).
+function Get-TzOwnConsole {
+    Get-TzConsole | Where-Object { $script:BaseConsoleIds -notcontains $_.ProcessId }
+}
+
 function Test-UiAlive {
     param([IntPtr]$Hwnd)
     # WM_NULL 을 타임아웃과 함께 보내 UI 스레드가 메시지 펌프에 응답하는지 본다.
@@ -183,8 +191,8 @@ function Test-UiAlive {
 }
 
 # ── 시작 전 위생
-$before = @(Get-TzConsole).Count
-"시작 전 tildaz OpenConsole = $before"
+$script:BaseConsoleIds = @(Get-TzConsole | ForEach-Object { $_.ProcessId })
+"시작 전 tildaz OpenConsole = $($script:BaseConsoleIds.Count)  (사용자의 다른 instance 몫 — 이 회차는 세지도 죽이지도 않아요)"
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
 
 # -e 회차 — config_9.toml 도 전역 hotkey 도 만들지 않는다 (AGENTS.md).
@@ -214,17 +222,17 @@ if ([TzWin]::GetForegroundWindow() -ne $hwnd) {
 # 탭 생성은 **성공 시 로그를 남기지 않으므로** (log.zig 는 실패만 적는다) 로그로는
 # "안 먹었다" 와 "먹었다" 를 가를 수 없다. 새 탭이 생기면 OpenConsole 이 하나 늘어난다.
 if ($Probe) {
-    "① 시작 상태: OpenConsole = $(@(Get-TzConsole).Count)  (탭 1 개 = 1 이 정상)"
+    "① 시작 상태: OpenConsole = $(@(Get-TzOwnConsole).Count)  (탭 1 개 = 1 이 정상)"
     Send-Chord @([uint16]$VK.Control, [uint16]$VK.Shift, [uint16]$VK.T)
     Start-Sleep -Seconds 2
-    "② Ctrl+Shift+T 뒤: OpenConsole = $(@(Get-TzConsole).Count)  (2 여야 단축키가 먹은 것)"
+    "② Ctrl+Shift+T 뒤: OpenConsole = $(@(Get-TzOwnConsole).Count)  (2 여야 단축키가 먹은 것)"
     Send-Chord @([uint16]$VK.Control, [uint16]$VK.Shift, [uint16]$VK.W)
     Start-Sleep -Seconds 2
-    "③ Ctrl+Shift+W 뒤: OpenConsole = $(@(Get-TzConsole).Count)  (1 이면 정상 정리)"
+    "③ Ctrl+Shift+W 뒤: OpenConsole = $(@(Get-TzOwnConsole).Count)  (1 이면 정상 정리)"
     Get-CimInstance Win32_Process -Filter "Name='tildaz.exe'" | Where-Object { $_.CommandLine -like '*--instance 9*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
-    "④ 앱 종료 뒤: OpenConsole = $(@(Get-TzConsole).Count)"
-    foreach ($x in (Get-TzConsole)) {
+    "④ 앱 종료 뒤: OpenConsole = $(@(Get-TzOwnConsole).Count)"
+    foreach ($x in (Get-TzOwnConsole)) {
         Get-CimInstance Win32_Process -Filter "ParentProcessId=$($x.ProcessId)" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         Stop-Process -Id $x.ProcessId -Force -ErrorAction SilentlyContinue
     }
@@ -248,7 +256,7 @@ for ($c = 1; $c -le $Cycles; $c++) {
     }
 
     $alive = Test-UiAlive -Hwnd $hwnd
-    $left = @(Get-TzConsole).Count
+    $left = @(Get-TzOwnConsole).Count
     if ($left -gt $maxLeft) { $maxLeft = $left }
     if (-not $alive) {
         # 일시적 지연과 영구 정지를 가른다 — 최대 40 초까지 다시 물어본다.
@@ -270,15 +278,15 @@ for ($c = 1; $c -le $Cycles; $c++) {
     Start-Sleep -Milliseconds $GapMs
 }
 
-$leftEnd = @(Get-TzConsole).Count
+$leftEnd = @(Get-TzOwnConsole).Count
 "결과: 사이클=$Cycles hold=${HoldMs}ms · UI무응답=$(if ($hangCycle -gt 0) { "사이클 $hangCycle" } else { '없음' }) · OpenConsole 최대=$maxLeft 최종=$leftEnd"
 
 # ── 정리: 인스턴스 9 만 내린다
 Get-CimInstance Win32_Process -Filter "Name='tildaz.exe'" | Where-Object { $_.CommandLine -like '*--instance 9*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 1
-$after = @(Get-TzConsole).Count
+$after = @(Get-TzOwnConsole).Count
 "앱 종료 뒤 남은 OpenConsole = $after"
-foreach ($x in (Get-TzConsole)) {
+foreach ($x in (Get-TzOwnConsole)) {
     Get-CimInstance Win32_Process -Filter "ParentProcessId=$($x.ProcessId)" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Stop-Process -Id $x.ProcessId -Force -ErrorAction SilentlyContinue
 }
