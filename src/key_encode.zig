@@ -227,6 +227,12 @@ pub fn encode(
 /// **물리 키의 US 글자**. 러시아어 배열의 `Ctrl+I` (물리 `i` 자리, keysym `ш`) 가 그
 /// 되짚기로 `0x09` 를 낸다. CapsLock 으로 대문자가 와도 내려서 본다.
 fn legacyC0Override(event: Event, opts: Options) ?u8 {
+    // **누름 · 반복만이다.** `Event.action` 주석이 약속한 대로 host 는 `.release` 를
+    // 모드와 무관하게 넘기고 (macOS `tildazKeyUp` 은 무조건 보낸다) 거르는 것은
+    // 인코더의 몫이다. ghostty 의 legacy 경로는 맨 앞에서 걸러 내는데, 이 override 는
+    // 그보다 앞에 있어 직접 걸러야 한다 — 빠뜨려서 `Ctrl+[` 가 누름 · 뗌 두 번 나가
+    // `^[^[` 가 됐다 (2026-09-11 실기).
+    if (event.action != .press and event.action != .repeat) return null;
     if (opts.kitty_flags.int() != 0) return null;
     if (opts.modify_other_keys_state_2) return null;
     if (!event.mods.ctrl) return null;
@@ -585,6 +591,39 @@ test "#650 legacy 에서 Ctrl+[ · Ctrl+I · Ctrl+M 이 C0 로 나간다" {
         }, .{});
         try testing.expectEqualStrings(c.want, out);
     }
+}
+
+test "#650 키를 뗄 때는 C0 를 내지 않는다" {
+    // host 는 `.release` 를 모드와 무관하게 넘긴다 (`Event.action` 주석). 거르지 않으면
+    // 누름 · 뗌 두 번 나가 `Ctrl+[` 가 `^[^[` 가 된다.
+    const Case = struct { code: physical_key.PhysicalCode, ch: []const u8 };
+    for ([_]Case{
+        .{ .code = .bracket_left, .ch = "[" },
+        .{ .code = .key_i, .ch = "i" },
+        .{ .code = .key_m, .ch = "m" },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const outcome, const bytes = try encodeOutcome(&buf, .{
+            .code = c.code,
+            .mods = .{ .ctrl = true },
+            .utf8 = c.ch,
+            .unshifted_codepoint = c.ch[0],
+            .action = .release,
+        }, .{});
+        try testing.expectEqual(Outcome.encoded, outcome);
+        try testing.expectEqualStrings("", bytes);
+    }
+
+    // 반복 (누른 채 대기) 은 누름과 같다 — 키 반복이 죽으면 안 된다.
+    var buf: [16]u8 = undefined;
+    const repeat = try encodeToBuf(&buf, .{
+        .code = .bracket_left,
+        .mods = .{ .ctrl = true },
+        .utf8 = "[",
+        .unshifted_codepoint = '[',
+        .action = .repeat,
+    }, .{});
+    try testing.expectEqualStrings("\x1b", repeat);
 }
 
 test "#650 프로토콜을 켠 앱에는 확장 인코딩이 그대로 간다" {
