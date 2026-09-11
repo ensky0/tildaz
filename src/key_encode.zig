@@ -258,9 +258,37 @@ fn legacyC0Override(event: Event, opts: Options) ?u8 {
     if (event.action != .press and event.action != .repeat) return null;
     if (opts.kitty_flags.int() != 0) return null;
     if (opts.modify_other_keys_state_2) return null;
-    if (!event.mods.ctrl) return null;
-    if (event.mods.shift or event.mods.alt or event.mods.super) return null;
+    if (event.mods.alt or event.mods.super) return null;
 
+    // #648 — `Ctrl+Shift` 대역은 **앱 단축키 대역**이라 PTY 로 보내지 않는다. 그쪽 규칙이
+    // 이미 세 OS 로 검증돼 있으므로 여기서 되살리지 않는다.
+    if (event.mods.ctrl and event.mods.shift) return null;
+
+    // ① #653 — 특수키. legacy 에는 수식키를 실을 자리가 없는데 ghostty 는
+    // `function_keys` 표의 무조건 항목으로 `CSI 27;<mods>;<cp> ~` 를 낸다. 앱이
+    // `CSI > 4;2m` 으로 켠 적이 없으면 그것은 요청되지 않은 인코딩이라 (위에서 이미
+    // 걸렀다) **맨 키의 C0** 를 보낸다 — xterm · Terminal.app · iTerm2 가 하는 것이고
+    // Windows 의 `WM_CHAR` 경로가 이미 내던 값이다.
+    if (event.code) |code| switch (code) {
+        .enter => if (event.mods.ctrl or event.mods.shift) return 0x0d,
+        .escape => if (event.mods.ctrl or event.mods.shift) return 0x1b,
+        // **`Shift+Tab` 은 건드리지 않는다** — `ESC[Z` (CBT) 는 확장이 아니라 ECMA-48
+        // 시절부터 있던 진짜 legacy 시퀀스다.
+        .tab => if (event.mods.ctrl) return 0x09,
+        else => {},
+    };
+
+    // ② #650 — 글자 키. ghostty 의 `ctrlSeq` C0 표는 `[` · `i` · `m` 을 **주석과 함께
+    // 일부러 비워 두었다** — *"These are purposely NOT handled here because of the
+    // fixterms specification … processed as CSI u"*. 앱이 `Tab` 과 `Ctrl+I` 를 구분할 수
+    // 있게 하려는 것이고 그 자체는 타당하다. 문제는 **앱이 그 프로토콜을 켜지 않았을
+    // 때도** 그렇게 나간다는 것이다 — bash 에서 `Ctrl+[` 가 ESC 가 아니라 `ESC[91;5u`
+    // 라서 vi-mode 탈출이 안 됐다.
+    //
+    // 글자를 고르는 순서는 `ctrlSeq` 와 같다 — 1 바이트 `utf8` 이 있으면 그것, 없으면
+    // **물리 키의 US 글자**. 러시아어 배열의 `Ctrl+I` (물리 `i` 자리, keysym `\u0448`) 가 그
+    // 되짚기로 `0x09` 를 낸다. CapsLock 으로 대문자가 와도 내려서 본다.
+    if (!event.mods.ctrl) return null;
     var char: u8 = if (event.utf8.len == 1)
         event.utf8[0]
     else
@@ -565,13 +593,15 @@ test "#648 legacy 의 Ctrl+Shift+Enter 도 보내지 않는다" {
     }, .{});
     try testing.expectEqualStrings("", out);
 
-    // Shift 없는 `Ctrl+Enter` 는 규칙 밖이다 — 지금까지대로 나간다.
+    // Shift 없는 `Ctrl+Enter` 는 **#653 에서 `0d` 가 됐다.** 이 이슈(#648)의 억제 규칙이
+    // 아니라 "legacy 는 맨 키의 C0" 규칙이 잡는다 — `ESC[27;5;13~` 도 요청되지 않은
+    // modifyOtherKeys 형식이라 같은 병이었다.
     var buf2: [16]u8 = undefined;
     const ctrl_only = try encodeToBuf(&buf2, .{
         .code = .enter,
         .mods = .{ .ctrl = true },
     }, .{});
-    try testing.expectEqualStrings("\x1b[27;5;13~", ctrl_only);
+    try testing.expectEqualStrings("\x0d", ctrl_only);
 }
 
 test "#648 표준 CSI modifier 는 확장이 아니라 그대로 둔다" {
@@ -647,6 +677,70 @@ test "#650 키를 뗄 때는 C0 를 내지 않는다" {
         .action = .repeat,
     }, .{});
     try testing.expectEqualStrings("\x1b", repeat);
+}
+
+test "#653 legacy 의 ctrl · shift + 특수키는 맨 키의 C0 로 나간다" {
+    // ghostty 는 `function_keys` 표의 무조건 항목으로 `CSI 27;<mods>;<cp> ~` 를 낸다.
+    // legacy 에는 수식키를 실을 자리가 없으므로 맨 키의 C0 를 보낸다 — xterm 동등.
+    const Case = struct { name: []const u8, code: physical_key.PhysicalCode, mods: Mods, want: []const u8 };
+    for ([_]Case{
+        .{ .name = "ctrl+enter", .code = .enter, .mods = .{ .ctrl = true }, .want = "\x0d" },
+        .{ .name = "shift+enter", .code = .enter, .mods = .{ .shift = true }, .want = "\x0d" },
+        .{ .name = "ctrl+escape", .code = .escape, .mods = .{ .ctrl = true }, .want = "\x1b" },
+        .{ .name = "shift+escape", .code = .escape, .mods = .{ .shift = true }, .want = "\x1b" },
+        .{ .name = "ctrl+tab", .code = .tab, .mods = .{ .ctrl = true }, .want = "\x09" },
+        // 수식키 없는 맨 키는 원래도 C0 다 — 회귀 감시.
+        .{ .name = "enter", .code = .enter, .mods = .{}, .want = "\x0d" },
+        .{ .name = "tab", .code = .tab, .mods = .{}, .want = "\x09" },
+        .{ .name = "escape", .code = .escape, .mods = .{}, .want = "\x1b" },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const out = try encodeToBuf(&buf, .{ .code = c.code, .mods = c.mods }, .{});
+        testing.expectEqualStrings(c.want, out) catch |err| {
+            std.debug.print("실패한 조합: {s}\n", .{c.name});
+            return err;
+        };
+    }
+}
+
+test "#653 Shift+Tab 의 ESC[Z 는 확장이 아니라 건드리지 않는다" {
+    // CBT 는 ECMA-48 시절부터 있던 진짜 legacy 시퀀스다. 여기까지 C0 로 내리면
+    // 셸 보완 메뉴의 역방향 이동이 죽는다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{ .code = .tab, .mods = .{ .shift = true } }, .{});
+    try testing.expectEqualStrings("\x1b[Z", out);
+}
+
+test "#653 Ctrl+Shift 대역은 #648 대로 계속 억제한다" {
+    // 특수키 C0 규칙이 `Ctrl+Shift` 까지 되살리면 안 된다 — 그쪽은 앱 단축키 대역이고
+    // 세 OS 로 검증된 결정이다.
+    const Case = struct { name: []const u8, code: physical_key.PhysicalCode };
+    for ([_]Case{
+        .{ .name = "ctrl+shift+enter", .code = .enter },
+        .{ .name = "ctrl+shift+tab", .code = .tab },
+        .{ .name = "ctrl+shift+escape", .code = .escape },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const outcome, const bytes = try encodeOutcome(&buf, .{
+            .code = c.code,
+            .mods = .{ .ctrl = true, .shift = true },
+        }, .{});
+        testing.expectEqual(Outcome.suppressed, outcome) catch |err| {
+            std.debug.print("실패한 조합: {s}\n", .{c.name});
+            return err;
+        };
+        try testing.expectEqualStrings("", bytes);
+    }
+}
+
+test "#653 프로토콜을 켠 앱에는 특수키도 그대로 간다" {
+    var buf: [16]u8 = undefined;
+    const kitty = try encodeToBuf(&buf, .{ .code = .enter, .mods = .{ .ctrl = true } }, .{ .kitty_flags = .{ .disambiguate = true } });
+    try testing.expectEqualStrings("\x1b[13;5u", kitty);
+
+    var buf2: [16]u8 = undefined;
+    const mok2 = try encodeToBuf(&buf2, .{ .code = .enter, .mods = .{ .ctrl = true } }, .{ .modify_other_keys_state_2 = true });
+    try testing.expectEqualStrings("\x1b[27;5;13~", mok2);
 }
 
 test "#650 프로토콜을 켠 앱에는 확장 인코딩이 그대로 간다" {

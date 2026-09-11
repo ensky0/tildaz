@@ -21,9 +21,10 @@
 # 기대값의 근거는 [#650 의 Windows 실측](https://github.com/ensky0/tildaz/issues/650) 이다. **mac · Linux 와
 # 다른 칸이 셋 있고 전부 Windows 쪽이 원래 그런 것**이다 (main 판과 바이트가 같은 것을 대조로 확인했다).
 #
-#   - ~~`Ctrl+H` → `7f`~~ · ~~`Shift+Tab` → `09`~~ — [#653](https://github.com/ensky0/tildaz/issues/653) 에서 고쳤다. Backspace 와
-#     Tab 을 `WM_CHAR` 가 아니라 **인코더**로 보내면서 `Ctrl+H` = `08` · `Shift+Tab` = `ESC[Z` 가 되고,
-#     `Ctrl+Backspace` (`08`) · `Ctrl+Tab` (`ESC[27;5;9~`) 까지 mac · Linux 와 같아졌다.
+#   - ~~`Ctrl+H` → `7f`~~ · ~~`Shift+Tab` → `09`~~ · ~~`Ctrl+Enter` → `0a`~~ — [#653](https://github.com/ensky0/tildaz/issues/653) 에서
+#     고쳤다. Backspace · Tab · Enter 를 `WM_CHAR` 가 아니라 **인코더**로 보내면서 세 platform 이 이
+#     대역에서 전부 같아졌다. legacy 는 맨 키의 C0 다 — `Ctrl+H`=`08` · `Shift+Tab`=`ESC[Z` ·
+#     `Ctrl+Tab`=`09` · `Ctrl+Enter`=`0d` · `Ctrl+Backspace`=`08`.
 #   - `mok2` 에서도 `Ctrl+[` 가 `1b` — Windows 는 legacy 에서 글자 키를 인코더로 안 보내고 `WM_CHAR` 로
 #     받으므로 앱이 modifyOtherKeys 를 켜도 그 경로가 안 바뀐다.
 #
@@ -148,8 +149,10 @@ $rounds = @(
         @{ n = "Tab";              k = ,@($VK.Tab);                          e = "09" }          # #653 — 그대로
         @{ n = "Shift+Tab";        k = ,@($VK.Shift, $VK.Tab);                e = "1b 5b 5a" }    # #653 — 전에는 09 (back-tab 이 없었다)
         @{ n = "Ctrl+Left";        k = ,@($VK.Ctrl, $VK.Left);                e = "1b 5b 31 3b 35 44" }
-        @{ n = "Ctrl+Tab";         k = ,@($VK.Ctrl, $VK.Tab);                 e = "1b 5b 32 37 3b 35 3b 39 7e" }  # #653 — 전에는 0 바이트. mac · Linux 와 같아졌다
-        @{ n = "Ctrl+Enter";       k = ,@($VK.Ctrl, $VK.Enter);               e = "0a" }          # #650 미결 항목의 답
+        @{ n = "Ctrl+Tab";         k = ,@($VK.Ctrl, $VK.Tab);                 e = "09" }          # #653 — legacy 는 맨 키의 C0 (한때 ESC[27;5;9~ 였다)
+        @{ n = "Ctrl+Enter";       k = ,@($VK.Ctrl, $VK.Enter);               e = "0d" }          # #653 — 전에는 0a (Win32 콘솔 관례). xterm 동등
+        @{ n = "Shift+Enter";      k = ,@($VK.Shift, $VK.Enter);              e = "0d" }          # #653 — mac · Linux 는 ESC[27;2;13~ 였다
+        @{ n = "Enter";            k = ,@($VK.Enter);                         e = "0d" }          # #653 — 인코더로 옮긴 뒤에도 그대로여야 한다
     ) },
     # 경계 ① — 앱이 kitty 를 켜면 예전 그대로 나가야 한다. 삼키면 nvim · helix · zellij 가 깨진다.
     @{ mode = "kitty"; enable = "[char]27+'[>1u'"; keys = @(
@@ -160,6 +163,7 @@ $rounds = @(
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "1b 5b 39 37 3b 35 75" }        # CSI 97;5u — 01 이 아니다
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 39 3b 32 75" }           # #653 — kitty 는 CSI 9;2u (legacy 의 ESC[Z 와 다르다)
         @{ n = "Backspace";    k = ,@($VK.Back);                      e = "7f" }
+        @{ n = "Ctrl+Enter";   k = ,@($VK.Ctrl, $VK.Enter);          e = "1b 5b 31 33 3b 35 75" }        # #653 — CSI 13;5u
     ) },
     # 경계 ② — modifyOtherKeys=2. Windows 는 mac · Linux 와 갈린다 (머리 주석).
     @{ mode = "mok2"; enable = "[char]27+'[>4;2m'"; keys = @(
@@ -168,6 +172,7 @@ $rounds = @(
         @{ n = "Ctrl+Shift+F"; k = ,@($VK.Ctrl, $VK.Shift, $VK.F);    e = "" }
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "01" }
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 32 37 3b 32 3b 39 7e" }  # #653 — mok2 는 CSI 27;2;9~
+        @{ n = "Ctrl+Enter";   k = ,@($VK.Ctrl, $VK.Enter);          e = "1b 5b 32 37 3b 35 3b 31 33 7e" }  # #653 — 켠 앱에는 그대로
     ) }
 )
 

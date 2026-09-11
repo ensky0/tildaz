@@ -2233,10 +2233,10 @@ pub const Window = struct {
                 if (physical_key.fromScanCode(kd_scan, kd_extended)) |code| {
                     if (key_encode.isNavOrFunction(code)) {
                         _ = self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam));
-                    } else if ((code == .backspace or code == .tab) and
+                    } else if ((code == .backspace or code == .tab or code == .enter) and
                         self.imePreeditSlice().len == 0 and self.compose_preview_len == 0)
                     {
-                        // #653 — **Backspace · Tab 도 인코더로 보낸다.** `isNavOrFunction` 이
+                        // #653 — **Backspace · Tab · Enter 도 인코더로 보낸다.** `isNavOrFunction` 이
                         // 이 둘을 빼는 것은 macOS 가 그것들을 IME 의 `doCommandBySelector:` 로
                         // 받기 때문이고 (그 함수 주석), Windows 에는 해당하지 않는다.
                         //
@@ -2246,10 +2246,14 @@ pub const Window = struct {
                         // 인코더를 태우면 Linux 와 같은 표를 쓰게 되어 `Ctrl+Backspace` (`08`) ·
                         // `Ctrl+Tab` (`ESC[27;5;9~`) · DECBKM (`?67`) 까지 함께 맞는다.
                         //
-                        // IME 조합 중에는 손대지 않는다 — 자모 지우기 · 후보 이동이 IME 의
-                        // 몫이다. 그때는 아래 `WM_CHAR` 가 예전처럼 받는다.
+                        // Enter 는 `Ctrl+Enter` 가 `WM_CHAR` 로 `0a` (LF) 가 되어 mac · Linux 의
+                        // `0d` 와 갈리던 마지막 칸이다 — Win32 콘솔 관례일 뿐이고 xterm ·
+                        // Terminal.app · iTerm2 는 `0d` 다.
+                        //
+                        // IME 조합 중에는 손대지 않는다 — 자모 지우기 · 후보 이동 · **Enter 의
+                        // 음절 확정**이 IME 의 몫이다. 그때는 아래 `WM_CHAR` 가 예전처럼 받는다.
                         if (self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam))) {
-                            // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR` (`08` · `09`) 를 삼킨다.
+                            // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR` (`08` · `09` · `0d`) 를 삼킨다.
                             self.swallow_next_wm_char = true;
                             return 0;
                         }
