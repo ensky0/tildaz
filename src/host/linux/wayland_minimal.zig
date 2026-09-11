@@ -28,6 +28,7 @@ const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
+const search_bar = @import("../../search_bar.zig");
 const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
 const key_encode = @import("../../key_encode.zig");
@@ -5169,6 +5170,9 @@ const Client = struct {
             // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
+            // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
+            // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+            .search_ui = search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
         };
     }
 

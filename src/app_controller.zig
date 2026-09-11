@@ -28,6 +28,7 @@ const system_open = @import("system_open.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const command_menu = @import("command_menu.zig");
+const search_bar = @import("search_bar.zig");
 const shell_validate = @import("shell_validate.zig");
 const run_options = @import("run_options.zig");
 
@@ -853,6 +854,9 @@ pub const App = struct {
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
+                        // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 ·
+                        // hover) 은 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+                        search_bar.uiFrom(&group.activeTab().search, &.{}, true, null),
                     );
                 }
                 // IME composition / candidate window 위치 갱신 — 일본 / 중국
