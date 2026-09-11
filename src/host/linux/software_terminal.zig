@@ -21,6 +21,7 @@ const display_width = @import("../../font/display_width.zig");
 const config_mod = @import("../../config.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const chrome_palette = @import("../../chrome_palette.zig");
+const cell_highlight = @import("../../cell_highlight.zig");
 const scrollbar = @import("../../scrollbar.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const tab_chrome = @import("../../tab_chrome.zig");
@@ -834,6 +835,8 @@ pub const Renderer = struct {
         const row_slice = state.row_data.slice();
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
+        // #646 — 검색 매치 강조. `selection` 과 같은 층위의 per-row 정보다.
+        const all_hls = row_slice.items(.highlights);
 
         for (0..rows) |y| {
             if (y >= all_cells.len) break;
@@ -842,6 +845,8 @@ pub const Renderer = struct {
             const styles = cell_slice.items(.style);
             const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            const hl_row: []const ghostty.RenderState.Highlight =
+                if (y < all_hls.len) all_hls[y].items else &.{};
 
             // ligature 가 삼킨 뒤따르는 셀은 **텍스트만** 건너뛴다. 배경은 셀마다
             // 그대로 만들어야 한다 — 예전에 두 순회가 나뉘어 있을 때 배경 쪽이
@@ -862,6 +867,7 @@ pub const Renderer = struct {
                 const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                const hl = hlAt(hl_row, x16, &self.chrome);
                 // #483 2단계 ② — 격자 원점은 pane 기준 (`rect` 는 탭바를 뺀 영역). pane 하나면 이전의
                 // `pad` / `tab_bar_h + pad` 와 같은 값이다.
                 const cell_x: i32 = pane.rect.x + pad + @as(i32, @intCast(x)) * cw;
@@ -871,13 +877,13 @@ pub const Renderer = struct {
                 // 셀 배경 — 평범한 셀 (선택·반전·명시 bg 없음) 은 사각형을 만들지
                 // 않는다. 표면 전체가 이미 배경색이라 (CPU 는 `fill`, GL 은
                 // `glClear`) 덧그릴 필요가 없다.
-                if (is_selected or style.flags.inverse or style.bg(&raw, &colors.palette) != null) {
+                if (is_selected or style.flags.inverse or hl != null or style.bg(&raw, &colors.palette) != null) {
                     self.layer.cell_bg.append(allocator, .{
                         .x = cell_x,
                         .y = cell_y,
                         .w = cell_w,
                         .h = ch,
-                        .color = resolveBg(style, &raw, &colors, is_selected),
+                        .color = resolveBg(style, &raw, &colors, is_selected, hl),
                     }) catch {};
                 }
 
@@ -895,7 +901,7 @@ pub const Renderer = struct {
                     var deco: [cell_decoration.MAX_RECTS]cell_decoration.Rect = undefined;
                     const dn = cell_decoration.rects(
                         style,
-                        resolveFg(style, &raw, &colors, is_selected),
+                        resolveFg(style, &raw, &colors, is_selected, hl),
                         &colors.palette,
                         @floatFromInt(ascent),
                         @floatFromInt(cell_w),
@@ -907,7 +913,7 @@ pub const Renderer = struct {
                     // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
                     // **미리** 합성해 불투명 rect 로 그린다 (#353). `cov == 1` 인
                     // 나머지 선은 합성 결과가 원래 색 그대로다.
-                    const deco_bg = resolveBg(style, &raw, &colors, is_selected);
+                    const deco_bg = resolveBg(style, &raw, &colors, is_selected, hl);
                     for (deco[0..dn]) |d| {
                         const blended = ui_metrics.blendOverRgb(
                             .{ d.color.r, d.color.g, d.color.b },
@@ -940,7 +946,7 @@ pub const Renderer = struct {
                 // "아무것도 안 보임" 이 SGR 8 의 의미다.
                 if (style.flags.invisible) continue;
 
-                const fg = resolveFg(style, &raw, &colors, is_selected);
+                const fg = resolveFg(style, &raw, &colors, is_selected, hl);
                 const cp = raw.codepoint();
 
                 // Block element + shade — cell-aligned procedural rectangle / dot
@@ -957,7 +963,7 @@ pub const Renderer = struct {
                     //
                     // `bg` 는 여기와 아래 box drawing 에서만 쓴다 — 평범한 글리프
                     // 셀에서는 해석하지 않는다 (#362).
-                    const bg = resolveBg(style, &raw, &colors, is_selected);
+                    const bg = resolveBg(style, &raw, &colors, is_selected, hl);
                     const blended = ui_metrics.blendOverRgb(
                         .{ fg.r, fg.g, fg.b },
                         .{ bg.r, bg.g, bg.b },
@@ -987,7 +993,7 @@ pub const Renderer = struct {
                 if (box_drawing.handles(cp)) {
                     var box_rects: [box_drawing.MAX_RECTS]box_drawing.Rect = undefined;
                     if (box_drawing.boxRects(cp, @floatFromInt(cell_w), @floatFromInt(ch), &box_rects)) |bn| {
-                        const bg = resolveBg(style, &raw, &colors, is_selected);
+                        const bg = resolveBg(style, &raw, &colors, is_selected, hl);
                         for (box_rects[0..bn]) |br| {
                             // #353 — `br.cov` (AA coverage) 도 공통
                             // `ui_metrics.blendOverRgb` 로 미리 합성하고 불투명 rect 로
@@ -1079,6 +1085,7 @@ pub const Renderer = struct {
                             const rst = cell_color.applyBlinkPhase(rs, blink_faint);
                             const rx16: u16 = @intCast(rx);
                             const rsel = if (sel_range) |sr| (rx16 >= sr[0] and rx16 <= sr[1]) else false;
+                            const rhl = hlAt(hl_row, rx16, &self.chrome);
                             const cg = self.run_results[i];
                             appendGlyph(&self.layer.glyphs, allocator, .{
                                 .ref = clusterRef(cg),
@@ -1090,7 +1097,7 @@ pub const Renderer = struct {
                                 .ascent = ascent,
                                 .x_offset = cg.x_offset,
                                 .y_offset = cg.y_offset,
-                                .fg = resolveFg(rst, &rr, &colors, rsel),
+                                .fg = resolveFg(rst, &rr, &colors, rsel, rhl),
                             });
                         }
                         // **`x` 를 점프하지 않는다.** 이 셀 루프는 셀마다 배경 · 선택 · 커서를
@@ -2394,8 +2401,8 @@ fn drawGlyphItem(memory: []u8, width: i32, height: i32, stride: i32, item: *cons
 // Windows/macOS 의 '색 교환' 렌더와 달랐다). software renderer 는 모든
 // cell 을 직접 칠하므로 null (= cell 고유 bg 없음) 을 theme 배경으로.
 
-fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, selected: bool) ghostty.color.RGB {
-    return cell_color.resolveFg(style, raw, colors, selected, style.flags.inverse);
+fn resolveFg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, selected: bool, hl: ?cell_color.HighlightColors) ghostty.color.RGB {
+    return cell_color.resolveFg(style, raw, colors, selected, style.flags.inverse, hl);
 }
 
 fn resolveBg(
@@ -2403,8 +2410,19 @@ fn resolveBg(
     raw: *const ghostty.Cell,
     colors: *const ghostty.RenderState.Colors,
     selected: bool,
+    hl: ?cell_color.HighlightColors,
 ) ghostty.color.RGB {
-    return cell_color.resolveBg(style, raw, colors, selected, style.flags.inverse) orelse colors.background;
+    return cell_color.resolveBg(style, raw, colors, selected, style.flags.inverse, hl) orelse colors.background;
+}
+
+/// #646 — 이 열에 걸린 강조의 색. 없거나 (링크 hover 처럼) 색을 모르는 종류면 `null`.
+fn hlAt(
+    hls: []const ghostty.RenderState.Highlight,
+    x: u16,
+    chrome: *const chrome_palette.Palette,
+) ?cell_color.HighlightColors {
+    const tag = cell_highlight.at(hls, x) orelse return null;
+    return cell_color.highlightColors(tag, chrome);
 }
 
 const isLigatureCandidate = @import("../../font/ligature.zig").isLigatureCandidate;

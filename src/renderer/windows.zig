@@ -27,6 +27,7 @@ const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
 const block_element = @import("block_element.zig");
 const cell_color = @import("cell_color.zig");
+const cell_highlight = @import("../cell_highlight.zig");
 const pane_draw = @import("pane_draw.zig");
 const pane_layout = @import("../pane_layout.zig");
 const font_constants = @import("../font/constants.zig");
@@ -1378,6 +1379,8 @@ pub const D3d11Renderer = struct {
 
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
+        // #646 — 검색 매치 강조. `selection` 과 같은 층위의 per-row 정보다.
+        const all_hls = row_slice.items(.highlights);
 
         const dbg_r = colorF(colors.background.r);
         const dbg_g = colorF(colors.background.g);
@@ -1397,6 +1400,8 @@ pub const D3d11Renderer = struct {
             const raws = cell_slice.items(.raw);
             const styles = cell_slice.items(.style);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            const hl_row: []const ghostty.RenderState.Highlight =
+                if (y < all_hls.len) all_hls[y].items else &.{};
 
             for (0..cols) |x| {
                 if (x >= raws.len) break;
@@ -1412,8 +1417,9 @@ pub const D3d11Renderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                const hl = hlAt(hl_row, x16, &self.chrome);
 
-                const is_custom_bg = is_selected or is_inverse or (style.bg(&raw, &colors.palette) != null);
+                const is_custom_bg = is_selected or is_inverse or hl != null or (style.bg(&raw, &colors.palette) != null);
                 // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
                 // **text pass 가 아니라 bg pass 인 것이 핵심** — 선이 글리프보다 먼저
                 // 그려져야 색 밑줄이 글자를 가로지르지 않는다 (ghostty 와 같은 선택,
@@ -1431,7 +1437,7 @@ pub const D3d11Renderer = struct {
                         self.drawBgInstances(bg_buf[0..bg_count]);
                         bg_count = 0;
                     }
-                    const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
+                    const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, hl, dbg_r, dbg_g, dbg_b);
                     bg_buf[bg_count] = .{
                         .pos = .{ fx, fy },
                         .size = .{ width, ch },
@@ -1444,7 +1450,7 @@ pub const D3d11Renderer = struct {
                     var deco: [cell_decoration.MAX_RECTS]cell_decoration.Rect = undefined;
                     const dn = cell_decoration.rects(
                         style,
-                        resolveFg(style, &raw, &colors, is_selected, is_inverse),
+                        resolveFg(style, &raw, &colors, is_selected, is_inverse, hl),
                         &colors.palette,
                         self.font.ascent_px,
                         width,
@@ -1462,7 +1468,7 @@ pub const D3d11Renderer = struct {
                     // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
                     // **미리** 합성해 알파 1.0 solid 로 그린다 (#353). `cov == 1` 인
                     // 나머지 선은 합성 결과가 원래 색 그대로다.
-                    const deco_bg = cell_color.resolveBg(style, &raw, &colors, is_selected, is_inverse) orelse colors.background;
+                    const deco_bg = cell_color.resolveBg(style, &raw, &colors, is_selected, is_inverse, hl) orelse colors.background;
                     for (deco[0..dn]) |d| {
                         const blended = ui_metrics.blendOverRgb(
                             .{ d.color.r, d.color.g, d.color.b },
@@ -1496,6 +1502,8 @@ pub const D3d11Renderer = struct {
             const styles = cell_slice.items(.style);
             const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            const hl_row: []const ghostty.RenderState.Highlight =
+                if (y < all_hls.len) all_hls[y].items else &.{};
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
@@ -1531,7 +1539,8 @@ pub const D3d11Renderer = struct {
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
-                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b);
+                    const hl_b = hlAt(hl_row, x16_b, &self.chrome);
+                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b);
                     const rect = blockElementRect(cp) orelse {
                         x += 1;
                         continue;
@@ -1549,7 +1558,7 @@ pub const D3d11Renderer = struct {
                     // `cell_color.resolveBg` 를 쓰고 null 이면 `colors.background`
                     // (bg pass 의 `dbg_*` 와 동일) 로 떨어진다. 솔리드 블록
                     // (alpha 1.0) 은 합성 결과가 `fg_rgb` 그대로다.
-                    const block_bg = cell_color.resolveBg(style_b, &raw, &colors, is_selected_b, is_inverse_b) orelse colors.background;
+                    const block_bg = cell_color.resolveBg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b) orelse colors.background;
                     const blended = ui_metrics.blendOverRgb(
                         .{ fg_rgb.r, fg_rgb.g, fg_rgb.b },
                         .{ block_bg.r, block_bg.g, block_bg.b },
@@ -1582,7 +1591,8 @@ pub const D3d11Renderer = struct {
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
-                        const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
+                        const hl_x = hlAt(hl_row, x16_x, &self.chrome);
+                        const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x);
                         const fx_box: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                         // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
                         // 로 미리 합성하고 알파 1.0 으로 그린다. **emitter 가 픽셀당
@@ -1591,7 +1601,7 @@ pub const D3d11Renderer = struct {
                         // 한 번뿐이고, 배경과 미리 합성한 결과가 순차 blend 와 같다.
                         // 이전에는 `SRC_ALPHA` blend factor 가 8bit 로 양자화돼
                         // fringe 픽셀이 Linux · macOS 와 갈렸다.
-                        const box_bg = cell_color.resolveBg(style_x, &raw, &colors, is_selected_x, is_inverse_x) orelse colors.background;
+                        const box_bg = cell_color.resolveBg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x) orelse colors.background;
                         for (box_rects[0..bn]) |br| {
                             const cov_blend = ui_metrics.blendOverRgb(
                                 .{ fg_rgb_x.r, fg_rgb_x.g, fg_rgb_x.b },
@@ -1615,7 +1625,7 @@ pub const D3d11Renderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16, &self.chrome));
 
                 // SPEC § 12.1 — Grapheme cluster (VS-16 / skin tone / ZWJ family /
                 // combining mark). IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
@@ -1668,7 +1678,7 @@ pub const D3d11Renderer = struct {
                             const inv = st.flags.inverse;
                             const cx16: u16 = @intCast(cell_x);
                             const sel = if (sel_range) |sr| (cx16 >= sr[0] and cx16 <= sr[1]) else false;
-                            const fg = resolveFg(st, &rr, &colors, sel, inv);
+                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, cx16, &self.chrome));
                             _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, self.run_results[i], cell_x, fy, cw, x_pad, fg, if (rr.wide == .wide) 2.0 else 1.0, 0);
                         }
                         x = scan;
@@ -2501,14 +2511,24 @@ pub const D3d11Renderer = struct {
     /// 색 해석 정책은 공유 모듈 `cell_color.zig` (#282 B2). 여기선 null
     /// (= cell 고유 bg 없음) 을 default-bg float 로 변환만 — 호출부가
     /// is_custom_bg 로 instance 생략하므로 실제로는 도달 안 하는 방어값.
-    fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
-        if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse)) |rgb| {
+    fn resolveBg(style: ghostty.Style, raw: *const ghostty.Cell, colors: *const ghostty.RenderState.Colors, is_selected: bool, is_inverse: bool, hl: ?cell_color.HighlightColors, dbg_r: f32, dbg_g: f32, dbg_b: f32) [3]f32 {
+        if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse, hl)) |rgb| {
             return .{ colorF(rgb.r), colorF(rgb.g), colorF(rgb.b) };
         }
         return .{ dbg_r, dbg_g, dbg_b };
     }
 
     const resolveFg = cell_color.resolveFg;
+
+    /// #646 — 이 열에 걸린 강조의 색. 없거나 (링크 hover 처럼) 색을 모르는 종류면 `null`.
+    fn hlAt(
+        hls: []const ghostty.RenderState.Highlight,
+        x: u16,
+        chrome: *const chrome_palette.Palette,
+    ) ?cell_color.HighlightColors {
+        const tag = cell_highlight.at(hls, x) orelse return null;
+        return cell_color.highlightColors(tag, chrome);
+    }
 
     /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로
     /// 옮김 (#155). Windows / macOS 가 동일 코드포인트 → cell-fraction 좌표
