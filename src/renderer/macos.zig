@@ -28,6 +28,7 @@ const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
 const box_drawing = @import("../box_drawing.zig");
 const cell_color = @import("cell_color.zig");
+const cell_highlight = @import("../cell_highlight.zig");
 const cell_decoration = @import("cell_decoration.zig");
 const pane_draw = @import("pane_draw.zig");
 const pane_layout = @import("../pane_layout.zig");
@@ -1058,6 +1059,9 @@ pub const MetalRenderer = struct {
         const preedit_utf8 = pane.preedit_utf8;
         const blink_faint = pane.blink_faint;
         state.update(self.alloc, terminal) catch return;
+        // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다. 순서가 뒤집히면
+        // 그 프레임에 재구축된 행의 강조가 사라진다.
+        if (pane.search) |ps| ps.applyHighlights(self.alloc, state);
 
         const rows = state.rows;
         const cols = state.cols;
@@ -1079,6 +1083,8 @@ pub const MetalRenderer = struct {
 
         const all_cells = row_slice.items(.cells);
         const all_sels = row_slice.items(.selection);
+        // #646 — 검색 매치 강조. `selection` 과 같은 층위의 per-row 정보다.
+        const all_hls = row_slice.items(.highlights);
 
         const dbg_r = colorF(colors.background.r);
         const dbg_g = colorF(colors.background.g);
@@ -1092,6 +1098,8 @@ pub const MetalRenderer = struct {
             const raws = cell_slice.items(.raw);
             const styles = cell_slice.items(.style);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            const hl_row: []const ghostty.RenderState.Highlight =
+                if (y < all_hls.len) all_hls[y].items else &.{};
 
             for (0..cols) |x| {
                 if (x >= raws.len) break;
@@ -1107,8 +1115,9 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
+                const hl = hlAt(hl_row, x16, &self.chrome);
 
-                const is_custom_bg = is_selected or is_inverse or (style.bg(&raw, &colors.palette) != null);
+                const is_custom_bg = is_selected or is_inverse or hl != null or (style.bg(&raw, &colors.palette) != null);
                 // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
                 // **text pass 가 아니라 bg pass 인 것이 핵심** — 선이 글리프보다 먼저
                 // 그려져야 색 밑줄이 글자를 가로지르지 않는다 (ghostty 와 같은 선택,
@@ -1122,7 +1131,7 @@ pub const MetalRenderer = struct {
                 const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
                 if (is_custom_bg) {
-                    const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, dbg_r, dbg_g, dbg_b);
+                    const cell_bg = resolveBg(style, &raw, &colors, is_selected, is_inverse, hl, dbg_r, dbg_g, dbg_b);
                     self.pushBg(.{
                         .pos = .{ fx, fy },
                         .size = .{ width, ch },
@@ -1134,7 +1143,7 @@ pub const MetalRenderer = struct {
                     var deco: [cell_decoration.MAX_RECTS]cell_decoration.Rect = undefined;
                     const dn = cell_decoration.rects(
                         style,
-                        resolveFg(style, &raw, &colors, is_selected, is_inverse),
+                        resolveFg(style, &raw, &colors, is_selected, is_inverse, hl),
                         &colors.palette,
                         self.font.ascent_px,
                         width,
@@ -1146,7 +1155,7 @@ pub const MetalRenderer = struct {
                     // box drawing 과 같은 처리 — 공통 `blendOverRgb` 로 셀 배경과
                     // **미리** 합성해 알파 1.0 solid 로 그린다 (#353). `cov == 1` 인
                     // 나머지 선은 합성 결과가 원래 색 그대로다.
-                    const deco_bg = cell_color.resolveBg(style, &raw, &colors, is_selected, is_inverse) orelse colors.background;
+                    const deco_bg = cell_color.resolveBg(style, &raw, &colors, is_selected, is_inverse, hl) orelse colors.background;
                     for (deco[0..dn]) |d| {
                         const blended = ui_metrics.blendOverRgb(
                             .{ d.color.r, d.color.g, d.color.b },
@@ -1177,6 +1186,8 @@ pub const MetalRenderer = struct {
             const styles = cell_slice.items(.style);
             const graphemes = cell_slice.items(.grapheme);
             const sel_range: ?[2]u16 = if (y < all_sels.len) all_sels[y] else null;
+            const hl_row: []const ghostty.RenderState.Highlight =
+                if (y < all_hls.len) all_hls[y].items else &.{};
 
             const fy: f32 = @as(f32, @floatFromInt(y)) * ch + y_off;
 
@@ -1210,7 +1221,8 @@ pub const MetalRenderer = struct {
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
-                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b);
+                    const hl_b = hlAt(hl_row, x16_b, &self.chrome);
+                    const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b);
                     const rect = block_element.blockElementRect(cp) orelse {
                         x += 1;
                         continue;
@@ -1226,7 +1238,7 @@ pub const MetalRenderer = struct {
                     // `cell_color.resolveBg` 를 쓰고 null 이면 `colors.background`
                     // (bg pass 의 `dbg_*` 와 동일) 로 떨어진다. 솔리드 블록
                     // (alpha 1.0) 은 합성 결과가 `fg_rgb` 그대로다.
-                    const block_bg = cell_color.resolveBg(style_b, &raw, &colors, is_selected_b, is_inverse_b) orelse colors.background;
+                    const block_bg = cell_color.resolveBg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b) orelse colors.background;
                     const blended = ui_metrics.blendOverRgb(
                         .{ fg_rgb.r, fg_rgb.g, fg_rgb.b },
                         .{ block_bg.r, block_bg.g, block_bg.b },
@@ -1253,14 +1265,15 @@ pub const MetalRenderer = struct {
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
-                        const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x);
+                        const hl_x = hlAt(hl_row, x16_x, &self.chrome);
+                        const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x);
                         const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                         // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
                         // 로 미리 합성하고 알파 1.0 으로 그린다. **emitter 가 픽셀당
                         // rect 를 하나만 내보내므로** (대각선은 두 선을 `@max` 로, 호는
                         // arm·arc 거리를 `@min` 으로 합친 *뒤* emit) 한 픽셀에 blend 가
                         // 한 번뿐이고, 배경과 미리 합성한 결과가 순차 blend 와 같다.
-                        const box_bg = cell_color.resolveBg(style_x, &raw, &colors, is_selected_x, is_inverse_x) orelse colors.background;
+                        const box_bg = cell_color.resolveBg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x) orelse colors.background;
                         for (box_rects[0..bn]) |br| {
                             const cov_blend = ui_metrics.blendOverRgb(
                                 .{ fg_rgb_x.r, fg_rgb_x.g, fg_rgb_x.b },
@@ -1283,7 +1296,7 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse);
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16, &self.chrome));
 
                 // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) — cell 의
                 // base + extras 를 CTLine 으로 shape, 단일 representative glyph 으로
@@ -1335,7 +1348,7 @@ pub const MetalRenderer = struct {
                             const st = cell_color.applyBlinkPhase(if (rr.style_id != 0) styles[cell_x] else ghostty.Style{}, blink_faint);
                             const inv = st.flags.inverse;
                             const sel = if (sel_range) |sr| (cell_x >= sr[0] and cell_x <= sr[1]) else false;
-                            const fg = resolveFg(st, &rr, &colors, sel, inv);
+                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, @intCast(cell_x), &self.chrome));
 
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
@@ -2201,14 +2214,25 @@ fn resolveBg(
     colors: *const ghostty.RenderState.Colors,
     is_selected: bool,
     is_inverse: bool,
+    hl: ?cell_color.HighlightColors,
     dbg_r: f32,
     dbg_g: f32,
     dbg_b: f32,
 ) [3]f32 {
-    if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse)) |rgb| {
+    if (cell_color.resolveBg(style, raw, colors, is_selected, is_inverse, hl)) |rgb| {
         return .{ MetalRenderer.colorF(rgb.r), MetalRenderer.colorF(rgb.g), MetalRenderer.colorF(rgb.b) };
     }
     return .{ dbg_r, dbg_g, dbg_b };
 }
 
 const resolveFg = cell_color.resolveFg;
+
+/// #646 — 이 열에 걸린 강조의 색. 없거나 (링크 hover 처럼) 색을 모르는 종류면 `null`.
+fn hlAt(
+    hls: []const ghostty.RenderState.Highlight,
+    x: u16,
+    chrome: *const chrome_palette.Palette,
+) ?cell_color.HighlightColors {
+    const tag = cell_highlight.at(hls, x) orelse return null;
+    return cell_color.highlightColors(tag, chrome);
+}

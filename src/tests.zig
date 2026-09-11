@@ -36,10 +36,12 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("physical_key.zig");
     _ = @import("process_cwd.zig");
     _ = @import("pwd_uri.zig");
+    _ = @import("cell_highlight.zig");
     _ = @import("renderer/cell_color.zig");
     _ = @import("renderer/cell_decoration.zig");
     _ = @import("root.zig");
     _ = @import("runtime.zig");
+    _ = @import("search.zig");
     _ = @import("scrollbar.zig");
     _ = @import("session_core.zig");
     _ = @import("shell_integration.zig");

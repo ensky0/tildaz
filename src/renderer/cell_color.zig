@@ -13,6 +13,9 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../themes.zig");
+const cell_highlight = @import("../cell_highlight.zig");
+const chrome_palette = @import("../chrome_palette.zig");
+const ui_metrics = @import("../ui_metrics.zig");
 
 /// GPU renderer frame clear와 비활성 탭이 함께 쓰는 active terminal 배경.
 /// OSC 11의 현재 RGB가 있으면 그것을 정규화하고, terminal이 값을 제공하지 않는
@@ -26,13 +29,58 @@ pub fn resolveFrameBackground(background: ?ghostty.color.RGB, fallback: [3]f32) 
     };
 }
 
+/// 검색 강조가 걸린 셀의 fg / bg. `null` 이면 강조가 없다 (평소 경로).
+pub const HighlightColors = struct {
+    bg: ghostty.color.RGB,
+    fg: ghostty.color.RGB,
+};
+
+/// 강조 종류에서 색 한 벌을 만든다. **정책은 여기 한 곳**이고 세 renderer 는 결과만 쓴다.
+///
+/// - **현재 매치는 amber (`TAB_ACCENT_COLOR`) 채움.** 앱이 이미 "활성" 에 쓰는 색이라
+///   (활성 탭 밑줄 · pane 포커스) 검색의 "지금 이것" 도 같은 색으로 모은다.
+/// - **그 위 글자는 theme 과 무관하게 어둡다** (`SEARCH_CURRENT_FG`). amber 는
+///   `chrome_palette` 파생을 타지 않는 고정 밝은 색이라, 밝은 theme 의 밝은 글자색을
+///   쓰면 대비가 2:1 아래로 떨어져 읽히지 않는다.
+/// - **나머지 매치는 chrome 의 hover 색**을 쓴다 — 메뉴 hover 와 같은 "약한 강조" 다.
+/// - **링크 hover (tag 0) 는 여기서 색을 주지 않는다** — #647 의 몫이라 `null` 이다.
+///   `cell_highlight.at` 이 그 tag 를 돌려줘도 이 함수가 색을 모르면 평소대로 그린다.
+pub fn highlightColors(
+    tag: cell_highlight.Tag,
+    chrome: *const chrome_palette.Palette,
+) ?HighlightColors {
+    return switch (tag) {
+        .search_current => .{
+            .bg = rgbOf(ui_metrics.TAB_ACCENT_COLOR),
+            .fg = rgbOf(ui_metrics.SEARCH_CURRENT_FG),
+        },
+        .search_match => .{
+            .bg = rgbOf(chrome.menu_hover_bg),
+            .fg = rgbOf(chrome.menu_label),
+        },
+        .link_hover => null,
+    };
+}
+
+fn rgbOf(c: [4]f32) ghostty.color.RGB {
+    return .{
+        .r = @intFromFloat(@round(std.math.clamp(c[0], 0.0, 1.0) * 255.0)),
+        .g = @intFromFloat(@round(std.math.clamp(c[1], 0.0, 1.0) * 255.0)),
+        .b = @intFromFloat(@round(std.math.clamp(c[2], 0.0, 1.0) * 255.0)),
+    };
+}
+
 pub fn resolveFg(
     style: ghostty.Style,
     raw: *const ghostty.Cell,
     colors: *const ghostty.RenderState.Colors,
     is_selected: bool,
     is_inverse: bool,
+    hl: ?HighlightColors,
 ) ghostty.color.RGB {
+    // **선택이 검색 강조를 이긴다.** 선택은 사용자가 방금 만든 것이고 복사할 대상이라,
+    // 겹치면 그쪽이 보여야 한다. 검색 매치는 그 아래 깔린 정적인 표시다.
+    if (!is_selected) if (hl) |h| return h.fg;
     if (is_selected or is_inverse) {
         return style.bg(raw, &colors.palette) orelse colors.background;
     }
@@ -74,7 +122,10 @@ pub fn resolveBg(
     colors: *const ghostty.RenderState.Colors,
     is_selected: bool,
     is_inverse: bool,
+    hl: ?HighlightColors,
 ) ?ghostty.color.RGB {
+    // `resolveFg` 와 같은 우선순위 — 선택이 위다.
+    if (!is_selected) if (hl) |h| return h.bg;
     if (is_selected or is_inverse) {
         return style.fg(.{
             .default = colors.foreground,
@@ -105,9 +156,9 @@ test "frame background — current terminal RGB 전체를 사용하고 null만 f
 test "평시 — cell 고유 색 없으면 fg=theme fg, bg=null" {
     const style = ghostty.Style{};
     const raw = ghostty.Cell{};
-    const fg = resolveFg(style, &raw, &test_colors, false, false);
+    const fg = resolveFg(style, &raw, &test_colors, false, false, null);
     try std.testing.expectEqual(test_colors.foreground, fg);
-    try std.testing.expectEqual(@as(?ghostty.color.RGB, null), resolveBg(style, &raw, &test_colors, false, false));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, null), resolveBg(style, &raw, &test_colors, false, false, null));
 }
 
 test "selection/inverse — cell 고유 fg/bg 교환" {
@@ -119,18 +170,18 @@ test "selection/inverse — cell 고유 fg/bg 교환" {
     };
     const raw = ghostty.Cell{};
     // selected: fg ← cell bg, bg ← cell fg
-    try std.testing.expectEqual(cell_bg, resolveFg(style, &raw, &test_colors, true, false));
-    try std.testing.expectEqual(@as(?ghostty.color.RGB, cell_fg), resolveBg(style, &raw, &test_colors, true, false));
+    try std.testing.expectEqual(cell_bg, resolveFg(style, &raw, &test_colors, true, false, null));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, cell_fg), resolveBg(style, &raw, &test_colors, true, false, null));
     // inverse 도 동일 교환
-    try std.testing.expectEqual(cell_bg, resolveFg(style, &raw, &test_colors, false, true));
-    try std.testing.expectEqual(@as(?ghostty.color.RGB, cell_fg), resolveBg(style, &raw, &test_colors, false, true));
+    try std.testing.expectEqual(cell_bg, resolveFg(style, &raw, &test_colors, false, true, null));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, cell_fg), resolveBg(style, &raw, &test_colors, false, true, null));
 }
 
 test "selection — cell 고유 색 없으면 theme fg/bg 로 교환" {
     const style = ghostty.Style{};
     const raw = ghostty.Cell{};
-    try std.testing.expectEqual(test_colors.background, resolveFg(style, &raw, &test_colors, true, false));
-    try std.testing.expectEqual(@as(?ghostty.color.RGB, test_colors.foreground), resolveBg(style, &raw, &test_colors, true, false));
+    try std.testing.expectEqual(test_colors.background, resolveFg(style, &raw, &test_colors, true, false, null));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, test_colors.foreground), resolveBg(style, &raw, &test_colors, true, false, null));
 }
 
 test "bold — 평시 fg 는 bright 승격, 교환 bg 는 승격 없음" {
@@ -140,9 +191,9 @@ test "bold — 평시 fg 는 bright 승격, 교환 bg 는 승격 없음" {
         .flags = .{ .bold = true },
     };
     const raw = ghostty.Cell{};
-    try std.testing.expectEqual(ghostty.color.default[9], resolveFg(style, &raw, &test_colors, false, false));
+    try std.testing.expectEqual(ghostty.color.default[9], resolveFg(style, &raw, &test_colors, false, false, null));
     // 교환된 bg 는 bold 미반영 — palette 1 그대로 (Windows/macOS 현행).
-    try std.testing.expectEqual(@as(?ghostty.color.RGB, ghostty.color.default[1]), resolveBg(style, &raw, &test_colors, false, true));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, ghostty.color.default[1]), resolveBg(style, &raw, &test_colors, false, true, null));
 }
 
 test "#376 blink 의 off 위상은 faint 로 표현된다" {
@@ -171,13 +222,13 @@ test "#376 blink off 위상의 fg 는 faint 와 같은 색이다 — 같은 blen
 
     // off 위상 = faint 셀과 동일한 색.
     try std.testing.expectEqual(
-        resolveFg(faint, &raw, &test_colors, false, false),
-        resolveFg(applyBlinkPhase(blink, true), &raw, &test_colors, false, false),
+        resolveFg(faint, &raw, &test_colors, false, false, null),
+        resolveFg(applyBlinkPhase(blink, true), &raw, &test_colors, false, false, null),
     );
     // on 위상 = 평범한 셀과 동일한 색.
     try std.testing.expectEqual(
         cell_fg,
-        resolveFg(applyBlinkPhase(blink, false), &raw, &test_colors, false, false),
+        resolveFg(applyBlinkPhase(blink, false), &raw, &test_colors, false, false, null),
     );
 }
 
@@ -188,5 +239,57 @@ test "faint — fg 를 bg 와 50% blend" {
     };
     const raw = ghostty.Cell{};
     const expected = themes.faintBlend(.{ .r = 100, .g = 100, .b = 100 }, test_colors.background);
-    try std.testing.expectEqual(expected, resolveFg(style, &raw, &test_colors, false, false));
+    try std.testing.expectEqual(expected, resolveFg(style, &raw, &test_colors, false, false, null));
+}
+
+test "#646 강조 색 — 현재 매치는 amber 채움에 어두운 글자" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const hl = highlightColors(.search_current, &chrome).?;
+    // 배경은 앱의 활성 색 (amber) 그대로.
+    try std.testing.expectEqual(@as(u8, 247), hl.bg.r);
+    try std.testing.expectEqual(@as(u8, 164), hl.bg.g);
+    try std.testing.expectEqual(@as(u8, 29), hl.bg.b);
+    // 글자는 어둡다 — amber 위 대비를 위해.
+    try std.testing.expectEqual(@as(u8, 0), hl.fg.r);
+}
+
+test "#646 강조 색 — 밝은 theme 에서도 현재 매치 글자는 어둡다" {
+    // amber 는 chrome_palette 파생을 타지 않으므로 밝은 theme 에서도 같은 배경이다.
+    // 그 위 글자까지 밝아지면 대비가 무너지므로 theme 과 무관하게 어두워야 한다.
+    const light = chrome_palette.derive(.{ 0xef, 0xf1, 0xf5 }, false);
+    const hl = highlightColors(.search_current, &light).?;
+    try std.testing.expectEqual(@as(u8, 247), hl.bg.r);
+    try std.testing.expectEqual(@as(u8, 0), hl.fg.r);
+    try std.testing.expectEqual(@as(u8, 0), hl.fg.g);
+    try std.testing.expectEqual(@as(u8, 0), hl.fg.b);
+}
+
+test "#646 강조 색 — 나머지 매치는 chrome hover 색을 쓴다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const hl = highlightColors(.search_match, &chrome).?;
+    try std.testing.expectEqual(@as(u8, 64), hl.bg.r);
+    try std.testing.expectEqual(@as(u8, 235), hl.fg.r);
+}
+
+test "#646 강조 색 — 링크 hover 는 이 모듈이 색을 모른다 (#647 몫)" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    try std.testing.expect(highlightColors(.link_hover, &chrome) == null);
+}
+
+test "#646 선택이 검색 강조를 이긴다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const hl = highlightColors(.search_current, &chrome);
+    const style = ghostty.Style{};
+    const raw = ghostty.Cell{};
+
+    // 선택된 셀은 강조가 걸려 있어도 선택 색 (fg ↔ bg 교환) 으로 그린다.
+    try std.testing.expectEqual(test_colors.background, resolveFg(style, &raw, &test_colors, true, false, hl));
+    try std.testing.expectEqual(
+        @as(?ghostty.color.RGB, test_colors.foreground),
+        resolveBg(style, &raw, &test_colors, true, false, hl),
+    );
+
+    // 선택이 아니면 강조 색이 이긴다.
+    try std.testing.expectEqual(hl.?.fg, resolveFg(style, &raw, &test_colors, false, false, hl));
+    try std.testing.expectEqual(@as(?ghostty.color.RGB, hl.?.bg), resolveBg(style, &raw, &test_colors, false, false, hl));
 }
