@@ -17,6 +17,22 @@
 const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const url_scan = @import("url_scan.zig");
+const log = @import("log.zig");
+const system_open = @import("system_open.zig");
+const Runtime = @import("runtime.zig").Runtime;
+
+/// 링크를 기본 브라우저로 연다. 세 host 가 이 함수 하나를 부른다.
+///
+/// **로그를 여기서 남기는 이유가 이 함수의 존재 이유다.** 여는 것 자체는
+/// `system_open.openInDefaultApp` 한 줄인데, 그것만으로는 "클릭이 링크로 판정됐는지" 와
+/// "OS 가 열었는지" 를 가를 수 없다 — 브라우저가 안 뜨면 우리가 안 부른 것인지 OS 가 무시한
+/// 것인지 모른다. 실기 검증의 판정선이자 (`#647` 5 단계) 사용자가 이슈에 붙이는 진단 자료다.
+///
+/// 로그는 영어다 (AGENTS.md `# 메시지 언어` — 로그는 format string 과 인자까지 영어).
+pub fn open(rt: Runtime, alloc: std.mem.Allocator, url: []const u8) void {
+    log.appendLine("link", "opening link: {s}", .{url});
+    system_open.openInDefaultApp(rt, alloc, url);
+}
 
 /// 화면(viewport) 셀 좌표.
 pub const Coord = struct {

@@ -8255,7 +8255,7 @@ const Client = struct {
         self.updateLinkHover();
         const cell = self.linkProbe().cell orelse return false;
         const url = self.link_hover.urlAt(cell) orelse return false;
-        system_open.openInDefaultApp(self.rt, self.allocator, url);
+        link.open(self.rt, self.allocator, url);
         return true;
     }
 

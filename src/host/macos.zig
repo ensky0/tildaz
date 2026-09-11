@@ -34,7 +34,6 @@ const scrollbar = @import("../scrollbar.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
 const link = @import("../link.zig");
-const system_open = @import("../system_open.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_actions = @import("../tab_actions.zig");
@@ -2647,7 +2646,7 @@ fn tryOpenLinkMac(self_view: objc.id, event: objc.id) bool {
     updateLinkHoverMac(self_view, event);
     const cell = eventToCell(self_view, event) orelse return false;
     const url = g_link_hover.urlAt(.{ .x = cell.col, .y = cell.row }) orelse return false;
-    system_open.openInDefaultApp(g_rt, g_gpa.allocator(), url);
+    link.open(g_rt, g_gpa.allocator(), url);
     return true;
 }
 

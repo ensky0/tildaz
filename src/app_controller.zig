@@ -1435,7 +1435,7 @@ pub const App = struct {
         self.updateLinkHover(x, y, ctrl);
         const probe_cell = self.linkProbe(x, y, ctrl).cell orelse return false;
         const url = self.link_hover.urlAt(probe_cell) orelse return false;
-        system_open.openInDefaultApp(self.rt, self.allocator, url);
+        link.open(self.rt, self.allocator, url);
         return true;
     }
 
