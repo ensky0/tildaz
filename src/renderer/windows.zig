@@ -2683,8 +2683,8 @@ pub const D3d11Renderer = struct {
         x: u16,
         chrome: *const chrome_palette.Palette,
     ) ?cell_color.HighlightColors {
-        const tag = cell_highlight.at(hls, x) orelse return null;
-        return cell_color.highlightColors(tag, chrome);
+        // **색이 있는 tag 중 최상** 을 고른다 (`cell_color.highlightAt` 주석 참고).
+        return cell_color.highlightAt(hls, x, chrome);
     }
 
     /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로

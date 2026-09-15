@@ -2431,6 +2431,7 @@ fn hlAt(
     x: u16,
     chrome: *const chrome_palette.Palette,
 ) ?cell_color.HighlightColors {
-    const tag = cell_highlight.at(hls, x) orelse return null;
-    return cell_color.highlightColors(tag, chrome);
+    // **색이 있는 tag 중 최상** 을 고른다 — `cell_highlight.at` 은 우선순위 최상 하나를
+    // 주는데 그것이 색을 안 주는 종류면 (링크 hover, #647) 색이 통째로 사라진다.
+    return cell_color.highlightAt(hls, x, chrome);
 }

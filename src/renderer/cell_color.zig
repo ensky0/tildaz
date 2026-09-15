@@ -62,6 +62,39 @@ pub fn highlightColors(
     };
 }
 
+/// 이 열에 걸린 강조 중 **색을 가진 것** 가운데 우선순위가 가장 높은 것.
+///
+/// `cell_highlight.at` 은 tag 값이 가장 작은 것 하나를 돌려주는데, 그 tag 가 색을 주지
+/// 않으면 (`link_hover` — #647 은 색 대신 밑줄로 표현한다) 색이 통째로 사라진다. 그러면
+/// **검색 매치이면서 링크인 칸에 마우스를 올렸을 때 매치 표시가 없어져** 어디가 매치인지가
+/// 포인터 위치에 따라 깜빡인다.
+///
+/// 그래서 색 결정은 "우선순위 최상" 이 아니라 "색이 있는 것 중 최상" 으로 고른다. 두 기능이
+/// *다른 축* (색 · 밑줄) 을 쓰므로 한 칸에서 공존하는 것이 맞다.
+pub fn highlightAt(
+    hls: []const ghostty.RenderState.Highlight,
+    x: u16,
+    chrome: *const chrome_palette.Palette,
+) ?HighlightColors {
+    var best: ?cell_highlight.Tag = null;
+    var best_colors: ?HighlightColors = null;
+    for (hls) |h| {
+        if (x < h.range[0] or x > h.range[1]) continue;
+        const tag = blk: {
+            inline for (comptime std.enums.values(cell_highlight.Tag)) |t| {
+                if (t.value() == h.tag) break :blk t;
+            }
+            continue;
+        };
+        const colors = highlightColors(tag, chrome) orelse continue; // 색 없는 종류는 건너뛴다
+        if (best == null or tag.value() < best.?.value()) {
+            best = tag;
+            best_colors = colors;
+        }
+    }
+    return best_colors;
+}
+
 fn rgbOf(c: [4]f32) ghostty.color.RGB {
     return .{
         .r = @intFromFloat(@round(std.math.clamp(c[0], 0.0, 1.0) * 255.0)),
@@ -292,4 +325,32 @@ test "#646 선택이 검색 강조를 이긴다" {
     // 선택이 아니면 강조 색이 이긴다.
     try std.testing.expectEqual(hl.?.fg, resolveFg(style, &raw, &test_colors, false, false, hl));
     try std.testing.expectEqual(@as(?ghostty.color.RGB, hl.?.bg), resolveBg(style, &raw, &test_colors, false, false, hl));
+}
+
+test "#646 · #647 링크 hover 가 검색 강조를 덮어 색을 지우지 않는다" {
+    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
+    const style = ghostty.Style{};
+    const raw = ghostty.Cell{};
+
+    // 검색 매치이면서 동시에 링크 hover 인 셀 — 두 기능이 같은 칸에서 만난다.
+    const hls = [_]ghostty.RenderState.Highlight{
+        .{ .tag = cell_highlight.Tag.search_match.value(), .range = .{ 0, 9 } },
+        .{ .tag = cell_highlight.Tag.link_hover.value(), .range = .{ 0, 9 } },
+    };
+
+    // 링크는 색을 주지 않고 (밑줄로 표현한다) 검색은 배경색을 준다. 둘이 겹쳐도
+    // **검색 강조 색은 살아 있어야 한다** — 마우스를 올렸다고 매치 표시가 사라지면
+    // "어디가 매치인지" 가 포인터 위치에 따라 깜빡인다.
+    const hl = highlightAt(&hls, 5, &chrome);
+    try std.testing.expect(hl != null);
+    try std.testing.expectEqual(rgbOf(chrome.menu_hover_bg), hl.?.bg);
+
+    // 링크만 걸린 칸은 여전히 색이 없다 (밑줄이 그 몫이다).
+    const only_link = [_]ghostty.RenderState.Highlight{
+        .{ .tag = cell_highlight.Tag.link_hover.value(), .range = .{ 0, 9 } },
+    };
+    try std.testing.expect(highlightAt(&only_link, 5, &chrome) == null);
+
+    _ = style;
+    _ = raw;
 }
