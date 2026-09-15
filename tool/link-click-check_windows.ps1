@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'A', 'B', 'C', 'D')][string]$Mode = 'probe',
+    [ValidateSet('probe', 'A', 'B', 'C', 'D', 'E')][string]$Mode = 'probe',
     [string]$Bin = 'zig-out\bin\tildaz.exe',
     [string]$Screen = "$env:TEMP\tz-link.ps1",
     [string]$Size = '88x20',
@@ -33,6 +33,8 @@ param(
     [string]$Link = '',
     [string]$Osc8 = '',
     [string]$Plain = '',
+    # 회차 E 전용 — 컨트롤 스트립 `+` 의 클라이언트 좌표. 비우면 창 폭에서 계산한다.
+    [string]$Plus = '',
     [int]$Wait = 6
 )
 
@@ -490,8 +492,69 @@ if ($Mode -eq 'D') {
     Record "D2" "문턱을 넘게 끌면 선택 — 안 열린다" "+0" "+$($n1 - $n0)" (($n1 - $n0) -eq 0)
 }
 
-# 비활성 창에서의 hover (Windows 만 따로 보는 항목 — #647 7 절)
+# 회차 E — 포인터가 **창을 떠날 때** hover 가 풀리는가 (#647 의 Windows 몫).
+# macOS 는 `tildazMouseExited`, Linux 는 `handlePointerLeave` 가 그 자리인데 Windows 에는
+# `WM_MOUSELEAVE` · `TrackMouseEvent` 가 아예 없었다 — 밑줄이 남으면 그 결함이다.
+# 탭바 hover 도 같은 뿌리라 E3 에서 함께 본다 (Linux 의 `handlePointerLeave` 는 둘을 함께 푼다).
+if ($Mode -eq 'E') {
+    # 창 밖 좌표 — **아무 창도 없는 자리**를 고른다. macOS 회차가 브라우저에 덮인 자리에
+    # 포인터를 두고 없는 결함을 만들 뻔했다 (#647 정정 코멘트). 창 오른쪽 · 아래 바깥이면
+    # tildaz 는 확실히 벗어나고, 무엇이 그 밑에 있든 *우리 창이 아닌 것*이 판정 조건이다.
+    $dpi = 96
+    if ($initLine -match 'dpi=(\d+)') { $dpi = [int]$matches[1] }
+    $scale = $dpi / 96.0
+    $vw = [TzLink]::GetSystemMetrics(78); $vh = [TzLink]::GetSystemMetrics(79)
+    $outX = [Math]::Min($wr.R + 120, $vw - 8)
+    $outY = [Math]::Min($wr.B + 120, $vh - 8)
+    if ($outX -le $wr.R) { $outX = [Math]::Max($wr.L - 120, 8) }
+    if ($outY -le $wr.B) { $outY = [Math]::Max($wr.T - 120, 8) }
+    "창 밖 지점: $outX,$outY  (창 $($wr.L),$($wr.T)-$($wr.R),$($wr.B) · 가상화면 ${vw}x${vh})"
+
+    # E1 — 링크 위 hover. 밑줄이 떠야 E2 를 판정할 수 있다 (기준).
+    MoveClient $LinkPt 5
+    $e1 = Shot "E1_hover"
+    $bb = ""; $d1 = [TzLink]::Diff($base, $e1, [ref]$bb)
+    $cur1 = [TzLink]::CursorName()
+    Record "E1" "URL hover — 밑줄 (E2 의 기준)" ">0 px · hand" "$d1 px ($bb) · cursor=$cur1" ($d1 -gt 0 -and $cur1 -eq 'hand')
+
+    # E2 — 창 밖으로 뺀다. 밑줄이 남으면 결함이다.
+    Guard
+    [TzLink]::MoveTo($outX, $outY, 3)
+    Start-Sleep -Seconds 1
+    $e2 = Shot "E2_outside"
+    $bb = ""; $d2 = [TzLink]::Diff($base, $e2, [ref]$bb)
+    Record "E2" "창 밖으로 — 밑줄이 풀린다" "0 px" "$d2 px ($bb)" ($d2 -eq 0)
+
+    # E3 — 탭바 hover 도 같은 뿌리인가 (`App.tab_hover`). **탭 본체에는 hover 강조가 없다** —
+    # `updateTabHover` 가 `.tab_area` 를 `.none` 으로 접는다. 강조가 있는 것은 컨트롤 버튼
+    # (`+` · `×` · `⋯` · 화살표) 뿐이라 `+` 위에서 본다. 탭을 만들지 않으므로 창 크기도
+    # 그대로고 앞의 `base` 를 그대로 기준으로 쓴다.
+    $PlusPt = if ($Plus) { Parse-Pt $Plus 'Plus' } else { @([int](($cr.R - $cr.L) - 61 * $scale), [int](13 * $scale)) }
+    "컨트롤 `+` 지점: $($PlusPt[0]),$($PlusPt[1])"
+    MoveClient $NeutralPt 2; Start-Sleep -Milliseconds 500
+    $t0 = Shot "E3_ctrl_base"
+    MoveClient $PlusPt 4
+    $t1 = Shot "E3_ctrl_hover"
+    $bb = ""; $dt1 = [TzLink]::Diff($t0, $t1, [ref]$bb)
+    Guard
+    [TzLink]::MoveTo($outX, $outY, 3)
+    Start-Sleep -Seconds 1
+    $t2 = Shot "E3_ctrl_outside"
+    $bb2 = ""; $dt2 = [TzLink]::Diff($t0, $t2, [ref]$bb2)
+    # 강조가 잡혀야 (dt1 > 0) 풀리는지를 물을 수 있다. 안 잡히면 좌표 문제지 결함이 아니다.
+    $ok3 = ($dt1 -gt 0 -and $dt2 -eq 0)
+    $note = if ($dt1 -eq 0) { "컨트롤 hover 강조가 안 잡혔다 (좌표 의심 — 판정 불가)" } else { "" }
+    Record "E3" "컨트롤 `+` hover — 창 밖에서 풀린다" "hover>0 px · 밖 0 px" "hover=$dt1 px ($bb) · 밖=$dt2 px ($bb2) $note" $ok3
+}
+
+# 비활성 창에서의 hover (Windows 만 따로 보는 항목 — #647 7 절).
+# 회차 E 는 건너뛴다 — 탭을 만들어 창 크기가 바뀐 뒤라 앞 캡처와 못 견주고, 이 항목은
+# 회차 A · B 에서 이미 답이 나와 있다.
 "";
+if ($Mode -eq 'E') {
+    "--- 비활성 창 hover: 회차 E 에서는 건너뜀 ---"
+}
+else {
 "--- 비활성 창 hover (참고 항목) ---"
 MoveClient $NeutralPt 2
 $inactiveBase = Shot "inactive_base"
@@ -509,6 +572,7 @@ if ($nowFg -ne $h) {
     "비활성 상태 hover: 밑줄차이=$d px ($bb) · cursor=$cur"
 } else {
     "비활성으로 만들지 못해 건너뜀"
+}
 }
 
 [TzLink]::Topmost($h, $false)
