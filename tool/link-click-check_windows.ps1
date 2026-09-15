@@ -227,10 +227,21 @@ if (Test-Path $Cfg9) { throw "config_9.toml 이 이미 있다 — 사용자 설�
 if (-not (Test-Path $Screen)) { throw "화면 스크립트 없음: $Screen" }
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
 
+# 인스턴스 9 만 내린다 — 명령줄에 `--instance 9` 가 있는 tildaz 만. **정말 사라졌는지 확인한다** —
+# 종료가 늦으면 다음 `zig build` 가 `zig-outin	ildaz.exe` 를 못 덮어 `AccessDenied` 로 떨어진다
+# (2026-09-15 실측 — 회차 뒤 한 프로세스가 남아 빌드가 막혔다).
 function Stop-Tz {
     Get-CimInstance Win32_Process -Filter "Name like 'tildaz%'" |
         Where-Object { $_.CommandLine -match '--instance 9' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt 5000) {
+        $left = @(Get-CimInstance Win32_Process -Filter "Name like 'tildaz%'" |
+            Where-Object { $_.CommandLine -match '--instance 9' })
+        if ($left.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 200
+    }
+    "⚠️ 인스턴스 9 가 5 초 안에 안 내려갔다 — 다음 빌드가 막힐 수 있다"
 }
 function Parse-Pt([string]$s, [string]$name) {
     if (-not $s) { throw "$name 좌표가 없다 — probe 캡처에서 읽어 -$name x,y 로 준다" }
