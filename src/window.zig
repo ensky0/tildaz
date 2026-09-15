@@ -95,6 +95,11 @@ const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
+/// #647 — 포인터가 창 밖으로 나간 순간. `TrackMouseEvent` 로 요청해야 오고, 한 번
+/// 발동하면 추적이 스스로 풀린다 (Win32 의 계약). macOS `mouseExited:` · Linux
+/// `wl_pointer.leave` 와 같은 자리다.
+const WM_MOUSELEAVE: UINT = 0x02A3;
+const TME_LEAVE: DWORD = 0x00000002;
 const WM_RBUTTONDOWN: UINT = 0x0204;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 // #502 — 가운데 버튼은 mouse reporting 이 실을 버튼 하나 (`Cb` 1). 이전에 우클릭
@@ -288,6 +293,14 @@ extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
 extern "user32" fn SetCursor(HCURSOR) callconv(.c) HCURSOR;
 extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.c) BOOL;
+/// #647 — `TrackMouseEvent` 인자. `cbSize` 를 반드시 채운다 (Win32 의 버전 구분 방식).
+const TRACKMOUSEEVENT = extern struct {
+    cbSize: DWORD,
+    dwFlags: DWORD,
+    hwndTrack: HWND,
+    dwHoverTime: DWORD,
+};
+extern "user32" fn TrackMouseEvent(*TRACKMOUSEEVENT) callconv(.c) BOOL;
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 // #386 — 프레임 clock. `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 은 `timeBeginPeriod(1)` 로
@@ -468,6 +481,9 @@ pub const Window = struct {
     auto_scroll_active: bool = false,
     last_mouse_x: c_int = 0,
     last_mouse_y: c_int = 0,
+    /// #647 — `WM_MOUSELEAVE` 는 한 번 발동하면 추적이 **스스로 해제된다** (Win32 의
+    /// 계약). 그래서 "지금 추적 중인가" 를 들고 있다가 `WM_MOUSEMOVE` 에서 다시 건다.
+    tracking_mouse_leave: bool = false,
     /// #386 — 프레임 clock. 화면 주사율 주기로 `WM_FRAME_TICK` 을 post 하는 스레드와
     /// 그 스레드가 기다리는 고해상도 waitable timer. `SetTimer` 를 쓰지 않는 이유는
     /// `WM_FRAME_TICK` 주석에 있다.
@@ -2610,6 +2626,17 @@ pub const Window = struct {
                 return 0;
             },
             WM_MOUSEMOVE => {
+                // #647 — 포인터가 창을 떠나는 순간을 받으려면 이동할 때마다 (추적이 꺼져
+                // 있으면) 다시 걸어야 한다. `WM_MOUSELEAVE` 는 한 번 발동하고 스스로 해제된다.
+                if (!self.tracking_mouse_leave) {
+                    var tme: TRACKMOUSEEVENT = .{
+                        .cbSize = @sizeOf(TRACKMOUSEEVENT),
+                        .dwFlags = TME_LEAVE,
+                        .hwndTrack = hwnd,
+                        .dwHoverTime = 0,
+                    };
+                    if (TrackMouseEvent(&tme).toBool()) self.tracking_mouse_leave = true;
+                }
                 // #245 — 마지막 위치 저장 (auto-scroll 타이머가 재전송에 사용).
                 self.last_mouse_x = getMouseX(lParam);
                 self.last_mouse_y = getMouseY(lParam);
@@ -2623,6 +2650,15 @@ pub const Window = struct {
                         .mods = mouseMods(wParam),
                     },
                 });
+                return 0;
+            },
+            // #647 — 포인터가 창을 떠났다. hover 로 켠 것 (링크 밑줄 · 탭바 컨트롤 강조) 을
+            // 푼다. 안 하면 창 밖으로 나가도 강조가 그대로 남는다 (2026-09-15 실측 —
+            // 밑줄 216 px · 컨트롤 강조 480 px 이 남았다).
+            WM_MOUSELEAVE => {
+                // 발동과 함께 추적이 풀렸으므로 다음 이동에서 다시 건다.
+                self.tracking_mouse_leave = false;
+                _ = self.dispatchAppEvent(.mouse_leave);
                 return 0;
             },
             // #193 — OS cursor shape (cell hover I-beam, 그 외 arrow). HTCLIENT

@@ -28,6 +28,10 @@ pub const Event = union(enum) {
     /// 커서가 따라오게 하려고 둔다 — 판정이 motion 에만 걸려 있으면 포인터를 흔들어야
     /// 반응한다. `ctrl` 은 그 시점의 눌림 상태다.
     link_mods_changed: bool,
+    /// #647 — 포인터가 창을 떠났다. hover 로 켠 것 (링크 밑줄 · 탭바 컨트롤 강조) 을 푼다.
+    /// macOS `tildazMouseExited` · Linux `handlePointerLeave` 와 같은 자리이고, Windows 는
+    /// `WM_MOUSELEAVE` 가 그 자리다.
+    mouse_leave: void,
     focus_lost: void,
     tab_closed: usize,
 };

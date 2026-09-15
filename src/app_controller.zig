@@ -1594,6 +1594,24 @@ pub const App = struct {
                 if (self.link_pointer) |p| self.updateLinkHover(p.x, p.y, ctrl);
                 return false; // 키 처리를 막지 않는다
             },
+            .mouse_leave => {
+                // #647 — 포인터가 창을 떠났다. 판정이 `mouse_move` 에만 걸려 있어서
+                // 이 훅이 없으면 강조가 창 밖에서도 그대로 남는다 (2026-09-15 Windows
+                // 실측 — 밑줄 216 px · 컨트롤 강조 480 px). macOS `tildazMouseExited` ·
+                // Linux `handlePointerLeave` 가 같은 일을 한다.
+                var changed = false;
+                if (self.link_hover.clear(self.allocator)) changed = true;
+                // 좌표도 무효로 둔다 — 안 그러면 수식키를 눌렀을 때 창 밖인데 **옛 자리**로
+                // 판정한다 (macOS 의 `g_link_pointer_valid = false` 와 같은 이유).
+                self.link_pointer = null;
+                // #268 2b — 탭바 컨트롤 hover 도 같이 푼다. 같은 뿌리로 남는 것을 실측했다.
+                if (self.tab_hover != .none) {
+                    self.tab_hover = .none;
+                    changed = true;
+                }
+                if (changed) self.window.requestRender();
+                return true;
+            },
             .focus_lost => {
                 // #390 — 다른 앱으로 focus 가 넘어가면 열린 menu 를 닫는다
                 // (native menu 동등). 창 밖 클릭 자체는 우리에게 오지 않으므로
