@@ -50,6 +50,8 @@
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
 | [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행을 자동 검증 | `# Linux — headless sway …` |
 | [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`send return` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
+| [`key-bytes.py`](key-bytes.py) | 무관 | 키 하나가 PTY 로 보낸 **바이트를 그대로** 찍음. `legacy` · `kitty` · `mok2` 세 모드 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)) | — (도구 머리 주석) |
+| [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
 | [`kitty-text-check_windows.ps1`](kitty-text-check_windows.ps1) | Windows | kitty keyboard protocol 의 글자 키 바이트 판정 | `# Windows — 합성 입력으로 …` |
 | [`launcher-fatal-check_windows.ps1`](launcher-fatal-check_windows.ps1) | Windows | launcher 기동 실패가 화면에 뜨는지 | `# Windows — 합성 입력으로 …` |
 | [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 (실제 GNOME · Cinnamon 세션용) | `# Linux — headless sway …` |

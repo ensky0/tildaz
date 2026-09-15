@@ -57,6 +57,10 @@ pub const KeyInput = enum {
     enter,
     escape,
     backspace,
+    // #653 — Tab 도 key 로 보낸다. 예전에는 `WM_CHAR` 의 `0x09` 를 `text_input` 으로
+    // 받았는데, 그 메시지에는 **Shift 도 물리 키도 없어서** `Shift+Tab` 의 back-tab
+    // (`ESC[Z`) 을 만들 수 없었다 (Windows 만 `09` 가 나갔다).
+    tab,
     left,
     right,
     home,

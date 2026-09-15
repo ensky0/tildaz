@@ -59,6 +59,13 @@ static const struct {
     {"1", 18},   {"2", 19},   {"3", 20},    {"4", 21},    {"6", 22},    {"5", 23},
     {"9", 25},   {"7", 26},   {"8", 28},    {"0", 29},
     {"return", 36}, {"tab", 48}, {"space", 49}, {"delete", 51}, {"esc", 53},
+    {"escape", 53}, {"enter", 36},
+    // #650 — `Ctrl+[` 의 C0 (ESC) 를 재는 데 필요하다. 이름은 `tool/vkbd_linux.py` 의
+    // evdev 표기와 맞춘다 (`bracketleft` · `bracketright`) — 세 platform 회차를 같은
+    // 키 이름으로 적을 수 있어야 대조가 쉽다.
+    {"bracketleft", 33}, {"bracketright", 30}, {"backspace", 51},
+    {"semicolon", 41}, {"apostrophe", 39}, {"comma", 43}, {"period", 47}, {"slash", 44},
+    {"minus", 27}, {"equal", 24}, {"backslash", 42}, {"grave", 50},
     // 화살표 — pane 분할 · 포커스 이동 단축키에 필요하다 (#551 ②, `alt+cmd+right` 등).
     {"left", 123}, {"right", 124}, {"down", 125}, {"up", 126},
     {"f1", 122}, {"f2", 120}, {"f3", 99},   {"f4", 118},  {"f5", 96},   {"f6", 97},

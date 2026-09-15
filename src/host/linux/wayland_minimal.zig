@@ -7085,7 +7085,7 @@ const Client = struct {
         }
         var out_buf: [64]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&out_buf);
-        key_encode.encode(&writer, .{
+        const outcome = key_encode.encode(&writer, .{
             .code = physical_key.fromEvdev(key),
             .mods = .{
                 .shift = self.keyboard.shiftActive(),
@@ -7105,7 +7105,12 @@ const Client = struct {
             .action = action,
         }, self.keyEncodeOptions()) catch return;
         const bytes = writer.buffered();
-        if (bytes.len > 0) self.queueInput(bytes);
+        // #648 — macOS · Windows 와 같은 판정 함수를 쓴다. 이 host 에는 안전망이 없어
+        // `.consume` 과 `.fallback` 이 같은 동작이지만, 셋이 같은 자리를 보게 둔다.
+        switch (key_encode.hostAction(outcome, bytes)) {
+            .write => self.queueInput(bytes),
+            .consume, .fallback => {},
+        }
     }
 
     /// #533 — 인코딩 옵션. 여덟 개 중 일곱 개는 터미널 상태가 정하고
