@@ -54,6 +54,7 @@
 | [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
 | [`kitty-text-check_windows.ps1`](kitty-text-check_windows.ps1) | Windows | kitty keyboard protocol 의 글자 키 바이트 판정 | `# Windows — 합성 입력으로 …` |
 | [`launcher-fatal-check_windows.ps1`](launcher-fatal-check_windows.ps1) | Windows | launcher 기동 실패가 화면에 뜨는지 | `# Windows — 합성 입력으로 …` |
+| [`link-click-check_windows.ps1`](link-click-check_windows.ps1) | Windows | 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Windows — 합성 입력으로 …` |
 | [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 (실제 GNOME · Cinnamon 세션용) | `# Linux — headless sway …` |
 | [`position-hotkey-check_linux.sh`](position-hotkey-check_linux.sh) | Linux | 전역 hotkey 의 위치 표기가 이 데스크톱에 실제로 등록되는지 | `# 전역 hotkey 의 위치 표기 검증` |
 | [`real-session-check_linux.sh`](real-session-check_linux.sh) | Linux | 실제 Hyprland · GNOME · Cinnamon 세션에 붙어 배율 · layer-shell 부재를 봄 | `# Linux — headless sway …` |

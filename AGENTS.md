@@ -825,6 +825,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
 | [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 |
+| [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) 를 돌린다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
@@ -871,6 +872,18 @@ tool\key-bytes-check_windows.ps1                                    # 창 3 회 
 - **자식 (PTY 안 python) 이 죽으면 창도 곧 사라져 "포커스 못 잡음" 으로 보여요.** 자식 코드를 heredoc · python 으로 편집하면 `
 ` 이 실제 개행으로 바뀌어 문법이 깨질 수 있어요 (2026-09-03 — #606 도구 편집). 도구는 자식 코드를 `py_compile` 로 먼저 검사하고, 자식은 항목마다 파일을 다시 쓰며 예외를 `<out>.err` 에 남겨요 — "결과 파일 없음" 이 아니라 **어느 항목이 비었는지** 가 보여야 원인을 가를 수 있어요.
 - **`Start-Process -RedirectStandardError` 로 앱을 띄우면 새 창이 포커스를 못 받아요** (같은 날 실측 — 두 회차 모두 "포커스 못 잡음"). 앱 로그가 필요하면 `%APPDATA%	ildaz	ildaz_<instance>.log` (stress 인스턴스 9 는 `tildaz_stress.log`) 를 읽어요 — `log.appendLine` 이 거기 써요.
+- **⚠️ `Add-Type @"…"@` 안의 C# 주석에 백틱을 쓰지 말아요 — PowerShell 이 먼저 먹어요.** `@"…"@` 는 *확장*
+  here-string 이라 백틱이 이스케이프로 해석돼서, 코드 이름을 `` `render-ab-shot_windows.ps1` `` 처럼 감싸면
+  `` `r `` 이 **캐리지 리턴으로 치환돼 줄이 깨지고** C# 컴파일이 `잘못된 '-' 토큰` 으로 떨어져요 (2026-09-15
+  `link-click-check` 작성 중 실측). 원인이 C# 쪽으로 보여서 엉뚱한 데를 봐요. 그 블록 안에서는 백틱 없이 쓰고,
+  `$` 도 같은 이유로 피해요. 블록 **밖**의 PowerShell 주석은 백틱을 써도 돼요.
+- **회차 중 창을 띄우는 케이스는 맨 뒤에 둬요.** 그 창이 foreground 를 가져가면 뒤따르는 케이스의 합성 입력이
+  그쪽으로 가요 — 2026-09-15 `link-click-check` 첫 회차에서 A2 (실제 브라우저 열기) 뒤의 A4 가 그렇게 막혔어요.
+  `SetForegroundWindow` 는 **남의 프로세스가 foreground 면 조용히 무시**되므로 재시도만으로는 못 되찾아요.
+  되찾으려면 **창 안 (링크가 아닌 중립 자리) 을 한 번 클릭**하고, 회차 동안 tildaz 를 `HWND_TOPMOST` 로 올려 둬요.
+- **커서 모양은 `GetCursorInfo` 의 `hCursor` 를 `LoadCursorW(NULL, IDC_*)` 의 공유 핸들과 비교**해 판정해요
+  (`IDC_HAND` 32649 · `IDC_IBEAM` 32513 · `IDC_ARROW` 32512). 캡처로는 못 봐요 — `PrintWindow` 는 커서를 안
+  그려요. 덕분에 **밑줄 판정 (캡처 픽셀) 과 커서 판정이 서로 오염되지 않아요.**
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
 
 # Windows — 키보드 layout 조회 실측 방법
