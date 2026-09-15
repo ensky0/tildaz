@@ -204,20 +204,28 @@ pub fn encode(
         .unshifted_codepoint = event.unshifted_codepoint,
     };
 
-    // #650 — ghostty 가 fixterms 때문에 C0 표에서 뺀 세 키를 legacy 에서 되돌린다.
-    if (legacyC0Override(event, opts)) |byte| {
-        try writer.writeByte(byte);
-        return .encoded;
-    }
-
-    // #648 — legacy 인 Ctrl+Shift 조합만 결과를 들여다본다. 나머지는 그대로 흘려
-    // 보낸다 (버퍼 한 번을 더 쓰지 않는다).
-    if (mayDropExtended(event, opts)) {
+    // #648 · #650 · #653 — **판정은 인코더가 내놓은 바이트 한 곳에서만 한다.**
+    //
+    // 예전에는 여기 앞에 `legacyC0Override` 가 있어서 원본 이벤트 필드로 키 정체를
+    // **다시 판정**했다. 그 판정이 ghostty 의 것과 어긋나면 엉뚱한 바이트가 나간다 —
+    // 물리 Escape 자리에 다른 keysym 이 얹힌 keymap 에서 `Ctrl+<그 키>` 가 그 키의 C0
+    // 대신 `0x1b` 였다 (2026-09-15 Linux 실기, `deadkey-check_linux.sh` 가 잡았다).
+    // 지금은 우리가 키를 다시 판정하지 않고 **ghostty 의 결과를 내리기만** 한다.
+    if (mayRewriteExtended(event, opts)) {
         var buf: [64]u8 = undefined;
         var probe: std.Io.Writer = .fixed(&buf);
         if (ghostty.input.encodeKey(&probe, ghostty_event, opts)) {
             const bytes = probe.buffered();
-            if (isUnrequestedExtended(bytes, opts)) return .suppressed;
+            if (isUnrequestedExtended(bytes, opts)) {
+                // 규칙 ① — `Ctrl+Shift` 대역은 앱 단축키 대역이라 보내지 않는다 (#648).
+                if (event.mods.ctrl and event.mods.shift) return .suppressed;
+                // 규칙 ② — 표현 가능한 C0 면 그것을, 아니면 아무것도 (#650 · #653).
+                if (legacyC0(bytes, event)) |byte| {
+                    try writer.writeByte(byte);
+                    return .encoded;
+                }
+                return .suppressed;
+            }
             try writer.writeAll(bytes);
             return .encoded;
         } else |_| {
@@ -230,92 +238,79 @@ pub fn encode(
     return .encoded;
 }
 
-/// #650 — legacy 에서 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` 이 내야 할 C0 바이트.
-///
-/// ghostty 의 `ctrlSeq` C0 표는 이 셋을 **주석과 함께 일부러 비워 두었다** —
-/// *"These are purposely NOT handled here because of the fixterms specification …
-/// processed as CSI u"*. 앱이 `Tab` 과 `Ctrl+I` 를, `Enter` 와 `Ctrl+M` 을 구분할 수
-/// 있게 하려는 것이고 그 자체는 타당하다. 문제는 **앱이 그 프로토콜을 켜지 않았을 때도**
-/// 그렇게 나간다는 것이다 — bash 에서 `Ctrl+[` 가 ESC 가 아니라 `ESC[91;5u` 라서
-/// vi-mode 탈출이 안 됐다.
-///
-/// 그래서 legacy 일 때만 되돌린다. **kitty flags 나 modifyOtherKeys=2 가 켜져 있으면
-/// 손대지 않는다** — vim · emacs 는 후자를 켜고 `ESC[27;5;91~` 를 받아 이미 잘 동작하며,
-/// kitty 를 켠 앱은 정확히 그 구분을 원해서 켠 것이다.
-///
-/// Shift 가 눌린 조합은 #648 의 몫이라 여기서 뺀다 (`Ctrl+Shift+I` 는 계속 0 바이트 —
-/// Windows 동등). Alt 는 ESC prefix 규칙이 따로 있어 건드리지 않는다.
-///
-/// 글자를 고르는 순서는 `ctrlSeq` 와 같다 — 1 바이트 `utf8` 이 있으면 그것, 없으면
-/// **물리 키의 US 글자**. 러시아어 배열의 `Ctrl+I` (물리 `i` 자리, keysym `ш`) 가 그
-/// 되짚기로 `0x09` 를 낸다. CapsLock 으로 대문자가 와도 내려서 본다.
-fn legacyC0Override(event: Event, opts: Options) ?u8 {
-    // **누름 · 반복만이다.** `Event.action` 주석이 약속한 대로 host 는 `.release` 를
-    // 모드와 무관하게 넘기고 (macOS `tildazKeyUp` 은 무조건 보낸다) 거르는 것은
-    // 인코더의 몫이다. ghostty 의 legacy 경로는 맨 앞에서 걸러 내는데, 이 override 는
-    // 그보다 앞에 있어 직접 걸러야 한다 — 빠뜨려서 `Ctrl+[` 가 누름 · 뗌 두 번 나가
-    // `^[^[` 가 됐다 (2026-09-11 실기).
-    if (event.action != .press and event.action != .repeat) return null;
-    if (opts.kitty_flags.int() != 0) return null;
-    if (opts.modify_other_keys_state_2) return null;
-    if (event.mods.alt or event.mods.super) return null;
-
-    // #648 — `Ctrl+Shift` 대역은 **앱 단축키 대역**이라 PTY 로 보내지 않는다. 그쪽 규칙이
-    // 이미 세 OS 로 검증돼 있으므로 여기서 되살리지 않는다.
-    if (event.mods.ctrl and event.mods.shift) return null;
-
-    // ① #653 — 특수키. legacy 에는 수식키를 실을 자리가 없는데 ghostty 는
-    // `function_keys` 표의 무조건 항목으로 `CSI 27;<mods>;<cp> ~` 를 낸다. 앱이
-    // `CSI > 4;2m` 으로 켠 적이 없으면 그것은 요청되지 않은 인코딩이라 (위에서 이미
-    // 걸렀다) **맨 키의 C0** 를 보낸다 — xterm · Terminal.app · iTerm2 가 하는 것이고
-    // Windows 의 `WM_CHAR` 경로가 이미 내던 값이다.
-    if (event.code) |code| switch (code) {
-        .enter => if (event.mods.ctrl or event.mods.shift) return 0x0d,
-        .escape => if (event.mods.ctrl or event.mods.shift) return 0x1b,
-        // **`Shift+Tab` 은 건드리지 않는다** — `ESC[Z` (CBT) 는 확장이 아니라 ECMA-48
-        // 시절부터 있던 진짜 legacy 시퀀스다.
-        .tab => if (event.mods.ctrl) return 0x09,
-        else => {},
-    };
-
-    // ② #650 — 글자 키. ghostty 의 `ctrlSeq` C0 표는 `[` · `i` · `m` 을 **주석과 함께
-    // 일부러 비워 두었다** — *"These are purposely NOT handled here because of the
-    // fixterms specification … processed as CSI u"*. 앱이 `Tab` 과 `Ctrl+I` 를 구분할 수
-    // 있게 하려는 것이고 그 자체는 타당하다. 문제는 **앱이 그 프로토콜을 켜지 않았을
-    // 때도** 그렇게 나간다는 것이다 — bash 에서 `Ctrl+[` 가 ESC 가 아니라 `ESC[91;5u`
-    // 라서 vi-mode 탈출이 안 됐다.
-    //
-    // 글자를 고르는 순서는 `ctrlSeq` 와 같다 — 1 바이트 `utf8` 이 있으면 그것, 없으면
-    // **물리 키의 US 글자**. 러시아어 배열의 `Ctrl+I` (물리 `i` 자리, keysym `\u0448`) 가 그
-    // 되짚기로 `0x09` 를 낸다. CapsLock 으로 대문자가 와도 내려서 본다.
-    if (!event.mods.ctrl) return null;
-    var char: u8 = if (event.utf8.len == 1)
-        event.utf8[0]
-    else
-        usAscii(event.code) orelse return null;
-    if (char >= 'A' and char <= 'Z') char = std.ascii.toLower(char);
-
-    return switch (char) {
-        '[' => 0x1b,
-        'i' => 0x09,
-        'm' => 0x0d,
-        else => null,
-    };
-}
-
-/// #648 — 이 이벤트에 "요청되지 않은 확장 인코딩은 버린다" 규칙이 걸릴 수 있는가.
+/// #648 · #650 · #653 — 이 이벤트에 "요청되지 않은 확장 인코딩" 규칙이 걸릴 수 있는가.
 ///
 /// **kitty flags 가 있으면 걸리지 않는다.** 그때는 앱이 `CSI > flags u` 로 프로토콜을
 /// 명시적으로 켠 상태이고, 그런 앱 (nvim · helix · zellij) 은 `Ctrl+Shift+<글자>` 를
 /// 정말로 원한다. 여기서 삼키면 그쪽이 통째로 깨진다.
 ///
-/// Shift 가 없는 `Ctrl+<글자>` 도 대상이 아니다 — `^C` · `^F` 는 C0 바이트로 잘 나간다.
 /// Alt · Cmd 가 섞인 조합은 각자 규칙 (ESC prefix · macOS super) 이 있어 건드리지 않는다.
-fn mayDropExtended(event: Event, opts: Options) bool {
+///
+/// **Ctrl 만이 아니라 Shift 단독도 본다** (#653) — `Shift+Enter` 가 `ESC[27;2;13~` 로
+/// 나가고 있었다. ctrl 이 없어서 #648 의 억제에도 #650 의 C0 복구에도 안 걸렸다.
+/// 수식키가 아예 없는 키는 확장 인코딩을 만들지 않으므로 볼 필요가 없다.
+fn mayRewriteExtended(event: Event, opts: Options) bool {
     if (opts.kitty_flags.int() != 0) return false;
-    if (!event.mods.ctrl or !event.mods.shift) return false;
     if (event.mods.alt or event.mods.super) return false;
-    return true;
+    return event.mods.ctrl or event.mods.shift;
+}
+
+/// #650 · #653 — 요청되지 않은 확장 인코딩을 legacy 가 보낼 **1 바이트 C0** 로 내린다.
+///
+/// **핵심은 그 인코딩이 이미 답을 담고 있다는 것이다.** 두 형식 모두 키의 codepoint 를
+/// 파라미터로 싣는다. 그래서 우리가 키 정체를 다시 판정할 필요가 없고, 판정이 ghostty 와
+/// 어긋날 여지도 없다 — 예전 `legacyC0Override` 가 `event.code` 로 다시 판정하다가
+/// 물리 Escape 자리의 글자 키를 `0x1b` 로 내보낸 자리다.
+///
+///   `CSI <cp>;<mods> u`      → 첫 파라미터   (`[` 91 · `i` 105 · `m` 109)
+///   `CSI 27;<mods>;<cp> ~`   → 셋째 파라미터 (`Enter` 13 · `Tab` 9 · `Escape` 27)
+///
+/// 환산은 표가 아니라 규칙 둘이다.
+///
+///   1. `cp` 가 이미 C0 면 그대로다 — 특수키 셋이 여기 걸린다.
+///   2. Ctrl 조합이고 `cp` 가 fixterms 의 C0 대역 (`@`..`_`) 이거나 그 소문자면 `cp & 0x1f`.
+///      `[` → `0x1b` · `i` → `0x09` · `m` → `0x0d` 가 이 식 하나로 나온다.
+///
+/// 둘 다 아니면 **보낼 것이 없다** — `Ctrl+;` 처럼 C0 대응이 없는 키다. legacy 에는
+/// 수식키를 실을 자리가 없으니 확장 인코딩을 대신 보내지 않고 아무것도 안 보낸다
+/// (Windows 의 `WM_CHAR` 경로가 원래 그랬다).
+///
+/// 비라틴 배열만 한 번 더 본다. `csiu` 블록이 싣는 codepoint 는 `event.utf8` 에서 온 것이라
+/// 러시아어 배열의 `Ctrl+I` 는 `CSI 1096;5u` (`ш`) 다. 그때는 **물리 키의 US 글자**로
+/// 되짚는다 — ghostty 의 `ctrlSeq` 가 같은 자리에서 쓰는 수다 (`logical_key.codepoint()`).
+/// `Enter` · `Tab` · `Escape` 는 그 표에 없어 `usAscii` 가 `null` 이라, 이 되짚기가 특수키
+/// 자리를 잘못 살려내지 않는다.
+fn legacyC0(bytes: []const u8, event: Event) ?u8 {
+    if (extendedCodepoint(bytes)) |cp| {
+        if (c0ForCodepoint(cp, event.mods)) |byte| return byte;
+    }
+    const us = usAscii(event.code) orelse return null;
+    return c0ForCodepoint(us, event.mods);
+}
+
+/// 확장 인코딩이 싣고 있는 키 codepoint.
+fn extendedCodepoint(bytes: []const u8) ?u21 {
+    const final = bytes[bytes.len - 1];
+    var it = std.mem.splitScalar(u8, bytes[2 .. bytes.len - 1], ';');
+    const field = switch (final) {
+        'u' => it.first(),
+        '~' => blk: {
+            _ = it.next() orelse return null; // 27
+            _ = it.next() orelse return null; // mods
+            break :blk it.next() orelse return null; // cp
+        },
+        else => return null,
+    };
+    return std.fmt.parseInt(u21, field, 10) catch null;
+}
+
+/// codepoint → legacy 가 보낼 C0. 위 `legacyC0` 머리 주석의 규칙 둘이다.
+fn c0ForCodepoint(cp: u21, mods: Mods) ?u8 {
+    if (cp < 0x20) return @intCast(cp);
+    if (!mods.ctrl) return null;
+    if (cp >= '@' and cp <= '_') return @intCast(cp & 0x1f);
+    if (cp >= 'a' and cp <= 'z') return @intCast(cp & 0x1f);
+    return null;
 }
 
 /// #648 — 이 바이트열이 **앱이 요청한 적 없는** 확장 인코딩인가.
@@ -700,6 +695,48 @@ test "#653 legacy 의 ctrl · shift + 특수키는 맨 키의 C0 로 나간다" 
             std.debug.print("실패한 조합: {s}\n", .{c.name});
             return err;
         };
+    }
+}
+
+test "#650 물리 키 자리가 아니라 인코딩이 싣고 온 글자를 본다" {
+    // 합성 keymap (`wtype` · 원격 입력 · 재배치한 xkb) 은 keysym 을 임의의 물리 키에
+    // 얹는다 — 물리 Escape 자리 (evdev 1) 에 `a` 가 오는 식이다. 예전 구현은
+    // `event.code` 로 키 정체를 **다시 판정**해 `Ctrl+<그 키>` 를 `0x1b` 로 내보냈고,
+    // `deadkey-check_linux.sh` 가 `Ctrl+C` 자리에서 그것을 잡았다 (2026-09-15 Linux 실기).
+    // 지금은 ghostty 가 그 글자로 낸 `0x01` 이 확장 인코딩이 아니라 그대로 지나간다.
+    var buf: [16]u8 = undefined;
+    const out = try encodeToBuf(&buf, .{
+        .code = .escape,
+        .mods = .{ .ctrl = true },
+        .utf8 = "a",
+        .unshifted_codepoint = 'a',
+    }, .{});
+    try testing.expectEqualStrings("\x01", out);
+}
+
+test "#650 C0 대응이 없는 키는 legacy 에서 아무것도 보내지 않는다" {
+    // `Ctrl+;` 는 `ESC[59;5u` 로 나가고 있었다 — 앱이 켤 방법조차 없는 인코딩이다.
+    // C0 대응이 없으니 규칙 ② 대로 아무것도 보내지 않는다 (Windows 의 `WM_CHAR` 경로가
+    // 원래 그랬다). 규칙을 화이트리스트가 아니라 식으로 두어서 일곱 칸이 함께 닫혔다.
+    const Case = struct { code: physical_key.PhysicalCode, ch: []const u8 };
+    for ([_]Case{
+        .{ .code = .semicolon, .ch = ";" },
+        .{ .code = .quote, .ch = "'" },
+        .{ .code = .comma, .ch = "," },
+        .{ .code = .period, .ch = "." },
+        .{ .code = .minus, .ch = "-" },
+        .{ .code = .backquote, .ch = "`" },
+        .{ .code = .equal, .ch = "=" },
+    }) |c| {
+        var buf: [16]u8 = undefined;
+        const outcome, const out = try encodeOutcome(&buf, .{
+            .code = c.code,
+            .mods = .{ .ctrl = true },
+            .utf8 = c.ch,
+            .unshifted_codepoint = c.ch[0],
+        }, .{});
+        try testing.expectEqual(Outcome.suppressed, outcome);
+        try testing.expectEqualStrings("", out);
     }
 }
 
