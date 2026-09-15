@@ -41,13 +41,16 @@ pub const SelectionState = struct {
     slop_px: f32 = 0,
     /// 문턱을 한 번이라도 넘었는가. 켜지면 계속 켜져 있다.
     armed: bool = false,
+    /// #647 — 누른 자리가 링크였는가. `arm` 의 *칸이 바뀌었다* 조건을 끈다 (그 주석 참고).
+    from_link: bool = false,
 
-    pub fn begin(self: *SelectionState, screen: *ghostty.Screen, cell: Cell, px: Px, slop_px: f32) void {
+    pub fn begin(self: *SelectionState, screen: *ghostty.Screen, cell: Cell, px: Px, slop_px: f32, from_link: bool) void {
         self.active = true;
         self.armed = false;
         self.start_cell = cell;
         self.start_px = px;
         self.slop_px = slop_px;
+        self.from_link = from_link;
         screen.clearSelection();
         self.start_pin = screen.pages.pin(.{ .viewport = .{ .x = cell.col, .y = cell.row } });
     }
@@ -63,12 +66,22 @@ pub const SelectionState = struct {
     /// - **다른 칸으로 넘어갔다** — 문턱보다 작게 움직였어도 칸이 바뀌었으면 선택이다.
     ///
     /// 한 번 켜지면 유지되므로 (`armed`) 이웃 칸으로 갔다 돌아오는 한 칸 선택도 그대로 된다.
+    ///
+    /// **누른 자리가 링크면 두 번째 조건 (*칸이 바뀌었다*) 을 쓰지 않는다** ([#647](https://github.com/ensky0/tildaz/issues/647),
+    /// 2026-09-15 Windows 실기에서 사용자가 발견). 칸은 좁아서 (150 % 에서 14 px) 칸 경계 근처를 누르면
+    /// **1 px 만 미끄러져도** 칸이 바뀌어 선택이 시작되고, 그러면 뗌에서 링크가 안 열린다 — 누를 때 손이
+    /// 흔들린 것뿐인데 링크를 못 여는 것이 결함으로 보인다. 칸 경계는 *선택의 단위*지 클릭과 드래그를
+    /// 가르는 기준이 아니다. 링크 위에서는 문턱 (`slop_px`) 만 보므로 그 안에서는 선택도 안 생기고 링크가
+    /// 열린다. 문턱을 넘으면 그때부터는 평소와 같아서 URL 글자를 끌어 고르는 것도 그대로 된다.
+    ///
+    /// ghostty 는 칸 (pin) 이 바뀌면 바로 드래그로 친다 (`SelectionGesture.zig` 의 `left_click_dragged`).
+    /// 우리는 그 규칙을 링크가 아닌 자리에만 유지한다.
     fn arm(self: *SelectionState, cell: Cell, px: Px) bool {
         if (self.armed) return true;
         const moved = @abs(px.x - self.start_px.x) > self.slop_px or
             @abs(px.y - self.start_px.y) > self.slop_px;
         const same_cell = cell.col == self.start_cell.col and cell.row == self.start_cell.row;
-        if (!moved and same_cell) return false;
+        if (!moved and (same_cell or self.from_link)) return false;
         self.armed = true;
         return true;
     }
@@ -87,6 +100,7 @@ pub const SelectionState = struct {
         self.active = false;
         self.start_pin = null;
         self.armed = false;
+        self.from_link = false;
         return true;
     }
 
@@ -94,6 +108,7 @@ pub const SelectionState = struct {
         self.active = false;
         self.start_pin = null;
         self.armed = false;
+        self.from_link = false;
     }
 };
 
@@ -361,6 +376,44 @@ test "#483 6단계 — 클릭 떨림은 선택을 만들지 않는다 (문턱 ·
     try std.testing.expect(!crossed.armed);
     in_cell.cancel();
     try std.testing.expect(!in_cell.armed);
+}
+
+test "#647 — 링크 위에서 누르면 칸이 바뀌어도 문턱 안에서는 선택이 아니다" {
+    const at = struct {
+        fn s(from_link: bool) SelectionState {
+            return .{
+                .active = true,
+                .start_cell = .{ .col = 5, .row = 3 },
+                .start_px = .{ .x = 100, .y = 200 },
+                .slop_px = 6, // 150 % 의 4 pt — 셀 폭 14 px 의 절반보다 작다.
+                .from_link = from_link,
+            };
+        }
+    }.s;
+
+    // ① 링크 위 · 칸이 바뀌었지만 문턱 안 (손 떨림 2 px) — 선택이 아니다. 뗌에서 링크가 열린다.
+    var slip = at(true);
+    try std.testing.expect(!slip.arm(.{ .col = 6, .row = 3 }, .{ .x = 102, .y = 200 }));
+    try std.testing.expect(!slip.armed);
+
+    // ② 링크가 아니면 같은 움직임이 선택이다 (기존 규칙 그대로 — ghostty 와 같다).
+    var plain = at(false);
+    try std.testing.expect(plain.arm(.{ .col = 6, .row = 3 }, .{ .x = 102, .y = 200 }));
+
+    // ③ 링크 위여도 문턱을 넘으면 선택이다 — URL 글자를 끌어 고르는 것이 그대로 된다.
+    var drag = at(true);
+    try std.testing.expect(drag.arm(.{ .col = 6, .row = 3 }, .{ .x = 107, .y = 200 }));
+    try std.testing.expect(drag.armed);
+
+    // ④ 세로도 같다 (행이 바뀌어도 문턱 안이면 클릭).
+    var vertical = at(true);
+    try std.testing.expect(!vertical.arm(.{ .col = 5, .row = 4 }, .{ .x = 100, .y = 204 }));
+
+    // ⑤ finish · cancel 이 `from_link` 를 되돌린다 — 다음 클릭이 링크 규칙을 물려받지 않는다.
+    _ = drag.finish();
+    try std.testing.expect(!drag.from_link);
+    slip.cancel();
+    try std.testing.expect(!slip.from_link);
 }
 
 test "selection finish and cancel clear active state" {

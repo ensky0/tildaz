@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'A', 'B', 'C')][string]$Mode = 'probe',
+    [ValidateSet('probe', 'A', 'B', 'C', 'D')][string]$Mode = 'probe',
     [string]$Bin = 'zig-out\bin\tildaz.exe',
     [string]$Screen = "$env:TEMP\tz-link.ps1",
     [string]$Size = '88x20',
@@ -452,6 +452,31 @@ if ($Mode -eq 'C') {
     Record "C4" "Ctrl 유지 + 1 px 이동" ">0 px · hand" "$d4 px ($bb) · cursor=$cur4" ($d4 -gt 0 -and $cur4 -eq 'hand')
 
     Guard; [TzLink]::KeyDownUp(0x11, $false); Start-Sleep -Milliseconds 400
+}
+
+# 회차 D — 누른 뒤 미끄러진 클릭 (#647, 2026-09-15 사용자 발견). 칸이 좁아 (150 % 에서 14 px)
+# 경계 근처를 누르면 1 px 만 밀려도 칸이 바뀌는데, 그때 선택이 시작되면 뗌에서 링크가 안 열렸다.
+# 링크 위에서는 문턱 (`slop_px`) 만 보도록 고쳤으므로 **문턱 안 미끄러짐은 열리고, 넘으면 선택**이다.
+if ($Mode -eq 'D') {
+    # D1 — 누르고 문턱 안에서 미끄러진 뒤 뗀다 (2 px · 칸 경계를 넘도록 셀 폭의 절반 자리에서 시작).
+    $n0 = Get-OpenCount
+    Guard
+    $s0 = [TzLink]::ClientToScreenPt($h, $LinkPt[0], $LinkPt[1])
+    $s1 = [TzLink]::ClientToScreenPt($h, $LinkPt[0] + 3, $LinkPt[1])
+    [TzLink]::DragTo($s0.x, $s0.y, $s1.x, $s1.y)
+    Start-Sleep -Seconds 4
+    $n1 = Get-OpenCount
+    Record "D1" "링크 위 3 px 미끄러짐 — 열린다" "+1" "+$($n1 - $n0) · $(Get-OpenLast)" (($n1 - $n0) -eq 1)
+
+    # D2 — 문턱 (6 px) 을 넘게 끌면 선택이고 열리지 않는다.
+    MoveClient $NeutralPt 2; Start-Sleep -Milliseconds 400
+    $n0 = Get-OpenCount
+    Guard
+    $s1 = [TzLink]::ClientToScreenPt($h, $LinkPt[0] + 60, $LinkPt[1])
+    [TzLink]::DragTo($s0.x, $s0.y, $s1.x, $s1.y)
+    Start-Sleep -Seconds 3
+    $n1 = Get-OpenCount
+    Record "D2" "문턱을 넘게 끌면 선택 — 안 열린다" "+0" "+$($n1 - $n0)" (($n1 - $n0) -eq 0)
 }
 
 # 비활성 창에서의 hover (Windows 만 따로 보는 항목 — #647 7 절)

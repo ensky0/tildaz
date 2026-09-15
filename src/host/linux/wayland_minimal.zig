@@ -7705,7 +7705,7 @@ const Client = struct {
                     return;
                 }
 
-                tab.interaction.selection.begin(tab.terminal.screens.active, cell, self.pointerPx(), self.selectionSlop());
+                tab.interaction.selection.begin(tab.terminal.screens.active, cell, self.pointerPx(), self.selectionSlop(), on_link);
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {

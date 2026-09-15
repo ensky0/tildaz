@@ -3357,7 +3357,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         return;
     }
     const down_px = eventToWindowPx(self_view, event);
-    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac());
+    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac(), on_link);
 }
 
 /// #483 6단계 — 선택 시작 문턱 (물리 px). 배율 · 셀 크기가 바뀌면 따라 바뀐다.

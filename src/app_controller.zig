@@ -1356,13 +1356,14 @@ pub const App = struct {
         return .{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
     }
 
-    fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+    /// `on_link` — 누른 자리가 링크였는가. #647 에서 `arm` 의 *칸이 바뀌었다* 조건을 끄는 데 쓴다.
+    fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int, on_link: bool) void {
         const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
         // #483 6단계 — 선택 시작 문턱 (물리 px). DPI 배율 · 셀 크기가 바뀌면 따라 바뀐다.
         const slop = ui_metrics.selectionDragSlopPx(@floatFromInt(self.window.cell_width_px), self.dpi_scale);
-        tab.interaction.selection.begin(screen, cell, mousePx(mouse_x, mouse_y), slop);
+        tab.interaction.selection.begin(screen, cell, mousePx(mouse_x, mouse_y), slop, on_link);
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
@@ -1779,7 +1780,7 @@ pub const App = struct {
                     mouse.y,
                     true,
                 ))) return true;
-                self.startTerminalSelection(mouse.x, mouse.y);
+                self.startTerminalSelection(mouse.x, mouse.y, on_link);
                 return true;
             },
             .mouse_double_click => |mouse| {

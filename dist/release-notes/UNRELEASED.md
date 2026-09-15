@@ -20,3 +20,5 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 ## Body candidates
+
+- Click a link in the terminal to open it in your browser — both OSC 8 hyperlinks and plain URLs found on screen. Hold `Ctrl` (`⌘` on macOS) while an app is using the mouse ([#643](https://github.com/ensky0/tildaz/issues/643)).
