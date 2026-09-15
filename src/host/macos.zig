@@ -33,6 +33,7 @@ const ui_metrics = @import("../ui_metrics.zig");
 const scrollbar = @import("../scrollbar.zig");
 const terminal = @import("../terminal.zig");
 const terminal_interaction = @import("../terminal_interaction.zig");
+const link = @import("../link.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_actions = @import("../tab_actions.zig");
@@ -1370,6 +1371,11 @@ fn tildazKeyUp(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
 /// 짝을 못 맞춘다. `keyUp:` 과 같은 가드 (command menu · IME 조합 중).
 fn tildazFlagsChanged(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     if (event == null) return;
+    // #647 — `⌘` 를 누르거나 뗀 그 순간 링크 판정을 다시 한다. 마우스가 가만히 있으면
+    // motion 이 오지 않아서, 이것이 없으면 포인터를 흔들어야 밑줄 · 손 커서가 따라온다
+    // (2026-09-11 사용자 제안). 앱이 마우스를 잡은 동안에만 실제로 달라진다 — 평소에는
+    // `active` 가 수식키와 무관해 `needsUpdate` 가 걸러 낸다.
+    refreshLinkHoverMac();
     if (g_command_menu_open) return;
     if (g_marked_len > 0) return;
     const tab = g_session.activeTab() orelse return;
@@ -2529,19 +2535,25 @@ fn eventToWindowPx(self_view: objc.id, event: objc.id) struct { x: f32, y: f32 }
 /// NSEvent 의 window 좌표 (Y-up) → terminal grid cell 좌표.
 /// `null` = window 밖 또는 padding 영역.
 fn eventToCell(self_view: objc.id, event: objc.id) ?terminal_interaction.Cell {
+    const px = eventToWindowPx(self_view, event);
+    return cellFromPx(px.x, px.y);
+}
+
+/// `eventToCell` 의 본체 — 좌표만 받는다. **키 이벤트에는 마우스 좌표가 없어서** 링크 판정이
+/// 마지막 포인터 위치 (`g_link_pointer_*`) 로 같은 계산을 해야 한다 (#647).
+fn cellFromPx(px_x: f32, px_y: f32) ?terminal_interaction.Cell {
     if (g_renderer == null) return null;
     const tab = g_session.activeTab() orelse return null;
 
-    const xy = eventToWindowPx(self_view, event);
     const cell_w_px = g_renderer.?.font.cell_width_px;
     const cell_h_px = g_renderer.?.font.cell_height_px;
     // #483 5단계 — 활성 pane 의 격자 원점 (pane 하나면 `pad` · `tab_bar_h + pad`).
     const origin = activeGridOriginPx();
 
     // 격자 원점 앞 (padding · 탭바) 은 cell 이 아니다 (탭바 클릭은 별도 dispatch).
-    if (xy.x < origin.x or xy.y < origin.y) return null;
-    const x_in: f32 = xy.x - origin.x;
-    const y_in: f32 = xy.y - origin.y;
+    if (px_x < origin.x or px_y < origin.y) return null;
+    const x_in: f32 = px_x - origin.x;
+    const y_in: f32 = px_y - origin.y;
 
     const col_f = x_in / @as(f32, @floatFromInt(cell_w_px));
     const row_f = y_in / @as(f32, @floatFromInt(cell_h_px));
@@ -2592,6 +2604,141 @@ fn reportGeometryMac() ?terminal_interaction.ReportGeometry {
 
 /// NSEvent 의 modifier → 인코더 `Cb` modifier. Command 는 프로토콜에 자리가 없어
 /// 싣지 않는다 (xterm 의 shift / meta / ctrl 3 비트만 존재).
+// ── #647 링크 (Ctrl · ⌘ + 클릭으로 브라우저 열기) ────────────────────────────
+
+/// 지금 가리키는 링크. **창 하나에 하나** — 포인터가 하나라서 pane 이 여럿이어도 한 곳이다.
+/// Windows `App.link_hover` · Linux `Client.link_hover` 와 같은 것이다.
+var g_link_hover: link.Hover = .{};
+
+/// 마지막으로 본 포인터 위치 (물리 px). **키 이벤트에는 마우스 좌표가 없어서** `⌘` 를 눌렀을
+/// 때 "지금 포인터가 링크 위인가" 를 이 값으로 판정한다 (2026-09-11 사용자 제안).
+var g_link_pointer_x: f32 = 0;
+var g_link_pointer_y: f32 = 0;
+var g_link_pointer_valid: bool = false;
+
+/// 지금 `⌘` 가 눌려 있는가. `NSEvent` 의 클래스 메서드라 **이벤트 없이도** 읽을 수 있다 —
+/// 키 이벤트 · 마우스 이벤트 어디서든 같은 값이다.
+fn linkModsNowMac() bool {
+    const NSEvent = objc.getClass("NSEvent");
+    const get_flags = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) c_ulong);
+    return (get_flags(NSEvent, objc.sel("modifierFlags")) & (1 << 20)) != 0;
+}
+
+/// 포인터 아래에 맞는 커서를 **즉시** 지정한다.
+///
+/// **`addCursorRect:cursor:` 로는 안 된다** — AppKit 은 마우스가 그 사각형에 *들어올 때* 커서를
+/// 바꾸는데, hover 중에는 포인터가 이미 그 자리에 있어서 rect 를 다시 만들어도 (그래서
+/// `invalidateCursorRects` 를 불러도) 진입 이벤트가 없다. 2026-09-11 실기에서 밑줄은 뜨는데
+/// 손 커서만 안 나온 원인이 이것이었다.
+///
+/// 그래서 링크 위에서는 `NSCursor.set` 으로 직접 지정하고, 벗어나면 셀 영역의 기본값
+/// (I-beam) 으로 되돌린다. 셀 밖 (탭바 · padding · 스크롤바) 은 건드리지 않는다 — 그쪽은
+/// `tildazResetCursorRects` 의 rect 가 이미 맞게 잡아 준다.
+fn applyLinkCursorMac() void {
+    const NSCursor = objc.getClass("NSCursor");
+    const get = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
+    const set = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) void);
+
+    if (g_link_hover.hit != null) {
+        if (get(NSCursor, objc.sel("pointingHandCursor"))) |hand| set(hand, objc.sel("set"));
+        return;
+    }
+    // 링크를 벗어났다 — 셀 위면 I-beam 으로 되돌린다.
+    if (!g_link_pointer_valid) return;
+    if (cellFromPx(g_link_pointer_x, g_link_pointer_y) == null) return;
+    if (get(NSCursor, objc.sel("IBeamCursor"))) |ibeam| set(ibeam, objc.sel("set"));
+}
+
+/// 마지막 포인터 위치로 링크 판정을 다시 한다. `⌘` 를 누르거나 뗀 순간에 부른다 — 그때
+/// 마우스는 가만히 있으므로 motion 이 오지 않는다.
+fn refreshLinkHoverMac() void {
+    if (!g_link_pointer_valid) return;
+    const tab = g_session.activeTab() orelse return;
+    const cell = cellFromPx(g_link_pointer_x, g_link_pointer_y);
+    const probe: link.Hover.Probe = .{
+        .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
+        .active = linkActiveNowMac(),
+        .pane = @intFromPtr(tab),
+    };
+    if (!g_link_hover.needsUpdate(probe)) return;
+
+    const allocator = g_gpa.allocator();
+    tab.render_state.update(allocator, &tab.terminal) catch return;
+    const changed = g_link_hover.update(allocator, &tab.render_state, probe) catch return;
+    if (changed) requestRender();
+    // 커서는 **바뀌지 않았어도 매번** 지정한다 — AppKit 이 cursor rect 평가로 I-beam 을
+    // 되돌릴 수 있어서, 한 번만 set 하면 다음 motion 에 사라진다.
+    applyLinkCursorMac();
+}
+
+/// 지금 이 클릭이 링크로 갈 수 있는가 — 앱이 마우스를 잡지 않았거나 `⌘` 가 눌렸을 때.
+///
+/// 앱이 mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
+/// "보이는데 안 열리는" 어긋남이 된다. kitty 의 `ungrabbed` 조건과 같다 (#647).
+fn linkActiveNowMac() bool {
+    const tab = g_session.activeTab() orelse return false;
+    if (terminal_interaction.reportTracking(&tab.terminal) == .none) return true;
+    return linkModsNowMac();
+}
+
+/// 포인터가 있는 셀과 "지금 링크로 갈 수 있는가".
+fn linkProbeMac(self_view: objc.id, event: objc.id) link.Hover.Probe {
+    const cell = eventToCell(self_view, event);
+    return .{
+        .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
+        .active = linkActiveNowMac(),
+        // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
+        .pane = if (g_session.activeTab()) |t| @intFromPtr(t) else 0,
+    };
+}
+
+/// 포인터 · 수식키가 바뀌었을 때 판정을 갱신한다.
+///
+/// **`render_state.update` 를 여기서 부른다.** `link.hitTest` 가 `RenderState.Row.pin` 을
+/// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
+/// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 `fillImeSnapshot`
+/// 과 같다 — *"다음 프레임의 `update` 가 이어받는다 (dirty 가 소비된 상태라 증분)"*.
+fn updateLinkHoverMac(self_view: objc.id, event: objc.id) void {
+    const tab = g_session.activeTab() orelse return;
+
+    // 키 이벤트가 나중에 같은 자리를 다시 판정할 수 있게 좌표를 기억한다.
+    if (event != null) {
+        const px = eventToWindowPx(self_view, event);
+        g_link_pointer_x = px.x;
+        g_link_pointer_y = px.y;
+        g_link_pointer_valid = true;
+    }
+
+    const probe = linkProbeMac(self_view, event);
+    // **커서는 판정이 그대로여도 매번 다시 지정한다.** 같은 셀 안에서 마우스가 움직이면
+    // `needsUpdate` 가 false 라 아래에서 빠져나가는데, 그 사이 AppKit 이 cursor rect 평가로
+    // I-beam 을 되돌린다 — 2026-09-11 실기에서 손 커서가 셀 경계를 넘을 때만 한 순간
+    // 떴다 사라진 원인이 이것이었다.
+    if (!g_link_hover.needsUpdate(probe)) {
+        applyLinkCursorMac();
+        return;
+    }
+
+    const allocator = g_gpa.allocator();
+    tab.render_state.update(allocator, &tab.terminal) catch return;
+    const changed = g_link_hover.update(allocator, &tab.render_state, probe) catch return;
+    if (changed) {
+        requestRender();
+        applyLinkCursorMac();
+    }
+}
+
+/// 포인터 아래 링크의 URL. 없으면 `null`. 판정을 먼저 갱신하므로 포인터를 움직이지 않고
+/// 누른 경우에도 맞는다.
+///
+/// 반환이 `null` 이 아니면 **밑줄이 그려져 있다는 뜻** 이기도 하다 (`Hover.urlAt` 주석) —
+/// 그래서 이것만 보면 "보이는 것과 되는 것" 이 저절로 맞는다.
+fn linkUrlMac(self_view: objc.id, event: objc.id) ?[]const u8 {
+    updateLinkHoverMac(self_view, event);
+    const cell = eventToCell(self_view, event) orelse return null;
+    return g_link_hover.urlAt(.{ .x = cell.col, .y = cell.row });
+}
+
 fn eventMouseMods(event: objc.id) mouse_report.Mods {
     if (event == null) return .{};
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
@@ -3186,11 +3333,16 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         }
     }
 
+    // #647 — 링크 위 누름은 **앱에 보내지 않는다** (이 클릭은 링크 것이다). 열기는 뗌에서
+    // 한다 — 드래그로 선택한 경우와 갈라야 해서다. 아래 selection 은 그대로 시작하므로
+    // 링크 위에서 드래그해 글자를 고르는 것도 된다.
+    const on_link = linkUrlMac(self_view, event) != null;
+
     const cell = eventToCell(self_view, event) orelse return;
     // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다. Shift 를 누르면
     // 우리 selection 으로 돌아온다 (bypass). 더블클릭의 *의미* 도 앱이 정하므로
     // word selection 으로 가로채지 않는다 (Windows mouse_double_click 동등).
-    {
+    if (!on_link) {
         const px = eventToWindowPx(self_view, event);
         if (!routeMouseMac(.press, .left, px.x, px.y, eventMouseMods(event), true)) return;
     }
@@ -3205,7 +3357,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         return;
     }
     const down_px = eventToWindowPx(self_view, event);
-    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac());
+    tab.interaction.selection.begin(tab.terminal.screens.active, cell, .{ .x = down_px.x, .y = down_px.y }, selectionSlopMac(), on_link);
 }
 
 /// #483 6단계 — 선택 시작 문턱 (물리 px). 배율 · 셀 크기가 바뀌면 따라 바뀐다.
@@ -3317,6 +3469,20 @@ fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         return;
     }
 
+    // #647 — 드래그로 고르지 않은 **순수 클릭**이 링크 위면 연다. 뗌에서 하는 이유가
+    // 이것이다 — 누름에서 열면 링크 위에서 글자를 끌어 고를 수 없다. 앱에는 보내지 않는다
+    // (누름도 안 보냈다).
+    {
+        const plain_click = tab.interaction.selection.active and !tab.interaction.selection.armed;
+        if (plain_click) {
+            if (linkUrlMac(self_view, event)) |url| {
+                _ = tab.interaction.selection.finish();
+                link.open(g_rt, g_gpa.allocator(), url);
+                return;
+            }
+        }
+    }
+
     // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야 앱이 버튼 상태를
     // 잃지 않는다 (그 규칙은 인코더가 갖는다).
     if (event != null) {
@@ -3373,6 +3539,10 @@ fn tildazMouseMoved(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c
         const px = eventToWindowPx(self_view, event);
         _ = routeMouseMac(.motion, null, px.x, px.y, eventMouseMods(event), false);
     }
+
+    // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏 갱신까지
+    // 건너뛴다 (motion 은 픽셀마다 온다).
+    updateLinkHoverMac(self_view, event);
 }
 
 /// #268 2b — 마우스가 view 밖으로 나가면 hover 해제 (안 하면 박스가 남음).
@@ -3381,6 +3551,9 @@ fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
         g_tab_hover = .none;
         requestRender();
     }
+    // #647 — 포인터가 나가면 링크 hover 도 푼다 (탭바 hover 와 같은 이유 — 안 그러면 밑줄이 남는다).
+    g_link_pointer_valid = false;
+    if (g_link_hover.clear(g_gpa.allocator())) requestRender();
     // #334 재감사 — 메뉴 항목 hover 도 창 이탈 시 해제 (keyboard focus 는
     // 유지 — 표준 메뉴의 마지막 selection 기억과 동일).
     if (g_command_menu_hover != null) {
@@ -4533,6 +4706,8 @@ fn renderFrameTick() void {
             // IME 조합 글자는 키보드가 가는 pane (활성) 에만.
             .preedit_utf8 = if (is_active) cell_preedit else &.{},
             .search = &t.search,
+            // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+            .link_hover = if (is_active) &g_link_hover else null,
             .is_active = is_active,
             // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가 시계를 다시
             // 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.

@@ -1366,6 +1366,7 @@ pub const D3d11Renderer = struct {
         state.update(self.alloc, terminal) catch return;
         // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
         if (pane.search) |ps| ps.applyHighlights(self.alloc, state);
+        if (pane.link_hover) |lh| lh.applyHighlights(self.alloc, state);
 
         const rows = state.rows;
         const cols = state.cols;
@@ -1415,7 +1416,13 @@ pub const D3d11Renderer = struct {
                 // 세워 fg 해석과 선 색이 한 번에 흐려지게 한다.
                 const raw_style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 if (raw_style.flags.blink) self.saw_blink_cell = true;
-                const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
+                // #647 — 링크 hover 는 색이 아니라 밑줄이다. `cell_decoration` 이 이미
+                // SGR 밑줄을 그리므로 style 에 켜 주면 두께 · 위치 · 색이 그대로 따라온다.
+                const style = cell_highlight.withLinkUnderline(
+                    cell_color.applyBlinkPhase(raw_style, blink_faint),
+                    hl_row,
+                    @intCast(x),
+                );
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;

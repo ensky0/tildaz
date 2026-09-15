@@ -706,6 +706,7 @@ pub const Renderer = struct {
         };
         // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
         for (in.panes) |p| if (p.search) |ps| ps.applyHighlights(allocator, p.state);
+        for (in.panes) |p| if (p.link_hover) |lh| lh.applyHighlights(allocator, p.state);
         const t_updated = if (timing_enabled) timingNowNs() else 0;
         defer if (timing_enabled) {
             last_update_ns = @intCast(t_updated - t_start);
@@ -866,7 +867,13 @@ pub const Renderer = struct {
                 // 흐려지게 한다 (macOS · Windows 와 같은 helper).
                 const raw_style = if (raw.style_id != 0) styles[x] else ghostty.Style{};
                 if (raw_style.flags.blink) self.saw_blink_cell = true;
-                const style = cell_color.applyBlinkPhase(raw_style, blink_faint);
+                // #647 — 링크 hover 는 색이 아니라 밑줄이다. `cell_decoration` 이 이미
+                // SGR 밑줄을 그리므로 style 에 켜 주면 두께 · 위치 · 색이 그대로 따라온다.
+                const style = cell_highlight.withLinkUnderline(
+                    cell_color.applyBlinkPhase(raw_style, blink_faint),
+                    hl_row,
+                    @intCast(x),
+                );
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
                 const hl = hlAt(hl_row, x16, &self.chrome);
@@ -1674,6 +1681,7 @@ pub const Renderer = struct {
         };
         // #646 — `update` 로 행이 다시 세워진 **뒤**에 검색 매치를 칠한다.
         for (in.panes) |p| if (p.search) |ps| ps.applyHighlights(allocator, p.state);
+        for (in.panes) |p| if (p.link_hover) |lh| lh.applyHighlights(allocator, p.state);
 
         fill(memory, width, height, stride, frameBackground(in));
 

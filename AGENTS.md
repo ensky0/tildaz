@@ -825,6 +825,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
 | [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 |
+| [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 ```powershell
@@ -871,6 +872,18 @@ tool\key-bytes-check_windows.ps1                                    # 창 3 회 
 - **자식 (PTY 안 python) 이 죽으면 창도 곧 사라져 "포커스 못 잡음" 으로 보여요.** 자식 코드를 heredoc · python 으로 편집하면 `
 ` 이 실제 개행으로 바뀌어 문법이 깨질 수 있어요 (2026-09-03 — #606 도구 편집). 도구는 자식 코드를 `py_compile` 로 먼저 검사하고, 자식은 항목마다 파일을 다시 쓰며 예외를 `<out>.err` 에 남겨요 — "결과 파일 없음" 이 아니라 **어느 항목이 비었는지** 가 보여야 원인을 가를 수 있어요.
 - **`Start-Process -RedirectStandardError` 로 앱을 띄우면 새 창이 포커스를 못 받아요** (같은 날 실측 — 두 회차 모두 "포커스 못 잡음"). 앱 로그가 필요하면 `%APPDATA%	ildaz	ildaz_<instance>.log` (stress 인스턴스 9 는 `tildaz_stress.log`) 를 읽어요 — `log.appendLine` 이 거기 써요.
+- **⚠️ `Add-Type @"…"@` 안의 C# 주석에 백틱을 쓰지 말아요 — PowerShell 이 먼저 먹어요.** `@"…"@` 는 *확장*
+  here-string 이라 백틱이 이스케이프로 해석돼서, 코드 이름을 `` `render-ab-shot_windows.ps1` `` 처럼 감싸면
+  `` `r `` 이 **캐리지 리턴으로 치환돼 줄이 깨지고** C# 컴파일이 `잘못된 '-' 토큰` 으로 떨어져요 (2026-09-15
+  `link-click-check` 작성 중 실측). 원인이 C# 쪽으로 보여서 엉뚱한 데를 봐요. 그 블록 안에서는 백틱 없이 쓰고,
+  `$` 도 같은 이유로 피해요. 블록 **밖**의 PowerShell 주석은 백틱을 써도 돼요.
+- **회차 중 창을 띄우는 케이스는 맨 뒤에 둬요.** 그 창이 foreground 를 가져가면 뒤따르는 케이스의 합성 입력이
+  그쪽으로 가요 — 2026-09-15 `link-click-check` 첫 회차에서 A2 (실제 브라우저 열기) 뒤의 A4 가 그렇게 막혔어요.
+  `SetForegroundWindow` 는 **남의 프로세스가 foreground 면 조용히 무시**되므로 재시도만으로는 못 되찾아요.
+  되찾으려면 **창 안 (링크가 아닌 중립 자리) 을 한 번 클릭**하고, 회차 동안 tildaz 를 `HWND_TOPMOST` 로 올려 둬요.
+- **커서 모양은 `GetCursorInfo` 의 `hCursor` 를 `LoadCursorW(NULL, IDC_*)` 의 공유 핸들과 비교**해 판정해요
+  (`IDC_HAND` 32649 · `IDC_IBEAM` 32513 · `IDC_ARROW` 32512). 캡처로는 못 봐요 — `PrintWindow` 는 커서를 안
+  그려요. 덕분에 **밑줄 판정 (캡처 픽셀) 과 커서 판정이 서로 오염되지 않아요.**
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
 
 # Windows — 키보드 layout 조회 실측 방법
@@ -1188,6 +1201,9 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vkbd_linux.py`](tool/vkbd_linux.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`tool/clusters.py bands`](tool/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`tool/bands-check.py`](tool/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
+| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` 을 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요 |
+| [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
+| [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
@@ -1224,6 +1240,24 @@ grim shot.png                                                          # sway �
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
   **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
+- **sway 회차에서는 `-size` 를 못 써요.** `SWAYSOCK` 이 보이면 tildaz 가 layer-shell 대신 scratchpad 경로를 타서 (#454)
+  창 크기를 우리가 못 정하고, 앱이 `-size cannot be used on this desktop` 으로 **부팅을 멈춰요** (2026-09-15 실측). 창은
+  타일링으로 출력 전체가 되니 칸 수는 로그의 `terminal session created cols= rows=` 에서 읽어요. 반대로 `SWAYSOCK` 을
+  빼고 띄우면 layer-shell 경로라 `-size` 가 먹지만, 그건 **실제 sway 동작이 아니에요** — 재는 대상이 달라져요.
+- **`applied ratios cell_w=` 는 로그에 두 번 찍혀요 (터미널 폰트 · UI 폰트).** `tail -1` 로 집으면 8 이 나오는데 격자는
+  9 예요 (2026-09-15 실측). 셀 폭은 **캡처에서 재요** — `link-shot_linux.py grid` 가 글자 줄 두 개의 잉크 폭을 각각 나눠
+  서로 맞는지 보고, 안 맞으면 좌표를 안 쓰고 실패해요.
+- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz.stress` 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
+  브라우저를 치우려고 `swaymsg '[app_id=".*"] kill'` 을 쓰면 **앱에도 닫기 요청이 가서 확인 다이얼로그가 떠요** — 회차가
+  거기서 엉켜요. `app_id` 가 `tildaz` 로 시작하는 것을 빼고 지워요.
+- **⚠️ headless sway 가 커서 그림을 화면에 아예 안 그리는 구간이 있어요.** 같은 sway · 같은 앱인데 회차에 따라 갈렸고,
+  대조군 `foot` 위에서도 똑같이 안 나와 compositor 쪽으로 판정했어요 (`XCURSOR_THEME` · `seat * xcursor_theme` · sway
+  재기동 모두 무효). 이때 커서 판정기는 배경을 긁어 **70 % 대 점수**를 내니 `--min-ratio` 로 걸러 `unknown` 을 만들고,
+  **회차 시작 전에 빈 칸에서 `text` 가 나오는지로 가드**를 걸어요 — 아니면 커서 판정만 건너뛰고 나머지를 돌려요.
+  그래도 확정이 필요하면 **`set_shape` 에 임시 로그**를 달아 우리가 보낸 enum 값을 봐요 (`link=4` · `cell=9` · `other=1`).
+- **`xdg-open` 이 등록 안 된 scheme 에 조용히 실패하는 것은 데스크톱에 달렸어요.** 환경이 KDE 로 보이면
+  (`KDE_FULL_SESSION=true`) `kde-open` 으로 넘어가 **KIO 오류 다이얼로그**를 띄워요 (*"… 파일에서 읽을 수 없습니다"*).
+  일반 · sway 환경에서는 조용해요. 창이 안 뜨는 것을 전제로 회차를 짜면 여기서 어긋나요 (2026-09-15 #647 실측).
 - **sway 는 layer-shell 을 우리가 일부러 안 써서** (#454) `-size` · dock 배치가 안 먹고 창은 tiling 으로 출력 전체예요. 그래도
   xdg_toplevel · layer-surface · dialog 가 **같은 `logicalToPhysicalSize`** 를 쓰므로 배율 검증은 성립해요.
 - **단축키 판정은 파일로 해요.** 탭마다 `cat > tab_N.txt` 를 띄워 두고 `Alt+N` 뒤 글자를 보내면 어느 파일에 들어갔는지로

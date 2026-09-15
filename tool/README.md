@@ -54,6 +54,9 @@
 | [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
 | [`kitty-text-check_windows.ps1`](kitty-text-check_windows.ps1) | Windows | kitty keyboard protocol 의 글자 키 바이트 판정 | `# Windows — 합성 입력으로 …` |
 | [`launcher-fatal-check_windows.ps1`](launcher-fatal-check_windows.ps1) | Windows | launcher 기동 실패가 화면에 뜨는지 | `# Windows — 합성 입력으로 …` |
+| [`link-click-check_linux.sh`](link-click-check_linux.sh) | Linux | headless sway 안에서 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Linux — headless sway …` |
+| [`link-click-check_windows.ps1`](link-click-check_windows.ps1) | Windows | 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Windows — 합성 입력으로 …` |
+| [`link-shot_linux.py`](link-shot_linux.py) | Linux | 링크 회차의 캡처 판정 — 격자 찾기 · 밑줄 픽셀 · XCursor 테마와 맞댄 커서 모양 | `# Linux — headless sway …` |
 | [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 (실제 GNOME · Cinnamon 세션용) | `# Linux — headless sway …` |
 | [`position-hotkey-check_linux.sh`](position-hotkey-check_linux.sh) | Linux | 전역 hotkey 의 위치 표기가 이 데스크톱에 실제로 등록되는지 | `# 전역 hotkey 의 위치 표기 검증` |
 | [`real-session-check_linux.sh`](real-session-check_linux.sh) | Linux | 실제 Hyprland · GNOME · Cinnamon 세션에 붙어 배율 · layer-shell 부재를 봄 | `# Linux — headless sway …` |
@@ -62,3 +65,4 @@
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 (다른 Windows 도구 셋이 같이 씀) | `# Windows — 합성 입력으로 …` |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
 | [`vkbd_linux.py`](vkbd_linux.py) | Linux | headless sway 안의 가상 키보드 데몬 (`zwp_virtual_keyboard_v1`) | `# Linux — headless sway …` |
+| [`vptr_linux.py`](vptr_linux.py) | Linux | headless sway 안의 가상 포인터 데몬 (`zwlr_virtual_pointer_v1`) — 절대좌표 hover · 클릭 · 드래그 | `# Linux — headless sway …` |

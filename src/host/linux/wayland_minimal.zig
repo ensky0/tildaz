@@ -61,6 +61,7 @@ const shell_validate = @import("../../shell_validate.zig");
 const font_linux = @import("../../font/linux/font.zig");
 const font_validate = @import("../../font/validate.zig");
 const system_open = @import("../../system_open.zig");
+const link = @import("../../link.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
 const instance_context = @import("../../instance_context.zig");
@@ -204,6 +205,10 @@ const wp_cursor_shape_device_v1_request_set_shape: u16 = 1;
 // 스프레드시트 셀 선택 + 모양이 나오던 회귀 — 9 (`text`) 가 정답.
 const wp_cursor_shape_v1_default: u32 = 1;
 const wp_cursor_shape_v1_text: u32 = 9;
+/// #647 — CSS `pointer` (링크 · 상호작용 요소). enum 이 `default=1 · context_menu=2 ·
+/// help=3` 순이라 4 다 ([cursor-shape-v1](https://wayland.app/protocols/cursor-shape-v1)) —
+/// 아래 `text=9` · `col_resize=30` · `row_resize=31` 과 같은 표에서 읽었다.
+const wp_cursor_shape_v1_pointer: u32 = 4;
 /// #483 4c — 분할선 위 리사이즈 커서. wp-cursor-shape-v1 enum 의 `col_resize` 30 · `row_resize` 31
 /// (GTK paned 손잡이와 같은 뜻 — 열 · 행 크기 조절).
 const wp_cursor_shape_v1_col_resize: u32 = 30;
@@ -1618,6 +1623,9 @@ const Client = struct {
     /// + 탭 area 가장자리 auto-scroll, button release 에서 `finish` →
     /// `session.reorderTabs` (mac 패턴 그대로, host hook 추가 안 함).
     tab_drag: tab_interaction.DragState = .{},
+    /// #647 — 지금 가리키는 링크. **창 하나에 하나** (포인터가 하나라서 pane 이 여럿이어도
+    /// 한 곳이다). Windows `App.link_hover` · macOS `g_link_hover` 와 같은 것이다.
+    link_hover: link.Hover = .{},
     /// #483 4c — 분할선 드래그. 누른 분할선의 노드 · 축과 지금 포인터의 분할 축 좌표. **놓을 때만**
     /// 트리에 적용한다 (확정 설계 축 2 — 드래그 중 PTY resize 폭풍 방지, Konsole 방식). 드래그 중엔
     /// `frameInputs` 가 스냅된 자리의 amber 고스트를 그린다.
@@ -3694,7 +3702,14 @@ const Client = struct {
     fn pointerRegion(self: *const Client) PointerRegion {
         if (self.sep_drag) |d| return if (d.axis == .side_by_side) .separator_v else .separator_h;
         if (self.separatorUnderPointer()) |s| return if (s.axis == .side_by_side) .separator_v else .separator_h;
-        return if (self.pointerInCellArea()) .cell else .other;
+        if (!self.pointerInCellArea()) return .other;
+        // #647 — 포인터 아래가 링크면 손 커서. 판정은 hover 가 이미 해 뒀다 (motion 에서
+        // 갱신). 여기서 다시 찾지 않는 이유는 사용자가 *보는 것* (밑줄) 과 커서가 같아야
+        // 하기 때문이다.
+        if (self.pixelToCell(self.pointer_x_px, self.pointer_y_px)) |c| {
+            if (self.link_hover.urlAt(.{ .x = c.col, .y = c.row }) != null) return .link;
+        }
+        return .cell;
     }
 
     /// #483 4b — 활성 pane 의 배치 (영역 · 격자 · 격자 원점). 세션 · 탭이 없으면 null.
@@ -5122,6 +5137,8 @@ const Client = struct {
                 .preedit_utf8 = if (!is_active) "" else if (self.renderer.preedit_text.len > 0) self.renderer.preedit_text else self.renderer.compose_preview,
                 .blink_faint = self.last_blink_phase,
                 .search = &t.search,
+                // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+                .link_hover = if (is_active) &self.link_hover else null,
                 .is_active = is_active,
             };
         }
@@ -7317,6 +7334,13 @@ const Client = struct {
             self.refreshKdePositionHotkey();
             self.writeCosmicPositionHotkey();
         }
+
+        // #647 — `Ctrl` 을 누르거나 뗀 그 순간 링크 판정을 다시 한다. 마우스가 가만히
+        // 있으면 motion 이 오지 않아서, 이것이 없으면 포인터를 흔들어야 밑줄 · 손 커서가
+        // 따라온다. 앱이 마우스를 잡은 동안에만 실제로 달라진다 — 평소에는 `active` 가
+        // 수식키와 무관해 `needsUpdate` 가 걸러 낸다.
+        self.updateLinkHover();
+        self.updateCursorShape() catch {};
     }
 
     fn handleKeyboardRepeatInfo(self: *Client, payload: []const u8) void {
@@ -7361,6 +7385,14 @@ const Client = struct {
         // arrow) 로 즉시 전환. enter 후 cached shape 가 stale 할 수 있어 강제
         // reset.
         self.last_cursor_shape = 0;
+        // #647 — **들어온 그 자리로 링크 판정을 한다.** `wl_pointer.enter` 는 좌표를 함께 싣고
+        // 오므로, 들어온 뒤 포인터가 멈춰 있으면 `motion` 이 아예 오지 않는다. 그러면 링크 위에
+        // 들어와도 밑줄 · 손 커서가 없다가 1 px 움직여야 나타난다 (2026-09-15 Linux 실기).
+        // 드롭다운이라 *포인터를 안 움직이고 핫키로 창을 여는* 것이 흔한 사용이라 실제로 닿는다.
+        // `handleKeyboardModifiers` · macOS `refreshLinkHoverMac` 과 같은 자리다 — 이벤트가 없는
+        // 순간에 마지막 포인터 위치로 다시 판정한다. `updateCursorShape` 가 이 판정을 읽으므로
+        // **앞에** 둔다.
+        self.updateLinkHover();
         self.updateCursorShape() catch {};
     }
 
@@ -7390,6 +7422,11 @@ const Client = struct {
             self.command_menu_hover = null;
             self.needs_redraw = true;
         }
+        // #647 — 링크 hover 도 같은 이유로 푼다. 안 풀면 **창을 떠난 뒤에도 밑줄이 남는다**
+        // (2026-09-15 Linux 실기 — 216 px 이 그대로 있었다). 창 안에서 링크 밖 칸으로 옮기는
+        // 것은 `motion` 이 와서 이미 풀리고, 빠지는 것은 이 경로뿐이다.
+        // macOS `tildazMouseExited` 가 `g_link_hover.clear` 를 부르는 것과 같다.
+        if (self.link_hover.clear(self.allocator)) self.needs_redraw = true;
     }
 
     /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed). 좌표 = logical.
@@ -7447,6 +7484,9 @@ const Client = struct {
             } else {
                 _ = self.routeMouseLinux(.motion, null, false);
             }
+            // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
+            // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
+            self.updateLinkHover();
             return;
         }
         // #245 — 경계 밖이어도 null 대신 clamp 된 cell 로 선택 연장 + 위/아래 경계면
@@ -7642,12 +7682,17 @@ const Client = struct {
                 // preedit 보존.
                 self.commitPendingInput();
 
+                // #647 — 링크 위 누름은 **앱에 보내지 않는다** (이 클릭은 링크 것이다).
+                // 열기는 뗌에서 한다 — 드래그로 선택한 경우와 갈라야 해서다. 아래 selection
+                // 은 그대로 시작하므로 링크 위에서 글자를 끌어 고르는 것도 된다.
+                const on_link = self.linkUrl() != null;
+
                 const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px) orelse return;
 
                 // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다.
                 // Shift 를 누르면 우리 selection 으로 돌아온다 (bypass). 더블클릭의
                 // *의미* 도 앱이 정하므로 word selection 으로 가로채지 않는다.
-                if (!self.routeMouseLinux(.press, .left, true)) return;
+                if (!on_link and !self.routeMouseLinux(.press, .left, true)) return;
 
                 // 더블클릭 검출 — 같은 cell + threshold 이내 두 번째 좌클릭.
                 // wayland `wl_pointer.button` event 에는 click count 정보가 없어
@@ -7673,7 +7718,7 @@ const Client = struct {
                     return;
                 }
 
-                tab.interaction.selection.begin(tab.terminal.screens.active, cell, self.pointerPx(), self.selectionSlop());
+                tab.interaction.selection.begin(tab.terminal.screens.active, cell, self.pointerPx(), self.selectionSlop(), on_link);
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
@@ -7711,6 +7756,16 @@ const Client = struct {
                     tab.interaction.scrollbar.end();
                     return;
                 }
+                // #647 — 드래그로 고르지 않은 **순수 클릭**이 링크 위면 연다. 뗌에서 하는
+                // 이유가 이것이다 — 누름에서 열면 링크 위에서 글자를 끌어 고를 수 없다.
+                if (tab.interaction.selection.active and !tab.interaction.selection.armed) {
+                    if (self.linkUrl()) |url| {
+                        _ = tab.interaction.selection.finish();
+                        link.open(self.rt, self.allocator, url);
+                        return;
+                    }
+                }
+
                 // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야 앱이
                 // 버튼 상태를 잃지 않는다 (그 규칙은 인코더가 갖는다).
                 if (!self.routeMouseLinux(.release, .left, false)) return;
@@ -8201,7 +8256,61 @@ const Client = struct {
         return true;
     }
 
-    fn pixelToCell(self: *Client, px: i32, py: i32) ?terminal_interaction.Cell {
+    // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
+
+    /// 지금 이 클릭이 링크로 갈 수 있는가 — 앱이 마우스를 잡지 않았거나 `Ctrl` 이 눌렸을 때.
+    ///
+    /// 앱이 mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
+    /// "보이는데 안 열리는" 어긋남이 된다. kitty 의 `ungrabbed` 조건과 같다 (#647).
+    fn linkActive(self: *Client) bool {
+        const sess = if (self.session) |*s| s else return false;
+        const tab = sess.activeTab() orelse return false;
+        if (terminal_interaction.reportTracking(&tab.terminal) == .none) return true;
+        return self.keyboard.ctrlActive();
+    }
+
+    /// 포인터가 있는 셀과 "지금 링크로 갈 수 있는가".
+    fn linkProbe(self: *Client) link.Hover.Probe {
+        const cell = self.pixelToCell(self.pointer_x_px, self.pointer_y_px);
+        return .{
+            .cell = if (cell) |c| .{ .x = c.col, .y = c.row } else null,
+            .active = self.linkActive(),
+            // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
+            .pane = if (self.session) |*sess| blk: {
+                const t = sess.activeTab() orelse break :blk 0;
+                break :blk @intFromPtr(t);
+            } else 0,
+        };
+    }
+
+    /// 포인터 · 수식키가 바뀌었을 때 판정을 갱신한다.
+    ///
+    /// **`render_state.update` 를 여기서 부른다.** `link.hitTest` 가 `RenderState.Row.pin` 을
+    /// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
+    /// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 macOS 의
+    /// `fillImeSnapshot` 과 같다 — 다음 프레임의 `update` 가 dirty 를 이어받는다.
+    fn updateLinkHover(self: *Client) void {
+        const sess = if (self.session) |*sess| sess else return;
+        const tab = sess.activeTab() orelse return;
+        const probe = self.linkProbe();
+        if (!self.link_hover.needsUpdate(probe)) return;
+
+        tab.render_state.update(self.allocator, &tab.terminal) catch return;
+        const changed = self.link_hover.update(self.allocator, &tab.render_state, probe) catch return;
+        if (changed) self.needs_redraw = true;
+    }
+
+    /// 포인터 아래 링크의 URL. 없으면 `null`. 판정을 먼저 갱신하므로 포인터를 움직이지 않고
+    /// 누른 경우에도 맞는다.
+    ///
+    /// 반환이 `null` 이 아니면 **밑줄이 그려져 있다는 뜻** 이기도 하다 (`Hover.urlAt` 주석).
+    fn linkUrl(self: *Client) ?[]const u8 {
+        self.updateLinkHover();
+        const cell = self.linkProbe().cell orelse return null;
+        return self.link_hover.urlAt(cell);
+    }
+
+    fn pixelToCell(self: *const Client, px: i32, py: i32) ?terminal_interaction.Cell {
         // #483 4b — 활성 pane 의 격자 기준 (`pane_layout.cellAt` — padding · 남는 px · scrollbar 자리는
         // null). pane 하나면 이전의 `pad` · `tab_bar_h + pad` 원점 계산과 같다.
         const pr = self.activePaneRect() orelse return null;
@@ -10866,7 +10975,9 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
 /// main surface 위에서만 선택한다. Dialog surface는 같은 좌표가 terminal cell
 /// 범위와 겹쳐도 기본 arrow를 유지한다.
 /// 포인터가 main surface 의 어디에 있는가 — 커서 모양의 근거. #483 4c 로 분할선 둘이 늘었다.
-const PointerRegion = enum { other, cell, separator_v, separator_h };
+/// #647 — `link` 는 포인터 아래가 클릭 가능한 링크일 때. 밑줄과 같은 규칙으로 **수식키를
+/// 보지 않는다** (여는 데만 `Ctrl` 이 필요하다).
+const PointerRegion = enum { other, cell, separator_v, separator_h, link };
 
 /// #483 4c — 분할선 드래그 상태 (`Client.sep_drag`).
 const SepDrag = struct {
@@ -10880,6 +10991,7 @@ fn cursorShapeForSurface(focused_surface_id: u32, main_surface_id: u32, region: 
     if (focused_surface_id == 0 or focused_surface_id != main_surface_id) return wp_cursor_shape_v1_default;
     return switch (region) {
         .cell => wp_cursor_shape_v1_text,
+        .link => wp_cursor_shape_v1_pointer,
         .separator_v => wp_cursor_shape_v1_col_resize,
         .separator_h => wp_cursor_shape_v1_row_resize,
         .other => wp_cursor_shape_v1_default,

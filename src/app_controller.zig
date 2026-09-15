@@ -13,6 +13,7 @@ const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
+const link = @import("link.zig");
 const mouse_report = @import("mouse_report.zig");
 const Window = @import("window.zig").Window;
 const renderer_backend = @import("renderer.zig");
@@ -57,6 +58,13 @@ pub const App = struct {
     /// 탭 drag-and-drop reorder state. cross-platform `tab_interaction.DragState`
     /// — macOS `g_drag` / Linux `tab_drag` 와 같은 모듈.
     tab_drag: tab_interaction.DragState = .{},
+    /// #647 — 지금 가리키는 링크. **창 하나에 하나** (포인터가 하나라서 pane 이 여럿이어도
+    /// 한 곳이다). macOS `g_link_hover` · Linux `Client.link_hover` 와 같은 것이다.
+    /// `App` 은 프로세스 수명과 같아 따로 해제하지 않는다.
+    link_hover: link.Hover = .{},
+    /// #647 — 마지막으로 본 포인터 위치 (client px). **키 이벤트에는 마우스 좌표가 없어서**
+    /// `Ctrl` 을 눌렀을 때 "지금 포인터가 링크 위인가" 를 이 값으로 판정한다.
+    link_pointer: ?struct { x: c_int, y: c_int } = null,
     // terminal_interaction (mouse selection / scrollbar drag) state 는 per-tab —
     // session_core.Tab.interaction (cross-platform field, macOS 와 동등) 사용.
     // App level 에는 더 이상 글로벌 state 없음. 탭 전환 시 자동으로 새 탭의
@@ -289,6 +297,11 @@ pub const App = struct {
         if (x < pr.grid_x or y < pr.grid_y) return .other; // 좌측 / 상단 padding
         if (y >= pr.rect.y + pr.rect.h - pad) return .other; // 하단 padding
         if (x >= pr.rect.x + pr.rect.w - pad - self.SCROLLBAR_W) return .other; // 우측 padding · 스크롤바
+        // #647 — 포인터 아래가 링크면 손 커서. 판정은 hover 가 이미 해 뒀다 (motion 에서
+        // 갱신). 여기서 다시 찾지 않는 이유는 사용자가 *보는 것* (밑줄) 과 커서가 같아야
+        // 하기 때문이다.
+        const cell = self.mouseToCell(x, y);
+        if (self.link_hover.urlAt(.{ .x = @intCast(cell.col), .y = @intCast(cell.row) }) != null) return .link;
         return .cell;
     }
 
@@ -807,6 +820,8 @@ pub const App = struct {
                             // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
                             .blink_faint = blink_phase_now,
                             .search = &t.search,
+                            // #647 — hover 는 창에 하나뿐이라 활성 pane 에만 싣는다.
+                            .link_hover = if (is_active) &self.link_hover else null,
                             .is_active = is_active,
                         });
                     }
@@ -1341,13 +1356,14 @@ pub const App = struct {
         return .{ .x = @floatFromInt(mouse_x), .y = @floatFromInt(mouse_y) };
     }
 
-    fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
+    /// `on_link` — 누른 자리가 링크였는가. #647 에서 `arm` 의 *칸이 바뀌었다* 조건을 끄는 데 쓴다.
+    fn startTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int, on_link: bool) void {
         const tab = self.activeTabPtr() orelse return;
         const cell = self.mouseToCell(mouse_x, mouse_y);
         const screen: *ghostty.Screen = tab.terminal.screens.active;
         // #483 6단계 — 선택 시작 문턱 (물리 px). DPI 배율 · 셀 크기가 바뀌면 따라 바뀐다.
         const slop = ui_metrics.selectionDragSlopPx(@floatFromInt(self.window.cell_width_px), self.dpi_scale);
-        tab.interaction.selection.begin(screen, cell, mousePx(mouse_x, mouse_y), slop);
+        tab.interaction.selection.begin(screen, cell, mousePx(mouse_x, mouse_y), slop, on_link);
     }
 
     fn updateTerminalSelection(self: *App, mouse_x: c_int, mouse_y: c_int) void {
@@ -1388,6 +1404,58 @@ pub const App = struct {
         if (text.len > 0) {
             self.window.copyToClipboard(text);
         }
+    }
+
+    // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
+
+    /// 지금 이 클릭이 링크로 갈 수 있는가 — 앱이 마우스를 잡지 않았거나 `Ctrl` 이 눌렸을 때.
+    ///
+    /// 앱이 mouse tracking 을 켠 동안 (vim · htop) 클릭은 앱 것이라, 그때 밑줄을 보여 주면
+    /// "보이는데 안 열리는" 어긋남이 된다. kitty 의 `ungrabbed` 조건과 같다 (#647).
+    fn linkActive(self: *App, ctrl: bool) bool {
+        const tab = self.activeTabPtr() orelse return false;
+        if (terminal_interaction.reportTracking(&tab.terminal) == .none) return true;
+        return ctrl;
+    }
+
+    /// 포인터가 있는 셀과 "지금 링크로 갈 수 있는가".
+    fn linkProbe(self: *App, x: c_int, y: c_int, ctrl: bool) link.Hover.Probe {
+        // `cursorRegion` 은 링크면 `.link` 를 주므로 셀 판정에는 둘 다 받는다.
+        const region = App.cursorRegion(x, y, @ptrCast(self));
+        const in_cell = region == .cell or region == .link;
+        const cell = self.mouseToCell(x, y);
+        return .{
+            .cell = if (in_cell) .{ .x = @intCast(cell.col), .y = @intCast(cell.row) } else null,
+            .active = self.linkActive(ctrl),
+            // 활성 탭(pane)을 가리키는 값이면 된다 — 포인터가 곧 그 pane 의 화면을 본다.
+            .pane = if (self.activeTabPtr()) |t| @intFromPtr(t) else 0,
+        };
+    }
+
+    /// 포인터 · 수식키가 바뀌었을 때 판정을 갱신한다.
+    ///
+    /// **`render_state.update` 를 여기서 부른다.** `link.hitTest` 가 `RenderState.Row.pin` 을
+    /// 역참조하는데 그 pin 은 마지막 `update` 이후 터미널이 바뀌지 않았을 때만 유효해서, 이벤트
+    /// 시점에 스냅숏을 맞춰 두고 판정해야 한다. 프레임 밖 갱신이 안전한 근거는 macOS 의
+    /// `fillImeSnapshot` 과 같다 — 다음 프레임의 `update` 가 dirty 를 이어받는다.
+    fn updateLinkHover(self: *App, x: c_int, y: c_int, ctrl: bool) void {
+        const tab = self.activeTabPtr() orelse return;
+        const probe = self.linkProbe(x, y, ctrl);
+        if (!self.link_hover.needsUpdate(probe)) return;
+
+        tab.render_state.update(self.allocator, &tab.terminal) catch return;
+        const changed = self.link_hover.update(self.allocator, &tab.render_state, probe) catch return;
+        if (changed) self.window.requestRender();
+    }
+
+    /// 포인터 아래 링크의 URL. 없으면 `null`. 판정을 먼저 갱신하므로 포인터를 움직이지 않고
+    /// 누른 경우에도 맞는다.
+    ///
+    /// 반환이 `null` 이 아니면 **밑줄이 그려져 있다는 뜻** 이기도 하다 (`Hover.urlAt` 주석).
+    fn linkUrl(self: *App, x: c_int, y: c_int, ctrl: bool) ?[]const u8 {
+        self.updateLinkHover(x, y, ctrl);
+        const cell = self.linkProbe(x, y, ctrl).cell orelse return null;
+        return self.link_hover.urlAt(cell);
     }
 
     fn selectWordAt(self: *App, mouse_x: c_int, mouse_y: c_int) void {
@@ -1518,6 +1586,31 @@ pub const App = struct {
                 // window 가 붙여넣기를 건너뛴다.
                 if (self.focusPaneUnderPointer(mouse.x, mouse.y)) return true;
                 return false;
+            },
+            .link_mods_changed => |ctrl| {
+                // #647 — 수식키를 누르거나 뗀 순간의 재판정. 마지막 포인터 자리로 본다.
+                // 앱이 마우스를 잡은 동안에만 실제로 달라진다 — 평소에는 `active` 가
+                // 수식키와 무관해 `needsUpdate` 가 걸러 낸다.
+                if (self.link_pointer) |p| self.updateLinkHover(p.x, p.y, ctrl);
+                return false; // 키 처리를 막지 않는다
+            },
+            .mouse_leave => {
+                // #647 — 포인터가 창을 떠났다. 판정이 `mouse_move` 에만 걸려 있어서
+                // 이 훅이 없으면 강조가 창 밖에서도 그대로 남는다 (2026-09-15 Windows
+                // 실측 — 밑줄 216 px · 컨트롤 강조 480 px). macOS `tildazMouseExited` ·
+                // Linux `handlePointerLeave` 가 같은 일을 한다.
+                var changed = false;
+                if (self.link_hover.clear(self.allocator)) changed = true;
+                // 좌표도 무효로 둔다 — 안 그러면 수식키를 눌렀을 때 창 밖인데 **옛 자리**로
+                // 판정한다 (macOS 의 `g_link_pointer_valid = false` 와 같은 이유).
+                self.link_pointer = null;
+                // #268 2b — 탭바 컨트롤 hover 도 같이 푼다. 같은 뿌리로 남는 것을 실측했다.
+                if (self.tab_hover != .none) {
+                    self.tab_hover = .none;
+                    changed = true;
+                }
+                if (changed) self.window.requestRender();
+                return true;
             },
             .focus_lost => {
                 // #390 — 다른 앱으로 focus 가 넘어가면 열린 menu 를 닫는다
@@ -1691,9 +1784,13 @@ pub const App = struct {
                 }
                 self.tab_drag.reset();
                 if (self.activeTabPtr()) |tab| tab.interaction.scrollbar.end();
+                // #647 — 링크 위 누름은 **앱에 보내지 않는다** (이 클릭은 링크 것이다).
+                // 열기는 뗌에서 한다 — 드래그로 선택한 경우와 갈라야 해서다. 아래 selection
+                // 은 그대로 시작하므로 링크 위에서 글자를 끌어 고르는 것도 된다.
+                const on_link = self.linkUrl(mouse.x, mouse.y, mouse.mods.ctrl) != null;
                 // #502 — 앱이 mouse tracking 을 켰으면 셀 영역 클릭은 앱 것이다.
                 // Shift 를 누르면 우리 selection 으로 돌아온다 (bypass).
-                if (!self.routeMouseToApp(self.reportEvent(
+                if (!on_link and !self.routeMouseToApp(self.reportEvent(
                     .press,
                     .left,
                     mouse.mods,
@@ -1701,7 +1798,7 @@ pub const App = struct {
                     mouse.y,
                     true,
                 ))) return true;
-                self.startTerminalSelection(mouse.x, mouse.y);
+                self.startTerminalSelection(mouse.x, mouse.y, on_link);
                 return true;
             },
             .mouse_double_click => |mouse| {
@@ -1779,6 +1876,10 @@ pub const App = struct {
                     ));
                 }
                 self.updateTabHover(mouse.x, mouse.y);
+                // #647 — 링크 판정. 셀이 바뀌지 않았으면 `needsUpdate` 가 걸러서 스냅숏
+                // 갱신까지 건너뛴다 (motion 은 픽셀마다 온다).
+                self.link_pointer = .{ .x = mouse.x, .y = mouse.y };
+                self.updateLinkHover(mouse.x, mouse.y, mouse.mods.ctrl);
                 return true;
             },
             .mouse_up => |mouse| {
@@ -1812,6 +1913,18 @@ pub const App = struct {
                 if (self.tab_drag.active) {
                     self.handleDragEnd();
                 } else {
+                    // #647 — 드래그로 고르지 않은 **순수 클릭**이 링크 위면 연다. 뗌에서
+                    // 하는 이유가 이것이다 — 누름에서 열면 링크 위에서 글자를 끌어 고를 수
+                    // 없다. 앱에는 보내지 않는다 (누름도 안 보냈다).
+                    if (self.activeTabPtr()) |tab| {
+                        if (tab.interaction.selection.active and !tab.interaction.selection.armed) {
+                            if (self.linkUrl(mouse.x, mouse.y, mouse.mods.ctrl)) |url| {
+                                _ = tab.interaction.selection.finish();
+                                link.open(self.rt, self.allocator, url);
+                                return true;
+                            }
+                        }
+                    }
                     // #502 — 뗌은 앱에게 먼저. viewport 밖에서 놓아도 항상 보내야
                     // 앱이 버튼 상태를 잃지 않는다 (인코더가 그 규칙을 갖는다).
                     if (!self.routeMouseToApp(self.reportEvent(

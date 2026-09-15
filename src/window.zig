@@ -95,6 +95,11 @@ const WM_LBUTTONDBLCLK: UINT = 0x0203;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
 const WM_MOUSEMOVE: UINT = 0x0200;
+/// #647 — 포인터가 창 밖으로 나간 순간. `TrackMouseEvent` 로 요청해야 오고, 한 번
+/// 발동하면 추적이 스스로 풀린다 (Win32 의 계약). macOS `mouseExited:` · Linux
+/// `wl_pointer.leave` 와 같은 자리다.
+const WM_MOUSELEAVE: UINT = 0x02A3;
+const TME_LEAVE: DWORD = 0x00000002;
 const WM_RBUTTONDOWN: UINT = 0x0204;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 // #502 — 가운데 버튼은 mouse reporting 이 실을 버튼 하나 (`Cb` 1). 이전에 우클릭
@@ -150,6 +155,8 @@ const COLOR_WINDOW: c_int = 5;
 // 요구 제거.
 const IDC_ARROW: ?*const anyopaque = @ptrFromInt(32512);
 const IDC_IBEAM: ?*const anyopaque = @ptrFromInt(32513);
+/// #647 — 링크 위의 손 커서. CSS `pointer` · macOS `pointingHandCursor` 와 같은 뜻이다.
+const IDC_HAND: ?*const anyopaque = @ptrFromInt(32649);
 // #483 — 분할선 리사이즈 커서 (winuser.h: IDC_SIZEWE 32644 · IDC_SIZENS 32645).
 const IDC_SIZEWE: ?*const anyopaque = @ptrFromInt(32644);
 const IDC_SIZENS: ?*const anyopaque = @ptrFromInt(32645);
@@ -286,6 +293,14 @@ extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
 extern "user32" fn SetCursor(HCURSOR) callconv(.c) HCURSOR;
 extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.c) BOOL;
+/// #647 — `TrackMouseEvent` 인자. `cbSize` 를 반드시 채운다 (Win32 의 버전 구분 방식).
+const TRACKMOUSEEVENT = extern struct {
+    cbSize: DWORD,
+    dwFlags: DWORD,
+    hwndTrack: HWND,
+    dwHoverTime: DWORD,
+};
+extern "user32" fn TrackMouseEvent(*TRACKMOUSEEVENT) callconv(.c) BOOL;
 extern "user32" fn SetTimer(HWND, usize, UINT, ?*anyopaque) callconv(.c) usize;
 extern "user32" fn KillTimer(HWND, usize) callconv(.c) BOOL;
 // #386 — 프레임 clock. `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` 은 `timeBeginPeriod(1)` 로
@@ -426,7 +441,9 @@ pub const Window = struct {
     /// `WM_SETCURSOR` (#193) — client 영역 안의 위치별 cursor 분류. 결정은
     /// host (app) 가 — cell 영역만 알면 되고, 그 외는 `.other` 로 default arrow.
     /// #483 5단계 — 분할선 위는 좌우 / 상하 리사이즈 커서 (`IDC_SIZEWE` / `IDC_SIZENS`).
-    pub const CursorRegion = enum { cell, other, separator_v, separator_h };
+    /// #647 — `link` 는 포인터 아래가 클릭 가능한 링크일 때. 밑줄과 같은 규칙으로
+    /// **수식키를 보지 않는다** (여는 데만 `Ctrl` 이 필요하다).
+    pub const CursorRegion = enum { cell, other, separator_v, separator_h, link };
 
     /// #451 — `Io` · 환경변수 묶음. host 의 `run(rt, …)` 이 창을 만들 때 넣는다.
     rt: Runtime,
@@ -464,6 +481,9 @@ pub const Window = struct {
     auto_scroll_active: bool = false,
     last_mouse_x: c_int = 0,
     last_mouse_y: c_int = 0,
+    /// #647 — `WM_MOUSELEAVE` 는 한 번 발동하면 추적이 **스스로 해제된다** (Win32 의
+    /// 계약). 그래서 "지금 추적 중인가" 를 들고 있다가 `WM_MOUSEMOVE` 에서 다시 건다.
+    tracking_mouse_leave: bool = false,
     /// #386 — 프레임 clock. 화면 주사율 주기로 `WM_FRAME_TICK` 을 post 하는 스레드와
     /// 그 스레드가 기다리는 고해상도 waitable timer. `SetTimer` 를 쓰지 않는 이유는
     /// `WM_FRAME_TICK` 주석에 있다.
@@ -517,6 +537,7 @@ pub const Window = struct {
     /// `WM_SETCURSOR` 마다 LoadCursorW 호출 비용 피하려 init 에서 캐시 (#193).
     cursor_arrow: HCURSOR = null,
     cursor_ibeam: HCURSOR = null,
+    cursor_hand: HCURSOR = null,
     cursor_sizewe: HCURSOR = null,
     cursor_sizens: HCURSOR = null,
     shell_exited: bool = false,
@@ -660,6 +681,7 @@ pub const Window = struct {
         // LoadCursorW(null, IDC_*) 는 system shared resource — DestroyCursor 불필요.
         self.cursor_arrow = LoadCursorW(null, IDC_ARROW);
         self.cursor_ibeam = LoadCursorW(null, IDC_IBEAM);
+        self.cursor_hand = LoadCursorW(null, IDC_HAND);
         self.cursor_sizewe = LoadCursorW(null, IDC_SIZEWE);
         self.cursor_sizens = LoadCursorW(null, IDC_SIZENS);
 
@@ -1736,6 +1758,30 @@ pub const Window = struct {
         // 다른 모드 → no-op (예: .monitor 상태에서 인자 .workarea).
     }
 
+    /// #647 — 포인터가 있는 자리의 커서를 **지금** 다시 지정한다.
+    ///
+    /// `WM_SETCURSOR` 는 마우스가 움직일 때만 오므로, 수식키만 누른 순간에는 커서가 따라오지
+    /// 않는다. 그때 이것을 불러 같은 판정 (`cursor_region_fn`) 을 한 번 더 태운다.
+    pub fn refreshCursor(self: *Window) void {
+        const region_fn = self.cursor_region_fn orelse return;
+        if (self.hwnd == null) return;
+        // **실패하면 좌표를 쓰지 않는다.** `pt` 는 `undefined` 라 실패한 값을 그대로 쓰면
+        // 엉뚱한 자리의 커서를 정한다. `BOOL` 은 non-exhaustive enum 이고 참값이 1 만이
+        // 아니므로 `.TRUE` 와 비교하지 않는다 — std 가 그 비교를 *"always a bug"* 로 적어
+        // 두었고 `toBool()` 이 그 자리다.
+        var pt: POINT = undefined;
+        if (!GetCursorPos(&pt).toBool()) return;
+        if (!ScreenToClient(self.hwnd, &pt).toBool()) return;
+        const handle: HCURSOR = switch (region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata)) {
+            .cell => self.cursor_ibeam,
+            .other => self.cursor_arrow,
+            .separator_v => self.cursor_sizewe,
+            .separator_h => self.cursor_sizens,
+            .link => self.cursor_hand,
+        };
+        _ = SetCursor(handle);
+    }
+
     fn dispatchAppEvent(self: *Window, event: app_event.Event) bool {
         if (self.app_event_fn) |f| {
             return f(event, self.userdata);
@@ -2128,6 +2174,13 @@ pub const Window = struct {
                 // `Ctrl+Enter` (`0a`) 가 통째로 사라졌다 (순서를 바꾸면 정상이라 확정했다).
                 // 다음 keydown 이 왔다는 것은 앞 키의 문자 메시지는 이미 지나갔다는 뜻이다.
                 self.swallow_next_wm_char = false;
+                // #647 — 링크 수식키를 누른 **그 순간** 판정을 다시 한다 (마우스가 가만히
+                // 있으면 motion 이 오지 않는다). auto-repeat 로 여러 번 와도 `needsUpdate`
+                // 가 걸러 낸다. 소비하지 않으므로 아래 기존 처리는 그대로 간다.
+                if (wParam == @as(WPARAM, @intCast(VK_CONTROL))) {
+                    _ = self.dispatchAppEvent(.{ .link_mods_changed = true });
+                    self.refreshCursor();
+                }
                 // Ctrl keydown이 먼저 끝낸 composition result는 modifier keydown을
                 // 건너뛰어 실제 chord key까지 유지한다. leave 정책이 필요한
                 // C(copy/interrupt), Ctrl+Shift+V(paste), F12(perf)는 app resolver가
@@ -2343,6 +2396,11 @@ pub const Window = struct {
                 return 0;
             },
             WM_KEYUP, WM_SYSKEYUP => {
+                // #647 — 링크 수식키를 뗀 순간에도 다시 판정한다 (위 `WM_KEYDOWN` 과 짝).
+                if (wParam == @as(WPARAM, @intCast(VK_CONTROL))) {
+                    _ = self.dispatchAppEvent(.{ .link_mods_changed = false });
+                    self.refreshCursor();
+                }
                 // preserve 요청 뒤 IME result가 전혀 오지 않은 IME에서는 chord가
                 // 끝날 때 요청만 해제. 예상 read-only result가 보류됐는데 action이
                 // 소비하지 못한 예외에는 결과를 확정해 입력 손실/가짜 overlay 방지.
@@ -2568,6 +2626,17 @@ pub const Window = struct {
                 return 0;
             },
             WM_MOUSEMOVE => {
+                // #647 — 포인터가 창을 떠나는 순간을 받으려면 이동할 때마다 (추적이 꺼져
+                // 있으면) 다시 걸어야 한다. `WM_MOUSELEAVE` 는 한 번 발동하고 스스로 해제된다.
+                if (!self.tracking_mouse_leave) {
+                    var tme: TRACKMOUSEEVENT = .{
+                        .cbSize = @sizeOf(TRACKMOUSEEVENT),
+                        .dwFlags = TME_LEAVE,
+                        .hwndTrack = hwnd,
+                        .dwHoverTime = 0,
+                    };
+                    if (TrackMouseEvent(&tme).toBool()) self.tracking_mouse_leave = true;
+                }
                 // #245 — 마지막 위치 저장 (auto-scroll 타이머가 재전송에 사용).
                 self.last_mouse_x = getMouseX(lParam);
                 self.last_mouse_y = getMouseY(lParam);
@@ -2581,6 +2650,15 @@ pub const Window = struct {
                         .mods = mouseMods(wParam),
                     },
                 });
+                return 0;
+            },
+            // #647 — 포인터가 창을 떠났다. hover 로 켠 것 (링크 밑줄 · 탭바 컨트롤 강조) 을
+            // 푼다. 안 하면 창 밖으로 나가도 강조가 그대로 남는다 (2026-09-15 실측 —
+            // 밑줄 216 px · 컨트롤 강조 480 px 이 남았다).
+            WM_MOUSELEAVE => {
+                // 발동과 함께 추적이 풀렸으므로 다음 이동에서 다시 건다.
+                self.tracking_mouse_leave = false;
+                _ = self.dispatchAppEvent(.mouse_leave);
                 return 0;
             },
             // #193 — OS cursor shape (cell hover I-beam, 그 외 arrow). HTCLIENT
@@ -2600,6 +2678,7 @@ pub const Window = struct {
                                 .other => self.cursor_arrow,
                                 .separator_v => self.cursor_sizewe,
                                 .separator_h => self.cursor_sizens,
+                                .link => self.cursor_hand,
                             };
                             _ = SetCursor(handle);
                             return 1; // TRUE — 우리가 처리 (DefWindowProcW 안 부름)

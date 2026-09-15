@@ -24,6 +24,14 @@ pub const Event = union(enum) {
     /// 클릭은 OS 가 다른 창으로 라우팅해 pointer event 가 우리에게 오지 않으므로,
     /// 열린 command menu 를 닫는 훅은 focus 상실뿐이다. menu 상태가 `App` 에 있어
     /// `Window` 가 직접 닫을 수 없어 event 로 넘긴다. true 반환 = menu 를 닫았음.
+    /// #647 — 링크 수식키 (`Ctrl`) 를 누르거나 뗐다. 마우스가 가만히 있어도 밑줄 · 손
+    /// 커서가 따라오게 하려고 둔다 — 판정이 motion 에만 걸려 있으면 포인터를 흔들어야
+    /// 반응한다. `ctrl` 은 그 시점의 눌림 상태다.
+    link_mods_changed: bool,
+    /// #647 — 포인터가 창을 떠났다. hover 로 켠 것 (링크 밑줄 · 탭바 컨트롤 강조) 을 푼다.
+    /// macOS `tildazMouseExited` · Linux `handlePointerLeave` 와 같은 자리이고, Windows 는
+    /// `WM_MOUSELEAVE` 가 그 자리다.
+    mouse_leave: void,
     focus_lost: void,
     tab_closed: usize,
 };

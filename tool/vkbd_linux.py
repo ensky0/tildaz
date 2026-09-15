@@ -11,6 +11,8 @@ headless sway · nested Hyprland 같은 wlroots 계열 compositor 안에서 tild
     echo 'key Return'              > /run/user/1000/tz583/vkbd.fifo            # 키 하나
     echo 'key ctrl+shift+t'        > /run/user/1000/tz583/vkbd.fifo            # 조합 (ctrl · shift · alt · super)
     echo 'key alt+F4'              > /run/user/1000/tz583/vkbd.fifo
+    echo 'hold ctrl'               > /run/user/1000/tz583/vkbd.fifo            # 누른 채 유지 (#647 회차 B)
+    echo 'release ctrl'            > /run/user/1000/tz583/vkbd.fifo
     echo 'quit'                    > /run/user/1000/tz583/vkbd.fifo
 
 왜 `wtype` 이 아닌가 — 두 가지가 실측으로 걸렸다 (2026-09-03 · 미니PC Firebat ZY-A8 · headless sway 1.12).
@@ -247,9 +249,31 @@ class VirtualKeyboard:
             raise ValueError(f"unknown key: {last}")
         self.tap(code, mods)
 
+    def hold(self, name, pressed):
+        """수식키 하나를 **누른 채 유지**하거나 뗀다 (#647 회차 B — 마우스를 안 움직이고 `Ctrl` 만 누르는 자리).
+
+        `tap` 은 누름 · 뗌이 한 호출 안에서 끝나 그 사이에 다른 명령을 넣을 수 없다. 여기서는 `modifiers`
+        mask 를 눌린 수식키 전체로 다시 계산해 보낸다 — 여러 개를 겹쳐 잡아도 상태가 맞는다.
+        """
+        code = KEY.get(name.lower())
+        if code is None or code not in MOD_MASK:
+            raise ValueError(f"not a modifier: {name}")
+        if pressed:
+            self.key(code, True)
+        mask = 0
+        for c in self.down:
+            mask |= MOD_MASK.get(c, 0)
+        if not pressed:
+            mask &= ~MOD_MASK[code]
+        self.modifiers(mask)
+        if not pressed:
+            self.key(code, False)
+        self.wl.roundtrip()
+
     def release_all(self):
         for code in list(reversed(self.down)):
             self.key(code, False)
+        self.modifiers(0)
         self.wl.roundtrip()
 
 
@@ -278,6 +302,10 @@ def main():
                         vk.type_text(rest, args.delay)
                     elif cmd == "key":
                         vk.combo(rest)
+                    elif cmd == "hold":
+                        vk.hold(rest.strip(), True)
+                    elif cmd == "release":
+                        vk.hold(rest.strip(), False)
                     elif cmd == "sleep":
                         time.sleep(int(rest) / 1000.0)
                     elif cmd == "quit":

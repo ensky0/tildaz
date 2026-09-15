@@ -11,6 +11,7 @@
 const ghostty = @import("ghostty-vt");
 const pane_layout = @import("../pane_layout.zig");
 const search = @import("../search.zig");
+const link = @import("../link.zig");
 
 pub const PaneDraw = struct {
     terminal: *ghostty.Terminal,
@@ -43,6 +44,10 @@ pub const PaneDraw = struct {
     /// 그 함수의 일이라, 여기서 `null` 로 바꾸면 강조가 화면에 남는다. host 가 pane 을
     /// 그릴 수 없는 경우 (테스트 하네스 등) 만 `null` 이다.
     search: ?*search.PaneSearch,
+    /// #647 — 마우스가 가리키는 링크. **활성 pane 에만 실린다** (포인터가 하나라 hover 도
+    /// 하나다). 렌더러가 `state.update` 직후 `applyHighlights` 를 불러 `link_hover` 강조를
+    /// 칠하고, 셀마다 `cell_highlight.withLinkUnderline` 이 그것을 밑줄로 바꾼다.
+    link_hover: ?*link.Hover,
     /// #483 5단계 — 키보드가 가는 pane 인가. 렌더러가 pane 마다 달라야 하는 부수 효과 (Windows 의 IME 조합
     /// 창 위치 `last_cursor_px`) 를 활성 pane 에만 적용하는 데 쓴다. 그리기 자체는 이 값을 보지 않는다.
     is_active: bool,
