@@ -123,7 +123,7 @@ pub fn uiFrom(
     const field_w = view(viewport_w_pt, top_pt).field.w;
     ps.field_scroll_px = fieldScrollOffset(
         ps.needle.items,
-        ps.needle.items.len, // caret 은 4 단계에서 움직인다 — 지금은 끝.
+        ps.caret,
         cw_pt,
         field_w,
         textWidthPx(preedit, cw_pt),
@@ -133,7 +133,7 @@ pub fn uiFrom(
         .open = ps.is_open,
         .needle = ps.needle.items,
         .preedit = preedit,
-        .caret = ps.needle.items.len, // 편집 caret 은 4 단계에서 움직인다 — 지금은 끝.
+        .caret = ps.caret,
         .current = ps.currentIndex(),
         .total = ps.matchCount(),
         .searching = ps.isSearching(),

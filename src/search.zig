@@ -57,6 +57,10 @@ pub const PaneSearch = struct {
     /// `search_matches_dirty` 를 둔다 (`renderer/generic.zig`).
     highlights_dirty: bool = false,
 
+    /// #646 — 편집 caret 의 byte offset (`needle` 기준). 늘 codepoint 경계에 있다 —
+    /// 그것을 지키는 것은 `search_input.zig` 의 몫이다.
+    caret: usize = 0,
+
     /// #646 — 입력칸 가로 스크롤 (logical pt). `search_bar.fieldScrollOffset` 이 매 프레임
     /// 갱신해 여기 써 둔다. **상태로 남겨야** caret 이 보이는 동안 스크롤을 바꾸지 않는
     /// hysteresis 가 성립한다 (탭 rename 이 `RenameState` 에 같은 값을 뒀다).
@@ -119,6 +123,8 @@ pub const PaneSearch = struct {
         self.dropEngine();
         self.needle.clearAndFree(alloc);
         self.debounce_deadline_ns = null;
+        self.caret = 0;
+        self.field_scroll_px = 0;
         self.is_open = false;
     }
 
@@ -138,6 +144,10 @@ pub const PaneSearch = struct {
         self.needle.clearRetainingCapacity();
         try self.needle.appendSlice(alloc, text);
         self.dropEngine();
+
+        // caret 이 새 길이를 넘지 않게 한다. 정확한 자리는 부르는 쪽 (`search_input`) 이
+        // 곧바로 다시 정하지만, 그러지 않는 경로 (통째 교체) 에서도 범위 밖이면 안 된다.
+        self.caret = @min(self.caret, self.needle.items.len);
 
         // 짧은 needle 만 기다린다. 긴 needle 과 빈 needle 은 대기가 없다 (`null`).
         self.debounce_deadline_ns = if (text.len != 0 and text.len < DEBOUNCE_MIN_NEEDLE_LEN)

@@ -6999,6 +6999,10 @@ const Client = struct {
                     },
                     // interrupt \x03 는 아래 escape / utf8 로. paste 는 위에서 처리.
                     .pty => {},
+                    // #646 4 단계 ② — 검색바 배선은 다음 커밋이다. 지금은 어느 host 도
+                    // `search_active` 를 세우지 않으므로 이 두 갈래로 오지 않는다.
+                    // (`.drop` 은 배선 뒤에도 "삼킴" 이라 이 자리가 그대로 맞다.)
+                    .search_field, .drop => return,
                 }
             }
         }
