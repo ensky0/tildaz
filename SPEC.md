@@ -588,6 +588,8 @@ TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.app
 #### Alt(Meta) · 화살표/기능키의 modifier ([#533](https://github.com/ensky0/tildaz/issues/533))
 
 **tildaz 가 소비하지 않은 키 입력은 전부 표준 인코딩으로 자식 프로세스에 전달한다.**
+(예외는 이 절 끝의 *"legacy 에서 요청되지 않은 확장 인코딩"* 하나다 — 앱이 켠 적 없는
+프로토콜의 바이트는 보내지 않는다.)
 세 host 가 native 이벤트를 `key_encode.Event` 로 담아 주면 ghostty 의 `input.encodeKey`
 하나가 바이트를 만든다 — 인코딩 표를 우리가 갖지 않는다. 그 전에는 host 마다 escape
 sequence 를 직접 적고 있었고 (Linux `terminalSequenceForKeysym` · macOS `keyCodeToEscape` ·
@@ -649,6 +651,34 @@ Windows 실측).
 **macOS 도 같은 갭이 있었다 — 글자 · Return 을 누르는 순간이 옛 바이트였다** ([#636](https://github.com/ensky0/tildaz/issues/636), 2026-09-05). macOS 는 글자를 `interpretKeyEvents:` → `imeInsertText` 로, Return 을 `insertNewline:` → `imeDoCommand` 의 `"\r"` 로 받는데 두 경로가 인코더를 거치지 않았다. 놓는 순간은 `keyUp:` 이 인코더로 직행해 (#538) `CSI u` 였으므로 **한 키에서 누름은 옛 바이트 · 놓음은 CSI u** 가 섞여 나갔다 (실측 `a` → `61` + `CSI 97;1:3 u`). 고친 것 — `keyDown:` 끝에서 **조합 중이 아니고 `report_all` 이면** 글자 · Return 을 인코더로 (Windows 와 같은 조건). 조합 중이면 IME 가 키를 소비하고 확정 글자는 텍스트로, `report_all` 이 꺼진 앱은 IME 경로 그대로, Return 의 `isNavOrFunction` 이 false 인 것 (한글 조합의 Return 확정) 도 그대로다. 실측 (MacBook Pro M5 Pro · flags 11): `a` → `CSI 97 u` · `Shift+a` → `CSI 97;2 u` · Return → `CSI 13 u` · 놓음 `CSI <cp>;<mods>:3 u`; flags 1 에서는 `61` · `41` · `0d` 그대로; 한글 2벌식 `r` `k` Return → `가` + 개행 그대로. Linux 는 처음부터 인코더 경로라 해당 없다.
 
 **modifier 단독 누름 · 뗌은 kitty `report_all` 에서 세 platform 이 보고한다** ([#606](https://github.com/ensky0/tildaz/issues/606), 2026-09-03). kitty keyboard protocol 은 `report_all` (8) 을 켠 앱에 `Shift` 만 눌러도 `CSI 57441;2u` (뗌 `CSI 57441;1:3u`) 를 요구한다 — kitty 의 `kitten show-key -m kitty` · helix 가 그것을 기다린다. 이전에는 세 platform 다 내지 못했다: `physical_key` 표에 modifier 가 없어 인코더가 항목을 못 찾았고 (Linux · Windows 뗌은 이미 인코더까지 갔으나 항목이 없어 바이트 0 개), macOS 는 AppKit 이 modifier 를 `keyDown:` 이 아니라 `flagsChanged:` 로 주는데 그 메서드가 없었다. 고친 것 — ① 표에 `ShiftLeft` … `MetaRight` 8 행 (`bindable = false` — `[ShiftLeft]` 같은 바인딩 이름은 여전히 거부한다. modifier 는 비트다), ② Windows `WM_KEYDOWN` 이 `VK_SHIFT` · `VK_CONTROL` · `VK_MENU` · `VK_LWIN` · `VK_RWIN` 을 글자 없이 인코더로 (Alt 단독은 `WM_SYSKEYDOWN` 이 이미 그랬다 · 뗌은 `WM_KEYUP` 이 모든 키를 보낸다), ③ macOS `flagsChanged:` 등록 — keyCode 로 어느 modifier 인지, 그 키의 device 비트 (`NX_DEVICELSHIFTKEYMASK` 등) 로 누름 · 뗌을 가른다 (일반 비트는 양쪽 Shift 를 함께 누른 뒤 하나만 떼도 켜져 있다). 누름의 `mods` 에는 그 modifier 자체가 든다 (Windows `GetKeyState` · macOS `modifierFlags` 가 이미 갱신된 값을 주고, ghostty 인코더는 넘긴 mods 를 그대로 쓴다) — kitty 규약과 같다. `report_all` 이 아니면 인코더가 modifier 항목을 걸러 아무것도 나가지 않는다. lock 키 (CapsLock 57358 · NumLock 57360) 는 Windows 만 보고한다 — macOS 는 토글 키의 뗌을 주지 않아 짝이 없어 뺐다. Windows 실기 (2026-09-03 · 노트북 Ryzen AI 7 350 · Windows 11 · US 배열을 창에 로드 · `tool/kitty-text-check_windows.ps1` flags 11): `Shift` 단독 → `CSI 57441;2u` + `CSI 57441;1:3u`, `Ctrl` 단독 → `CSI 57442;5u` + `CSI 57442;1:3u`, `Shift+a` → `CSI 57441;2u` `CSI 97;2u` `CSI 97;2:3u` `CSI 57441;1:3u` (modifier 누름 · 뗌이 글자를 감싼다 — kitty 와 같다), flags 1 회차는 이전과 같다 (modifier 바이트 0). macOS · Linux 는 컴파일 (`zig build check`) 까지, 실기는 대기.
+
+**legacy 에서 요청되지 않은 확장 인코딩은 보내지 않는다** ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650) · [#653](https://github.com/ensky0/tildaz/issues/653), 2026-09-15). ghostty 의 legacy 경로는 앱이 프로토콜을 켜지 않았어도 두 가지 확장형으로 폴백한다 — fixterms `CSI <cp>;<mods> u` 와 xterm modifyOtherKeys `CSI 27;<mods>;<cp> ~`. **둘 다 앱이 켠 적 없는 인코딩**이라 bash · readline · `python input()` 은 그것을 글자로 찍는다 (신고 증상: `Ctrl+Shift+F` 가 프롬프트에 `2;6u`, `Ctrl+[` 가 ESC 가 아니라 `ESC[91;5u` 라 vi-mode 탈출 불가).
+
+규칙은 둘이다. 판정은 **인코더가 내놓은 바이트 한 곳**에서만 한다 — 키 정체를 우리가 다시 판정하면 ghostty 와 어긋난다 (실제로 어긋나 물리 Escape 자리에 글자가 얹힌 keymap 에서 `Ctrl+a` 가 `01` 대신 `1b` 였다 · `deadkey-check_linux.sh` 가 잡았다).
+
+> ① **`Ctrl+Shift` 대역은 앱 단축키 대역**이라 PTY 로 보내지 않는다.
+> ② 그 밖은 **표현 가능한 C0** 를 보내고, 없으면 아무것도 보내지 않는다.
+
+②의 답은 확장 인코딩이 이미 싣고 있다 — `CSI u` 의 첫 파라미터와 `CSI 27;…~` 의 셋째 파라미터가 그 키의 codepoint 다. 환산은 표가 아니라 규칙 둘이다: `cp` 가 이미 C0 면 그대로 (`Enter` 13 · `Tab` 9 · `Escape` 27), Ctrl 조합이고 `cp` 가 `@`..`_` 나 그 소문자면 `cp & 0x1f` (`[` → `1b` · `i` → `09` · `m` → `0d`). 비라틴 배열에서 codepoint 가 ASCII 가 아니면 위 *"물리 키의 US 글자로 되짚는다"* 를 같은 자리에서 쓴다.
+
+| 입력 (legacy) | 나가는 것 | 전 |
+|---|---|---|
+| `Ctrl+Shift` + 글자 · Enter · Tab · Escape | (없음) — 규칙 ① | `ESC[102;6u` · `ESC[27;6;13~` |
+| `Ctrl+[` · `Ctrl+I` · `Ctrl+M` | `1b` · `09` · `0d` | `ESC[91;5u` · `ESC[105;5u` · `ESC[109;5u` |
+| `Ctrl`/`Shift` + `Enter` | `0d` | `ESC[27;5;13~` · `ESC[27;2;13~` |
+| `Ctrl`/`Shift` + `Escape` | `1b` | `ESC[27;5;27~` · `ESC[27;2;27~` |
+| `Ctrl+Tab` | `09` | `ESC[27;5;9~` |
+| `Ctrl+;` `'` `,` `.` `-` `` ` `` `=` | (없음) — C0 대응이 없다 | `ESC[59;5u` 등 |
+
+**`Shift+Tab` 의 `ESC[Z` 는 확장이 아니다** — CBT 는 ECMA-48 시절부터 있던 legacy 시퀀스라 규칙이 아예 보지 않는다. `ESC[1;6D` (`Ctrl+Shift+←`) · `ESC[5;6~` (`Ctrl+Shift+PgUp`) 같은 표준 CSI modifier 도 같다.
+
+**앱이 프로토콜을 켜면 전부 그대로 나간다.** kitty flags 가 있거나 `CSI > 4;2m` 을 켰으면 규칙이 걸리지 않는다 — 그 앱들 (nvim · helix · zellij) 은 `Ctrl+Shift+<글자>` 를 정말로 구분하려고 켠 것이다. 실측으로 kitty · mok2 회차가 `origin/main` 과 바이트 단위로 같다.
+
+**Windows 는 Backspace · Tab · Enter 를 인코더로 보낸다** (#653). 그 전에는 `WM_CHAR` 로 받았는데 그 메시지에는 물리 키도 Shift 도 없어서 Backspace 와 `Ctrl+H` 가 코드포인트 8 하나로 합쳐지고 (둘 다 `7f`) `Shift+Tab` 의 back-tab 이 사라졌다 (`09`). IME 조합 중과 dead key 대기 중에는 손대지 않는다 — 음절 확정이 IME 의 몫이다.
+
+**macOS 는 세 칸이 아직 다르다** ([#658](https://github.com/ensky0/tildaz/issues/658)) — `Ctrl+Tab` · `Ctrl+Escape` 가 AppKit 의 key-view loop 에 막혀 `keyDown:` 에 도달하지 않고, `Shift+Tab` · `Shift+Enter` · `Shift+Escape` 가 `imeDoCommand` 의 하드코딩 표를 지나 프로토콜을 무시하며, 한글 입력 소스에서 kitty 코드포인트가 자모다. 셋 다 이 규칙 이전부터 있던 것이다.
+
+실기 — Linux (KDE Plasma Wayland · headless sway + `vkbd`) 19 키 × 3 모드, macOS 26 키 × 3 모드, Windows 26 키 + 경계 14 키. 도구는 [`tool/key-bytes.py`](tool/key-bytes.py) (세 OS 공통) 와 [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) (자동 판정).
 
 ### 2.7 Key repeat (길게 누름 반복)
 
