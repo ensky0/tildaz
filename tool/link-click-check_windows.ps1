@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'A', 'B')][string]$Mode = 'probe',
+    [ValidateSet('probe', 'A', 'B', 'C')][string]$Mode = 'probe',
     [string]$Bin = 'zig-out\bin\tildaz.exe',
     [string]$Screen = "$env:TEMP\tz-link.ps1",
     [string]$Size = '88x20',
@@ -255,7 +255,7 @@ if ($stale -gt 0) { "앞선 회차의 오류 다이얼로그 $stale 개를 닫�
 Stop-Tz; Start-Sleep -Milliseconds 500
 if (Test-Path $Log) { Move-Item $Log (Join-Path $Out "log_prev.txt") -Force }
 
-if ($Mode -eq 'B') { $env:TZ_MOUSE = "1" } else { Remove-Item Env:\TZ_MOUSE -ErrorAction SilentlyContinue }
+if ($Mode -eq 'B' -or $Mode -eq 'C') { $env:TZ_MOUSE = "1" } else { Remove-Item Env:\TZ_MOUSE -ErrorAction SilentlyContinue }
 $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File $Screen"
 $p = Start-Process -FilePath (Resolve-Path $Bin) -PassThru -ArgumentList '--instance', '9', '-e', "`"$cmd`"", '-size', $Size
 $h = [IntPtr]::Zero
@@ -418,6 +418,40 @@ if ($Mode -eq 'B') {
     Guard; [TzLink]::ClickHere(); Start-Sleep -Seconds 3
     $n1 = Get-OpenCount
     Record "B5" "Ctrl 없이 클릭 — 안 열리고 앱 것" "+0" "+$($n1 - $n0)" (($n1 - $n0) -eq 0)
+}
+
+# 회차 C — B 와 같은 상태 (앱이 마우스를 잡음) 인데 **Ctrl 앞에 클릭이 한 번 들어간다.**
+# 클릭이 앱으로 라우팅된 뒤에도 수식키 훅이 그대로 듣는지 (`link_pointer` 가 살아 있는지) 를 본다.
+# C3 (정지 상태에서 Ctrl) 과 C4 (Ctrl 유지 + 1 px 이동) 가 같은 결과여야 정상이다.
+if ($Mode -eq 'C') {
+    MoveClient $LinkPt 5
+    $c0 = Shot "C1_hover"
+    $bb = ""; $d = [TzLink]::Diff($base, $c0, [ref]$bb)
+    Record "C1" "hover (수식키 없음)" "0 px · ibeam" "$d px · cursor=$([TzLink]::CursorName())" ($d -eq 0)
+
+    # C2 — Ctrl 없이 클릭. 앱이 가져간다 (열리지 않는다).
+    $n0 = Get-OpenCount
+    Guard; [TzLink]::ClickHere(); Start-Sleep -Seconds 2
+    $n1 = Get-OpenCount
+    $c2 = Shot "C2_after_click"
+    Record "C2" "Ctrl 없이 클릭 — 앱 것" "+0" "+$($n1 - $n0)" (($n1 - $n0) -eq 0)
+
+    # C3 — **클릭 뒤에** 마우스를 멈춘 채 Ctrl 누름.
+    Guard; [TzLink]::KeyDownUp(0x11, $true); Start-Sleep -Milliseconds 900
+    $c3 = Shot "C3_ctrl_after_click"
+    $bb = ""; $d3 = [TzLink]::Diff($c2, $c3, [ref]$bb)
+    $cur3 = [TzLink]::CursorName()
+    Record "C3" "클릭 뒤 · 마우스 정지 · Ctrl 누름" ">0 px · hand" "$d3 px ($bb) · cursor=$cur3" ($d3 -gt 0 -and $cur3 -eq 'hand')
+
+    # C4 — Ctrl 을 누른 채 1 px 움직인다. C3 와 결과가 같아야 한다 (움직여야만 되는 것이 아니다).
+    $sp = [TzLink]::ClientToScreenPt($h, $LinkPt[0] + 1, $LinkPt[1])
+    [TzLink]::MoveTo($sp.x, $sp.y, 1); Start-Sleep -Milliseconds 700
+    $c4 = Shot "C4_ctrl_after_move"
+    $bb = ""; $d4 = [TzLink]::Diff($c2, $c4, [ref]$bb)
+    $cur4 = [TzLink]::CursorName()
+    Record "C4" "Ctrl 유지 + 1 px 이동" ">0 px · hand" "$d4 px ($bb) · cursor=$cur4" ($d4 -gt 0 -and $cur4 -eq 'hand')
+
+    Guard; [TzLink]::KeyDownUp(0x11, $false); Start-Sleep -Milliseconds 400
 }
 
 # 비활성 창에서의 hover (Windows 만 따로 보는 항목 — #647 7 절)
