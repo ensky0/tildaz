@@ -1201,6 +1201,9 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vkbd_linux.py`](tool/vkbd_linux.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`tool/clusters.py bands`](tool/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`tool/bands-check.py`](tool/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
+| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` 을 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요 |
+| [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
+| [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
@@ -1237,6 +1240,24 @@ grim shot.png                                                          # sway �
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
   **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
+- **sway 회차에서는 `-size` 를 못 써요.** `SWAYSOCK` 이 보이면 tildaz 가 layer-shell 대신 scratchpad 경로를 타서 (#454)
+  창 크기를 우리가 못 정하고, 앱이 `-size cannot be used on this desktop` 으로 **부팅을 멈춰요** (2026-09-15 실측). 창은
+  타일링으로 출력 전체가 되니 칸 수는 로그의 `terminal session created cols= rows=` 에서 읽어요. 반대로 `SWAYSOCK` 을
+  빼고 띄우면 layer-shell 경로라 `-size` 가 먹지만, 그건 **실제 sway 동작이 아니에요** — 재는 대상이 달라져요.
+- **`applied ratios cell_w=` 는 로그에 두 번 찍혀요 (터미널 폰트 · UI 폰트).** `tail -1` 로 집으면 8 이 나오는데 격자는
+  9 예요 (2026-09-15 실측). 셀 폭은 **캡처에서 재요** — `link-shot_linux.py grid` 가 글자 줄 두 개의 잉크 폭을 각각 나눠
+  서로 맞는지 보고, 안 맞으면 좌표를 안 쓰고 실패해요.
+- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz.stress` 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
+  브라우저를 치우려고 `swaymsg '[app_id=".*"] kill'` 을 쓰면 **앱에도 닫기 요청이 가서 확인 다이얼로그가 떠요** — 회차가
+  거기서 엉켜요. `app_id` 가 `tildaz` 로 시작하는 것을 빼고 지워요.
+- **⚠️ headless sway 가 커서 그림을 화면에 아예 안 그리는 구간이 있어요.** 같은 sway · 같은 앱인데 회차에 따라 갈렸고,
+  대조군 `foot` 위에서도 똑같이 안 나와 compositor 쪽으로 판정했어요 (`XCURSOR_THEME` · `seat * xcursor_theme` · sway
+  재기동 모두 무효). 이때 커서 판정기는 배경을 긁어 **70 % 대 점수**를 내니 `--min-ratio` 로 걸러 `unknown` 을 만들고,
+  **회차 시작 전에 빈 칸에서 `text` 가 나오는지로 가드**를 걸어요 — 아니면 커서 판정만 건너뛰고 나머지를 돌려요.
+  그래도 확정이 필요하면 **`set_shape` 에 임시 로그**를 달아 우리가 보낸 enum 값을 봐요 (`link=4` · `cell=9` · `other=1`).
+- **`xdg-open` 이 등록 안 된 scheme 에 조용히 실패하는 것은 데스크톱에 달렸어요.** 환경이 KDE 로 보이면
+  (`KDE_FULL_SESSION=true`) `kde-open` 으로 넘어가 **KIO 오류 다이얼로그**를 띄워요 (*"… 파일에서 읽을 수 없습니다"*).
+  일반 · sway 환경에서는 조용해요. 창이 안 뜨는 것을 전제로 회차를 짜면 여기서 어긋나요 (2026-09-15 #647 실측).
 - **sway 는 layer-shell 을 우리가 일부러 안 써서** (#454) `-size` · dock 배치가 안 먹고 창은 tiling 으로 출력 전체예요. 그래도
   xdg_toplevel · layer-surface · dialog 가 **같은 `logicalToPhysicalSize`** 를 쓰므로 배율 검증은 성립해요.
 - **단축키 판정은 파일로 해요.** 탭마다 `cat > tab_N.txt` 를 띄워 두고 `Alt+N` 뒤 글자를 보내면 어느 파일에 들어갔는지로
