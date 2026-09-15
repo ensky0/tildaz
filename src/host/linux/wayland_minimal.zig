@@ -7385,6 +7385,14 @@ const Client = struct {
         // arrow) 로 즉시 전환. enter 후 cached shape 가 stale 할 수 있어 강제
         // reset.
         self.last_cursor_shape = 0;
+        // #647 — **들어온 그 자리로 링크 판정을 한다.** `wl_pointer.enter` 는 좌표를 함께 싣고
+        // 오므로, 들어온 뒤 포인터가 멈춰 있으면 `motion` 이 아예 오지 않는다. 그러면 링크 위에
+        // 들어와도 밑줄 · 손 커서가 없다가 1 px 움직여야 나타난다 (2026-09-15 Linux 실기).
+        // 드롭다운이라 *포인터를 안 움직이고 핫키로 창을 여는* 것이 흔한 사용이라 실제로 닿는다.
+        // `handleKeyboardModifiers` · macOS `refreshLinkHoverMac` 과 같은 자리다 — 이벤트가 없는
+        // 순간에 마지막 포인터 위치로 다시 판정한다. `updateCursorShape` 가 이 판정을 읽으므로
+        // **앞에** 둔다.
+        self.updateLinkHover();
         self.updateCursorShape() catch {};
     }
 
@@ -7414,6 +7422,11 @@ const Client = struct {
             self.command_menu_hover = null;
             self.needs_redraw = true;
         }
+        // #647 — 링크 hover 도 같은 이유로 푼다. 안 풀면 **창을 떠난 뒤에도 밑줄이 남는다**
+        // (2026-09-15 Linux 실기 — 216 px 이 그대로 있었다). 창 안에서 링크 밖 칸으로 옮기는
+        // 것은 `motion` 이 와서 이미 풀리고, 빠지는 것은 이 경로뿐이다.
+        // macOS `tildazMouseExited` 가 `g_link_hover.clear` 를 부르는 것과 같다.
+        if (self.link_hover.clear(self.allocator)) self.needs_redraw = true;
     }
 
     /// wl_pointer.motion(time, surface_x_fixed, surface_y_fixed). 좌표 = logical.
