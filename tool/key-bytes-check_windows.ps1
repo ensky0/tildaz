@@ -129,8 +129,12 @@ public static class TzKeyBytes {
 
 $VK = @{
     Ctrl = 0x11; Shift = 0x10; Enter = 0x0D; Tab = 0x09; Left = 0x25; Back = 0x08   # #653 — VK_BACK
+    Esc = 0x1B                                                    # #650 — VK_ESCAPE
     A = 0x41; C = 0x43; F = 0x46; H = 0x48; I = 0x49; M = 0x4D
     LBracket = 0xDB                                               # VK_OEM_4
+    # C0 대응이 없는 문장부호 일곱 (#650 본문 "같이 결정할 것" 1 번 — 2026-09-15 에 함께 닫았다).
+    Semi = 0xBA; Quote = 0xDE; Comma = 0xBC; Period = 0xBE        # VK_OEM_1 · 7 · COMMA · PERIOD
+    Minus = 0xBD; Backtick = 0xC0; Equal = 0xBB                   # VK_OEM_MINUS · 3 · PLUS
 }
 
 # 모드별 회차. `e` 는 기대 hex (`""` 는 "아무 바이트도 안 나가야 한다").
@@ -153,6 +157,20 @@ $rounds = @(
         @{ n = "Ctrl+Enter";       k = ,@($VK.Ctrl, $VK.Enter);               e = "0d" }          # #653 — 전에는 0a (Win32 콘솔 관례). xterm 동등
         @{ n = "Shift+Enter";      k = ,@($VK.Shift, $VK.Enter);              e = "0d" }          # #653 — mac · Linux 는 ESC[27;2;13~ 였다
         @{ n = "Enter";            k = ,@($VK.Enter);                         e = "0d" }          # #653 — 인코더로 옮긴 뒤에도 그대로여야 한다
+        @{ n = "Escape";           k = ,@($VK.Esc);                           e = "1b" }          # #650 — 인코더로 옮긴 뒤에도 그대로
+        @{ n = "Shift+Escape";     k = ,@($VK.Shift, $VK.Esc);                e = "1b" }          # #650 — 맨 키의 C0
+        # `Ctrl+Escape` 는 넣지 않는다 — Windows 는 OS 가 시작 메뉴로 가져가 앱에 오지 않고,
+        # 회차 중에 그 메뉴가 뜨면 포커스를 잃어 남은 키가 전부 오염된다 (#650 기대표의 주석과 같다).
+        #
+        # C0 대응이 없는 문장부호 일곱 — `ccf2414` 의 규칙 ② 대로 아무것도 안 나가야 한다.
+        # Windows 는 `WM_CHAR` 경로라 원래 0 바이트였을 것으로 보이지만 확인된 적이 없다 (#650).
+        @{ n = "Ctrl+;";           k = ,@($VK.Ctrl, $VK.Semi);                e = "" }
+        @{ n = "Ctrl+'";           k = ,@($VK.Ctrl, $VK.Quote);               e = "" }
+        @{ n = "Ctrl+,";           k = ,@($VK.Ctrl, $VK.Comma);               e = "" }
+        @{ n = "Ctrl+.";           k = ,@($VK.Ctrl, $VK.Period);              e = "" }
+        @{ n = "Ctrl+-";           k = ,@($VK.Ctrl, $VK.Minus);               e = "" }
+        @{ n = "Ctrl+``";          k = ,@($VK.Ctrl, $VK.Backtick);            e = "" }
+        @{ n = "Ctrl+=";           k = ,@($VK.Ctrl, $VK.Equal);               e = "" }
     ) },
     # 경계 ① — 앱이 kitty 를 켜면 예전 그대로 나가야 한다. 삼키면 nvim · helix · zellij 가 깨진다.
     @{ mode = "kitty"; enable = "[char]27+'[>1u'"; keys = @(
