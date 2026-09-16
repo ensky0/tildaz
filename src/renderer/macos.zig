@@ -39,6 +39,8 @@ const tab_icons = @import("../tab_icons.zig");
 const session_core = @import("../session_core.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
+const search_bar = @import("../search_bar.zig");
+const messages = @import("../messages.zig");
 const ligature_mod = @import("../font/ligature.zig");
 const isLigatureCandidate = ligature_mod.isLigatureCandidate;
 
@@ -746,7 +748,12 @@ pub const MetalRenderer = struct {
 
     /// #483 2단계 ② — 프레임 끝: 보류한 탭바 (또는 단일 탭 스트립) · command menu → endEncoding →
     /// present + commit. `drawPane` 이 0 번이어도 프레임은 끝낸다.
-    pub fn endFrame(self: *MetalRenderer, menu_ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    pub fn endFrame(
+        self: *MetalRenderer,
+        menu_ui: command_menu.Ui,
+        toggle_hotkey: []const u8,
+        search_ui: search_bar.Ui,
+    ) void {
         if (self.current_cmd_buf == null) return;
 
         // #591 2 단계 — 탭바 · 스트립 · 메뉴도 **먼저 담는다** (blit 앞). pane 들 뒤에 담으니
@@ -758,6 +765,9 @@ pub const MetalRenderer = struct {
                 self.emitSingleControlStrip(t.layout, t.hover);
             }
         }
+        // #646 — 검색바는 터미널 위 · 메뉴 아래다. 메뉴가 열려 있으면 그것이 최상위이고,
+        // 검색바는 창 아래에 붙어 있어 서로 겹치지 않는다.
+        if (search_ui.open) self.emitSearchBar(search_ui);
         if (menu_ui.open) self.emitCommandMenu(menu_ui, toggle_hotkey);
 
         // #591 — 두 atlas 를 올리고 encoder 를 열어 담은 것을 전부 순서대로 그린다. 여기가 이
@@ -1122,7 +1132,7 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const hl = hlAt(hl_row, x16, &self.chrome);
+                const hl = hlAt(hl_row, x16);
 
                 const is_custom_bg = is_selected or is_inverse or hl != null or (style.bg(&raw, &colors.palette) != null);
                 // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
@@ -1228,7 +1238,7 @@ pub const MetalRenderer = struct {
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
-                    const hl_b = hlAt(hl_row, x16_b, &self.chrome);
+                    const hl_b = hlAt(hl_row, x16_b);
                     const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b);
                     const rect = block_element.blockElementRect(cp) orelse {
                         x += 1;
@@ -1272,7 +1282,7 @@ pub const MetalRenderer = struct {
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
-                        const hl_x = hlAt(hl_row, x16_x, &self.chrome);
+                        const hl_x = hlAt(hl_row, x16_x);
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x);
                         const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                         // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
@@ -1303,7 +1313,7 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16, &self.chrome));
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16));
 
                 // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) — cell 의
                 // base + extras 를 CTLine 으로 shape, 단일 representative glyph 으로
@@ -1355,7 +1365,7 @@ pub const MetalRenderer = struct {
                             const st = cell_color.applyBlinkPhase(if (rr.style_id != 0) styles[cell_x] else ghostty.Style{}, blink_faint);
                             const inv = st.flags.inverse;
                             const sel = if (sel_range) |sr| (cell_x >= sr[0] and cell_x <= sr[1]) else false;
-                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, @intCast(cell_x), &self.chrome));
+                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, @intCast(cell_x)));
 
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
@@ -1828,6 +1838,184 @@ pub const MetalRenderer = struct {
         self.closeRange(.tab_text);
     }
 
+    /// #646 — 입력칸 glyph 하나. `search_bar.iterFieldText` 가 보이는 것만 넘겨주므로
+    /// 여기서는 클립을 다시 보지 않는다.
+    fn emitFieldGlyph(self: *MetalRenderer, g: search_bar.Glyph, x0: f32, top: f32, color: [4]f32) void {
+        const result = self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
+        const entry = self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+            mac_font.releaseCluster(result);
+            return;
+        };
+        mac_font.releaseCluster(result);
+        if (entry.w == 0 or entry.h == 0) return;
+        self.pushText(.{
+            .pos = .{ x0 + g.x + @as(f32, @floatFromInt(entry.bearing_x)), top + self.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
+            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+            .fg_color = color,
+            .color_flag = if (entry.is_color) 1 else 0,
+        });
+    }
+
+    /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
+    /// caret 만 그린다 (`emitCommandMenu` 와 같은 분담).
+    fn emitSearchBar(self: *MetalRenderer, ui: search_bar.Ui) void {
+        const scale = self.scale;
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
+
+        var bar_rects: [search_bar.MAX_RECTS]ui_rect.Rect = undefined;
+        self.openRange(.bg);
+        for (search_bar.rects(&bar_rects, v, ui, scale, &self.chrome)) |r| self.pushBg(bgFromChrome(r));
+
+        // caret 은 텍스트 자리에 의존하므로 여기서 만든다 (공통 모듈은 폰트를 모른다).
+        // bg 구간에 담아 글리프보다 먼저 그린다 — 텍스트 앞에 서는 얇은 막대다.
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
+        const field_x = v.field.x * scale;
+        const field_y = v.field.y * scale;
+        const field_h = v.field.h * scale;
+        const text_top = field_y + (field_h - ch) * 0.5;
+
+        if (ui.focused) {
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다.
+            const caret_x = field_x + search_bar.caretOffsetPt(ui.needle, ui.preedit, ui.caret, cw, ui.scroll_px * scale);
+            const vert = search_bar.caretVertical(text_top, ch);
+            // 입력칸을 벗어나면 그리지 않는다 — 긴 검색어에서 카운터 위로 삐져나가지 않게.
+            if (caret_x >= field_x and caret_x < field_x + v.field.w * scale) {
+                self.pushBg(.{
+                    .pos = .{ @round(caret_x), @round(vert.y) },
+                    .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(vert.height) },
+                    .color = self.chrome.menu_label,
+                });
+            }
+        }
+        self.closeRange(.bg);
+
+        self.openRange(.tab_text);
+
+        // 돋보기 — 탭바 컨트롤과 같은 rasterizer · 같은 stroke.
+        if (v.icon.w > 0) {
+            const isz: u32 = ui_metrics.scaledPx(u32, search_bar.ICON_PT, scale);
+            const istroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale);
+            if (self.tab_atlas.getOrInsertIcon(.search, isz, istroke)) |entry| {
+                self.pushText(.{
+                    .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = self.chrome.menu_hint,
+                    .color_flag = 0,
+                });
+            }
+        }
+
+        const emit = struct {
+            fn text(r: *MetalRenderer, bytes: []const u8, start_x: f32, top: f32, color: [4]f32, clip_right: f32) void {
+                var x = start_x;
+                var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+                while (iter.nextCodepoint()) |cp| {
+                    const adv = @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp)))) * @as(f32, @floatFromInt(r.tab_font.cell_width_px));
+                    if (x + adv > clip_right) break; // 입력칸 밖으로 넘치지 않는다.
+                    const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse {
+                        x += adv;
+                        continue;
+                    };
+                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                        mac_font.releaseCluster(result);
+                        x += adv;
+                        continue;
+                    };
+                    mac_font.releaseCluster(result);
+                    if (entry.w > 0 and entry.h > 0) {
+                        r.pushText(.{
+                            .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), top + r.tab_font.ascent_px - @as(f32, @floatFromInt(entry.bearing_y)) - @as(f32, @floatFromInt(entry.h)) },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = color,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        });
+                    }
+                    x += adv;
+                }
+            }
+        }.text;
+
+        const field_right = field_x + v.field.w * scale;
+        if (ui.needle.len == 0 and ui.preedit.len == 0) {
+            emit(self, messages.search_placeholder, field_x, text_top, self.chrome.menu_hint, field_right);
+        } else {
+            // #159 · #163 과 같은 이유로 **공통 helper** 를 쓴다 — 잘림 · 스크롤 산술을 세
+            // renderer 에 복사하면 같은 fix 를 세 번 해야 하고 한 곳을 빠뜨린다.
+            const FieldCtx = struct {
+                r: *MetalRenderer,
+                x0: f32,
+                top: f32,
+                color: [4]f32,
+                fn put(c: @This(), g: search_bar.Glyph) void {
+                    c.r.emitFieldGlyph(g, c.x0, c.top, c.color);
+                }
+            };
+            search_bar.iterFieldText(
+                ui.needle,
+                cw,
+                v.field.w * scale,
+                ui.scroll_px * scale,
+                FieldCtx{ .r = self, .x0 = field_x, .top = text_top, .color = self.chrome.menu_label },
+                FieldCtx.put,
+            );
+            if (ui.preedit.len > 0) {
+                const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw);
+                search_bar.iterFieldText(
+                    ui.preedit,
+                    cw,
+                    @max(0, v.field.w * scale - (before_w - ui.scroll_px * scale)),
+                    0,
+                    FieldCtx{ .r = self, .x0 = field_x + before_w - ui.scroll_px * scale, .top = text_top, .color = self.chrome.ctrl_active },
+                    FieldCtx.put,
+                );
+            }
+        }
+
+        // 카운터 — 오른쪽 정렬.
+        if (v.count.w > 0) {
+            var cbuf: [24]u8 = undefined;
+            const txt = search_bar.countText(ui, &cbuf);
+            const tw = @as(f32, @floatFromInt(display_width.stringWidth(txt))) * cw;
+            const cx = v.count.x * scale + v.count.w * scale - tw;
+            const color = if (ui.total == 0 and !ui.searching) self.chrome.arrow_disabled else self.chrome.menu_hint;
+            emit(self, txt, cx, text_top, color, cx + tw + 1);
+        }
+
+        // 컨트롤 — 매치가 없으면 흐리게 (탭바 화살표 관례).
+        if (v.prev.w > 0) {
+            const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
+            const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+            const enabled = ui.total > 0;
+            for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
+                const r = search_bar.controlRect(v, c);
+                const entry = self.tab_atlas.getOrInsertIcon(search_bar.controlIcon(c), isz, istroke) orelse continue;
+                const size_f: f32 = @floatFromInt(isz);
+                self.pushText(.{
+                    .pos = .{
+                        @round(r.x * scale + (r.w * scale - size_f) * 0.5),
+                        @round(r.y * scale + (r.h * scale - size_f) * 0.5),
+                    },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    // 닫기는 늘 쓸 수 있다 — 매치가 없어도 바를 닫아야 한다.
+                    .fg_color = if (c == .close or enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
+                    .color_flag = 0,
+                });
+            }
+        }
+
+        self.closeRange(.tab_text);
+    }
+
     fn emitCommandMenu(self: *MetalRenderer, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
         const scale = self.scale;
         // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
@@ -2238,8 +2426,8 @@ const resolveFg = cell_color.resolveFg;
 fn hlAt(
     hls: []const ghostty.RenderState.Highlight,
     x: u16,
-    chrome: *const chrome_palette.Palette,
 ) ?cell_color.HighlightColors {
-    const tag = cell_highlight.at(hls, x) orelse return null;
-    return cell_color.highlightColors(tag, chrome);
+    // **색이 있는 tag 중 최상** 을 고른다 — `cell_highlight.at` 은 우선순위 최상 하나를
+    // 주는데 그것이 색을 안 주는 종류면 (링크 hover, #647) 색이 통째로 사라진다.
+    return cell_color.highlightAt(hls, x);
 }

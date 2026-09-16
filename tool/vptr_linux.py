@@ -11,6 +11,7 @@ compositor 안에서 tildaz 에 합성 hover · 클릭 · 드래그를 보낸다
     echo 'down left'     > /run/user/1000/tz647/vptr.fifo    # 누름 · 뗌을 따로 (드래그 · 미끄러짐 회차)
     echo 'up left'       > /run/user/1000/tz647/vptr.fifo
     echo 'click left'    > /run/user/1000/tz647/vptr.fifo    # 누름 + 뗌
+    echo 'scroll -3'     > /run/user/1000/tz647/vptr.fifo    # 휠 세 칸 위로 (양수 = 아래로)
     echo 'quit'          > /run/user/1000/tz647/vptr.fifo
 
 **`ydotool` 을 쓰지 않는 이유 두 가지.** ① `ydotool mousemove -a` (절대 좌표) 는 조용히 아무 일도 하지
@@ -156,6 +157,11 @@ class Wayland:
 class VirtualPointer:
     # zwlr_virtual_pointer_v1 요청 opcode (wlr-virtual-pointer-unstable-v1.xml)
     MOTION, MOTION_ABS, BUTTON, AXIS, FRAME = 0, 1, 2, 3, 4
+    AXIS_SOURCE, AXIS_STOP, AXIS_DISCRETE = 5, 6, 7
+    AXIS_VERTICAL, AXIS_SOURCE_WHEEL = 0, 0
+    #: 휠 한 칸이 싣는 `value`. libinput 이 실제 휠에 쓰는 값이고, 이것이 있어야
+    #: `axis_discrete` 를 안 보는 client 도 같은 양을 본다.
+    WHEEL_STEP = 10.0
 
     def __init__(self, wl, extent):
         self.wl = wl
@@ -206,6 +212,24 @@ class VirtualPointer:
         time.sleep(hold_ms / 1000.0)
         self.button(name, False)
 
+    def scroll(self, clicks):
+        """휠 `clicks` 칸. **양수 = 아래로** (Wayland 의 positive axis 와 같다).
+
+        한 칸은 `axis_source` (wheel) → `axis_discrete` → `frame` 으로 낸다. `axis_discrete`
+        하나가 연속값 (`value`) 과 칸 수 (`discrete`) 를 함께 실으므로 `axis` 를 따로 보내지
+        않는다 — 둘 다 보내면 client 가 두 배로 센다. `fixed` 는 24.8 이라 `value * 256` 이다.
+        """
+        n = int(clicks)
+        if n == 0:
+            return
+        step = 1 if n > 0 else -1
+        value = int(self.WHEEL_STEP * 256) * step
+        for _ in range(abs(n)):
+            self.wl.send(self.vp, self.AXIS_SOURCE, struct.pack("<I", self.AXIS_SOURCE_WHEEL))
+            self.wl.send(self.vp, self.AXIS_DISCRETE,
+                         struct.pack("<IIii", self.now_ms(), self.AXIS_VERTICAL, value, step))
+            self.frame()
+
     def release_all(self):
         for name in list(reversed(self.down_buttons)):
             self.button(name, False)
@@ -251,6 +275,8 @@ def main():
                         vp.button(rest.strip() or "left", False)
                     elif cmd == "click":
                         vp.click(rest.strip() or "left", args.hold)
+                    elif cmd == "scroll":
+                        vp.scroll(rest.strip() or "1")
                     elif cmd == "sleep":
                         time.sleep(int(rest) / 1000.0)
                     elif cmd == "where":

@@ -19,6 +19,18 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- `[keys]` gained one action (`open_search`). The section is strict in both directions,
+  so an existing `config_N.toml` fails to start with `missing required key "open_search"`.
+  Add the line below, or delete the config and let TildaZ regenerate it.
+
+  ```toml
+  open_search = ["cmd+f"]        # macOS
+  open_search = ["ctrl+shift+f"] # Linux, Windows
+  ```
+
 ## Body candidates
 
 - Click a link in the terminal to open it in your browser — both OSC 8 hyperlinks and plain URLs found on screen. Hold `Ctrl` (`⌘` on macOS) while an app is using the mouse ([#643](https://github.com/ensky0/tildaz/issues/643)).
+- Search the scrollback of the focused pane. `Cmd+F` / `Ctrl+Shift+F` opens a panel in the
+  bottom-right corner; matches are highlighted in place and `Enter` / `Shift+Enter` step
+  through them, starting from what is on screen ([#642](https://github.com/ensky0/tildaz/issues/642)).

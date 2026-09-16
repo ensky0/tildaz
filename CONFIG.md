@@ -301,6 +301,7 @@ here would give it two homes to drift between.
 | | `equalize_panes` | Give every row or column of panes an even share |
 | | `zoom_pane` | Toggle the active pane to fill the whole tab |
 | | `close_pane` | Close the active pane — the tab, when it is the last pane in it |
+| Search | `open_search` | Open the search panel for the active pane |
 | Clipboard | `copy_selection` | Copy the selection |
 | | `paste` | Paste the clipboard |
 | Window | `fullscreen` | Fullscreen, covering the taskbar / dock / panels |

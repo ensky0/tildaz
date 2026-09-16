@@ -2242,6 +2242,21 @@ pub const Window = struct {
                     0x2D => .insert,
                     else => null,
                 };
+                // #493 3-c — `[keys]` 가 정한다. 예전엔 `Ctrl+Shift+*`
+                // 열두 개와 `Ctrl+PgUp` / `Ctrl+PgDn` 이 `wParam` 상수로 하드코딩돼
+                // 있었다. `Ctrl+C` (interrupt) 만 위에서 먼저 보고, 아래 Shift+PgUp
+                // (scrollback) 과 PTY 경로는 config 대상이 아니라 그대로 남는다.
+                //
+                // #646 — **이 조회가 `key_input` 보다 먼저다.** Linux (`wayland_minimal.zig`) ·
+                // macOS (`macos.zig`) 의 검색바 분기에도 *"`[keys]` 조회보다 뒤라 검색 중에도
+                // 단축키가 그대로 돈다"* 고 적혀 있다. 여기만 순서가 반대여서, 검색바가 열려
+                // 있으면 방향키류가 전부 입력칸에 먼저 먹혀 `Ctrl+Shift+←/→` (분할) ·
+                // `Ctrl+PgUp/PgDn` (탭 순환) 이 죽었다 (2026-09-16 Windows 실기).
+                // `Alt` 조합은 `WM_SYSKEYDOWN` 이라 원래부터 이 문제가 없었다.
+                if (self.lookupKeyAction(wParam, lParam)) |action| {
+                    self.runKeyAction(action);
+                    return 0;
+                }
                 if (maybe_key) |key| {
                     if (self.dispatchAppEvent(.{ .key_input = key })) {
                         // Enter / Escape / Backspace 는 TranslateMessage 가
@@ -2253,14 +2268,6 @@ pub const Window = struct {
                         }
                         return 0;
                     }
-                }
-                // #493 3-c — 여기부터는 `[keys]` 가 정한다. 예전엔 `Ctrl+Shift+*`
-                // 열두 개와 `Ctrl+PgUp` / `Ctrl+PgDn` 이 `wParam` 상수로 하드코딩돼
-                // 있었다. `Ctrl+C` (interrupt) 만 위에서 먼저 보고, 아래 Shift+PgUp
-                // (scrollback) 과 PTY 경로는 config 대상이 아니라 그대로 남는다.
-                if (self.lookupKeyAction(wParam, lParam)) |action| {
-                    self.runKeyAction(action);
-                    return 0;
                 }
 
                 const vk_prior: WPARAM = 0x21; // Page Up
@@ -3140,6 +3147,7 @@ pub const Window = struct {
             .equalize_panes => .equalize_panes,
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
+            .open_search => .open_search,
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).

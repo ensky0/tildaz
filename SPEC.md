@@ -701,6 +701,80 @@ Windows 실측).
 
 ---
 
+### 2.9 버퍼 검색 ([#642](https://github.com/ensky0/tildaz/issues/642) · [#646](https://github.com/ensky0/tildaz/issues/646))
+
+활성 pane 의 스크롤백에서 문자열을 찾는다. 검색 **엔진은 우리가 짜지 않는다** — ghostty-vt 의
+`search.Screen` 이 증분 검색 · 결과 캐시 · 선택 추적을 갖고 있고 [`src/search.zig`](src/search.zig) 는
+그 수명과 진행만 맡는다. 진행은 프레임 예산 (§13) 안에서 `tick` 으로 나눠 한다 — `searchAll` 은
+10,000 줄에서 6.5 ms 라 한 프레임에 넣을 수 없다.
+
+| 동작 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|
+| 검색 열기 | Ctrl+Shift+F (`open_search`) | Cmd+F | Ctrl+Shift+F | ✅ | ✅ | ✅ |
+| 검색 열기 (메뉴) | `…` → `Find` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 다음 매치 (아래로) | Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 이전 매치 (위로) | Shift+Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 닫기 (검색어 · 강조 버림) | Esc | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 컨트롤 클릭 (`‹ › ×`) | 같은 동작 (`search_input.control`) | 동일 | 동일 | ✅ | ✅ | ✅ |
+
+**상태는 pane 별이고 바는 하나다.** 검색바는 활성 pane 의 상태를 비추는 창이라, pane 을 옮기면
+그 pane 의 검색으로 바뀌고 검색이 없는 pane 으로 가면 사라진다. 비활성 pane 은 검색하지도
+강조하지도 않는다 (2026-09-11 사용자 결정).
+
+**바가 열려 있으면 "검색 있음" 이다** — needle 이 비어도 유지된다. 여닫기는 사용자가 명시적으로
+하고 pane 을 오가는 것으로 닫히지 않는다.
+
+**매칭은 upstream 을 따른다** — ASCII 대소문자 무시 부분 문자열. 정규식도 토글도 없다.
+
+#### 어느 매치를 고르는가
+
+규칙은 둘뿐이다. **누른 방향으로 간다. 끝에 닿으면 반대쪽 끝에서 이어진다.**
+
+시작점은 버퍼 끝이 아니라 **보이는 화면**이다 (2026-09-16 사용자 결정) — 화면을 올려 뭔가 읽던
+중이었다면 그 자리를 버리고 끌려가면 안 된다. `less` · `vim` · 브라우저가 모두 보고 있는 곳에서
+시작한다. 방향별로 대칭이다:
+
+| 첫 키 | 시작 | 그 방향에 없으면 |
+|---|---|---|
+| Enter | 화면 **맨 윗**줄에서 아래로 | 버퍼 **맨 위**에서 이어 찾기 |
+| Shift+Enter | 화면 **맨 아랫**줄에서 위로 | 버퍼 **맨 아래**에서 이어 찾기 |
+
+그래서 프롬프트에 서 있을 때 (찾는 것이 전부 위에 있을 때) `Shift+Enter` 가 가장 최근 매치로
+가고 `Enter` 는 가장 오래된 매치로 감싸 돈다. 둘 다 한 키다.
+
+**고른 매치가 화면 밖이면 화면이 따라간다.** 놓는 자리는 가는 방향이 정한다 — 위로 갈 때는
+아래에서 1/4, 아래로 갈 때는 위에서 1/4 (`search.REVEAL_MARGIN_DIVISOR`). 화면의 3/4 이 *앞으로
+갈 곳* 을 보여 준다. **이미 보이는 매치는 화면을 움직이지 않는다** — 화면 안에서 매치를 오갈
+때마다 viewport 가 들썩이면 읽던 자리를 잃는다.
+
+#### 강조
+
+| | 배경 | 글자 |
+|---|---|---|
+| 지금 고른 매치 | `TAB_ACCENT_COLOR` (`#f7a41d`) | 검정 (`SEARCH_CURRENT_FG`) |
+| 나머지 매치 | `SEARCH_MATCH_BG` (`#8c5c0e`) | 흰색 |
+
+**theme 파생을 타지 않는 고정색이다.** 파생을 시도했다가 전제가 틀린 것을 재서 확인했다 —
+밝은 theme 에서는 현재 매치의 amber 조차 배경 대비가 1.8:1 인데도 잘 보인다. 매치를 보이게 하는
+것은 배경과의 밝기 차이가 아니라 *채워진 색 블록 + 뒤집힌 글자색* 이다. 값의 하한 (18 종 theme
+에서 글자 4.5:1 · 배경 분리 2.1:1) 은 `renderer/cell_color.zig` 의 테스트가 지킨다.
+
+강조는 `RenderState.Row.highlights` 에 얹히고, tag 배분 · 지우기 · 조회 계약은
+[`src/cell_highlight.zig`](src/cell_highlight.zig) 한 곳이다 — 링크 hover (#647) 와 같은 목록을
+쓰므로 서로의 것을 지우지 않게 tag 로 걸러 지운다. 겹치면 **색이 있는 것 중 우선순위가 높은
+것**을 쓴다 (`cell_color.highlightAt`) — 링크 hover 는 색 대신 밑줄을 쓰므로 검색 매치와 한 칸에서
+공존한다.
+
+#### 배치
+
+창 **우하단** 플로팅. 오른쪽 여백은 터미널 셀 한 칸, 아래 여백은 한 줄이고, 오른쪽 기준선은
+**스크롤바가 떠 있으면 그 왼쪽**이다. 바닥은 창 바닥이 아니라 **격자 맨 아랫줄의 윗변**에 맞춘다
+— 거기 프롬프트가 있고, 창 바닥에서 한 줄을 세면 패딩과 자투리를 한 줄로 착각해 그 줄을 파고든다.
+
+배치 입력은 `search_bar.Geometry` 하나이고 **host 가 재서 `Ui` 에 실어 보내고 renderer 는 그대로
+쓴다** — 셋이 각자 재면 같은 창에서 platform 마다 다른 자리에 뜬다. 마우스 히트 테스트도 그
+값을 본다 (그린 것과 같은 사각형이어야 한다).
+
 ## 3. 마우스 동작
 
 | 동작 | 위치 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -734,12 +808,32 @@ Windows 실측).
 | alternate scroll ([#502](https://github.com/ensky0/tildaz/issues/502)) | tracking 이 **꺼져 있고** alt screen + `?1007` (ghostty 기본 on) 이면 휠을 화살표 키로 바꿔 보낸다 — notch 당 3 줄, DECCKM (`?1`) 이 켜져 있으면 `SS3` (`ESC O A/B`) 아니면 `CSI` (`ESC [ A/B`). alt screen 은 scrollback 이 없어서 그대로 두면 휠이 무동작이다. Shift+휠은 여기서도 우리 scrollback 이다 | `routeWheel` (`app_controller`) | `routeWheelMac` | `routeWheelLinux` | ✅ | ✅ | ✅ |
 | **링크 클릭 → 기본 브라우저** ([#647](https://github.com/ensky0/tildaz/issues/647), 요청 [#643](https://github.com/ensky0/tildaz/issues/643)) | cell 영역. **OSC 8** (앱이 `ESC ] 8 ; ; <uri> ESC \` 로 명시한 링크) 이 먼저고, 없으면 **화면 글자에서 찾은 URL** — 후자가 이 기능의 본체다 (`gh` 는 OSC 8 을 쓰지 않고 PR URL 을 맨 글자로 뱉는다). 스캐너는 ghostty 의 정규식을 쓰지 않고 순수 Zig 로 옮겼다 ([`url_scan.zig`](src/url_scan.zig) — `ghostty-vt` 모듈 밖이라 oniguruma 를 새 의존성으로 들일 수 없다). scheme 접두 + 허용 문자 + **후행 구두점 · 괄호 휴리스틱** (마침표로 끝나는 매치를 뺀다; 닫는 괄호로 끝나는 매치는 여는 괄호가 짝 없이 앞에 있을 때만 포함한다) 이고 `row.wrap` 으로 줄 넘김을 잇는다. **확정 동작은 "밑줄이 보이면 클릭하면 열린다"** — 앱이 mouse tracking 을 **안** 켠 평소에는 hover 만으로 밑줄 · 손 커서가 나오고 **수식키 없이 그냥 클릭**하면 열린다. 앱이 켠 동안 (vim · htop) 은 **`Ctrl`** (macOS `⌘`) 을 누르는 동안만 밑줄이 보이고 그때만 열리며, 아니면 클릭은 앱 것이다 (kitty 의 `ungrabbed` 조건 · ghostty `Surface.zig` 의 `ctrlOrSuper` 와 같다 — *보이는데 안 열리는* 어긋남을 만들지 않는다). **누름이 아니라 뗌에서 연다** — URL 위 드래그는 선택이다. 수식키를 누르거나 뗀 **그 순간** 마지막 포인터 자리 (`link_pointer`) 로 다시 판정하므로 마우스가 정지해 있어도 즉시 반영된다. **포인터가 창에 들어오고 나가는 순간에도 같은 판정을 한다** — 들어오는 이벤트가 좌표를 함께 실어 오는 platform (Wayland `wl_pointer.enter`) 에서는 들어온 뒤 마우스가 멈춰 있으면 이동 이벤트가 오지 않아, 이것이 없으면 링크 위로 들어와도 1 px 움직이기 전까지 밑줄 · 손 커서가 없다. 나갈 때 강조를 풀지 않으면 창을 떠난 뒤에도 밑줄이 남는다 ([#647](https://github.com/ensky0/tildaz/issues/647) — Linux · Windows 실기에서 각각 216 px 이 남았다). **이탈 훅은 세 host 가 같은 일을 한다** (`link_hover.clear` + 아래 탭바 컨트롤 hover 해제) — Windows `WM_MOUSELEAVE` · macOS `tildazMouseExited` · Linux `handlePointerLeave`. Windows 의 그것은 `TrackMouseEvent(TME_LEAVE)` 로 **요청해야 오고 한 번 발동하면 스스로 풀리므로** 이동마다 다시 건다 (`Window.tracking_mouse_leave`). 여는 자리는 [`link.open`](src/link.zig) 한 곳이고 `[link] opening link: <url>` 을 남긴다 — 그래야 *우리가 안 불렀다* 와 *OS 가 무시했다* 가 갈린다 | `WM_KEYDOWN` · `WM_KEYUP` 의 `VK_CONTROL` 에서 재판정 + `Window.refreshCursor` (`WM_SETCURSOR` 는 마우스가 움직일 때만 온다) · 이탈은 `WM_MOUSELEAVE` · `ShellExecuteW` | `flagsChanged:` 에서 재판정 · 이탈은 `tildazMouseExited` · `/usr/bin/open` | `wl_keyboard.modifiers` 에서 재판정 · 진입 · 이탈은 `handlePointerEnter` / `handlePointerLeave` · `xdg-open` | ✅ | ✅ | ✅ |
 
+> **검색바는 터미널 셀 *위에* 떠 있다** ([#646](https://github.com/ensky0/tildaz/issues/646)).
+> 세 host 모두 누름을 터미널로 넘기기 **전에** `search_bar.contains` 를 본다 — 가로채지 않으면
+> 바 위 드래그가 터미널 선택을 시작하고, 마우스 리포팅을 켠 앱 (vim · htop) 에 클릭 좌표가
+> 그대로 전송된다. 누름이 바에서 시작했으면 이어지는 이동 · 뗌도 터미널이 보지 않는다. 컨트롤
+> 클릭은 같은 이름의 키와 **같은 함수**를 탄다 (`search_input.control`) — 버튼과 키가 다르게
+> 굴면 그 자체가 결함이다. command menu 가 같은 이유로 같은 자리에서 가로챈다.
+>
+> **휠은 가로채지 않는다** (2026-09-17 사용자 결정). 바 위에서 굴려도 그 아래 터미널이
+> 스크롤되고, 마우스 리포팅을 켠 앱에게도 그대로 간다 — 즉 **휠에 대해서는 바가 없는 것처럼**
+> 동작한다. 클릭과 다른 이유는 막을 것이 다르기 때문이다: 클릭은 터미널 선택을 만들거나 앱에
+> 좌표를 보내는 *부작용*이 있어 막지만, 휠에는 그런 것이 없고 막으면 바 크기만큼 **스크롤이
+> 죽은 자리**가 생긴다. command menu 는 자기 항목을 스크롤해야 해서 휠도 소비한다 — 검색바는
+> 스크롤할 내용이 없다.
+>
+> 세 host 모두 휠 경로 (`routeWheelMac` · `routeWheel` · `routeWheelLinux`) 가 검색바를 보지
+> 않는 것이 이 사양의 구현이다. 실기로도 확인했다 — Linux 는 바 닫힘 · 터미널 위 · 바 위 ·
+> 컨트롤 위 네 경우가 같은 값이고 (thumb `870 → 848`), macOS 도 네 경우 모두 화면이 움직인다.
+
 ### 3.1 OS mouse cursor shape (#193) — 영역별 정의
 
 | 영역 | hover 시 cursor | 비고 |
 |---|---|---|
 | 셀 (terminal grid) 영역 | I-beam | preedit / 기타 상태 무관, 셀 영역은 *항상* 텍스트 편집 컨텍스트 |
 | 셀 영역 — **링크 위** ([#647](https://github.com/ensky0/tildaz/issues/647)) | hand | **밑줄이 보이는 동안만** — 손 커서와 밑줄은 같은 판정 하나를 쓰므로 *커서가 손이면 그 클릭이 링크를 연다*. 앱이 mouse tracking 을 켠 동안은 `Ctrl` (macOS `⌘`) 을 누르는 동안만. Windows 는 `WM_SETCURSOR` 가 마우스 이동에만 오므로 수식키 시점에 `refreshCursor` 로 직접 민다 |
+| 검색바 — 입력칸 ([#646](https://github.com/ensky0/tildaz/issues/646)) | I-beam | 셀 영역이 이미 I-beam 이라 따로 얹지 않는다 |
+| 검색바 — 그 밖 (`‹ › ×` · 아이콘 · 여백) | arrow | 버튼 성격. 겹치는 cursor rect 의 우선순위를 AppKit 이 보장하지 않아 macOS 는 입력칸 좌우 두 조각으로 나눠 덮는다 |
 | 탭바 — 우측 `+` / `×` / `…` 버튼 | arrow | 버튼 성격 — 클릭 = 새 탭 / 활성 탭 닫기 / command menu (#268, #329) |
 | 탭바 — 탭 본체 / `<` / `>` / `+` / `×` / `…` / 빈 영역 / drag 중 | arrow | 탭바의 기본 — 클릭 / drag 등 *버튼* 성격 영역 |
 | 스크롤바 (우측 10 PT) | arrow | drag-to-scroll 버튼 |
@@ -787,7 +881,23 @@ Windows 실측).
 
 ### 4.1 Pending 입력 (terminal preedit) focus_loss 정책 (#175, #296)
 
-> **입력 상태 × 단축키/키 처리 정책은 `src/input_policy.zig` (`resolve`) 단일 소스** — 세 host(Windows `onAppEvent` / macOS keyDown / Linux `processKeyEvent`)가 native 입력을 분류해 `resolve` 에 넘기고 그 결과(pending: leave/commit/discard × target: pty/run_action)대로 동작한다. §5.1 이 그 정책의 truth table 이며 `input_policy` 의 단위 테스트로 고정 (#296).
+> **입력 상태 × 단축키/키 처리 정책은 `src/input_policy.zig` (`resolve`) 단일 소스** — 세 host(Windows `onAppEvent` / macOS keyDown / Linux `processKeyEvent`)가 native 입력을 분류해 `resolve` 에 넘기고 그 결과(pending: leave/commit/discard × target: pty/run_action/search_field/drop)대로 동작한다. §5.1 이 그 정책의 truth table 이며 `input_policy` 의 단위 테스트로 고정 (#296).
+
+**상태 축은 둘이다** — `terminal_preedit_active` 와 `search_active` (#646). 뒤엣것은 검색바가
+키보드를 갖고 있다는 뜻이고, **바가 열려 있으면 언제나 참이다.** 포커스를 터미널과 검색바로
+나누지 않는다 (2026-09-16 사용자 결정) — 나누면 *사람이 어디에 있는지 볼 수 없다.* 입력칸의
+caret 은 1 px 세로선이고 명령을 치려는 순간 시선은 프롬프트에 있다. 잘못 알면 검색어가 셸로
+가고 이어진 Enter 가 그것을 **실행한다.** 터미널에 원래 "클릭해서 포커스를 옮긴다" 는 개념이
+없다는 것도 같은 방향이다 — 마우스는 그와 무관하게 터미널에서 평소대로 돈다 (드래그 선택 · 휠).
+
+조합 중 글자가 검색 입력칸으로 갈 때는 `terminal_preedit_active` 에 **세지 않는다** — 같은
+"조합 중" 이라도 확정될 자리 (sink) 가 PTY 냐 검색어냐가 다르다. 그래서 `Pending.commit` 은
+"자모를 **지금의 sink** 로 flush" 라는 한 가지 뜻이고, 단축키 · paste 처럼 commit 을 요구하는
+경로가 저마다 검색을 알 필요가 없다.
+
+(탭 inline rename 이 #341 로 사라지면서 같은 모양의 축이 함께 없어졌다가 #646 으로 되살아났다.
+그때 결함 — #282 A1·A3·A4·A5·A6 — 을 낳은 것은 축의 존재가 아니라 **host 3 벌로 흩어진 판정**
+이었으므로, 판정은 `resolve` 한 곳에 두고 키의 *의미* 는 그 아래 `search_input.zig` 에 둔다.)
 
 terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 클릭 / 상태 변경 단축키 / F1 hide / quit) 가 발생해도 동일 동작 = **commit** (자모를 PTY 로 flush — 사용자 입력 손실 회피). 예외 둘: **Ctrl+C** 는 discard (line abort, §5.1), **read-only 단축키(copy_selection / dump_perf)** 는 preedit 을 유지하되 자모 보존이 필요한 terminal preedit 은 flush 후 실행한다.
 
@@ -834,6 +944,18 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 입력 확정된 한글의 한자 변환 ([#209](https://github.com/ensky0/tildaz/issues/209)) | committed text 또는 조합 중 한글 → 후보 popup → 확정 시 replacement. 후보창이 떠 있는 동안 원래 한글은 그대로 보이고, 후보 확정 시에만 한글을 지우고 한자를 입력. Esc / 후보 취소 / focus loss 는 원래 한글 유지. 일반 용어로는 "Hanja reconversion" — *재변환* 이지만 *한자 → 한글* 의미가 아니라 *이미 commit 된 글자를 다시 IME 의 변환 대상으로 되돌려 후보 popup 띄우기*. | Win IME native conversion key / candidate popup 경로. app 은 후보 위치를 `ImmSetCompositionWindow` 로 유지 | `NSTextInputClient` API (`selectedRange`, `markedRange`, `attributedSubstringForProposedRange`, `firstRectForCharacterRange`, `insertText:replacementRange:`) 구현. terminal cursor row 는 PTY `backspace + insert`. 그 외 범위는 안전하게 plain insert fallback (#166, #190 v0.4.3) | ❌ **platform 한계** — *조합 중* 한자 후보는 fcitx5 / ibus 자체 popup 으로 동작 (어느 host 든 OK). *입력 확정된* 한글의 한자 변환은 `zwp_text_input_v3` wire protocol 에 *해당 request 자체가 없어* client → IME 트리거 경로 부재. text-input-v4 의 `set_surrounding_text` 활용 가능성은 별 후속 검토 — Linux 첫 릴리즈는 unsupported 로 출시 | ✅ | ✅ | ❌ (platform-limit) |
 
 ### 5.1 IME preedit × line-nav 키 매트릭스 (#164 follow-up 6, v0.4.0)
+
+> **검색바가 열려 있을 때 (`search_active`)** 는 아래 표의 목적지가 통째로 바뀐다 (#646).
+> 문자 · 편집키 · paste 는 PTY 가 아니라 **검색 입력칸**으로 가고, 조합 중 글자는 터미널
+> 커서가 아니라 **검색바 안**에 보이며 그때 맨 아래로 내리기 (#242) 도 하지 않는다.
+> 삼키는 것이 둘이다 — **Ctrl+C** (셸이 SIGINT 를 받으면 안 된다) 와 **나브키** (방향 ·
+> page · insert · tab — escape sequence 가 셸로 새면 히스토리가 넘어간다, #282 A9 와 같은 샘).
+> **단축키는 그대로 실행된다** — 검색바에 포커스가 있어도 pane 이동 · 탭 전환이 된다
+> (2026-09-11 사용자 결정). IME 후보창은 검색바 caret 아래에 뜬다.
+>
+> 글자가 들어오는 길은 platform 마다 다르고 **셋 다 같은 자리에서 갈린다**:
+> Windows 는 `.text_input` 하나 (IME 확정도 그리로 온다), macOS 는 `insertText:` 와
+> `commitPreeditToSink`, Linux 는 compose (dead key) · xkb utf8 · text-input v3 셋이다.
 
 terminal cell 에서 IME 조합 (preedit) 중에 line-nav 키 (Home / End / Ctrl+A / Ctrl+E) 를 누를 때 동작 정의. native textbox / iTerm2 동등.
 

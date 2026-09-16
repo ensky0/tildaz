@@ -25,6 +25,8 @@ const session_core = @import("../session_core.zig");
 const tab_icons = @import("../tab_icons.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const command_menu = @import("../command_menu.zig");
+const search_bar = @import("../search_bar.zig");
+const messages = @import("../messages.zig");
 const block_element = @import("block_element.zig");
 const cell_color = @import("cell_color.zig");
 const cell_highlight = @import("../cell_highlight.zig");
@@ -1426,7 +1428,7 @@ pub const D3d11Renderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const hl = hlAt(hl_row, x16, &self.chrome);
+                const hl = hlAt(hl_row, x16);
 
                 const is_custom_bg = is_selected or is_inverse or hl != null or (style.bg(&raw, &colors.palette) != null);
                 // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
@@ -1548,7 +1550,7 @@ pub const D3d11Renderer = struct {
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
-                    const hl_b = hlAt(hl_row, x16_b, &self.chrome);
+                    const hl_b = hlAt(hl_row, x16_b);
                     const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b);
                     const rect = blockElementRect(cp) orelse {
                         x += 1;
@@ -1600,7 +1602,7 @@ pub const D3d11Renderer = struct {
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
-                        const hl_x = hlAt(hl_row, x16_x, &self.chrome);
+                        const hl_x = hlAt(hl_row, x16_x);
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x);
                         const fx_box: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                         // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
@@ -1634,7 +1636,7 @@ pub const D3d11Renderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16, &self.chrome));
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16));
 
                 // SPEC § 12.1 — Grapheme cluster (VS-16 / skin tone / ZWJ family /
                 // combining mark). IDWriteTextAnalyzer.GetGlyphs 로 cluster 통째
@@ -1687,7 +1689,7 @@ pub const D3d11Renderer = struct {
                             const inv = st.flags.inverse;
                             const cx16: u16 = @intCast(cell_x);
                             const sel = if (sel_range) |sr| (cx16 >= sr[0] and cx16 <= sr[1]) else false;
-                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, cx16, &self.chrome));
+                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, cx16));
                             _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, self.run_results[i], cell_x, fy, cw, x_pad, fg, if (rr.wide == .wide) 2.0 else 1.0, 0);
                         }
                         x = scan;
@@ -1963,8 +1965,11 @@ pub const D3d11Renderer = struct {
         control_hover: tab_layout.Area,
         menu_ui: command_menu.Ui,
         toggle_hotkey: []const u8,
+        search_ui: search_bar.Ui,
     ) void {
         if (tab_bar_h == 0) self.drawSingleControlStrip(control_layout, control_hover);
+        // #646 — 검색바는 터미널 위 · 메뉴 아래다.
+        if (search_ui.open) self.drawSearchBar(search_ui);
         if (menu_ui.open) self.drawCommandMenu(vp_w, @intCast(self.vp_height), menu_ui, toggle_hotkey);
 
         // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
@@ -2042,6 +2047,147 @@ pub const D3d11Renderer = struct {
         emit(self, .close, layout.close_x, layout.close_w, h, size, stroke, &icons, &icon_n);
         emit(self, .more, layout.more_x, layout.more_w, h, size, more_stroke, &icons, &icon_n);
         if (icon_n > 0) self.drawTextInstancesWithAtlas(icons[0..icon_n], &self.tab_atlas);
+    }
+
+    /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
+    /// caret 만 그린다 (`drawCommandMenu` 와 같은 분담).
+    fn drawSearchBar(self: *D3d11Renderer, ui: search_bar.Ui) void {
+        const scale = self.pixels_per_dip;
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
+
+        const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
+        const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);
+        const field_x = v.field.x * scale;
+        const field_y = v.field.y * scale;
+        const field_h = v.field.h * scale;
+        const field_right = field_x + v.field.w * scale;
+        const baseline = field_y + (field_h + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2;
+        const text_top = field_y + (field_h - ch) * 0.5;
+
+        // 배경 · 위쪽 선 · hover 강조 + caret (caret 은 글리프보다 먼저 그려야 한다).
+        var bar_rects: [search_bar.MAX_RECTS]tab_chrome.Rect = undefined;
+        var bg: [search_bar.MAX_RECTS + 1]BgInstance = undefined;
+        var bg_n: usize = 0;
+        for (search_bar.rects(&bar_rects, v, ui, scale, &self.chrome)) |r| {
+            bg[bg_n] = bgFromChrome(r);
+            bg_n += 1;
+        }
+        if (ui.focused) {
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다. 예전에는 여기서
+            // 직접 셈하면서 **가로 스크롤을 빼먹어** 긴 검색어에서 caret 이 어긋났다.
+            const caret_x = field_x + search_bar.caretOffsetPt(ui.needle, ui.preedit, ui.caret, cw, ui.scroll_px * scale);
+            if (caret_x >= field_x and caret_x < field_right) {
+                bg[bg_n] = .{
+                    .pos = .{ @round(caret_x), @round(text_top) },
+                    .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(ch) },
+                    .color = self.chrome.menu_label,
+                };
+                bg_n += 1;
+            }
+        }
+        self.drawBgInstances(bg[0..bg_n]);
+
+        const isz: u32 = ui_metrics.scaledPx(u32, ui_metrics.TAB_ICON_SIZE_PT, scale);
+        const istroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+        const search_sz: u32 = ui_metrics.scaledPx(u32, search_bar.ICON_PT, scale);
+        const search_stroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale);
+
+        // 돋보기 + 컨트롤 아이콘.
+        var icons: [4]TextInstance = undefined;
+        var icon_n: u32 = 0;
+        if (v.icon.w > 0) {
+            if (self.tab_atlas.getOrInsertIcon(.search, search_sz, search_stroke)) |entry| {
+                icons[icon_n] = .{
+                    .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .fg_color = self.chrome.menu_hint,
+                    .color_flag = 0, // 아이콘 — mono (#359)
+                };
+                icon_n += 1;
+            }
+        }
+        if (v.prev.w > 0) {
+            const enabled = ui.total > 0;
+            for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
+                const r = search_bar.controlRect(v, c);
+                const entry = self.tab_atlas.getOrInsertIcon(search_bar.controlIcon(c), isz, istroke) orelse continue;
+                const size_f: f32 = @floatFromInt(isz);
+                icons[icon_n] = .{
+                    .pos = .{
+                        @round(r.x * scale + (r.w * scale - size_f) * 0.5),
+                        @round(r.y * scale + (r.h * scale - size_f) * 0.5),
+                    },
+                    .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                    .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                    // 닫기는 매치가 없어도 활성이다 — 바를 닫는 길은 늘 열려 있어야 한다.
+                    .fg_color = if (c == .close or enabled) self.chrome.ctrl_active else self.chrome.arrow_disabled,
+                    .color_flag = 0,
+                };
+                icon_n += 1;
+            }
+        }
+        if (icon_n > 0) self.drawTextInstancesWithAtlas(icons[0..icon_n], &self.tab_atlas);
+
+        var glyphs: [256]TextInstance = undefined;
+        var glyph_n: u32 = 0;
+        const emit = struct {
+            fn text(r: *D3d11Renderer, bytes: []const u8, start_x: f32, base: f32, color: [4]f32, clip_right: f32, out: []TextInstance, n: *u32) void {
+                var x = start_x;
+                var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+                while (iter.nextCodepoint()) |cp| {
+                    if (n.* >= out.len) return;
+                    const adv = @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp)))) * @as(f32, @floatFromInt(r.tab_font.cell_width_px));
+                    if (x + adv > clip_right) return; // 입력칸 밖으로 넘치지 않는다.
+                    const result = r.tab_font.resolveGlyph(cp, .regular) orelse {
+                        x += adv;
+                        continue;
+                    };
+                    const entry = r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                        if (result.owned) _ = result.face.vtable.Release(result.face);
+                        x += adv;
+                        continue;
+                    };
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    if (entry.w > 0 and entry.h > 0) {
+                        out[n.*] = .{
+                            .pos = .{ x + @as(f32, @floatFromInt(entry.bearing_x)), base + @as(f32, @floatFromInt(entry.bearing_y)) },
+                            .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                            .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                            .fg_color = color,
+                            .color_flag = if (entry.is_color) 1 else 0,
+                        };
+                        n.* += 1;
+                    }
+                    x += adv;
+                }
+            }
+        }.text;
+
+        if (ui.needle.len == 0 and ui.preedit.len == 0) {
+            emit(self, messages.search_placeholder, field_x, baseline, self.chrome.menu_hint, field_right, &glyphs, &glyph_n);
+        } else {
+            emit(self, ui.needle, field_x, baseline, self.chrome.menu_label, field_right, &glyphs, &glyph_n);
+            if (ui.preedit.len > 0) {
+                const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
+                emit(self, ui.preedit, field_x + before_w, baseline, self.chrome.ctrl_active, field_right, &glyphs, &glyph_n);
+            }
+        }
+
+        if (v.count.w > 0) {
+            var cbuf: [24]u8 = undefined;
+            const txt = search_bar.countText(ui, &cbuf);
+            const tw = @as(f32, @floatFromInt(display_width.stringWidth(txt))) * cw;
+            const cx = v.count.x * scale + v.count.w * scale - tw;
+            const color = if (ui.total == 0 and !ui.searching) self.chrome.arrow_disabled else self.chrome.menu_hint;
+            emit(self, txt, cx, baseline, color, cx + tw + 1, &glyphs, &glyph_n);
+        }
+
+        if (glyph_n > 0) self.drawTextInstancesWithAtlas(glyphs[0..glyph_n], &self.tab_atlas);
     }
 
     fn drawCommandMenu(self: *D3d11Renderer, viewport_w: c_int, viewport_h: c_int, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
@@ -2533,10 +2679,9 @@ pub const D3d11Renderer = struct {
     fn hlAt(
         hls: []const ghostty.RenderState.Highlight,
         x: u16,
-        chrome: *const chrome_palette.Palette,
     ) ?cell_color.HighlightColors {
-        const tag = cell_highlight.at(hls, x) orelse return null;
-        return cell_color.highlightColors(tag, chrome);
+        // **색이 있는 tag 중 최상** 을 고른다 (`cell_color.highlightAt` 주석 참고).
+        return cell_color.highlightAt(hls, x);
     }
 
     /// Block element + shade 처리는 양 platform 공유 모듈 `block_element.zig` 로

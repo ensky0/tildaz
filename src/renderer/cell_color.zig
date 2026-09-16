@@ -14,7 +14,6 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../themes.zig");
 const cell_highlight = @import("../cell_highlight.zig");
-const chrome_palette = @import("../chrome_palette.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 
 /// GPU renderer frame clear와 비활성 탭이 함께 쓰는 active terminal 배경.
@@ -42,24 +41,53 @@ pub const HighlightColors = struct {
 /// - **그 위 글자는 theme 과 무관하게 어둡다** (`SEARCH_CURRENT_FG`). amber 는
 ///   `chrome_palette` 파생을 타지 않는 고정 밝은 색이라, 밝은 theme 의 밝은 글자색을
 ///   쓰면 대비가 2:1 아래로 떨어져 읽히지 않는다.
-/// - **나머지 매치는 chrome 의 hover 색**을 쓴다 — 메뉴 hover 와 같은 "약한 강조" 다.
+/// - **나머지 매치는 어두운 amber 에 흰 글자** (`SEARCH_MATCH_BG` · `SEARCH_MATCH_FG`) 다.
+///   현재 매치와 같은 색상 계열이라 "이게 다 검색 결과" 가 한눈에 들어오고, **글자색이
+///   서로 뒤집혀** (현재는 밝은 바탕에 검정, 나머지는 어두운 바탕에 흰색) 어느 것을
+///   골랐는지가 분명하다. 이것도 theme 파생을 타지 않는다 — 이유는 그 상수의 주석에.
 /// - **링크 hover (tag 0) 는 여기서 색을 주지 않는다** — #647 의 몫이라 `null` 이다.
 ///   `cell_highlight.at` 이 그 tag 를 돌려줘도 이 함수가 색을 모르면 평소대로 그린다.
-pub fn highlightColors(
-    tag: cell_highlight.Tag,
-    chrome: *const chrome_palette.Palette,
-) ?HighlightColors {
+pub fn highlightColors(tag: cell_highlight.Tag) ?HighlightColors {
     return switch (tag) {
         .search_current => .{
             .bg = rgbOf(ui_metrics.TAB_ACCENT_COLOR),
             .fg = rgbOf(ui_metrics.SEARCH_CURRENT_FG),
         },
         .search_match => .{
-            .bg = rgbOf(chrome.menu_hover_bg),
-            .fg = rgbOf(chrome.menu_label),
+            .bg = rgbOf(ui_metrics.SEARCH_MATCH_BG),
+            .fg = rgbOf(ui_metrics.SEARCH_MATCH_FG),
         },
         .link_hover => null,
     };
+}
+
+/// 이 열에 걸린 강조 중 **색을 가진 것** 가운데 우선순위가 가장 높은 것.
+///
+/// `cell_highlight.at` 은 tag 값이 가장 작은 것 하나를 돌려주는데, 그 tag 가 색을 주지
+/// 않으면 (`link_hover` — #647 은 색 대신 밑줄로 표현한다) 색이 통째로 사라진다. 그러면
+/// **검색 매치이면서 링크인 칸에 마우스를 올렸을 때 매치 표시가 없어져** 어디가 매치인지가
+/// 포인터 위치에 따라 깜빡인다.
+///
+/// 그래서 색 결정은 "우선순위 최상" 이 아니라 "색이 있는 것 중 최상" 으로 고른다. 두 기능이
+/// *다른 축* (색 · 밑줄) 을 쓰므로 한 칸에서 공존하는 것이 맞다.
+pub fn highlightAt(hls: []const ghostty.RenderState.Highlight, x: u16) ?HighlightColors {
+    var best: ?cell_highlight.Tag = null;
+    var best_colors: ?HighlightColors = null;
+    for (hls) |h| {
+        if (x < h.range[0] or x > h.range[1]) continue;
+        const tag = blk: {
+            inline for (comptime std.enums.values(cell_highlight.Tag)) |t| {
+                if (t.value() == h.tag) break :blk t;
+            }
+            continue;
+        };
+        const colors = highlightColors(tag) orelse continue; // 색 없는 종류는 건너뛴다
+        if (best == null or tag.value() < best.?.value()) {
+            best = tag;
+            best_colors = colors;
+        }
+    }
+    return best_colors;
 }
 
 fn rgbOf(c: [4]f32) ghostty.color.RGB {
@@ -243,8 +271,7 @@ test "faint — fg 를 bg 와 50% blend" {
 }
 
 test "#646 강조 색 — 현재 매치는 amber 채움에 어두운 글자" {
-    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
-    const hl = highlightColors(.search_current, &chrome).?;
+    const hl = highlightColors(.search_current).?;
     // 배경은 앱의 활성 색 (amber) 그대로.
     try std.testing.expectEqual(@as(u8, 247), hl.bg.r);
     try std.testing.expectEqual(@as(u8, 164), hl.bg.g);
@@ -254,31 +281,77 @@ test "#646 강조 색 — 현재 매치는 amber 채움에 어두운 글자" {
 }
 
 test "#646 강조 색 — 밝은 theme 에서도 현재 매치 글자는 어둡다" {
-    // amber 는 chrome_palette 파생을 타지 않으므로 밝은 theme 에서도 같은 배경이다.
-    // 그 위 글자까지 밝아지면 대비가 무너지므로 theme 과 무관하게 어두워야 한다.
-    const light = chrome_palette.derive(.{ 0xef, 0xf1, 0xf5 }, false);
-    const hl = highlightColors(.search_current, &light).?;
+    // 강조 색은 theme 파생을 타지 않는다 — 어느 theme 에서도 같은 값이어야 한다.
+    const hl = highlightColors(.search_current).?;
     try std.testing.expectEqual(@as(u8, 247), hl.bg.r);
     try std.testing.expectEqual(@as(u8, 0), hl.fg.r);
     try std.testing.expectEqual(@as(u8, 0), hl.fg.g);
     try std.testing.expectEqual(@as(u8, 0), hl.fg.b);
 }
 
-test "#646 강조 색 — 나머지 매치는 chrome hover 색을 쓴다" {
-    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
-    const hl = highlightColors(.search_match, &chrome).?;
-    try std.testing.expectEqual(@as(u8, 64), hl.bg.r);
-    try std.testing.expectEqual(@as(u8, 235), hl.fg.r);
+test "#646 강조 색 — 나머지 매치는 어두운 amber 에 흰 글자, theme 과 무관하다" {
+    const hl = highlightColors(.search_match).?;
+    try std.testing.expectEqual(@as(u8, 140), hl.bg.r);
+    try std.testing.expectEqual(@as(u8, 92), hl.bg.g);
+    try std.testing.expectEqual(@as(u8, 14), hl.bg.b);
+    try std.testing.expectEqual(@as(u8, 255), hl.fg.r);
+}
+
+test "#646 강조 색 — 매치 색이 18 종 theme 모두에서 보이고 글자가 읽힌다" {
+    // 실기에서 옛 `menu_hover_bg` 가 안 보였던 것이 이 테스트의 이유다. 고정색이므로
+    // 검사할 것은 theme **배경들** 과의 관계다.
+    const bgs = [_][3]u8{
+        .{ 0x00, 0x00, 0x00 }, .{ 0x1d, 0x1f, 0x21 }, .{ 0x0c, 0x0c, 0x0c }, .{ 0x1e, 0x1e, 0x2e },
+        .{ 0x28, 0x2a, 0x36 }, .{ 0x28, 0x28, 0x28 }, .{ 0x1a, 0x1b, 0x26 }, .{ 0x2e, 0x34, 0x40 },
+        .{ 0x28, 0x2c, 0x34 }, .{ 0x00, 0x1e, 0x27 }, .{ 0x1a, 0x1a, 0x1a }, .{ 0x19, 0x17, 0x24 },
+        .{ 0x1f, 0x1f, 0x28 }, .{ 0x1e, 0x23, 0x26 }, .{ 0xef, 0xf1, 0xf5 }, .{ 0xfd, 0xf6, 0xe3 },
+        .{ 0xfb, 0xf1, 0xc7 }, .{ 0xfa, 0xfa, 0xfa },
+    };
+    const match = ui_metrics.SEARCH_MATCH_BG;
+
+    // ① 그 위 흰 글자가 읽힌다 (WCAG AA 본문).
+    try std.testing.expect(contrastRatio(ui_metrics.SEARCH_MATCH_FG, match) >= 4.5);
+
+    // ② 어느 theme 배경에서도 떨어져 보인다. 하한 2.1 은 가장 밝은 어두운 theme (Nord
+    //    `#2e3440`, 2.17) 이 정한다. **이 선을 더 내리면 안 된다** — 옛 `menu_hover_bg`
+    //    가 검정에서 갖던 값이 2.03 이고 그것이 "칠했는데 안 보인다" 였다.
+    for (bgs) |b| {
+        const bg: [4]f32 = .{
+            @as(f32, @floatFromInt(b[0])) / 255.0,
+            @as(f32, @floatFromInt(b[1])) / 255.0,
+            @as(f32, @floatFromInt(b[2])) / 255.0,
+            1.0,
+        };
+        try std.testing.expect(contrastRatio(match, bg) >= 2.1);
+    }
+
+    // ③ 현재 매치와 서로 구별된다. 글자색 뒤집힘과 함께 이것이 "어느 것을 골랐나" 를
+    //    알려 준다.
+    try std.testing.expect(contrastRatio(ui_metrics.TAB_ACCENT_COLOR, match) >= 2.0);
+}
+
+/// WCAG 상대 명도 대비비. 이 파일의 테스트 전용이다.
+fn contrastRatio(a: [4]f32, b: [4]f32) f64 {
+    const la = relLuminance(a);
+    const lb = relLuminance(b);
+    return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
+}
+
+fn relLuminance(c: [4]f32) f64 {
+    var l: [3]f64 = undefined;
+    for (0..3) |i| {
+        const v: f64 = @floatCast(c[i]);
+        l[i] = if (v <= 0.04045) v / 12.92 else std.math.pow(f64, (v + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
 }
 
 test "#646 강조 색 — 링크 hover 는 이 모듈이 색을 모른다 (#647 몫)" {
-    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
-    try std.testing.expect(highlightColors(.link_hover, &chrome) == null);
+    try std.testing.expect(highlightColors(.link_hover) == null);
 }
 
 test "#646 선택이 검색 강조를 이긴다" {
-    const chrome = chrome_palette.derive(.{ 0, 0, 0 }, true);
-    const hl = highlightColors(.search_current, &chrome);
+    const hl = highlightColors(.search_current);
     const style = ghostty.Style{};
     const raw = ghostty.Cell{};
 
@@ -292,4 +365,31 @@ test "#646 선택이 검색 강조를 이긴다" {
     // 선택이 아니면 강조 색이 이긴다.
     try std.testing.expectEqual(hl.?.fg, resolveFg(style, &raw, &test_colors, false, false, hl));
     try std.testing.expectEqual(@as(?ghostty.color.RGB, hl.?.bg), resolveBg(style, &raw, &test_colors, false, false, hl));
+}
+
+test "#646 · #647 링크 hover 가 검색 강조를 덮어 색을 지우지 않는다" {
+    const style = ghostty.Style{};
+    const raw = ghostty.Cell{};
+
+    // 검색 매치이면서 동시에 링크 hover 인 셀 — 두 기능이 같은 칸에서 만난다.
+    const hls = [_]ghostty.RenderState.Highlight{
+        .{ .tag = cell_highlight.Tag.search_match.value(), .range = .{ 0, 9 } },
+        .{ .tag = cell_highlight.Tag.link_hover.value(), .range = .{ 0, 9 } },
+    };
+
+    // 링크는 색을 주지 않고 (밑줄로 표현한다) 검색은 배경색을 준다. 둘이 겹쳐도
+    // **검색 강조 색은 살아 있어야 한다** — 마우스를 올렸다고 매치 표시가 사라지면
+    // "어디가 매치인지" 가 포인터 위치에 따라 깜빡인다.
+    const hl = highlightAt(&hls, 5);
+    try std.testing.expect(hl != null);
+    try std.testing.expectEqual(rgbOf(ui_metrics.SEARCH_MATCH_BG), hl.?.bg);
+
+    // 링크만 걸린 칸은 여전히 색이 없다 (밑줄이 그 몫이다).
+    const only_link = [_]ghostty.RenderState.Highlight{
+        .{ .tag = cell_highlight.Tag.link_hover.value(), .range = .{ 0, 9 } },
+    };
+    try std.testing.expect(highlightAt(&only_link, 5) == null);
+
+    _ = style;
+    _ = raw;
 }

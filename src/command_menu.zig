@@ -47,29 +47,44 @@ pub const Command = enum {
     close_active_tab,
     copy_selection,
     paste,
+    /// #646 — 버퍼 검색을 연다.
+    find,
     fullscreen,
     open_config,
+    /// #646 — `Open Config` 와 짝이다. 둘 다 앱의 파일을 여는 항목이라 마지막 묶음으로 내렸다.
+    open_log,
     keyboard_shortcuts,
     about,
 };
 
+/// 메뉴 차례. **탭 → pane → 내용 → 창 → 앱** 순으로 다루는 대상이 점점 넓어진다
+/// (2026-09-16 사용자 정리). 예전에는 `new_tab` 과 `close_active_tab` 사이에 split 이 끼어
+/// 탭 쌍이 갈라져 있었다.
 pub const entries = [_]?Command{
     .toggle_visibility,
     null,
+    // 탭 — 만들기 · 닫기가 붙어 있다.
     .new_tab,
+    .close_active_tab,
+    // pane — 누르면 기본 방향 (오른쪽 · 아래) 으로 나뉜다.
     .split_right,
     .split_down,
-    .close_active_tab,
+    // 보고 있는 내용 — 대부분의 앱이 Find 를 Edit 메뉴의 복사 · 붙여넣기 뒤에 둔다.
     .copy_selection,
     .paste,
+    .find,
+    // 창.
     .fullscreen,
-    .open_config,
     null,
+    // 앱 — 설정 · 로그 · 도움말. 여기 넷은 터미널을 쓰는 동작이 아니라 **앱을 들여다보는**
+    // 항목이라 구분선 아래로 모았다 (2026-09-16 사용자 정리).
+    .open_config,
+    .open_log,
     .keyboard_shortcuts,
     .about,
 };
 
-/// 전체 content 높이 (padding 제외) — 항목과 구분선을 `entries` 에서 센다 (항목 11 + 구분선 2).
+/// 전체 content 높이 (padding 제외) — 항목과 구분선을 `entries` 에서 센다 (항목 13 + 구분선 2).
 const CONTENT_HEIGHT_PT: f32 = blk: {
     var h: f32 = 0;
     for (entries) |entry| h += entryHeight(entry);
@@ -90,8 +105,10 @@ pub fn label(command: Command) []const u8 {
         .close_active_tab => messages.command_close_active_tab,
         .copy_selection => messages.command_copy_selection,
         .paste => messages.command_paste,
+        .find => messages.command_find,
         .fullscreen => messages.command_full_screen,
         .open_config => messages.command_open_config,
+        .open_log => messages.command_open_log,
         .keyboard_shortcuts => messages.command_keyboard_shortcuts,
         .about => messages.command_about,
     };
@@ -109,11 +126,13 @@ pub fn shortcut(command: Command, macos: bool, toggle_hotkey: []const u8, fullsc
         .close_active_tab => if (macos) messages.shortcut_close_tab_macos else messages.shortcut_close_tab,
         .copy_selection => if (macos) messages.shortcut_copy_macos else messages.shortcut_copy,
         .paste => if (macos) messages.shortcut_paste_macos else messages.shortcut_paste,
+        .find => if (macos) messages.shortcut_find_macos else messages.shortcut_find,
         .fullscreen => if (fullscreen_workarea)
             (if (macos) messages.shortcut_full_screen_workarea_macos else messages.shortcut_full_screen_workarea)
         else
             (if (macos) messages.shortcut_full_screen_macos else messages.shortcut_full_screen),
         .open_config => if (macos) messages.shortcut_open_config_macos else messages.shortcut_open_config,
+        .open_log => if (macos) messages.shortcut_open_log_macos else messages.shortcut_open_log,
         .keyboard_shortcuts, .about => "",
     };
 }
@@ -420,18 +439,22 @@ test "command menu order and hit rectangles include separator gap" {
     try std.testing.expect(!v.can_scroll_up and !v.can_scroll_down and !v.clipped);
     try std.testing.expect(hitScrollIndicator(v, 490, 30) == null); // 잘림 없음 = 표시 행 없음
     // 항목 y (ITEM=22, SEP=9, PAD=6, top=28): toggle [34,56) / sep [56,65) /
-    // new [65,87) / split_right [87,109) / split_down [109,131) / close [131,153) /
-    // copy [153,175) / paste [175,197) / fs [197,219) / config [219,241) / sep [241,250) /
-    // ks [250,272) / about [272,294).
+    // new [65,87) / close [87,109) / split_right [109,131) / split_down [131,153) /
+    // copy [153,175) / paste [175,197) / find [197,219) / fs [219,241) / sep [241,250) /
+    // config [250,272) / log [272,294) / ks [294,316) / about [316,338).
     try std.testing.expectEqual(Command.toggle_visibility, hit(v, 490, 40).?);
     try std.testing.expect(hit(v, 490, 60) == null); // first separator
     try std.testing.expectEqual(Command.new_tab, hit(v, 490, 70).?);
-    try std.testing.expectEqual(Command.split_right, hit(v, 490, 90).?);
-    try std.testing.expectEqual(Command.split_down, hit(v, 490, 120).?);
-    try std.testing.expectEqual(Command.open_config, hit(v, 490, 230).?);
+    try std.testing.expectEqual(Command.close_active_tab, hit(v, 490, 90).?);
+    try std.testing.expectEqual(Command.split_right, hit(v, 490, 120).?);
+    try std.testing.expectEqual(Command.split_down, hit(v, 490, 140).?);
+    try std.testing.expectEqual(Command.find, hit(v, 490, 205).?);
+    try std.testing.expectEqual(Command.fullscreen, hit(v, 490, 230).?);
     try std.testing.expect(hit(v, 490, 245) == null); // second separator
-    try std.testing.expectEqual(Command.keyboard_shortcuts, hit(v, 490, 255).?);
-    try std.testing.expectEqual(Command.about, hit(v, 490, 280).?);
+    try std.testing.expectEqual(Command.open_config, hit(v, 490, 260).?);
+    try std.testing.expectEqual(Command.open_log, hit(v, 490, 280).?);
+    try std.testing.expectEqual(Command.keyboard_shortcuts, hit(v, 490, 300).?);
+    try std.testing.expectEqual(Command.about, hit(v, 490, 320).?);
     try std.testing.expect(hit(v, 470, 40) == null); // 메뉴 왼쪽 밖
 }
 
@@ -443,7 +466,7 @@ test "narrow viewport clamps menu to the left edge" {
 
 test "#329 short viewport quantizes to whole entries and scrolls to reach the tail" {
     // avail_full = 200-28-8-12 = 152 < content 260 → clipped, avail = 152-28 = 124.
-    // toggle(22)+sep(9)+new(22)+split_right(22)+split_down(22)+close(22) = 119 ≤ 124 → 6 entry.
+    // toggle(22)+sep(9)+new(22)+close(22)+split_right(22)+split_down(22) = 119 ≤ 124 → 6 entry.
     const v = view(800, 200, 28, 0);
     try std.testing.expect(v.clipped);
     try std.testing.expectEqual(@as(usize, 6), v.count);
@@ -506,7 +529,7 @@ test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구
     const palette = chrome_palette.derive(.{ 0, 0, 0 }, true);
     var buf: [MAX_RECTS]ui_rect.Rect = undefined;
 
-    // 잘림 없는 뷰 (viewport 800x600, 탭바 28) — entry 13개 전부 보이고 구분선 2개.
+    // 잘림 없는 뷰 (viewport 800x600, 탭바 28) — entry 15개 전부 보이고 구분선 2개.
     const v = view(800, 600, 28, 0);
     const with_hover = rects(&buf, v, .{ .open = true, .hover = .new_tab }, 1.0, &palette);
     try std.testing.expectEqual(@as(usize, 4), with_hover.len); // bg + 강조 + 구분선 2

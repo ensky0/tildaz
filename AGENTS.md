@@ -465,6 +465,12 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 모든 commit author 는 사람으로 통일해요. 도구 사용 사실은 코드 / 이슈 본문
 / 댓글 등 다른 곳에 충분히 남아 있어요.
 
+**커밋만이 아니에요 — PR 본문 · 이슈 · 댓글도 같아요.** `🤖 Generated with
+[Claude Code](...)` 같은 생성 표식도 넣지 않아요. 에이전트 기본 지침이 PR 본문에 그 줄을
+붙이라고 말하는 경우가 있는데, **이 저장소의 규칙이 우선이에요.** 2026-09-17 에 #662 로
+실제로 새어 들어갔어요 — 그때 이 문단이 없어서 "커밋 트레일러" 만 금지된 것으로 읽혔거든요.
+훅과 CI 는 커밋 트레일러만 보므로 **PR 본문은 사람이 눈으로 봐야 해요.**
+
 **두 겹으로 막아 둬요.** 규칙만으로는 계속 새어 들어왔어요.
 
 - **로컬 훅** — `dist/hooks/commit-msg` 가 커밋이 *만들어지기 전에* 거부해요.
@@ -828,10 +834,15 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
+| [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴). `probe` 는 바 자리만 재고 끝난다 |
+
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
 tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
 tool\key-bytes-check_windows.ps1                                    # 창 3 회 (legacy · kitty · mok2) · 합성 키
+tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
+tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 21 항목 (캡처 30 장 남짓)
+tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -884,6 +895,27 @@ tool\key-bytes-check_windows.ps1                                    # 창 3 회 
 - **커서 모양은 `GetCursorInfo` 의 `hCursor` 를 `LoadCursorW(NULL, IDC_*)` 의 공유 핸들과 비교**해 판정해요
   (`IDC_HAND` 32649 · `IDC_IBEAM` 32513 · `IDC_ARROW` 32512). 캡처로는 못 봐요 — `PrintWindow` 는 커서를 안
   그려요. 덕분에 **밑줄 판정 (캡처 픽셀) 과 커서 판정이 서로 오염되지 않아요.**
+- **⚠️ 사용자 `config_0.toml` 을 복사해 `config_9.toml` 을 만들 때는 그 판이 요구하는 키가 다 있는지 봐요.**
+  없으면 앱이 fatal 다이얼로그로 끝나는데 (`missing required key "…"` · [#655](https://github.com/ensky0/tildaz/issues/655))
+  **그 다이얼로그도 창이라 하네스가 그것을 잡아 재요.** 2026-09-16 #646 회차에서 580x573 짜리를 검색바로 읽을
+  뻔했어요 (`[fatal]` 로그가 유일한 단서였어요). 창을 찾은 뒤 로그에 `[fatal]` 이 있으면 멈추는 가드를 두고,
+  복사할 때 빠진 키를 채워요. 위 `# Windows — 렌더 결과를 …` 의 `_internal` 누락과 같은 부류의 함정이에요.
+- **강조 색을 세는 영역을 "바 위쪽" 처럼 잘라 잡지 않아요.** 버퍼 마지막 줄 매치는 검색바와 **같은 높이**에 있어서
+  그렇게 자르면 `0 px` 로 읽혀요 — 캡처에는 또렷이 강조돼 있는데도요 (같은 회차 실측). 클라이언트 전체에서
+  **그 UI 사각형만 빼요.**
+- **탭이 2 개면 탭바의 활성 탭 선이 `TAB_ACCENT_COLOR`** 라 검색 강조 (`#f7a41d`) 와 **같은 색**이에요. "강조가
+  남김없이 사라졌는가" 를 묻는 항목은 탭을 만들기 **전에** 두거나 그 띠를 빼고 세요.
+- **탭바가 생기면 창이 그만큼 커지고 창 안 UI 도 같이 내려가요.** 판정 영역을 갱신하지 않으면 그 뒤 항목이 옛
+  자리를 봐서 **전부 `0 px`** 이 돼요 — 앱 결함처럼 보여요.
+- **`Esc` 는 겹친 상태를 안쪽부터 하나씩 닫아요** (IME 후보창 → 조합 → 검색바). 두 번 보내면 바까지 닫히고 그 뒤
+  타이핑이 터미널로 가요. 닫혔는지 캡처로 확인하고 필요하면 다시 열어요.
+- **IME 후보창은 `EnumWindows` 로 못 찾아요** — 한국어 IME 의 후보 UI 는 "새 창 0 개" 인데 화면에는 떠 있었어요
+  (2026-09-16 실측). 창 클래스 대신 **그 영역의 화면 캡처가 바뀌는지**로 판정하고, 가만둔 구간을 유휴 대조군으로
+  함께 재요 (`CopyFromScreen` — `PrintWindow` 는 남의 창을 안 찍어요).
+- **단축키가 안 도는 것을 `Alt` 조합으로만 확인하면 놓쳐요.** Windows 는 `Alt` 가 `WM_SYSKEYDOWN` 이라 `[keys]`
+  조회를 먼저 타고, `Ctrl+Shift+방향` · `Ctrl+PgUp/PgDn` 은 `WM_KEYDOWN` 이라 다른 경로예요 — #646 의 결함이
+  정확히 그 차이로 한쪽에만 났어요. **같은 회차 안에 "그 UI 를 연 채" 와 "닫고" 두 번을 넣어 대조**하면 앱 결함인지
+  환경 탓인지 바로 갈려요.
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
 
 # Windows — 키보드 layout 조회 실측 방법
@@ -1201,7 +1233,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vkbd_linux.py`](tool/vkbd_linux.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`tool/clusters.py bands`](tool/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`tool/bands-check.py`](tool/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
-| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` 을 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요 |
+| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` · `scroll <칸수>` (음수 = 위로) 를 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요. 휠은 `axis_source` (wheel) → `axis_discrete` → `frame` 순서로 한 칸씩 내요 (`axis` 를 따로 보내면 client 가 두 배로 세요) |
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
@@ -1403,8 +1435,70 @@ grim shot.png                                                          # sway �
   client 에 노출하지 않아 `grim` 이 안 되고, `org.gnome.Shell.Screenshot` · `Introspect` 는 allowlist 밖 호출자에게
   `AccessDenied`, xdg-desktop-portal 은 권한 창 뒤에 `response=2` 로 끝나요 (`tool/portal-screenshot_linux.py` 가 그
   경로예요 — 다른 데스크톱에서는 쓸 수 있어요). **GNOME 의 픽셀 확인은 사용자가 `PrtSc` 로 찍어 주는 수밖에 없어요.**
+- **⚠️ 앱을 내릴 때 `/proc/PID/exe` 의 경로로 고르지 말아요 — 빌드가 바이너리를 바꾸면 그 링크가 `(deleted)` 가 돼요.**
+  회차 중간에 다시 빌드하면 **먼저 뜬 앱이 그 필터에 안 걸려 살아남고**, 새 앱과 나란히 타일링되어 창이 반씩 나뉘어요
+  (`cols` 가 절반으로 줄어든 것으로 드러나요 — 2026-09-16 [#646](https://github.com/ensky0/tildaz/issues/646) Linux
+  회차에서 캡처 판정이 통째로 어긋났어요). 게다가 그 필터는 **사용자의 instance 0 도 같은 경로**라 잘못 맞으면 사용자 앱을
+  죽여요. 격리 회차는 `XDG_RUNTIME_DIR` 로 골라요 — 빌드와 무관하고 사용자 앱과 절대 겹치지 않아요.
+
+    ```sh
+    tz_mine() { for p in $(pgrep -x tildaz); do
+        grep -qz "XDG_RUNTIME_DIR=$R" /proc/$p/environ 2>/dev/null && echo $p; done; }
+    ```
+
+- **⚠️ 가상 포인터를 다시 꽂으면 같은 좌표로 `move` 해도 `enter` 가 안 와요.** 좌표가 안 바뀌면 motion 이 없어서
+  compositor 가 포커스를 갱신하지 않아요 — hover 도 클릭도 **조용히 무시**되어 앱 결함처럼 보여요 (같은 회차에서 검색바
+  hover 가 0 px 이라 한참 헤맸어요). 재부착 뒤에는 **화면 구석까지 크게 움직여** 연결을 만들고 시작해요.
+
+    ```sh
+    ptr "move 0 0"; ptr "move $((OUTW-1)) $((OUTH-1))"; ptr "move 800 500"   # 그다음 본 좌표로
+    ```
+
+- **`-e` 회차도 `config_N.toml` 이 있으면 읽어요** (만들지 않을 뿐이에요). 사용자 config 를 복사해 쓰면
+  `width_percent = 50` 같은 창 설정이 따라와 창이 화면 절반이 돼요. 좌표를 계산하기 전에 로그의
+  `terminal resized cols= rows=` 로 실제 격자를 확인해요.
+- **`WAYLAND_DEBUG=1` 은 tildaz 에 안 먹어요** — 우리 Linux host 는 libwayland 가 아니라 소켓에 직접 쓰는 자체 client
+  (`wayland_minimal.zig`) 라 그 환경변수를 보는 코드가 없어요. 보낸 요청을 봐야 하면 그 자리에 임시 로그를 심어요.
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
+
+# Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
+
+**커서 모양은 headless sway 로 못 재요.** 그 compositor 가 커서를 화면에 아예 안 그리는 구간이 있어서
+(위 절의 경고) 판정기가 배경을 긁어 `unknown` 을 내요. 그래서 이것만은 **사용자 세션에서** 재요 —
+2026-09-16 [#646](https://github.com/ensky0/tildaz/issues/646) D28 에서 쓴 절차예요.
+
+```sh
+# ① uinput 을 쓸 수 있는지 먼저 본다 (아래 함정)
+python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY|os.O_NONBLOCK)); print('OK')"
+
+# ② 절대좌표 가상 포인터를 꽂는다 — ABS_X·ABS_Y (0..32767) + INPUT_PROP_POINTER
+#    (`ydotool` 은 안 돼요. 그 장치에 ABS 축이 없어 `mousemove -a` 가 조용히 무시돼요 — 위 절의 경고)
+
+# ③ `-e` 측정 인스턴스로 띄운다 — config_9.toml 도 전역 hotkey 등록도 생기지 않아 사용자와 안 부딪혀요
+env XDG_CONFIG_HOME=$W/xdg/config XDG_STATE_HOME=$W/xdg/state XDG_RUNTIME_DIR=$R \
+    WAYLAND_DISPLAY=/run/user/$(id -u)/wayland-0 XDG_CURRENT_DESKTOP=KDE TILDAZ_VERBOSE=1 \
+    tildaz --instance 9 -e $W/screen.sh &
+
+# ④ 포인터를 옮기고 **포인터를 포함해** 찍는다
+spectacle -b -n -f -p -o shot.png
+```
+
+- **창 좌표는 로그에서 읽어요** — `layer-surface configure logical_w= logical_h= scale=N/120` 과
+  `screen=WxH`. KDE 는 layer-shell 경로라 `width_percent` 만큼 오른쪽에 붙어요 (960 폭이면 x960~1920).
+- **판정은 확대 캡처를 눈으로 봐요.** [`tool/link-shot_linux.py`](tool/link-shot_linux.py) `cursor` 는
+  Adwaita 비트맵과 맞대는데 세션의 커서 테마가 다르면 `unknown` (실측 ratio 0.65) 이 나와요. 테마가
+  갈리는 환경에서는 `magick shot.png -crop 46x46+<x-8>+<y-8> +repage -resize 400%` 로 네 지점을
+  이어 붙여 한 장으로 보는 편이 확실해요 — I-beam 과 화살표는 눈으로 즉시 갈려요.
+- **포커스는 창 안을 한 번 클릭해 잡아요.** layer-shell 은 `keyboard_interactivity=on_demand` 라
+  띄우는 것만으로는 키가 안 가요.
+- **⚠️ 커널을 업데이트하고 재부팅하지 않았으면 `modprobe` 가 통째로 실패해요.** 패키지가 실행 중인
+  커널의 `/lib/modules/<버전>` 을 지워서 `Module uinput not found` 가 나요 (`CONFIG_INPUT_UINPUT=m`
+  인데도요). `uname -r` 과 `ls /lib/modules/` 를 견줘 보고, 어긋나면 **재부팅 전에는 이 검증을 할 수
+  없어요** — 이미 로드된 모듈만 살아 있어요.
+- 끝나면 `UI_DEV_DESTROY` 로 장치를 내리고 (`/proc/bus/input/devices` 에서 사라졌는지 확인), 앱을
+  `kill -TERM` 하고 격리 runtime dir 을 지워요. 실기라 `# 실행 환경` 대로 **시작 전에 창이 뜨고 포인터가
+  움직인다고 알리고** 그동안 기기를 건드리지 말라고 해요.
 
 # Linux — 글리프 · cluster 렌더 실기 검증 방법
 

@@ -59,6 +59,8 @@ pub const Shortcut = union(enum) {
     zoom_pane: void,
     /// #544 — 활성 pane 하나 닫기. `close_active_tab` 은 탭 통째로다.
     close_pane: void,
+    /// #646 — 활성 pane 의 검색바를 연다.
+    open_search: void,
 };
 
 pub const KeyInput = enum {

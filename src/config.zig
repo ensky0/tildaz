@@ -1070,9 +1070,10 @@ test "#493 default [keys] has no conflicting bindings" {
             count += 1;
         }
     }
-    // 액션 38 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
-    // `split_left` · `split_up` 포함) + prev_tab / next_tab 이 2 개씩 = 40.
-    try std.testing.expectEqual(@as(usize, 40), count);
+    // 액션 39 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
+    // `split_left` · `split_up` + #646 의 `open_search` 포함) + prev_tab / next_tab 이
+    // 2 개씩 = 41.
+    try std.testing.expectEqual(@as(usize, 41), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1936,6 +1937,7 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         // 글자는 예외 없이 `⇧⌘<글자>` 다 (`I` `L` `P` `R` `Z`). `⌘D` 는 iTerm2 · Terminal.app 이
         // *분할* 에 쓰는 글자라 반대 동작이 연상돼 쓰지 않는다.
         .close_pane => &.{"shift+cmd+x"},
+        .open_search => &.{"cmd+f"},
     };
 }
 
@@ -1987,6 +1989,7 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         // #544 — pane 닫기. `Ctrl+<글자>` 는 터미널의 제어문자라 앱 chrome 은 `Ctrl+Shift+<글자>`
         // 한 대역이고, macOS 의 `Shift+Cmd+X` 와 같은 글자다.
         .close_pane => &.{"ctrl+shift+x"},
+        .open_search => &.{"ctrl+shift+f"},
     };
 }
 
@@ -2034,6 +2037,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
     const groups = [_]struct { title: ?[]const u8, actions: []const KeyAction }{
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
         .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane, .close_pane } },
+        .{ .title = "Search", .actions = &.{.open_search} },
         .{ .title = "Clipboard", .actions = &.{ .copy_selection, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
@@ -2127,6 +2131,12 @@ pub const KeyAction = enum {
     /// 앱의 `×` 글리프에서 왔다 — 형식 규칙은 `AGENTS.md` 의
     /// `# 새 단축키 기본값 고르기 — 형식 규칙` 절에 있다.
     close_pane,
+    /// #646 — 버퍼 안 검색. 글자 `F` 는 Find 의 선례가 워낙 넓어 (브라우저 · 편집기 · 터미널
+    /// 전부) 형식 규칙의 "선례에서 고르고 뜻 없는 글자는 안 쓴다" 를 그대로 만족한다.
+    /// 다음 · 이전 매치는 **바인딩을 따로 두지 않는다** — 검색바가 열린 동안 `Enter` ·
+    /// `Shift+Enter` 가 그 일을 하므로 (바가 닫혀 있으면 그 키는 평소대로 PTY 로 간다) 액션을
+    /// 늘리면 `[keys]` strict 스키마의 부팅 차단 비용만 커진다.
+    open_search,
 
     /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
     /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
@@ -2276,6 +2286,7 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .equalize_panes => .{ .input = .{ .shortcut = .equalize_panes } },
         .zoom_pane => .{ .input = .{ .shortcut = .zoom_pane } },
         .close_pane => .{ .input = .{ .shortcut = .close_pane } },
+        .open_search => .{ .input = .{ .shortcut = .open_search } },
     };
 }
 

@@ -16,6 +16,8 @@ pub const Snapshot = struct {
     /// Read-only shortcut보다 먼저 온 GCS_RESULTSTR를 아직 target에 보내지 않고
     /// 보류한 상태. overlay는 계속 preedit로 표시한다.
     ime_result_deferred: bool = false,
+    /// #646 — 검색바가 키보드를 갖고 있다. 바가 열려 있으면 언제나 참이다.
+    search_active: bool = false,
 };
 
 pub const NativePending = enum {
@@ -33,7 +35,10 @@ pub const Resolution = struct {
 pub fn resolve(input: input_policy.Input, snapshot: Snapshot) Resolution {
     const has_ime_preedit = snapshot.ime_preedit_len > 0 or snapshot.ime_result_deferred;
     const state: input_policy.State = .{
-        .terminal_preedit_active = has_ime_preedit,
+        // #646 — 조합 중 글자가 검색 입력칸으로 갈 때는 *터미널* preedit 이 아니다. sink 가
+        // 다르므로 `search_active` 쪽으로 센다 (`input_policy.State` 주석).
+        .terminal_preedit_active = has_ime_preedit and !snapshot.search_active,
+        .search_active = snapshot.search_active,
     };
     const disposition = input_policy.resolve(input, state);
 

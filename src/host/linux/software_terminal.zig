@@ -31,6 +31,7 @@ const tab_interaction = @import("../../tab_interaction.zig");
 const dialog_mod = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
+const search_bar = @import("../../search_bar.zig");
 const dialog_layout = @import("dialog_layout.zig");
 const log = @import("../../log.zig");
 
@@ -302,6 +303,8 @@ pub const FrameInputs = struct {
     drag_view: ?tab_interaction.DragView,
     tab_hover: tab_layout.Area,
     menu_ui: command_menu.Ui,
+    /// #646 — 검색바 상태. `open` 이 false 면 그리지 않는다.
+    search_ui: search_bar.Ui = .{},
     toggle_hotkey: []const u8,
     /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
     /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
@@ -763,6 +766,8 @@ pub const Renderer = struct {
         }
         self.collectPaneChrome(allocator, in);
         self.collectSingleTabControls(allocator, in);
+        // #646 — 검색바는 터미널 위 · 메뉴 아래다.
+        if (in.search_ui.open) self.collectSearchBar(allocator, in);
         if (in.menu_ui.open) self.collectCommandMenu(allocator, in);
     }
 
@@ -876,7 +881,7 @@ pub const Renderer = struct {
                 );
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const hl = hlAt(hl_row, x16, &self.chrome);
+                const hl = hlAt(hl_row, x16);
                 // #483 2단계 ② — 격자 원점은 pane 기준 (`rect` 는 탭바를 뺀 영역). pane 하나면 이전의
                 // `pad` / `tab_bar_h + pad` 와 같은 값이다.
                 const cell_x: i32 = pane.rect.x + pad + @as(i32, @intCast(x)) * cw;
@@ -1094,7 +1099,7 @@ pub const Renderer = struct {
                             const rst = cell_color.applyBlinkPhase(rs, blink_faint);
                             const rx16: u16 = @intCast(rx);
                             const rsel = if (sel_range) |sr| (rx16 >= sr[0] and rx16 <= sr[1]) else false;
-                            const rhl = hlAt(hl_row, rx16, &self.chrome);
+                            const rhl = hlAt(hl_row, rx16);
                             const cg = self.run_results[i];
                             appendGlyph(&self.layer.glyphs, allocator, .{
                                 .ref = clusterRef(cg),
@@ -1719,6 +1724,112 @@ pub const Renderer = struct {
     /// #277 S2-5 — command menu. #343 단계 3 — 메뉴 배경 · 강조 박스 · 항목
     /// 구분선의 rect 와 그 순서는 공통 `command_menu.rects` 한 곳이 만든다. 여기
     /// 남은 것은 텍스트와 스크롤 표시 아이콘뿐이다.
+    /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
+    /// caret 만 모은다 (`collectCommandMenu` 와 같은 분담).
+    fn collectSearchBar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
+        const scale = self.scale;
+        const ui = in.search_ui;
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
+        const list = &self.layer.chrome_after;
+
+        var bar_rects: [search_bar.MAX_RECTS]tab_chrome.Rect = undefined;
+        for (search_bar.rects(&bar_rects, v, ui, scale, &self.chrome)) |r| {
+            self.appendChromeRect(allocator, list, r);
+        }
+
+        const cw: i32 = @intCast(self.tab_font_ctx.cell_width_px);
+        const ch: i32 = @intCast(self.tab_font_ctx.cell_height_px);
+        const field_x: i32 = @round(v.field.x * scale);
+        const field_y: i32 = @round(v.field.y * scale);
+        const field_h: i32 = @round(v.field.h * scale);
+        const field_right: i32 = field_x + @as(i32, @round(v.field.w * scale));
+        const baseline = field_y + @divFloor(field_h - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
+        const text_top = field_y + @divFloor(field_h - ch, 2);
+
+        // caret — 글리프보다 먼저 담는다 (같은 list 라 순서가 곧 그리는 순서다).
+        if (ui.focused) {
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다. 예전에는 여기서
+            // 직접 셈하면서 **가로 스크롤을 빼먹어** 긴 검색어에서 caret 이 어긋났다.
+            const caret_x = field_x + @as(i32, @intFromFloat(@round(search_bar.caretOffsetPt(
+                ui.needle,
+                ui.preedit,
+                ui.caret,
+                @floatFromInt(cw),
+                ui.scroll_px * scale,
+            ))));
+            if (caret_x >= field_x and caret_x < field_right) {
+                self.appendChromeRect(allocator, list, .{
+                    .x = @floatFromInt(caret_x),
+                    .y = @floatFromInt(text_top),
+                    .w = ui_metrics.cursorBarWidthPx(scale),
+                    .h = @floatFromInt(ch),
+                    .color = self.chrome.menu_label,
+                });
+            }
+        }
+
+        const icon_size_i: i32 = scaledPt(ui_metrics.TAB_ICON_SIZE_PT, scale);
+        const icon_size: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), icon_size_i)));
+        const icon_stroke: f32 = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
+
+        if (v.icon.w > 0) {
+            const search_sz_i: i32 = scaledPt(search_bar.ICON_PT, scale);
+            const search_sz: u32 = @intCast(@max(1, @min(@as(i32, @intCast(tab_icons.MAX_SIZE)), search_sz_i)));
+            list.append(allocator, .{ .icon = .{
+                .kind = .search,
+                .size = search_sz,
+                .stroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale),
+                .x = @round(v.icon.x * scale),
+                .y = @round(v.icon.y * scale),
+                .color = rgbFromMetrics(self.chrome.menu_hint),
+            } }) catch {};
+        }
+
+        const fg = rgbFromMetrics(self.chrome.menu_label);
+        const hint_fg = rgbFromMetrics(self.chrome.menu_hint);
+        const dim_fg = rgbFromMetrics(self.chrome.arrow_disabled);
+        const active_fg = rgbFromMetrics(self.chrome.ctrl_active);
+
+        if (ui.needle.len == 0 and ui.preedit.len == 0) {
+            self.collectChromeText(allocator, list, field_x, baseline, ch, messages.search_placeholder, hint_fg, field_right);
+        } else {
+            self.collectChromeText(allocator, list, field_x, baseline, ch, ui.needle, fg, field_right);
+            if (ui.preedit.len > 0) {
+                const before_w = @as(i32, @intCast(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
+                self.collectChromeText(allocator, list, field_x + before_w, baseline, ch, ui.preedit, active_fg, field_right);
+            }
+        }
+
+        if (v.count.w > 0) {
+            var cbuf: [24]u8 = undefined;
+            const txt = search_bar.countText(ui, &cbuf);
+            const tw = @as(i32, @intCast(display_width.stringWidth(txt))) * cw;
+            const cx = @as(i32, @round(v.count.x * scale + v.count.w * scale)) - tw;
+            const color = if (ui.total == 0 and !ui.searching) dim_fg else hint_fg;
+            self.collectChromeText(allocator, list, cx, baseline, ch, txt, color, cx + tw + 1);
+        }
+
+        if (v.prev.w > 0) {
+            const enabled = ui.total > 0;
+            const sz_i: i32 = @intCast(icon_size);
+            for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
+                const r = search_bar.controlRect(v, c);
+                list.append(allocator, .{
+                    .icon = .{
+                        .kind = search_bar.controlIcon(c),
+                        .size = icon_size,
+                        .stroke = icon_stroke,
+                        .x = @as(i32, @round(r.x * scale)) + @divFloor(@as(i32, @round(r.w * scale)) - sz_i, 2),
+                        .y = @as(i32, @round(r.y * scale)) + @divFloor(@as(i32, @round(r.h * scale)) - sz_i, 2),
+                        // 닫기는 매치가 없어도 활성이다.
+                        .color = if (c == .close or enabled) active_fg else dim_fg,
+                    },
+                }) catch {};
+            }
+        }
+    }
+
     fn collectCommandMenu(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
         const scale = self.scale;
         const ui = in.menu_ui;
@@ -2431,10 +2542,10 @@ fn resolveBg(
 fn hlAt(
     hls: []const ghostty.RenderState.Highlight,
     x: u16,
-    chrome: *const chrome_palette.Palette,
 ) ?cell_color.HighlightColors {
-    const tag = cell_highlight.at(hls, x) orelse return null;
-    return cell_color.highlightColors(tag, chrome);
+    // **색이 있는 tag 중 최상** 을 고른다 — `cell_highlight.at` 은 우선순위 최상 하나를
+    // 주는데 그것이 색을 안 주는 종류면 (링크 hover, #647) 색이 통째로 사라진다.
+    return cell_color.highlightAt(hls, x);
 }
 
 const isLigatureCandidate = @import("../../font/ligature.zig").isLigatureCandidate;

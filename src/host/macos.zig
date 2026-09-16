@@ -44,6 +44,8 @@ const themes = @import("../themes.zig");
 const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const command_menu = @import("../command_menu.zig");
+const search_bar = @import("../search_bar.zig");
+const search_input = @import("../search_input.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
@@ -1057,7 +1059,174 @@ fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
 
 /// #296 — 현재 입력 상태를 공통 입력 정책(input_policy)용으로.
 fn macInputState() input_policy.State {
-    return .{ .terminal_preedit_active = g_marked_len > 0 };
+    return .{
+        // 조합 중 글자가 검색 입력칸으로 갈 때는 *터미널* preedit 이 아니다 — sink 가
+        // 다르므로 `search_active` 쪽으로 센다 (`input_policy.State` 주석).
+        .terminal_preedit_active = g_marked_len > 0 and !searchFocused(),
+        .search_active = searchFocused(),
+    };
+}
+
+/// #646 — 검색바 배치 입력. **여기 한 곳에서 재고** renderer 는 결과만 쓴다.
+///
+/// 여백이 pt 상수가 아니라 터미널 셀 단위라 (`search_bar.Geometry`) 여기서 셀 크기를
+/// 넘겨야 한다. 스크롤바는 떠 있을 때만 폭을 빼는데, 판정은 그것을 그리는 쪽과 같은
+/// 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다 (`scrollbar.geom` 의 `total <= len`).
+///
+/// pane 이 여럿이면 창 오른쪽 가장자리의 스크롤바는 *가장 오른쪽 pane* 의 것인데, 여기서는
+/// **활성 pane** 의 것을 본다. 검색바가 비추는 것이 활성 pane 이라 그쪽과 짝이 맞고, 좌우로
+/// 나뉜 창에서 활성 pane 이 왼쪽이면 여백이 한 칸 어긋날 수 있다 — 붙어 보이지는 않는다.
+fn searchGeometry(tab: anytype, scale: f32, grid_bottom_px: ?i32) search_bar.Geometry {
+    const r = &g_renderer.?;
+    const sb = tab.terminal.screens.active.pages.scrollbar();
+    return .{
+        .viewport_w_pt = @as(f32, @floatFromInt(r.vp_width)) / scale,
+        .viewport_h_pt = @as(f32, @floatFromInt(r.vp_height)) / scale,
+        .cell_w_pt = @as(f32, @floatFromInt(r.font.cell_width_px)) / scale,
+        .cell_h_pt = @as(f32, @floatFromInt(r.font.cell_height_px)) / scale,
+        .scrollbar_w_pt = if (sb.total > sb.len)
+            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+        else
+            0,
+        .grid_bottom_pt = if (grid_bottom_px) |px| @as(f32, @floatFromInt(px)) / scale else 0,
+    };
+}
+
+/// #646 — 마지막 프레임의 검색바 배치. **히트 테스트가 그린 것과 같은 사각형을 봐야 하므로**
+/// 다시 재지 않고 그릴 때 쓴 값을 그대로 둔다 — 격자 바닥은 pane 배치를 돌아야 나오는 값이라
+/// 마우스 경로에서 다시 구하면 어긋날 여지가 생긴다.
+var g_search_geom: search_bar.Geometry = .{};
+
+/// #646 — pointer 가 올라간 검색바 컨트롤.
+var g_search_hover: ?search_bar.Control = null;
+
+/// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.
+fn searchBarViewNow() ?search_bar.View {
+    const tab = g_session.activeTab() orelse return null;
+    if (!tab.search.is_open) return null;
+    if (g_search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+    return search_bar.view(g_search_geom);
+}
+
+/// #646 — 검색바 위 클릭 · 이동을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
+/// 경로로 넘기지 않는다.
+///
+/// 이 가로채기가 없으면 바가 터미널 셀 **위에 떠 있는** 탓에 바 위에서 드래그하면 터미널
+/// 선택이 시작되고, 마우스 리포팅을 켠 앱 (vim · htop) 에는 클릭 좌표가 그대로 전송된다.
+/// 커맨드 메뉴가 같은 이유로 같은 자리에서 가로챈다.
+fn searchBarMouseDown(px: f64, py: f64) bool {
+    const v = searchBarViewNow() orelse return false;
+    const scale: f32 = g_renderer.?.scale;
+    const x: f32 = @as(f32, @floatCast(px)) / scale;
+    const y: f32 = @as(f32, @floatCast(py)) / scale;
+    if (!search_bar.contains(v, x, y)) return false;
+
+    const tab = g_session.activeTab() orelse return true;
+    if (search_bar.hit(v, x, y)) |c| {
+        // 버튼은 같은 이름의 키와 **같은 함수**를 탄다 (`search_input.control`).
+        const eff = search_input.control(&tab.search, g_gpa.allocator(), c, tab.title_clock.read()) catch return true;
+        applySearchEffect(eff);
+        return true;
+    }
+
+    // 입력칸을 눌렀으면 caret 을 그 자리로. 바의 빈 자리는 삼키기만 한다.
+    if (x >= v.field.x and x < v.field.x + v.field.w) {
+        const cw = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / scale;
+        tab.search.caret = search_bar.fieldCaret(
+            tab.search.needle.items,
+            cw,
+            tab.search.field_scroll_px,
+            x - v.field.x,
+        );
+        requestRender();
+    }
+    return true;
+}
+
+/// #646 — 검색바가 키보드를 갖고 있는가. `input_policy.State.search_active` 가 곧 이 값이다.
+///
+/// **바가 열려 있으면 언제나 참이다** (2026-09-16 사용자 결정). 터미널을 클릭해도 넘어가지
+/// 않는다 — 포커스를 둘로 나누면 *사람이 어디에 있는지 볼 수 없다.* 입력칸의 caret 은 1 px
+/// 세로선이고 명령을 치려는 순간 시선은 프롬프트에 있다. 잘못 알면 검색어가 셸로 가고
+/// 이어진 Enter 가 그것을 **실행한다** — 그래서 구별할 상태 자체를 두지 않는다.
+///
+/// 터미널에 원래 "클릭해서 포커스를 옮긴다" 는 개념이 없다는 것도 같은 방향이다. 창에
+/// 포커스가 있으면 프롬프트가 키를 갖고, 클릭은 선택일 뿐이다.
+///
+/// 그래도 `input_policy` 의 축은 `is_open` 과 **따로** 둔다 — 나중에 둘을 가를 이유가
+/// 생기면 이 함수 하나만 바뀐다.
+fn searchFocused() bool {
+    const tab = g_session.activeTab() orelse return false;
+    return tab.search.is_open;
+}
+
+/// #646 — 검색 입력칸에 키 하나를 적용한다. 의미는 `search_input` 이 정하고, 여기는 활성
+/// pane 과 시계를 붙이기만 한다.
+fn searchApplyKey(k: search_input.Key) void {
+    const tab = g_session.activeTab() orelse return;
+    const eff = search_input.key(&tab.search, g_gpa.allocator(), k, tab.title_clock.read()) catch return;
+    applySearchEffect(eff);
+}
+
+/// #646 — 검색 입력이 만든 변화를 화면에 반영한다. 닫힘은 **커서 영역까지** 되돌려야 한다 —
+/// 바가 사라진 자리는 다시 터미널이라 I-beam 이어야 하고, 마우스를 안 움직이면 AppKit 이
+/// 스스로 다시 계산하지 않는다 (#193 의 커맨드 메뉴와 같은 자리).
+fn applySearchEffect(eff: search_input.Effect) void {
+    if (eff.closed) {
+        g_search_hover = null;
+        invalidateCursorRects();
+    }
+    if (eff.redraw) requestRender();
+}
+
+/// #646 — needle 의 `[from, to)` 를 `text` 로 갈아 끼우고 caret 을 그 뒤에 둔다.
+///
+/// `NSTextInputClient.insertText:replacementRange:` 가 요구하는 그대로다 — 범위를 지우고
+/// 그 자리에 넣는다. 편집 자체는 `search_input` 의 것을 쓴다 (caret 규칙이 한 곳이다).
+fn searchSpliceText(from: usize, to: usize, text: []const u8) void {
+    const tab = g_session.activeTab() orelse return;
+    const len = tab.search.needle.items.len;
+    const start = @min(from, len);
+    const end = @min(@max(to, start), len);
+
+    // 지울 것이 있으면 caret 을 끝에 두고 그만큼 지운다.
+    tab.search.caret = end;
+    var remaining = std.unicode.utf8CountCodepoints(tab.search.needle.items[start..end]) catch (end - start);
+    while (remaining > 0) : (remaining -= 1) searchApplyKey(.backspace);
+    searchInsertText(text);
+}
+
+/// #646 — 확정된 글자를 검색어에 끼운다. `insertText:` · paste · preedit commit 이 모두
+/// 이리로 온다.
+fn searchInsertText(text: []const u8) void {
+    const tab = g_session.activeTab() orelse return;
+    const eff = search_input.insertText(&tab.search, g_gpa.allocator(), text, tab.title_clock.read()) catch return;
+    if (eff.redraw) requestRender();
+}
+
+/// #646 — macOS keyCode → 검색 입력칸이 뜻을 두는 키. `null` 이면 입력칸이 안 쓰는 키다.
+fn macSearchKey(kc: c_ushort, shift: bool) ?search_input.Key {
+    return switch (kc) {
+        0x35 => .close, // Esc
+        // Return / KP Enter — 기본은 **아래로**, Shift 면 위로.
+        0x24, 0x4C => if (shift) .match_up else .match_down,
+        0x33 => .backspace,
+        0x75 => .delete, // forward delete
+        0x7B => .left,
+        0x7C => .right,
+        0x73 => .home,
+        0x77 => .end,
+        else => null,
+    };
+}
+
+/// #646 — 한 줄 입력칸이 뜻을 두지 않는 나브키. 삼키지 않으면 검색어를 치는 동안 방향키
+/// escape sequence 가 셸로 새어 히스토리가 넘어간다 (#282 A9 와 같은 샘).
+fn macSearchNavKey(kc: c_ushort) bool {
+    return switch (kc) {
+        0x7E, 0x7D, 0x74, 0x79, 0x72 => true, // up / down / page up / page down / help
+        else => false,
+    };
 }
 
 /// #317 — macOS의 모든 shortcut 진입점이 같은 pending 입력 정책을 적용한다.
@@ -1335,6 +1504,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         .zoom_pane => handleZoomPane(),
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
         .close_pane => handleClosePane(),
+        .open_search => handleOpenSearch(),
     }
     return true;
 }
@@ -1481,6 +1651,46 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         }
     }
     const keycode = get_keycode(event, objc.sel("keyCode"));
+
+    // #646 — 검색바가 포커스를 가지면 키는 입력칸이 먹는다. **여기서 하는 것은 분류뿐**
+    // 이고, 어디로 갈지는 `input_policy.resolve` 가, 무엇을 할지는 `search_input` 이
+    // 정한다 — 세 host 가 각자 판정하다 어긋난 것이 #282 의 결함이었다.
+    //
+    // 자리가 여기인 이유가 둘이다. 위의 Cmd · `[keys]` 조회보다 **뒤**라 검색 중에도
+    // 단축키가 그대로 돈다 (검색바 포커스 중 pane 이동 — 2026-09-11 사용자 결정).
+    // 아래 IME · PTY 경로보다 **앞**이라 편집키가 셸로 새지 않는다.
+    if (searchFocused()) {
+        const ctrl_search = (flags & (1 << 18)) != 0;
+        const cmd_search = (flags & NSEventModifierFlagCommand) != 0;
+        // **조합 중에는 편집키가 IME 의 것이다.** native 텍스트 필드와 같은 규칙이고,
+        // `NSTextInputClient` 의 전제이기도 하다 — 조합 글자는 document 안에 있고
+        // (`fillSearchImeSnapshot`) 그것을 편집 · 확정 · 취소하는 것은 IME 다.
+        //
+        //   - `Return` — 조합 확정 (후보가 떠 있으면 고른 후보 확정)
+        //   - `Esc` — 조합 취소 (검색바 닫기가 아니다)
+        //   - `Option+Return` — 한자 변환
+        //   - 방향키 · `Backspace` — 후보 이동 · 조합 편집
+        //
+        // 우리가 가로채면 이것이 전부 막힌다. 조합이 끝나면 (`g_marked_len == 0`) 아래
+        // 분류가 평소대로 돈다.
+        if (g_marked_len > 0) {
+            // 아래 IME 경로로 흘린다.
+        } else if (macSearchKey(keycode, shift)) |k| {
+            if (input_policy.resolve(.edit_key, macInputState()).target == .search_field) {
+                searchApplyKey(k);
+                return;
+            }
+        } else if (ctrl_search and !cmd_search) {
+            // Ctrl 조합은 한 줄 입력칸이 쓰지 않는다. Ctrl+C 는 `interrupt`, 나머지는
+            // `nav_key` 로 분류되는데 검색 중에는 **둘 다 `drop`** 이라 결과가 같다.
+            // 삼키지 않으면 검색어를 치다가 셸이 SIGINT 를 받는다.
+            if (input_policy.resolve(.interrupt, macInputState()).target == .drop) return;
+        } else if (macSearchNavKey(keycode)) {
+            if (input_policy.resolve(.nav_key, macInputState()).target == .drop) return;
+        }
+        // 그 밖의 키는 문자다 — 아래 IME 경로 (`interpretKeyEvents:` → `insertText:`) 로
+        // 내려가고, 확정되는 자리에서 `text` 로 다시 판정한다.
+    }
 
     if (option and keycode == 0x24) {
         const had_marked_text = g_marked_len > 0 and g_preedit_len > 0;
@@ -1644,7 +1854,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     interpretSingleKeyEvent(self_view, event);
                     return;
                 }
-                commitPreeditToPty(self_view);
+                commitPreeditToSink(self_view);
                 _ = sendEncodedKeyMac(tab, event, "", macKeyAction(event));
                 return;
             }
@@ -2032,7 +2242,87 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
 
 /// 활성 탭 cursor row 를 NSTextInputClient 용 snapshot 으로 채운다. 실패 시
 /// `snap` 은 *부분 생성 상태* 로 남으므로 호출자(`buildImeSnapshot`)가 정리한다.
+/// #646 — 검색 입력칸을 IME 가 보는 **document** 로 만든다.
+///
+/// `NSTextInputClient` 는 client 가 하나의 document 를 들고 있다고 본다. 헤더가 그것을
+/// 못박는다 — `selectedRange` 는 *"valid location is from 0 to **the document length**"*,
+/// `markedRange` 는 그 document 안의 범위이고, `attributedSubstringForProposedRange:` 는
+/// 그 범위를 **실제 글자로 돌려줄 수 있어야** 한다.
+///
+/// 그래서 **조합 중 글자 (marked text) 가 document 에 들어 있어야 한다.** 헤더의
+/// `setMarkedText:` 설명도 같다 — *"the receiver **inserts** string replacing the content
+/// specified by replacementRange"*. 조합은 document 밖의 무엇이 아니라 document 안에 끼워진
+/// 글자다.
+///
+/// 이것을 안 지키면 조합 · 확정 같은 단순 흐름은 그럭저럭 되지만 **한자 재변환은 안 된다** —
+/// IME 가 `markedRange` 를 받아 그 범위의 글자를 물었는데 document 에 없으면 후보를 띄우지
+/// 않는다 (2026-09-16 실기: 터미널에서는 뜨고 검색바에서는 안 떴다).
+///
+/// 그래서 document 는 **needle 에 preedit 을 caret 자리로 끼운 것**이다:
+///
+///     needle[0..caret] + preedit + needle[caret..]
+///
+/// `selected.location` 은 그 preedit 이 시작하는 자리다 (= marked range 의 시작).
+/// 되돌리는 사상은 `searchDocToNeedleByte` 가 든다.
+///
+/// (탭 inline rename 도 같은 자리에서 같은 일을 했다 — `buildRenameImeSnapshot`, #341 로
+/// 제거. 다만 그쪽은 preedit 을 document 에 넣지 않아 한자 재변환에 별도 장치가 필요했다.)
+fn fillSearchImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    if (!searchFocused()) return false;
+    const v = searchBarViewNow() orelse return false;
+    const tab = g_session.activeTab() orelse return false;
+    const r = &g_renderer.?;
+
+    const needle = tab.search.needle.items;
+    const caret = @min(tab.search.caret, needle.len);
+    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+
+    const scale = r.scale;
+    const cw: f32 = @floatFromInt(r.tab_font.cell_width_px);
+    const ch: f32 = @floatFromInt(r.tab_font.cell_height_px);
+    const field_x = v.field.x * scale;
+    const text_y_top = v.field.y * scale + (v.field.h * scale - ch) * 0.5;
+
+    var x = field_x - tab.search.field_scroll_px * scale;
+    snap.* = .{};
+    try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
+
+    // 세 조각을 순서대로 넣는다. `selected` 는 preedit 이 시작하는 자리 — 조합이 없으면
+    // 그냥 caret 이다.
+    const Emit = struct {
+        fn run(sn: *ImeSnapshot, alloc: std.mem.Allocator, bytes: []const u8, xp: *f32, top: f32, w: f32, h: f32) !void {
+            var it = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+            while (it.nextCodepoint()) |cp| {
+                const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * w;
+                const start = ImeRectPx{ .x = xp.*, .y = top, .w = @max(advance, w), .h = h };
+                xp.* += advance;
+                try sn.appendCodepoint(alloc, cp, start, .{ .x = xp.*, .y = top, .w = w, .h = h });
+            }
+        }
+    };
+
+    try Emit.run(snap, allocator, needle[0..caret], &x, text_y_top, cw, ch);
+    snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+    try Emit.run(snap, allocator, preedit, &x, text_y_top, cw, ch);
+    try Emit.run(snap, allocator, needle[caret..], &x, text_y_top, cw, ch);
+    return true;
+}
+
+/// #646 — document (needle + preedit) 의 byte offset → **needle** 의 byte offset.
+///
+/// preedit 은 needle 에 없으므로 그 구간은 전부 caret 으로 접힌다. IME 가 marked text 를
+/// 덮어쓰라고 주는 범위 (한자 변환이 그렇다) 가 정확히 그 구간이라, 이 사상이 있어야
+/// "조합한 글자를 지우고 한자를 넣는다" 가 성립한다.
+fn searchDocToNeedleByte(doc_off: usize, caret: usize, preedit_len: usize) usize {
+    if (doc_off <= caret) return doc_off;
+    if (doc_off <= caret + preedit_len) return caret;
+    return doc_off - preedit_len;
+}
+
 fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    // #646 — 검색바가 키보드를 가지면 IME 가 보는 문서는 터미널이 아니라 입력칸이다.
+    if (fillSearchImeSnapshot(allocator, snap) catch false) return true;
+
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
     const r = &g_renderer.?;
@@ -2215,6 +2505,38 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     const cstr = get_utf8(str, objc.sel("UTF8String"));
     const commit = cstr[0..len];
 
+    // #646 — 검색바가 포커스를 가지면 확정 글자는 PTY 가 아니라 검색어로 간다.
+    //
+    // **여기는 터미널 경로의 backspace 흉내를 쓰지 않는다.** 그 우회책 (`queueBackspaces` ·
+    // `storeHanjaPendingCommit` · `g_hanja_reconversion_*`) 이 있는 이유는 터미널에 *범위를
+    // 고치는 API 가 없어서* 다 — 끝에 바이트를 붙이거나 backspace 를 보내는 것뿐이다.
+    // 검색 입력칸은 진짜 편집 버퍼라 `replacementRange` 를 **그대로 splice** 하면 된다.
+    // 그래서 한자 변환도 IME 의 평범한 흐름 그대로 성립한다.
+    if (searchFocused()) {
+        const tab_s = g_session.activeTab() orelse return;
+        const caret_before = @min(tab_s.search.caret, tab_s.search.needle.items.len);
+        const preedit_len_before = g_preedit_len;
+
+        // 치환 범위는 **document** (needle + preedit) 좌표다. needle 좌표로 되돌린다.
+        var from = caret_before;
+        var to = caret_before;
+        if (replacement.location != NSNotFound) {
+            var dsnap = buildImeSnapshot(g_gpa.allocator());
+            defer if (dsnap) |*sn| sn.deinit(g_gpa.allocator());
+            if (dsnap) |*sn| {
+                if (replacementByteRange(sn, replacement)) |r| {
+                    from = searchDocToNeedleByte(r.byte_start, caret_before, preedit_len_before);
+                    to = searchDocToNeedleByte(r.byte_end, caret_before, preedit_len_before);
+                }
+            }
+        }
+
+        clearImeMarkedState();
+        clearHanjaState();
+        searchSpliceText(from, to, commit);
+        return;
+    }
+
     var snap = buildImeSnapshot(g_gpa.allocator());
     defer if (snap) |*s| s.deinit(g_gpa.allocator());
     const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
@@ -2258,6 +2580,32 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
         clearHanjaState();
         return;
     }
+    // #646 — **`replacementRange` 를 지킨다.** 헤더가 못박은 계약이다 — *"the receiver
+    // inserts string replacing the content specified by replacementRange"*.
+    //
+    // 한자 재변환이 정확히 이 길로 온다 (2026-09-16 로그로 확인): IME 는 조합을 먼저
+    // `insertText` 로 확정한 뒤, **그 글자를 document 범위로 지목해 다시 marked 로 가져간다**
+    // (`setMarked … repl=(0,1)`). 이 인자를 무시하면 확정본이 needle 에 남은 채 조합이 겹쳐
+    // 보이고, 변환 결과까지 붙어 `한韓` 이 된다.
+    //
+    // 터미널 쪽은 이 인자를 못 쓴다 — 범위를 되돌릴 API 가 없어 `g_hanja_candidate_*` 로
+    // 삭제 개수를 세는 우회책을 쓴다. 검색 입력칸은 진짜 버퍼라 그냥 지우면 된다.
+    if (searchFocused() and isReplacingRange(replacement_range)) {
+        if (g_session.activeTab()) |tab_m| {
+            const caret_now = @min(tab_m.search.caret, tab_m.search.needle.items.len);
+            const pre_now = g_preedit_len;
+            var msnap = buildImeSnapshot(g_gpa.allocator());
+            defer if (msnap) |*sn| sn.deinit(g_gpa.allocator());
+            if (msnap) |*sn| {
+                if (replacementByteRange(sn, replacement_range)) |rr| {
+                    const from = searchDocToNeedleByte(rr.byte_start, caret_now, pre_now);
+                    const to = searchDocToNeedleByte(rr.byte_end, caret_now, pre_now);
+                    searchSpliceText(from, to, &.{});
+                }
+            }
+        }
+    }
+
     const get_length = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
     g_marked_len = get_length(str, objc.sel("length"));
     g_marked_selected_range = selected_range;
@@ -2278,7 +2626,10 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     // composition 은 cursor(맨 아래 live line)에 inline 표시되므로, 스크롤백 올린
     // 상태에서 조합 시작 시 안 내려가면 자기 조합이 안 보임. commit 은
     // imeInsertText 가 scroll.
-    g_session.scrollActiveToBottom();
+    //
+    // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 스크롤할 이유가
+    // 없다. 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
+    if (!searchFocused()) g_session.scrollActiveToBottom();
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;
@@ -2286,6 +2637,13 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
             reconversion_delete_count
         else
             replacement_range.length;
+
+        // #646 — 후보 panel 은 우리 drop-down 보다 낮은 level 이라 **가려진다.** 터미널
+        // 경로는 이벤트를 두 번 먹이면서 두 번째 패스의 `firstRect` 에서 낮추는데
+        // (`g_hanja_reconversion_active`), 검색 경로는 IME 가 한 번에 끝내 그 시점이 없다.
+        // 후보 세션이 열리는 **바로 이 자리**에서 낮춘다 — 복구는 `clearHanjaCandidateTarget`
+        // 이 이미 맡고 있어 짝이 맞는다.
+        if (searchFocused()) lowerWindowForImePanel();
     }
 }
 
@@ -2376,6 +2734,9 @@ fn imeCharIndex(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) us
 }
 
 fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) CGRect {
+    // #646 — 검색 중에도 여기를 그대로 탄다. 스냅숏이 이미 **입력칸**을 가리키므로
+    // (`fillSearchImeSnapshot`) 자리가 저절로 검색바 caret 이 된다 — 특수 분기를 두면
+    // 그 하나만 맞고 나머지 표면 (`markedRange` 등) 은 어긋난 채로 남는다.
     var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
         if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
         return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
@@ -3028,6 +3389,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
+        // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
+        .find => handleOpenSearch(),
         // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
         // 해제, 아니면 monitor 진입. 키보드의 self-symmetric(들어간 키로만
         // 나옴) 정책은 그대로 — workarea 상태에서 메뉴가 no-op 이던 문제.
@@ -3037,6 +3400,10 @@ fn executeCommandMenu(command: command_menu.Command) void {
             const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
             defer allocator.free(path);
             @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
+        },
+        .open_log => {
+            const path = log.filePath() orelse return;
+            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), path);
         },
         .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url),
         .about => about.showAboutDialog(g_rt),
@@ -3059,12 +3426,19 @@ fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
     );
 }
 
-/// IME preedit (g_preedit_buf) 을 활성 탭 PTY 로 commit + IME 상태 클리어.
+/// IME preedit (g_preedit_buf) 을 **지금의 sink** 로 commit + IME 상태 클리어.
 /// 호출 후 typing 계속 가능. render 요청은 하지 않는다 — 호출자가 뒤이어
 /// 화면을 바꾸는 경우(escape 송신 등)가 있어 `commitPendingInput` 이 그걸 맡는다.
-fn commitPreeditToPty(self_view: objc.id) void {
+///
+/// #646 — sink 는 검색바가 포커스를 가지면 검색어, 아니면 PTY 다. `input_policy` 의
+/// `Pending.commit` 이 뜻하는 것이 바로 이 "지금의 sink 로 flush" 이고, 그래서 단축키 ·
+/// paste 처럼 commit 을 요구하는 경로가 검색 중에도 자모를 흘리지 않는다.
+fn commitPreeditToSink(self_view: objc.id) void {
     if (g_preedit_len == 0) return;
-    g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
+    if (searchFocused())
+        searchInsertText(g_preedit_buf[0..g_preedit_len])
+    else
+        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     g_preedit_len = 0;
     g_marked_len = 0;
     clearHanjaState();
@@ -3081,7 +3455,7 @@ fn commitPreeditToPty(self_view: objc.id) void {
 /// 동작 (cancel 아님).
 /// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
 fn commitPendingInput(self_view: objc.id) void {
-    commitPreeditToPty(self_view);
+    commitPreeditToSink(self_view);
     // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
     // 우회한다. 내부 marked state 만 지우고 render 를 요청하지 않으면
     // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
@@ -3165,6 +3539,34 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
         };
         add_rect(self_view, objc.sel("addCursorRect:cursor:"), controls, arrow);
     }
+    // #646 — 검색바. 입력칸은 I-beam 그대로 두고 (터미널 영역이 이미 그렇다) **나머지만**
+    // 화살표로 덮는다. 겹치는 cursor rect 의 우선순위는 AppKit 이 보장하지 않으므로, 입력칸
+    // 위에 I-beam 을 다시 얹는 대신 좌우 두 조각으로 나눠 겹치지 않게 한다.
+    if (arrow != null) {
+        if (searchBarViewNow()) |v| {
+            const flip = struct {
+                fn y(win_h: f64, top: f32, height: f32) f64 {
+                    return @max(0, win_h - @as(f64, top + height));
+                }
+            };
+            const pieces = [_]struct { x: f32, w: f32 }{
+                .{ .x = v.rect.x, .w = @max(0, v.field.x - v.rect.x) },
+                .{
+                    .x = v.field.x + v.field.w,
+                    .w = @max(0, (v.rect.x + v.rect.w) - (v.field.x + v.field.w)),
+                },
+            };
+            for (pieces) |piece| {
+                if (piece.w <= 0) continue;
+                const r = NSRect{
+                    .origin = .{ .x = piece.x, .y = flip.y(h, v.rect.y, v.rect.h) },
+                    .size = .{ .width = piece.w, .height = @min(h, @as(f64, v.rect.h)) },
+                };
+                add_rect(self_view, objc.sel("addCursorRect:cursor:"), r, arrow);
+            }
+        }
+    }
+
     if (arrow != null and g_command_menu_open and g_renderer != null) {
         const menu = commandMenuViewNow().rect;
         const menu_rect = NSRect{
@@ -3212,6 +3614,21 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         closeCommandMenu();
         if (hit) |command| executeCommandMenu(command);
         return;
+    }
+
+    // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+    //
+    // **새 누름마다 플래그를 다시 정한다.** 뗌에서만 풀면, 뗌이 오지 않는 경로 (창 밖에서
+    // 떼기 · pointer leave) 에서 참으로 걸린 채 남아 터미널 마우스가 죽는다.
+    g_search_press = false;
+    if (g_renderer != null) {
+        const xy = eventToWindowPx(self_view, event);
+        if (searchBarMouseDown(xy.x, xy.y)) {
+            // 눌림이 바에서 시작했으니 이어질 drag · up 도 터미널 선택을 만들면 안 된다.
+            tab.interaction.cancelPointerModes();
+            g_search_press = true;
+            return;
+        }
     }
 
     if (g_session.count() == 1 and g_renderer != null) {
@@ -3366,7 +3783,12 @@ fn selectionSlopMac() f32 {
     return ui_metrics.selectionDragSlopPx(@floatFromInt(r.font.cell_width_px), r.scale);
 }
 
+/// #646 — 이번 누름이 검색바에서 시작했는가. 시작했으면 이어지는 drag · up 을 터미널이
+/// 보면 안 된다 (바 위에서 뗐다 해도 셀 좌표로 해석돼 선택이 생긴다).
+var g_search_press: bool = false;
+
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_search_press) return;
     requestRender(); // #255 Phase2
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
@@ -3434,6 +3856,10 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 }
 
 fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_search_press) {
+        g_search_press = false;
+        return;
+    }
     requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
     // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
@@ -3516,6 +3942,29 @@ fn tildazMouseMoved(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c
         return;
     }
     g_command_menu_hover = null;
+
+    // #646 — 검색바 컨트롤 hover. 바 위에 있으면 탭바 hover 는 꺼 둔다 (바가 위에 있다).
+    {
+        const xy = eventToWindowPx(self_view, event);
+        const sv = searchBarViewNow();
+        const scale: f32 = g_renderer.?.scale;
+        const hx: f32 = @as(f32, @floatCast(xy.x)) / scale;
+        const hy: f32 = @as(f32, @floatCast(xy.y)) / scale;
+        const on_bar = if (sv) |v| search_bar.contains(v, hx, hy) else false;
+        const new_search_hover: ?search_bar.Control = if (sv) |v| search_bar.hit(v, hx, hy) else null;
+        if (new_search_hover != g_search_hover) {
+            g_search_hover = new_search_hover;
+            requestRender();
+        }
+        if (on_bar) {
+            if (g_tab_hover != .none) {
+                g_tab_hover = .none;
+                requestRender();
+            }
+            return;
+        }
+    }
+
     const new_hover: tab_layout.Area = blk: {
         const xy = eventToWindowPx(self_view, event);
         if (g_session.count() == 1) break :blk singleControlHit(xy.x, xy.y);
@@ -3558,6 +4007,11 @@ fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     // 유지 — 표준 메뉴의 마지막 selection 기억과 동일).
     if (g_command_menu_hover != null) {
         g_command_menu_hover = null;
+        requestRender();
+    }
+    // #646 — 검색바 컨트롤 hover 도 같은 이유로 푼다. Linux 에는 있고 여기만 빠져 있었다.
+    if (g_search_hover != null) {
+        g_search_hover = null;
         requestRender();
     }
 }
@@ -3754,6 +4208,17 @@ fn handleCloseActiveTab() void {
 /// #544 — `Shift+Cmd+X` (`close_pane`). 활성 pane 하나를 닫는다 — 마지막 pane 이면 탭,
 /// 마지막 탭이면 앱 종료 (`tab_actions.closeActivePane` 이 정책을 든다). 사후 처리는
 /// `handleCloseActiveTab` 과 같다. `Cmd+W` 는 탭 통째로다.
+/// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않고 그대로 둔다
+/// (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
+fn handleOpenSearch() void {
+    const tab = g_session.activeTab() orelse return;
+    const was_open = tab.search.is_open;
+    tab.search.open();
+    // 바가 새로 떴으면 그 자리의 커서 모양이 바뀐다 (터미널 I-beam → 컨트롤 화살표).
+    if (!was_open) invalidateCursorRects();
+    requestRender();
+}
+
 fn handleClosePane() void {
     if (tab_actions.closeActivePane(&g_host) == .changed) {
         syncGeometryAfterTabCountChange();
@@ -3800,6 +4265,14 @@ fn handlePaste() void {
 
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
+
+    // #646 — 검색바가 포커스를 가지면 payload 는 검색어로 간다 (`input_policy` 의
+    // `.paste` → `.search_field`). 조합 확정은 `applyPasteInputPolicy` 가 이미 같은
+    // sink 로 했으므로 여기서는 잇기만 하면 '하X' 순서가 그대로 성립한다.
+    if (searchFocused()) {
+        searchInsertText(cstr[0..len]);
+        return;
+    }
 
     // PTY paste (bracketed paste + wrap 은 session.pasteToActive 가).
     tab_actions.routePaste(&g_host, cstr[0..len]);
@@ -4660,11 +5133,17 @@ fn renderFrameTick() void {
     const titles = titles_buf[0..tab_count];
 
     // IME preedit (`g_preedit_buf`) — cell grid 의 cursor 위치 inline overlay.
+    //
+    // #646 — 검색바가 포커스를 가지면 같은 버퍼를 **검색 입력칸 안**에 그린다. 조합이
+    // 보이는 자리는 하나여야 하므로 목적지를 여기서 가른다.
+    const search_focused_now = searchFocused();
     const cell_preedit: []const u8 =
-        if (g_preedit_len > 0 and !g_hanja_candidate_active)
+        if (!search_focused_now and g_preedit_len > 0 and !g_hanja_candidate_active)
             g_preedit_buf[0..g_preedit_len]
         else
             &.{};
+    const search_preedit: []const u8 =
+        if (search_focused_now and g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
 
     g_renderer.?.renderTabBar(
         titles,
@@ -4687,9 +5166,14 @@ fn renderFrameTick() void {
     var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
     const lay = group.layout(area, m, &rect_buf);
     var active_rect: ?pane_layout.Rect = null;
+    // #646 — 검색바가 맨 아랫줄 (프롬프트) 을 가리지 않도록 활성 pane 격자의 아래 가장자리를
+    // 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이**인 이유는, 격자가 pane 높이에 딱 안 떨어져
+    // 아래에 한 줄이 안 되는 자투리가 남기 때문이다.
+    var active_grid_bottom_px: ?i32 = null;
     for (lay) |pr| {
         const t = group.panes[pr.pane].?;
         const is_active = pr.pane == group.active_pane;
+        if (is_active) active_grid_bottom_px = pr.rect.y + pad_px + @as(i32, @intCast(t.terminal.rows)) * cell_h_px;
         // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
         if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
         g_renderer.?.drawPane(.{
@@ -4728,6 +5212,11 @@ fn renderFrameTick() void {
             }
         }
     }
+    // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다.** 마우스 히트 테스트가 그린 것과
+    // 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를 돌아야 나오는 값이라 마우스 경로에서
+    // 다시 구하면 어긋날 여지가 생긴다.
+    g_search_geom = searchGeometry(group.activeTab(), r_scale, active_grid_bottom_px);
+
     g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
     g_renderer.?.endFrame(
         .{
@@ -4738,6 +5227,15 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
+        // #646 — 검색바는 활성 pane 의 상태를 비춘다.
+        search_bar.uiFrom(
+            &group.activeTab().search,
+            search_preedit,
+            search_focused_now,
+            g_search_hover,
+            @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / r_scale,
+            g_search_geom,
+        ),
     );
 
     // #255 · #591 — 예전에는 "이번 frame 에 처음 본 글리프는 다음 frame 에 올라간다" (2-frame)
