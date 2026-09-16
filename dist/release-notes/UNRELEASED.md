@@ -24,8 +24,8 @@ Internal changes belong in neither.
   Add the line below, or delete the config and let TildaZ regenerate it.
 
   ```toml
-  open_search = "cmd+f"        # macOS
-  open_search = "ctrl+shift+f" # Linux, Windows
+  open_search = ["cmd+f"]        # macOS
+  open_search = ["ctrl+shift+f"] # Linux, Windows
   ```
 
 ## Body candidates
