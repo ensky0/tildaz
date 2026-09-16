@@ -828,10 +828,15 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
+| [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴). `probe` 는 바 자리만 재고 끝난다 |
+
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
 tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
 tool\key-bytes-check_windows.ps1                                    # 창 3 회 (legacy · kitty · mok2) · 합성 키
+tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
+tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 21 항목 (캡처 30 장 남짓)
+tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -884,6 +889,27 @@ tool\key-bytes-check_windows.ps1                                    # 창 3 회 
 - **커서 모양은 `GetCursorInfo` 의 `hCursor` 를 `LoadCursorW(NULL, IDC_*)` 의 공유 핸들과 비교**해 판정해요
   (`IDC_HAND` 32649 · `IDC_IBEAM` 32513 · `IDC_ARROW` 32512). 캡처로는 못 봐요 — `PrintWindow` 는 커서를 안
   그려요. 덕분에 **밑줄 판정 (캡처 픽셀) 과 커서 판정이 서로 오염되지 않아요.**
+- **⚠️ 사용자 `config_0.toml` 을 복사해 `config_9.toml` 을 만들 때는 그 판이 요구하는 키가 다 있는지 봐요.**
+  없으면 앱이 fatal 다이얼로그로 끝나는데 (`missing required key "…"` · [#655](https://github.com/ensky0/tildaz/issues/655))
+  **그 다이얼로그도 창이라 하네스가 그것을 잡아 재요.** 2026-09-16 #646 회차에서 580x573 짜리를 검색바로 읽을
+  뻔했어요 (`[fatal]` 로그가 유일한 단서였어요). 창을 찾은 뒤 로그에 `[fatal]` 이 있으면 멈추는 가드를 두고,
+  복사할 때 빠진 키를 채워요. 위 `# Windows — 렌더 결과를 …` 의 `_internal` 누락과 같은 부류의 함정이에요.
+- **강조 색을 세는 영역을 "바 위쪽" 처럼 잘라 잡지 않아요.** 버퍼 마지막 줄 매치는 검색바와 **같은 높이**에 있어서
+  그렇게 자르면 `0 px` 로 읽혀요 — 캡처에는 또렷이 강조돼 있는데도요 (같은 회차 실측). 클라이언트 전체에서
+  **그 UI 사각형만 빼요.**
+- **탭이 2 개면 탭바의 활성 탭 선이 `TAB_ACCENT_COLOR`** 라 검색 강조 (`#f7a41d`) 와 **같은 색**이에요. "강조가
+  남김없이 사라졌는가" 를 묻는 항목은 탭을 만들기 **전에** 두거나 그 띠를 빼고 세요.
+- **탭바가 생기면 창이 그만큼 커지고 창 안 UI 도 같이 내려가요.** 판정 영역을 갱신하지 않으면 그 뒤 항목이 옛
+  자리를 봐서 **전부 `0 px`** 이 돼요 — 앱 결함처럼 보여요.
+- **`Esc` 는 겹친 상태를 안쪽부터 하나씩 닫아요** (IME 후보창 → 조합 → 검색바). 두 번 보내면 바까지 닫히고 그 뒤
+  타이핑이 터미널로 가요. 닫혔는지 캡처로 확인하고 필요하면 다시 열어요.
+- **IME 후보창은 `EnumWindows` 로 못 찾아요** — 한국어 IME 의 후보 UI 는 "새 창 0 개" 인데 화면에는 떠 있었어요
+  (2026-09-16 실측). 창 클래스 대신 **그 영역의 화면 캡처가 바뀌는지**로 판정하고, 가만둔 구간을 유휴 대조군으로
+  함께 재요 (`CopyFromScreen` — `PrintWindow` 는 남의 창을 안 찍어요).
+- **단축키가 안 도는 것을 `Alt` 조합으로만 확인하면 놓쳐요.** Windows 는 `Alt` 가 `WM_SYSKEYDOWN` 이라 `[keys]`
+  조회를 먼저 타고, `Ctrl+Shift+방향` · `Ctrl+PgUp/PgDn` 은 `WM_KEYDOWN` 이라 다른 경로예요 — #646 의 결함이
+  정확히 그 차이로 한쪽에만 났어요. **같은 회차 안에 "그 UI 를 연 채" 와 "닫고" 두 번을 넣어 대조**하면 앱 결함인지
+  환경 탓인지 바로 갈려요.
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
 
 # Windows — 키보드 layout 조회 실측 방법
