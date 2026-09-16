@@ -299,6 +299,17 @@ pub const App = struct {
         // #483 5단계 — 분할선 위 (±slop) 는 리사이즈 커서, pane 의 셀 영역 (padding · scrollbar 자리 안쪽) 은
         // I-beam. pane 하나면 이전의 창 기준 판정과 같다.
         if (self.separatorAt(x, y)) |s| return if (s.axis == .side_by_side) .separator_v else .separator_h;
+        // #646 — 검색바는 셀 위에 떠 있다. 입력칸은 I-beam 그대로 두고 (셀 영역이 이미 그렇다)
+        // 컨트롤 · 여백은 화살표로 돌린다. Linux `pointerRegion` · macOS `tildazResetCursorRects`
+        // 가 이미 같은 규칙을 갖고 있었는데 여기만 빠져 있었다 — 바 위 어디서나 I-beam 이 나왔다.
+        if (self.searchBarViewNow()) |v| {
+            const sx = @as(f32, @floatFromInt(x)) / self.dpi_scale;
+            const sy = @as(f32, @floatFromInt(y)) / self.dpi_scale;
+            if (search_bar.contains(v, sx, sy)) {
+                const in_field = sx >= v.field.x and sx < v.field.x + v.field.w;
+                if (!in_field) return .other;
+            }
+        }
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         const lay = self.activeLayout(&buf);
         const id = pane_layout.paneAt(lay, x, y) orelse return .other;
