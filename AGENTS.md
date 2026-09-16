@@ -1430,6 +1430,44 @@ grim shot.png                                                          # sway �
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
 
+# Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
+
+**커서 모양은 headless sway 로 못 재요.** 그 compositor 가 커서를 화면에 아예 안 그리는 구간이 있어서
+(위 절의 경고) 판정기가 배경을 긁어 `unknown` 을 내요. 그래서 이것만은 **사용자 세션에서** 재요 —
+2026-09-16 [#646](https://github.com/ensky0/tildaz/issues/646) D28 에서 쓴 절차예요.
+
+```sh
+# ① uinput 을 쓸 수 있는지 먼저 본다 (아래 함정)
+python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY|os.O_NONBLOCK)); print('OK')"
+
+# ② 절대좌표 가상 포인터를 꽂는다 — ABS_X·ABS_Y (0..32767) + INPUT_PROP_POINTER
+#    (`ydotool` 은 안 돼요. 그 장치에 ABS 축이 없어 `mousemove -a` 가 조용히 무시돼요 — 위 절의 경고)
+
+# ③ `-e` 측정 인스턴스로 띄운다 — config_9.toml 도 전역 hotkey 등록도 생기지 않아 사용자와 안 부딪혀요
+env XDG_CONFIG_HOME=$W/xdg/config XDG_STATE_HOME=$W/xdg/state XDG_RUNTIME_DIR=$R \
+    WAYLAND_DISPLAY=/run/user/$(id -u)/wayland-0 XDG_CURRENT_DESKTOP=KDE TILDAZ_VERBOSE=1 \
+    tildaz --instance 9 -e $W/screen.sh &
+
+# ④ 포인터를 옮기고 **포인터를 포함해** 찍는다
+spectacle -b -n -f -p -o shot.png
+```
+
+- **창 좌표는 로그에서 읽어요** — `layer-surface configure logical_w= logical_h= scale=N/120` 과
+  `screen=WxH`. KDE 는 layer-shell 경로라 `width_percent` 만큼 오른쪽에 붙어요 (960 폭이면 x960~1920).
+- **판정은 확대 캡처를 눈으로 봐요.** [`tool/link-shot_linux.py`](tool/link-shot_linux.py) `cursor` 는
+  Adwaita 비트맵과 맞대는데 세션의 커서 테마가 다르면 `unknown` (실측 ratio 0.65) 이 나와요. 테마가
+  갈리는 환경에서는 `magick shot.png -crop 46x46+<x-8>+<y-8> +repage -resize 400%` 로 네 지점을
+  이어 붙여 한 장으로 보는 편이 확실해요 — I-beam 과 화살표는 눈으로 즉시 갈려요.
+- **포커스는 창 안을 한 번 클릭해 잡아요.** layer-shell 은 `keyboard_interactivity=on_demand` 라
+  띄우는 것만으로는 키가 안 가요.
+- **⚠️ 커널을 업데이트하고 재부팅하지 않았으면 `modprobe` 가 통째로 실패해요.** 패키지가 실행 중인
+  커널의 `/lib/modules/<버전>` 을 지워서 `Module uinput not found` 가 나요 (`CONFIG_INPUT_UINPUT=m`
+  인데도요). `uname -r` 과 `ls /lib/modules/` 를 견줘 보고, 어긋나면 **재부팅 전에는 이 검증을 할 수
+  없어요** — 이미 로드된 모듈만 살아 있어요.
+- 끝나면 `UI_DEV_DESTROY` 로 장치를 내리고 (`/proc/bus/input/devices` 에서 사라졌는지 확인), 앱을
+  `kill -TERM` 하고 격리 runtime dir 을 지워요. 실기라 `# 실행 환경` 대로 **시작 전에 창이 뜨고 포인터가
+  움직인다고 알리고** 그동안 기기를 건드리지 말라고 해요.
+
 # Linux — 글리프 · cluster 렌더 실기 검증 방법
 
 폰트 / shaping / cluster 관련 변경 (#401 등) 을 검증하는 절차예요. **소스 판정 → 드라이버로
