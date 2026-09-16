@@ -454,6 +454,32 @@ pub fn iterFieldText(
     }
 }
 
+/// 입력칸을 누른 자리 → **caret 의 byte offset.** `iterFieldText` 의 역함수다 — 같은 전제
+/// (왼쪽으로 `scroll_px` 만큼 민 텍스트, 글자 폭은 `display_width`) 로 되짚는다.
+///
+/// `rel_x` 는 **입력칸 왼쪽 가장자리 기준** 이다 (`click_x - view.field.x`). host 가 창 좌표를
+/// 넘기면 세 곳이 각자 빼야 해서 어긋난다.
+///
+/// 글자 **가운데를 기준**으로 앞뒤를 가른다 — 글자의 왼쪽 절반을 누르면 그 앞, 오른쪽 절반을
+/// 누르면 그 뒤다. native textbox 가 모두 같고, 이것이 없으면 글자 오른쪽 끝을 눌러도 caret 이
+/// 그 앞에 서서 "누른 자리와 다른 곳에 커서가 생긴다".
+pub fn fieldCaret(text: []const u8, cw: f32, scroll_px: f32, rel_x: f32) usize {
+    // 텍스트 좌표계로 옮긴다 (스크롤된 만큼 더한다).
+    const target = rel_x + scroll_px;
+    if (target <= 0) return 0;
+
+    var x: f32 = 0;
+    var byte: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const advance = cw * @as(f32, @floatFromInt(display_width.codepointWidth(@intCast(cp))));
+        if (target < x + advance * 0.5) return byte;
+        byte += std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+        x += advance;
+    }
+    return text.len;
+}
+
 /// 문자열의 표시 폭 (px).
 pub fn textWidthPx(text: []const u8, cw: f32) f32 {
     return @as(f32, @floatFromInt(display_width.stringWidth(text))) * cw;
@@ -676,4 +702,65 @@ test "#646 rects — 컨트롤이 접힌 폭에서는 hover 강조를 만들지 
     // 폭 0 인 컨트롤에 hover 가 남아 있어도 빈 rect 를 내보내지 않는다.
     const rs = rects(&buf, v, .{ .open = true, .hover = .close }, 1.0, &chrome);
     try std.testing.expectEqual(@as(usize, 2), rs.len);
+}
+
+test "#646 fieldCaret — 글자 가운데를 기준으로 앞뒤가 갈린다" {
+    const cw: f32 = 10;
+    const text = "abc";
+
+    try std.testing.expectEqual(@as(usize, 0), fieldCaret(text, cw, 0, 0));
+    try std.testing.expectEqual(@as(usize, 0), fieldCaret(text, cw, 0, 4)); // `a` 왼쪽 절반
+    try std.testing.expectEqual(@as(usize, 1), fieldCaret(text, cw, 0, 6)); // `a` 오른쪽 절반
+    try std.testing.expectEqual(@as(usize, 1), fieldCaret(text, cw, 0, 14));
+    try std.testing.expectEqual(@as(usize, 2), fieldCaret(text, cw, 0, 16));
+    // 텍스트 오른쪽 빈 자리를 누르면 맨 뒤.
+    try std.testing.expectEqual(@as(usize, 3), fieldCaret(text, cw, 0, 500));
+    // 왼쪽 바깥은 맨 앞.
+    try std.testing.expectEqual(@as(usize, 0), fieldCaret(text, cw, 0, -20));
+}
+
+test "#646 fieldCaret — 두 칸 글자는 두 칸 폭으로 센다" {
+    const cw: f32 = 10;
+    const text = "가b"; // `가` 는 3 byte · 2 칸
+
+    try std.testing.expectEqual(@as(usize, 0), fieldCaret(text, cw, 0, 9));
+    try std.testing.expectEqual(@as(usize, 3), fieldCaret(text, cw, 0, 11)); // `가` 가운데 넘김
+    try std.testing.expectEqual(@as(usize, 3), fieldCaret(text, cw, 0, 24));
+    try std.testing.expectEqual(@as(usize, 4), fieldCaret(text, cw, 0, 26));
+}
+
+test "#646 fieldCaret — 가로 스크롤을 되짚는다" {
+    const cw: f32 = 10;
+    const text = "abcdef";
+    // 20 px 만큼 왼쪽으로 밀렸으면, 화면 x=0 은 텍스트의 `c` 자리다.
+    try std.testing.expectEqual(@as(usize, 2), fieldCaret(text, cw, 20, 0));
+    try std.testing.expectEqual(@as(usize, 3), fieldCaret(text, cw, 20, 6));
+}
+
+test "#646 fieldCaret — iterFieldText 와 같은 자리를 가리킨다" {
+    // 역함수 관계를 고정한다. 각 글리프의 시작 x 를 그대로 누르면 그 글자 앞이어야 한다.
+    const cw: f32 = 12;
+    const text = "a가b다c";
+    const Ctx = struct {
+        var xs: [8]f32 = undefined;
+        var bytes: [8]usize = undefined;
+        var n: usize = 0;
+    };
+    Ctx.n = 0;
+    iterFieldText(text, cw, 1000, 0, {}, struct {
+        fn cb(_: void, g: Glyph) void {
+            Ctx.xs[Ctx.n] = g.x;
+            Ctx.n += 1;
+        }
+    }.cb);
+
+    var byte: usize = 0;
+    var i: usize = 0;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| : (i += 1) {
+        // 글리프 시작 x 에서 아주 조금 오른쪽 = 그 글자의 왼쪽 절반 → 그 글자 앞.
+        try std.testing.expectEqual(byte, fieldCaret(text, cw, 0, Ctx.xs[i] + 1));
+        byte += std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+    }
+    try std.testing.expectEqual(text.len, byte);
 }

@@ -1092,11 +1092,69 @@ fn searchGeometry(tab: anytype, scale: f32, grid_bottom_px: ?i32) search_bar.Geo
     };
 }
 
-/// #646 — 지금 키보드 포커스를 검색 입력칸이 갖고 있는가. `input_policy.State.search_active`
-/// 가 곧 이 값이다.
+/// #646 — 마지막 프레임의 검색바 배치. **히트 테스트가 그린 것과 같은 사각형을 봐야 하므로**
+/// 다시 재지 않고 그릴 때 쓴 값을 그대로 둔다 — 격자 바닥은 pane 배치를 돌아야 나오는 값이라
+/// 마우스 경로에서 다시 구하면 어긋날 여지가 생긴다.
+var g_search_geom: search_bar.Geometry = .{};
+
+/// #646 — pointer 가 올라간 검색바 컨트롤.
+var g_search_hover: ?search_bar.Control = null;
+
+/// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.
+fn searchBarViewNow() ?search_bar.View {
+    const tab = g_session.activeTab() orelse return null;
+    if (!tab.search.is_open) return null;
+    if (g_search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+    return search_bar.view(g_search_geom);
+}
+
+/// #646 — 검색바 위 클릭 · 이동을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
+/// 경로로 넘기지 않는다.
 ///
-/// 지금은 "바가 열려 있으면 포커스" 다. 바를 닫지 않고 터미널로 포커스만 되돌리는 길이
-/// 아직 없어서인데, 축을 `is_open` 과 따로 둔 덕에 그 길이 생겨도 이 함수만 바뀐다.
+/// 이 가로채기가 없으면 바가 터미널 셀 **위에 떠 있는** 탓에 바 위에서 드래그하면 터미널
+/// 선택이 시작되고, 마우스 리포팅을 켠 앱 (vim · htop) 에는 클릭 좌표가 그대로 전송된다.
+/// 커맨드 메뉴가 같은 이유로 같은 자리에서 가로챈다.
+fn searchBarMouseDown(px: f64, py: f64) bool {
+    const v = searchBarViewNow() orelse return false;
+    const scale: f32 = g_renderer.?.scale;
+    const x: f32 = @as(f32, @floatCast(px)) / scale;
+    const y: f32 = @as(f32, @floatCast(py)) / scale;
+    if (!search_bar.contains(v, x, y)) return false;
+
+    const tab = g_session.activeTab() orelse return true;
+    if (search_bar.hit(v, x, y)) |c| {
+        // 버튼은 같은 이름의 키와 **같은 함수**를 탄다 (`search_input.control`).
+        const eff = search_input.control(&tab.search, g_gpa.allocator(), c, tab.title_clock.read()) catch return true;
+        applySearchEffect(eff);
+        return true;
+    }
+
+    // 입력칸을 눌렀으면 caret 을 그 자리로. 바의 빈 자리는 삼키기만 한다.
+    if (x >= v.field.x and x < v.field.x + v.field.w) {
+        const cw = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / scale;
+        tab.search.caret = search_bar.fieldCaret(
+            tab.search.needle.items,
+            cw,
+            tab.search.field_scroll_px,
+            x - v.field.x,
+        );
+        requestRender();
+    }
+    return true;
+}
+
+/// #646 — 검색바가 키보드를 갖고 있는가. `input_policy.State.search_active` 가 곧 이 값이다.
+///
+/// **바가 열려 있으면 언제나 참이다** (2026-09-16 사용자 결정). 터미널을 클릭해도 넘어가지
+/// 않는다 — 포커스를 둘로 나누면 *사람이 어디에 있는지 볼 수 없다.* 입력칸의 caret 은 1 px
+/// 세로선이고 명령을 치려는 순간 시선은 프롬프트에 있다. 잘못 알면 검색어가 셸로 가고
+/// 이어진 Enter 가 그것을 **실행한다** — 그래서 구별할 상태 자체를 두지 않는다.
+///
+/// 터미널에 원래 "클릭해서 포커스를 옮긴다" 는 개념이 없다는 것도 같은 방향이다. 창에
+/// 포커스가 있으면 프롬프트가 키를 갖고, 클릭은 선택일 뿐이다.
+///
+/// 그래도 `input_policy` 의 축은 `is_open` 과 **따로** 둔다 — 나중에 둘을 가를 이유가
+/// 생기면 이 함수 하나만 바뀐다.
 fn searchFocused() bool {
     const tab = g_session.activeTab() orelse return false;
     return tab.search.is_open;
@@ -1107,6 +1165,17 @@ fn searchFocused() bool {
 fn searchApplyKey(k: search_input.Key) void {
     const tab = g_session.activeTab() orelse return;
     const eff = search_input.key(&tab.search, g_gpa.allocator(), k, tab.title_clock.read()) catch return;
+    applySearchEffect(eff);
+}
+
+/// #646 — 검색 입력이 만든 변화를 화면에 반영한다. 닫힘은 **커서 영역까지** 되돌려야 한다 —
+/// 바가 사라진 자리는 다시 터미널이라 I-beam 이어야 하고, 마우스를 안 움직이면 AppKit 이
+/// 스스로 다시 계산하지 않는다 (#193 의 커맨드 메뉴와 같은 자리).
+fn applySearchEffect(eff: search_input.Effect) void {
+    if (eff.closed) {
+        g_search_hover = null;
+        invalidateCursorRects();
+    }
     if (eff.redraw) requestRender();
 }
 
@@ -3305,6 +3374,34 @@ fn tildazResetCursorRects(self_view: objc.id, _: objc.SEL) callconv(.c) void {
         };
         add_rect(self_view, objc.sel("addCursorRect:cursor:"), controls, arrow);
     }
+    // #646 — 검색바. 입력칸은 I-beam 그대로 두고 (터미널 영역이 이미 그렇다) **나머지만**
+    // 화살표로 덮는다. 겹치는 cursor rect 의 우선순위는 AppKit 이 보장하지 않으므로, 입력칸
+    // 위에 I-beam 을 다시 얹는 대신 좌우 두 조각으로 나눠 겹치지 않게 한다.
+    if (arrow != null) {
+        if (searchBarViewNow()) |v| {
+            const flip = struct {
+                fn y(win_h: f64, top: f32, height: f32) f64 {
+                    return @max(0, win_h - @as(f64, top + height));
+                }
+            };
+            const pieces = [_]struct { x: f32, w: f32 }{
+                .{ .x = v.rect.x, .w = @max(0, v.field.x - v.rect.x) },
+                .{
+                    .x = v.field.x + v.field.w,
+                    .w = @max(0, (v.rect.x + v.rect.w) - (v.field.x + v.field.w)),
+                },
+            };
+            for (pieces) |piece| {
+                if (piece.w <= 0) continue;
+                const r = NSRect{
+                    .origin = .{ .x = piece.x, .y = flip.y(h, v.rect.y, v.rect.h) },
+                    .size = .{ .width = piece.w, .height = @min(h, @as(f64, v.rect.h)) },
+                };
+                add_rect(self_view, objc.sel("addCursorRect:cursor:"), r, arrow);
+            }
+        }
+    }
+
     if (arrow != null and g_command_menu_open and g_renderer != null) {
         const menu = commandMenuViewNow().rect;
         const menu_rect = NSRect{
@@ -3352,6 +3449,17 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         closeCommandMenu();
         if (hit) |command| executeCommandMenu(command);
         return;
+    }
+
+    // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+    if (g_renderer != null) {
+        const xy = eventToWindowPx(self_view, event);
+        if (searchBarMouseDown(xy.x, xy.y)) {
+            // 눌림이 바에서 시작했으니 이어질 drag · up 도 터미널 선택을 만들면 안 된다.
+            tab.interaction.cancelPointerModes();
+            g_search_press = true;
+            return;
+        }
     }
 
     if (g_session.count() == 1 and g_renderer != null) {
@@ -3506,7 +3614,12 @@ fn selectionSlopMac() f32 {
     return ui_metrics.selectionDragSlopPx(@floatFromInt(r.font.cell_width_px), r.scale);
 }
 
+/// #646 — 이번 누름이 검색바에서 시작했는가. 시작했으면 이어지는 drag · up 을 터미널이
+/// 보면 안 된다 (바 위에서 뗐다 해도 셀 좌표로 해석돼 선택이 생긴다).
+var g_search_press: bool = false;
+
 fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_search_press) return;
     requestRender(); // #255 Phase2
     if (event == null) return;
     const tab = g_session.activeTab() orelse return;
@@ -3574,6 +3687,10 @@ fn tildazMouseDragged(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(
 }
 
 fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
+    if (g_search_press) {
+        g_search_press = false;
+        return;
+    }
     requestRender(); // #255 Phase2
     const tab = g_session.activeTab() orelse return;
     // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
@@ -3656,6 +3773,29 @@ fn tildazMouseMoved(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c
         return;
     }
     g_command_menu_hover = null;
+
+    // #646 — 검색바 컨트롤 hover. 바 위에 있으면 탭바 hover 는 꺼 둔다 (바가 위에 있다).
+    {
+        const xy = eventToWindowPx(self_view, event);
+        const sv = searchBarViewNow();
+        const scale: f32 = g_renderer.?.scale;
+        const hx: f32 = @as(f32, @floatCast(xy.x)) / scale;
+        const hy: f32 = @as(f32, @floatCast(xy.y)) / scale;
+        const on_bar = if (sv) |v| search_bar.contains(v, hx, hy) else false;
+        const new_search_hover: ?search_bar.Control = if (sv) |v| search_bar.hit(v, hx, hy) else null;
+        if (new_search_hover != g_search_hover) {
+            g_search_hover = new_search_hover;
+            requestRender();
+        }
+        if (on_bar) {
+            if (g_tab_hover != .none) {
+                g_tab_hover = .none;
+                requestRender();
+            }
+            return;
+        }
+    }
+
     const new_hover: tab_layout.Area = blk: {
         const xy = eventToWindowPx(self_view, event);
         if (g_session.count() == 1) break :blk singleControlHit(xy.x, xy.y);
@@ -3898,7 +4038,10 @@ fn handleCloseActiveTab() void {
 /// (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
 fn handleOpenSearch() void {
     const tab = g_session.activeTab() orelse return;
+    const was_open = tab.search.is_open;
     tab.search.open();
+    // 바가 새로 떴으면 그 자리의 커서 모양이 바뀐다 (터미널 I-beam → 컨트롤 화살표).
+    if (!was_open) invalidateCursorRects();
     requestRender();
 }
 
@@ -4895,6 +5038,11 @@ fn renderFrameTick() void {
             }
         }
     }
+    // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다.** 마우스 히트 테스트가 그린 것과
+    // 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를 돌아야 나오는 값이라 마우스 경로에서
+    // 다시 구하면 어긋날 여지가 생긴다.
+    g_search_geom = searchGeometry(group.activeTab(), r_scale, active_grid_bottom_px);
+
     g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
     g_renderer.?.endFrame(
         .{
@@ -4905,14 +5053,14 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
-        // #646 — 검색바는 활성 pane 의 상태를 비춘다. hover 는 4 단계 ③ (마우스) 에서 붙는다.
+        // #646 — 검색바는 활성 pane 의 상태를 비춘다.
         search_bar.uiFrom(
             &group.activeTab().search,
             search_preedit,
             search_focused_now,
-            null,
+            g_search_hover,
             @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / r_scale,
-            searchGeometry(tab, r_scale, active_grid_bottom_px),
+            g_search_geom,
         ),
     );
 
