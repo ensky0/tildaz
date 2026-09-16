@@ -1862,10 +1862,8 @@ pub const MetalRenderer = struct {
     /// caret 만 그린다 (`emitCommandMenu` 와 같은 분담).
     fn emitSearchBar(self: *MetalRenderer, ui: search_bar.Ui) void {
         const scale = self.scale;
-        const v = search_bar.view(
-            @as(f32, @floatFromInt(self.vp_width)) / scale,
-            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
-        );
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
 
         var bar_rects: [search_bar.MAX_RECTS]ui_rect.Rect = undefined;
         self.openRange(.bg);

@@ -1729,10 +1729,8 @@ pub const Renderer = struct {
     fn collectSearchBar(self: *Renderer, allocator: std.mem.Allocator, in: FrameInputs) void {
         const scale = self.scale;
         const ui = in.search_ui;
-        const v = search_bar.view(
-            @as(f32, @floatFromInt(in.width)) / scale,
-            @as(f32, @floatFromInt(in.height)) / scale,
-        );
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
         const list = &self.layer.chrome_after;
 
         var bar_rects: [search_bar.MAX_RECTS]tab_chrome.Rect = undefined;

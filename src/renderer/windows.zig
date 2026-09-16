@@ -1969,7 +1969,7 @@ pub const D3d11Renderer = struct {
     ) void {
         if (tab_bar_h == 0) self.drawSingleControlStrip(control_layout, control_hover);
         // #646 — 검색바는 터미널 위 · 메뉴 아래다.
-        if (search_ui.open) self.drawSearchBar(vp_w, @intCast(self.vp_height), search_ui);
+        if (search_ui.open) self.drawSearchBar(search_ui);
         if (menu_ui.open) self.drawCommandMenu(vp_w, @intCast(self.vp_height), menu_ui, toggle_hotkey);
 
         // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
@@ -2051,12 +2051,10 @@ pub const D3d11Renderer = struct {
 
     /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
     /// caret 만 그린다 (`drawCommandMenu` 와 같은 분담).
-    fn drawSearchBar(self: *D3d11Renderer, viewport_w: c_int, viewport_h: c_int, ui: search_bar.Ui) void {
+    fn drawSearchBar(self: *D3d11Renderer, ui: search_bar.Ui) void {
         const scale = self.pixels_per_dip;
-        const v = search_bar.view(
-            @as(f32, @floatFromInt(viewport_w)) / scale,
-            @as(f32, @floatFromInt(viewport_h)) / scale,
-        );
+        // 배치는 host 가 이미 재 뒀다 (`search_bar.Geometry`) — 여기서 다시 재지 않는다.
+        const v = search_bar.view(ui.geom);
 
         const cw: f32 = @floatFromInt(self.tab_font.cell_width_px);
         const ch: f32 = @floatFromInt(self.tab_font.cell_height_px);

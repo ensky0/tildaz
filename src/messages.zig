@@ -22,15 +22,25 @@ pub const quit_confirm_title = "Quit TildaZ?";
 pub const command_toggle_visibility = "Show / Hide TildaZ";
 pub const command_new_tab = "New Tab";
 /// #483 4c — `…` 메뉴의 분할 항목 둘 (확정 설계: 아이콘을 늘리지 않고 메뉴에 넣는다).
-pub const command_split_right = "Split Right";
-pub const command_split_down = "Split Down";
-pub const command_close_active_tab = "Close Active Tab";
-pub const command_copy_selection = "Copy Selection";
+// #646 — 메뉴는 **네 방향이 다 있다는 것을 알리는 자리**다. 항목을 넷으로 늘리는 대신 쌍으로
+// 묶어 같은 높이에 네 방향을 담는다 (2026-09-16 사용자 요청 — "있는 기능인데 너무 잘 안
+// 보여서"). 누르면 기본 방향 (오른쪽 · 아래) 으로 나뉜다.
+pub const command_split_right = "Split Left / Right";
+pub const command_split_down = "Split Up / Down";
+// "Active" 는 뺀다 (2026-09-16 사용자 결정) — 메뉴의 다른 항목도 전부 활성 탭 · 활성 pane
+// 에 대한 것이라 이 항목에만 붙여 둘 이유가 없었다.
+pub const command_close_active_tab = "Close Tab";
+/// #646 — 버퍼 검색.
+pub const command_find = "Find";
+pub const shortcut_find = "Ctrl+Shift+F";
+pub const shortcut_find_macos = "Cmd+F";
+pub const command_copy_selection = "Copy";
 pub const command_paste = "Paste";
 /// toggle 의미 + 320pt 메뉴 폭에서 hint 와 공존하는 짧은 문구 (#334 피드백 —
 /// "Enter / Exit Full Screen" 은 길어서 hint 가 숨겨졌음).
 pub const command_full_screen = "Toggle Full Screen";
 pub const command_open_config = "Open Config";
+pub const command_open_log = "Open Log";
 pub const command_keyboard_shortcuts = "Keyboard Shortcuts";
 pub const command_about = "About TildaZ";
 
@@ -41,16 +51,21 @@ pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/K
 pub const shortcut_new_tab = "Ctrl+Shift+T";
 pub const shortcut_new_tab_macos = "Cmd+T";
 /// #483 — 분할 항목 hint. 기존 hint 처럼 키 이름을 글자로 적는다 (`Enter` 와 같은 표기).
-pub const shortcut_split_right = "Ctrl+Shift+Right";
-pub const shortcut_split_right_macos = "Option+Cmd+Right";
-pub const shortcut_split_down = "Ctrl+Shift+Down";
-pub const shortcut_split_down_macos = "Option+Cmd+Down";
+// 화살표는 글자 대신 기호로 적는다 — 두 방향을 한 줄에 담아야 해서 폭이 빠듯하고,
+// `←/→` 는 키캡 모양 그대로라 더 빨리 읽힌다.
+pub const shortcut_split_right = "Ctrl+Shift+←/→";
+pub const shortcut_split_right_macos = "Option+Cmd+←/→";
+pub const shortcut_split_down = "Ctrl+Shift+↑/↓";
+pub const shortcut_split_down_macos = "Option+Cmd+↑/↓";
 pub const shortcut_close_tab = "Ctrl+Shift+W";
 pub const shortcut_close_tab_macos = "Cmd+W";
-pub const shortcut_copy = "Drag / Ctrl+Shift+C";
-pub const shortcut_copy_macos = "Drag / Cmd+C";
-pub const shortcut_paste = "Right-click / Ctrl+Shift+V";
-pub const shortcut_paste_macos = "Right-click / Cmd+V";
+// 힌트는 **키만** 적는다 (2026-09-16 사용자 결정). 예전에는 `Drag /` · `Right-click /` 을
+// 앞에 붙여 마우스 경로도 함께 알렸는데, 다른 항목은 전부 키 하나만 적고 있어 이 둘만
+// 형식이 달랐다. 폭도 그만큼 먹어 좁은 창에서 힌트가 먼저 숨는 항목이 이 둘이었다.
+pub const shortcut_copy = "Ctrl+Shift+C";
+pub const shortcut_copy_macos = "Cmd+C";
+pub const shortcut_paste = "Ctrl+Shift+V";
+pub const shortcut_paste_macos = "Cmd+V";
 pub const shortcut_full_screen = "Alt+Enter";
 pub const shortcut_full_screen_macos = "Cmd+Enter";
 /// workarea 전체화면 상태에서 메뉴의 Toggle Full Screen 이 하는 일(해제)과
@@ -58,6 +73,8 @@ pub const shortcut_full_screen_macos = "Cmd+Enter";
 /// SPEC §2 의 기존 확립 표기(`Shift+Alt+Enter`)를 따른다.
 pub const shortcut_full_screen_workarea = "Shift+Alt+Enter";
 pub const shortcut_full_screen_workarea_macos = "Shift+Cmd+Enter";
+pub const shortcut_open_log = "Ctrl+Shift+L";
+pub const shortcut_open_log_macos = "Shift+Cmd+L";
 pub const shortcut_open_config = "Ctrl+Shift+P";
 pub const shortcut_open_config_macos = "Shift+Cmd+P";
 

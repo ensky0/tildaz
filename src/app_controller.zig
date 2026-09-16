@@ -798,9 +798,15 @@ pub const App = struct {
                     var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
                     const lay = group.layout(area, m, &rect_buf);
                     var active_rect: ?pane_layout.Rect = null;
+                    // #646 — 검색바가 맨 아랫줄 (프롬프트) 을 가리지 않도록 활성 pane 격자의
+                    // 아래 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는
+                    // 격자가 pane 높이에 딱 안 떨어져 자투리가 남기 때문이다.
+                    var active_grid_bottom_px: ?i32 = null;
                     for (lay) |pr| {
                         const t = group.panes[pr.pane].?;
                         const is_active = pr.pane == group.active_pane;
+                        if (is_active) active_grid_bottom_px = pr.rect.y + @as(i32, self.TERMINAL_PADDING) +
+                            @as(i32, @intCast(t.terminal.rows)) * @as(i32, window.cell_height_px);
                         // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
                         if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
                         r.drawPane(.{
@@ -855,15 +861,34 @@ pub const App = struct {
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
                         // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 ·
-                        // hover) 은 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+                        // hover) 은 Windows 배선에서 붙는다 — 지금은 "열려 있으면 포커스" 다.
                         search_bar.uiFrom(
                             &group.activeTab().search,
                             &.{},
                             true,
                             null,
                             @as(f32, @floatFromInt(r.tab_font.cell_width_px)) / r.pixels_per_dip,
-                            @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
-                            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+                            blk: {
+                                // #646 — 배치는 host 가 잰다 (`search_bar.Geometry`).
+                                // 스크롤바 판정은 그리는 쪽과 같은 기준이다 — 스크롤백이
+                                // 보이는 영역보다 길면 뜬다 (`scrollbar.geom`).
+                                const t = group.activeTab();
+                                const sb = t.terminal.screens.active.pages.scrollbar();
+                                break :blk search_bar.Geometry{
+                                    .viewport_w_pt = @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
+                                    .viewport_h_pt = @as(f32, @floatFromInt(size.h)) / r.pixels_per_dip,
+                                    .cell_w_pt = @as(f32, @floatFromInt(window.cell_width_px)) / r.pixels_per_dip,
+                                    .cell_h_pt = @as(f32, @floatFromInt(window.cell_height_px)) / r.pixels_per_dip,
+                                    .scrollbar_w_pt = if (sb.total > sb.len)
+                                        @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+                                    else
+                                        0,
+                                    .grid_bottom_pt = if (active_grid_bottom_px) |px|
+                                        @as(f32, @floatFromInt(px)) / r.pixels_per_dip
+                                    else
+                                        0,
+                                };
+                            },
                         ),
                     );
                 }
@@ -1055,6 +1080,14 @@ pub const App = struct {
     /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
     /// 입력 정책(IMM complete → action)을 거친다 (#329).
     /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
+    /// #646 — 활성 pane 의 검색바를 연다. 단축키와 메뉴가 **같은 함수**를 쓴다.
+    /// 이미 열려 있으면 검색어를 지우지 않는다 (다시 눌러도 치던 것이 사라지지 않는다).
+    fn handleOpenSearch(self: *App) void {
+        const tab = self.session.activeTab() orelse return;
+        tab.search.open();
+        self.window.requestRender();
+    }
+
     fn resolveRunAction(self: *App, sc: input_policy.Shortcut) bool {
         const disposition = self.resolveWindowsInput(.{ .shortcut = sc }) orelse return false;
         return disposition.target == .run_action;
@@ -1073,12 +1106,19 @@ pub const App = struct {
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),
+            // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
+            .find => if (self.resolveRunAction(.open_search)) self.handleOpenSearch(),
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
             .open_config => if (self.resolveRunAction(.open_config)) {
                 const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
+                self.window.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.rt, self.allocator, path);
+            },
+            .open_log => if (self.resolveRunAction(.open_log)) {
+                const path = log.filePath() orelse return;
                 self.window.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, path);
             },
@@ -1728,13 +1768,8 @@ pub const App = struct {
                         self.handleZoomPane();
                         return true;
                     },
-                    // #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않는다
-                    // (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
                     .open_search => {
-                        if (self.session.activeTab()) |tab| {
-                            tab.search.open();
-                            self.window.requestRender();
-                        }
+                        self.handleOpenSearch();
                         return true;
                     },
                     // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).

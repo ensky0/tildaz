@@ -1067,6 +1067,31 @@ fn macInputState() input_policy.State {
     };
 }
 
+/// #646 — 검색바 배치 입력. **여기 한 곳에서 재고** renderer 는 결과만 쓴다.
+///
+/// 여백이 pt 상수가 아니라 터미널 셀 단위라 (`search_bar.Geometry`) 여기서 셀 크기를
+/// 넘겨야 한다. 스크롤바는 떠 있을 때만 폭을 빼는데, 판정은 그것을 그리는 쪽과 같은
+/// 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다 (`scrollbar.geom` 의 `total <= len`).
+///
+/// pane 이 여럿이면 창 오른쪽 가장자리의 스크롤바는 *가장 오른쪽 pane* 의 것인데, 여기서는
+/// **활성 pane** 의 것을 본다. 검색바가 비추는 것이 활성 pane 이라 그쪽과 짝이 맞고, 좌우로
+/// 나뉜 창에서 활성 pane 이 왼쪽이면 여백이 한 칸 어긋날 수 있다 — 붙어 보이지는 않는다.
+fn searchGeometry(tab: anytype, scale: f32, grid_bottom_px: ?i32) search_bar.Geometry {
+    const r = &g_renderer.?;
+    const sb = tab.terminal.screens.active.pages.scrollbar();
+    return .{
+        .viewport_w_pt = @as(f32, @floatFromInt(r.vp_width)) / scale,
+        .viewport_h_pt = @as(f32, @floatFromInt(r.vp_height)) / scale,
+        .cell_w_pt = @as(f32, @floatFromInt(r.font.cell_width_px)) / scale,
+        .cell_h_pt = @as(f32, @floatFromInt(r.font.cell_height_px)) / scale,
+        .scrollbar_w_pt = if (sb.total > sb.len)
+            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+        else
+            0,
+        .grid_bottom_pt = if (grid_bottom_px) |px| @as(f32, @floatFromInt(px)) / scale else 0,
+    };
+}
+
 /// #646 — 지금 키보드 포커스를 검색 입력칸이 갖고 있는가. `input_policy.State.search_active`
 /// 가 곧 이 값이다.
 ///
@@ -1097,9 +1122,8 @@ fn searchInsertText(text: []const u8) void {
 fn macSearchKey(kc: c_ushort, shift: bool) ?search_input.Key {
     return switch (kc) {
         0x35 => .close, // Esc
-        // Return / KP Enter. `.next_match` 는 화면 **아래에서 위로** 간다 (ghostty 의
-        // `Select.next` 가 최신 → 오래된 순서다). Shift 면 반대.
-        0x24, 0x4C => if (shift) .prev_match else .next_match,
+        // Return / KP Enter — 기본은 **아래로**, Shift 면 위로.
+        0x24, 0x4C => if (shift) .match_up else .match_down,
         0x33 => .backspace,
         0x75 => .delete, // forward delete
         0x7B => .left,
@@ -3131,6 +3155,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .close_active_tab => handleCloseActiveTab(),
         .copy_selection => handleCopy(),
         .paste => handlePaste(),
+        // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
+        .find => handleOpenSearch(),
         // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
         // 해제, 아니면 monitor 진입. 키보드의 self-symmetric(들어간 키로만
         // 나옴) 정책은 그대로 — workarea 상태에서 메뉴가 no-op 이던 문제.
@@ -3140,6 +3166,10 @@ fn executeCommandMenu(command: command_menu.Command) void {
             const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
             defer allocator.free(path);
             @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
+        },
+        .open_log => {
+            const path = log.filePath() orelse return;
+            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), path);
         },
         .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url),
         .about => about.showAboutDialog(g_rt),
@@ -4819,9 +4849,14 @@ fn renderFrameTick() void {
     var rect_buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
     const lay = group.layout(area, m, &rect_buf);
     var active_rect: ?pane_layout.Rect = null;
+    // #646 — 검색바가 맨 아랫줄 (프롬프트) 을 가리지 않도록 활성 pane 격자의 아래 가장자리를
+    // 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이**인 이유는, 격자가 pane 높이에 딱 안 떨어져
+    // 아래에 한 줄이 안 되는 자투리가 남기 때문이다.
+    var active_grid_bottom_px: ?i32 = null;
     for (lay) |pr| {
         const t = group.panes[pr.pane].?;
         const is_active = pr.pane == group.active_pane;
+        if (is_active) active_grid_bottom_px = pr.rect.y + pad_px + @as(i32, @intCast(t.terminal.rows)) * cell_h_px;
         // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
         if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
         g_renderer.?.drawPane(.{
@@ -4877,8 +4912,7 @@ fn renderFrameTick() void {
             search_focused_now,
             null,
             @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / r_scale,
-            @as(f32, @floatFromInt(g_renderer.?.vp_width)) / r_scale,
-            @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+            searchGeometry(tab, r_scale, active_grid_bottom_px),
         ),
     );
 

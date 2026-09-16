@@ -18,11 +18,14 @@ const search_bar = @import("search_bar.zig");
 /// 검색 입력칸이 뜻을 갖는 키. host 가 native 키를 여기로 분류한다 (`input_policy` 의
 /// `edit_key` 분류가 "입력칸이 먹는다" 까지, 이 enum 이 "무엇을 한다" 까지).
 pub const Key = enum {
-    /// 다음 매치. ghostty 의 `Select.next` 는 **최신 → 오래된**, 즉 화면 아래에서 위로
-    /// 간다. 선택이 없던 상태에서는 맨 아래 매치부터 잡는다.
-    next_match,
-    /// 이전 매치 (아래 방향). Shift+Enter.
-    prev_match,
+    /// 다음 매치 — **화면 아래쪽**으로. Enter 의 기본 방향이다 (2026-09-16 사용자 결정).
+    ///
+    /// 아래가 기본인 이유는 카운터다. 위로 가면 `43/43 → 42/43` 처럼 숫자가 줄어 읽는
+    /// 방향과 어긋난다. 브라우저 · 에디터의 "다음" 도 모두 아래다. 끝에 닿으면 맨 위에서
+    /// 이어진다.
+    match_down,
+    /// Shift+Enter — **화면 위쪽**으로. 터미널에서 "조금 전 출력" 을 찾는 방향이다.
+    match_up,
     /// 검색바 닫기 (Esc). needle 과 결과까지 버린다 — `PaneSearch.close` 참고.
     close,
     backspace,
@@ -62,8 +65,8 @@ pub fn key(
 
         // 매치 이동은 엔진이 있어야 한다. 디바운스 대기 중이거나 needle 이 비었으면
         // `select` 가 `false` 를 돌려주고 아무 일도 일어나지 않는다.
-        .next_match => return .{ .redraw = try ps.select(.next) },
-        .prev_match => return .{ .redraw = try ps.select(.prev) },
+        .match_down => return .{ .redraw = try ps.select(.down) },
+        .match_up => return .{ .redraw = try ps.select(.up) },
 
         .backspace => {
             if (ps.caret == 0) return .{};
@@ -111,8 +114,8 @@ pub fn control(
     now_ns: u64,
 ) std.mem.Allocator.Error!Effect {
     return try key(ps, alloc, switch (c) {
-        .prev => .prev_match,
-        .next => .next_match,
+        .prev => .match_up,
+        .next => .match_down,
         .close => .close,
     }, now_ns);
 }
@@ -301,8 +304,8 @@ test "#646 엔진이 없으면 매치 이동은 아무 일도 하지 않는다" 
     defer ps.deinit(alloc);
 
     try seed(&ps, alloc, "ab"); // 디바운스 중 — 엔진이 아직 없다
-    try std.testing.expect(!(try key(&ps, alloc, .next_match, 0)).redraw);
-    try std.testing.expect(!(try key(&ps, alloc, .prev_match, 0)).redraw);
+    try std.testing.expect(!(try key(&ps, alloc, .match_down, 0)).redraw);
+    try std.testing.expect(!(try key(&ps, alloc, .match_up, 0)).redraw);
 }
 
 test "#646 여러 줄 paste 는 첫 줄만 넣는다" {

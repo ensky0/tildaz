@@ -5117,9 +5117,15 @@ const Client = struct {
             }
         }
         var active_rect: ?pane_layout.Rect = null;
+        // #646 — 검색바가 맨 아랫줄 (프롬프트) 을 가리지 않도록 활성 pane 격자의 아래
+        // 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는 격자가 pane
+        // 높이에 딱 안 떨어져 자투리가 남기 때문이다.
+        var active_grid_bottom_px: ?i32 = null;
         for (lay, 0..) |pr, i| {
             const t = group.panes[pr.pane].?;
             const is_active = pr.pane == group.active_pane;
+            if (is_active) active_grid_bottom_px = pr.rect.y + @as(i32, @intCast(m.pad)) +
+                @as(i32, @intCast(t.terminal.rows)) * @as(i32, @intCast(m.cell_h));
             // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
             if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
             pane_storage[i] = .{
@@ -5171,15 +5177,33 @@ const Client = struct {
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
             // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
-            // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+            // Linux 배선에서 붙는다 — 지금은 "열려 있으면 포커스" 다.
             .search_ui = search_bar.uiFrom(
                 &group.activeTab().search,
                 &.{},
                 true,
                 null,
                 @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_width_px)) / self.renderer.scale,
-                @as(f32, @floatFromInt(width)) / self.renderer.scale,
-                @floatFromInt(ui_metrics.TAB_BAR_HEIGHT_PT),
+                blk: {
+                    // #646 — 배치는 host 가 잰다 (`search_bar.Geometry`). 스크롤바 판정은
+                    // 그리는 쪽과 같은 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다.
+                    const t = group.activeTab();
+                    const sb = t.terminal.screens.active.pages.scrollbar();
+                    break :blk search_bar.Geometry{
+                        .viewport_w_pt = @as(f32, @floatFromInt(width)) / self.renderer.scale,
+                        .viewport_h_pt = @as(f32, @floatFromInt(height)) / self.renderer.scale,
+                        .cell_w_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_width_px)) / self.renderer.scale,
+                        .cell_h_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_height_px)) / self.renderer.scale,
+                        .scrollbar_w_pt = if (sb.total > sb.len)
+                            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+                        else
+                            0,
+                        .grid_bottom_pt = if (active_grid_bottom_px) |px|
+                            @as(f32, @floatFromInt(px)) / self.renderer.scale
+                        else
+                            0,
+                    };
+                },
             ),
         };
     }
@@ -7232,6 +7256,8 @@ const Client = struct {
             .close_active_tab => self.handleCloseTab(),
             .copy_selection => self.copyActiveSelection(),
             .paste => self.requestPaste(),
+            // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
+            .find => self.handleOpenSearch(),
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
@@ -7239,6 +7265,10 @@ const Client = struct {
                 const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
                 system_open.openInDefaultApp(self.rt, self.allocator, path);
+            },
+            .open_log => {
+                const log_path = log.filePath() orelse return;
+                system_open.openInDefaultApp(self.rt, self.allocator, log_path);
             },
             .keyboard_shortcuts => system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url),
             .about => self.pending_about_request = true,
