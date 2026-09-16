@@ -17,6 +17,13 @@ const std = @import("std");
 const ghostty = @import("ghostty-vt");
 const cell_highlight = @import("cell_highlight.zig");
 
+/// 화면 밖 매치로 갈 때, 매치를 화면 가장자리에서 얼마나 떼어 놓을지 — **viewport 행 수의
+/// 1/N** 이다 (2026-09-16 사용자 결정).
+///
+/// 고정 행 수가 아니라 비율인 이유는 창 높이가 크게 달라서다. "5 행" 은 10 행짜리 창에서
+/// 화면 절반이고 60 행짜리 창에서는 거의 없는 것과 같다.
+pub const REVEAL_MARGIN_DIVISOR: isize = 4;
+
 /// needle 이 이 길이 미만이면 입력이 멈출 때까지 검색을 미룬다. 한 글자마다 전수
 /// 검색을 새로 시작하면 타이핑 중 예산을 계속 먹는다 — ghostty 의 macOS 앱도 같은
 /// 자리에 3 자 / 300 ms 를 쓴다 (`SurfaceView_AppKit.swift` 의 needle debounce).
@@ -250,11 +257,57 @@ pub const PaneSearch = struct {
     }
 
     /// 선택된 매치를 다음/이전으로 옮긴다. 옮겼으면 `true`.
+    ///
+    /// **옮긴 자리가 화면 밖이면 화면도 따라간다** (`revealSelected`).
     pub fn select(self: *PaneSearch, to: ghostty.search.Screen.Select) std.mem.Allocator.Error!bool {
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return false;
         const moved = try engine.select(to);
-        if (moved) self.highlights_dirty = true;
+        if (moved) {
+            self.highlights_dirty = true;
+            self.revealSelected(to);
+        }
         return moved;
+    }
+
+    /// #646 — 선택된 매치가 viewport 밖이면 그 자리로 화면을 옮긴다.
+    ///
+    /// 이것이 없으면 Enter 로 스크롤백 위쪽 매치를 골라도 화면은 맨 아래에 붙어 있어
+    /// **무엇을 골랐는지 볼 수 없다** (2026-09-16 실기에서 발견). ghostty 의 `select` 는
+    /// 선택 인덱스만 옮기고 viewport 는 건드리지 않는다 — 어디를 보여 줄지는 앱의 몫이다.
+    ///
+    /// **이미 보이는 매치는 건드리지 않는다.** 화면 안에서 매치를 오갈 때마다 viewport 가
+    /// 들썩이면 읽던 자리를 잃는다.
+    ///
+    /// **어디에 놓을지는 가는 방향이 정한다** (2026-09-16 사용자 결정). 위로 (오래된 쪽)
+    /// 갈 때는 매치를 아래쪽에 놓아 화면 대부분이 *앞으로 갈 곳* 을 보여 주고, 아래로 갈
+    /// 때는 반대다. 방향을 무시하고 늘 가운데에 놓으면 다음 매치가 어느 쪽에 있는지 화면이
+    /// 알려 주지 못한다.
+    fn revealSelected(self: *PaneSearch, to: ghostty.search.Screen.Select) void {
+        const engine: *const ghostty.search.Screen = if (self.engine) |*e| e else return;
+        const screen = self.engine_screen orelse return;
+        const m = engine.selectedMatch() orelse return;
+        const pin = m.startPin();
+
+        // `pointFromPin(.viewport, …)` 이 `null` 인 것은 pin 이 viewport **위쪽**일 때뿐이다 —
+        // 아래쪽이면 행 번호가 그냥 rows 보다 크게 나온다. 그래서 두 방향을 따로 본다.
+        if (screen.pages.pointFromPin(.viewport, pin)) |pt| {
+            if (pt.viewport.y < screen.pages.rows) return;
+        }
+
+        // `.pin` 은 그 줄을 viewport 의 **맨 윗줄**로 만든다. 거기서 원하는 자리까지
+        // 끌어내린다 — `delta_row` 가 음수면 viewport 가 위로 가고 매치는 그만큼 아래로
+        // 내려온다. 스크롤은 위아래 끝으로 clamp 되므로 스크롤백 경계에서도 안전하다.
+        screen.scroll(.{ .pin = pin });
+        const rows: isize = @intCast(screen.pages.rows);
+        const margin: isize = @divFloor(rows, REVEAL_MARGIN_DIVISOR);
+        const down: isize = switch (to) {
+            // 위 (오래된 쪽) 로 간다 — 매치를 아래에서 `margin` 째 줄에.
+            .next => rows - 1 - margin,
+            // 아래 (최신 쪽) 로 간다 — 매치를 위에서 `margin` 째 줄에.
+            .prev => margin,
+        };
+        if (down > 0) screen.scroll(.{ .delta_row = -down });
+        self.highlights_dirty = true;
     }
 
     /// 선택된 매치의 **1-based 번호** (`3/17` 의 `3`). 선택이 없으면 `0`.
@@ -431,6 +484,96 @@ test "#646 실제 스크롤백을 step 으로 끝까지 검색한다" {
     try std.testing.expectEqual(@as(usize, 4), s.matchCount());
     try std.testing.expect(try s.select(.next));
     try std.testing.expect(s.selectedMatch() != null);
+}
+
+test "#646 화면 밖 매치를 고르면 화면이 따라간다" {
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 500,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+
+    // 맨 위 (스크롤백 깊숙이) 와 맨 아래에만 매치를 둔다.
+    try term.printString("top FINDME\r\n");
+    for (0..200) |i| {
+        var buf: [64]u8 = undefined;
+        try term.printString(try std.fmt.bufPrint(&buf, "filler {d}\r\n", .{i}));
+    }
+    try term.printString("bottom FINDME\r\n");
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expectEqual(@as(usize, 2), s.matchCount());
+
+    const screen = term.screens.active;
+
+    // 첫 선택은 맨 아래 매치 — 이미 보이므로 화면이 움직이지 않아야 한다.
+    const before = screen.pages.getTopLeft(.viewport);
+    try std.testing.expect(try s.select(.next));
+    try std.testing.expectEqual(before, screen.pages.getTopLeft(.viewport));
+
+    // 다음은 스크롤백 맨 위 매치 — 화면 밖이라 따라가야 한다.
+    try std.testing.expect(try s.select(.next));
+    const pin = s.selectedMatch().?.startPin();
+    const pt = screen.pages.pointFromPin(.viewport, pin) orelse
+        return error.MatchStillAboveViewport;
+    try std.testing.expect(pt.viewport.y < screen.pages.rows);
+}
+
+test "#646 매치를 놓는 자리는 가는 방향이 정한다" {
+    const alloc = std.testing.allocator;
+    const rows: u16 = 24;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = rows,
+        .max_scrollback_lines = 2000,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+
+    // 매치를 화면 높이보다 훨씬 멀리 떼어 놓는다 — 그래야 매번 화면이 움직인다.
+    for (0..8) |m| {
+        var buf: [64]u8 = undefined;
+        try term.printString(try std.fmt.bufPrint(&buf, "mark {d} FINDME\r\n", .{m}));
+        for (0..100) |i| {
+            var b2: [64]u8 = undefined;
+            try term.printString(try std.fmt.bufPrint(&b2, "filler {d}\r\n", .{i}));
+        }
+    }
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expectEqual(@as(usize, 8), s.matchCount());
+
+    const screen = term.screens.active;
+    const margin: u32 = @intCast(@divFloor(@as(isize, rows), REVEAL_MARGIN_DIVISOR));
+
+    // 위로 (오래된 쪽) — 매치는 **아래에서** margin 째 줄에 온다.
+    for (0..4) |_| _ = try s.select(.next);
+    {
+        const pin = s.selectedMatch().?.startPin();
+        const y = screen.pages.pointFromPin(.viewport, pin).?.viewport.y;
+        try std.testing.expectEqual(@as(u32, rows - 1 - margin), y);
+    }
+
+    // 아래로 (최신 쪽) — 매치는 **위에서** margin 째 줄에 온다.
+    try std.testing.expect(try s.select(.prev));
+    {
+        const pin = s.selectedMatch().?.startPin();
+        const y = screen.pages.pointFromPin(.viewport, pin).?.viewport.y;
+        try std.testing.expectEqual(margin, y);
+    }
 }
 
 test "#646 대상 screen 이 바뀌면 엔진을 다시 만든다" {
