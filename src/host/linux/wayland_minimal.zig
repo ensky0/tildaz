@@ -29,6 +29,7 @@ const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
 const search_bar = @import("../../search_bar.zig");
+const search_input = @import("../../search_input.zig");
 const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
 const key_encode = @import("../../key_encode.zig");
@@ -1568,6 +1569,14 @@ const Client = struct {
     /// #329 command/shortcut menu 표시 상태.
     command_menu_open: bool = false,
     command_menu_hover: ?command_menu.Command = null,
+    /// #646 — pointer 가 올라간 검색바 컨트롤.
+    search_hover: ?search_bar.Control = null,
+    /// #646 — 이번 누름이 검색바에서 시작했는가. 시작했으면 이어지는 이동 · 뗌을 터미널이
+    /// 보면 안 된다 (바 밖에서 뗐다 해도 셀 좌표로 해석돼 선택이 생긴다).
+    search_press: bool = false,
+    /// #646 — 마지막 프레임의 검색바 배치. 히트 테스트가 **그린 것과 같은 사각형**을 봐야
+    /// 하므로 다시 재지 않고 그릴 때 쓴 값을 그대로 둔다.
+    search_geom: search_bar.Geometry = .{},
     /// #329 — 메뉴 keyboard focus (Up/Down/Home/End/Tab 이동, Enter/Space 실행).
     command_menu_focus: ?command_menu.Command = null,
     /// #329 — 작은 viewport 에서 entry 단위 scroll 의 첫 표시 entry 인덱스.
@@ -3703,6 +3712,17 @@ const Client = struct {
     fn pointerRegion(self: *const Client) PointerRegion {
         if (self.sep_drag) |d| return if (d.axis == .side_by_side) .separator_v else .separator_h;
         if (self.separatorUnderPointer()) |s| return if (s.axis == .side_by_side) .separator_v else .separator_h;
+        // #646 — 검색바는 셀 위에 떠 있다. 입력칸은 I-beam 그대로 두고 (셀 영역이 이미
+        // 그렇다) 컨트롤 · 여백은 화살표로 돌린다.
+        if (self.searchBarViewConst()) |v| {
+            const sc = self.renderer.scale;
+            const x = @as(f32, @floatFromInt(self.pointer_x_px)) / sc;
+            const y = @as(f32, @floatFromInt(self.pointer_y_px)) / sc;
+            if (search_bar.contains(v, x, y)) {
+                const in_field = x >= v.field.x and x < v.field.x + v.field.w;
+                if (!in_field) return .other;
+            }
+        }
         if (!self.pointerInCellArea()) return .other;
         // #647 — 포인터 아래가 링크면 손 커서. 판정은 hover 가 이미 해 뒀다 (motion 에서
         // 갱신). 여기서 다시 찾지 않는 이유는 사용자가 *보는 것* (밑줄) 과 커서가 같아야
@@ -5121,6 +5141,11 @@ const Client = struct {
         // 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는 격자가 pane
         // 높이에 딱 안 떨어져 자투리가 남기 때문이다.
         var active_grid_bottom_px: ?i32 = null;
+        const search_focused_now = self.searchFocused();
+        // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다** (`search_geom`). 마우스 히트
+        // 테스트가 그린 것과 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를 돌아야 나오는
+        // 값이라 마우스 경로에서 다시 구하면 어긋날 여지가 생긴다. 실제 대입은 아래 루프가
+        // `active_grid_bottom_px` 를 채운 뒤에 한다.
         for (lay, 0..) |pr, i| {
             const t = group.panes[pr.pane].?;
             const is_active = pr.pane == group.active_pane;
@@ -5149,6 +5174,28 @@ const Client = struct {
                 .is_active = is_active,
             };
         }
+
+        // 스크롤바 판정은 그리는 쪽과 같은 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다
+        // (`scrollbar.geom`).
+        {
+            const t = group.activeTab();
+            const sb = t.terminal.screens.active.pages.scrollbar();
+            self.search_geom = .{
+                .viewport_w_pt = @as(f32, @floatFromInt(width)) / self.renderer.scale,
+                .viewport_h_pt = @as(f32, @floatFromInt(height)) / self.renderer.scale,
+                .cell_w_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_width_px)) / self.renderer.scale,
+                .cell_h_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_height_px)) / self.renderer.scale,
+                .scrollbar_w_pt = if (sb.total > sb.len)
+                    @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+                else
+                    0,
+                .grid_bottom_pt = if (active_grid_bottom_px) |px|
+                    @as(f32, @floatFromInt(px)) / self.renderer.scale
+                else
+                    0,
+            };
+        }
+
         return .{
             .panes = pane_storage[0..lay.len],
             .separators = seps,
@@ -5176,34 +5223,14 @@ const Client = struct {
             // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
-            // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
-            // Linux 배선에서 붙는다 — 지금은 "열려 있으면 포커스" 다.
+            // #646 — 검색바는 활성 pane 의 상태를 비춘다. 배치는 바로 위에서 잰 값이다.
             .search_ui = search_bar.uiFrom(
                 &group.activeTab().search,
-                &.{},
-                true,
-                null,
+                if (search_focused_now) self.preedit_text.items else &.{},
+                search_focused_now,
+                self.search_hover,
                 @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_width_px)) / self.renderer.scale,
-                blk: {
-                    // #646 — 배치는 host 가 잰다 (`search_bar.Geometry`). 스크롤바 판정은
-                    // 그리는 쪽과 같은 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다.
-                    const t = group.activeTab();
-                    const sb = t.terminal.screens.active.pages.scrollbar();
-                    break :blk search_bar.Geometry{
-                        .viewport_w_pt = @as(f32, @floatFromInt(width)) / self.renderer.scale,
-                        .viewport_h_pt = @as(f32, @floatFromInt(height)) / self.renderer.scale,
-                        .cell_w_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_width_px)) / self.renderer.scale,
-                        .cell_h_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_height_px)) / self.renderer.scale,
-                        .scrollbar_w_pt = if (sb.total > sb.len)
-                            @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
-                        else
-                            0,
-                        .grid_bottom_pt = if (active_grid_bottom_px) |px|
-                            @as(f32, @floatFromInt(px)) / self.renderer.scale
-                        else
-                            0,
-                    };
-                },
+                self.search_geom,
             ),
         };
     }
@@ -6068,6 +6095,108 @@ const Client = struct {
         self.settlePendingInput(.commit);
     }
 
+    /// #646 — 검색바가 키보드를 갖고 있는가. 바가 열려 있으면 언제나 참이다 — 포커스를
+    /// 터미널과 나누지 않는다 (`host/macos.zig` 의 `searchFocused` 에 근거가 있다).
+    fn searchFocused(self: *Client) bool {
+        const session = if (self.session) |*s| s else return false;
+        const tab = session.activeTab() orelse return false;
+        return tab.search.is_open;
+    }
+
+    /// #646 — 검색 입력이 만든 변화를 화면에 반영한다.
+    fn applySearchEffect(self: *Client, eff: search_input.Effect) void {
+        if (eff.redraw) self.requestRedraw();
+    }
+
+    /// #646 — 검색 입력칸에 키 하나. 의미는 `search_input` 이 정한다.
+    fn searchApplyKey(self: *Client, k: search_input.Key) void {
+        const session = if (self.session) |*s| s else return;
+        const tab = session.activeTab() orelse return;
+        const eff = search_input.key(&tab.search, self.allocator, k, tab.title_clock.read()) catch return;
+        self.applySearchEffect(eff);
+    }
+
+    /// #646 — 확정된 글자를 검색어에 끼운다. 타이핑 · dead key 조합 · IME 확정 · paste 가
+    /// 모두 이리로 온다.
+    fn searchInsertText(self: *Client, text: []const u8) void {
+        const session = if (self.session) |*s| s else return;
+        const tab = session.activeTab() orelse return;
+        const eff = search_input.insertText(&tab.search, self.allocator, text, tab.title_clock.read()) catch return;
+        self.applySearchEffect(eff);
+    }
+
+    /// #646 — `searchBarViewNow` 의 `const` 판. 커서 모양 판정처럼 상태를 안 바꾸는
+    /// 자리에서 쓴다.
+    fn searchBarViewConst(self: *const Client) ?search_bar.View {
+        const session = if (self.session) |*s| s else return null;
+        if (session.active_tab >= session.tabs.items.len) return null;
+        if (!session.tabs.items[session.active_tab].activeTab().search.is_open) return null;
+        if (self.search_geom.viewport_w_pt <= 0) return null;
+        return search_bar.view(self.search_geom);
+    }
+
+    /// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.
+    fn searchBarViewNow(self: *Client) ?search_bar.View {
+        if (!self.searchFocused()) return null;
+        if (self.search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+        return search_bar.view(self.search_geom);
+    }
+
+    /// #646 — 검색바 위 누름을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
+    /// 경로로 넘기지 않는다. 바가 터미널 셀 **위에 떠 있어서** 가로채지 않으면 바 위 드래그가
+    /// 터미널 선택을 만들고 마우스 리포팅을 켠 앱에 좌표가 전송된다.
+    fn searchBarMouseDown(self: *Client) bool {
+        const v = self.searchBarViewNow() orelse return false;
+        const s = self.renderer.scale;
+        const x = @as(f32, @floatFromInt(self.pointer_x_px)) / s;
+        const y = @as(f32, @floatFromInt(self.pointer_y_px)) / s;
+        if (!search_bar.contains(v, x, y)) return false;
+
+        const session = if (self.session) |*sess| sess else return true;
+        const tab = session.activeTab() orelse return true;
+        if (search_bar.hit(v, x, y)) |c| {
+            const eff = search_input.control(&tab.search, self.allocator, c, tab.title_clock.read()) catch return true;
+            self.applySearchEffect(eff);
+            return true;
+        }
+        if (x >= v.field.x and x < v.field.x + v.field.w) {
+            const cw = @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_width_px)) / s;
+            tab.search.caret = search_bar.fieldCaret(
+                tab.search.needle.items,
+                cw,
+                tab.search.field_scroll_px,
+                x - v.field.x,
+            );
+            self.requestRedraw();
+        }
+        return true;
+    }
+
+    /// #646 — xkb keysym → 검색 입력칸이 뜻을 두는 키. `null` 이면 입력칸이 안 쓰는 키다.
+    fn searchKeyFromSym(sym: u32, shift: bool) ?search_input.Key {
+        return switch (sym) {
+            // Return / KP_Enter — 기본은 아래로, Shift 면 위로.
+            xkb_key_return, 0xff8d => if (shift) .match_up else .match_down,
+            xkb_key_escape => .close,
+            0xff08 => .backspace, // BackSpace
+            0xffff => .delete, // Delete
+            0xff51 => .left,
+            0xff53 => .right,
+            0xff50 => .home,
+            0xff57 => .end,
+            else => null,
+        };
+    }
+
+    /// #646 — 한 줄 입력칸이 뜻을 두지 않는 나브키. 삼키지 않으면 검색어를 치는 동안 방향키
+    /// escape sequence 가 셸로 새어 히스토리가 넘어간다 (#282 A9 와 같은 샘).
+    fn searchNavSym(sym: u32) bool {
+        return switch (sym) {
+            0xff52, 0xff54, xkb_key_page_up, xkb_key_page_down, 0xff63, 0xff09 => true,
+            else => false, // Up · Down · Page_Up · Page_Down · Insert · Tab
+        };
+    }
+
     /// #583 B14 — 진행 중인 입력을 **PTY 로 보내지 않고 버린다.** 확정 대상 셸이 이미 죽은
     /// 자리 (`drainExitedTabs`) 를 위해 있다 — 자세한 근거는 `abandonShell` 주석.
     fn discardPendingInput(self: *Client) void {
@@ -6080,7 +6209,14 @@ const Client = struct {
         const had_preedit = self.preedit_text.items.len > 0 or self.pending_preedit.items.len > 0;
         // 1) Cell preedit (terminal IME 조합 중) — PTY 로 직접 송신.
         if (self.preedit_text.items.len > 0) {
-            if (mode == .commit) self.queueInput(self.preedit_text.items);
+            // #646 — commit 은 **지금의 sink** 로 간다. 검색바가 키보드를 갖고 있으면
+            // 검색어, 아니면 PTY 다 (`input_policy.Pending.commit` 이 뜻하는 것).
+            if (mode == .commit) {
+                if (self.searchFocused())
+                    self.searchInsertText(self.preedit_text.items)
+                else
+                    self.queueInput(self.preedit_text.items);
+            }
             self.preedit_text.clearRetainingCapacity();
             self.renderer.preedit_text = "";
         }
@@ -6649,7 +6785,11 @@ const Client = struct {
     fn applyTextInputBatch(self: *Client) !void {
         if (self.pending_commit.items.len > 0) {
             log.appendLineVerbose("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
-            self.queueInput(self.pending_commit.items);
+            // #646 — 검색 중이면 확정 글자는 PTY 가 아니라 검색어로 간다.
+            if (self.searchFocused())
+                self.searchInsertText(self.pending_commit.items)
+            else
+                self.queueInput(self.pending_commit.items);
             self.pending_commit.clearRetainingCapacity();
         }
         // pending_preedit → preedit_text 로 옮긴 뒤 renderer slice 갱신. paint
@@ -6662,7 +6802,9 @@ const Client = struct {
         self.preedit_text.clearRetainingCapacity();
         try self.preedit_text.appendSlice(self.allocator, self.pending_preedit.items);
         self.pending_preedit.clearRetainingCapacity();
-        self.renderer.preedit_text = self.preedit_text.items;
+        // #646 — 검색바가 키보드를 가지면 조합 글자는 터미널 커서가 아니라 **입력칸 안**에
+        // 보인다. 조합이 보이는 자리는 하나여야 한다.
+        self.renderer.preedit_text = if (self.searchFocused()) "" else self.preedit_text.items;
         // #530 — IME 가 preedit 을 들면 dead key 조합은 버린다. IME 가 키를 가로채는 세션에서는
         // `processKeyEvent` 가 오지 않아 그쪽 defer 로는 지워지지 않는다.
         if (self.preedit_text.items.len > 0) self.resetCompose();
@@ -6670,7 +6812,10 @@ const Client = struct {
         // composition 은 cursor(맨 아래 live line)에 inline 표시되므로 스크롤백
         // 올린 상태에서 안 내려가면 자기 조합이 안 보임. commit 은 위
         // queueInput 이 scroll.
-        if (self.preedit_text.items.len > 0) {
+        //
+        // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 내릴 이유가 없다.
+        // 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
+        if (self.preedit_text.items.len > 0 and !self.searchFocused()) {
             if (self.session) |*session| session.scrollActiveToBottom();
         }
         // IME 활성 시 wl_keyboard.key event 는 IME 로 raised 되어 우리한테 안
@@ -6997,8 +7142,12 @@ const Client = struct {
                     self.requestPaste();
                     return;
                 }
+                const searching = self.searchFocused();
                 const disp = input_policy.resolve(classified.input, .{
-                    .terminal_preedit_active = self.preedit_text.items.len > 0,
+                    // #646 — 조합 중 글자가 검색 입력칸으로 갈 때는 *터미널* preedit 이
+                    // 아니다. sink 가 다르므로 `search_active` 쪽으로 센다.
+                    .terminal_preedit_active = self.preedit_text.items.len > 0 and !searching,
+                    .search_active = searching,
                 });
                 switch (disp.pending) {
                     .leave => {},
@@ -7023,12 +7172,38 @@ const Client = struct {
                     },
                     // interrupt \x03 는 아래 escape / utf8 로. paste 는 위에서 처리.
                     .pty => {},
-                    // #646 4 단계 ② — 검색바 배선은 다음 커밋이다. 지금은 어느 host 도
-                    // `search_active` 를 세우지 않으므로 이 두 갈래로 오지 않는다.
-                    // (`.drop` 은 배선 뒤에도 "삼킴" 이라 이 자리가 그대로 맞다.)
+                    // #646 — 검색 중 Ctrl+C 는 삼킨다. 검색어를 치다가 셸이 SIGINT 를 받으면
+                    // 안 되고, 벗어나는 키는 Esc 다. (`.search_field` 는 `.paste` · `.text` ·
+                    // `.edit_key` 의 target 인데 셋 다 이 분기 앞에서 처리된다.)
                     .search_field, .drop => return,
                 }
             }
+        }
+
+        // #646 — 검색바가 포커스를 가지면 키는 입력칸이 먹는다. **여기서 하는 것은 분류뿐**
+        // 이고, 어디로 갈지는 `input_policy.resolve` 가, 무엇을 할지는 `search_input` 이
+        // 정한다 — 세 host 가 각자 판정하다 어긋난 것이 #282 의 결함이었다.
+        //
+        // 자리가 여기인 이유가 둘이다. 위의 `[keys]` 조회보다 **뒤**라 검색 중에도 단축키가
+        // 그대로 돈다 (검색바 포커스 중 pane 이동). 아래 compose · PTY 경로보다 **앞**이라
+        // 편집키가 셸로 새지 않는다.
+        if (self.searchFocused()) {
+            if (sym_opt) |sym| {
+                if (searchKeyFromSym(sym, shift)) |k| {
+                    if (input_policy.resolve(.edit_key, .{ .search_active = true }).target == .search_field) {
+                        self.searchApplyKey(k);
+                        return;
+                    }
+                } else if (ctrl and !alt) {
+                    // Ctrl 조합은 한 줄 입력칸이 쓰지 않는다. Ctrl+C 는 `interrupt`, 나머지는
+                    // `nav_key` 인데 검색 중에는 **둘 다 `drop`** 이라 결과가 같다.
+                    if (input_policy.resolve(.interrupt, .{ .search_active = true }).target == .drop) return;
+                } else if (searchNavSym(sym)) {
+                    if (input_policy.resolve(.nav_key, .{ .search_active = true }).target == .drop) return;
+                }
+            }
+            // 그 밖의 키는 글자다 — 아래 compose · utf8 경로가 만든 텍스트를 그 자리에서
+            // 입력칸으로 보낸다 (dead key 조합이 검색어에서도 그대로 된다).
         }
 
         // ── 기존 PTY 경로 (정책 target=pty 또는 미분류 키) ──────────────
@@ -7088,7 +7263,9 @@ const Client = struct {
                     // 결과는 조합이 만든 글자 그대로다 (#494 에서 검증된 동작).
                     .composed => |text| {
                         self.dropComposePreview();
-                        self.queueInput(text);
+                        // #646 — 검색 중이면 조합 결과도 입력칸으로. dead key 가 검색어에서
+                        // 그대로 동작한다 (`^` + `e` → `ê`).
+                        if (self.searchFocused()) self.searchInsertText(text) else self.queueInput(text);
                         return;
                     },
                 }
@@ -7097,7 +7274,16 @@ const Client = struct {
         // #533 — 여기서 PTY 로 나가는 바이트가 정해진다. 예전엔 `utf8()` 결과를 그대로
         // 보냈고 (그래서 Alt 가 사라졌다) 그 위에 `terminalSequenceForKeysym` 이 특수키를
         // 따로 적고 있었다. 이제 둘 다 인코더 한 곳으로 모은다 — modifier 가 실린다.
-        self.sendEncodedKey(key, xkb_key, self.keyboard.utf8(xkb_key, &buf), action);
+        const utf8_out = self.keyboard.utf8(xkb_key, &buf);
+        // #646 — 검색 중에는 **글자만** 입력칸으로 보낸다. 제어문자 · 특수키는 위 분기에서
+        // 이미 걸렀고, 여기 남은 제어문자는 입력칸이 쓸 것이 없으므로 삼킨다.
+        if (self.searchFocused()) {
+            if (utf8_out.len > 0 and utf8_out[0] >= 0x20 and utf8_out[0] != 0x7f) {
+                self.searchInsertText(utf8_out);
+            }
+            return;
+        }
+        self.sendEncodedKey(key, xkb_key, utf8_out, action);
     }
 
     /// #533 — 키 하나를 `key_encode` 로 인코딩해 PTY 로 보낸다.
@@ -7477,6 +7663,11 @@ const Client = struct {
             self.command_menu_hover = null;
             self.needs_redraw = true;
         }
+        // #646 — 검색바 컨트롤 hover 도 같은 이유로 푼다.
+        if (self.search_hover != null) {
+            self.search_hover = null;
+            self.needs_redraw = true;
+        }
         // #647 — 링크 hover 도 같은 이유로 푼다. 안 풀면 **창을 떠난 뒤에도 밑줄이 남는다**
         // (2026-09-15 Linux 실기 — 216 px 이 그대로 있었다). 창 안에서 링크 밖 칸으로 옮기는
         // 것은 `motion` 이 와서 이미 풀리고, 빠지는 것은 이 경로뿐이다.
@@ -7501,6 +7692,22 @@ const Client = struct {
             if (self.dialog.scrollbar_drag_grab != null) self.scrollDialogToPointer();
             return;
         }
+        // #646 — 누름이 검색바에서 시작했으면 이어지는 이동은 터미널이 보면 안 된다.
+        if (self.search_press) return;
+        // 검색바 컨트롤 hover. 바 위에 있으면 아래 탭바 · 터미널 판정을 건너뛴다 (바가 위다).
+        {
+            const v = self.searchBarViewNow();
+            const sc = self.renderer.scale;
+            const hx = @as(f32, @floatFromInt(self.pointer_x_px)) / sc;
+            const hy = @as(f32, @floatFromInt(self.pointer_y_px)) / sc;
+            const new_hover: ?search_bar.Control = if (v) |vv| search_bar.hit(vv, hx, hy) else null;
+            if (new_hover != self.search_hover) {
+                self.search_hover = new_hover;
+                self.needs_redraw = true;
+            }
+            if (v) |vv| if (search_bar.contains(vv, hx, hy)) return;
+        }
+
         // #268 2b — 탭바 컨트롤 버튼 hover 갱신 (변경 시에만 재렌더).
         self.updateTabHover();
 
@@ -7680,6 +7887,12 @@ const Client = struct {
                     if (hit) |command| self.executeCommandMenu(command);
                     return;
                 }
+                // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+                if (self.searchBarMouseDown()) {
+                    tab.interaction.cancelPointerModes();
+                    self.search_press = true;
+                    return;
+                }
                 if (self.session.?.count() == 1) {
                     switch (self.singleControlHit(self.pointer_x_px, self.pointer_y_px)) {
                         .plus => {
@@ -7777,6 +7990,11 @@ const Client = struct {
                 self.requestRedraw();
             },
             wl_pointer_button_state_released => {
+                // #646 — 누름이 검색바에서 시작했으면 뗌도 터미널이 보면 안 된다.
+                if (self.search_press) {
+                    self.search_press = false;
+                    return;
+                }
                 // #245 — 어떤 release 든 drag-select auto-scroll 해제 (선택 끝/취소).
                 self.sel_autoscroll_dir = 0;
                 // #483 4c — 분할선 드래그 끝.
@@ -8010,8 +8228,10 @@ const Client = struct {
     /// terminal preedit 이면 먼저 commit(자모 flush 로 '하'+'X' 순서 보존,
     /// #282 A2/A4).
     fn requestPaste(self: *Client) void {
+        const searching = self.searchFocused();
         const disp = input_policy.resolve(.paste, .{
-            .terminal_preedit_active = self.preedit_text.items.len > 0,
+            .terminal_preedit_active = self.preedit_text.items.len > 0 and !searching,
+            .search_active = searching,
         });
         switch (disp.pending) {
             .leave => {},
@@ -8034,11 +8254,7 @@ const Client = struct {
         // deadlock. 우리 buffer 직접 사용.
         if (self.active_data_source_id != 0) {
             if (self.clipboard_text) |text| {
-                // PTY paste (cross-platform tab_actions.routePaste 단일 구현.
-                // Windows/macOS 동등).
-                var host = self.buildTabActionsHost();
-                tab_actions.routePaste(&host, text);
-                self.requestRedraw();
+                self.routePasteToSink(text);
             }
             return;
         }
@@ -8076,12 +8292,19 @@ const Client = struct {
             accumulated.appendSlice(self.allocator, buf[0..n]) catch break;
         }
         if (accumulated.items.len == 0) return;
-        if (self.session != null) {
-            // PTY 로 라우팅. routePaste 단일 구현.
-            var host = self.buildTabActionsHost();
-            tab_actions.routePaste(&host, accumulated.items);
-            self.requestRedraw();
+        if (self.session != null) self.routePasteToSink(accumulated.items);
+    }
+
+    /// #646 — paste payload 를 **지금의 sink** 로. 검색바가 키보드를 갖고 있으면 검색어,
+    /// 아니면 PTY 다 (`tab_actions.routePaste` — bracketed paste · wrap 은 그쪽이 든다).
+    fn routePasteToSink(self: *Client, text: []const u8) void {
+        if (self.searchFocused()) {
+            self.searchInsertText(text);
+            return;
         }
+        var host = self.buildTabActionsHost();
+        tab_actions.routePaste(&host, text);
+        self.requestRedraw();
     }
 
     /// wl_data_source 이벤트 분기.
