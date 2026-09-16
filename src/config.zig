@@ -21,6 +21,7 @@ const instance_context = @import("instance_context.zig");
 // (`config.Hotkey`), 서로의 *값*에 의존하지 않아 순환 참조가 성립한다.
 const instances = @import("instances.zig");
 const paths = @import("paths.zig");
+const system_open = @import("system_open.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
@@ -3270,7 +3271,7 @@ const config_notice_message_capacity: usize = 4096;
 ///
 /// `quiet` 는 `-e` 로 명령을 실행하는 인스턴스다. 스크립트가 다이얼로그 앞에서 멈추면
 /// 안 되므로 로그로만 남긴다 — 로그에는 어차피 `appendNotice` 가 줄마다 이미 적었다.
-pub fn showConfigNotice(rt: Runtime, quiet: bool) void {
+pub fn showConfigNotice(rt: Runtime, allocator: std.mem.Allocator, quiet: bool) void {
     const n = pendingConfigNotice() orelse return;
     var buf: [config_notice_message_capacity]u8 = undefined;
     const body = configNoticeMessage(&buf, n);
@@ -3279,7 +3280,20 @@ pub fn showConfigNotice(rt: Runtime, quiet: bool) void {
 
     log.appendLine("config", "notice shown: {d} item(s){s}", .{ n.count, if (n.truncated) " (truncated)" else "" });
     if (quiet) return;
-    dialog.showError(rt, messages.config_notice_title, body);
+
+    // 두 번째 버튼이 고칠 파일을 연다. 이 안내의 목적이 **사용자가 직접 고치게**
+    // 만드는 것이라, 목록만 보여주고 파일은 알아서 찾으라고 하면 절반만 한 것이다.
+    if (!dialog.showNoticeWithAction(rt, messages.config_notice_title, body, messages.button_open_config)) {
+        log.appendLine("config", "notice dismissed without opening the file", .{});
+        return;
+    }
+    log.appendLine("config", "notice action: opening the config file", .{});
+    const path = paths.configPath(rt, allocator) catch |err| {
+        log.appendLine("config", "open config from notice failed: {s}", .{@errorName(err)});
+        return;
+    };
+    defer allocator.free(path);
+    system_open.openInDefaultApp(rt, allocator, path);
 }
 
 /// Linux host 는 `*const Config` 를 들고 있어 위 함수의 "필드를 비운다" 를 할 수

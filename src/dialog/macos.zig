@@ -1129,6 +1129,50 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     return result == 1000;
 }
 
+/// #655 — 안내 + 행동. `showConfirm` 과 뼈대가 같고 **두 번째 버튼의 글자만** 다르다.
+/// 그래서 배치 · Esc 매핑 · osascript fallback 을 그대로 물려받는다.
+pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
+    if (!nsapp_ready) return noticeActionOsascript(rt, title, message, action_label);
+
+    const alert = newAlert() orelse {
+        log.userFacing("dialog", "NSAlert creation failed — falling back to osascript for the notice");
+        return noticeActionOsascript(rt, title, message, action_label);
+    };
+    setMessage(alert, title);
+    setStyle(alert, 1); // Informational
+    _ = addButton(alert, messages.button_ok);
+    _ = addButton(alert, action_label);
+    // Esc 는 **primary (확인)** 다. `showConfirm` 은 Esc 를 두 번째 버튼에 걸지만
+    // 거기서는 그것이 "아무 일도 하지 않음" 이고, 여기서는 반대로 *행동* 이다.
+    setButtonEsc(alert, 0);
+    const actions = [_]DialogAction{
+        .{ .title = action_label, .response = 1001, .key_equivalent = "" },
+        .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
+    };
+    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+
+    // **`.confirm` 이 아니라 `.single` 이다.** `.confirm` 은 Esc 를 두 번째 버튼으로
+    // 보내는데 (`dismissMonitorInvoke`), 거기서는 그것이 "아무 일도 하지 않음" 이고
+    // 여기서는 *행동* 이다 — 창을 닫아 버리는 몸짓이 config 파일을 여는 일이 된다.
+    // `.single` 은 Esc · Enter 를 모두 primary 로 보낸다. 행동은 **클릭으로만** 일어난다.
+    const result = runModalOverHost(alert, .single);
+    return result == 1001;
+}
+
+/// NSApp 이 아직 없을 때 (bootstrap) 의 안내. **행동 버튼은 내지 않는다.**
+///
+/// `display dialog` 로 두 버튼을 내면 어느 쪽을 눌렀는지는 stdout 의
+/// `button returned:` 를 읽어야 아는데, 그러려면 여기서 자식 프로세스의 출력을 받아
+/// 파싱해야 한다. 그 machinery 를 **닿지 않는 경로**에 두지 않는다 — 이 함수를 쓰는
+/// 유일한 호출자 (config 안내) 는 창이 뜬 뒤에 불려서 `nsapp_ready` 가 참이다.
+/// 안내 자체는 잃지 않고 (한 버튼으로 뜬다), 행동만 없는 것으로 낮춘다.
+fn noticeActionOsascript(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
+    _ = action_label;
+    log.appendLine("dialog", "NSApp not ready — notice shown without its action button", .{});
+    showOsascript(rt, .info, title, message);
+    return false;
+}
+
 /// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
 fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {

@@ -7,6 +7,7 @@ const std = @import("std");
 const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const dialog = @import("../dialog.zig");
+const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 
@@ -674,6 +675,9 @@ const ScrollContext = struct {
     hinstance: HINSTANCE,
     dpi: UINT,
     confirm: bool,
+    /// #655 — Cancel 자리에 세울 글자. `null` 이면 표준 `Cancel`. 다이얼로그가 modal
+    /// 이라 한 번에 하나만 살고, 이 버퍼는 `showScrollableText` 가 도는 동안만 쓰인다.
+    secondary_label: ?[:0]const WCHAR = null,
     title_text: [:0]const WCHAR,
     body_text: [:0]const WCHAR,
     fonts: ScrollFonts,
@@ -683,6 +687,10 @@ const ScrollContext = struct {
 };
 
 var scroll_ctx: ?ScrollContext = null;
+
+/// #655 — 안내 모드에서 행동 버튼을 눌렀는가. `showScrollableTextLabeled` 가 시작할 때
+/// 내리고, `IDCANCEL` 클릭만 올린다.
+var scroll_secondary_clicked: bool = false;
 
 fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.c) LRESULT {
     if (msg == WM_COMMAND) {
@@ -694,6 +702,12 @@ fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
         }
         if (id == IDCANCEL) {
             scroll_result = false;
+            // #655 — 안내 모드면 이 버튼이 취소가 아니라 **행동**이다. `scroll_result` 를
+            // 뒤집어 읽지 않는 이유는, 그 값의 기본이 `false` 라 창 닫기 · 메시지 루프
+            // 이탈이 모두 "행동" 이 되기 때문이다. 눌렀을 때만 참이 되는 자기 플래그를 둔다.
+            if (scroll_ctx) |c| {
+                if (c.secondary_label != null) scroll_secondary_clicked = true;
+            }
             scroll_done = true;
             return 0;
         }
@@ -1086,6 +1100,11 @@ fn dialogOwner() HWND {
 /// native 경로를 사용해야 한다. 값이 있으면 window를 표시했으며 confirm 여부에
 /// 따라 OK(true) / Cancel(false) 결과를 돌려준다.
 fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool {
+    return showScrollableTextLabeled(title, body, confirm, null);
+}
+
+/// #655 — `secondary_label` 은 Cancel 자리의 글자. `null` 이면 표준 `Cancel`.
+fn showScrollableTextLabeled(title: []const u8, body: []const u8, confirm: bool, secondary_label: ?[]const u8) ?bool {
     const allocator = std.heap.page_allocator;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return null;
     defer allocator.free(title_w);
@@ -1104,10 +1123,17 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     // #540 — GDI 자원의 소유를 ctx 한 곳으로 모은다. 여기부터의 모든 `return null` 이
     // 아래 defer 하나로 정리되고, 배율 변화가 폰트 · 아이콘을 바꿔치기해도 *마지막*
     // 값이 지워진다 (지역 변수에 두면 바꿔치기된 뒤 이미 지운 핸들을 또 지운다).
+    const secondary_w: ?[:0]const WCHAR = if (secondary_label) |label|
+        (std.unicode.utf8ToUtf16LeAllocZ(allocator, label) catch null)
+    else
+        null;
+    defer if (secondary_w) |w| allocator.free(w);
+
     scroll_ctx = .{
         .hinstance = hinstance,
         .dpi = dpi,
         .confirm = confirm,
+        .secondary_label = secondary_w,
         .title_text = title_w,
         .body_text = body_w,
         .fonts = createScrollFonts(dpi),
@@ -1210,10 +1236,15 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
         null,
     ) orelse return null;
     if (confirm) {
+        // #655 — 안내 다이얼로그는 이 자리에 `Open Config` 를 세운다. 기본은 `Cancel`.
+        const secondary: [*:0]const WCHAR = if (ctx.secondary_label) |label|
+            label.ptr
+        else
+            std.unicode.utf8ToUtf16LeStringLiteral(messages.button_cancel);
         ctx.controls.cancel = CreateWindowExW(
             0,
             std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"),
-            std.unicode.utf8ToUtf16LeStringLiteral(messages.button_cancel),
+            secondary,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             0,
             0,
@@ -1232,6 +1263,7 @@ fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool 
     _ = SetFocus(ctx.controls.body);
     scroll_done = false;
     scroll_result = false;
+    scroll_secondary_clicked = false;
     var msg: MSG = undefined;
     while (!scroll_done and GetMessageW(&msg, null, 0, 0) > 0) {
         if ((msg.message == WM_KEYDOWN or msg.message == WM_SYSKEYDOWN) and
@@ -1268,6 +1300,22 @@ pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
 /// Enter=OK. Esc 는 MB_OKCANCEL 에서 항상 Cancel. (#116 의 'Cancel 기본 — Enter
 /// 종료 방지' 폐기 — 다이얼로그 출현 자체가 speed bump.)
 /// 반환: OK → true, Cancel / 닫기 → false.
+/// #655 — 안내 + 행동. `showConfirm` 과 같은 창인데 Cancel 자리의 글자만 다르다.
+///
+/// `MessageBoxW` fallback 은 **행동 버튼을 내지 못한다** — `MB_OKCANCEL` 의 글자는
+/// OS 가 정하고 바꿀 방법이 없다. 그 경우 안내만 내고 false 를 준다: 안내를 잃는 것보다
+/// 행동 하나를 잃는 쪽이 낫고, 그 경로는 커스텀 창을 못 띄운 예외 상황이다.
+pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
+    _ = rt;
+    if (showScrollableTextLabeled(title, message, true, action_label)) |_| {
+        // 행동은 **누른 경우에만** 참이다 — `scroll_secondary_clicked` 의 주석 참고.
+        return scroll_secondary_clicked;
+    }
+    log.appendLine("dialog", "custom window unavailable — notice shown without its action button", .{});
+    _ = messageBox(title, message, MB_OK | MB_TOPMOST);
+    return false;
+}
+
 pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     _ = rt;
     if (showScrollableText(title, message, true)) |result| return result;

@@ -23,6 +23,9 @@ pub const Callbacks = struct {
     show_info: *const fn (ctx: *anyopaque, severity: dialog.Severity, title: []const u8, message: []const u8) void,
     show_about: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) void,
     show_confirm: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8) bool,
+    /// #655 — 안내 + 행동. `show_confirm` 과 같은 오버레이인데 두 번째 버튼의 글자만
+    /// 다르다. 행동 버튼을 눌렀으면 true.
+    show_notice_action: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8, action_label: []const u8) bool,
     prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8,
 };
 
@@ -100,6 +103,20 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     if (g_callbacks) |cb| {
         const result = cb.show_confirm(cb.ctx, title, message);
         log.appendLine("dialog", "confirm title={s} result={s}", .{ title, if (result) "OK" else "Cancel" });
+        return result;
+    }
+    showStderr(.info, title, message);
+    return false;
+}
+
+/// #655 — 안내 + 행동. backend 가 없으면 stderr 로 내고 **행동은 없다** (false).
+/// 안내를 잃지 않는 것이 먼저다 — `showConfirm` 이 미가용 시 Cancel 로 떨어지는 것과
+/// 같은 판단이다.
+pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
+    _ = rt;
+    if (g_callbacks) |cb| {
+        const result = cb.show_notice_action(cb.ctx, title, message, action_label);
+        log.appendLine("dialog", "notice title={s} action={s} taken={}", .{ title, action_label, result });
         return result;
     }
     showStderr(.info, title, message);

@@ -1968,6 +1968,8 @@ pub const Renderer = struct {
         visible_message_rows: usize,
         message_scroll_row: usize,
         show_icon: bool,
+        /// #655 — Cancel 자리의 글자. `null` 이면 표준 `Cancel`.
+        secondary_label: ?[]const u8,
     ) void {
         const cw: i32 = @intCast(self.dialogFont().cell_width_px);
         const ch: i32 = @intCast(self.dialogFont().cell_height_px);
@@ -2120,7 +2122,7 @@ pub const Renderer = struct {
             const cancel_x: i32 = group_x;
             self.last_dialog_cancel_rect = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h };
             fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
-            const cancel_text = messages.button_cancel;
+            const cancel_text = secondary_label orelse messages.button_cancel;
             const cancel_text_w: i32 = button_measure.width(cancel_text);
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
             self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);

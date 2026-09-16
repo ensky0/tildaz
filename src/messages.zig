@@ -548,6 +548,11 @@ pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 /// 밀려난다. 다이얼로그에는 `config_notice_bad_value_format` 한 줄만 선다.
 pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:";
 
+/// #655 — 안내 다이얼로그의 두 번째 버튼. 사용자가 **직접 고치게** 만드는 것이 이
+/// 안내의 목적이라, 고칠 파일을 여는 길을 그 자리에 둔다. 메뉴의 `Open Config` 와
+/// 같은 글자다 — 같은 일을 하는 자리가 다르게 불리면 안 된다.
+pub const button_open_config = command_open_config;
+
 pub const config_notice_title = "TildaZ started with parts of your config replaced.";
 pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
 pub const config_notice_removable_header = "These are not used any more -- delete them:";

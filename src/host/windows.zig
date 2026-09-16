@@ -236,7 +236,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
     // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
     // 멈추면 안 되므로 로그로만 남긴다.
-    config_mod.showConfigNotice(rt, opts.isStressRun());
+    config_mod.showConfigNotice(rt, alloc, opts.isStressRun());
     defer app.window.deinit();
 
     // Scale tab bar / scrollbar / padding constants by the startup DPI.
