@@ -45,6 +45,7 @@ const dialog = @import("../dialog.zig");
 const messages = @import("../messages.zig");
 const command_menu = @import("../command_menu.zig");
 const search_bar = @import("../search_bar.zig");
+const search_input = @import("../search_input.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
@@ -1058,7 +1059,64 @@ fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
 
 /// #296 — 현재 입력 상태를 공통 입력 정책(input_policy)용으로.
 fn macInputState() input_policy.State {
-    return .{ .terminal_preedit_active = g_marked_len > 0 };
+    return .{
+        // 조합 중 글자가 검색 입력칸으로 갈 때는 *터미널* preedit 이 아니다 — sink 가
+        // 다르므로 `search_active` 쪽으로 센다 (`input_policy.State` 주석).
+        .terminal_preedit_active = g_marked_len > 0 and !searchFocused(),
+        .search_active = searchFocused(),
+    };
+}
+
+/// #646 — 지금 키보드 포커스를 검색 입력칸이 갖고 있는가. `input_policy.State.search_active`
+/// 가 곧 이 값이다.
+///
+/// 지금은 "바가 열려 있으면 포커스" 다. 바를 닫지 않고 터미널로 포커스만 되돌리는 길이
+/// 아직 없어서인데, 축을 `is_open` 과 따로 둔 덕에 그 길이 생겨도 이 함수만 바뀐다.
+fn searchFocused() bool {
+    const tab = g_session.activeTab() orelse return false;
+    return tab.search.is_open;
+}
+
+/// #646 — 검색 입력칸에 키 하나를 적용한다. 의미는 `search_input` 이 정하고, 여기는 활성
+/// pane 과 시계를 붙이기만 한다.
+fn searchApplyKey(k: search_input.Key) void {
+    const tab = g_session.activeTab() orelse return;
+    const eff = search_input.key(&tab.search, g_gpa.allocator(), k, tab.title_clock.read()) catch return;
+    if (eff.redraw) requestRender();
+}
+
+/// #646 — 확정된 글자를 검색어에 끼운다. `insertText:` · paste · preedit commit 이 모두
+/// 이리로 온다.
+fn searchInsertText(text: []const u8) void {
+    const tab = g_session.activeTab() orelse return;
+    const eff = search_input.insertText(&tab.search, g_gpa.allocator(), text, tab.title_clock.read()) catch return;
+    if (eff.redraw) requestRender();
+}
+
+/// #646 — macOS keyCode → 검색 입력칸이 뜻을 두는 키. `null` 이면 입력칸이 안 쓰는 키다.
+fn macSearchKey(kc: c_ushort, shift: bool) ?search_input.Key {
+    return switch (kc) {
+        0x35 => .close, // Esc
+        // Return / KP Enter. `.next_match` 는 화면 **아래에서 위로** 간다 (ghostty 의
+        // `Select.next` 가 최신 → 오래된 순서다). Shift 면 반대.
+        0x24, 0x4C => if (shift) .prev_match else .next_match,
+        0x33 => .backspace,
+        0x75 => .delete, // forward delete
+        0x7B => .left,
+        0x7C => .right,
+        0x73 => .home,
+        0x77 => .end,
+        else => null,
+    };
+}
+
+/// #646 — 한 줄 입력칸이 뜻을 두지 않는 나브키. 삼키지 않으면 검색어를 치는 동안 방향키
+/// escape sequence 가 셸로 새어 히스토리가 넘어간다 (#282 A9 와 같은 샘).
+fn macSearchNavKey(kc: c_ushort) bool {
+    return switch (kc) {
+        0x7E, 0x7D, 0x74, 0x79, 0x72 => true, // up / down / page up / page down / help
+        else => false,
+    };
 }
 
 /// #317 — macOS의 모든 shortcut 진입점이 같은 pending 입력 정책을 적용한다.
@@ -1484,6 +1542,33 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     }
     const keycode = get_keycode(event, objc.sel("keyCode"));
 
+    // #646 — 검색바가 포커스를 가지면 키는 입력칸이 먹는다. **여기서 하는 것은 분류뿐**
+    // 이고, 어디로 갈지는 `input_policy.resolve` 가, 무엇을 할지는 `search_input` 이
+    // 정한다 — 세 host 가 각자 판정하다 어긋난 것이 #282 의 결함이었다.
+    //
+    // 자리가 여기인 이유가 둘이다. 위의 Cmd · `[keys]` 조회보다 **뒤**라 검색 중에도
+    // 단축키가 그대로 돈다 (검색바 포커스 중 pane 이동 — 2026-09-11 사용자 결정).
+    // 아래 IME · PTY 경로보다 **앞**이라 편집키가 셸로 새지 않는다.
+    if (searchFocused()) {
+        const ctrl_search = (flags & (1 << 18)) != 0;
+        const cmd_search = (flags & NSEventModifierFlagCommand) != 0;
+        if (macSearchKey(keycode, shift)) |k| {
+            if (input_policy.resolve(.edit_key, macInputState()).target == .search_field) {
+                searchApplyKey(k);
+                return;
+            }
+        } else if (ctrl_search and !cmd_search) {
+            // Ctrl 조합은 한 줄 입력칸이 쓰지 않는다. Ctrl+C 는 `interrupt`, 나머지는
+            // `nav_key` 로 분류되는데 검색 중에는 **둘 다 `drop`** 이라 결과가 같다.
+            // 삼키지 않으면 검색어를 치다가 셸이 SIGINT 를 받는다.
+            if (input_policy.resolve(.interrupt, macInputState()).target == .drop) return;
+        } else if (macSearchNavKey(keycode)) {
+            if (input_policy.resolve(.nav_key, macInputState()).target == .drop) return;
+        }
+        // 그 밖의 키는 문자다 — 아래 IME 경로 (`interpretKeyEvents:` → `insertText:`) 로
+        // 내려가고, 확정되는 자리에서 `text` 로 다시 판정한다.
+    }
+
     if (option and keycode == 0x24) {
         const had_marked_text = g_marked_len > 0 and g_preedit_len > 0;
         clearHanjaState();
@@ -1646,7 +1731,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     interpretSingleKeyEvent(self_view, event);
                     return;
                 }
-                commitPreeditToPty(self_view);
+                commitPreeditToSink(self_view);
                 _ = sendEncodedKeyMac(tab, event, "", macKeyAction(event));
                 return;
             }
@@ -2217,6 +2302,19 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     const cstr = get_utf8(str, objc.sel("UTF8String"));
     const commit = cstr[0..len];
 
+    // #646 — 검색바가 포커스를 가지면 확정 글자는 PTY 가 아니라 검색어로 간다.
+    // 아래 `buildImeSnapshot` 경로는 **터미널 줄**을 읽어 치환 범위를 셈하므로 여기서
+    // 타면 안 된다. 한자 후보 확정처럼 IME 가 직접 알려 준 삭제 개수만 반영한다.
+    if (searchFocused()) {
+        const delete_count = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
+        clearImeMarkedState();
+        clearHanjaState();
+        var back: usize = 0;
+        while (back < delete_count) : (back += 1) searchApplyKey(.backspace);
+        searchInsertText(commit);
+        return;
+    }
+
     var snap = buildImeSnapshot(g_gpa.allocator());
     defer if (snap) |*s| s.deinit(g_gpa.allocator());
     const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
@@ -2280,7 +2378,10 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     // composition 은 cursor(맨 아래 live line)에 inline 표시되므로, 스크롤백 올린
     // 상태에서 조합 시작 시 안 내려가면 자기 조합이 안 보임. commit 은
     // imeInsertText 가 scroll.
-    g_session.scrollActiveToBottom();
+    //
+    // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 스크롤할 이유가
+    // 없다. 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
+    if (!searchFocused()) g_session.scrollActiveToBottom();
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;
@@ -3061,12 +3162,19 @@ fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
     );
 }
 
-/// IME preedit (g_preedit_buf) 을 활성 탭 PTY 로 commit + IME 상태 클리어.
+/// IME preedit (g_preedit_buf) 을 **지금의 sink** 로 commit + IME 상태 클리어.
 /// 호출 후 typing 계속 가능. render 요청은 하지 않는다 — 호출자가 뒤이어
 /// 화면을 바꾸는 경우(escape 송신 등)가 있어 `commitPendingInput` 이 그걸 맡는다.
-fn commitPreeditToPty(self_view: objc.id) void {
+///
+/// #646 — sink 는 검색바가 포커스를 가지면 검색어, 아니면 PTY 다. `input_policy` 의
+/// `Pending.commit` 이 뜻하는 것이 바로 이 "지금의 sink 로 flush" 이고, 그래서 단축키 ·
+/// paste 처럼 commit 을 요구하는 경로가 검색 중에도 자모를 흘리지 않는다.
+fn commitPreeditToSink(self_view: objc.id) void {
     if (g_preedit_len == 0) return;
-    g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
+    if (searchFocused())
+        searchInsertText(g_preedit_buf[0..g_preedit_len])
+    else
+        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
     g_preedit_len = 0;
     g_marked_len = 0;
     clearHanjaState();
@@ -3083,7 +3191,7 @@ fn commitPreeditToPty(self_view: objc.id) void {
 /// 동작 (cancel 아님).
 /// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
 fn commitPendingInput(self_view: objc.id) void {
-    commitPreeditToPty(self_view);
+    commitPreeditToSink(self_view);
     // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
     // 우회한다. 내부 marked state 만 지우고 render 를 요청하지 않으면
     // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
@@ -3810,6 +3918,14 @@ fn handlePaste() void {
 
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(ns_text, objc.sel("UTF8String"));
+
+    // #646 — 검색바가 포커스를 가지면 payload 는 검색어로 간다 (`input_policy` 의
+    // `.paste` → `.search_field`). 조합 확정은 `applyPasteInputPolicy` 가 이미 같은
+    // sink 로 했으므로 여기서는 잇기만 하면 '하X' 순서가 그대로 성립한다.
+    if (searchFocused()) {
+        searchInsertText(cstr[0..len]);
+        return;
+    }
 
     // PTY paste (bracketed paste + wrap 은 session.pasteToActive 가).
     tab_actions.routePaste(&g_host, cstr[0..len]);
@@ -4670,11 +4786,17 @@ fn renderFrameTick() void {
     const titles = titles_buf[0..tab_count];
 
     // IME preedit (`g_preedit_buf`) — cell grid 의 cursor 위치 inline overlay.
+    //
+    // #646 — 검색바가 포커스를 가지면 같은 버퍼를 **검색 입력칸 안**에 그린다. 조합이
+    // 보이는 자리는 하나여야 하므로 목적지를 여기서 가른다.
+    const search_focused_now = searchFocused();
     const cell_preedit: []const u8 =
-        if (g_preedit_len > 0 and !g_hanja_candidate_active)
+        if (!search_focused_now and g_preedit_len > 0 and !g_hanja_candidate_active)
             g_preedit_buf[0..g_preedit_len]
         else
             &.{};
+    const search_preedit: []const u8 =
+        if (search_focused_now and g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
 
     g_renderer.?.renderTabBar(
         titles,
@@ -4748,12 +4870,11 @@ fn renderFrameTick() void {
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
         hotkey_hint,
-        // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 · hover) 은
-        // 4 단계에서 붙으므로 지금은 "열려 있으면 포커스" 로 둔다.
+        // #646 — 검색바는 활성 pane 의 상태를 비춘다. hover 는 4 단계 ③ (마우스) 에서 붙는다.
         search_bar.uiFrom(
             &group.activeTab().search,
-            &.{},
-            true,
+            search_preedit,
+            search_focused_now,
             null,
             @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / r_scale,
             @as(f32, @floatFromInt(g_renderer.?.vp_width)) / r_scale,

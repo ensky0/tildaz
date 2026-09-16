@@ -86,15 +86,20 @@ pub fn key(
 /// 들어온다 — 세 경로가 각자 needle 을 만지면 caret 규칙이 갈린다.
 ///
 /// host 는 제어문자를 걸러서 준다 (`input_policy` 가 `text` 로 분류하는 것은 codepoint
-/// ≥ 0x20 뿐이다). 다만 paste 는 payload 에 개행이 섞일 수 있으므로 여기서도 막는다.
+/// ≥ 0x20 뿐이다). 다만 **paste 는 payload 에 개행이 섞인다** — 한 줄짜리 입력칸이라
+/// 첫 제어문자에서 자른다. 여러 줄을 한 줄로 이어 붙이면 무엇을 찾는지 볼 수 없고,
+/// 통째로 버리면 왜 아무 일도 안 일어나는지 알 수 없다. UTF-8 이어지는 바이트는 모두
+/// `0x80` 이상이라 이 컷이 글자 중간을 자르지 않는다.
 pub fn insertText(
     ps: *search.PaneSearch,
     alloc: std.mem.Allocator,
     text: []const u8,
     now_ns: u64,
 ) std.mem.Allocator.Error!Effect {
-    if (text.len == 0) return .{};
-    return try splice(ps, alloc, ps.caret, ps.caret, text, now_ns);
+    var end: usize = 0;
+    while (end < text.len and text[end] >= 0x20 and text[end] != 0x7F) end += 1;
+    if (end == 0) return .{};
+    return try splice(ps, alloc, ps.caret, ps.caret, text[0..end], now_ns);
 }
 
 /// 바 안의 컨트롤을 눌렀다. 키와 같은 동작으로 모은다 — `< > ×` 가 Shift+Enter ·
@@ -298,4 +303,20 @@ test "#646 엔진이 없으면 매치 이동은 아무 일도 하지 않는다" 
     try seed(&ps, alloc, "ab"); // 디바운스 중 — 엔진이 아직 없다
     try std.testing.expect(!(try key(&ps, alloc, .next_match, 0)).redraw);
     try std.testing.expect(!(try key(&ps, alloc, .prev_match, 0)).redraw);
+}
+
+test "#646 여러 줄 paste 는 첫 줄만 넣는다" {
+    const alloc = std.testing.allocator;
+    var ps: search.PaneSearch = .{};
+    defer ps.deinit(alloc);
+
+    ps.open();
+    _ = try insertText(&ps, alloc, "가나다\nlater\n", 0);
+    try std.testing.expectEqualStrings("가나다", ps.needle.items);
+    try std.testing.expectEqual(@as(usize, 9), ps.caret);
+
+    // 개행으로 시작하면 아무것도 안 들어간다.
+    const e = try insertText(&ps, alloc, "\n\n", 0);
+    try std.testing.expect(!e.redraw);
+    try std.testing.expectEqualStrings("가나다", ps.needle.items);
 }
