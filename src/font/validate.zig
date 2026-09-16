@@ -117,19 +117,23 @@ test "font validation messages preserve runtime values and final newline" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, "/tmp/config_3.json"));
 }
 
-test "#577 폰트 schema 오류도 다른 config 오류와 같은 첫 줄을 쓴다" {
-    // 이 문구는 이제 `config.zig` 의 `recordConfigFatalMsg` 가 조립한다. 여기서는
-    // 그 조립이 지나는 공통 형식만 고정한다 — 세 갈래였던 형식이 하나로 모였다는
+test "#577 남은 config fatal 도 다른 config 오류와 같은 첫 줄을 쓴다" {
+    // 이 문구는 `config.zig` 의 `recordConfigFatalMsg` 가 조립한다. 여기서는 그
+    // 조립이 지나는 공통 형식만 고정한다 — 세 갈래였던 형식이 하나로 모였다는
     // 사실이 test 로 남아야 한다 (#495 가 노렸고 #577 이 마무리한 지점).
+    //
+    // #655 — 본보기가 폰트 schema 오류였는데, 그 갈래는 이제 fatal 이 아니라
+    // 폴백이다 (`font.family` 가 문자열이 아니면 지우고 기본 폰트로 뜬다). 봉투는
+    // 남은 fatal 이 그대로 쓰므로, 본보기만 그중 하나로 바꾼다.
     var buf: [512]u8 = undefined;
     const message = try std.fmt.bufPrint(
         &buf,
         messages.config_error_with_path_format,
-        .{ "/tmp/config_3.toml", messages.font_family_must_be_string_msg },
+        .{ "/tmp/config_3.toml", messages.config_parse_failed_fallback_msg },
     );
     try std.testing.expectEqualStrings(
         "Config: /tmp/config_3.toml\n\n" ++
-            "Invalid config: font.family must be a string (font name).",
+            "Failed to parse config file.",
         message,
     );
 }

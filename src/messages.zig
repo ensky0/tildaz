@@ -410,15 +410,6 @@ pub const font_chain_all_failed_msg =
     \\Tried:
 ;
 
-/// `font.family` 가 string 이 아닐 때 (대표적으로 array). `font/validate.zig`
-/// 의 helper 가 Config path 라인을 붙여 표시.
-pub const font_family_must_be_string_msg = "Invalid config: font.family must be a string (font name).";
-
-/// `font.glyph_fallback` 이 string 의 array 가 아닐 때 (다른 type, 또는 array
-/// element 가 string 아닌 경우). `font/validate.zig` 의 helper 가 Config path
-/// 라인을 붙여 표시.
-pub const font_glyph_fallback_must_be_list_msg = "Invalid config: font.glyph_fallback must be a list of strings (fallback font names).";
-
 /// #501 — config 를 읽지 못하거나 만들지 못했을 때. **fatal 이 아니다.**
 ///
 /// 시작을 거부하면 사용자가 스스로 잠긴다 — config 를 고치려면 편집기가 필요하고
@@ -502,45 +493,6 @@ pub const config_error_with_path_format = config_error_path_prefix_format ++ "{s
 /// 경로를 아예 잃어서 (`"Failed to parse config JSON."`) 정작 가장 도움이 필요한
 /// 상황에서 가장 적은 정보를 줬다.
 pub const config_error_with_path_fallback_msg = "Config: (unknown)\n\nConfiguration is invalid.";
-pub const config_dock_position_invalid_format = "Configuration: unknown \"window.dock_position\" value \"{s}\".\n\nAllowed: top, bottom, left, right";
-pub const config_dock_position_invalid_fallback_msg = "Configuration: window.dock_position invalid";
-pub const config_macos_option_as_alt_invalid_format = "Configuration: unknown \"input.macos_option_as_alt\" value \"{s}\".\n\nAllowed: none, both, left, right";
-pub const config_macos_option_as_alt_invalid_fallback_msg = "Configuration: input.macos_option_as_alt invalid";
-pub const config_field_number_required_format = "Configuration: \"{s}\" must be a number.";
-pub const config_field_range_required_format = "Configuration: \"{s}\" must be in {s}.";
-pub const config_field_integer_range_required_format = "Configuration: \"{s}\" must be an integer in {s}.";
-pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:\n";
-/// #484 — 거부 이유가 둘인데 메시지가 하나였다. `ctrl+twosuperior` 는 이미 modifier 가
-/// 있는데도 "Other keys require Ctrl, Alt, Super, or Cmd" 를 받아, 신고자가 modifier 를
-/// 더해 보고도 같은 안내를 다시 받았다. 실제 원인 (모르는 key 이름) 을 알 방법이 없었다.
-/// 이제 원인별로 갈라 보낸다 — `config.HotkeyFailure` 참고.
-///
-/// key 이름을 못 알아본 경우. **받는 key 목록을 함께 준다** — 안 되는 이유만 알려 주고
-/// 무엇이 되는지 안 알려 주면 사용자가 또 추측해야 한다.
-/// #493 — `[keys]` 의 같은 키가 두 액션에 걸린 경우. **양쪽 액션을 다 짚는다** —
-/// 한쪽만 알려주면 사용자가 나머지를 찾아 헤맨다 (#484 의 hotkey 메시지 교훈).
-/// 바인딩 총량 상한. 조용히 잘라 버리면 사용자가 적은 단축키가 이유 없이 안 먹는다.
-pub const config_key_too_many_format = "Configuration: too many key bindings in [keys] (limit {d}).";
-pub const config_key_too_many_fallback_msg = "Configuration: too many key bindings in [keys]";
-pub const config_key_conflict_format = "Configuration: \"{s}\" is bound to both \"{s}\" and \"{s}\" in [keys].\n\nEach key may trigger only one action. Remove it from one of them.";
-pub const config_key_conflict_fallback_msg = "Configuration: the same key is bound to two actions in [keys]";
-/// `[keys]` 의 값이 리스트가 아닌 경우.
-pub const config_key_not_list_format = "Configuration: \"keys.{s}\" must be a list of key combinations.\n\nExample: {s} = [\"ctrl+shift+t\"]\nUse an empty list [] to leave the action unbound.";
-pub const config_key_not_list_fallback_msg = "Configuration: a [keys] entry must be a list";
-/// `[keys]` 의 키 문자열을 파싱하지 못한 경우. `hotkey` 와 달리 액션 이름을 함께 짚는다.
-pub const config_key_invalid_format = "Configuration: \"keys.{s}\" contains a key TildaZ does not recognize: \"{s}\".\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.";
-pub const config_key_invalid_fallback_msg = "Configuration: a [keys] entry uses an unrecognized key";
-/// 글자를 내는 키를 modifier 없이 바인딩한 경우 — 그 글자를 터미널에 칠 수 없게 된다.
-pub const config_key_needs_modifier_format = "Configuration: \"keys.{s}\" binds \"{s}\" without Ctrl, Alt, or Cmd.\n\nThat key types text, so binding it alone would make it impossible to type in the terminal. Keys that do not type text (F1-F12, PageUp, PageDown) may be bound without a modifier.";
-pub const config_key_needs_modifier_fallback_msg = "Configuration: a [keys] entry needs a modifier";
-/// #496 — 위치 표기를 macOS 에서 쓸 수 없는 두 경우. 안내가 갈리는 이유는 원인이
-/// 다르기 때문이다 — 하나는 **키가 다른 이름으로 보고되는 것**이고 다른 하나는
-/// **정말 없는 것**이다. 한 메시지로 묶으면 앞쪽 사용자에게 "쓸 수 없다" 고 말하게
-/// 되는데 실제로는 이름만 바꾸면 되는 상황이다 (#484 의 교훈).
-pub const config_key_position_aliased_format = "Configuration: \"keys.{s}\" uses {s}, and macOS reports that key under a different name.\n\nOn a PC keyboard attached to a Mac, PrintScreen, ScrollLock and Pause arrive as F13, F14 and F15 -- Apple's extended keyboard puts those function keys in the same spots.\n\nUse [F13], [F14] or [F15] instead.";
-pub const config_key_position_aliased_fallback_msg = "Configuration: on macOS use [F13] / [F14] / [F15] for PrintScreen / ScrollLock / Pause";
-pub const config_key_position_absent_format = "Configuration: \"keys.{s}\" uses {s}, which macOS does not provide.\n\nApple's key codes stop at F20, and the Japanese input-switching keys (Convert, NonConvert, KanaMode) are handled by the input method rather than delivered as keys.\n\nPick a different key for this action, or leave it unbound with an empty list [].";
-pub const config_key_position_absent_fallback_msg = "Configuration: that key position does not exist on macOS";
 pub const config_hotkey_unknown_key_format = "Configuration: \"hotkey\" value \"{s}\" uses a key TildaZ does not recognize.\n\nAccepted keys: F1-F12, A-Z, 0-9, space, tab, escape, return, grave (`), pageup, pagedown, [ , ]\nAccepted modifiers: ctrl, shift, alt, super (also win / cmd / meta)\n\nKeys outside this list are not supported yet, including layout-specific ones.\n\nExamples: \"f1\", \"ctrl+space\", \"shift+cmd+t\"";
 pub const config_hotkey_unknown_key_fallback_msg = "Configuration: hotkey uses an unrecognized key";
 /// key 는 유효하지만 modifier 가 없어 전역 등록이 위험한 경우 (일상 입력을 OS 전체에서
@@ -573,9 +525,6 @@ pub const config_hotkey_duplicate_format =
     "Each TildaZ instance needs its own global hotkey. Change \"hotkey\" in this instance's config and start it again.";
 pub const config_hotkey_duplicate_fallback_msg =
     "This hotkey is already used by another TildaZ instance. Change \"hotkey\" in this instance's config and start it again.";
-pub const config_font_family_empty_msg = "Configuration: \"font.family\" must not be empty.";
-pub const config_font_chain_too_long_format = "Configuration: font.family + glyph_fallback total exceeds {d} entries.";
-pub const config_font_chain_too_long_fallback_msg = "Configuration: font chain too long";
 pub const config_type_mismatch_format = "Configuration: type mismatch at \"{s}\" — expected {s}, got {s}.";
 pub const config_type_mismatch_fallback_msg = "Configuration: type mismatch";
 /// #483 (2026-08-27 사용자 결정) — 새 버전이 키를 더하면 이전 파일이 여기서 걸린다 (strict schema 는 유지,
@@ -595,6 +544,10 @@ pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 //
 // 문구는 **무엇을 했는지 + 사용자가 할 일** 두 조각이다. 앞만 있으면 "그래서 어쩌라고" 가
 // 되고, 뒤만 있으면 지금 어떤 값으로 도는지를 모른다.
+/// #655 — 이제 **로그에만** 간다. 테마가 18 개라 다이얼로그에 펼치면 나머지 안내가
+/// 밀려난다. 다이얼로그에는 `config_notice_bad_value_format` 한 줄만 선다.
+pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{s}\"\n\nAvailable themes:";
+
 pub const config_notice_title = "TildaZ started with parts of your config replaced.";
 pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
 pub const config_notice_removable_header = "These are not used any more -- delete them:";
@@ -612,6 +565,21 @@ pub const config_notice_unknown_format = "  {s}";
 pub const config_notice_used_default = "the default";
 /// 담을 자리를 넘겼을 때 마지막 줄. 조용히 자르지 않는다.
 pub const config_notice_truncated_msg = "  ... and more (see the log for the full list)";
+/// 숫자를 문구로 못 옮겼을 때 (`bufPrint` 실패) `config_notice_clamped_format` 에 넣는 말.
+/// 값은 잃어도 "범위 밖이라 잘렸다" 는 사실은 남아야 한다.
+pub const config_notice_the_limit = "the limit";
+/// `[keys]` 의 한 항목만 버렸을 때. 액션은 남은 키로, 다 버렸으면 기본 바인딩으로 돈다.
+pub const config_notice_key_dropped_format = "  keys.{s} -- dropped \"{s}\" ({s})";
+pub const config_notice_key_dropped_fallback_msg = "  keys -- dropped a key that could not be read";
+/// 두 액션이 같은 조합을 쓸 때. 먼저 나온 쪽이 이긴다 (SPEC 7.3).
+pub const config_notice_key_conflict_format = "  keys.{s} -- \"{s}\" is already used by {s}, dropped";
+pub const config_notice_key_conflict_fallback_msg = "  keys -- dropped a key that was already used";
+pub const config_notice_key_reason_unknown = "unknown key";
+pub const config_notice_key_reason_needs_modifier = "needs a modifier";
+pub const config_notice_key_reason_position_aliased = "left/right is not distinguished on macOS";
+pub const config_notice_key_reason_position_absent = "needs left or right on macOS";
+pub const config_notice_key_reason_not_text = "not a text value";
+pub const config_notice_key_reason_too_many = "too many key bindings";
 
 // #577 — 세 문구 모두 경로가 **첫 줄**로 왔다 (#495). 예전에는 맨 끝의
 // `Config path:` 였는데, 그러면 같은 다이얼로그 안에서도 오류 종류에 따라 경로
