@@ -60,6 +60,7 @@
 | [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 (실제 GNOME · Cinnamon 세션용) | `# Linux — headless sway …` |
 | [`position-hotkey-check_linux.sh`](position-hotkey-check_linux.sh) | Linux | 전역 hotkey 의 위치 표기가 이 데스크톱에 실제로 등록되는지 | `# 전역 hotkey 의 위치 표기 검증` |
 | [`real-session-check_linux.sh`](real-session-check_linux.sh) | Linux | 실제 Hyprland · GNOME · Cinnamon 세션에 붙어 배율 · layer-shell 부재를 봄 | `# Linux — headless sway …` |
+| [`search-bar-check_windows.ps1`](search-bar-check_windows.ps1) | Windows | 버퍼 검색바의 배치 · 키보드 · IME · 마우스 · 메뉴를 합성 입력과 캡처로 자동 판정 ([#646](https://github.com/ensky0/tildaz/issues/646)) | `# Windows — 합성 입력으로 …` |
 | [`render-process-check_macos.sh`](render-process-check_macos.sh) | macOS | 기동 직후부터 촘촘히 찍어 **그리는 과정**을 봄 | `# macOS — 렌더 결과와 …` |
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 (다른 Windows 도구 셋이 같이 씀) | `# Windows — 합성 입력으로 …` |

@@ -710,12 +710,12 @@ Windows 실측).
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 검색 열기 | Ctrl+Shift+F (`open_search`) | Cmd+F | Ctrl+Shift+F | ⏳ | ✅ | ⏳ |
-| 검색 열기 (메뉴) | `…` → `Find` | 동일 | 동일 | ⏳ | ✅ | ⏳ |
-| 다음 매치 (아래로) | Enter | 동일 | 동일 | ⏳ | ✅ | ⏳ |
-| 이전 매치 (위로) | Shift+Enter | 동일 | 동일 | ⏳ | ✅ | ⏳ |
-| 닫기 (검색어 · 강조 버림) | Esc | 동일 | 동일 | ⏳ | ✅ | ⏳ |
-| 컨트롤 클릭 (`‹ › ×`) | 같은 동작 (`search_input.control`) | 동일 | 동일 | ⏳ | ✅ | ⏳ |
+| 검색 열기 | Ctrl+Shift+F (`open_search`) | Cmd+F | Ctrl+Shift+F | ✅ | ✅ | ✅ |
+| 검색 열기 (메뉴) | `…` → `Find` | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 다음 매치 (아래로) | Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 이전 매치 (위로) | Shift+Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 닫기 (검색어 · 강조 버림) | Esc | 동일 | 동일 | ✅ | ✅ | ✅ |
+| 컨트롤 클릭 (`‹ › ×`) | 같은 동작 (`search_input.control`) | 동일 | 동일 | ✅ | ✅ | ✅ |
 
 **상태는 pane 별이고 바는 하나다.** 검색바는 활성 pane 의 상태를 비추는 창이라, pane 을 옮기면
 그 pane 의 검색으로 바뀌고 검색이 없는 pane 으로 가면 사라진다. 비활성 pane 은 검색하지도
