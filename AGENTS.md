@@ -1227,7 +1227,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vkbd_linux.py`](tool/vkbd_linux.py) | `zwp_virtual_keyboard_v1` 가상 키보드를 **한 번 꽂고 유지**하며 FIFO 로 `type …` · `key ctrl+shift+t` 를 받는 데몬 |
 | [`tool/clusters.py bands`](tool/clusters.py) | 밝은 230 / 어두운 20 띠를 3 줄씩 번갈아 채운 화면 — 배율 리샘플 (#539) 판정용 |
 | [`tool/bands-check.py`](tool/bands-check.py) | 그 캡처의 세로 단면에서 띠 경계 전이 행의 밝기 종류를 세요 (한 종류 이하 = 리샘플 없음). **`--locate` 로 창 영역을 캡처에서 직접 찾아요** — 좌표를 밖에서 계산하지 말아요 (아래 함정) |
-| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` 을 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요 |
+| [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` · `scroll <칸수>` (음수 = 위로) 를 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요. 휠은 `axis_source` (wheel) → `axis_discrete` → `frame` 순서로 한 칸씩 내요 (`axis` 를 따로 보내면 client 가 두 배로 세요) |
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
