@@ -412,19 +412,32 @@ pub const PaneSearch = struct {
             if (pt.viewport.y < screen.pages.rows) return;
         }
 
-        // `.pin` 은 그 줄을 viewport 의 **맨 윗줄**로 만든다. 거기서 원하는 자리까지
+        // `.pin` 은 그 줄을 viewport 의 맨 윗줄로 **올리려** 한다. 거기서 원하는 자리까지
         // 끌어내린다 — `delta_row` 가 음수면 viewport 가 위로 가고 매치는 그만큼 아래로
-        // 내려온다. 스크롤은 위아래 끝으로 clamp 되므로 스크롤백 경계에서도 안전하다.
+        // 내려온다.
         screen.scroll(.{ .pin = pin });
         const rows: isize = @intCast(screen.pages.rows);
         const margin: isize = @divFloor(rows, REVEAL_MARGIN_DIVISOR);
-        const down: isize = switch (dir) {
+        const target: isize = switch (dir) {
             // 위로 간다 — 매치를 아래에서 `margin` 째 줄에 놓아 화면 위쪽 (갈 곳) 이 보이게.
             .up => rows - 1 - margin,
             // 아래로 간다 — 매치를 위에서 `margin` 째 줄에.
             .down => margin,
         };
-        if (down > 0) screen.scroll(.{ .delta_row = -down });
+
+        // **`.pin` 이 매치를 맨 윗줄에 놓았다고 가정하지 않는다.** 버퍼 끝 근처 매치는 아래로
+        // 채울 줄이 모자라 그 스크롤이 clamp 되고, 매치는 맨 윗줄이 아니라 화면 **아래쪽**에
+        // 남는다. 거기서 고정값 (`target`) 만큼 또 올리면 매치가 화면 **밖으로** 밀려난다 —
+        // 2026-09-16 Linux 실기에서 버퍼 마지막 줄 매치가 어느 방향으로 가도 안 보였다
+        // ([#646](https://github.com/ensky0/tildaz/issues/646)). 그래서 옮긴 **뒤의 실제 자리**를
+        // 다시 재고 목표까지 필요한 만큼만 움직인다. clamp 된 회차는 `cur` 이 이미 화면 안이라
+        // 아래로 되돌리려는 스크롤도 clamp 되어, 매치는 보이는 자리에 그대로 남는다.
+        const cur: isize = if (screen.pages.pointFromPin(.viewport, pin)) |pt|
+            @intCast(pt.viewport.y)
+        else
+            0;
+        const delta_row: isize = cur - target;
+        if (delta_row != 0) screen.scroll(.{ .delta_row = delta_row });
         self.highlights_dirty = true;
     }
 
@@ -822,6 +835,45 @@ test "#646 매치를 놓는 자리는 가는 방향이 정한다" {
         const pin = s.selectedMatch().?.startPin();
         const y = screen.pages.pointFromPin(.viewport, pin).?.viewport.y;
         try std.testing.expectEqual(margin, y);
+    }
+}
+
+test "#646 버퍼 끝 줄의 매치도 화면 안에 남는다" {
+    // 2026-09-16 Linux 실기 회귀. 버퍼 **마지막 줄** 의 매치는 아래로 채울 줄이 없어
+    // `.pin` 스크롤이 clamp 되는데, 그때 목표 자리만큼 또 올리면 매치가 화면 밖으로
+    // 밀려났다 — 어느 방향으로 가도 안 보였다. 프롬프트 근처를 찾는 가장 흔한 경로다.
+    const alloc = std.testing.allocator;
+    const rows: u16 = 24;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = rows,
+        .max_scrollback_lines = 2000,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+
+    try term.printString("head FINDME\r\n");
+    for (0..200) |i| {
+        var b: [64]u8 = undefined;
+        try term.printString(try std.fmt.bufPrint(&b, "filler {d}\r\n", .{i}));
+    }
+    try term.printString("tail FINDME"); // 마지막 줄 — 이 아래로는 스크롤할 것이 없다
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expectEqual(@as(usize, 2), s.matchCount());
+
+    const screen = term.screens.active;
+    // 매치가 둘뿐이라 순회는 head ↔ tail 을 오간다. **매 회차마다** 고른 것이 보여야 한다.
+    for ([_]Direction{ .down, .down, .down, .up, .up, .up }) |dir| {
+        try std.testing.expect(try s.select(dir));
+        const pin = s.selectedMatch().?.startPin();
+        const pt = screen.pages.pointFromPin(.viewport, pin) orelse
+            return error.SelectedMatchAboveViewport;
+        try std.testing.expect(pt.viewport.y < rows);
     }
 }
 
