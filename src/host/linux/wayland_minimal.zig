@@ -7697,6 +7697,9 @@ const Client = struct {
             self.command_menu_hover = null;
             self.needs_redraw = true;
         }
+        // #646 — 포인터가 창을 떠나면 "바에서 시작한 누름" 도 푼다. Wayland 는 leave 뒤의
+        // 뗌이 우리에게 오지 않을 수 있어, 안 풀면 터미널 마우스가 영영 죽는다.
+        self.search_press = false;
         // #646 — 검색바 컨트롤 hover 도 같은 이유로 푼다.
         if (self.search_hover != null) {
             self.search_hover = null;
@@ -7922,6 +7925,9 @@ const Client = struct {
                     return;
                 }
                 // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+                // **새 누름마다 플래그를 다시 정한다** — 뗌에서만 풀면 뗌이 오지 않는 경로에서
+                // 참으로 걸린 채 남아 터미널 마우스가 죽는다.
+                self.search_press = false;
                 if (self.searchBarMouseDown()) {
                     tab.interaction.cancelPointerModes();
                     self.search_press = true;

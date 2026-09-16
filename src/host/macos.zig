@@ -3482,6 +3482,10 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
     }
 
     // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+    //
+    // **새 누름마다 플래그를 다시 정한다.** 뗌에서만 풀면, 뗌이 오지 않는 경로 (창 밖에서
+    // 떼기 · pointer leave) 에서 참으로 걸린 채 남아 터미널 마우스가 죽는다.
+    g_search_press = false;
     if (g_renderer != null) {
         const xy = eventToWindowPx(self_view, event);
         if (searchBarMouseDown(xy.x, xy.y)) {

@@ -779,3 +779,48 @@ test "#646 fieldCaret — iterFieldText 와 같은 자리를 가리킨다" {
     }
     try std.testing.expectEqual(text.len, byte);
 }
+
+test "#646 caretOffsetPt — 예전 renderer 산술과 같은 값" {
+    // 세 renderer 가 각자 적던 `before_w + preedit_w - scroll` 을 helper 로 모았다.
+    // 그 치환이 값이 같은지 고정한다 (macOS 는 px, Linux 는 정수 px, 단위는 무관하다).
+    const cw: f32 = 10;
+    const needle = "abcdef";
+    const preedit = "가";
+    const caret: usize = 3;
+    const scroll: f32 = 25;
+
+    const before_w = textWidthPx(needle[0..caret], cw);
+    const preedit_w = textWidthPx(preedit, cw);
+    try std.testing.expectEqual(
+        before_w + preedit_w - scroll,
+        caretOffsetPt(needle, preedit, caret, cw, scroll),
+    );
+}
+
+test "#646 caretOffsetPt — caret 범위를 넘겨도 끝에서 멈춘다" {
+    const cw: f32 = 10;
+    const needle = "abc";
+    // 결과가 줄어드는 중에 caret 이 남아 있을 수 있다 — 자르지 않으면 slice 가 터진다.
+    try std.testing.expectEqual(
+        textWidthPx(needle, cw),
+        caretOffsetPt(needle, "", 999, cw, 0),
+    );
+}
+
+test "#646 caretOffsetPt 와 fieldCaret 은 서로의 역이다" {
+    // 클릭 → byte offset (`fieldCaret`) 과 byte offset → x (`caretOffsetPt`) 가 어긋나면
+    // "누른 자리와 다른 곳에 커서가 생긴다". 두 함수가 같은 전제를 쓰는지 고정한다.
+    const cw: f32 = 12;
+    const text = "a가b다c";
+    for ([_]f32{ 0, 17, 40 }) |scroll| {
+        var byte: usize = 0;
+        var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+        while (true) {
+            const x = caretOffsetPt(text, "", byte, cw, scroll);
+            // caret 자리에서 아주 조금 오른쪽을 누르면 같은 offset 으로 돌아와야 한다.
+            try std.testing.expectEqual(byte, fieldCaret(text, cw, scroll, x + 0.5));
+            const cp = iter.nextCodepoint() orelse break;
+            byte += std.unicode.utf8CodepointSequenceLength(cp) catch 1;
+        }
+    }
+}

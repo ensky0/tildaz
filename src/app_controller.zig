@@ -1975,6 +1975,9 @@ pub const App = struct {
                     return true;
                 }
                 // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+                // **새 누름마다 플래그를 다시 정한다** — 뗌에서만 풀면 뗌이 오지 않는 경로에서
+                // 참으로 걸린 채 남아 터미널 마우스가 죽는다.
+                self.search_press = false;
                 if (self.searchBarMouseDown(mouse.x, mouse.y)) {
                     if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
                     self.search_press = true;
