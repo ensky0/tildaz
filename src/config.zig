@@ -3983,6 +3983,15 @@ test "#577 정상 config 는 문구를 담지 않는다" {
 
     // 담긴 것이 없어야 한다 — 있으면 host 가 정상 부팅을 오류로 끊는다.
     try std.testing.expectEqual(@as(?[]const u8, null), pendingFatalNotice());
+
+    // #655 — **안내도 없어야 한다.** 이것이 이 이슈에서 가장 위험한 회귀 자리다:
+    // `repairStructure` 가 대조하는 기준 (`schemaReferenceToml`) 과 생성기가 적는 문서
+    // (`defaultConfigToml`) 가 갈리면, 아무 잘못 없는 사용자가 **뜰 때마다** 다이얼로그를
+    // 본다. 지금은 앞이 뒤를 그대로 부르지만 그 사실을 test 가 붙잡고 있어야 한다.
+    if (pendingConfigNotice()) |n| {
+        std.debug.print("\n정상 config 가 안내를 만들었다 ({d} 줄):\n{s}{s}\n", .{ n.count, n.repaired, n.removable });
+        return error.CleanConfigProducedNotice;
+    }
 }
 
 test "DockPosition.fromString" {
