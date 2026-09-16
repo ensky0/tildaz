@@ -1132,7 +1132,7 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const hl = hlAt(hl_row, x16, &self.chrome);
+                const hl = hlAt(hl_row, x16);
 
                 const is_custom_bg = is_selected or is_inverse or hl != null or (style.bg(&raw, &colors.palette) != null);
                 // #365 — SGR 선 속성 (밑줄 · 취소선 · 윗줄) 도 이 pass 에서 만든다.
@@ -1238,7 +1238,7 @@ pub const MetalRenderer = struct {
                     const is_inverse_b = style_b.flags.inverse;
                     const x16_b: u16 = @intCast(x);
                     const is_selected_b = if (sel_range) |sr| (x16_b >= sr[0] and x16_b <= sr[1]) else false;
-                    const hl_b = hlAt(hl_row, x16_b, &self.chrome);
+                    const hl_b = hlAt(hl_row, x16_b);
                     const fg_rgb = resolveFg(style_b, &raw, &colors, is_selected_b, is_inverse_b, hl_b);
                     const rect = block_element.blockElementRect(cp) orelse {
                         x += 1;
@@ -1282,7 +1282,7 @@ pub const MetalRenderer = struct {
                         const is_inverse_x = style_x.flags.inverse;
                         const x16_x: u16 = @intCast(x);
                         const is_selected_x = if (sel_range) |sr| (x16_x >= sr[0] and x16_x <= sr[1]) else false;
-                        const hl_x = hlAt(hl_row, x16_x, &self.chrome);
+                        const hl_x = hlAt(hl_row, x16_x);
                         const fg_rgb_x = resolveFg(style_x, &raw, &colors, is_selected_x, is_inverse_x, hl_x);
                         const box_x: f32 = @as(f32, @floatFromInt(x)) * cw + x_pad;
                         // #353 — `br.cov` (AA coverage) 를 공통 `ui_metrics.blendOverRgb`
@@ -1313,7 +1313,7 @@ pub const MetalRenderer = struct {
                 const is_inverse = style.flags.inverse;
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16, &self.chrome));
+                const fg_rgb = resolveFg(style, &raw, &colors, is_selected, is_inverse, hlAt(hl_row, x16));
 
                 // grapheme cluster (VS-16 / skin tone modifier / ZWJ 시퀀스) — cell 의
                 // base + extras 를 CTLine 으로 shape, 단일 representative glyph 으로
@@ -1365,7 +1365,7 @@ pub const MetalRenderer = struct {
                             const st = cell_color.applyBlinkPhase(if (rr.style_id != 0) styles[cell_x] else ghostty.Style{}, blink_faint);
                             const inv = st.flags.inverse;
                             const sel = if (sel_range) |sr| (cell_x >= sr[0] and cell_x <= sr[1]) else false;
-                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, @intCast(cell_x), &self.chrome));
+                            const fg = resolveFg(st, &rr, &colors, sel, inv, hlAt(hl_row, @intCast(cell_x)));
 
                             // #401 — cluster 가 글리프 여러 개면 한 비트맵으로 합성한다.
                             // 하나면 `getOrInsertCluster` 가 기존 경로로 넘긴다.
@@ -2429,9 +2429,8 @@ const resolveFg = cell_color.resolveFg;
 fn hlAt(
     hls: []const ghostty.RenderState.Highlight,
     x: u16,
-    chrome: *const chrome_palette.Palette,
 ) ?cell_color.HighlightColors {
     // **색이 있는 tag 중 최상** 을 고른다 — `cell_highlight.at` 은 우선순위 최상 하나를
     // 주는데 그것이 색을 안 주는 종류면 (링크 hover, #647) 색이 통째로 사라진다.
-    return cell_color.highlightAt(hls, x, chrome);
+    return cell_color.highlightAt(hls, x);
 }

@@ -881,7 +881,7 @@ pub const Renderer = struct {
                 );
                 const x16: u16 = @intCast(x);
                 const is_selected = if (sel_range) |sr| (x16 >= sr[0] and x16 <= sr[1]) else false;
-                const hl = hlAt(hl_row, x16, &self.chrome);
+                const hl = hlAt(hl_row, x16);
                 // #483 2단계 ② — 격자 원점은 pane 기준 (`rect` 는 탭바를 뺀 영역). pane 하나면 이전의
                 // `pad` / `tab_bar_h + pad` 와 같은 값이다.
                 const cell_x: i32 = pane.rect.x + pad + @as(i32, @intCast(x)) * cw;
@@ -1099,7 +1099,7 @@ pub const Renderer = struct {
                             const rst = cell_color.applyBlinkPhase(rs, blink_faint);
                             const rx16: u16 = @intCast(rx);
                             const rsel = if (sel_range) |sr| (rx16 >= sr[0] and rx16 <= sr[1]) else false;
-                            const rhl = hlAt(hl_row, rx16, &self.chrome);
+                            const rhl = hlAt(hl_row, rx16);
                             const cg = self.run_results[i];
                             appendGlyph(&self.layer.glyphs, allocator, .{
                                 .ref = clusterRef(cg),
@@ -2538,11 +2538,10 @@ fn resolveBg(
 fn hlAt(
     hls: []const ghostty.RenderState.Highlight,
     x: u16,
-    chrome: *const chrome_palette.Palette,
 ) ?cell_color.HighlightColors {
     // **색이 있는 tag 중 최상** 을 고른다 — `cell_highlight.at` 은 우선순위 최상 하나를
     // 주는데 그것이 색을 안 주는 종류면 (링크 hover, #647) 색이 통째로 사라진다.
-    return cell_color.highlightAt(hls, x, chrome);
+    return cell_color.highlightAt(hls, x);
 }
 
 const isLigatureCandidate = @import("../../font/ligature.zig").isLigatureCandidate;
