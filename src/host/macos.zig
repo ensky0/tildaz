@@ -1179,6 +1179,23 @@ fn applySearchEffect(eff: search_input.Effect) void {
     if (eff.redraw) requestRender();
 }
 
+/// #646 — needle 의 `[from, to)` 를 `text` 로 갈아 끼우고 caret 을 그 뒤에 둔다.
+///
+/// `NSTextInputClient.insertText:replacementRange:` 가 요구하는 그대로다 — 범위를 지우고
+/// 그 자리에 넣는다. 편집 자체는 `search_input` 의 것을 쓴다 (caret 규칙이 한 곳이다).
+fn searchSpliceText(from: usize, to: usize, text: []const u8) void {
+    const tab = g_session.activeTab() orelse return;
+    const len = tab.search.needle.items.len;
+    const start = @min(from, len);
+    const end = @min(@max(to, start), len);
+
+    // 지울 것이 있으면 caret 을 끝에 두고 그만큼 지운다.
+    tab.search.caret = end;
+    var remaining = std.unicode.utf8CountCodepoints(tab.search.needle.items[start..end]) catch (end - start);
+    while (remaining > 0) : (remaining -= 1) searchApplyKey(.backspace);
+    searchInsertText(text);
+}
+
 /// #646 — 확정된 글자를 검색어에 끼운다. `insertText:` · paste · preedit commit 이 모두
 /// 이리로 온다.
 fn searchInsertText(text: []const u8) void {
@@ -1645,17 +1662,20 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (searchFocused()) {
         const ctrl_search = (flags & (1 << 18)) != 0;
         const cmd_search = (flags & NSEventModifierFlagCommand) != 0;
-        // **Option+Enter (한자 재변환) 는 여기서 가져간다 — 매치 이동이다.**
+        // **조합 중에는 편집키가 IME 의 것이다.** native 텍스트 필드와 같은 규칙이고,
+        // `NSTextInputClient` 의 전제이기도 하다 — 조합 글자는 document 안에 있고
+        // (`fillSearchImeSnapshot`) 그것을 편집 · 확정 · 취소하는 것은 IME 다.
         //
-        // 흘려보내 봤고 안 됐다 (2026-09-16 실기). `fillSearchImeSnapshot` 으로 IME 가 보는
-        // 문서를 입력칸으로 바꾼 뒤에는 변환 자체는 일어나지만, 터미널 경로에는 조합을
-        // **가로채 보관했다가** 재변환하는 장치가 따로 있다 (`g_hanja_preedit_commit_requested`
-        // → `storeHanjaPendingCommit` → `g_hanja_reconversion_*`). 검색 분기는 그보다 먼저
-        // 확정 글자를 needle 에 쓰므로 `한` 이 남고 `韓` 이 덧붙어 **`한韓`** 이 된다.
+        //   - `Return` — 조합 확정 (후보가 떠 있으면 고른 후보 확정)
+        //   - `Esc` — 조합 취소 (검색바 닫기가 아니다)
+        //   - `Option+Return` — 한자 변환
+        //   - 방향키 · `Backspace` — 후보 이동 · 조합 편집
         //
-        // 그 장치까지 sink 별로 가르는 것은 #646 보다 큰 일이라 별도 이슈로 둔다. 검색바
-        // 안에서 한글은 치고 확정되며, 한자 변환만 안 된다.
-        if (macSearchKey(keycode, shift)) |k| {
+        // 우리가 가로채면 이것이 전부 막힌다. 조합이 끝나면 (`g_marked_len == 0`) 아래
+        // 분류가 평소대로 돈다.
+        if (g_marked_len > 0) {
+            // 아래 IME 경로로 흘린다.
+        } else if (macSearchKey(keycode, shift)) |k| {
             if (input_policy.resolve(.edit_key, macInputState()).target == .search_field) {
                 searchApplyKey(k);
                 return;
@@ -2222,23 +2242,41 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
 
 /// 활성 탭 cursor row 를 NSTextInputClient 용 snapshot 으로 채운다. 실패 시
 /// `snap` 은 *부분 생성 상태* 로 남으므로 호출자(`buildImeSnapshot`)가 정리한다.
-/// #646 — 검색 입력칸을 IME 가 보는 "문서" 로 만든다.
+/// #646 — 검색 입력칸을 IME 가 보는 **document** 로 만든다.
 ///
-/// `NSTextInputClient` 표면 (`markedRange` · `selectedRange` ·
-/// `attributedSubstringForProposedRange:` · `firstRectForCharacterRange:`) 이 **모두 이
-/// 스냅숏 위에 있다.** 그래서 이것 없이 키만 IME 에게 흘려보내면, IME 는 *터미널 줄* 의 범위와
-/// 내용을 답으로 받고 자기가 아는 문서와 조합 상태가 맞지 않아 **한자 후보를 띄우지 않는다**
-/// (2026-09-16 실기로 확인 — 터미널에서는 뜨고 검색바에서는 안 떴다).
+/// `NSTextInputClient` 는 client 가 하나의 document 를 들고 있다고 본다. 헤더가 그것을
+/// 못박는다 — `selectedRange` 는 *"valid location is from 0 to **the document length**"*,
+/// `markedRange` 는 그 document 안의 범위이고, `attributedSubstringForProposedRange:` 는
+/// 그 범위를 **실제 글자로 돌려줄 수 있어야** 한다.
 ///
-/// 탭 inline rename 이 같은 문제를 같은 방법으로 풀었다 (`buildRenameImeSnapshot`, #341 로
-/// 제거). 좌표 산술만 검색바 것으로 바꾼 것이다.
+/// 그래서 **조합 중 글자 (marked text) 가 document 에 들어 있어야 한다.** 헤더의
+/// `setMarkedText:` 설명도 같다 — *"the receiver **inserts** string replacing the content
+/// specified by replacementRange"*. 조합은 document 밖의 무엇이 아니라 document 안에 끼워진
+/// 글자다.
+///
+/// 이것을 안 지키면 조합 · 확정 같은 단순 흐름은 그럭저럭 되지만 **한자 재변환은 안 된다** —
+/// IME 가 `markedRange` 를 받아 그 범위의 글자를 물었는데 document 에 없으면 후보를 띄우지
+/// 않는다 (2026-09-16 실기: 터미널에서는 뜨고 검색바에서는 안 떴다).
+///
+/// 그래서 document 는 **needle 에 preedit 을 caret 자리로 끼운 것**이다:
+///
+///     needle[0..caret] + preedit + needle[caret..]
+///
+/// `selected.location` 은 그 preedit 이 시작하는 자리다 (= marked range 의 시작).
+/// 되돌리는 사상은 `searchDocToNeedleByte` 가 든다.
+///
+/// (탭 inline rename 도 같은 자리에서 같은 일을 했다 — `buildRenameImeSnapshot`, #341 로
+/// 제거. 다만 그쪽은 preedit 을 document 에 넣지 않아 한자 재변환에 별도 장치가 필요했다.)
 fn fillSearchImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
     if (!searchFocused()) return false;
     const v = searchBarViewNow() orelse return false;
     const tab = g_session.activeTab() orelse return false;
     const r = &g_renderer.?;
 
-    const text = tab.search.needle.items;
+    const needle = tab.search.needle.items;
+    const caret = @min(tab.search.caret, needle.len);
+    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+
     const scale = r.scale;
     const cw: f32 = @floatFromInt(r.tab_font.cell_width_px);
     const ch: f32 = @floatFromInt(r.tab_font.cell_height_px);
@@ -2249,33 +2287,36 @@ fn fillSearchImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool
     snap.* = .{};
     try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
 
-    var selected_set = false;
-    var pending_hanja_inserted = false;
-    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
-    while (iter.nextCodepoint()) |cp| {
-        const byte_end = iter.i;
-        const byte_start = byte_end - (std.unicode.utf8CodepointSequenceLength(cp) catch 1);
-        if (!selected_set and tab.search.caret <= byte_start) {
-            snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
-            selected_set = true;
-            _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
-            pending_hanja_inserted = true;
+    // 세 조각을 순서대로 넣는다. `selected` 는 preedit 이 시작하는 자리 — 조합이 없으면
+    // 그냥 caret 이다.
+    const Emit = struct {
+        fn run(sn: *ImeSnapshot, alloc: std.mem.Allocator, bytes: []const u8, xp: *f32, top: f32, w: f32, h: f32) !void {
+            var it = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
+            while (it.nextCodepoint()) |cp| {
+                const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * w;
+                const start = ImeRectPx{ .x = xp.*, .y = top, .w = @max(advance, w), .h = h };
+                xp.* += advance;
+                try sn.appendCodepoint(alloc, cp, start, .{ .x = xp.*, .y = top, .w = w, .h = h });
+            }
         }
-        const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
-        const start = ImeRectPx{ .x = x, .y = text_y_top, .w = @max(advance, cw), .h = ch };
-        x += advance;
-        const end = ImeRectPx{ .x = x, .y = text_y_top, .w = cw, .h = ch };
-        try snap.appendCodepoint(allocator, cp, start, end);
-    }
+    };
 
-    if (!selected_set) {
-        snap.selected = .{ .location = utf16LenOfUtf8Prefix(text, @min(tab.search.caret, text.len)), .length = 0 };
-        if (snap.selected.location > snap.utf16Len()) snap.selected.location = snap.utf16Len();
-    }
-    if (!pending_hanja_inserted) {
-        _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
-    }
+    try Emit.run(snap, allocator, needle[0..caret], &x, text_y_top, cw, ch);
+    snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+    try Emit.run(snap, allocator, preedit, &x, text_y_top, cw, ch);
+    try Emit.run(snap, allocator, needle[caret..], &x, text_y_top, cw, ch);
     return true;
+}
+
+/// #646 — document (needle + preedit) 의 byte offset → **needle** 의 byte offset.
+///
+/// preedit 은 needle 에 없으므로 그 구간은 전부 caret 으로 접힌다. IME 가 marked text 를
+/// 덮어쓰라고 주는 범위 (한자 변환이 그렇다) 가 정확히 그 구간이라, 이 사상이 있어야
+/// "조합한 글자를 지우고 한자를 넣는다" 가 성립한다.
+fn searchDocToNeedleByte(doc_off: usize, caret: usize, preedit_len: usize) usize {
+    if (doc_off <= caret) return doc_off;
+    if (doc_off <= caret + preedit_len) return caret;
+    return doc_off - preedit_len;
 }
 
 fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
@@ -2466,33 +2507,33 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
 
     // #646 — 검색바가 포커스를 가지면 확정 글자는 PTY 가 아니라 검색어로 간다.
     //
-    // **치환 범위를 지켜야 한다.** 한자 변환은 조합한 `한` 을 `韓` 으로 *바꾸는* 것이라
-    // `replacement` 에 그 범위가 실려 온다. 그것을 무시하면 지우지 않고 덧붙여 `한韓` 이
-    // 된다 (2026-09-16 실기에서 그렇게 나왔다). 스냅숏이 이제 입력칸을 가리키므로
-    // (`fillSearchImeSnapshot`) 그 범위가 곧 needle 의 byte 범위다.
+    // **여기는 터미널 경로의 backspace 흉내를 쓰지 않는다.** 그 우회책 (`queueBackspaces` ·
+    // `storeHanjaPendingCommit` · `g_hanja_reconversion_*`) 이 있는 이유는 터미널에 *범위를
+    // 고치는 API 가 없어서* 다 — 끝에 바이트를 붙이거나 backspace 를 보내는 것뿐이다.
+    // 검색 입력칸은 진짜 편집 버퍼라 `replacementRange` 를 **그대로 splice** 하면 된다.
+    // 그래서 한자 변환도 IME 의 평범한 흐름 그대로 성립한다.
     if (searchFocused()) {
-        var ssnap = buildImeSnapshot(g_gpa.allocator());
-        defer if (ssnap) |*sn| sn.deinit(g_gpa.allocator());
+        const tab_s = g_session.activeTab() orelse return;
+        const caret_before = @min(tab_s.search.caret, tab_s.search.needle.items.len);
+        const preedit_len_before = g_preedit_len;
 
-        var delete_count: usize = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
-        var caret_at: ?usize = null;
-        if (ssnap) |*sn| {
-            if (replacementByteRange(sn, replacement)) |r| {
-                if (r.byte_end > r.byte_start) {
-                    caret_at = r.byte_end;
-                    delete_count = utf8CodepointCount(sn.text.items[r.byte_start..r.byte_end]);
+        // 치환 범위는 **document** (needle + preedit) 좌표다. needle 좌표로 되돌린다.
+        var from = caret_before;
+        var to = caret_before;
+        if (replacement.location != NSNotFound) {
+            var dsnap = buildImeSnapshot(g_gpa.allocator());
+            defer if (dsnap) |*sn| sn.deinit(g_gpa.allocator());
+            if (dsnap) |*sn| {
+                if (replacementByteRange(sn, replacement)) |r| {
+                    from = searchDocToNeedleByte(r.byte_start, caret_before, preedit_len_before);
+                    to = searchDocToNeedleByte(r.byte_end, caret_before, preedit_len_before);
                 }
             }
         }
 
         clearImeMarkedState();
         clearHanjaState();
-
-        const tab_s = g_session.activeTab() orelse return;
-        if (caret_at) |c| tab_s.search.caret = @min(c, tab_s.search.needle.items.len);
-        var back: usize = 0;
-        while (back < delete_count) : (back += 1) searchApplyKey(.backspace);
-        searchInsertText(commit);
+        searchSpliceText(from, to, commit);
         return;
     }
 
@@ -2539,6 +2580,32 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
         clearHanjaState();
         return;
     }
+    // #646 — **`replacementRange` 를 지킨다.** 헤더가 못박은 계약이다 — *"the receiver
+    // inserts string replacing the content specified by replacementRange"*.
+    //
+    // 한자 재변환이 정확히 이 길로 온다 (2026-09-16 로그로 확인): IME 는 조합을 먼저
+    // `insertText` 로 확정한 뒤, **그 글자를 document 범위로 지목해 다시 marked 로 가져간다**
+    // (`setMarked … repl=(0,1)`). 이 인자를 무시하면 확정본이 needle 에 남은 채 조합이 겹쳐
+    // 보이고, 변환 결과까지 붙어 `한韓` 이 된다.
+    //
+    // 터미널 쪽은 이 인자를 못 쓴다 — 범위를 되돌릴 API 가 없어 `g_hanja_candidate_*` 로
+    // 삭제 개수를 세는 우회책을 쓴다. 검색 입력칸은 진짜 버퍼라 그냥 지우면 된다.
+    if (searchFocused() and isReplacingRange(replacement_range)) {
+        if (g_session.activeTab()) |tab_m| {
+            const caret_now = @min(tab_m.search.caret, tab_m.search.needle.items.len);
+            const pre_now = g_preedit_len;
+            var msnap = buildImeSnapshot(g_gpa.allocator());
+            defer if (msnap) |*sn| sn.deinit(g_gpa.allocator());
+            if (msnap) |*sn| {
+                if (replacementByteRange(sn, replacement_range)) |rr| {
+                    const from = searchDocToNeedleByte(rr.byte_start, caret_now, pre_now);
+                    const to = searchDocToNeedleByte(rr.byte_end, caret_now, pre_now);
+                    searchSpliceText(from, to, &.{});
+                }
+            }
+        }
+    }
+
     const get_length = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) usize);
     g_marked_len = get_length(str, objc.sel("length"));
     g_marked_selected_range = selected_range;
@@ -2570,6 +2637,13 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
             reconversion_delete_count
         else
             replacement_range.length;
+
+        // #646 — 후보 panel 은 우리 drop-down 보다 낮은 level 이라 **가려진다.** 터미널
+        // 경로는 이벤트를 두 번 먹이면서 두 번째 패스의 `firstRect` 에서 낮추는데
+        // (`g_hanja_reconversion_active`), 검색 경로는 IME 가 한 번에 끝내 그 시점이 없다.
+        // 후보 세션이 열리는 **바로 이 자리**에서 낮춘다 — 복구는 `clearHanjaCandidateTarget`
+        // 이 이미 맡고 있어 짝이 맞는다.
+        if (searchFocused()) lowerWindowForImePanel();
     }
 }
 
