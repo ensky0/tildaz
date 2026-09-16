@@ -1403,6 +1403,30 @@ grim shot.png                                                          # sway �
   client 에 노출하지 않아 `grim` 이 안 되고, `org.gnome.Shell.Screenshot` · `Introspect` 는 allowlist 밖 호출자에게
   `AccessDenied`, xdg-desktop-portal 은 권한 창 뒤에 `response=2` 로 끝나요 (`tool/portal-screenshot_linux.py` 가 그
   경로예요 — 다른 데스크톱에서는 쓸 수 있어요). **GNOME 의 픽셀 확인은 사용자가 `PrtSc` 로 찍어 주는 수밖에 없어요.**
+- **⚠️ 앱을 내릴 때 `/proc/PID/exe` 의 경로로 고르지 말아요 — 빌드가 바이너리를 바꾸면 그 링크가 `(deleted)` 가 돼요.**
+  회차 중간에 다시 빌드하면 **먼저 뜬 앱이 그 필터에 안 걸려 살아남고**, 새 앱과 나란히 타일링되어 창이 반씩 나뉘어요
+  (`cols` 가 절반으로 줄어든 것으로 드러나요 — 2026-09-16 [#646](https://github.com/ensky0/tildaz/issues/646) Linux
+  회차에서 캡처 판정이 통째로 어긋났어요). 게다가 그 필터는 **사용자의 instance 0 도 같은 경로**라 잘못 맞으면 사용자 앱을
+  죽여요. 격리 회차는 `XDG_RUNTIME_DIR` 로 골라요 — 빌드와 무관하고 사용자 앱과 절대 겹치지 않아요.
+
+    ```sh
+    tz_mine() { for p in $(pgrep -x tildaz); do
+        grep -qz "XDG_RUNTIME_DIR=$R" /proc/$p/environ 2>/dev/null && echo $p; done; }
+    ```
+
+- **⚠️ 가상 포인터를 다시 꽂으면 같은 좌표로 `move` 해도 `enter` 가 안 와요.** 좌표가 안 바뀌면 motion 이 없어서
+  compositor 가 포커스를 갱신하지 않아요 — hover 도 클릭도 **조용히 무시**되어 앱 결함처럼 보여요 (같은 회차에서 검색바
+  hover 가 0 px 이라 한참 헤맸어요). 재부착 뒤에는 **화면 구석까지 크게 움직여** 연결을 만들고 시작해요.
+
+    ```sh
+    ptr "move 0 0"; ptr "move $((OUTW-1)) $((OUTH-1))"; ptr "move 800 500"   # 그다음 본 좌표로
+    ```
+
+- **`-e` 회차도 `config_N.toml` 이 있으면 읽어요** (만들지 않을 뿐이에요). 사용자 config 를 복사해 쓰면
+  `width_percent = 50` 같은 창 설정이 따라와 창이 화면 절반이 돼요. 좌표를 계산하기 전에 로그의
+  `terminal resized cols= rows=` 로 실제 격자를 확인해요.
+- **`WAYLAND_DEBUG=1` 은 tildaz 에 안 먹어요** — 우리 Linux host 는 libwayland 가 아니라 소켓에 직접 쓰는 자체 client
+  (`wayland_minimal.zig`) 라 그 환경변수를 보는 코드가 없어요. 보낸 요청을 봐야 하면 그 자리에 임시 로그를 심어요.
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
 
