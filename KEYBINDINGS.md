@@ -26,6 +26,10 @@ is not US QWERTY.
 | Equalize the panes — every row or column of panes shares its space evenly | Shift+Alt+0 | Shift+Cmd+0 | Shift+Alt+0 |
 | Zoom the active pane to the whole tab (toggle) | Ctrl+Shift+Z | Shift+Cmd+Z | Ctrl+Shift+Z |
 | Close active pane (the tab, when it is the last pane) | Ctrl+Shift+X | Shift+Cmd+X | Ctrl+Shift+X |
+| Search the scrollback of the active pane *(see [Search](#search))* | Ctrl+Shift+F | Cmd+F | Ctrl+Shift+F |
+| — next match, downward | Enter | Enter | Enter |
+| — previous match, upward | Shift+Enter | Shift+Enter | Shift+Enter |
+| — close the search panel | Esc | Esc | Esc |
 | Copy selection (explicit) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C |
 | Paste from clipboard | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R | Ctrl+Shift+R |
@@ -343,6 +347,35 @@ that never send one keep `Tab N`. Later title changes are debounced so a busy
 program doesn't flicker the tab. To set a title yourself, use your shell —
 e.g. `printf '\033]0;my title\007'` or your shell prompt configuration. (Inline tab renaming was removed in
 [#341](https://github.com/ensky0/tildaz/issues/341).)
+
+## Search
+
+`Ctrl+Shift+F` (`Cmd+F` on macOS) opens a search panel in the bottom-right corner of the
+window. It searches the scrollback of the **active pane only**. Type to search; matches are
+highlighted where they are, and the counter shows which one is selected out of how many
+(`29/43`). While the panel is open the keyboard belongs to it — press `Esc` to go back to the
+shell. The mouse still works on the terminal as usual, so you can select and copy text while
+a search is on screen.
+
+Matching is case-insensitive for ASCII, plain substring — no regular expressions.
+
+**Which match you land on.** `Enter` moves down, `Shift+Enter` moves up, and each starts from
+**what is on screen** rather than from the end of the buffer: down starts at the top visible
+row, up starts at the bottom one. When there is nothing left in that direction the search
+continues from the other end of the scrollback. So at a fresh prompt, where everything you are
+looking for is above you, `Shift+Enter` goes to the most recent match and `Enter` wraps around
+to the oldest.
+
+When the match you land on is off screen the view follows it, and where it lands depends on
+the direction you are going — moving up puts it near the bottom, moving down puts it near the
+top, so most of the screen shows where you are heading. A match that is already visible does
+not move the view.
+
+**Per pane.** Each pane keeps its own search, so switching panes swaps the panel to that
+pane's search, and moving to a pane with no search hides it. Only the active pane is searched
+and highlighted.
+
+Closing the panel discards the search term and the highlights.
 
 ## Split panes
 
