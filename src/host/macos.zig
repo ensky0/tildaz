@@ -1108,26 +1108,6 @@ fn searchBarViewNow() ?search_bar.View {
     return search_bar.view(g_search_geom);
 }
 
-/// #646 — 검색바 caret 이 차지하는 사각형 (physical px, 창 좌상단 기준). IME 후보창을 그
-/// 아래에 띄우는 데 쓴다. 바가 안 떠 있으면 `null`.
-///
-/// 자리 계산은 renderer 가 caret 을 그릴 때와 **같은 helper** 를 탄다
-/// (`search_bar.caretOffsetPt`) — 둘이 갈리면 후보 목록이 caret 에서 떨어져 뜬다.
-fn searchCaretRectPx() ?ImeRectPx {
-    const v = searchBarViewNow() orelse return null;
-    const tab = g_session.activeTab() orelse return null;
-    const scale = g_renderer.?.scale;
-    const cw = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / scale;
-    const ch = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_height_px)) / scale;
-
-    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
-    const offset = search_bar.caretOffsetPt(tab.search.needle.items, preedit, tab.search.caret, cw, tab.search.field_scroll_px);
-    // 입력칸을 벗어나면 가장자리에 붙인다 — 후보창이 화면 밖으로 나가는 것보다 낫다.
-    const x_pt = std.math.clamp(v.field.x + offset, v.field.x, v.field.x + v.field.w);
-    const top_pt = v.field.y + (v.field.h - ch) * 0.5;
-    return .{ .x = x_pt * scale, .y = top_pt * scale, .w = cw * scale, .h = ch * scale };
-}
-
 /// #646 — 검색바 위 클릭 · 이동을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
 /// 경로로 넘기지 않는다.
 ///
@@ -1665,6 +1645,16 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     if (searchFocused()) {
         const ctrl_search = (flags & (1 << 18)) != 0;
         const cmd_search = (flags & NSEventModifierFlagCommand) != 0;
+        // **Option+Enter (한자 재변환) 는 여기서 가져간다 — 매치 이동이다.**
+        //
+        // 흘려보내 봤고 안 됐다 (2026-09-16 실기). `fillSearchImeSnapshot` 으로 IME 가 보는
+        // 문서를 입력칸으로 바꾼 뒤에는 변환 자체는 일어나지만, 터미널 경로에는 조합을
+        // **가로채 보관했다가** 재변환하는 장치가 따로 있다 (`g_hanja_preedit_commit_requested`
+        // → `storeHanjaPendingCommit` → `g_hanja_reconversion_*`). 검색 분기는 그보다 먼저
+        // 확정 글자를 needle 에 쓰므로 `한` 이 남고 `韓` 이 덧붙어 **`한韓`** 이 된다.
+        //
+        // 그 장치까지 sink 별로 가르는 것은 #646 보다 큰 일이라 별도 이슈로 둔다. 검색바
+        // 안에서 한글은 치고 확정되며, 한자 변환만 안 된다.
         if (macSearchKey(keycode, shift)) |k| {
             if (input_policy.resolve(.edit_key, macInputState()).target == .search_field) {
                 searchApplyKey(k);
@@ -2232,7 +2222,66 @@ fn screenPointToLocalTopDownPx(self_view: objc.id, point: NSPoint) ?struct { x: 
 
 /// 활성 탭 cursor row 를 NSTextInputClient 용 snapshot 으로 채운다. 실패 시
 /// `snap` 은 *부분 생성 상태* 로 남으므로 호출자(`buildImeSnapshot`)가 정리한다.
+/// #646 — 검색 입력칸을 IME 가 보는 "문서" 로 만든다.
+///
+/// `NSTextInputClient` 표면 (`markedRange` · `selectedRange` ·
+/// `attributedSubstringForProposedRange:` · `firstRectForCharacterRange:`) 이 **모두 이
+/// 스냅숏 위에 있다.** 그래서 이것 없이 키만 IME 에게 흘려보내면, IME 는 *터미널 줄* 의 범위와
+/// 내용을 답으로 받고 자기가 아는 문서와 조합 상태가 맞지 않아 **한자 후보를 띄우지 않는다**
+/// (2026-09-16 실기로 확인 — 터미널에서는 뜨고 검색바에서는 안 떴다).
+///
+/// 탭 inline rename 이 같은 문제를 같은 방법으로 풀었다 (`buildRenameImeSnapshot`, #341 로
+/// 제거). 좌표 산술만 검색바 것으로 바꾼 것이다.
+fn fillSearchImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    if (!searchFocused()) return false;
+    const v = searchBarViewNow() orelse return false;
+    const tab = g_session.activeTab() orelse return false;
+    const r = &g_renderer.?;
+
+    const text = tab.search.needle.items;
+    const scale = r.scale;
+    const cw: f32 = @floatFromInt(r.tab_font.cell_width_px);
+    const ch: f32 = @floatFromInt(r.tab_font.cell_height_px);
+    const field_x = v.field.x * scale;
+    const text_y_top = v.field.y * scale + (v.field.h * scale - ch) * 0.5;
+
+    var x = field_x - tab.search.field_scroll_px * scale;
+    snap.* = .{};
+    try snap.initPositions(allocator, .{ .x = x, .y = text_y_top, .w = cw, .h = ch });
+
+    var selected_set = false;
+    var pending_hanja_inserted = false;
+    var iter = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (iter.nextCodepoint()) |cp| {
+        const byte_end = iter.i;
+        const byte_start = byte_end - (std.unicode.utf8CodepointSequenceLength(cp) catch 1);
+        if (!selected_set and tab.search.caret <= byte_start) {
+            snap.selected = .{ .location = snap.utf16Len(), .length = 0 };
+            selected_set = true;
+            _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
+            pending_hanja_inserted = true;
+        }
+        const advance = @as(f32, @floatFromInt(display_width.codepointWidth(cp))) * cw;
+        const start = ImeRectPx{ .x = x, .y = text_y_top, .w = @max(advance, cw), .h = ch };
+        x += advance;
+        const end = ImeRectPx{ .x = x, .y = text_y_top, .w = cw, .h = ch };
+        try snap.appendCodepoint(allocator, cp, start, end);
+    }
+
+    if (!selected_set) {
+        snap.selected = .{ .location = utf16LenOfUtf8Prefix(text, @min(tab.search.caret, text.len)), .length = 0 };
+        if (snap.selected.location > snap.utf16Len()) snap.selected.location = snap.utf16Len();
+    }
+    if (!pending_hanja_inserted) {
+        _ = try appendPendingHanjaCommitToSnapshot(allocator, snap, x, text_y_top, cw, ch);
+    }
+    return true;
+}
+
 fn fillImeSnapshot(allocator: std.mem.Allocator, snap: *ImeSnapshot) !bool {
+    // #646 — 검색바가 키보드를 가지면 IME 가 보는 문서는 터미널이 아니라 입력칸이다.
+    if (fillSearchImeSnapshot(allocator, snap) catch false) return true;
+
     if (g_renderer == null) return false;
     const tab = g_session.activeTab() orelse return false;
     const r = &g_renderer.?;
@@ -2416,12 +2465,31 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
     const commit = cstr[0..len];
 
     // #646 — 검색바가 포커스를 가지면 확정 글자는 PTY 가 아니라 검색어로 간다.
-    // 아래 `buildImeSnapshot` 경로는 **터미널 줄**을 읽어 치환 범위를 셈하므로 여기서
-    // 타면 안 된다. 한자 후보 확정처럼 IME 가 직접 알려 준 삭제 개수만 반영한다.
+    //
+    // **치환 범위를 지켜야 한다.** 한자 변환은 조합한 `한` 을 `韓` 으로 *바꾸는* 것이라
+    // `replacement` 에 그 범위가 실려 온다. 그것을 무시하면 지우지 않고 덧붙여 `한韓` 이
+    // 된다 (2026-09-16 실기에서 그렇게 나왔다). 스냅숏이 이제 입력칸을 가리키므로
+    // (`fillSearchImeSnapshot`) 그 범위가 곧 needle 의 byte 범위다.
     if (searchFocused()) {
-        const delete_count = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
+        var ssnap = buildImeSnapshot(g_gpa.allocator());
+        defer if (ssnap) |*sn| sn.deinit(g_gpa.allocator());
+
+        var delete_count: usize = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
+        var caret_at: ?usize = null;
+        if (ssnap) |*sn| {
+            if (replacementByteRange(sn, replacement)) |r| {
+                if (r.byte_end > r.byte_start) {
+                    caret_at = r.byte_end;
+                    delete_count = utf8CodepointCount(sn.text.items[r.byte_start..r.byte_end]);
+                }
+            }
+        }
+
         clearImeMarkedState();
         clearHanjaState();
+
+        const tab_s = g_session.activeTab() orelse return;
+        if (caret_at) |c| tab_s.search.caret = @min(c, tab_s.search.needle.items.len);
         var back: usize = 0;
         while (back < delete_count) : (back += 1) searchApplyKey(.backspace);
         searchInsertText(commit);
@@ -2592,16 +2660,9 @@ fn imeCharIndex(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) us
 }
 
 fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) CGRect {
-    // #646 — 검색 중이면 후보창은 **검색바 caret** 아래에 떠야 한다. 그러지 않으면 화면
-    // 저 아래 터미널 커서 옆에 떠서, 치고 있는 자리와 후보 목록이 따로 논다.
-    if (searchFocused()) {
-        if (searchCaretRectPx()) |r| {
-            if (actual) |a| a.* = .{ .location = proposed.location, .length = 0 };
-            if (g_hanja_reconversion_active or g_hanja_candidate_active) lowerWindowForImePanel();
-            return localTopDownPxToScreenRect(self_view, r);
-        }
-    }
-
+    // #646 — 검색 중에도 여기를 그대로 탄다. 스냅숏이 이미 **입력칸**을 가리키므로
+    // (`fillSearchImeSnapshot`) 자리가 저절로 검색바 caret 이 된다 — 특수 분기를 두면
+    // 그 하나만 맞고 나머지 표면 (`markedRange` 등) 은 어긋난 채로 남는다.
     var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
         if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
         return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
