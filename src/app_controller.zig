@@ -29,6 +29,7 @@ const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const command_menu = @import("command_menu.zig");
 const search_bar = @import("search_bar.zig");
+const search_input = @import("search_input.zig");
 const shell_validate = @import("shell_validate.zig");
 const run_options = @import("run_options.zig");
 
@@ -88,6 +89,14 @@ pub const App = struct {
     /// model로 세 platform의 layout과 hit-test를 맞춘다.
     command_menu_open: bool = false,
     command_menu_hover: ?command_menu.Command = null,
+    /// #646 — pointer 가 올라간 검색바 컨트롤.
+    search_hover: ?search_bar.Control = null,
+    /// #646 — 이번 누름이 검색바에서 시작했는가. 시작했으면 이어지는 이동 · 뗌을 터미널이
+    /// 보면 안 된다 (바 밖에서 뗐다 해도 셀 좌표로 해석돼 선택이 생긴다).
+    search_press: bool = false,
+    /// #646 — 마지막 프레임의 검색바 배치. 히트 테스트가 **그린 것과 같은 사각형**을 봐야
+    /// 하므로 다시 재지 않고 그릴 때 쓴 값을 그대로 둔다.
+    search_geom: search_bar.Geometry = .{},
     /// #329 — 메뉴 keyboard focus (Up/Down/Home/End/Tab 이동, Enter/Space 실행).
     command_menu_focus: ?command_menu.Command = null,
     /// #329 — 작은 viewport 에서 entry 단위 scroll 의 첫 표시 entry 인덱스.
@@ -588,6 +597,9 @@ pub const App = struct {
     /// #282 A11 — IME 조합 시작 시 활성 탭을 맨 아래로 (macOS/Linux 동등).
     pub fn onImeCompositionStart(userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
+        // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 내릴 이유가 없다.
+        // 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
+        if (self.searchFocused()) return;
         self.session.scrollActiveToBottom();
     }
 
@@ -802,6 +814,7 @@ pub const App = struct {
                     // 아래 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는
                     // 격자가 pane 높이에 딱 안 떨어져 자투리가 남기 때문이다.
                     var active_grid_bottom_px: ?i32 = null;
+                    const search_focused_now = self.searchFocused();
                     for (lay) |pr| {
                         const t = group.panes[pr.pane].?;
                         const is_active = pr.pane == group.active_pane;
@@ -822,7 +835,9 @@ pub const App = struct {
                             .scrollbar_top_inset = self.paneScrollbarTopInset(pr.rect, area),
                             // IME 자모는 키보드가 가는 pane (활성) 의 cursor 옆에만 (#164). dead key 조합 중
                             // 표시 (#530) 도 같은 자리 · 같은 모양 — IME 가 있으면 IME 가 우선이다.
-                            .preedit_utf8 = if (is_active) self.window.activePreeditSlice() else &.{},
+                            // #646 — 검색바가 키보드를 가지면 조합 글자는 터미널 커서가
+                            // 아니라 **입력칸 안**에 보인다. 조합이 보이는 자리는 하나여야 한다.
+                            .preedit_utf8 = if (is_active and !search_focused_now) self.window.activePreeditSlice() else &.{},
                             // #376 — 위쪽 게이트가 이미 구한 위상을 그대로 내린다. 렌더러가
                             // 시계를 다시 읽으면 500 ms 경계에서 둘이 갈릴 수 있다.
                             .blink_faint = blink_phase_now,
@@ -846,6 +861,30 @@ pub const App = struct {
                             }
                         }
                     }
+                    // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다.** 마우스 히트
+                    // 테스트가 그린 것과 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를
+                    // 돌아야 나오는 값이라 마우스 경로에서 다시 구하면 어긋날 여지가 생긴다.
+                    // 스크롤바 판정은 그리는 쪽과 같은 기준이다 — 스크롤백이 보이는 영역보다
+                    // 길면 뜬다 (`scrollbar.geom`).
+                    {
+                        const t = group.activeTab();
+                        const sb = t.terminal.screens.active.pages.scrollbar();
+                        self.search_geom = .{
+                            .viewport_w_pt = @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
+                            .viewport_h_pt = @as(f32, @floatFromInt(size.h)) / r.pixels_per_dip,
+                            .cell_w_pt = @as(f32, @floatFromInt(window.cell_width_px)) / r.pixels_per_dip,
+                            .cell_h_pt = @as(f32, @floatFromInt(window.cell_height_px)) / r.pixels_per_dip,
+                            .scrollbar_w_pt = if (sb.total > sb.len)
+                                @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
+                            else
+                                0,
+                            .grid_bottom_pt = if (active_grid_bottom_px) |px|
+                                @as(f32, @floatFromInt(px)) / r.pixels_per_dip
+                            else
+                                0,
+                        };
+                    }
+
                     r.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
                     r.endFrame(
                         size.w,
@@ -860,35 +899,14 @@ pub const App = struct {
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
                         self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
-                        // #646 — 검색바는 활성 pane 의 상태를 비춘다. 입력 (preedit · 포커스 ·
-                        // hover) 은 Windows 배선에서 붙는다 — 지금은 "열려 있으면 포커스" 다.
+                        // #646 — 검색바는 활성 pane 의 상태를 비춘다.
                         search_bar.uiFrom(
                             &group.activeTab().search,
-                            &.{},
-                            true,
-                            null,
+                            if (search_focused_now) self.window.activePreeditSlice() else &.{},
+                            search_focused_now,
+                            self.search_hover,
                             @as(f32, @floatFromInt(r.tab_font.cell_width_px)) / r.pixels_per_dip,
-                            blk: {
-                                // #646 — 배치는 host 가 잰다 (`search_bar.Geometry`).
-                                // 스크롤바 판정은 그리는 쪽과 같은 기준이다 — 스크롤백이
-                                // 보이는 영역보다 길면 뜬다 (`scrollbar.geom`).
-                                const t = group.activeTab();
-                                const sb = t.terminal.screens.active.pages.scrollbar();
-                                break :blk search_bar.Geometry{
-                                    .viewport_w_pt = @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
-                                    .viewport_h_pt = @as(f32, @floatFromInt(size.h)) / r.pixels_per_dip,
-                                    .cell_w_pt = @as(f32, @floatFromInt(window.cell_width_px)) / r.pixels_per_dip,
-                                    .cell_h_pt = @as(f32, @floatFromInt(window.cell_height_px)) / r.pixels_per_dip,
-                                    .scrollbar_w_pt = if (sb.total > sb.len)
-                                        @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
-                                    else
-                                        0,
-                                    .grid_bottom_pt = if (active_grid_bottom_px) |px|
-                                        @as(f32, @floatFromInt(px)) / r.pixels_per_dip
-                                    else
-                                        0,
-                                };
-                            },
+                            self.search_geom,
                         ),
                     );
                 }
@@ -1077,9 +1095,89 @@ pub const App = struct {
         }
     }
 
-    /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
-    /// 입력 정책(IMM complete → action)을 거친다 (#329).
-    /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
+    /// #646 — 검색바가 키보드를 갖고 있는가. 바가 열려 있으면 언제나 참이다 — 포커스를
+    /// 터미널과 나누지 않는다 (`host/macos.zig` 의 `searchFocused` 에 근거가 있다).
+    fn searchFocused(self: *App) bool {
+        const tab = self.session.activeTab() orelse return false;
+        return tab.search.is_open;
+    }
+
+    /// #646 — 검색 입력이 만든 변화를 화면에 반영한다.
+    fn applySearchEffect(self: *App, eff: search_input.Effect) void {
+        if (eff.redraw) self.window.requestRender();
+    }
+
+    /// #646 — 검색 입력칸에 키 하나. 의미는 `search_input` 이 정한다.
+    fn searchApplyKey(self: *App, k: search_input.Key) void {
+        const tab = self.session.activeTab() orelse return;
+        const eff = search_input.key(&tab.search, self.allocator, k, tab.title_clock.read()) catch return;
+        self.applySearchEffect(eff);
+    }
+
+    /// #646 — 확정된 글자를 검색어에 끼운다. 타이핑 · IME 확정 · paste 가 모두 이리로 온다.
+    fn searchInsertText(self: *App, text: []const u8) void {
+        const tab = self.session.activeTab() orelse return;
+        const eff = search_input.insertText(&tab.search, self.allocator, text, tab.title_clock.read()) catch return;
+        self.applySearchEffect(eff);
+    }
+
+    /// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.
+    fn searchBarViewNow(self: *App) ?search_bar.View {
+        const tab = self.session.activeTab() orelse return null;
+        if (!tab.search.is_open) return null;
+        if (self.search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+        return search_bar.view(self.search_geom);
+    }
+
+    /// #646 — 검색바 위 누름을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
+    /// 경로로 넘기지 않는다.
+    ///
+    /// 이 가로채기가 없으면 바가 터미널 셀 **위에 떠 있는** 탓에 바 위에서 드래그하면
+    /// 터미널 선택이 시작되고, 마우스 리포팅을 켠 앱에는 클릭 좌표가 그대로 전송된다.
+    fn searchBarMouseDown(self: *App, mx: i32, my: i32) bool {
+        const v = self.searchBarViewNow() orelse return false;
+        const x = @as(f32, @floatFromInt(mx)) / self.dpi_scale;
+        const y = @as(f32, @floatFromInt(my)) / self.dpi_scale;
+        if (!search_bar.contains(v, x, y)) return false;
+
+        const tab = self.session.activeTab() orelse return true;
+        if (search_bar.hit(v, x, y)) |c| {
+            const eff = search_input.control(&tab.search, self.allocator, c, tab.title_clock.read()) catch return true;
+            self.applySearchEffect(eff);
+            return true;
+        }
+        if (x >= v.field.x and x < v.field.x + v.field.w) {
+            const r = if (self.renderer) |*rr| rr else return true;
+            const cw = @as(f32, @floatFromInt(r.tab_font.cell_width_px)) / self.dpi_scale;
+            tab.search.caret = search_bar.fieldCaret(
+                tab.search.needle.items,
+                cw,
+                tab.search.field_scroll_px,
+                x - v.field.x,
+            );
+            self.window.requestRender();
+        }
+        return true;
+    }
+
+    /// #646 — Windows `KeyInput` → 검색 입력칸이 뜻을 두는 키. `null` 이면 안 쓰는 키다.
+    fn searchKeyFromWindows(self: *const App, key: app_event.KeyInput) ?search_input.Key {
+        return switch (key) {
+            // 기본은 아래로, Shift 면 위로. `WM_KEYDOWN` 에는 Shift 가 실려 오지 않아
+            // host 에 묻는다 (#653 의 `Tab` 과 같은 방법).
+            .enter => if (self.window.isShiftDown()) .match_up else .match_down,
+            .escape => .close,
+            .backspace => .backspace,
+            .delete => .delete,
+            .left => .left,
+            .right => .right,
+            .home => .home,
+            .end => .end,
+            // 한 줄 입력칸이 안 쓰는 키 — 호출자가 삼킨다.
+            .tab, .up, .down, .page_up, .page_down, .insert => null,
+        };
+    }
+
     /// #646 — 활성 pane 의 검색바를 연다. 단축키와 메뉴가 **같은 함수**를 쓴다.
     /// 이미 열려 있으면 검색어를 지우지 않는다 (다시 눌러도 치던 것이 사라지지 않는다).
     fn handleOpenSearch(self: *App) void {
@@ -1088,6 +1186,9 @@ pub const App = struct {
         self.window.requestRender();
     }
 
+    /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
+    /// 입력 정책(IMM complete → action)을 거친다 (#329).
+    /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
     fn resolveRunAction(self: *App, sc: input_policy.Shortcut) bool {
         const disposition = self.resolveWindowsInput(.{ .shortcut = sc }) orelse return false;
         return disposition.target == .run_action;
@@ -1561,6 +1662,7 @@ pub const App = struct {
         const resolution = windows_input_adapter.resolve(input, .{
             .ime_preedit_len = self.window.imePreeditSlice().len,
             .ime_result_deferred = self.window.imeHasDeferredResult(),
+            .search_active = self.searchFocused(),
         });
 
         switch (resolution.native_pending) {
@@ -1588,6 +1690,17 @@ pub const App = struct {
                     });
                     return true;
                 }
+                // #646 — 검색바가 열려 있으면 글자는 입력칸으로. **IME 확정 텍스트도 여기로
+                // 온다** (`Window.imeDispatchCommittedText` 가 codepoint 마다 이 이벤트를
+                // 보내고, 소비하면 PTY 로 쓰지 않는다) — 타이핑과 IME 가 한 경로다.
+                if (self.searchFocused()) {
+                    if (input_policy.resolve(.text, .{ .search_active = true }).target == .search_field) {
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cp, &buf) catch return true;
+                        self.searchInsertText(buf[0..len]);
+                    }
+                    return true;
+                }
                 return false;
             },
             .key_input => |key| {
@@ -1608,6 +1721,18 @@ pub const App = struct {
                     });
                     return true;
                 }
+                // #646 — 편집키는 입력칸으로, 안 쓰는 키는 삼킨다. 삼키지 않으면 검색어를
+                // 치는 동안 방향키 escape sequence 가 셸로 새어 히스토리가 넘어간다.
+                if (self.searchFocused()) {
+                    if (self.searchKeyFromWindows(key)) |k| {
+                        if (input_policy.resolve(.edit_key, .{ .search_active = true }).target == .search_field) {
+                            self.searchApplyKey(k);
+                        }
+                    } else {
+                        if (input_policy.resolve(.nav_key, .{ .search_active = true }).target != .drop) return false;
+                    }
+                    return true;
+                }
                 return false;
             },
             .paste => |bytes| {
@@ -1616,13 +1741,19 @@ pub const App = struct {
                 // PTY paste (bracketed paste + wrap 은 session 가). mac
                 // handlePaste 와 같은 path.
                 const disposition = self.resolveWindowsInput(.paste) orelse return true;
-                if (disposition.target == .pty) {
-                    tab_actions.routePaste(&self.host, bytes);
+                switch (disposition.target) {
+                    .pty => tab_actions.routePaste(&self.host, bytes),
+                    // #646 — 검색 중이면 payload 는 검색어로. 조합 확정은 위 `resolve` 가
+                    // 이미 같은 sink 로 했으므로 잇기만 하면 '하X' 순서가 성립한다.
+                    .search_field => self.searchInsertText(bytes),
+                    .run_action, .drop => {},
                 }
                 return true;
             },
             .interrupt => {
                 if (self.command_menu_open) self.closeCommandMenu();
+                // #646 — 검색 중에는 정책이 `drop` 이라 아래 분기를 안 탄다. 삼키지 않으면
+                // 검색어를 치다가 셸이 SIGINT 를 받는다.
                 const disposition = self.resolveWindowsInput(.interrupt) orelse return true;
                 if (disposition.target == .pty) self.session.interruptActive("\x03");
                 return true;
@@ -1808,6 +1939,12 @@ pub const App = struct {
                     if (hit) |command| self.executeCommandMenu(command);
                     return true;
                 }
+                // #646 — 검색바가 터미널 셀 위에 떠 있다. 터미널로 넘기기 **전에** 가로챈다.
+                if (self.searchBarMouseDown(mouse.x, mouse.y)) {
+                    if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
+                    self.search_press = true;
+                    return true;
+                }
                 const single_control = self.singleControlHit(mouse.x, mouse.y);
                 if (mouse.y < self.effectiveTabBarHeight() or single_control != .none) {
                     if (self.activeTabPtr()) |tab| tab.interaction.cancelPointerModes();
@@ -1878,6 +2015,19 @@ pub const App = struct {
                 return true;
             },
             .mouse_move => |mouse| {
+                // #646 — 누름이 검색바에서 시작했으면 이어지는 이동은 터미널이 보면 안 된다.
+                if (self.search_press) return true;
+                {
+                    const v = self.searchBarViewNow();
+                    const hx = @as(f32, @floatFromInt(mouse.x)) / self.dpi_scale;
+                    const hy = @as(f32, @floatFromInt(mouse.y)) / self.dpi_scale;
+                    const new_hover: ?search_bar.Control = if (v) |vv| search_bar.hit(vv, hx, hy) else null;
+                    if (new_hover != self.search_hover) {
+                        self.search_hover = new_hover;
+                        self.window.requestRender();
+                    }
+                    if (v) |vv| if (search_bar.contains(vv, hx, hy)) return true;
+                }
                 // #483 5단계 — 분할선 드래그 중: 좌표만 기억 (고스트는 프레임이 그린다). 트리는 놓을 때.
                 if (self.sep_drag) |*d| {
                     if (mouse.left_button) {
@@ -1940,6 +2090,11 @@ pub const App = struct {
                 return true;
             },
             .mouse_up => |mouse| {
+                // #646 — 누름이 검색바에서 시작했으면 뗌도 터미널이 보면 안 된다.
+                if (self.search_press) {
+                    self.search_press = false;
+                    return true;
+                }
                 // #502 — 가운데 / 오른쪽 뗌은 chrome 에 역할이 없다. 앱이 press 를
                 // 받았으면 뗌도 받아야 버튼이 눌린 채로 남지 않는다.
                 if (mouse.button != .left) {
