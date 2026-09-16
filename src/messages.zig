@@ -589,6 +589,30 @@ pub const config_missing_key_fallback_msg = "Configuration: missing key";
 pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
 pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 
+// #655 — **고쳐서 계속 뜨는** 항목의 문구. 위 `config_missing_key_format` 등은 "옮겨 두고
+// 다시 시작하라" 는 *종료* 안내라서 여기 쓰지 않는다. SPEC 원칙 5 (언제나 부팅은 되게) 와
+// §7.3 이 정본이다.
+//
+// 문구는 **무엇을 했는지 + 사용자가 할 일** 두 조각이다. 앞만 있으면 "그래서 어쩌라고" 가
+// 되고, 뒤만 있으면 지금 어떤 값으로 도는지를 모른다.
+pub const config_notice_title = "TildaZ started with parts of your config replaced.";
+pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
+pub const config_notice_removable_header = "These are not used any more -- delete them:";
+/// 키가 없어 기본값을 쓴 경우. `{s}` = 키 경로.
+pub const config_notice_missing_format = "  {s} -- missing, using the default";
+/// 값을 읽을 수 없어 기본값을 쓴 경우. `{s}` = 키 경로, `{s}` = 쓰는 값.
+pub const config_notice_bad_value_format = "  {s} -- could not read the value, using {s}";
+/// 범위 밖이라 잘라낸 경우. `{s}` = 키 경로, `{s}` = 잘라낸 값.
+pub const config_notice_clamped_format = "  {s} -- out of range, limited to {s}";
+/// 리스트에서 항목 하나를 뺀 경우. `{s}` = 키 경로, `{s}` = 뺀 항목.
+pub const config_notice_dropped_format = "  {s} -- dropped {s}";
+/// 모르는 키 · 섹션. `{s}` = 키 경로.
+pub const config_notice_unknown_format = "  {s}";
+/// `config_notice_bad_value_format` 의 흔한 인자 — "기본값" 이라고만 적는 경우.
+pub const config_notice_used_default = "the default";
+/// 담을 자리를 넘겼을 때 마지막 줄. 조용히 자르지 않는다.
+pub const config_notice_truncated_msg = "  ... and more (see the log for the full list)";
+
 // #577 — 세 문구 모두 경로가 **첫 줄**로 왔다 (#495). 예전에는 맨 끝의
 // `Config path:` 였는데, 그러면 같은 다이얼로그 안에서도 오류 종류에 따라 경로
 // 위치가 달라졌다 — #495 가 없애려던 바로 그 불일치다.
