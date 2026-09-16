@@ -1122,6 +1122,9 @@ pub const App = struct {
 
     /// #646 — 검색 입력이 만든 변화를 화면에 반영한다.
     fn applySearchEffect(self: *App, eff: search_input.Effect) void {
+        // #646 — 바가 닫히면 hover 도 푼다. 안 그러면 `×` 로 닫은 뒤 다음에 열었을 때
+        // 마우스를 움직이기 전까지 옛 강조가 남는다 (macOS 와 같은 규칙).
+        if (eff.closed) self.search_hover = null;
         if (eff.redraw) self.window.requestRender();
     }
 
@@ -1837,6 +1840,12 @@ pub const App = struct {
                 // #268 2b — 탭바 컨트롤 hover 도 같이 푼다. 같은 뿌리로 남는 것을 실측했다.
                 if (self.tab_hover != .none) {
                     self.tab_hover = .none;
+                    changed = true;
+                }
+                // #646 — 검색바 컨트롤 hover 도 같은 이유로 푼다. Linux 에는 있고 여기만
+                // 빠져 있었다 (`handlePointerLeave` 의 `search_hover = null`).
+                if (self.search_hover != null) {
+                    self.search_hover = null;
                     changed = true;
                 }
                 if (changed) self.window.requestRender();

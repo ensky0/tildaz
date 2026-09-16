@@ -4009,6 +4009,11 @@ fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
         g_command_menu_hover = null;
         requestRender();
     }
+    // #646 — 검색바 컨트롤 hover 도 같은 이유로 푼다. Linux 에는 있고 여기만 빠져 있었다.
+    if (g_search_hover != null) {
+        g_search_hover = null;
+        requestRender();
+    }
 }
 
 /// 우클릭 paste (#119). cmd.exe console 표준 패턴 — Windows 의 WM_RBUTTONDOWN
