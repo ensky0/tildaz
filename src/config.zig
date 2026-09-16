@@ -2606,7 +2606,7 @@ pub const Config = struct {
         };
         defer allocator.free(path);
 
-        const loaded = blk: {
+        var loaded = blk: {
             const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch {
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
@@ -2675,31 +2675,62 @@ pub const Config = struct {
         // 들고 나가는 것이 중요하다 — host 는 이 config 로 창을 세운 뒤 담긴 문구를
         // 안내하고 종료한다. 기본값으로 갈아치우면 안내를 그릴 창의 폰트 · 크기가
         // 사용자 설정과 달라진다.
-        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path) catch {};
+        resolveHotkeyConflict(rt, allocator, &loaded, path) catch {};
         return loaded;
     }
 
     /// **뒤에 있는 것이 양보한다** ([#431](https://github.com/ensky0/tildaz/issues/431)) —
-    /// 자기보다 낮은 index 가 같은 전역 핫키를 쓰면 이 인스턴스가 멈춘다. 겹친 두 인스턴스는
-    /// 양쪽 다 중복을 감지하므로, 규칙이 없으면 둘 다 안 뜬다.
+    /// 자기보다 낮은 index 가 같은 전역 핫키를 쓰면 이 인스턴스가 양보한다. 겹친 두
+    /// 인스턴스는 양쪽 다 중복을 감지하므로, 규칙이 없으면 둘 다 안 뜬다.
     ///
     /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
     /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
     /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
-    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) LoadError!void {
+    ///
+    /// #655 — 양보가 곧 종료였는데, 이제 **먼저 갈아탄다**. 이 충돌은 파일 값이 틀린
+    /// 것이 아니라 *바깥과 부딪히는 것* 이라 스키마 대조로는 잡히지 않고, 그래서
+    /// 원칙 5 의 유일한 예외 자리다 (SPEC §7.3). 순서는
+    ///
+    ///   config 의 키가 겹침 → 인스턴스 번호에서 파생한 기본 키 (`F{N+1}`) 로 갈아탄다
+    ///   → **그 값으로 다시 검사한다** → 그래도 겹치면 안내하고 종료한다.
+    ///
+    /// 다시 검사하는 것이 핵심이다. 파생 기본값도 낮은 index 가 *직접 적어서* 쓰고
+    /// 있을 수 있어 (`config_0` 에 `hotkey = "F3"`), 검사 없이 갈아타면 두 인스턴스가
+    /// 같은 키에 함께 반응하는 #431 의 원래 증상으로 되돌아간다.
+    fn resolveHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, config: *Config, config_path: []const u8) LoadError!void {
         // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
         // (단위 테스트 등) 비교할 자기 자신이 없다.
         if (instance_context.isStress()) return;
         const self_index = instance_context.workerIndex() orelse return;
-        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, hotkey) orelse return;
+        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, config.hotkey) orelse return;
 
+        // 파생 기본값으로 갈아타 본다. 이미 그 값이었다면 갈아탈 곳이 없다.
+        if (Hotkey.fromString(Defaults.hotkeyFor(self_index))) |derived| {
+            if (!std.meta.eql(derived, config.hotkey) and
+                instances.lowerIndexHotkeyConflict(rt, allocator, self_index, derived) == null)
+            {
+                var key_buf: [64]u8 = undefined;
+                appendNotice(
+                    &repaired_buf,
+                    &repaired_len,
+                    messages.config_notice_hotkey_taken_format,
+                    .{ owner, hotkeyDisplay(&key_buf, derived) },
+                );
+                config.hotkey = derived;
+                return;
+            }
+        }
+
+        // 갈아탈 자리가 없다. 여기서만 종료한다 — 전역 핫키 없이 뜨면 창을 부를
+        // 방법이 없어서, 떠 있어도 쓸 수 없는 인스턴스가 된다.
+        //
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;
         var msg_buf: [384]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
             messages.config_hotkey_duplicate_format,
-            .{ hotkeyDisplay(&key_buf, hotkey), owner },
+            .{ hotkeyDisplay(&key_buf, config.hotkey), owner },
         ) catch messages.config_hotkey_duplicate_fallback_msg;
         return recordConfigFatalMsg(rt, config_path, msg);
     }
@@ -3200,6 +3231,57 @@ pub fn showLoadNotice(rt: Runtime, config: *Config) void {
     showLoadNoticeText(rt, notice);
 }
 
+/// 안내 본문을 조립한다 — 세 platform 이 **같은 글자**를 본다.
+///
+/// 두 묶음을 나눠 세우는 것이 이 함수의 요점이다. "넣거나 고치세요" 와 "지우세요" 는
+/// 사용자가 파일에서 할 일이 반대라, 한 줄로 섞으면 어느 쪽인지 다시 읽어야 한다.
+/// 비어 있는 묶음의 머리글은 세우지 않는다.
+pub fn configNoticeMessage(buf: []u8, n: ConfigNotice) []const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    if (n.repaired.len > 0) {
+        w.writeAll(messages.config_notice_repaired_header) catch {};
+        w.writeAll("\n") catch {};
+        w.writeAll(n.repaired) catch {};
+    }
+    if (n.removable.len > 0) {
+        if (n.repaired.len > 0) w.writeAll("\n") catch {};
+        w.writeAll(messages.config_notice_removable_header) catch {};
+        w.writeAll("\n") catch {};
+        w.writeAll(n.removable) catch {};
+    }
+    // 잘렸으면 그 사실을 **본문 안에** 적는다. 여기서 빠지면 사용자는 목록이 전부인 줄
+    // 알고 고친 뒤, 다음 실행에서 처음 보는 항목을 또 만난다.
+    if (n.truncated) {
+        w.writeAll("\n") catch {};
+        w.writeAll(messages.config_notice_truncated_msg) catch {};
+    }
+    return w.buffered();
+}
+
+/// 안내 본문의 상한. Linux overlay 가 받는 상한 (`dialog/linux.zig` 의
+/// `message_capacity`) 과 **같은 값**이다 — 여기서 더 담아도 그쪽에서 잘린다.
+const config_notice_message_capacity: usize = 4096;
+
+/// #655 — 고친 것이 있으면 **한 번** 알린다. 담긴 것이 없으면 아무 일도 하지 않으므로
+/// host 는 조건 없이 부르면 된다.
+///
+/// `showLoadNotice` 와 같은 시점 · 같은 자리에서 부른다 (창을 세운 뒤). Linux 는 그
+/// 전에는 다이얼로그 backend 가 없어 안내가 보이지 않는다 (#501).
+///
+/// `quiet` 는 `-e` 로 명령을 실행하는 인스턴스다. 스크립트가 다이얼로그 앞에서 멈추면
+/// 안 되므로 로그로만 남긴다 — 로그에는 어차피 `appendNotice` 가 줄마다 이미 적었다.
+pub fn showConfigNotice(rt: Runtime, quiet: bool) void {
+    const n = pendingConfigNotice() orelse return;
+    var buf: [config_notice_message_capacity]u8 = undefined;
+    const body = configNoticeMessage(&buf, n);
+    // 조립한 **뒤에** 비운다. `n` 의 slice 가 그 버퍼를 가리키고 있다.
+    clearConfigNotice();
+
+    log.appendLine("config", "notice shown: {d} item(s){s}", .{ n.count, if (n.truncated) " (truncated)" else "" });
+    if (quiet) return;
+    dialog.showError(rt, messages.config_notice_title, body);
+}
+
 /// Linux host 는 `*const Config` 를 들고 있어 위 함수의 "필드를 비운다" 를 할 수
 /// 없다. 대신 자기 one-shot flag 로 한 번만 부른다 — 문안과 로그는 여기 한 곳이라
 /// 세 platform 이 같은 안내를 낸다.
@@ -3296,7 +3378,13 @@ pub fn clearConfigNotice() void {
 /// 한 줄을 묶음에 더한다. **로그에는 언제나 남긴다** — 버퍼가 차도 원인이 사라지지 않게.
 fn appendNotice(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype) void {
     var line_buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&line_buf, fmt, args) catch return;
+    // 조립 실패는 **조용히 넘기지 않는다.** 줄은 잃어도 "다 못 담았다" 는 사실은
+    // 남아야 사용자가 로그를 본다.
+    const line = std.fmt.bufPrint(&line_buf, fmt, args) catch {
+        notice_count += 1;
+        notice_truncated = true;
+        return;
+    };
     log.appendLine("config", "{s}", .{line});
     notice_count += 1;
 
@@ -4147,4 +4235,76 @@ test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이�
     try std.testing.expectEqual(DEFAULT_FONT_CHAIN_COUNT, config.font_family_count);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family") != null);
+}
+
+test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, .{
+        .repaired = "  input -- missing, using the default\n",
+        .removable = "  bogus_key\n",
+        .count = 2,
+        .truncated = false,
+    });
+    // 사용자가 파일에서 할 일이 반대다 — 섞어 세우면 줄마다 어느 쪽인지 다시 읽어야 한다.
+    try std.testing.expectEqualStrings(
+        messages.config_notice_repaired_header ++ "\n" ++
+            "  input -- missing, using the default\n" ++
+            "\n" ++ messages.config_notice_removable_header ++ "\n" ++
+            "  bogus_key\n",
+        body,
+    );
+}
+
+test "#655 빈 묶음의 머리글은 세우지 않는다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, .{
+        .repaired = "",
+        .removable = "  bogus_key\n",
+        .count = 1,
+        .truncated = false,
+    });
+    // "지울 것" 만 있는데 "넣을 것" 머리글이 서면, 사용자는 없는 목록을 찾는다.
+    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_repaired_header) == null);
+    try std.testing.expect(std.mem.startsWith(u8, body, messages.config_notice_removable_header));
+}
+
+test "#655 잘렸으면 본문이 그 사실을 말한다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, .{
+        .repaired = "  a\n",
+        .removable = "",
+        .count = 999,
+        .truncated = true,
+    });
+    // 여기서 빠지면 사용자는 목록이 전부인 줄 알고 고친 뒤, 다음 실행에서 처음 보는
+    // 항목을 또 만난다.
+    try std.testing.expect(std.mem.endsWith(u8, body, messages.config_notice_truncated_msg));
+}
+
+test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 없다" {
+    clearConfigNotice();
+    defer clearConfigNotice();
+    noticeMissing("input");
+    try std.testing.expect(pendingConfigNotice() != null);
+    // `showConfigNotice` 가 조립 뒤 비우는 것과 같은 동작. 창을 여닫을 때마다 뜨면
+    // 드롭다운이 마비된다 (SPEC §7.3).
+    clearConfigNotice();
+    try std.testing.expect(pendingConfigNotice() == null);
+}
+
+test "#655 버퍼가 넘쳐도 잘렸다는 사실은 남는다" {
+    clearConfigNotice();
+    defer clearConfigNotice();
+    var long_path: [400]u8 = undefined;
+    @memset(&long_path, 'k');
+    // 16 KiB 를 넘기도록 충분히 넣는다.
+    var i: usize = 0;
+    while (i < 200) : (i += 1) noticeMissing(&long_path);
+
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(n.truncated);
+    // 담긴 줄은 버퍼 안에 머문다 — 넘친 만큼 버렸을 뿐 뭉개지 않는다.
+    try std.testing.expect(n.repaired.len <= config_notice_capacity);
+    // 그래도 **몇 개였는지**는 정확하다. 로그에는 전부 남아 있다.
+    try std.testing.expectEqual(@as(usize, 200), n.count);
 }

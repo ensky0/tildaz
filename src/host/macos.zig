@@ -4549,6 +4549,10 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 아니다** — 기본값으로 계속 돈다. 창이 만들어진 뒤인 것은 세 platform 을 같은
     // 시점으로 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
     config.showLoadNotice(rt, &g_config);
+    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
+    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
+    // 멈추면 안 되므로 로그로만 남긴다.
+    config.showConfigNotice(rt, g_run_opts.isStressRun());
 
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);

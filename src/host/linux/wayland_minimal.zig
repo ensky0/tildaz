@@ -1271,6 +1271,9 @@ const Client = struct {
     /// (`dialog/linux.zig` 참고). 문자열은 `Config` 소유이고 그쪽이 우리보다 오래
     /// 산다. non-null 이면 아직 안 보여준 것이다.
     pending_config_notice: ?[]const u8 = null,
+    /// #655 — config 를 고쳐서 띄웠다는 안내가 밀려 있는가. 문구 자체는 `config.zig` 가
+    /// 들고 있어 (`pendingConfigNotice`) 여기는 한 번만 부르게 하는 빗장이다.
+    pending_config_repair: bool = false,
     /// #496 1-a — 라벨 binding 이 현재 keymap 으로 **닿지 않을 때** 쓸 대체 위치.
     /// `config.key_bindings` 와 같은 인덱스다. keymap 이 바뀔 때마다 다시 계산한다
     /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
@@ -1687,6 +1690,7 @@ const Client = struct {
             // #501 — 로드 실패 안내를 loop 로 넘긴다. `Config` 가 문자열을 소유하고
             // 우리보다 오래 산다.
             .pending_config_notice = cfg.load_notice,
+            .pending_config_repair = config_mod.pendingConfigNotice() != null,
             .run_opts = opts,
             .extra_env_storage = .{
                 .{ .name = "TERM", .value = "xterm-256color" },
@@ -10625,10 +10629,21 @@ const Client = struct {
     /// 돈다. 다른 다이얼로그가 떠 있으면 다음 iteration 으로 미룬다 (info 경로처럼
     /// 그냥 버리지 않는다 — 이 안내는 사용자가 놓치면 증상만 남는다).
     fn drainConfigNotice(self: *Client) void {
-        const notice = self.pending_config_notice orelse return;
         if (self.dialog.active()) return;
-        self.pending_config_notice = null;
-        config_mod.showLoadNoticeText(self.rt, notice);
+        if (self.pending_config_notice) |notice| {
+            self.pending_config_notice = null;
+            config_mod.showLoadNoticeText(self.rt, notice);
+            // 한 iteration 에 하나만 낸다 — 위 호출이 방금 다이얼로그를 걸었으므로
+            // 이어서 내면 `drainInfoRequest` 가 뒤엣것을 버린다.
+            return;
+        }
+        // #655 — config 를 고쳐서 띄운 경우. 위 안내와 **같은 자리**에서 낸다: Wayland
+        // backend 가 붙기 전에는 다이얼로그가 보이지 않아, 아이콘으로 띄운 사용자에게
+        // 안내가 한 번도 닿지 않는다 (#501 이 고친 바로 그 구멍이다).
+        if (self.pending_config_repair) {
+            self.pending_config_repair = false;
+            config_mod.showConfigNotice(self.rt, self.run_opts.isStressRun());
+        }
     }
 
     fn drainInfoRequest(self: *Client) void {

@@ -568,6 +568,9 @@ pub const config_notice_truncated_msg = "  ... and more (see the log for the ful
 /// 숫자를 문구로 못 옮겼을 때 (`bufPrint` 실패) `config_notice_clamped_format` 에 넣는 말.
 /// 값은 잃어도 "범위 밖이라 잘렸다" 는 사실은 남아야 한다.
 pub const config_notice_the_limit = "the limit";
+/// #655 — 전역 hotkey 가 낮은 index 의 인스턴스와 겹쳐 파생 기본값으로 갈아탔다.
+/// 죽이는 대신 갈아타므로 안내 묶음으로 간다.
+pub const config_notice_hotkey_taken_format = "  hotkey -- already used by instance {d}, using {s}";
 /// `[keys]` 의 한 항목만 버렸을 때. 액션은 남은 키로, 다 버렸으면 기본 바인딩으로 돈다.
 pub const config_notice_key_dropped_format = "  keys.{s} -- dropped \"{s}\" ({s})";
 pub const config_notice_key_dropped_fallback_msg = "  keys -- dropped a key that could not be read";
