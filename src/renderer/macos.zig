@@ -1879,9 +1879,8 @@ pub const MetalRenderer = struct {
         const text_top = field_y + (field_h - ch) * 0.5;
 
         if (ui.focused) {
-            const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw);
-            const preedit_w = search_bar.textWidthPx(ui.preedit, cw);
-            const caret_x = field_x + before_w + preedit_w - ui.scroll_px * scale;
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다.
+            const caret_x = field_x + search_bar.caretOffsetPt(ui.needle, ui.preedit, ui.caret, cw, ui.scroll_px * scale);
             const vert = search_bar.caretVertical(text_top, ch);
             // 입력칸을 벗어나면 그리지 않는다 — 긴 검색어에서 카운터 위로 삐져나가지 않게.
             if (caret_x >= field_x and caret_x < field_x + v.field.w * scale) {

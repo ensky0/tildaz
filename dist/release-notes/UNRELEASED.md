@@ -32,5 +32,5 @@ Internal changes belong in neither.
 
 - Click a link in the terminal to open it in your browser — both OSC 8 hyperlinks and plain URLs found on screen. Hold `Ctrl` (`⌘` on macOS) while an app is using the mouse ([#643](https://github.com/ensky0/tildaz/issues/643)).
 - Search the scrollback of the focused pane. `Cmd+F` / `Ctrl+Shift+F` opens a panel in the
-  top-right corner; matches are highlighted in place and `Enter` / `Shift+Enter` step
-  through them ([#642](https://github.com/ensky0/tildaz/issues/642)).
+  bottom-right corner; matches are highlighted in place and `Enter` / `Shift+Enter` step
+  through them, starting from what is on screen ([#642](https://github.com/ensky0/tildaz/issues/642)).

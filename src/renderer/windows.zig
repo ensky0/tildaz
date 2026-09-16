@@ -2074,10 +2074,10 @@ pub const D3d11Renderer = struct {
             bg_n += 1;
         }
         if (ui.focused) {
-            const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-            const preedit_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.preedit))) * cw;
-            const caret_x = field_x + before_w + preedit_w;
-            if (caret_x < field_right) {
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다. 예전에는 여기서
+            // 직접 셈하면서 **가로 스크롤을 빼먹어** 긴 검색어에서 caret 이 어긋났다.
+            const caret_x = field_x + search_bar.caretOffsetPt(ui.needle, ui.preedit, ui.caret, cw, ui.scroll_px * scale);
+            if (caret_x >= field_x and caret_x < field_right) {
                 bg[bg_n] = .{
                     .pos = .{ @round(caret_x), @round(text_top) },
                     .size = .{ ui_metrics.cursorBarWidthPx(scale), @round(ch) },

@@ -1749,10 +1749,16 @@ pub const Renderer = struct {
 
         // caret — 글리프보다 먼저 담는다 (같은 list 라 순서가 곧 그리는 순서다).
         if (ui.focused) {
-            const before_w = @as(i32, @intCast(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-            const preedit_w = @as(i32, @intCast(display_width.stringWidth(ui.preedit))) * cw;
-            const caret_x = field_x + before_w + preedit_w;
-            if (caret_x < field_right) {
+            // 자리는 공용 helper 가 정한다 — IME 후보창도 같은 함수를 쓴다. 예전에는 여기서
+            // 직접 셈하면서 **가로 스크롤을 빼먹어** 긴 검색어에서 caret 이 어긋났다.
+            const caret_x = field_x + @as(i32, @intFromFloat(@round(search_bar.caretOffsetPt(
+                ui.needle,
+                ui.preedit,
+                ui.caret,
+                @floatFromInt(cw),
+                ui.scroll_px * scale,
+            ))));
+            if (caret_x >= field_x and caret_x < field_right) {
                 self.appendChromeRect(allocator, list, .{
                     .x = @floatFromInt(caret_x),
                     .y = @floatFromInt(text_top),

@@ -1108,6 +1108,26 @@ fn searchBarViewNow() ?search_bar.View {
     return search_bar.view(g_search_geom);
 }
 
+/// #646 — 검색바 caret 이 차지하는 사각형 (physical px, 창 좌상단 기준). IME 후보창을 그
+/// 아래에 띄우는 데 쓴다. 바가 안 떠 있으면 `null`.
+///
+/// 자리 계산은 renderer 가 caret 을 그릴 때와 **같은 helper** 를 탄다
+/// (`search_bar.caretOffsetPt`) — 둘이 갈리면 후보 목록이 caret 에서 떨어져 뜬다.
+fn searchCaretRectPx() ?ImeRectPx {
+    const v = searchBarViewNow() orelse return null;
+    const tab = g_session.activeTab() orelse return null;
+    const scale = g_renderer.?.scale;
+    const cw = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_width_px)) / scale;
+    const ch = @as(f32, @floatFromInt(g_renderer.?.tab_font.cell_height_px)) / scale;
+
+    const preedit: []const u8 = if (g_preedit_len > 0) g_preedit_buf[0..g_preedit_len] else &.{};
+    const offset = search_bar.caretOffsetPt(tab.search.needle.items, preedit, tab.search.caret, cw, tab.search.field_scroll_px);
+    // 입력칸을 벗어나면 가장자리에 붙인다 — 후보창이 화면 밖으로 나가는 것보다 낫다.
+    const x_pt = std.math.clamp(v.field.x + offset, v.field.x, v.field.x + v.field.w);
+    const top_pt = v.field.y + (v.field.h - ch) * 0.5;
+    return .{ .x = x_pt * scale, .y = top_pt * scale, .w = cw * scale, .h = ch * scale };
+}
+
 /// #646 — 검색바 위 클릭 · 이동을 처리한다. **처리했으면 `true`** — 그때 호출자는 터미널
 /// 경로로 넘기지 않는다.
 ///
@@ -2572,6 +2592,16 @@ fn imeCharIndex(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) us
 }
 
 fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) CGRect {
+    // #646 — 검색 중이면 후보창은 **검색바 caret** 아래에 떠야 한다. 그러지 않으면 화면
+    // 저 아래 터미널 커서 옆에 떠서, 치고 있는 자리와 후보 목록이 따로 논다.
+    if (searchFocused()) {
+        if (searchCaretRectPx()) |r| {
+            if (actual) |a| a.* = .{ .location = proposed.location, .length = 0 };
+            if (g_hanja_reconversion_active or g_hanja_candidate_active) lowerWindowForImePanel();
+            return localTopDownPxToScreenRect(self_view, r);
+        }
+    }
+
     var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
         if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
         return .{ .x = 0, .y = 0, .w = 0, .h = 0 };

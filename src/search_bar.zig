@@ -121,7 +121,12 @@ pub const Ui = struct {
     /// 디바운스 대기와 큰 스크롤백의 증분 진행이 모두 여기에 해당한다.
     searching: bool = false,
 
-    /// 키보드 포커스가 바에 있는가 (amber 선).
+    /// 검색바가 키보드를 갖고 있는가. **바가 열려 있으면 언제나 참이다** — 포커스를 터미널과
+    /// 나누지 않는다 (2026-09-16 사용자 결정, 근거는 `host/macos.zig` 의 `searchFocused`).
+    ///
+    /// 그래도 축을 남겨 두는 이유는 `input_policy.State.search_active` 와 짝이기 때문이다 —
+    /// 둘을 가를 이유가 생기면 host 의 그 함수 하나만 바뀐다. 이 값이 거짓이면 renderer 는
+    /// caret 을 그리지 않는다.
     focused: bool = false,
 
     /// 입력칸 가로 스크롤 (logical pt). caret 이 늘 보이게 한다.
@@ -452,6 +457,16 @@ pub fn iterFieldText(
         if (x >= 0 and x + advance <= max_w) cb(ctx, .{ .cp = @intCast(cp), .x = x, .advance = advance });
         x += advance;
     }
+}
+
+/// caret 이 서는 자리 (입력칸 왼쪽 가장자리 기준, logical pt). 조합 중이면 그 **뒤**다 —
+/// 조합 글자는 caret 자리에 끼워 그리므로.
+///
+/// **renderer 와 IME 후보창이 이 한 함수를 쓴다.** 한자 · 일본어 후보 팝업은 caret 바로 아래에
+/// 떠야 하는데, 두 곳이 각자 계산하면 글자 폭 · 스크롤 처리가 갈려 팝업이 caret 에서 떨어진다.
+pub fn caretOffsetPt(text: []const u8, preedit: []const u8, caret_byte: usize, cw: f32, scroll_px: f32) f32 {
+    const before = textWidthPx(text[0..@min(caret_byte, text.len)], cw);
+    return before + textWidthPx(preedit, cw) - scroll_px;
 }
 
 /// 입력칸을 누른 자리 → **caret 의 byte offset.** `iterFieldText` 의 역함수다 — 같은 전제

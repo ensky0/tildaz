@@ -917,7 +917,14 @@ pub const App = struct {
                 // 개선 후보 (#386 §2.4, 우선순위 낮음): 그리는 **매 프레임** IMM 을 부른다.
                 // 조합 중이 아니거나 위치가 안 바뀐 프레임은 건너뛸 수 있다. 폭포 중 프레임당
                 // 비용은 측정하지 않았다 — 하려면 조합 여부 · 좌표 변화로 가드를 두면 된다.
-                self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
+                //
+                // #646 — 검색 중이면 후보창은 **검색바 caret** 아래에 떠야 한다. 그러지
+                // 않으면 화면 저 아래 터미널 커서 옆에 떠서 치는 자리와 후보가 따로 논다.
+                if (self.searchCaretPx()) |c| {
+                    self.window.imeSetCompositionPos(c.x, c.y);
+                } else {
+                    self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
+                }
             } else if (!want_render) {
                 // #386 ② 게이트가 닫힌 경우만 여기서 센다. swap chain 대기로 넘긴 tick 은
                 // 위에서 `perf.swapwait` 로 따로 세므로 두 이유가 한 칸에 섞이지 않는다.
@@ -1119,6 +1126,34 @@ pub const App = struct {
         const tab = self.session.activeTab() orelse return;
         const eff = search_input.insertText(&tab.search, self.allocator, text, tab.title_clock.read()) catch return;
         self.applySearchEffect(eff);
+    }
+
+    /// #646 — 검색바 caret 의 좌상단 (physical px, 창 기준). IME 후보창을 그 아래에 띄우는
+    /// 데 쓴다. 바가 안 떠 있으면 `null`.
+    ///
+    /// 자리 계산은 renderer 가 caret 을 그릴 때와 **같은 helper** 를 탄다
+    /// (`search_bar.caretOffsetPt`) — 둘이 갈리면 후보 목록이 caret 에서 떨어져 뜬다.
+    fn searchCaretPx(self: *App) ?struct { x: c_int, y: c_int } {
+        const v = self.searchBarViewNow() orelse return null;
+        const tab = self.session.activeTab() orelse return null;
+        const r = if (self.renderer) |*rr| rr else return null;
+        const scale = self.dpi_scale;
+        const cw = @as(f32, @floatFromInt(r.tab_font.cell_width_px)) / scale;
+        const ch = @as(f32, @floatFromInt(r.tab_font.cell_height_px)) / scale;
+        const offset = search_bar.caretOffsetPt(
+            tab.search.needle.items,
+            self.window.activePreeditSlice(),
+            tab.search.caret,
+            cw,
+            tab.search.field_scroll_px,
+        );
+        // 입력칸을 벗어나면 가장자리에 붙인다 — 후보창이 화면 밖으로 나가는 것보다 낫다.
+        const x_pt = std.math.clamp(v.field.x + offset, v.field.x, v.field.x + v.field.w);
+        const top_pt = v.field.y + (v.field.h - ch) * 0.5;
+        return .{
+            .x = @intFromFloat(@round(x_pt * scale)),
+            .y = @intFromFloat(@round((top_pt + ch) * scale)),
+        };
     }
 
     /// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.

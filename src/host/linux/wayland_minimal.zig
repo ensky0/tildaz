@@ -6125,6 +6125,36 @@ const Client = struct {
         self.applySearchEffect(eff);
     }
 
+    /// #646 — 검색바 caret 이 차지하는 사각형 (physical px, surface 기준). IME 후보창을 그
+    /// 아래에 띄우는 데 쓴다. 바가 안 떠 있으면 `null`.
+    ///
+    /// 자리 계산은 renderer 가 caret 을 그릴 때와 **같은 helper** 를 탄다
+    /// (`search_bar.caretOffsetPt`) — 둘이 갈리면 후보 목록이 caret 에서 떨어져 뜬다.
+    fn searchCaretRectPx(self: *Client) ?CursorRect {
+        const v = self.searchBarViewNow() orelse return null;
+        const session = if (self.session) |*s| s else return null;
+        const tab = session.activeTab() orelse return null;
+        const sc = self.renderer.scale;
+        const cw = @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_width_px)) / sc;
+        const ch = @as(f32, @floatFromInt(self.renderer.tab_font_ctx.cell_height_px)) / sc;
+        const offset = search_bar.caretOffsetPt(
+            tab.search.needle.items,
+            self.preedit_text.items,
+            tab.search.caret,
+            cw,
+            tab.search.field_scroll_px,
+        );
+        // 입력칸을 벗어나면 가장자리에 붙인다 — 후보창이 화면 밖으로 나가는 것보다 낫다.
+        const x_pt = std.math.clamp(v.field.x + offset, v.field.x, v.field.x + v.field.w);
+        const top_pt = v.field.y + (v.field.h - ch) * 0.5;
+        return .{
+            .x = @intFromFloat(@round(x_pt * sc)),
+            .y = @intFromFloat(@round(top_pt * sc)),
+            .w = @intFromFloat(@round(cw * sc)),
+            .h = @intFromFloat(@round(ch * sc)),
+        };
+    }
+
     /// #646 — `searchBarViewNow` 의 `const` 판. 커서 모양 판정처럼 상태를 안 바꾸는
     /// 자리에서 쓴다.
     fn searchBarViewConst(self: *const Client) ?search_bar.View {
@@ -6693,6 +6723,10 @@ const Client = struct {
         const cw = self.renderer.cellWidth();
         const ch = self.renderer.cellHeight();
         const rect: CursorRect = blk: {
+            // #646 — 검색 중이면 후보창은 **검색바 caret** 아래에 떠야 한다. 그러지 않으면
+            // 화면 저 아래 터미널 커서 옆에 떠서 치는 자리와 후보가 따로 논다.
+            if (self.searchCaretRectPx()) |r| break :blk r;
+
             const st = self.activeRenderState() orelse return;
             const vp = st.cursor.viewport orelse return;
             // #483 4b — 활성 pane 의 격자 원점.
