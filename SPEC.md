@@ -1709,10 +1709,17 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 
 **바깥 앱을 띄우기 전에 z-order 를 비켜 준다** ([#655](https://github.com/ensky0/tildaz/issues/655)).
 우리 창은 항상-위라, 비켜 주지 않으면 편집기 · 브라우저가 **우리 뒤에 열려 사용자 눈에 띄지
-않는다** — 버튼을 눌렀는데 아무 일도 안 일어난 것처럼 보인다. 해당하는 자리는 다섯이다:
-`Open Config` · `Open Log` 단축키, command menu 의 `Open Config` · `Open Log` ·
-`Keyboard Shortcuts`, 그리고 config 안내 다이얼로그의 `Open Config` 버튼. **다음 show 가
-원래 높이로 되돌린다** (따로 복구 코드를 두지 않는다).
+않는다** — 버튼을 눌렀는데 아무 일도 안 일어난 것처럼 보인다. **다음 show 가 원래 높이로
+되돌린다** (따로 복구 코드를 두지 않는다).
+
+바깥 앱을 띄우는 자리는 **여섯이고 세 platform 이 모두 같다.** 같은 앱을 같은 이유로 띄우는데
+들어온 문 (단축키 · 메뉴 · 안내 버튼) 이 다르다고 동작이 갈리면 안 된다.
+
+| 들어온 문 | 자리 |
+|---|---|
+| 단축키 | `Open Config` (Ctrl+Shift+P / Shift+Cmd+P) · `Open Log` (Ctrl+Shift+L / Shift+Cmd+L) |
+| command menu | `Open Config` · `Open Log` · `Keyboard Shortcuts` |
+| config 안내 다이얼로그 | `Open Config` 버튼 ([§7.3](#73-config-로드--부팅을-막지-않는다-655)) |
 
 | | 비켜 주는 방법 | 되돌리는 자리 |
 |---|---|---|

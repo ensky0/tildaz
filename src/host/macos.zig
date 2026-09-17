@@ -5759,6 +5759,11 @@ fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callco
     const allocator = g_gpa.allocator();
     const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
     defer allocator.free(path);
+    // #655 — 메뉴 갈래와 **같이** 비켜 준다. `2efc343` 이 메뉴 세 자리와 안내 버튼에만
+    // 걸어서 단축키 경로 (Shift+Cmd+P · Shift+Cmd+L) 두 자리가 남아 있었다 — 같은 앱을
+    // 같은 이유로 띄우는데 들어온 문이 다르다고 동작이 갈리면 안 된다.
+    // Windows 는 `app_controller` 의 키보드 갈래에도 예전부터 걸려 있었다.
+    yieldTopmostUntilNextShow();
     @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
@@ -5770,6 +5775,8 @@ fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(
     applyShortcutInputPolicy(.open_log);
     const allocator = g_gpa.allocator();
     const path = log.filePath() orelse return;
+    // #655 — 위 `tildazOpenConfigAction` 과 같은 이유.
+    yieldTopmostUntilNextShow();
     @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
 }
 
