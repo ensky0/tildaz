@@ -876,6 +876,14 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
   옵션으로 보아 `unknown option "…"` (exit 2) 로 거부해요. 그러면 **로그 파일조차 안 생겨서** "앱이 조용하다" 와 "앱이 뜨지도
   않았다" 를 구별할 수 없어요 (같은 회차 실측). `key-bytes-check` · `search-bar-check` · `link-click-check` · `render-ab-shot` 이
   전부 이 형태예요.
+- **⚠️⚠️ `INPUT` 구조체는 PowerShell 이 아니라 `Add-Type` 의 **C# 안에서** 만들어요.** PowerShell 은 중첩 값 타입 속성을
+  **임시 복사본**으로 다뤄서 `$i.u.ki.wVk = 0x41` 이 **조용히 사라져요** (대입 직후 읽어 보면 `0` 이에요). 그러면 모든 키가
+  `vk=0` 으로 나가는데 **`SendInput` 은 성공을 반환**하고, 창은 포커스돼 있고, 오류도 경고도 없어요 — 앱은 멀쩡한데
+  *"키가 앱에 안 닿는다"* 로 읽혀요. 2026-09-17 #655 회차에서 `Ctrl+Shift+P` 가 안 먹는 것으로 보여 앱을 한참 뒤졌는데,
+  C# 쪽으로 옮기자 그 자리에서 동작했어요. `tool/send-keys_windows.ps1` 의 `One()` · `Send()` 가 그래서 C# 안에 있어요.
+  - **더 나쁜 것은 거짓 PASS 예요.** *"Esc 로는 편집기가 열리지 않는다"* 같은 **부정을 재는 항목**은 키가 안 닿아도
+    통과해요. 그래서 부정 항목에는 **그 입력이 실제로 닿았다는 증거**를 함께 재요 — Esc 면 *다이얼로그가 닫혔는가*,
+    토글이면 *창이 실제로 숨겨졌는가* (`before=1 afterHide=0`). 같은 회차에서 그 둘이 처음에 조용히 통과했어요.
 - **⚠️ 한 줄 `python -c "…"` 안에 `\"` 를 쓰지 말아요.** PowerShell 5.1 이 네이티브 인자로 넘기며 그 따옴표를 **인자 경계로
   다시 읽어** python 코드가 잘려요 (`SyntaxError: unterminated string literal`). here-string (`@"…"@`) 으로 넘기고 큰따옴표가
   필요하면 `chr(34)` 로 만들어요.
