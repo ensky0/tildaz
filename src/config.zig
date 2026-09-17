@@ -3790,9 +3790,11 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
         "Failed to parse config file.\n\nError: UnexpectedToken",
         "Configuration: failed to parse \"hotkey\" value \"plain-t\".",
         "Configuration: \"window.width_percent\" must be a number.",
+        // #655 — 본보기는 **지금 존재하는** 문구여야 한다. 예전에는 여기 세 줄이
+        // `missing required key` · `unknown key` · `type mismatch` 였는데, 그 갈래가
+        // 전부 폴백이 되면서 문구 자체가 없어졌다. 봉투는 남은 fatal 이 그대로 쓴다.
         "Configuration: unknown theme \"Missing\"\n\nAvailable themes:\nTilda",
-        "Configuration: missing required key \"font\" in (top-level).",
-        "Configuration: unknown key \"extra\" in (top-level).",
+        "Failed to parse config file.",
     };
     const config_paths = [_][]const u8{
         "/home/user/.config/tildaz/config_0.toml",

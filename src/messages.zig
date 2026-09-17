@@ -525,22 +525,10 @@ pub const config_hotkey_duplicate_format =
     "Each TildaZ instance needs its own global hotkey. Change \"hotkey\" in this instance's config and start it again.";
 pub const config_hotkey_duplicate_fallback_msg =
     "This hotkey is already used by another TildaZ instance. Change \"hotkey\" in this instance's config and start it again.";
-pub const config_type_mismatch_format = "Configuration: type mismatch at \"{s}\" — expected {s}, got {s}.";
-pub const config_type_mismatch_fallback_msg = "Configuration: type mismatch";
-/// #483 (2026-08-27 사용자 결정) — 새 버전이 키를 더하면 이전 파일이 여기서 걸린다 (strict schema 는 유지,
-/// 파일에 자동으로 써 넣지 않는다). 사용자가 할 일을 한 문단으로: 파일을 **옮겨 두고** (지우지 말고) 다시 띄우면
-/// 기본 파일이 새로 생기니, 바꿔 둔 값을 다시 옮겨 적으라. 세 platform 이 같은 문구다.
-pub const config_missing_key_format = "Configuration: missing required key \"{s}\" in {s}.\n\n" ++
-    "This file was written by an older version and lacks keys the current version needs. " ++
-    "Move the file aside (for example add .bak to its name) and start TildaZ again -- " ++
-    "a fresh default file will be created. Then copy back any values you had changed.";
-pub const config_missing_key_fallback_msg = "Configuration: missing key";
-pub const config_unknown_key_format = "Configuration: unknown key \"{s}\" in {s}.";
-pub const config_unknown_key_fallback_msg = "Configuration: unknown key";
 
-// #655 — **고쳐서 계속 뜨는** 항목의 문구. 위 `config_missing_key_format` 등은 "옮겨 두고
-// 다시 시작하라" 는 *종료* 안내라서 여기 쓰지 않는다. SPEC 원칙 5 (언제나 부팅은 되게) 와
-// §7.3 이 정본이다.
+// #655 — **고쳐서 계속 뜨는** 항목의 문구. 예전에는 이 자리에 `config_missing_key_format`
+// ("파일을 옮겨 두고 다시 시작하라") 이 있었는데, 그 문구 자체가 *종료* 안내라 함께 지웠다.
+// SPEC 원칙 5 (언제나 부팅은 되게) 와 §7.3 이 정본이다.
 //
 // 문구는 **무엇을 했는지 + 사용자가 할 일** 두 조각이다. 앞만 있으면 "그래서 어쩌라고" 가
 // 되고, 뒤만 있으면 지금 어떤 값으로 도는지를 모른다.

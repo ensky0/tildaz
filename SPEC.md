@@ -1156,7 +1156,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (`MessageBoxW` + key capture window + overflow read-only EDIT window) | `dialog/macos.zig` (NSAlert + overflow NSScrollView + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
 | 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정 | 짧은 info/error/confirm은 `MessageBoxW`, prompt 본문은 `STATIC`; overflow 때 read-only multiline `EDIT` + OS scrollbar로 전환 | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid / config / log 경로를 잘림 없이 표시. 실제 입력 길이만큼 본문을 할당하고 화면 높이를 넘을 때만 세로 scroll ([#314](https://github.com/ensky0/tildaz/issues/314)) | read-only multiline EDIT 전용 modal window. wheel·scrollbar drag·selection·Ctrl+C는 OS control 동작 | NSAlert accessoryView의 NSScrollView + selectable NSTextView. scrollbar 자동 숨김 | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → layer-shell overlay. 아이콘 + Title + separator + body + OK 버튼. overflow 때 아이콘을 생략하고 wheel/touchpad·scrollbar drag 지원 | ✅ | ✅ | ✅ |
-| Config 에러 (잘못된 값) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 짧으면 `MessageBoxW`, 화면 또는 4096 UTF-16 변환 상한을 넘으면 read-only multiline EDIT 전용 window | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전이라 동적 본문 전체를 stderr + log에 남기고 exit(1). 연결 후 startup 검증(예: shell)은 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback). **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
+| Config 에러 (**남은 fatal** — TOML 구문 오류 · 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이 폴백 + 안내로 돌려 여기 오지 않는다) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 짧으면 `MessageBoxW`, 화면 또는 4096 UTF-16 변환 상한을 넘으면 read-only multiline EDIT 전용 window | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전이라 동적 본문 전체를 stderr + log에 남기고 exit(1). 연결 후 startup 검증(예: shell)은 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback). **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit(1) | 동일 | **dialog 호출 안 함** — `showPanic` 이 log(`panic`) + `std.debug.defaultPanic` (stderr 에 file:line + backtrace 후 abort). panic 은 renderer/wayland state 가 이미 불안정할 수 있어 overlay 대신 표준 abort 경로 (의도된 차이). | ✅ | ✅ | 🟨 (dialog 없이 log+abort) |
 | 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 짧으면 `MessageBoxW MB_OKCANCEL`, overflow면 고정 OK/Cancel + scroll 본문 — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | native dialog 또는 소유자 window를 disable한 overflow modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. overflow scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
@@ -1335,13 +1335,24 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 >
 > Linux 는 해석 결과의 `path` 와 함께 **face `index` 도 `FT_New_Face` 로 넘긴다** — `.ttc` / `.otc` 는 한 파일에 face 가 여러 벌이라 index 를 빼면 요청과 다른 face 가 열린다 (`Noto Sans CJK KR` 은 `NotoSansCJK-Regular.ttc` 의 index 1 이고 index 0 은 JP 다; [#428](https://github.com/ensky0/tildaz/issues/428)). 같은 이유로 face 동일성 판정 (chain dedup · styled 변종의 "regular 와 같은 파일" 검사) 도 (path, index) 쌍으로 한다. libfontconfig 자체를 못 여는 환경은 판정 불가로 두고 loader 의 에러 경로에 맡긴다 (미설치 오판 방지). **#428 은 Linux 전용이다** — macOS `CTFontCreateWithName` 과 Windows `FindFamilyName` → `CreateFontFace` 는 face 를 직접 받아, 파일 경로 + index 로 face 를 여는 곳이 Linux 의 FreeType 경로뿐이다.
 >
-> schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은 별도 fatal — `font_validate.showFamilyMustBeStringFatal` / `showGlyphFallbackMustBeListFatal`.
+> schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은
+> **#655 이후 fatal 이 아니다** — `repairStructure` 가 그 값을 지워 기본 폰트 chain 이 남고
+> 안내에 담긴다. 배열 *안쪽* 의 string 아닌 항목은 그 항목만 버린다.
 
-> **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
-> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지). [#483](https://github.com/ensky0/tildaz/issues/483) (2026-08-27) — 새 버전이 키를 더하면 (예: `[keys]` 의 pane 액션) 이전 파일이 여기서 걸리는데, 기본값으로 조용히 채우지 않고 **strict 를 유지**한다. 대신 메시지가 할 일을 알려 준다: 파일을 옮겨 두고 (지우지 말고) 다시 띄워 기본 파일을 새로 만들고, 바꿔 둔 값을 다시 옮겨 적는다. 세 platform 같은 문구 (`messages.config_missing_key_format`).
-> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 예외는 없다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할 이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다).
-> - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
-> - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigToml(allocator, shell_resolved)` 결과와 user config 를 비교.
+> **schema 대조** (세 platform 동일). **[#655](https://github.com/ensky0/tildaz/issues/655)
+> 에서 정책이 뒤집혔다** — 아래는 지금 동작이고, 판단 근거와 갈래별 처리표는 §7.3 에 있다.
+> - 없는 키는 **기본값** 으로 돌고 안내에 담긴다. 예전에는 fatal `missing required key "..."`
+>   이었고, 새 버전이 키를 더할 때마다 (`[keys]` 의 pane 액션 15 개 · `[input]`) 이전 파일을
+>   쓰던 사용자 전원이 **터미널을 열 수 없었다**. v0.9.x 에서 두 번 일어났다.
+> - 알 수 없는 키 (오타 / 잘못된 위치) 는 **무시하고 "지우세요" 로 안내**한다. 조용히
+>   넘기지 않는 이유는 그대로다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할
+>   이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다). 모르는 **섹션**
+>   은 통째로 무시하고 테이블 하나로만 안내한다 (안의 키를 나열하지 않는다).
+> - Type mismatch (예: `width_percent` 에 string) 는 그 값만 **트리에서 지워** 기본값이
+>   남게 한다. 지우는 것이 중요하다 — 남기면 뒤의 `parse` 가 `v.boolean` 으로 읽다가 터진다.
+> - 위 처리 모두 `repairStructure(user, default, ctx)` 한 함수가 재귀로 한다 —
+>   `schemaReferenceToml` (= 기본 문서) 의 값 트리와 user config 를 비교한다. 예전 이름은
+>   `validateStructure` 였고, 이름 그대로 *거부* 가 일이었다.
 
 ### 7.1 hotkey 상세
 
@@ -1753,7 +1764,16 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+**#655 이후 이 절이 다루는 것은 "남은 fatal" 뿐이다.** 값이 틀린 경우는 더 이상 여기로
+오지 않는다 — §7.3 이 그것을 폴백 + 안내로 돌렸다. 여기 남은 것은 둘이다:
+**TOML 구문 오류** (파일을 값 트리로 만들 수조차 없어 고칠 자리를 짚어 줄 기준이 없다) 와
+**전역 hotkey 중복** (§7.3 의 예외 — 갈아탈 자리까지 없는 경우).
+
+잘못된 config 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해
+사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)).
+`Config.load`가 연 path를 `Config.parse`에 직접 전달하고 동적 message 를 조립한다. TOML parse
+실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와
+실제 파일이 갈리지 않는다.
 
 **안내는 담아 두고 host 가 그릴 수 있게 된 뒤에 띄운다** ([#577](https://github.com/ensky0/tildaz/issues/577)). config 파싱은 세 platform 공통이고 Linux 에서는 dialog backend (layer-shell overlay) 가 등록되기 **전에** 돈다 — `Client` 가 config 을 인자로 받아 만들어지기 때문이다. 그 자리에서 `dialog.showFatal` 을 부르면 안내가 stderr + 로그로만 가고, `.desktop` (메뉴 · autostart) 로 띄운 사용자에게는 **창도 다이얼로그도 없이 조용히 죽는 것**만 보였다.
 
@@ -1778,10 +1798,17 @@ Linux 가 공통 함수를 쓰지 않는 이유는 그쪽 `dialog.showFatal` 이
 ```
 Config: /home/user/.config/tildaz/config_0.toml
 
-Configuration: missing required key "window" in (top-level).
+Failed to parse config file.
+
+Line 12, column 3
+Error: UnexpectedToken
 ```
 
-예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
+예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
+
+**본보기가 `missing required key "window"` 였다** — #655 이후 그 문구는 존재하지 않는다 (없는
+키는 기본값으로 돌고 안내에 담긴다). 이 봉투를 지금 쓰는 것은 남은 fatal 뿐이라 본보기도 그중
+하나로 든다.
 
 조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `recordConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
 
@@ -1797,14 +1824,16 @@ Configuration: missing required key "window" in (top-level).
 
 ### 11.5 config 를 읽지 못하거나 만들지 못했을 때 ([#501](https://github.com/ensky0/tildaz/issues/501))
 
-**fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.** 내용이 틀린 config (§11.4) 와 정책이 다르며, 그 차이가 의도적이다.
+**fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.**
 
-| 상황 | 결과 상태 | 한 문장으로 설명되는가 | 정책 |
-|---|---|---|---|
-| 파일이 없거나 못 읽음 / 못 만듦 | **전부** 기본값 | ✅ "설정을 하나도 읽지 못했다" | 안내 + 계속 |
-| 파일은 읽혔는데 내용이 틀림 | **부분** 적용 | ❌ 어느 필드가 살고 어느 필드가 죽었나 | fatal (§11.4) |
+시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너).
 
-시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너). 반면 내용이 틀린 경우는 부분 적용이 되어 "테마는 먹었는데 핫키는 안 먹은" 상태를 설명할 수 없으므로 fatal 이 정직하다.
+**#655 이전에는 여기에 표가 하나 더 있었다** — "파일은 읽혔는데 내용이 틀림" 은 부분 적용이라
+*"테마는 먹었는데 핫키는 안 먹은"* 상태를 한 문장으로 설명할 수 없으므로 fatal 이 정직하다는
+것이었다. 그 논리가 뒤집혔다. 부분 적용을 **설명하지 못한다는 것이 문제라면 설명하면 된다** —
+§7.3 의 안내가 바뀐 자리를 한 줄씩 적는다. 그리고 위 문단의 "스스로 잠긴다" 는 내용이 틀린
+경우에 **더 크게** 적용된다: 키 하나를 잘못 적은 사용자가 그 키를 고칠 터미널을 잃었다
+(v0.9.2 · v0.9.3 에서 실제로 두 번). 지금은 두 경우가 같은 정책이고, 그 일관성이 원칙 5 다.
 
 **안내는 창이 뜬 뒤에 한 번 나온다.** config 로드 시점에 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어 다이얼로그가 stderr · log 로만 가고 (`dialog/linux.zig`), 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다. Windows (`MessageBoxW`) 와 macOS (`osascript display dialog`) 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세 platform 의 시점이 갈리고 안내가 두 번 뜰 수 있어 한 곳으로 모았다.
 
