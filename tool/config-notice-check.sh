@@ -11,7 +11,8 @@
 #
 # **사용자 파일을 건드리지 않는다.** `XDG_CONFIG_HOME` · `XDG_STATE_HOME` · `HOME` 을
 # 작업 디렉터리로 돌려서 config 와 로그가 모두 그 안에만 생긴다. instance 9 를 쓰는 것도
-# 같은 이유다 — 격리가 어디선가 새더라도 평소 쓰는 0 번과 겹치지 않는다.
+# 같은 이유다 — 격리가 어디선가 새더라도 평소 쓰는 0 번과 겹치지 않는다. **Linux 에서는
+# 그것만으로 부족해서** 데스크톱 연동 변수도 함께 뺀다 — 아래 `SESSION_GUARD` 주석.
 #
 # **기본 config 를 스크립트가 적지 않는다.** 빈 디렉터리에서 앱을 한 번 돌려 *앱이*
 # 만들게 하고 (`mkbase`) 그것을 망가뜨린다. 손으로 적으면 스키마가 넓어진 날 (이 이슈가
@@ -65,12 +66,28 @@ ENVV() {
   echo XDG_CONFIG_HOME="$WORK/run/config" XDG_STATE_HOME="$WORK/run/state" HOME="$WORK/run/home"
 }
 
+# ⚠️ **`XDG_*` 를 돌리는 것만으로는 사용자 세션이 안 막힌다** (2026-09-17 #655 Linux 회차 실측).
+# 앱이 `XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 그대로 물려받으면 **사용자의
+# 세션 버스에 붙어 전역 단축키를 등록한다.** KDE 세션에서 그냥 돌렸더니
+# `~/.config/kglobalshortcutsrc` 에 `[tildaz.instance9] toggle-9=F10` 이 생겼고 앱을 내려도
+# 남아서, D-Bus `org.kde.KGlobalAccel.unregister` 로 지워야 했다. GNOME 도 같은 부류다
+# (gsettings · Shell extension 경로). AGENTS.md 의 *"파일 경로만 바꾸는 격리는 다른 프로세스를
+# 거치는 상태를 못 막는다"* 와 같은 자리다.
+#
+# 이 회차들이 재는 것은 **config 로드 동작**이지 데스크톱 연동이 아니므로, 그 두 변수를 빼서
+# 등록 경로를 아예 안 타게 한다 (`de=(unset)` 이면 앱이 hotkey 등록을 건너뛴다). `hotkey`
+# 회차가 보는 것은 OS 등록이 아니라 **config 단계의 중복 판정**이라 그대로 성립한다.
+case "$(uname -s)" in
+  Linux) SESSION_GUARD="-u XDG_CURRENT_DESKTOP -u DBUS_SESSION_BUS_ADDRESS" ;;
+  *)     SESSION_GUARD="" ;;
+esac
+
 # 평소처럼 띄웠다가 내린다. **`-e` 로는 대신할 수 없다** — 측정 인스턴스는 config 파일을
 # 만들지 않고 (`instances.createDefaultConfig` 를 거치지 않는다) 로그도 `tildaz_stress.log`
 # 로 간다. 안내 다이얼로그가 뜨지만 곧 죽이므로 스크립트를 막지 않는다.
 run_app() { # <index> [설 시간]
   local idx="$1" wait_s="${2:-6}"
-  env $(ENVV) "$BIN" --instance "$idx" >/dev/null 2>&1 &
+  env $SESSION_GUARD $(ENVV) "$BIN" --instance "$idx" >/dev/null 2>&1 &
   local pid=$!
   local i=0
   while [ $i -lt $((wait_s * 4)) ]; do
@@ -86,7 +103,7 @@ run_app() { # <index> [설 시간]
 
 # `-e` 로 돈다 — 다이얼로그가 뜨지 않는 경로 그 자체를 재는 회차에서만 쓴다.
 run_app_quiet() { # <index>
-  env $(ENVV) "$BIN" --instance "$1" -e "true" >/dev/null 2>&1
+  env $SESSION_GUARD $(ENVV) "$BIN" --instance "$1" -e "true" >/dev/null 2>&1
 }
 
 # 앱이 자기 손으로 기본 config 를 만들게 한다.

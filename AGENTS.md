@@ -1815,14 +1815,26 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
     `WAYLAND_DISPLAY` 는 `/` 로 시작하면 **절대 소켓 경로**로 쓰여요. 그래서 `XDG_RUNTIME_DIR` 를
     임시 경로로 돌려 lock · endpoint 를 격리하면서도 compositor 에는 그대로 붙어요.
 
-- **⚠️ 그 격리가 덮지 못하는 것이 둘 있어요.** 파일 경로만 바꾸는 격리라, 다른 프로세스를
+- **⚠️ 그 격리가 덮지 못하는 것들이 있어요.** 파일 경로만 바꾸는 격리라, 다른 프로세스를
   거치는 상태는 그대로 실제 세션으로 나가요. 2026-08-26 [#510](https://github.com/ensky0/tildaz/issues/510)
-  검증에서 둘 다 걸렸어요.
+  검증에서 앞의 둘이, 2026-09-17 [#655](https://github.com/ensky0/tildaz/issues/655) 회차에서 셋째가 걸렸어요.
 
   | 새는 것 | 왜 | 증상 |
   |---|---|---|
   | **GSettings / dconf** | 읽기는 `$XDG_CONFIG_HOME/dconf/user` 를 **mmap** 하고, 쓰기는 세션 버스의 `dconf-service` 가 **자기 환경**으로 해요 | 격리하면 **읽기는 통째로 비고** (스키마 기본값만 보임) **쓰기는 실제 세션에 남아요** |
   | **`hyprctl`** | 진짜 `XDG_RUNTIME_DIR/hypr/<signature>` 를 찾아요 | 격리하면 인스턴스를 못 찾아 조회가 실패해요 |
+  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz.instance9]` 가 생기고 **앱을 내려도 남아요** |
+
+  셋째는 **`XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 함께 빼면** 막혀요 (`de=(unset)`
+  이면 등록 경로를 아예 안 타요 — 위 `# 전역 hotkey` 절의 첫 함정과 같은 성질을 이번엔 *이용*하는
+  거예요). [`tool/config-notice-check.sh`](tool/config-notice-check.sh) 의 `SESSION_GUARD` 가 그
+  모양이에요. 이미 남았으면 파일을 손으로 고치지 말고 D-Bus 로 지워요 — kglobalaccel 이 메모리
+  상태로 파일을 다시 써요.
+
+  ```sh
+  gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+      --method org.kde.KGlobalAccel.unregister "tildaz.instance9" "toggle-9"
+  ```
 
   그래서 **GNOME · Cinnamon 검증은 격리하지 말고 실제 홈으로 돌리고 뒤에 치워요.** 격리한 채
   돌리면 `enabled-extensions` 가 비어 보여 extension 경로가 아예 안 타는데, 로그만 봐서는
