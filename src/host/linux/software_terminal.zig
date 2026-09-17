@@ -3247,6 +3247,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
 }
 
@@ -3287,6 +3290,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     // #368 — dialog 폰트는 지연 생성이라 이 시점엔 이미 만들어져 있어야 한다
     // (`drawDialogContent` 가 위에서 불렸다). 없으면 그 자체가 회귀다.
@@ -3352,6 +3358,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     const error_separator = std.mem.readInt(u32, buf[separator_center_off..][0..4], .little) & 0x00FF_FFFF;
     try std.testing.expectEqual(info_separator, error_separator);
@@ -3373,6 +3382,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         layout.message_scroll_max,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.y > first_thumb_y);
 }
