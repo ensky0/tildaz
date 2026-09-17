@@ -1229,7 +1229,7 @@ pub const App = struct {
 
     /// #646 — 활성 pane 의 검색바를 연다. 단축키와 메뉴가 **같은 함수**를 쓴다.
     /// 이미 열려 있으면 검색어를 지우지 않는다 (다시 눌러도 치던 것이 사라지지 않는다).
-    fn handleOpenSearch(self: *App) void {
+    fn handleFind(self: *App) void {
         const tab = self.session.activeTab() orelse return;
         tab.search.open();
         self.window.requestRender();
@@ -1254,10 +1254,10 @@ pub const App = struct {
             .split_right => if (self.resolveRunAction(.split)) self.handleSplit(.right),
             .split_down => if (self.resolveRunAction(.split)) self.handleSplit(.down),
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
-            .copy_selection => if (self.resolveRunAction(.copy_selection)) tab_actions.copyActiveSelection(&self.host, self.allocator),
+            .copy => if (self.resolveRunAction(.copy)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),
             // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-            .find => if (self.resolveRunAction(.open_search)) self.handleOpenSearch(),
+            .find => if (self.resolveRunAction(.find)) self.handleFind(),
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
@@ -1689,7 +1689,7 @@ pub const App = struct {
             .switch_tab => .switch_tab,
             .next_tab => .next_tab,
             .prev_tab => .prev_tab,
-            .copy_selection => .copy_selection,
+            .copy => .copy,
             .toggle_visibility => .toggle_visibility,
             .fullscreen => .fullscreen,
             .split => .split,
@@ -1698,7 +1698,7 @@ pub const App = struct {
             .equalize_panes => .equalize_panes,
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
-            .open_search => .open_search,
+            .find => .find,
         };
     }
 
@@ -1918,7 +1918,7 @@ pub const App = struct {
                         tab_actions.prevTab(&self.host);
                         return true;
                     },
-                    .copy_selection => {
+                    .copy => {
                         // Ctrl+Shift+C — 현재 highlight 된 selection 을 clipboard 로
                         // (#120). 드래그 직후 finishTerminalSelection 이 자동 copy
                         // 하지만, 그 후 사용자가 키로 다시 트리거하고 싶을 때.
@@ -1954,8 +1954,8 @@ pub const App = struct {
                         self.handleZoomPane();
                         return true;
                     },
-                    .open_search => {
-                        self.handleOpenSearch();
+                    .find => {
+                        self.handleFind();
                         return true;
                     },
                     // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).

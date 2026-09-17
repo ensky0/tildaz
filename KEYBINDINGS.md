@@ -123,7 +123,7 @@ a shortcut pinned to a spot regardless of layout:
 new_tab        = ["ctrl+shift+[KeyT]"]
 close_tab      = ["ctrl+shift+[KeyW]"]
 close_pane     = ["ctrl+shift+[KeyX]"]
-copy_selection = ["ctrl+shift+[KeyC]"]
+copy = ["ctrl+shift+[KeyC]"]
 paste          = ["ctrl+shift+[KeyV]"]
 prev_tab       = ["ctrl+shift+[BracketLeft]", "ctrl+pageup"]
 next_tab       = ["ctrl+shift+[BracketRight]", "ctrl+pagedown"]

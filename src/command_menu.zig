@@ -45,7 +45,7 @@ pub const Command = enum {
     split_right,
     split_down,
     close_active_tab,
-    copy_selection,
+    copy,
     paste,
     /// #646 — 버퍼 검색을 연다.
     find,
@@ -70,7 +70,7 @@ pub const entries = [_]?Command{
     .split_right,
     .split_down,
     // 보고 있는 내용 — 대부분의 앱이 Find 를 Edit 메뉴의 복사 · 붙여넣기 뒤에 둔다.
-    .copy_selection,
+    .copy,
     .paste,
     .find,
     // 창.
@@ -103,7 +103,7 @@ pub fn label(command: Command) []const u8 {
         .split_right => messages.command_split_right,
         .split_down => messages.command_split_down,
         .close_active_tab => messages.command_close_active_tab,
-        .copy_selection => messages.command_copy_selection,
+        .copy => messages.command_copy,
         .paste => messages.command_paste,
         .find => messages.command_find,
         .fullscreen => messages.command_full_screen,
@@ -124,7 +124,7 @@ pub fn shortcut(command: Command, macos: bool, toggle_hotkey: []const u8, fullsc
         .split_right => if (macos) messages.shortcut_split_right_macos else messages.shortcut_split_right,
         .split_down => if (macos) messages.shortcut_split_down_macos else messages.shortcut_split_down,
         .close_active_tab => if (macos) messages.shortcut_close_tab_macos else messages.shortcut_close_tab,
-        .copy_selection => if (macos) messages.shortcut_copy_macos else messages.shortcut_copy,
+        .copy => if (macos) messages.shortcut_copy_macos else messages.shortcut_copy,
         .paste => if (macos) messages.shortcut_paste_macos else messages.shortcut_paste,
         .find => if (macos) messages.shortcut_find_macos else messages.shortcut_find,
         .fullscreen => if (fullscreen_workarea)

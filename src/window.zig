@@ -3118,7 +3118,7 @@ pub const Window = struct {
             .show_about => .show_about,
             .open_config => .open_config,
             .open_log => .open_log,
-            .copy_selection => .copy_selection,
+            .copy => .copy,
             .dump_perf => .dump_perf,
             // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 `GetAsyncKeyState`
             // 로 Shift 를 다시 읽어 갈랐는데, 사용자가 `fullscreen_workarea` 에
@@ -3147,7 +3147,7 @@ pub const Window = struct {
             .equalize_panes => .equalize_panes,
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
-            .open_search => .open_search,
+            .find => .find,
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).
