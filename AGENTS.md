@@ -866,6 +866,19 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
   이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
 - **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
+- **⚠️ `.ps1` 은 UTF-8 **BOM 을 붙여** 저장해요.** Windows PowerShell 5.1 은 BOM 이 없으면 파일을 ANSI (한국어 환경은
+  cp949) 로 읽어서, 한글 주석 · 문자열이 깨지고 그 깨진 바이트가 따옴표를 만들어 **파서 단계에서 즉사**해요
+  (`The string is missing the terminator`) — 회차가 하나도 돌지 않아요. 2026-09-17 #655 회차에서 `config-notice-check_windows.ps1`
+  이 그래서 Windows 에서 **한 번도 돌아간 적이 없었어요.** `tool/` 의 다른 Windows 도구는 전부 BOM 이 있으니, 새 도구를
+  더하면 첫 바이트를 확인해요 (`(Get-Content -Encoding Byte -TotalCount 3 f) -join ' '` 가 `239 187 191`).
+- **⚠️ `-e` 의 값은 따옴표로 감싸서 넘겨요** — `-ArgumentList '--instance','9','-e',"`"$cmd`""`. `Start-Process` 는 배열
+  원소를 공백으로 이어 붙일 뿐 **공백이 있는 원소를 감싸 주지 않아서**, 그냥 주면 앱이 `-e <첫 토큰>` 만 값으로 읽고 나머지를
+  옵션으로 보아 `unknown option "…"` (exit 2) 로 거부해요. 그러면 **로그 파일조차 안 생겨서** "앱이 조용하다" 와 "앱이 뜨지도
+  않았다" 를 구별할 수 없어요 (같은 회차 실측). `key-bytes-check` · `search-bar-check` · `link-click-check` · `render-ab-shot` 이
+  전부 이 형태예요.
+- **⚠️ 한 줄 `python -c "…"` 안에 `\"` 를 쓰지 말아요.** PowerShell 5.1 이 네이티브 인자로 넘기며 그 따옴표를 **인자 경계로
+  다시 읽어** python 코드가 잘려요 (`SyntaxError: unterminated string literal`). here-string (`@"…"@`) 으로 넘기고 큰따옴표가
+  필요하면 `chr(34)` 로 만들어요.
 - **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
   누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
   감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
