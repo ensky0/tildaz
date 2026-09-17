@@ -34,7 +34,7 @@ pub const command_close_active_tab = "Close Tab";
 pub const command_find = "Find";
 pub const shortcut_find = "Ctrl+Shift+F";
 pub const shortcut_find_macos = "Cmd+F";
-pub const command_copy_selection = "Copy";
+pub const command_copy = "Copy";
 pub const command_paste = "Paste";
 /// toggle 의미 + 320pt 메뉴 폭에서 hint 와 공존하는 짧은 문구 (#334 피드백 —
 /// "Enter / Exit Full Screen" 은 길어서 hint 가 숨겨졌음).

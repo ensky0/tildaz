@@ -1476,7 +1476,7 @@ fn runKeyAction(action: config.KeyAction) bool {
     const shortcut = mapped.input.shortcut;
     applyShortcutInputPolicy(shortcut);
     switch (shortcut) {
-        .copy_selection => handleCopy(),
+        .copy => handleCopy(),
         .new_tab => handleNewTab(),
         .close_tab => handleCloseActiveTab(),
         // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). `keycodeToTabIndex` 가
@@ -1504,7 +1504,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         .zoom_pane => handleZoomPane(),
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
         .close_pane => handleClosePane(),
-        .open_search => handleOpenSearch(),
+        .find => handleFind(),
     }
     return true;
 }
@@ -3400,10 +3400,10 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .split_right => handleSplit(.right),
         .split_down => handleSplit(.down),
         .close_active_tab => handleCloseActiveTab(),
-        .copy_selection => handleCopy(),
+        .copy => handleCopy(),
         .paste => handlePaste(),
         // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-        .find => handleOpenSearch(),
+        .find => handleFind(),
         // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
         // 해제, 아니면 monitor 진입. 키보드의 self-symmetric(들어간 키로만
         // 나옴) 정책은 그대로 — workarea 상태에서 메뉴가 no-op 이던 문제.
@@ -4231,7 +4231,7 @@ fn handleCloseActiveTab() void {
 /// `handleCloseActiveTab` 과 같다. `Cmd+W` 는 탭 통째로다.
 /// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않고 그대로 둔다
 /// (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
-fn handleOpenSearch() void {
+fn handleFind() void {
     const tab = g_session.activeTab() orelse return;
     const was_open = tab.search.is_open;
     tab.search.open();

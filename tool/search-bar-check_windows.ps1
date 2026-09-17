@@ -401,12 +401,12 @@ if ($SizePoint -gt 0) {
     $txt = Get-Content $Cfg0 -Raw -Encoding UTF8
     $txt = $txt -replace '(?m)^size_point\s*=.*$', ("size_point        = " + $SizePoint)
     $txt = $txt -replace '(?m)^auto_start\s*=.*$', 'auto_start       = false'
-    # `[keys]` 는 strict 다 — 사용자 config 가 이 브랜치보다 오래됐으면 `open_search` 가 없어서
+    # `[keys]` 는 strict 다 — 사용자 config 가 이 브랜치보다 오래됐으면 `find` 가 없어서
     # 앱이 **fatal 다이얼로그**로 끝난다 (#655). 그 다이얼로그는 창이라 하네스가 그것을 잡아
     # 엉뚱한 것을 잰다 (2026-09-16 첫 회차에서 580x573 짜리를 검색바로 읽을 뻔했다).
-    if ($txt -notmatch '(?m)^\s*open_search\s*=') {
-        $txt = $txt -replace '(?m)^(\[keys\]\s*)$', "`$1`r`nopen_search         = [`"ctrl+shift+f`"]"
-        "  config_0 에 open_search 가 없어 넣었다 (#655)"
+    if ($txt -notmatch '(?m)^\s*find\s*=') {
+        $txt = $txt -replace '(?m)^(\[keys\]\s*)$', "`$1`r`nfind         = [`"ctrl+shift+f`"]"
+        "  config_0 에 find 가 없어 넣었다 (#655)"
     }
     [IO.File]::WriteAllText($Cfg9, $txt, (New-Object System.Text.UTF8Encoding $false))
     $madeCfg = $true

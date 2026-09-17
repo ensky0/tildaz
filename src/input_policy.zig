@@ -72,7 +72,7 @@ pub const Shortcut = enum {
     show_about,
     open_config,
     open_log,
-    copy_selection,
+    copy,
     dump_perf,
     toggle_visibility,
     fullscreen,
@@ -101,7 +101,7 @@ pub const Shortcut = enum {
     /// #646 — 버퍼 안 검색바를 연다. 상태를 바꾸므로 (키보드 포커스가 터미널에서 바로 옮겨간다)
     /// 다른 상태 변경 단축키와 같이 preedit 을 먼저 commit 한다 — 조합 중이던 자모가 검색어로
     /// 흘러 들어가면 안 된다.
-    open_search,
+    find,
 };
 
 /// 진행 중 입력(terminal preedit)을 어떻게 처리할지.
@@ -139,12 +139,12 @@ pub const Disposition = struct {
 pub fn resolve(input: Input, state: State) Disposition {
     switch (input) {
         // 전역 단축키:
-        //   - copy_selection / dump_perf 는 read-only(클립보드 읽기 / 로그 덤프).
+        //   - copy / dump_perf 는 read-only(클립보드 읽기 / 로그 덤프).
         //     터미널 preedit 중에는 자모를 PTY 로 flush 해 보존(§5.1), 그 외엔
         //     leave (no-op commit 불필요).
         //   - 그 외 단축키는 focus-loss 로 preedit 확정(commit) 후 실행.
         .shortcut => |sc| {
-            const read_only = sc == .copy_selection or sc == .dump_perf;
+            const read_only = sc == .copy or sc == .dump_perf;
             if (read_only) {
                 if (state.terminal_preedit_active)
                     return .{ .pending = .commit, .target = .run_action };
@@ -210,10 +210,10 @@ test "SPEC §4.1 — preedit 중 action 단축키는 commit 후 실행" {
 
 test "#296 — read-only 단축키(copy/perf)는 preedit 자모를 flush 해 보존" {
     // 상태 없을 때는 편집 아니니 leave (no-op commit 불필요).
-    try expectDisp(.{ .shortcut = .copy_selection }, idle, .leave, .run_action);
+    try expectDisp(.{ .shortcut = .copy }, idle, .leave, .run_action);
     try expectDisp(.{ .shortcut = .dump_perf }, idle, .leave, .run_action);
     // 터미널 preedit 중에는 자모 보존 위해 flush(commit) 후 실행(§5.1).
-    try expectDisp(.{ .shortcut = .copy_selection }, preedit, .commit, .run_action);
+    try expectDisp(.{ .shortcut = .copy }, preedit, .commit, .run_action);
     try expectDisp(.{ .shortcut = .dump_perf }, preedit, .commit, .run_action);
 }
 
@@ -263,12 +263,12 @@ test "#646 — 검색 중에도 단축키는 그대로 실행된다 (pane 이동
     // 사용자 결정 (2026-09-11): 검색바에 포커스가 있어도 pane 을 옮길 수 있어야 한다.
     // 검색바는 단축키로 닫히지 않으므로 여기서 `commit` 은 *조합 자모를 입력칸에
     // 확정* 하라는 뜻이다 — 탭 이름을 확정시키던 rename 의 `commit` 과 다르다.
-    for ([_]Shortcut{ .focus_pane, .split, .next_tab, .new_tab, .zoom_pane, .open_search }) |sc| {
+    for ([_]Shortcut{ .focus_pane, .split, .next_tab, .new_tab, .zoom_pane, .find }) |sc| {
         try expectDisp(.{ .shortcut = sc }, searching, .commit, .run_action);
     }
 }
 
 test "#646 — 검색 중 copy 는 입력칸을 건드리지 않는다" {
-    try expectDisp(.{ .shortcut = .copy_selection }, searching, .leave, .run_action);
+    try expectDisp(.{ .shortcut = .copy }, searching, .leave, .run_action);
     try expectDisp(.{ .shortcut = .dump_perf }, searching, .leave, .run_action);
 }

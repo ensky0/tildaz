@@ -47,7 +47,7 @@ pub const Shortcut = union(enum) {
     switch_tab: usize,
     next_tab: void,
     prev_tab: void,
-    copy_selection: void,
+    copy: void,
     toggle_visibility: void,
     /// false = monitor fullscreen, true = work-area fullscreen.
     fullscreen: bool,
@@ -60,7 +60,7 @@ pub const Shortcut = union(enum) {
     /// #544 — 활성 pane 하나 닫기. `close_active_tab` 은 탭 통째로다.
     close_pane: void,
     /// #646 — 활성 pane 의 검색바를 연다.
-    open_search: void,
+    find: void,
 };
 
 pub const KeyInput = enum {

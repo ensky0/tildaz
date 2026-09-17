@@ -879,8 +879,8 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
 
     // Ctrl+Shift+* → shortcut / paste. **대문자 keysym 으로도 잡혀야 한다** — Shift 가
     // 눌려 있으므로 실제로 도착하는 것은 대문자다.
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy_selection } }), C(b, xkb_key_c_lower, true, true, false));
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy_selection } }), C(b, xkb_key_c_upper, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy } }), C(b, xkb_key_c_lower, true, true, false));
+    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy } }), C(b, xkb_key_c_upper, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_lower, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_upper, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .new_tab } }), C(b, xkb_key_t_lower, true, true, false));
@@ -6350,7 +6350,7 @@ const Client = struct {
     /// 종료 — `tab_actions.closeActivePane` 이 정책을 든다). 셸에 `exit` 를 치는 것과 결과가
     /// 같다 (`closeTabByPtr` 와 같은 규칙). `handleCloseTab` 은 탭 통째로다.
     /// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않는다.
-    fn handleOpenSearch(self: *Client) void {
+    fn handleFind(self: *Client) void {
         const session = &(self.session orelse return);
         const tab = session.activeTab() orelse return;
         tab.search.open();
@@ -7459,7 +7459,7 @@ const Client = struct {
     /// 여기서는 그것만 보고 실행한다.
     fn runShortcut(self: *Client, shortcut: input_policy.Shortcut, tab_index: ?usize, direction: ?pane_layout.Direction) void {
         switch (shortcut) {
-            .copy_selection => self.copyActiveSelection(),
+            .copy => self.copyActiveSelection(),
             .new_tab => self.handleNewTab(),
             .close_tab => self.handleCloseTab(),
             .next_tab => self.handleNextTab(),
@@ -7506,7 +7506,7 @@ const Client = struct {
             .zoom_pane => self.handleZoomPane(),
             // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
             .close_pane => self.handleClosePane(),
-            .open_search => self.handleOpenSearch(),
+            .find => self.handleFind(),
         }
     }
 
@@ -7521,10 +7521,10 @@ const Client = struct {
             .split_right => self.handleSplit(.right),
             .split_down => self.handleSplit(.down),
             .close_active_tab => self.handleCloseTab(),
-            .copy_selection => self.copyActiveSelection(),
+            .copy => self.copyActiveSelection(),
             .paste => self.requestPaste(),
             // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-            .find => self.handleOpenSearch(),
+            .find => self.handleFind(),
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),

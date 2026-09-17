@@ -727,7 +727,7 @@ Windows 실측).
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 검색 열기 | Ctrl+Shift+F (`open_search`) | Cmd+F | Ctrl+Shift+F | ✅ | ✅ | ✅ |
+| 검색 열기 | Ctrl+Shift+F (`find`) | Cmd+F | Ctrl+Shift+F | ✅ | ✅ | ✅ |
 | 검색 열기 (메뉴) | `…` → `Find` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 다음 매치 (아래로) | Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 이전 매치 (위로) | Shift+Enter | 동일 | 동일 | ✅ | ✅ | ✅ |
@@ -918,7 +918,7 @@ caret 은 1 px 세로선이고 명령을 치려는 순간 시선은 프롬프트
 그때 결함 — #282 A1·A3·A4·A5·A6 — 을 낳은 것은 축의 존재가 아니라 **host 3 벌로 흩어진 판정**
 이었으므로, 판정은 `resolve` 한 곳에 두고 키의 *의미* 는 그 아래 `search_input.zig` 에 둔다.)
 
-terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 클릭 / 상태 변경 단축키 / F1 hide / quit) 가 발생해도 동일 동작 = **commit** (자모를 PTY 로 flush — 사용자 입력 손실 회피). 예외 둘: **Ctrl+C** 는 discard (line abort, §5.1), **read-only 단축키(copy_selection / dump_perf)** 는 preedit 을 유지하되 자모 보존이 필요한 terminal preedit 은 flush 후 실행한다.
+terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 클릭 / 상태 변경 단축키 / F1 hide / quit) 가 발생해도 동일 동작 = **commit** (자모를 PTY 로 flush — 사용자 입력 손실 회피). 예외 둘: **Ctrl+C** 는 discard (line abort, §5.1), **read-only 단축키(copy / dump_perf)** 는 preedit 을 유지하되 자모 보존이 필요한 terminal preedit 은 flush 후 실행한다.
 
 (탭 inline rename 과 그 focus_loss commit 표는 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — 과거 표는 그 이슈와 git 이력 참조.)
 

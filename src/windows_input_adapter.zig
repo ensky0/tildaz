@@ -68,7 +68,7 @@ fn expectResolution(
 test "Windows adapter — terminal preedit shortcut은 IMM complete 뒤 action" {
     const terminal = Snapshot{ .ime_preedit_len = 3 };
     try expectResolution(.{ .shortcut = .new_tab }, terminal, .commit, .run_action, .complete_ime);
-    try expectResolution(.{ .shortcut = .copy_selection }, terminal, .commit, .run_action, .complete_ime);
+    try expectResolution(.{ .shortcut = .copy }, terminal, .commit, .run_action, .complete_ime);
 }
 
 test "Windows adapter — paste는 IMM complete 뒤 PTY(#340)" {
@@ -83,7 +83,7 @@ test "Windows adapter — Ctrl+C는 terminal preedit cancel" {
 test "Windows adapter — deferred result도 commit/discard 대상 preedit이다" {
     const deferred = Snapshot{ .ime_preedit_len = 0, .ime_result_deferred = true };
     try expectResolution(.{ .shortcut = .new_tab }, deferred, .commit, .run_action, .complete_ime);
-    try expectResolution(.{ .shortcut = .copy_selection }, deferred, .commit, .run_action, .complete_ime);
+    try expectResolution(.{ .shortcut = .copy }, deferred, .commit, .run_action, .complete_ime);
     try expectResolution(.interrupt, deferred, .discard, .pty, .cancel_ime);
 }
 
