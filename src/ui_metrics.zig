@@ -512,6 +512,32 @@ pub const DIALOG_PREFERRED_WIDTH_PT: u32 = 580;
 /// 긴 절대경로에서도 screen 전체 폭을 차지하지 않게 하는 logical 최대 폭.
 pub const DIALOG_MAX_WIDTH_PT: u32 = 960;
 pub const DIALOG_SCROLLBAR_GAP_PT: u32 = 8;
+/// #655 — 모달 안내의 **본문** 이 화면에서 차지할 수 있는 최대 비율. 넘치면 스크롤한다
+/// (목록은 하나도 잃지 않는다). **모달 경고창은 화면을 덮는 물건이 아니다** — 업그레이드
+/// 한 번에 45 줄이 뜨는데 창이 화면을 다 먹으면 뒤에 있는 config 와 대조할 수가 없다.
+///
+/// 이 값이 **본문** 기준인 것이 중요하다. 창 전체를 이 비율로 자르면 제목 · 버튼 · 아이콘
+/// 같은 고정 chrome 이 본문을 더 밀어내서, 짧은 목록에서도 스크롤이 생긴다.
+///
+/// 세 host 가 같은 값을 쓴다 — macOS 는 `f64` 비율로, Linux · Windows 는 아래 정수
+/// 헬퍼로 (그쪽 레이아웃이 전부 physical px 정수라서).
+pub const DIALOG_BODY_MAX_SCREEN_PERCENT: u32 = 50;
+
+/// 화면 높이에서 본문 상한 px. 정수 레이아웃 경로 (Linux · Windows) 가 쓴다.
+/// `screen_h_px` 가 0 이하면 상한을 두지 않는다 (화면 크기를 아직 모르는 경로).
+pub fn dialogBodyMaxHeightPx(screen_h_px: i32) i32 {
+    if (screen_h_px <= 0) return 0;
+    return @max(1, @divTrunc(screen_h_px * @as(i32, @intCast(DIALOG_BODY_MAX_SCREEN_PERCENT)), 100));
+}
+
+test "dialog body cap is half the screen and never zero" {
+    try std.testing.expectEqual(@as(i32, 500), dialogBodyMaxHeightPx(1000));
+    try std.testing.expectEqual(@as(i32, 562), dialogBodyMaxHeightPx(1125));
+    // 상한이 없다는 뜻의 0 은 그대로 돌려준다 — 호출측이 "자르지 않음" 으로 읽는다.
+    try std.testing.expectEqual(@as(i32, 0), dialogBodyMaxHeightPx(0));
+    // 아주 작은 화면에서도 1 px 아래로 내려가지 않는다 (0 은 "상한 없음" 과 겹친다).
+    try std.testing.expectEqual(@as(i32, 1), dialogBodyMaxHeightPx(1));
+}
 pub const TAB_WIDTH_PT: u32 = 150;
 pub const TAB_PADDING_PT: u32 = 6;
 /// 컨트롤 hover 박스의 네 방향 inset(2pt)과 탭 제목 x offset 의 근원 gap.

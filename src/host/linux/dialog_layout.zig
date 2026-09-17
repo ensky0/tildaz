@@ -161,7 +161,8 @@ pub fn compute(
     return computeWithinSurface(title, message, kind, metrics, body_measure, title_measure, .{
         .w = @max(1, viewport.w - metrics.viewport_margin * 2),
         .h = @max(1, viewport.h - metrics.viewport_margin * 2),
-    });
+        // #655 — 본문 상한은 **화면** 기준이다. 여기서만 건다.
+    }, ui_metrics.dialogBodyMaxHeightPx(viewport.h));
 }
 
 /// compositor가 요청과 다른 최종 surface 크기를 configure한 경우의 재계산.
@@ -176,10 +177,13 @@ pub fn computeForSurface(
     title_measure: Measure,
     surface: Size,
 ) Layout {
+    // #655 — 여기서는 본문 상한을 **다시 걸지 않는다** (0 = 상한 없음). `surface` 는
+    // compositor 가 확정한 크기라 `compute` 에서 이미 상한이 반영돼 있고, 한 번 더 걸면
+    // configure 를 받을 때마다 본문이 절반씩 줄어든다.
     return computeWithinSurface(title, message, kind, metrics, body_measure, title_measure, .{
         .w = @max(1, surface.w),
         .h = @max(1, surface.h),
-    });
+    }, 0);
 }
 
 fn computeWithinSurface(
@@ -190,6 +194,8 @@ fn computeWithinSurface(
     body_measure: Measure,
     title_measure: Measure,
     available_surface: Size,
+    /// #655 — 본문 (메시지 행) 이 쓸 수 있는 최대 높이. `0` 이면 상한 없음.
+    body_max_h: i32,
 ) Layout {
     std.debug.assert(metrics.body_cell_h > 0);
     std.debug.assert(metrics.title_cell_h > 0);
@@ -246,7 +252,11 @@ fn computeWithinSurface(
     // viewport를 만든다. scrollbar 공간을 먼저 제외하고 다시 wrap해야 측정 행
     // 수와 실제 그리기 행 수가 정확히 같다. prompt input과 button은 fixed_h에
     // 포함되어 항상 viewport 밖에 고정된다.
-    if (fixed_h + rows_h + icon_h > max_surface.h) {
+    //
+    // #655 — **본문 상한을 넘을 때도** 같은 길로 간다. 그 상한이 없으면 목록이 길수록
+    // 창이 화면 높이까지 자라서 (실측 955/1000) 뒤의 config 와 대조할 수가 없었다.
+    const body_capped = body_max_h > 0 and rows_h > body_max_h;
+    if (fixed_h + rows_h + icon_h > max_surface.h or body_capped) {
         const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
         const scroll_content_room_w = @max(
             ref_adv,
@@ -255,7 +265,8 @@ fn computeWithinSurface(
         wrap_width = @min(@max(natural_width, min_width), scroll_content_room_w);
         measured = measureMessage(message, wrap_width, body_measure);
         rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-        const row_room = max_surface.h - fixed_h - icon_h;
+        var row_room = max_surface.h - fixed_h - icon_h;
+        if (body_max_h > 0) row_room = @min(row_room, body_max_h);
         visible_message_rows = @min(
             measured.rows,
             @as(usize, @intCast(@max(1, @divTrunc(row_room, metrics.body_cell_h)))),

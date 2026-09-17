@@ -563,7 +563,11 @@ fn dialogBodyNeedsScroller(natural_h: f64, maximum_h: f64) bool {
 ///
 /// 모달 경고창은 화면을 덮는 물건이 아니다. 넘치면 **잘라서 스크롤**하는 것이 맞고,
 /// 그래야 목록을 하나도 잃지 않으면서 창이 읽을 만한 크기로 남는다.
-const dialog_body_max_screen_ratio: f64 = 0.5;
+/// 값은 [`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT`](../ui_metrics.zig) 한 곳에 있다 —
+/// Linux · Windows 도 같은 규칙을 쓰므로 세 host 가 갈리면 안 된다 (#655 Linux 회차에서
+/// 이 상한이 macOS 에만 있어 Linux 가 화면의 95.5 % 를 덮고 있던 것이 드러났다).
+const dialog_body_max_screen_ratio: f64 =
+    @as(f64, @floatFromInt(ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT)) / 100.0;
 
 fn dialogBodyMaxHeight(visible_frame_h: f64, base_alert_h: f64, reserved_h: f64) f64 {
     const remaining = visible_frame_h - base_alert_h - reserved_h - 32.0;

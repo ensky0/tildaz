@@ -787,7 +787,14 @@ fn scrollLayout(
     const button_w = scaled(96, dpi);
     const bottom = scaled(20, dpi);
     const max_client_h = dialogMaxClientHeight(dpi, work, frame);
-    const max_body_h = @max(1, max_client_h - body_y - gap - button_h - bottom);
+    // #655 — 본문은 화면의 절반을 넘지 않는다. 넘치면 EDIT 이 스크롤하므로 목록은
+    // 하나도 잃지 않는다. 그 상한이 없으면 항목이 늘수록 창이 work area 높이까지
+    // 자라서 뒤에 있는 config 와 대조할 수가 없다 (Linux 실측 955/1000 — #655 회차).
+    // 상한은 **본문** 기준이다 — 창 전체를 자르면 고정 chrome 이 본문을 더 밀어낸다.
+    const max_body_h = @min(
+        @max(1, max_client_h - body_y - gap - button_h - bottom),
+        ui_metrics.dialogBodyMaxHeightPx(work.bottom - work.top),
+    );
 
     // preferred 폭에서 고정 chrome 까지 합친 자연 높이가 screen 을 넘을 때만 maximum
     // 폭으로 확장해 다시 wrap 한다.
