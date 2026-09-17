@@ -2010,6 +2010,19 @@ fn setMainWindowLevel(level: c_int) void {
     setLevel(g_window, objc.sel("setLevel:"), level);
 }
 
+/// 새로 뜨는 앱 (config / log 를 여는 편집기, 브라우저) 이 **우리 위로 오게** 잠시 비켜
+/// 준다. 다음 `showWindow` 가 popup level 로 되돌린다 (거기 `setLevel:` 이 있다).
+///
+/// #655 — Windows 는 `Window.yieldTopmostUntilNextShow` 로 예전부터 하고 있었고
+/// (*"시연 중 발견 — editor 가 우리 창 뒤로 가려져 안 보였던 사고"*), **macOS 에는 없었다.**
+/// 우리 창은 `NSPopUpMenuWindowLevel` (101) 이라 편집기가 뒤에 열려 사용자 눈에 띄지 않는다.
+/// 메뉴의 `Open Config` 도 같은 증상이었는데, config 안내의 `Open Config` 버튼이 그것을
+/// 드러냈다 — 버튼을 눌렀는데 아무 일도 안 일어난 것처럼 보였다.
+fn yieldTopmostUntilNextShow() void {
+    const NSNormalWindowLevel: c_int = 0;
+    setMainWindowLevel(NSNormalWindowLevel);
+}
+
 fn setPopupWindowLevel() void {
     const NSPopUpMenuWindowLevel: c_int = 101;
     setMainWindowLevel(NSPopUpMenuWindowLevel);
@@ -3395,17 +3408,25 @@ fn executeCommandMenu(command: command_menu.Command) void {
         // 해제, 아니면 monitor 진입. 키보드의 self-symmetric(들어간 키로만
         // 나옴) 정책은 그대로 — workarea 상태에서 메뉴가 no-op 이던 문제.
         .fullscreen => toggleFullscreenMode(if (g_fullscreen_mode != .none) g_fullscreen_mode else .monitor),
+        // 셋 다 **바깥 앱을 띄운다** — 먼저 비켜 주지 않으면 우리 창 뒤에 열린다
+        // (`yieldTopmostUntilNextShow`). Windows `app_controller.zig` 의 같은 세 갈래와
+        // 짝이 맞는다.
         .open_config => {
             const allocator = g_gpa.allocator();
             const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
             defer allocator.free(path);
+            yieldTopmostUntilNextShow();
             @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
         },
         .open_log => {
             const path = log.filePath() orelse return;
+            yieldTopmostUntilNextShow();
             @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), path);
         },
-        .keyboard_shortcuts => @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url),
+        .keyboard_shortcuts => {
+            yieldTopmostUntilNextShow();
+            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url);
+        },
         .about => about.showAboutDialog(g_rt),
     }
     requestRender();
@@ -4552,7 +4573,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
     // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
     // 멈추면 안 되므로 로그로만 남긴다.
-    config.showConfigNotice(rt, g_gpa.allocator(), g_run_opts.isStressRun());
+    config.showConfigNotice(rt, g_gpa.allocator(), g_run_opts.isStressRun(), yieldTopmostUntilNextShow);
 
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);

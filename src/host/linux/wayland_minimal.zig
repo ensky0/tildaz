@@ -1278,13 +1278,9 @@ const Client = struct {
     /// #655 — config 를 고쳐서 띄웠다는 안내가 밀려 있는가. 문구 자체는 `config.zig` 가
     /// 들고 있어 (`pendingConfigNotice`) 여기는 한 번만 부르게 하는 빗장이다.
     pending_config_repair: bool = false,
-    /// #655 — 안내 오버레이에서 **행동 버튼을 눌렀는가.**
-    ///
-    /// `pending_confirm_result` 를 뒤집어 쓰지 않는 이유가 이 필드의 존재 이유다. 그 값의
-    /// 기본은 `false` (Cancel) 이고 — Esc · 창 닫기 · `SIGTERM` · 펌프 실패가 모두 그리로
-    /// 떨어진다 — 뒤집으면 **비정상 종료가 곧 행동**이 된다. 사용자가 창을 닫았는데 편집기가
-    /// 뜨는 식이다. 그래서 행동은 *눌렀을 때만* 참이 되는 자기 플래그를 갖는다.
-    notice_action_taken: bool = false,
+    /// #655 — 안내 오버레이의 Cancel 자리 버튼이 할 일. `null` 이면 그 자리는 평소대로
+    /// 창을 닫는 취소다. **누르면 실행만 하고 창은 남는다.**
+    notice_inline_action: ?*const fn () void = null,
     /// #496 1-a — 라벨 binding 이 현재 keymap 으로 **닿지 않을 때** 쓸 대체 위치.
     /// `config.key_bindings` 와 같은 인덱스다. keymap 이 바뀔 때마다 다시 계산한다
     /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
@@ -7880,10 +7876,15 @@ const Client = struct {
                     if (self.dialog.kind == .prompt and self.pending_prompt_result == null) return;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
+                    // #655 — 안내 모드면 이 자리가 취소가 아니라 **행동**이고, 창을
+                    // **닫지 않는다**. 사용자는 목록을 보면서 파일을 고친다.
+                    if (self.notice_inline_action) |inline_action| {
+                        log.appendLineVerbose("dialog", "notice action hit — keeping the dialog open", .{});
+                        inline_action();
+                        return;
+                    }
                     log.appendLineVerbose("dialog", "Cancel hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
-                    // #655 — 안내 모드면 이 자리가 취소가 아니라 **행동**이다.
-                    if (self.dialog.secondary_len > 0) self.notice_action_taken = true;
                     if (self.dialog.kind == .prompt) self.pending_prompt_result = false;
                     self.requestDismissDialog();
                 } else {
@@ -10657,7 +10658,11 @@ const Client = struct {
         // 안내가 한 번도 닿지 않는다 (#501 이 고친 바로 그 구멍이다).
         if (self.pending_config_repair) {
             self.pending_config_repair = false;
-            config_mod.showConfigNotice(self.rt, self.allocator, self.run_opts.isStressRun());
+            // Linux 는 아직 비켜 줄 방법이 없다 — 메인 surface 가 layer-shell `top` 이면
+            // 편집기가 뒤에 열린다. `set_layer` 는 version 2 라 환경을 가려야 하고,
+            // xdg_toplevel fallback 에서는 애초에 항상-위가 아니다. #655 의 Linux 검증에서
+            // 실제로 가려지는지 확인한 뒤 정한다.
+            config_mod.showConfigNotice(self.rt, self.allocator, self.run_opts.isStressRun(), null);
         }
     }
 
@@ -10701,18 +10706,17 @@ const Client = struct {
         return self.runConfirmDialog(.confirm, title, message);
     }
 
-    /// #655 — 안내 + 행동. `runConfirmDialog` 를 그대로 타되 두 번째 버튼의 글자만
-    /// 갈아 끼우고, 결과는 그 함수의 반환값이 아니라 `notice_action_taken` 에서 읽는다
-    /// (그 필드의 주석이 이유를 적는다).
-    fn dialogShowNoticeActionCb(ctx: *anyopaque, title: []const u8, message: []const u8, action_label: []const u8) bool {
+    /// #655 — 안내 + 그 자리에서 할 수 있는 일. `runConfirmDialog` 를 그대로 타되 두 번째
+    /// 버튼의 글자를 갈아 끼우고, 그 버튼이 **창을 닫지 않게** 한다.
+    fn dialogShowNoticeActionCb(ctx: *anyopaque, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
         const self: *Client = @ptrCast(@alignCast(ctx));
         const n = @min(action_label.len, self.dialog.secondary_buf.len);
         @memcpy(self.dialog.secondary_buf[0..n], action_label[0..n]);
         self.dialog.secondary_len = n;
         defer self.dialog.secondary_len = 0;
-        self.notice_action_taken = false;
+        self.notice_inline_action = on_action;
+        defer self.notice_inline_action = null;
         _ = self.runConfirmDialog(.confirm, title, message);
-        return self.notice_action_taken;
     }
 
     /// [#521](https://github.com/ensky0/tildaz/issues/521) — 다이얼로그 펌프가 `SIGTERM` 을

@@ -688,9 +688,9 @@ const ScrollContext = struct {
 
 var scroll_ctx: ?ScrollContext = null;
 
-/// #655 — 안내 모드에서 행동 버튼을 눌렀는가. `showScrollableTextLabeled` 가 시작할 때
-/// 내리고, `IDCANCEL` 클릭만 올린다.
-var scroll_secondary_clicked: bool = false;
+/// #655 — 안내 모드에서 `IDCANCEL` 자리 버튼이 할 일. `null` 이면 그 버튼은 평소대로
+/// 창을 닫는 취소다.
+var scroll_inline_action: ?*const fn () void = null;
 
 fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.c) LRESULT {
     if (msg == WM_COMMAND) {
@@ -701,13 +701,14 @@ fn scrollWndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv
             return 0;
         }
         if (id == IDCANCEL) {
-            scroll_result = false;
-            // #655 — 안내 모드면 이 버튼이 취소가 아니라 **행동**이다. `scroll_result` 를
-            // 뒤집어 읽지 않는 이유는, 그 값의 기본이 `false` 라 창 닫기 · 메시지 루프
-            // 이탈이 모두 "행동" 이 되기 때문이다. 눌렀을 때만 참이 되는 자기 플래그를 둔다.
-            if (scroll_ctx) |c| {
-                if (c.secondary_label != null) scroll_secondary_clicked = true;
+            // #655 — 안내 모드면 이 버튼이 취소가 아니라 **행동**이고, 창을 **닫지 않는다**.
+            // 사용자는 목록을 보면서 파일을 고친다 — 편집기를 띄우자마자 무엇을 고쳐야
+            // 하는지가 사라지면 안 된다.
+            if (scroll_inline_action) |run| {
+                run();
+                return 0;
             }
+            scroll_result = false;
             scroll_done = true;
             return 0;
         }
@@ -1263,7 +1264,6 @@ fn showScrollableTextLabeled(title: []const u8, body: []const u8, confirm: bool,
     _ = SetFocus(ctx.controls.body);
     scroll_done = false;
     scroll_result = false;
-    scroll_secondary_clicked = false;
     var msg: MSG = undefined;
     while (!scroll_done and GetMessageW(&msg, null, 0, 0) > 0) {
         if ((msg.message == WM_KEYDOWN or msg.message == WM_SYSKEYDOWN) and
@@ -1305,15 +1305,13 @@ pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
 /// `MessageBoxW` fallback 은 **행동 버튼을 내지 못한다** — `MB_OKCANCEL` 의 글자는
 /// OS 가 정하고 바꿀 방법이 없다. 그 경우 안내만 내고 false 를 준다: 안내를 잃는 것보다
 /// 행동 하나를 잃는 쪽이 낫고, 그 경로는 커스텀 창을 못 띄운 예외 상황이다.
-pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
+pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
     _ = rt;
-    if (showScrollableTextLabeled(title, message, true, action_label)) |_| {
-        // 행동은 **누른 경우에만** 참이다 — `scroll_secondary_clicked` 의 주석 참고.
-        return scroll_secondary_clicked;
-    }
+    scroll_inline_action = on_action;
+    defer scroll_inline_action = null;
+    if (showScrollableTextLabeled(title, message, true, action_label)) |_| return;
     log.appendLine("dialog", "custom window unavailable — notice shown without its action button", .{});
     _ = messageBox(title, message, MB_OK | MB_TOPMOST);
-    return false;
 }
 
 pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {

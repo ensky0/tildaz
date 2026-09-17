@@ -187,17 +187,23 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     return impl.showConfirm(rt, title, message);
 }
 
-/// #655 — **안내 + 한 가지 행동.** `showConfirm` 과 모양은 같지만 뜻이 다르다:
-/// 취소할 일이 없고, 어느 버튼을 눌러도 앱은 그대로 진행한다. 두 번째 버튼은
-/// 사용자가 *지금 바로* 할 수 있는 일을 준다 (config 안내라면 그 파일 열기).
+/// #655 — **안내 + 그 자리에서 할 수 있는 일.** `showConfirm` 과 모양은 같지만 뜻이
+/// 다르다: 취소할 일이 없고, **행동 버튼을 눌러도 창이 닫히지 않는다.**
+///
+/// 닫지 않는 것이 핵심이다. config 안내가 이것을 쓰는데, 사용자는 **목록을 보면서**
+/// 파일을 고친다 — 편집기를 띄우자마자 무엇을 고쳐야 하는지가 사라지면 안 된다.
+/// 창은 `확인` · Esc · 창 닫기로만 닫힌다.
 ///
 /// primary (`확인`) 가 오른쪽 · Enter, secondary (`action_label`) 가 왼쪽이다 —
-/// `showConfirm` 과 같은 자리 배치라 사용자가 다시 배울 것이 없다. Esc 는 primary 로
-/// 간다: 창을 닫아 버리는 몸짓이 예상 못 한 행동을 일으키면 안 된다.
-///
-/// 반환: 행동 버튼을 눌렀으면 true, `확인` · Esc · 닫기면 false.
-pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) bool {
-    return impl.showNoticeWithAction(rt, title, message, action_label);
+/// `showConfirm` 과 같은 자리 배치라 사용자가 다시 배울 것이 없다.
+pub fn showNoticeWithAction(
+    rt: Runtime,
+    title: []const u8,
+    message: []const u8,
+    action_label: []const u8,
+    on_action: *const fn () void,
+) void {
+    impl.showNoticeWithAction(rt, title, message, action_label, on_action);
 }
 
 /// 실제 key 조합을 캡처하는 modal dialog. Cancel / 닫기면 null, Create면

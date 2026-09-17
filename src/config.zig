@@ -2817,7 +2817,7 @@ pub const Config = struct {
         var default_parsed = default_parser.parseString(default_doc) catch unreachable;
         defer default_parsed.deinit();
         const default_root: toml.Value = .{ .table = &default_parsed.value };
-        repairStructure(root, default_root, "(top-level)");
+        repairStructure(root, default_root, "(top-level)", default_doc);
 
         // #533 — input section. macOS 만 값을 쓰지만 세 platform 이 같은 파일을
         // 읽을 수 있어야 해서 어디서든 파싱한다 (`MacOptionAsAlt` 주석 참고).
@@ -3256,6 +3256,10 @@ pub fn configNoticeMessage(buf: []u8, n: ConfigNotice) []const u8 {
         w.writeAll("\n") catch {};
         w.writeAll(messages.config_notice_truncated_msg) catch {};
     }
+    // 목록 뒤에 **빠져나갈 길**을 둔다. 45 줄을 한 줄씩 고치는 것보다 파일을 버리는
+    // 쪽이 빠른 경우가 있는데, 그 길이 있다는 것을 모르면 고치거나 포기한다.
+    w.writeAll("\n\n") catch {};
+    w.writeAll(messages.config_notice_reset_hint) catch {};
     return w.buffered();
 }
 
@@ -3271,7 +3275,15 @@ const config_notice_message_capacity: usize = 4096;
 ///
 /// `quiet` 는 `-e` 로 명령을 실행하는 인스턴스다. 스크립트가 다이얼로그 앞에서 멈추면
 /// 안 되므로 로그로만 남긴다 — 로그에는 어차피 `appendNotice` 가 줄마다 이미 적었다.
-pub fn showConfigNotice(rt: Runtime, allocator: std.mem.Allocator, quiet: bool) void {
+/// `before_open` — 파일을 열기 **직전에** host 가 할 일. 우리 창이 항상-위라 그대로
+/// 열면 편집기가 뒤에 뜬다 (macOS `NSPopUpMenuWindowLevel` · Windows `WS_EX_TOPMOST`).
+/// host 마다 비키는 방법이 달라 (창 레벨 / `SetWindowPos`) 여기서 부르지 않고 넘겨받는다.
+pub fn showConfigNotice(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    quiet: bool,
+    before_open: ?*const fn () void,
+) void {
     const n = pendingConfigNotice() orelse return;
     var buf: [config_notice_message_capacity]u8 = undefined;
     const body = configNoticeMessage(&buf, n);
@@ -3283,17 +3295,31 @@ pub fn showConfigNotice(rt: Runtime, allocator: std.mem.Allocator, quiet: bool) 
 
     // 두 번째 버튼이 고칠 파일을 연다. 이 안내의 목적이 **사용자가 직접 고치게**
     // 만드는 것이라, 목록만 보여주고 파일은 알아서 찾으라고 하면 절반만 한 것이다.
-    if (!dialog.showNoticeWithAction(rt, messages.config_notice_title, body, messages.button_open_config)) {
-        log.appendLine("config", "notice dismissed without opening the file", .{});
-        return;
-    }
+    // 다이얼로그가 `Open Config` 를 **그 자리에서** 실행한다 (창은 남는다). Zig 의 fn
+    // 포인터는 closure 가 아니라 인자를 못 실으므로 모듈 전역에 걸어 둔다 — 다이얼로그가
+    // modal 이라 한 번에 하나만 산다.
+    notice_open_rt = rt;
+    notice_open_allocator = allocator;
+    notice_open_before = before_open;
+    defer notice_open_before = null;
+    dialog.showNoticeWithAction(rt, messages.config_notice_title, body, messages.button_open_config, openConfigFromNotice);
+}
+
+var notice_open_rt: Runtime = undefined;
+var notice_open_allocator: std.mem.Allocator = undefined;
+var notice_open_before: ?*const fn () void = null;
+
+/// 안내의 `Open Config` 가 눌렸을 때. **다이얼로그는 그대로 있다** — 사용자는 목록을
+/// 보면서 파일을 고친다.
+fn openConfigFromNotice() void {
     log.appendLine("config", "notice action: opening the config file", .{});
-    const path = paths.configPath(rt, allocator) catch |err| {
+    if (notice_open_before) |f| f();
+    const path = paths.configPath(notice_open_rt, notice_open_allocator) catch |err| {
         log.appendLine("config", "open config from notice failed: {s}", .{@errorName(err)});
         return;
     };
-    defer allocator.free(path);
-    system_open.openInDefaultApp(rt, allocator, path);
+    defer notice_open_allocator.free(path);
+    system_open.openInDefaultApp(notice_open_rt, notice_open_allocator, path);
 }
 
 /// Linux host 는 `*const Config` 를 들고 있어 위 함수의 "필드를 비운다" 를 할 수
@@ -3318,8 +3344,19 @@ pub fn showLoadNoticeText(rt: Runtime, notice: []const u8) void {
 /// 가 갈리는 것과 **같은 이유, 같은 모양**이다 (#501).
 pub fn showFatalNoticeIfAny(rt: Runtime) void {
     const notice = pendingFatalNotice() orelse return;
+
+    // #655 — **빠져나갈 길을 함께 적는다.** 여기는 고칠 안내 (`showConfigNotice`) 와 달리
+    // 한 버튼이고, 누르면 앱이 사라진다 (`showFatal` 이 `noreturn` 이다). `Open Config`
+    // 버튼을 달지 않는 이유가 그것이다 — 편집기를 띄운 직후 프로세스가 죽으면 무엇이
+    // 열렸는지 사용자가 알기 어렵고, 두 다이얼로그를 잇달아 띄우게 된다.
+    //
+    // 그래서 *행동* 대신 *길* 을 준다. 여기까지 오는 것은 TOML 구문이 깨진 경우라
+    // 어느 줄을 고치라고 짚어 줄 수조차 없고, 파일을 버리는 것이 사실상 유일한 길이다.
+    var buf: [config_notice_message_capacity]u8 = undefined;
+    const body = std.fmt.bufPrint(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
+
     // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
-    dialog.showFatal(rt, messages.config_error_title, notice);
+    dialog.showFatal(rt, messages.config_error_title, body);
 }
 
 /// #577 — config 오류로 시작을 거부할 때 그 사실을 나르는 error. 문구 자체는
@@ -3639,18 +3676,35 @@ fn resetFatalNoticeForTest() void {
 ///
 /// **해시맵을 돌면서 지우지 않는다.** 지울 키를 먼저 모아 두고 순회가 끝난 뒤 지운다 —
 /// `StringHashMap` 은 순회 중 수정이 안전하지 않다.
-fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8) void {
+fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != .table or def_tag != .table) return;
 
-    // ① 스키마에 있는데 파일에 없는 키 — 안내만. 순회 순서가 곧 안내의 차례다.
+    // ① 스키마에 있는데 파일에 없는 키 — 안내만.
+    //
+    // **차례가 기본 문서의 차례다.** `toml.Table` 은 `StringHashMap` 이라 순회가 해시
+    // 순서고, 그대로 쓰면 `fullscreen · switch_tab7 · split_down · switch_tab5 …` 처럼
+    // 무작위로 나온다. 사용자는 이 목록을 **파일과 한 줄씩 대조**하는데 (v0.9.2 → v0.9.3
+    // 업그레이드가 45 줄짜리였다) 순서가 섞이면 대조 자체가 안 된다. SPEC §7.3 이
+    // "스키마 순서대로" 라고 적은 것이 이 뜻이다.
+    var order_buf: [MAX_SCHEMA_KEYS][]const u8 = undefined;
+    const ordered = schemaKeyOrder(doc, ctx, &order_buf);
+    for (ordered) |key| {
+        if (def.table.get(key) == null) continue;
+        if (user.table.get(key) != null) continue;
+        var path_buf: [256]u8 = undefined;
+        noticeMissing(joinPath(&path_buf, ctx, key));
+    }
+    // 문서에서 못 찾은 키가 남아 있으면 (스키마와 문서가 갈린 경우) 빠뜨리지 않는다 —
+    // 차례는 잃어도 **안내를 잃지는 않는다**.
     var def_iter = def.table.iterator();
     while (def_iter.next()) |entry| {
-        if (user.table.get(entry.key_ptr.*) == null) {
-            var path_buf: [256]u8 = undefined;
-            noticeMissing(joinPath(&path_buf, ctx, entry.key_ptr.*));
-        }
+        const key = entry.key_ptr.*;
+        if (user.table.get(key) != null) continue;
+        if (containsKey(ordered, key)) continue;
+        var path_buf: [256]u8 = undefined;
+        noticeMissing(joinPath(&path_buf, ctx, key));
     }
 
     // ② 파일에 있는데 스키마에 없는 키 — 지우고 "지우세요" 로.
@@ -3706,12 +3760,51 @@ fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8) void {
                     continue;
                 }
             }
-            if (ut == .table) repairStructure(u_val, entry.value_ptr.*, path);
+            if (ut == .table) repairStructure(u_val, entry.value_ptr.*, path, doc);
         }
         // 순회 중 지우면 iterator 가 깨진다 — 다 훑은 뒤에 지운다.
         for (bad_buf[0..bad_n]) |key| _ = user.table.remove(key);
         if (bad_n < bad_buf.len) break;
     }
+}
+
+/// 한 섹션이 가질 수 있는 키 수의 상한. `[keys]` 가 38 개로 가장 크다.
+const MAX_SCHEMA_KEYS = 128;
+
+fn containsKey(list: []const []const u8, key: []const u8) bool {
+    for (list) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
+}
+
+/// 기본 문서에서 `section` 에 속한 키를 **적힌 차례대로** 뽑는다. 최상위는
+/// `"(top-level)"` — 첫 `[header]` 앞의 키들이다.
+///
+/// 값 트리가 아니라 **문서 본문**을 보는 이유: 파서가 주는 것은 해시맵이라 차례가
+/// 없다. 생성기가 적은 차례가 곧 사용자 파일의 차례이므로, 안내를 그 차례로 세우면
+/// 위에서 아래로 훑으며 고칠 수 있다.
+fn schemaKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const []const u8 {
+    const want_top = std.mem.eql(u8, section, "(top-level)");
+    var n: usize = 0;
+    var in_section = want_top;
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            const name = line[1..close];
+            in_section = !want_top and std.mem.eql(u8, name, section);
+            continue;
+        }
+        if (!in_section) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (key.len == 0) continue;
+        if (n == out.len) break;
+        out[n] = key;
+        n += 1;
+    }
+    return out[0..n];
 }
 
 /// `ctx.key` 를 만든다. 최상위면 `key` 그대로다.
@@ -4271,11 +4364,13 @@ test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" 
         .truncated = false,
     });
     // 사용자가 파일에서 할 일이 반대다 — 섞어 세우면 줄마다 어느 쪽인지 다시 읽어야 한다.
+    // 마지막 줄은 **빠져나갈 길**이다 — 고칠 것이 너무 많으면 파일을 버리는 쪽이 빠르다.
     try std.testing.expectEqualStrings(
         messages.config_notice_repaired_header ++ "\n" ++
             "  input -- missing, using the default\n" ++
             "\n" ++ messages.config_notice_removable_header ++ "\n" ++
-            "  bogus_key\n",
+            "  bogus_key\n" ++
+            "\n\n" ++ messages.config_notice_reset_hint,
         body,
     );
 }
@@ -4302,8 +4397,13 @@ test "#655 잘렸으면 본문이 그 사실을 말한다" {
         .truncated = true,
     });
     // 여기서 빠지면 사용자는 목록이 전부인 줄 알고 고친 뒤, 다음 실행에서 처음 보는
-    // 항목을 또 만난다.
-    try std.testing.expect(std.mem.endsWith(u8, body, messages.config_notice_truncated_msg));
+    // 항목을 또 만난다. 잘림 문구는 **목록의 끝**에 서고, 빠져나갈 길이 그 뒤에 온다 —
+    // 잘린 목록일수록 파일을 버리는 쪽이 빠르므로 순서가 이래야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_truncated_msg) != null);
+    try std.testing.expect(std.mem.endsWith(u8, body, messages.config_notice_reset_hint));
+    const cut = std.mem.indexOf(u8, body, messages.config_notice_truncated_msg).?;
+    const hint = std.mem.indexOf(u8, body, messages.config_notice_reset_hint).?;
+    try std.testing.expect(cut < hint);
 }
 
 test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 없다" {

@@ -558,6 +558,12 @@ pub const config_notice_unknown_format = "  {s}";
 pub const config_notice_used_default = "the default";
 /// 담을 자리를 넘겼을 때 마지막 줄. 조용히 자르지 않는다.
 pub const config_notice_truncated_msg = "  ... and more (see the log for the full list)";
+/// #655 — **빠져나갈 길**. 목록이 길면 (v0.9.2 → v0.9.3 업그레이드가 45 줄이었다) 한 줄씩
+/// 고치는 것보다 파일을 버리는 쪽이 빠르다. 그 길이 있다는 것을 모르면 사용자는 45 줄을
+/// 손으로 고치거나 포기한다. 남은 fatal 안내도 같은 줄을 쓴다 — 거기서는 이것이 **유일한**
+/// 길이다 (TOML 구문이 깨지면 고칠 자리를 짚어 줄 수조차 없다).
+pub const config_notice_reset_hint =
+    "Or delete the file: TildaZ creates a fresh one with the defaults on the next start.";
 /// 숫자를 문구로 못 옮겼을 때 (`bufPrint` 실패) `config_notice_clamped_format` 에 넣는 말.
 /// 값은 잃어도 "범위 밖이라 잘렸다" 는 사실은 남아야 한다.
 pub const config_notice_the_limit = "the limit";
