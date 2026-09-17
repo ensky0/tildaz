@@ -120,38 +120,50 @@ function Get-NoticeLines([string]$i = "$idx") {
     }
 }
 
+# TOML 본문을 손보는 helper 들. **python 을 쓰지 않는다** — Windows 에 python 이 없는 기기가
+# 있고 (`# 실행 환경` 의 머신 목록 중 i5-1240P 노트북), 있더라도 한 줄 `-c` 는 따옴표가 인자
+# 경계로 다시 읽히는 함정이 있다. 텍스트 편집은 .NET 정규식으로 충분하다.
+function Read-Toml([string]$path) {
+    # 앱이 쓴 파일은 LF 다. 혹시 CRLF 여도 인덱스 계산이 어긋나지 않게 통일한다.
+    return ([IO.File]::ReadAllText($path)) -replace "`r`n", "`n"
+}
+function Write-Toml([string]$path, [string]$text) {
+    [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
+}
+function Replace-Once([string]$text, [string]$pattern, [string]$repl) {
+    $re = New-Object System.Text.RegularExpressions.Regex `
+        -ArgumentList $pattern, ([System.Text.RegularExpressions.RegexOptions]::Multiline)
+    return $re.Replace($text, $repl, 1)
+}
+
 # 네 갈래를 한 파일에 모두 넣는다. 반환: "첫액션 둘째액션".
 function Set-BrokenConfig {
     $p = Get-Cfg $idx
-    $out = & python -c @"
-import sys, re
-p = r'''$p'''
-s = open(p, encoding='utf-8').read()
-i, j = s.index('\n[input]\n'), s.index('\n[keys]\n')
-s = s[:i] + s[j:]
-s = re.sub(r'^auto_start\s*=.*$', 'auto_start = \"yes\"', s, count=1, flags=re.M)
-s = re.sub(r'^width_percent\s*=.*$', 'width_percent = 1000.0', s, count=1, flags=re.M)
-s = re.sub(r'^theme\s*=.*$', 'theme = \"Nonesuch\"', s, count=1, flags=re.M)
-first_table = s.index('\n[')
-s = s[:first_table] + '\nbogus_key = 1\n' + s[first_table:]
-body = s[s.index('\n[keys]\n'):]
-m = re.search(r'^(\w+)\s*=\s*\[([^\]]*)\]', body, flags=re.M)
-first_action, first_keys = m.group(1), m.group(2)
-s = re.sub(r'^(\w+)(\s*=\s*\[)([^\]]*)(\])',
-           lambda mm: mm.group(0) if mm.group(1) != first_action
-           else f'{mm.group(1)}{mm.group(2)}{mm.group(3)}, \"ctrl+shift+nosuchkey\"{mm.group(4)}',
-           s, flags=re.M)
-actions = re.findall(r'^(\w+)\s*=\s*\[', s[s.index('\n[keys]\n'):], flags=re.M)
-second = actions[1]
-first_key = first_keys.split(',')[0].strip()
-s = re.sub(rf'^({second})(\s*=\s*\[)([^\]]*)(\])',
-           lambda mm: f'{mm.group(1)}{mm.group(2)}{mm.group(3)}, {first_key}{mm.group(4)}',
-           s, count=1, flags=re.M)
-s += '\n[nosuch_section]\nfoo = 1\nbar = 2\n'
-open(p, 'w', encoding='utf-8').write(s)
-print(first_action, second)
-"@
-    return $out.Trim()
+    $s = Read-Toml $p
+    # ① 통째로 빠진 섹션 — `[input]` 을 들어낸다.
+    $i = $s.IndexOf("`n[input]`n"); $j = $s.IndexOf("`n[keys]`n")
+    $s = $s.Substring(0, $i) + $s.Substring($j)
+    # ② 값이 틀린 것 — 타입 · 범위 · 모르는 이름.
+    $s = Replace-Once $s '^auto_start\s*=.*$' 'auto_start = "yes"'
+    $s = Replace-Once $s '^width_percent\s*=.*$' 'width_percent = 1000.0'
+    $s = Replace-Once $s '^theme\s*=.*$' 'theme = "Nonesuch"'
+    # ③ 모르는 키 (첫 테이블 앞 = 최상위).
+    $firstTable = $s.IndexOf("`n[")
+    $s = $s.Substring(0, $firstTable) + "`nbogus_key = 1`n" + $s.Substring($firstTable)
+    # ④ 읽을 수 없는 조합 하나 + 중복 조합 하나 — `[keys]` 의 첫 두 액션에 심는다.
+    $keysAt = $s.IndexOf("`n[keys]`n")
+    $body = $s.Substring($keysAt)
+    $actions = @([regex]::Matches($body, '(?m)^(\w+)\s*=\s*\[') | ForEach-Object { $_.Groups[1].Value })
+    $firstAction = $actions[0]
+    $second = $actions[1]
+    $firstKeys = ([regex]::Match($body, '(?m)^' + [regex]::Escape($firstAction) + '\s*=\s*\[([^\]]*)\]')).Groups[1].Value
+    $firstKey = ($firstKeys -split ',')[0].Trim()
+    $s = Replace-Once $s ('^(' + [regex]::Escape($firstAction) + '\s*=\s*\[)([^\]]*)(\])') '$1$2, "ctrl+shift+nosuchkey"$3'
+    $s = Replace-Once $s ('^(' + [regex]::Escape($second) + '\s*=\s*\[)([^\]]*)(\])') ('$1$2, ' + $firstKey + '$3')
+    # ⑤ 모르는 섹션.
+    $s += "`n[nosuch_section]`nfoo = 1`nbar = 2`n"
+    Write-Toml $p $s
+    return "$firstAction $second"
 }
 
 function Case-boots {
@@ -176,7 +188,9 @@ function Case-order {
     Reset-Env
     if (-not (New-Base $idx)) { Write-Result order FAIL '준비 실패'; return }
     $p = Get-Cfg $idx
-    & python -c "import sys; p=r'''$p'''; s=open(p,encoding='utf-8').read(); i=s.index('\n[keys]\n'); open(p,'w',encoding='utf-8').write(s[:i]+'\n[keys]\n')"
+    # `[keys]` 를 헤더만 남기고 비운다 — 액션이 전부 "없는 키" 가 되어 안내가 길게 나온다.
+    $s = Read-Toml $p
+    Write-Toml $p ($s.Substring(0, $s.IndexOf("`n[keys]`n")) + "`n[keys]`n")
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
     # 로그를 먼저 떠 둔다 — 아래에서 환경을 지우면 로그도 함께 사라진다.
@@ -185,18 +199,21 @@ function Case-order {
     $base = Join-Path $work 'order-base.toml'
     Reset-Env
     if (New-Base $idx) { Copy-Item (Get-Cfg $idx) $base -Force }
-    & python -c @"
-import sys, re
-base, log = r'''$base''', r'''$saved'''
-s = open(base, encoding='utf-8').read()
-body = s[s.index('\n[keys]\n') + len('\n[keys]\n'):]
-want = [m.group(1) for m in re.finditer(r'^(\w+)\s*=', body, flags=re.M)]
-got = [m.group(1) for m in re.finditer(r'keys\.(\w+) -- missing', open(log, encoding='utf-8').read())]
-if not want or not got: sys.exit(1)
-common = [k for k in want if k in got]
-sys.exit(0 if got[:len(common)] == common else 1)
-"@
-    if ($LASTEXITCODE -eq 0) { Write-Result order PASS '안내가 파일 차례대로다' }
+    # 기본 config 의 `[keys]` 차례 (want) 와 안내에 나온 차례 (got) 를 앞에서부터 맞춰 본다.
+    $ordered = $false
+    if ((Test-Path $base) -and (Test-Path $saved)) {
+        $bs = Read-Toml $base
+        $hdr = "`n[keys]`n"
+        $body = $bs.Substring($bs.IndexOf($hdr) + $hdr.Length)
+        $want = @([regex]::Matches($body, '(?m)^(\w+)\s*=') | ForEach-Object { $_.Groups[1].Value })
+        $got = @([regex]::Matches(([IO.File]::ReadAllText($saved)), 'keys\.(\w+) -- missing') | ForEach-Object { $_.Groups[1].Value })
+        if ($want.Count -gt 0 -and $got.Count -gt 0) {
+            $common = @($want | Where-Object { $got -contains $_ })
+            $head = @($got | Select-Object -First $common.Count)
+            $ordered = (($head -join ',') -eq ($common -join ','))
+        }
+    }
+    if ($ordered) { Write-Result order PASS '안내가 파일 차례대로다' }
     else { Write-Result order FAIL '안내 차례가 파일과 다르다 (해시 순서로 나오면 45 줄을 대조할 수 없다)' }
 }
 
@@ -264,7 +281,9 @@ function Case-font-missing {
     Reset-Env
     if (-not (New-Base $idx)) { Write-Result font-missing FAIL '준비 실패'; return }
     $p = Get-Cfg $idx
-    & python -c "import sys; p=r'''$p'''; s=open(p,encoding='utf-8').read(); i,j=s.index('\n[font]\n'),s.index('\n[input]\n'); open(p,'w',encoding='utf-8').write(s[:i]+s[j:])"
+    # `[font]` 섹션을 통째로 들어낸다 (`[input]` 직전까지).
+    $s = Read-Toml $p
+    Write-Toml $p ($s.Substring(0, $s.IndexOf("`n[font]`n")) + $s.Substring($s.IndexOf("`n[input]`n")))
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
     # 예전 코드는 `root.table.get("font").?` 로 **그 자리에서 패닉**했다.
@@ -312,17 +331,7 @@ function Case-hotkey {
     if (-not (New-Base $idx)) { Write-Result hotkey FAIL '준비 실패'; return }
     $taken = (Select-String -Path (Get-Cfg 0) -Pattern '^hotkey\s*=\s*"(.*)"').Matches[0].Groups[1].Value
     $p = Get-Cfg $idx
-    # **한 줄 `-c` 에 `\"` 를 쓰지 않는다.** PowerShell 5.1 이 네이티브 인자로 넘기며 그
-    # 따옴표를 인자 경계로 다시 읽어 python 코드가 잘린다 (`unterminated string literal`).
-    # 이 파일의 다른 자리처럼 here-string 으로 넘기고, 큰따옴표는 `chr(34)` 로 만든다.
-    & python -c @"
-import re
-p, taken = r'''$p''', r'''$taken'''
-q = chr(34)
-s = open(p, encoding='utf-8').read()
-open(p, 'w', encoding='utf-8').write(
-    re.sub(r'^hotkey\s*=.*$', 'hotkey = ' + q + taken + q, s, count=1, flags=re.M))
-"@
+    Write-Toml $p (Replace-Once (Read-Toml $p) '^hotkey\s*=.*$' ('hotkey = "' + $taken + '"'))
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
     # 죽지 않고 파생 기본값 F{N+1} 로 갈아탄다 (SPEC §7.3 의 유일한 예외 — 갈아탈
@@ -343,7 +352,11 @@ function Case-no-cap {
     # 넘기면 파일이 통째로 거부돼 `load failed` 로 빠져 이 회차가 재려던 것이 안 일어난다.
     # 150 x 200 자 ~ 30 KiB 로 상한 안에 들면서 옛 16 KiB 버퍼는 훌쩍 넘긴다.
     $p = Get-Cfg $idx
-    & python -c "p=r'''$p'''; f=open(p,'a',encoding='utf-8'); f.write(chr(10)); [f.write('k'*200+str(i)+' = 1'+chr(10)) for i in range(150)]; f.close()"
+    $pad = 'k' * 200
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("`n")
+    for ($k = 0; $k -lt 150; $k++) { [void]$sb.Append($pad + $k + " = 1`n") }
+    [IO.File]::AppendAllText($p, $sb.ToString(), (New-Object System.Text.UTF8Encoding $false))
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
     $log = Get-Log $idx
