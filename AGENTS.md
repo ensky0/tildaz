@@ -456,7 +456,7 @@ awk '/new_tab => &\.\{"cmd\+t"\}/,/^    \}/' src/config.zig            # macOS �
 awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux · Windows 기본값
 ```
 
-**액션을 더하면 config 스키마가 바뀌어요.** `[keys]` 는 strict 라 필수 키가 하나 늘고, 기존 `config_N.toml` 은 `missing required key "<액션>"` 으로 **부팅이 막혀요.** 그래서 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
+**액션을 더하면 config 스키마가 바뀌어요.** 기존 `config_N.toml` 에는 그 키가 없으니 **기본 바인딩으로 돌고 시작 안내에 한 줄이 뜹니다** ([#655](https://github.com/ensky0/tildaz/issues/655) 이전에는 `missing required key "<액션>"` 으로 **부팅이 막혔어요** — 원칙 5 가 그것을 뒤집었어요). 부팅을 막지는 않지만 **사용자가 안내를 보는 것은 그대로**라, 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
 
 # 커밋 메시지
 
