@@ -866,6 +866,39 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
   이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
 - **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
+- **⚠️ `.ps1` 은 UTF-8 **BOM 을 붙여** 저장해요.** Windows PowerShell 5.1 은 BOM 이 없으면 파일을 ANSI (한국어 환경은
+  cp949) 로 읽어서, 한글 주석 · 문자열이 깨지고 그 깨진 바이트가 따옴표를 만들어 **파서 단계에서 즉사**해요
+  (`The string is missing the terminator`) — 회차가 하나도 돌지 않아요. 2026-09-17 #655 회차에서 `config-notice-check_windows.ps1`
+  이 그래서 Windows 에서 **한 번도 돌아간 적이 없었어요.** `tool/` 의 다른 Windows 도구는 전부 BOM 이 있으니, 새 도구를
+  더하면 첫 바이트를 확인해요 (`(Get-Content -Encoding Byte -TotalCount 3 f) -join ' '` 가 `239 187 191`).
+- **⚠️ `-e` 의 값은 따옴표로 감싸서 넘겨요** — `-ArgumentList '--instance','9','-e',"`"$cmd`""`. `Start-Process` 는 배열
+  원소를 공백으로 이어 붙일 뿐 **공백이 있는 원소를 감싸 주지 않아서**, 그냥 주면 앱이 `-e <첫 토큰>` 만 값으로 읽고 나머지를
+  옵션으로 보아 `unknown option "…"` (exit 2) 로 거부해요. 그러면 **로그 파일조차 안 생겨서** "앱이 조용하다" 와 "앱이 뜨지도
+  않았다" 를 구별할 수 없어요 (같은 회차 실측). `key-bytes-check` · `search-bar-check` · `link-click-check` · `render-ab-shot` 이
+  전부 이 형태예요.
+- **⚠️⚠️ `INPUT` 구조체는 PowerShell 이 아니라 `Add-Type` 의 **C# 안에서** 만들어요.** PowerShell 은 중첩 값 타입 속성을
+  **임시 복사본**으로 다뤄서 `$i.u.ki.wVk = 0x41` 이 **조용히 사라져요** (대입 직후 읽어 보면 `0` 이에요). 그러면 모든 키가
+  `vk=0` 으로 나가는데 **`SendInput` 은 성공을 반환**하고, 창은 포커스돼 있고, 오류도 경고도 없어요 — 앱은 멀쩡한데
+  *"키가 앱에 안 닿는다"* 로 읽혀요. 2026-09-17 #655 회차에서 `Ctrl+Shift+P` 가 안 먹는 것으로 보여 앱을 한참 뒤졌는데,
+  C# 쪽으로 옮기자 그 자리에서 동작했어요. `tool/send-keys_windows.ps1` 의 `One()` · `Send()` 가 그래서 C# 안에 있어요.
+  - **더 나쁜 것은 거짓 PASS 예요.** *"Esc 로는 편집기가 열리지 않는다"* 같은 **부정을 재는 항목**은 키가 안 닿아도
+    통과해요. 그래서 부정 항목에는 **그 입력이 실제로 닿았다는 증거**를 함께 재요 — Esc 면 *다이얼로그가 닫혔는가*,
+    토글이면 *창이 실제로 숨겨졌는가* (`before=1 afterHide=0`). 같은 회차에서 그 둘이 처음에 조용히 통과했어요.
+- **⚠️ 한 줄 `python -c "…"` 안에 `\"` 를 쓰지 말아요.** PowerShell 5.1 이 네이티브 인자로 넘기며 그 따옴표를 **인자 경계로
+  다시 읽어** python 코드가 잘려요 (`SyntaxError: unterminated string literal`). here-string (`@"…"@`) 으로 넘기고 큰따옴표가
+  필요하면 `chr(34)` 로 만들어요.
+- **⚠️ 애초에 Windows 도구는 python 에 기대지 말아요 — 없는 기기가 있어요.** `# 실행 환경` 의 i5-1240P 노트북에는
+  `python` 이 **Microsoft Store 스텁**뿐이라 (`Python was not found`) 그 도구의 회차가 통째로 안 돌아요. 2026-09-17 #655
+  재검증에서 `config-notice-check_windows.ps1` 의 여섯 자리가 그랬어요 — TOML 편집은 .NET 정규식 (`[regex]`) 으로 충분해서
+  PowerShell 로 옮겼어요. 반대로 `clusters.py` 처럼 **셋이 공유하는 화면 생성기**는 python 이 맞아요 (그건 있는 기기에서 씁니다).
+- **⚠️ `Start-Process -WindowStyle Hidden` 은 그 프로세스가 띄우는 **다이얼로그까지** 숨겨요.** `STARTUPINFO` 의 `SW_HIDE`
+  가 앱의 `ShowWindow(nCmdShow)` 로 흘러서, 창은 멀쩡히 있는데 `IsWindowVisible` 이 **false** 예요 — 창을 `EnumWindows` +
+  가시성으로 찾는 도구가 "다이얼로그가 안 떴다" 로 읽어요 (2026-09-17 #655 실측 — 로그에는 `notice shown: 39 item(s)` 이
+  또렷이 있었어요). 로그만 보는 회차는 Hidden 이 좋지만, **창을 찍거나 키를 보내는 회차는 Hidden 없이** 띄워요.
+- **⚠️ `PrintWindow` 는 자식 컨트롤이 빈 캡처를 **간헐적으로** 내요.** 같은 창을 200 ms 간격으로 여섯 번 찍었더니 여섯째만
+  본문 `EDIT` 과 버튼이 사라졌고, **같은 순간 `CopyFromScreen` 은 정상**이었어요 (2026-09-17 #655 — 어두운 표본
+  `print 0` vs `screen 433`). 그 한 장만 보면 "본문이 안 그려진다" 는 없는 결함을 만들어요. 캡처가 비면 **같은 순간 화면
+  캡처와 견주고**, 판정은 여러 장으로 해요.
 - **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
   누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
   감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
@@ -1815,14 +1848,26 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
     `WAYLAND_DISPLAY` 는 `/` 로 시작하면 **절대 소켓 경로**로 쓰여요. 그래서 `XDG_RUNTIME_DIR` 를
     임시 경로로 돌려 lock · endpoint 를 격리하면서도 compositor 에는 그대로 붙어요.
 
-- **⚠️ 그 격리가 덮지 못하는 것이 둘 있어요.** 파일 경로만 바꾸는 격리라, 다른 프로세스를
+- **⚠️ 그 격리가 덮지 못하는 것들이 있어요.** 파일 경로만 바꾸는 격리라, 다른 프로세스를
   거치는 상태는 그대로 실제 세션으로 나가요. 2026-08-26 [#510](https://github.com/ensky0/tildaz/issues/510)
-  검증에서 둘 다 걸렸어요.
+  검증에서 앞의 둘이, 2026-09-17 [#655](https://github.com/ensky0/tildaz/issues/655) 회차에서 셋째가 걸렸어요.
 
   | 새는 것 | 왜 | 증상 |
   |---|---|---|
   | **GSettings / dconf** | 읽기는 `$XDG_CONFIG_HOME/dconf/user` 를 **mmap** 하고, 쓰기는 세션 버스의 `dconf-service` 가 **자기 환경**으로 해요 | 격리하면 **읽기는 통째로 비고** (스키마 기본값만 보임) **쓰기는 실제 세션에 남아요** |
   | **`hyprctl`** | 진짜 `XDG_RUNTIME_DIR/hypr/<signature>` 를 찾아요 | 격리하면 인스턴스를 못 찾아 조회가 실패해요 |
+  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz.instance9]` 가 생기고 **앱을 내려도 남아요** |
+
+  셋째는 **`XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 함께 빼면** 막혀요 (`de=(unset)`
+  이면 등록 경로를 아예 안 타요 — 위 `# 전역 hotkey` 절의 첫 함정과 같은 성질을 이번엔 *이용*하는
+  거예요). [`tool/config-notice-check.sh`](tool/config-notice-check.sh) 의 `SESSION_GUARD` 가 그
+  모양이에요. 이미 남았으면 파일을 손으로 고치지 말고 D-Bus 로 지워요 — kglobalaccel 이 메모리
+  상태로 파일을 다시 써요.
+
+  ```sh
+  gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+      --method org.kde.KGlobalAccel.unregister "tildaz.instance9" "toggle-9"
+  ```
 
   그래서 **GNOME · Cinnamon 검증은 격리하지 말고 실제 홈으로 돌리고 뒤에 치워요.** 격리한 채
   돌리면 `enabled-extensions` 가 비어 보여 extension 경로가 아예 안 타는데, 로그만 봐서는

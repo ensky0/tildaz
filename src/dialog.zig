@@ -187,6 +187,25 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
     return impl.showConfirm(rt, title, message);
 }
 
+/// #655 — **안내 + 그 자리에서 할 수 있는 일.** `showConfirm` 과 모양은 같지만 뜻이
+/// 다르다: 취소할 일이 없고, **행동 버튼을 눌러도 창이 닫히지 않는다.**
+///
+/// 닫지 않는 것이 핵심이다. config 안내가 이것을 쓰는데, 사용자는 **목록을 보면서**
+/// 파일을 고친다 — 편집기를 띄우자마자 무엇을 고쳐야 하는지가 사라지면 안 된다.
+/// 창은 `확인` · Esc · 창 닫기로만 닫힌다.
+///
+/// primary (`확인`) 가 오른쪽 · Enter, secondary (`action_label`) 가 왼쪽이다 —
+/// `showConfirm` 과 같은 자리 배치라 사용자가 다시 배울 것이 없다.
+pub fn showNoticeWithAction(
+    rt: Runtime,
+    title: []const u8,
+    message: []const u8,
+    action_label: []const u8,
+    on_action: *const fn () void,
+) void {
+    impl.showNoticeWithAction(rt, title, message, action_label, on_action);
+}
+
 /// 실제 key 조합을 캡처하는 modal dialog. Cancel / 닫기면 null, Create면
 /// allocator-owned canonical hotkey 문자열을 반환한다.
 pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: HotkeyValidator) ?[]u8 {

@@ -376,10 +376,24 @@ fn setNativeButtonsHidden(alert: objc.id, hidden: bool) void {
     }
 }
 
+/// #655 — **창을 닫지 않는** 버튼의 응답 코드. 다른 코드는 모두 modal 을 끝낸다.
+const dialog_inline_response: c_long = 1002;
+/// 그 버튼을 눌렀을 때 실행할 일. modal 이 한 번에 하나라 전역 하나로 충분하다.
+var dialog_inline_action: ?*const fn () void = null;
+
 fn dialogActionPressed(_: objc.id, _: objc.SEL, sender: objc.id) callconv(.c) void {
     if (sender == null) return;
     const get_tag = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     const response = get_tag(sender, objc.sel("tag"));
+
+    // 창을 **그대로 둔다.** config 안내의 `Open Config` 가 이 길인데, 목록을 보면서
+    // 파일을 고쳐야 하므로 편집기를 띄우자마자 목록이 사라지면 안 된다. 창은
+    // `확인` · Esc 로만 닫힌다.
+    if (response == dialog_inline_response) {
+        if (dialog_inline_action) |run| run();
+        return;
+    }
+
     const app = sharedApp();
     if (app == null) return;
     const stop_modal = objc.objcSend(fn (objc.id, objc.SEL, c_long) callconv(.c) void);
@@ -538,6 +552,49 @@ fn dialogBodyNeedsScroller(natural_h: f64, maximum_h: f64) bool {
     return natural_h > maximum_h;
 }
 
+/// 본문이 쓸 수 있는 화면 세로 비율의 상한.
+///
+/// 예전에는 이 상한이 **없었다** — 남은 화면 전부 (`visible_frame.h - base - reserved`)
+/// 를 본문에 줬고, 주석은 *"화면 비율 상수로 일찍 자르지 않아 큰 화면에서는 자연 높이를
+/// 더 많이 보존한다"* 고 적어 두었다. 그 의도가 뒤집힌 자리가 #655 다: config 안내가
+/// 45 줄이 되자 본문 한도가 **1059pt / 화면 1320pt** 라 820pt 짜리 목록이 "들어간다" 고
+/// 판정됐다. 스크롤러는 `natural_h > maximum_h` 일 때만 나오므로 **나오지 않았고**,
+/// 다이얼로그가 화면의 80% 를 덮었다 (실측).
+///
+/// 모달 경고창은 화면을 덮는 물건이 아니다. 넘치면 **잘라서 스크롤**하는 것이 맞고,
+/// 그래야 목록을 하나도 잃지 않으면서 창이 읽을 만한 크기로 남는다.
+/// 값은 [`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT`](../ui_metrics.zig) 한 곳에 있다 —
+/// Linux · Windows 도 같은 규칙을 쓰므로 세 host 가 갈리면 안 된다 (#655 Linux 회차에서
+/// 이 상한이 macOS 에만 있어 Linux 가 화면의 95.5 % 를 덮고 있던 것이 드러났다).
+const dialog_body_max_screen_ratio: f64 =
+    @as(f64, @floatFromInt(ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT)) / 100.0;
+
+fn dialogBodyMaxHeight(visible_frame_h: f64, base_alert_h: f64, reserved_h: f64) f64 {
+    const remaining = visible_frame_h - base_alert_h - reserved_h - 32.0;
+    return @max(32.0, @min(remaining, visible_frame_h * dialog_body_max_screen_ratio));
+}
+
+/// 본문 · 제목 · 구분선을 상자 가장자리에서 띄우는 여백. 예전에는 셋 다 `x = 0` 에
+/// 전체 폭으로 놓여 **글자가 창에 붙어 있었다** (#655 실기 지적).
+const dialog_content_pad_pt: f64 = 20.0;
+/// 제목 위 여백. 없으면 NSAlert 이 그리는 앱 아이콘과 제목이 **겹친다** — 본문이 짧을
+/// 때는 AppKit 이 알아서 띄워 주지만, 본문이 길어지면 제목이 상자 맨 위로 올라붙는다.
+const dialog_content_top_pad_pt: f64 = 16.0;
+
+test "#655 본문 높이는 화면 비율 상한에 걸린다 — 안 그러면 스크롤이 안 나온다" {
+    // 실측값 (5120x2880 외장 모니터, logical 1320pt): 예전 식이면 1059pt 가 나와
+    // 820pt 짜리 45 줄 목록이 스크롤 없이 화면을 덮었다.
+    const max_h = dialogBodyMaxHeight(1320.0, 116.0, 113.0);
+    try std.testing.expectEqual(@as(f64, 660.0), max_h);
+    try std.testing.expect(dialogBodyNeedsScroller(820.0, max_h));
+
+    // 작은 화면에서는 남은 높이가 비율보다 작다 — 그쪽이 이긴다.
+    try std.testing.expectEqual(@as(f64, 219.0), dialogBodyMaxHeight(480.0, 116.0, 113.0));
+
+    // 짧은 본문은 예전과 똑같이 스크롤러가 없다 (#237 — 불필요한 scroller 금지).
+    try std.testing.expect(!dialogBodyNeedsScroller(120.0, max_h));
+}
+
 test "macOS dialog width uses the common cap and preserves screen margins" {
     try std.testing.expectEqual(@as(f64, 580.0), dialogPreferredAccessoryWidth(2560.0));
     try std.testing.expectEqual(@as(f64, 580.0), dialogPreferredAccessoryWidth(1512.0));
@@ -663,7 +720,7 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const alert_window = getObjForWindow(alert, objc.sel("window")) orelse return null;
     const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
     const base_alert_h = getRect(alert_window, objc.sel("frame")).h;
-    const max_accessory_h = @max(32.0, visible_frame.h - base_alert_h - reserved_h - 32.0);
+    const max_accessory_h = dialogBodyMaxHeight(visible_frame.h, base_alert_h, reserved_h);
 
     const NSScrollView = objc.getClass("NSScrollView");
     const NSTextView = objc.getClass("NSTextView");
@@ -970,7 +1027,11 @@ fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reser
     const body_view = makeDialogBody(alert, body, header_at_zero.total_h + reserved_bottom_h, minimum_w) orelse return null;
     const body_y = reserved_bottom_h;
     const header = brandedHeaderGeometry(body_y + body_view.height);
-    const content_w = body_view.width;
+    // #655 — 본문 폭은 그대로 두고 **상자를 여백만큼 넓힌다.** 안쪽 뷰를 좁히면 방금
+    // 그 폭으로 잰 wrap 높이가 어긋나 마지막 줄이 잘린다.
+    const pad = dialog_content_pad_pt;
+    const content_w = body_view.width + pad * 2.0;
+    const inner_w = body_view.width;
 
     const NSView = objc.getClass("NSView");
     const NSTextField = objc.getClass("NSTextField");
@@ -978,13 +1039,13 @@ fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reser
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
     const autorelease = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
 
-    const container_owned = initWithFrame(alloc(NSView, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = content_w, .h = header.total_h }) orelse return null;
+    const container_owned = initWithFrame(alloc(NSView, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = content_w, .h = header.total_h + dialog_content_top_pad_pt }) orelse return null;
     const container = autorelease(container_owned, objc.sel("autorelease"));
 
     const title_owned = initWithFrame(alloc(NSTextField, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{
-        .x = 0,
+        .x = pad,
         .y = header.title_y,
-        .w = content_w,
+        .w = inner_w,
         .h = header.title_h,
     }) orelse return null;
     const title_view = autorelease(title_owned, objc.sel("autorelease"));
@@ -1005,9 +1066,9 @@ fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reser
     }
 
     const separator_owned = initWithFrame(alloc(NSView, objc.sel("alloc")) orelse return null, objc.sel("initWithFrame:"), .{
-        .x = 0,
+        .x = pad,
         .y = header.separator_y,
-        .w = content_w,
+        .w = inner_w,
         .h = header.separator_h,
     }) orelse return null;
     const separator = autorelease(separator_owned, objc.sel("autorelease"));
@@ -1033,7 +1094,7 @@ fn makeBrandedContent(alert: objc.id, title: []const u8, body: []const u8, reser
     setColor(layer, objc.sel("setBackgroundColor:"), cg_color);
 
     const setOrigin = objc.objcSend(fn (objc.id, objc.SEL, NSAlertSize) callconv(.c) void);
-    setOrigin(body_view.view, objc.sel("setFrameOrigin:"), .{ .w = 0, .h = body_y });
+    setOrigin(body_view.view, objc.sel("setFrameOrigin:"), .{ .w = pad, .h = body_y });
     const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     addSubview(container, objc.sel("addSubview:"), body_view.view);
     addSubview(container, objc.sel("addSubview:"), separator);
@@ -1127,6 +1188,59 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
 
     const result = runModalOverHost(alert, .confirm);
     return result == 1000;
+}
+
+/// #655 — 안내 + 그 자리에서 할 수 있는 일. `showConfirm` 과 뼈대가 같지만 뜻이 다르다:
+/// **행동 버튼을 눌러도 창이 닫히지 않는다.** 창은 `확인` · Esc 로만 닫힌다.
+fn showNoticeWithActionImpl(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
+    if (!nsapp_ready) return noticeActionOsascript(rt, title, message, action_label);
+
+    const alert = newAlert() orelse {
+        log.userFacing("dialog", "NSAlert creation failed — falling back to osascript for the notice");
+        return noticeActionOsascript(rt, title, message, action_label);
+    };
+    setMessage(alert, title);
+    setStyle(alert, 1); // Informational
+    _ = addButton(alert, messages.button_ok);
+    _ = addButton(alert, action_label);
+    // Esc 는 **primary (확인)** 다. `showConfirm` 은 Esc 를 두 번째 버튼에 걸지만
+    // 거기서는 그것이 "아무 일도 하지 않음" 이고, 여기서는 반대로 *행동* 이다.
+    setButtonEsc(alert, 0);
+
+    dialog_inline_action = on_action;
+    defer dialog_inline_action = null;
+    const actions = [_]DialogAction{
+        .{ .title = action_label, .response = dialog_inline_response, .key_equivalent = "" },
+        .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
+    };
+    const branded = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+
+    // **`.confirm` 이 아니라 `.single` 이다.** `.confirm` 은 Esc 를 두 번째 버튼으로
+    // 보내는데 (`dismissMonitorInvoke`), 거기서는 그것이 "아무 일도 하지 않음" 이고
+    // 여기서는 *행동* 이다. `.single` 은 Esc · Enter 를 모두 primary 로 보낸다.
+    const result = runModalOverHost(alert, .single);
+
+    // branded content 를 못 붙인 경우만 native 버튼이 보인다. 그 버튼은 modal 을
+    // 끝내 버리므로 (`addButton` 순서상 두 번째가 `1001`) 행동을 **닫힌 뒤에** 돌린다 —
+    // 창이 남지는 않지만 사용자가 누른 일은 일어난다.
+    if (branded == null and result == 1001) on_action();
+}
+
+pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
+    showNoticeWithActionImpl(rt, title, message, action_label, on_action);
+}
+
+/// NSApp 이 아직 없을 때 (bootstrap) 의 안내. **행동 버튼은 내지 않는다.**
+///
+/// `display dialog` 로 두 버튼을 내면 어느 쪽을 눌렀는지는 stdout 의
+/// `button returned:` 를 읽어야 아는데, 그러려면 여기서 자식 프로세스의 출력을 받아
+/// 파싱해야 한다. 그 machinery 를 **닿지 않는 경로**에 두지 않는다 — 이 함수를 쓰는
+/// 유일한 호출자 (config 안내) 는 창이 뜬 뒤에 불려서 `nsapp_ready` 가 참이다.
+/// 안내 자체는 잃지 않고 (한 버튼으로 뜬다), 행동만 없는 것으로 낮춘다.
+fn noticeActionOsascript(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8) void {
+    _ = action_label;
+    log.appendLine("dialog", "NSApp not ready — notice shown without its action button", .{});
+    showOsascript(rt, .info, title, message);
 }
 
 /// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).

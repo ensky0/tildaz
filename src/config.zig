@@ -21,6 +21,7 @@ const instance_context = @import("instance_context.zig");
 // (`config.Hotkey`), 서로의 *값*에 의존하지 않아 순환 참조가 성립한다.
 const instances = @import("instances.zig");
 const paths = @import("paths.zig");
+const system_open = @import("system_open.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
@@ -2601,12 +2602,16 @@ pub const Config = struct {
     /// 모든 경로에서 shell / font_families 가 owned → `deinit` 이 일관 free.
     /// 따라서 `shell_resolved` 는 호출처가 항상 *owned* 로 넘겨야 한다.
     pub fn load(rt: Runtime, allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        // #655 — 안내를 담을 allocator 를 여기서 심는다. `parse` 보다 앞이어야 한다 —
+        // 파일이 없거나 못 읽는 경로도 `resolveHotkeyConflict` 로 안내를 만든다.
+        clearConfigNotice();
+        setNoticeAllocator(allocator);
         const path = paths.configPath(rt, allocator) catch {
             return defaultOwned(allocator, shell_resolved);
         };
         defer allocator.free(path);
 
-        const loaded = blk: {
+        var loaded = blk: {
             const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch {
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
@@ -2675,31 +2680,61 @@ pub const Config = struct {
         // 들고 나가는 것이 중요하다 — host 는 이 config 로 창을 세운 뒤 담긴 문구를
         // 안내하고 종료한다. 기본값으로 갈아치우면 안내를 그릴 창의 폰트 · 크기가
         // 사용자 설정과 달라진다.
-        fatalIfHotkeyTakenByLowerIndex(rt, allocator, loaded.hotkey, path) catch {};
+        resolveHotkeyConflict(rt, allocator, &loaded, path) catch {};
         return loaded;
     }
 
     /// **뒤에 있는 것이 양보한다** ([#431](https://github.com/ensky0/tildaz/issues/431)) —
-    /// 자기보다 낮은 index 가 같은 전역 핫키를 쓰면 이 인스턴스가 멈춘다. 겹친 두 인스턴스는
-    /// 양쪽 다 중복을 감지하므로, 규칙이 없으면 둘 다 안 뜬다.
+    /// 자기보다 낮은 index 가 같은 전역 핫키를 쓰면 이 인스턴스가 양보한다. 겹친 두
+    /// 인스턴스는 양쪽 다 중복을 감지하므로, 규칙이 없으면 둘 다 안 뜬다.
     ///
     /// 세 platform 이 여기서 함께 덮인다. 전에는 Windows 만 `RegisterHotKey` 실패로 뒤늦게
     /// 걸렸고 (원인이 자기 다른 인스턴스인지 알 수 없는 안내였다), macOS 는 `CGEventTap` 이
     /// 배타 등록이 아니라 **두 인스턴스가 같은 키에 함께 반응**했다.
-    fn fatalIfHotkeyTakenByLowerIndex(rt: Runtime, allocator: std.mem.Allocator, hotkey: Hotkey, config_path: []const u8) LoadError!void {
+    ///
+    /// #655 — 양보가 곧 종료였는데, 이제 **먼저 갈아탄다**. 이 충돌은 파일 값이 틀린
+    /// 것이 아니라 *바깥과 부딪히는 것* 이라 스키마 대조로는 잡히지 않고, 그래서
+    /// 원칙 5 의 유일한 예외 자리다 (SPEC §7.3). 순서는
+    ///
+    ///   config 의 키가 겹침 → 인스턴스 번호에서 파생한 기본 키 (`F{N+1}`) 로 갈아탄다
+    ///   → **그 값으로 다시 검사한다** → 그래도 겹치면 안내하고 종료한다.
+    ///
+    /// 다시 검사하는 것이 핵심이다. 파생 기본값도 낮은 index 가 *직접 적어서* 쓰고
+    /// 있을 수 있어 (`config_0` 에 `hotkey = "F3"`), 검사 없이 갈아타면 두 인스턴스가
+    /// 같은 키에 함께 반응하는 #431 의 원래 증상으로 되돌아간다.
+    fn resolveHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, config: *Config, config_path: []const u8) LoadError!void {
         // 측정 인스턴스는 전역 핫키를 등록하지 않는다 (#382). worker index 가 없으면
         // (단위 테스트 등) 비교할 자기 자신이 없다.
         if (instance_context.isStress()) return;
         const self_index = instance_context.workerIndex() orelse return;
-        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, hotkey) orelse return;
+        const owner = instances.lowerIndexHotkeyConflict(rt, allocator, self_index, config.hotkey) orelse return;
 
+        // 파생 기본값으로 갈아타 본다. 이미 그 값이었다면 갈아탈 곳이 없다.
+        if (Hotkey.fromString(Defaults.hotkeyFor(self_index))) |derived| {
+            if (!std.meta.eql(derived, config.hotkey) and
+                instances.lowerIndexHotkeyConflict(rt, allocator, self_index, derived) == null)
+            {
+                var key_buf: [64]u8 = undefined;
+                appendNotice(
+                    &repaired_list,
+                    messages.config_notice_hotkey_taken_format,
+                    .{ owner, hotkeyDisplay(&key_buf, derived) },
+                );
+                config.hotkey = derived;
+                return;
+            }
+        }
+
+        // 갈아탈 자리가 없다. 여기서만 종료한다 — 전역 핫키 없이 뜨면 창을 부를
+        // 방법이 없어서, 떠 있어도 쓸 수 없는 인스턴스가 된다.
+        //
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;
         var msg_buf: [384]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
             messages.config_hotkey_duplicate_format,
-            .{ hotkeyDisplay(&key_buf, hotkey), owner },
+            .{ hotkeyDisplay(&key_buf, config.hotkey), owner },
         ) catch messages.config_hotkey_duplicate_fallback_msg;
         return recordConfigFatalMsg(rt, config_path, msg);
     }
@@ -2756,6 +2791,11 @@ pub const Config = struct {
 
     fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) LoadError!Config {
         var config = Config{};
+        // #655 — 이 한 번의 읽기가 만든 안내만 담는다. 한 프로세스에서 두 번 읽으면
+        // (launcher 가 instance 별로 훑는 경로) 같은 줄이 두 벌 쌓여 다이얼로그가
+        // 같은 말을 반복한다. `load` 를 거치지 않고 부르는 test 를 위해 여기서도 심는다.
+        clearConfigNotice();
+        setNoticeAllocator(allocator);
         // #493 — TOML. `toml.Table` 로 받아 **값 트리**를 직접 훑는다. 구조체 매핑을
         // 쓰지 않는 이유는 아래 필드별 오류 메시지다 — 매핑에 맡기면 "어느 필드가 왜
         // 틀렸는지" 가 파서의 일반 오류로 퇴화한다.
@@ -2768,35 +2808,12 @@ pub const Config = struct {
         // 검사가 필요 없다. 그 자리를 파서가 문법으로 보장한다.
         const root: toml.Value = .{ .table = &parsed.value };
 
-        // font.family / font.glyph_fallback 의 type 만 우선 사전 체크 —
-        // validateStructure 의 일반 missing-key / type-mismatch 메시지보다 schema
-        // 의도 (primary single string + glyph fallback list) 를 명확히 안내.
-        if (true) {
-            // #577 — 예전에는 `font/validate.zig` 가 자기 형식으로 (경로를 본문 끝에)
-            // 조립해서 띄웠다. 이제 다른 config 오류와 **같은 한 형식**을 지난다
-            // (#495 — 경로가 첫 줄). 경로도 `paths.configPath` 로 다시 조회하지 않고
-            // 파싱 중인 파일의 `config_path` 를 그대로 쓴다 — 다시 조회하면 instance
-            // 번호와 실제 파일이 갈릴 수 있다 (#316).
-            if (root.table.get("font")) |fv_pre| {
-                if (fv_pre == .table) {
-                    if (fv_pre.table.get("family")) |fam_v| {
-                        if (fam_v != .string)
-                            return recordConfigFatalMsg(rt, config_path, messages.font_family_must_be_string_msg);
-                    }
-                    if (fv_pre.table.get("glyph_fallback")) |fb_v| {
-                        if (fb_v != .array)
-                            return recordConfigFatalMsg(rt, config_path, messages.font_glyph_fallback_must_be_list_msg);
-                        for (fb_v.array.items) |item| {
-                            if (item != .string)
-                                return recordConfigFatalMsg(rt, config_path, messages.font_glyph_fallback_must_be_list_msg);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Schema 검증 — `defaultConfigToml` 과 비교 (key set + nested 구조 + type).
-        // shell 인자는 schema 검증 시 *값* 무관 — `Defaults.shell` 한 번 사용.
+        // #655 — Schema 대조. 예전에는 어긋나면 **거부** 했고 (키 하나가 없어도 못 떴다),
+        // 이제는 **고치고 안내에 담는다** (SPEC 원칙 5 · §7.3). 아래 `parse` 본문이 그대로
+        // 돌 수 있게 트리를 먼저 손봐 두는 것이 이 호출의 뜻이다 — 타입이 다른 값은 지워져
+        // `root.table.get` 이 `null` 을 주고, 그러면 `Config` 의 기본값이 남는다.
+        //
+        // shell 인자는 대조에 *값* 이 무관하다 — `Defaults.shell` 한 번 사용.
         const default_doc = schemaReferenceToml(allocator) catch unreachable;
         defer allocator.free(default_doc);
         var default_parser: toml.Parser(toml.Table) = .init(allocator);
@@ -2804,7 +2821,7 @@ pub const Config = struct {
         var default_parsed = default_parser.parseString(default_doc) catch unreachable;
         defer default_parsed.deinit();
         const default_root: toml.Value = .{ .table = &default_parsed.value };
-        try validateStructure(rt, root, default_root, "(top-level)", config_path);
+        repairStructure(root, default_root, "(top-level)", default_doc);
 
         // #533 — input section. macOS 만 값을 쓰지만 세 platform 이 같은 파일을
         // 읽을 수 있어야 해서 어디서든 파싱한다 (`MacOptionAsAlt` 주석 참고).
@@ -2813,13 +2830,7 @@ pub const Config = struct {
                 if (MacOptionAsAlt.fromString(v.string)) |mode| {
                     config.macos_option_as_alt = mode;
                 } else {
-                    var buf: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(
-                        &buf,
-                        messages.config_macos_option_as_alt_invalid_format,
-                        .{v.string},
-                    ) catch messages.config_macos_option_as_alt_invalid_fallback_msg;
-                    return recordConfigFatalMsg(rt, config_path, msg);
+                    noticeBadValue("input.macos_option_as_alt", Defaults.macos_option_as_alt);
                 }
             }
         }
@@ -2830,51 +2841,33 @@ pub const Config = struct {
                 if (DockPosition.fromString(v.string)) |dp| {
                     config.dock_position = dp;
                 } else {
-                    var buf: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(
-                        &buf,
-                        messages.config_dock_position_invalid_format,
-                        .{v.string},
-                    ) catch messages.config_dock_position_invalid_fallback_msg;
-                    return recordConfigFatalMsg(rt, config_path, msg);
+                    noticeBadValue("window.dock_position", Defaults.dock_position);
                 }
             }
-            if (wv.table.get("width_percent")) |v| {
-                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.width_percent"});
-                if (f < 1.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.width_percent", "1..100" });
-                config.width_percent = f;
-            }
-            if (wv.table.get("height_percent")) |v| {
-                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.height_percent"});
-                if (f < 1.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.height_percent", "1..100" });
-                config.height_percent = f;
-            }
-            if (wv.table.get("offset_percent")) |v| {
-                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.offset_percent"});
-                if (f < 0.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.offset_percent", "0..100" });
-                config.offset_percent = f;
-            }
+            if (wv.table.get("width_percent")) |v|
+                config.width_percent = floatInRange(v, "window.width_percent", 1.0, 100.0, Defaults.width_percent);
+            if (wv.table.get("height_percent")) |v|
+                config.height_percent = floatInRange(v, "window.height_percent", 1.0, 100.0, Defaults.height_percent);
+            if (wv.table.get("offset_percent")) |v|
+                config.offset_percent = floatInRange(v, "window.offset_percent", 0.0, 100.0, Defaults.offset_percent);
             if (wv.table.get("opacity_percent")) |v| {
-                const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"window.opacity_percent"});
-                if (f < 0.0 or f > 100.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "window.opacity_percent", "0..100" });
-                config.opacity_alpha = @round(f * 255.0 / 100.0);
+                const f = floatInRange(v, "window.opacity_percent", 0.0, 100.0, Defaults.opacity_percent);
+                config.opacity_alpha = @intFromFloat(@round(f * 255.0 / 100.0));
             }
         }
 
         // theme
         if (root.table.get("theme")) |v| {
             if (v.string.len > 0) {
-                config.theme = themes.findTheme(v.string);
-                if (config.theme == null) {
-                    var buf: [512]u8 = undefined;
-                    var fbs: std.Io.Writer = .fixed(&buf);
-                    const w = &fbs;
-                    w.print(messages.config_unknown_theme_header_format, .{v.string}) catch {};
-                    for (themes.themes, 0..) |t, i| {
-                        if (i > 0) w.writeAll(", ") catch {};
-                        w.writeAll(t.name) catch {};
-                    }
-                    return recordConfigFatalMsg(rt, config_path, fbs.buffered());
+                if (themes.findTheme(v.string)) |t| {
+                    config.theme = t;
+                } else {
+                    // 고를 수 있는 이름은 **로그에만** 넣는다. 다이얼로그는 여러 항목을
+                    // 한 줄씩 세우는 자리라, 여기서 18 개 테마 이름을 펼치면 나머지
+                    // 안내가 밀려난다.
+                    log.appendLine("config", messages.config_unknown_theme_header_format, .{v.string});
+                    for (themes.themes) |t| log.appendLine("config", "  {s}", .{t.name});
+                    noticeBadValue("theme", Defaults.theme);
                 }
             }
         }
@@ -2884,27 +2877,26 @@ pub const Config = struct {
             if (Hotkey.fromString(v.string)) |h| {
                 config.hotkey = h;
             } else {
-                // #484 — 거부 이유별로 다른 안내를 보낸다. 한 메시지로 묶으면
-                // modifier 를 이미 준 사용자에게 "modifier 를 달라" 고 말하게 된다.
-                // `bufPrint` 의 format 은 comptime 이라 분기 안에서 각각 포맷한다.
+                // #484 — 거부 이유별로 다른 안내를 남긴다. 한 문장으로 묶으면 modifier 를
+                // 이미 준 사용자에게 "modifier 를 달라" 고 말하게 된다. 다이얼로그에는
+                // 한 줄만 서므로 **이유는 로그에 남긴다.**
+                //
+                // #496 1-c — 여기 `.position_aliased_on_macos` 는 한때 `unreachable` 이었다.
+                // 전역 hotkey 가 위치 표기를 아예 안 받던 시절의 전제였는데 1-c 가 그것을
+                // 받게 하면서 깨졌고, ReleaseFast 는 안전 검사가 없어 엉뚱한 안내로 떨어졌다.
                 var buf: [768]u8 = undefined;
-                const msg = switch (hotkeyFailure(v.string).?) {
+                const why = switch (hotkeyFailure(v.string).?) {
                     .unknown_key => std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
                         messages.config_hotkey_unknown_key_fallback_msg,
                     .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
-                    // #496 1-c — **여기는 `unreachable` 이었다.** 전역 `hotkey` 가 위치
-                    // 표기를 아예 안 받던 시절의 전제였는데 1-c 가 그것을 받게 하면서
-                    // 깨졌다. ReleaseFast 는 안전 검사가 없어 크래시 대신 위의
-                    // `modifier_required` 안내로 떨어졌고, `ctrl` 을 이미 준 사용자에게
-                    // "modifier 를 달라" 고 말했다 (macOS 실기 확인) — 바로 위 주석이
-                    // 막으려던 실패다.
                     .position_aliased_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
                         messages.config_hotkey_position_aliased_fallback_msg,
                     .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
                         messages.config_hotkey_position_absent_fallback_msg,
                 };
-                return recordConfigFatalMsg(rt, config_path, msg);
+                log.appendLine("config", "{s}", .{why});
+                noticeBadValue("hotkey", messages.config_notice_used_default);
             }
         }
 
@@ -2922,69 +2914,67 @@ pub const Config = struct {
         if (root.table.get("hidden_start")) |v| config.hidden_start = v.boolean;
 
         // max_scroll_lines
-        if (root.table.get("max_scroll_lines")) |v| {
-            if (v.integer < 100 or v.integer > 10_000_000) {
-                return recordConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "max_scroll_lines", "100..10_000_000" });
-            }
-            config.max_scroll_lines = @intCast(v.integer);
-        }
+        if (root.table.get("max_scroll_lines")) |v|
+            config.max_scroll_lines = @intCast(intInRange(v, "max_scroll_lines", 100, 10_000_000, Defaults.max_scroll_lines));
 
-        // font section — schema validateStructure 로 family / size_point /
-        // cell_width_ratio / line_height_ratio 모두 required + type 검증 끝남.
-        // 여기서는 value range + parse.
-        const fv = root.table.get("font").?;
-        if (fv.table.get("size_point")) |v| {
-            if (v.integer < 8 or v.integer > 72) {
-                return recordConfigFatal(rt, config_path, messages.config_field_integer_range_required_format, .{ "font.size_point", "8..72" });
-            }
-            config.font_size_point = @intCast(v.integer);
-        }
-        if (fv.table.get("cell_width_ratio")) |v| {
-            const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.cell_width_ratio"});
-            if (f < 0.5 or f > 2.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.cell_width_ratio", "0.5..2.0" });
-            config.cell_width_ratio = f;
-        }
-        if (fv.table.get("line_height_ratio")) |v| {
-            const f = parseFloat(v) orelse return recordConfigFatal(rt, config_path, messages.config_field_number_required_format, .{"font.line_height_ratio"});
-            if (f < 0.5 or f > 2.0) return recordConfigFatal(rt, config_path, messages.config_field_range_required_format, .{ "font.line_height_ratio", "0.5..2.0" });
-            config.line_height_ratio = f;
-        }
-        // font.family — primary, single string. type 은 사전 체크에서 이미
-        // 보장됨 (위 `font_family_must_be_string_msg` 분기). 여기서는 빈
-        // 문자열만 reject + chain[0] 에 저장.
+        // font section. `[font]` 이 통째로 없을 수 있다 — 예전에는 `.?` 로 꺼내
+        // **그 자리에서 패닉** 이었고, 스키마가 거부해 주는 덕에 닿지 않던 코드였다.
+        // 이제 거부하지 않으므로 없는 섹션이 여기까지 온다.
         var chain_count: usize = 0;
-        if (fv.table.get("family")) |v| {
-            if (v.string.len == 0) return recordConfigFatalMsg(rt, config_path, messages.config_font_family_empty_msg);
-            config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
-            chain_count = 1;
-        }
+        if (root.table.get("font")) |fv| {
+            if (fv.table.get("size_point")) |v|
+                config.font_size_point = @intCast(intInRange(v, "font.size_point", 8, 72, Defaults.font_size_point));
+            if (fv.table.get("cell_width_ratio")) |v|
+                config.cell_width_ratio = floatInRange(v, "font.cell_width_ratio", 0.5, 2.0, Defaults.cell_width_ratio);
+            if (fv.table.get("line_height_ratio")) |v|
+                config.line_height_ratio = floatInRange(v, "font.line_height_ratio", 0.5, 2.0, Defaults.line_height_ratio);
 
-        // font.glyph_fallback — array of strings. type / element 모두 사전
-        // 체크 보장. 빈 array 는 허용 (system fallback 만 의존). chain[1..] 에
-        // 저장. chain 총 길이 (1 + fallback) 가 MAX_FONT_FAMILIES 초과 시 fatal —
-        // silent truncate 방지.
-        if (fv.table.get("glyph_fallback")) |v| {
-            for (v.array.items) |item| {
-                if (item.string.len == 0) continue;
-                if (chain_count >= MAX_FONT_FAMILIES) {
-                    var buf: [256]u8 = undefined;
-                    const msg = std.fmt.bufPrint(
-                        &buf,
-                        messages.config_font_chain_too_long_format,
-                        .{MAX_FONT_FAMILIES},
-                    ) catch messages.config_font_chain_too_long_fallback_msg;
-                    return recordConfigFatalMsg(rt, config_path, msg);
+            // font.family — primary, 단일 string. 타입은 `repairStructure` 가 이미
+            // 걸렀으므로 남은 것은 빈 문자열뿐이다. 비었으면 기본 폰트로 간다 —
+            // 빈 이름으로 두면 host 의 폰트 검증이 시작을 막는다 (#282 C2).
+            if (fv.table.get("family")) |v| {
+                if (v.string.len > 0) {
+                    config.font_families[0] = allocator.dupe(u8, v.string) catch v.string;
+                    chain_count = 1;
+                } else {
+                    noticeBadValue("font.family", Defaults.font_family);
                 }
-                config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
-                chain_count += 1;
+            }
+
+            // font.glyph_fallback — string 의 배열. 빈 배열은 허용 (시스템 fallback 만
+            // 쓰겠다는 뜻이다). 배열 **안쪽** 타입은 `repairStructure` 가 보지 않으므로
+            // 여기서 본다 — 나쁜 항목만 버리고 나머지는 그대로 쓴다 (SPEC §7.3).
+            if (fv.table.get("glyph_fallback")) |v| {
+                for (v.array.items) |item| {
+                    if (item != .string) {
+                        noticeDropped("font.glyph_fallback", messages.config_notice_key_reason_not_text);
+                        continue;
+                    }
+                    if (item.string.len == 0) continue;
+                    if (chain_count >= MAX_FONT_FAMILIES) {
+                        // 조용히 자르지 않는다 — 사용자가 적은 폰트가 왜 안 먹는지
+                        // 알 수 없게 된다.
+                        noticeDropped("font.glyph_fallback", item.string);
+                        continue;
+                    }
+                    config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
+                    chain_count += 1;
+                }
             }
         }
 
-        var i = chain_count;
-        while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
-        config.font_family_count = @intCast(chain_count);
+        // `family` 를 못 읽었으면 chain 이 비어 있다. 기본 chain 을 그대로 쓴다 —
+        // 여기서 빈 chain 을 넘기면 renderer 가 글리프를 하나도 못 찾는다.
+        if (chain_count == 0) {
+            config.font_families = defaultFontFamiliesArray();
+            config.font_family_count = DEFAULT_FONT_CHAIN_COUNT;
+        } else {
+            var i = chain_count;
+            while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
+            config.font_family_count = @intCast(chain_count);
+        }
 
-        try parseKeys(rt, root, config_path, &config);
+        parseKeys(root, &config);
 
         return config;
     }
@@ -2999,7 +2989,7 @@ pub const Config = struct {
     /// `[keys]` 자체가 없거나 특정 액션이 빠져 있으면 **기본값으로 채운다** (결정 2).
     /// 정상 상태에서는 생성기가 모든 액션을 적으므로 이 경로는 버전 업그레이드 뒤의
     /// 안전망이다.
-    fn parseKeys(rt: Runtime, root: toml.Value, config_path: []const u8, config: *Config) LoadError!void {
+    fn parseKeys(root: toml.Value, config: *Config) void {
         const keys_table: ?*toml.Table = if (root.table.get("keys")) |kv|
             (if (kv == .table) kv.table else null)
         else
@@ -3013,92 +3003,83 @@ pub const Config = struct {
             var from_file: ?*toml.ValueList = null;
             if (keys_table) |kt| {
                 if (kt.get(name)) |v| {
-                    if (v != .array) {
-                        var buf: [512]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
-                            messages.config_key_not_list_fallback_msg;
-                        return recordConfigFatalMsg(rt, config_path, msg);
+                    if (v == .array) {
+                        from_file = v.array;
+                    } else {
+                        // 리스트가 아니면 이 액션만 기본 바인딩으로 돌린다. 예전에는
+                        // 여기서 죽어서, 액션 하나를 `"ctrl+t"` 로 적은 (대괄호를 빠뜨린)
+                        // 사용자가 터미널 전체를 잃었다.
+                        var buf: [128]u8 = undefined;
+                        const path = std.fmt.bufPrint(&buf, "keys.{s}", .{name}) catch "keys";
+                        noticeBadValue(path, messages.config_notice_used_default);
                     }
-                    from_file = v.array;
                 }
             }
 
             if (from_file) |list| {
+                const before = count;
                 for (list.items) |item| {
                     if (item != .string) {
-                        var buf: [512]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&buf, messages.config_key_not_list_format, .{ name, name }) catch
-                            messages.config_key_not_list_fallback_msg;
-                        return recordConfigFatalMsg(rt, config_path, msg);
+                        noticeKeyDropped(name, "", messages.config_notice_key_reason_not_text);
+                        continue;
                     }
-                    count = try addBinding(rt, config, count, action, item.string, config_path);
+                    count = addBinding(config, count, action, item.string);
+                }
+                // 적어 둔 키가 **하나도** 살아남지 못했으면 기본 바인딩으로 채운다.
+                // 빈 목록 (`[]`) 은 "이 액션에 키를 두지 않겠다" 는 뜻이라 그대로 둔다 —
+                // 다 버려진 경우와 구별된다.
+                if (count == before and list.items.len > 0) {
+                    for (defaultBindings(action)) |text| count = addBinding(config, count, action, text);
                 }
             } else {
-                for (defaultBindings(action)) |text| {
-                    count = try addBinding(rt, config, count, action, text, config_path);
-                }
+                for (defaultBindings(action)) |text| count = addBinding(config, count, action, text);
             }
         }
         config.key_binding_count = @intCast(count);
     }
 
-    /// 키 문자열 하나를 파싱해 배열에 넣는다. 이미 같은 키가 있으면 **양쪽 액션을
-    /// 짚어** fatal.
-    fn addBinding(
-        rt: Runtime,
-        config: *Config,
-        count: usize,
-        action: KeyAction,
-        text: []const u8,
-        config_path: []const u8,
-    ) LoadError!usize {
+    /// 키 문자열 하나를 파싱해 배열에 넣는다. **버려도 부팅은 막지 않는다** — 읽을 수
+    /// 없는 조합, 이미 쓰인 조합, 상한 초과 모두 그 항목만 버리고 안내에 담는다.
+    fn addBinding(config: *Config, count: usize, action: KeyAction, text: []const u8) usize {
+        const name = action.configName();
         const parsed = switch (parseHotkeyString(text, .app_binding)) {
             .ok => |v| v,
             .unknown_key => {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.config_key_invalid_format, .{ action.configName(), text }) catch
-                    messages.config_key_invalid_fallback_msg;
-                return recordConfigFatalMsg(rt, config_path, msg);
+                noticeKeyDropped(name, text, messages.config_notice_key_reason_unknown);
+                return count;
             },
             .modifier_required => {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.config_key_needs_modifier_format, .{ action.configName(), text }) catch
-                    messages.config_key_needs_modifier_fallback_msg;
-                return recordConfigFatalMsg(rt, config_path, msg);
+                noticeKeyDropped(name, text, messages.config_notice_key_reason_needs_modifier);
+                return count;
             },
-            // #496 — macOS 에서만 나온다. 겹침 / 부재를 갈라 다른 안내를 준다.
+            // #496 — macOS 에서만 나온다. 겹침 / 부재를 갈라 다른 이유를 준다.
             .position_aliased_on_macos => {
-                var buf: [640]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.config_key_position_aliased_format, .{ action.configName(), text }) catch
-                    messages.config_key_position_aliased_fallback_msg;
-                return recordConfigFatalMsg(rt, config_path, msg);
+                noticeKeyDropped(name, text, messages.config_notice_key_reason_position_aliased);
+                return count;
             },
             .position_absent_on_macos => {
-                var buf: [640]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.config_key_position_absent_format, .{ action.configName(), text }) catch
-                    messages.config_key_position_absent_fallback_msg;
-                return recordConfigFatalMsg(rt, config_path, msg);
+                noticeKeyDropped(name, text, messages.config_notice_key_reason_position_absent);
+                return count;
             },
         };
         const hotkey = Hotkey.fromParsed(parsed);
 
+        // **먼저 나온 것이 이긴다** (SPEC §7.3). 파일을 위에서 아래로 읽는 순서와 같아
+        // 사용자에게 설명하기 쉽고, 뒤에 적은 쪽이 앞을 조용히 덮어쓰는 일이 없다.
         for (config.key_bindings[0..count]) |existing| {
             if (std.meta.eql(existing.hotkey, hotkey)) {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.config_key_conflict_format, .{
-                    text,
-                    existing.action.configName(),
-                    action.configName(),
-                }) catch messages.config_key_conflict_fallback_msg;
-                return recordConfigFatalMsg(rt, config_path, msg);
+                appendNotice(
+                    &repaired_list,
+                    messages.config_notice_key_conflict_format,
+                    .{ name, text, existing.action.configName() },
+                );
+                return count;
             }
         }
 
         if (count >= MAX_KEY_BINDINGS) {
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.config_key_too_many_format, .{MAX_KEY_BINDINGS}) catch
-                messages.config_key_too_many_fallback_msg;
-            return recordConfigFatalMsg(rt, config_path, msg);
+            noticeKeyDropped(name, text, messages.config_notice_key_reason_too_many);
+            return count;
         }
         config.key_bindings[count] = .{ .hotkey = hotkey, .action = action };
         return count + 1;
@@ -3254,6 +3235,178 @@ pub fn showLoadNotice(rt: Runtime, config: *Config) void {
     showLoadNoticeText(rt, notice);
 }
 
+/// 안내 본문을 조립한다 — 세 platform 이 **같은 글자**를 본다.
+///
+/// 두 묶음을 나눠 세우는 것이 이 함수의 요점이다. "넣거나 고치세요" 와 "지우세요" 는
+/// 사용자가 파일에서 할 일이 반대라, 한 줄로 섞으면 어느 쪽인지 다시 읽어야 한다.
+/// 비어 있는 묶음의 머리글은 세우지 않는다.
+pub fn configNoticeMessage(buf: []u8, path: ?[]const u8, n: ConfigNotice) []const u8 {
+    // **꼬리 두 조각을 미리 떼어 둔다.** Linux overlay 는 상한 (4096) 을 넘으면 앞을
+    // 남기고 **뒤를 자른다** (`dialog/linux.zig` 의 `copyMessage`). 목록을 먼저 다 쓰고
+    // 뒤에 붙이면, 목록이 긴 바로 그 경우에 — 파일을 버리는 쪽이 빠른 그 경우에 —
+    // 탈출구가 잘려 나간다. 그래서 자리를 먼저 잡고 목록을 그 앞까지만 쓴다.
+    const tail = "\n\n" ++ messages.config_notice_reset_hint;
+    const cut_note = "\n" ++ messages.config_notice_truncated_msg;
+    const reserve = tail.len + cut_note.len;
+    if (buf.len <= reserve) return "";
+
+    var w: std.Io.Writer = .fixed(buf[0 .. buf.len - reserve]);
+    // 경로가 첫 줄이다 (#495 — 남은 fatal 과 같은 봉투). 본문 끝이 "파일을 지우면 새로
+    // 만들어 준다" 고 말하는데 어느 파일인지 안 적혀 있었다 — 이름이 인스턴스마다 다르고
+    // (`config_8.toml`) 자리도 OS 마다 달라서 경로 없이는 지울 수가 없다.
+    var overflow = false;
+    if (path) |pth| {
+        w.print(messages.config_error_path_prefix_format, .{pth}) catch {
+            overflow = true;
+        };
+    }
+    if (n.repaired.len > 0) {
+        w.writeAll(messages.config_notice_repaired_header) catch {
+            overflow = true;
+        };
+        w.writeAll("\n") catch {};
+        w.writeAll(n.repaired) catch {
+            overflow = true;
+        };
+    }
+    if (n.removable.len > 0) {
+        if (n.repaired.len > 0) w.writeAll("\n") catch {};
+        w.writeAll(messages.config_notice_removable_header) catch {
+            overflow = true;
+        };
+        w.writeAll("\n") catch {};
+        w.writeAll(n.removable) catch {
+            overflow = true;
+        };
+    }
+    const body_len = w.buffered().len;
+
+    // 잘렸으면 그 사실을 **본문 안에** 적는다. 여기서 빠지면 사용자는 목록이 전부인 줄
+    // 알고 고친 뒤, 다음 실행에서 처음 보는 항목을 또 만난다. 수집기가 넘친 경우
+    // (`n.truncated`) 와 이 버퍼가 모자란 경우 둘 다 같은 줄을 세운다.
+    var end = body_len;
+    if (n.truncated or overflow) {
+        @memcpy(buf[end..][0..cut_note.len], cut_note);
+        end += cut_note.len;
+    }
+    // 목록 뒤에 **빠져나갈 길**. 예약해 둔 자리라 언제나 들어간다.
+    @memcpy(buf[end..][0..tail.len], tail);
+    end += tail.len;
+    return buf[0..end];
+}
+
+/// 조립에 필요한 여유 — 머리글 · 경로 봉투 · 꼬리 두 조각. 목록 길이에 이것을 더해
+/// 버퍼를 잡으므로 **상한이 아니다.**
+const config_notice_overhead: usize = 1024;
+
+/// 안내 본문 앞에 **경로를 첫 줄로** 붙인다 (#495 — 남은 fatal 과 같은 봉투).
+///
+/// 본문 끝이 *"파일을 지우면 새로 만들어 준다"* 고 말하는데 어느 파일인지는 안 적혀
+/// 있었다. 파일 이름이 인스턴스마다 다르고 (`config_8.toml`) 자리도 OS 마다 달라서,
+/// 경로 없이는 지울 수가 없다. `Open Config` 버튼이 여는 파일이기도 하다.
+///
+/// 자리가 모자라면 **본문을 살린다** — 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
+fn configNoticeWithPath(buf: []u8, path: []const u8, body: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
+}
+
+test "#655 안내는 경로를 첫 줄에 붙인다 — 어느 파일을 지울지 알려 준다" {
+    var buf: [1024]u8 = undefined;
+    const out = configNoticeWithPath(&buf, "/home/user/.config/tildaz/config_8.toml", "BODY");
+    try std.testing.expectEqualStrings(
+        "Config: /home/user/.config/tildaz/config_8.toml\n\nBODY",
+        out,
+    );
+    // 남은 fatal 과 **같은 봉투**다 — 두 다이얼로그가 다른 형식을 쓰면 안 된다.
+    try std.testing.expect(std.mem.startsWith(u8, out, "Config: "));
+}
+
+test "#655 자리가 모자라면 경로 대신 본문을 살린다" {
+    var tiny: [8]u8 = undefined;
+    // 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
+    try std.testing.expectEqualStrings(
+        "BODY",
+        configNoticeWithPath(&tiny, "/very/long/path/config_0.toml", "BODY"),
+    );
+}
+
+/// #655 — 고친 것이 있으면 **한 번** 알린다. 담긴 것이 없으면 아무 일도 하지 않으므로
+/// host 는 조건 없이 부르면 된다.
+///
+/// `showLoadNotice` 와 같은 시점 · 같은 자리에서 부른다 (창을 세운 뒤). Linux 는 그
+/// 전에는 다이얼로그 backend 가 없어 안내가 보이지 않는다 (#501).
+///
+/// `quiet` 는 `-e` 로 명령을 실행하는 인스턴스다. 스크립트가 다이얼로그 앞에서 멈추면
+/// 안 되므로 로그로만 남긴다 — 로그에는 어차피 `appendNotice` 가 줄마다 이미 적었다.
+/// `before_open` — 파일을 열기 **직전에** host 가 할 일. 우리 창이 항상-위라 그대로
+/// 열면 편집기가 뒤에 뜬다 (macOS `NSPopUpMenuWindowLevel` · Windows `WS_EX_TOPMOST`).
+/// host 마다 비키는 방법이 달라 (창 레벨 / `SetWindowPos`) 여기서 부르지 않고 넘겨받는다.
+pub fn showConfigNotice(
+    rt: Runtime,
+    allocator: std.mem.Allocator,
+    quiet: bool,
+    before_open: ?*const fn () void,
+) void {
+    const n = pendingConfigNotice() orelse return;
+    log.appendLine("config", "notice shown: {d} item(s){s}", .{ n.count, if (n.truncated) " (truncated)" else "" });
+    // `-e` 는 다이얼로그를 띄우지 않는다 — 조립도 하지 않는다. 줄마다 이미 로그에 있다.
+    if (quiet) {
+        clearConfigNotice();
+        return;
+    }
+
+    const path = paths.configPath(rt, allocator) catch |err| blk: {
+        // 경로를 못 얻어도 **목록은 보여 준다** — 안내를 통째로 잃는 것이 더 나쁘다.
+        log.appendLine("config", "config path unavailable for the notice: {s}", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (path) |pth| allocator.free(pth);
+
+    // **상한이 없다.** 목록 길이에 조립 여유만 더해 잡는다 — 세 다이얼로그 backend 가
+    // 임의 길이를 받아 스크롤하므로 (macOS `NSTextView`, Windows `dialogEditTextAlloc`,
+    // Linux `message_owned`) 여기서 자를 이유가 없다.
+    const want = n.repaired.len + n.removable.len +
+        (if (path) |pth| pth.len else 0) + config_notice_overhead;
+    const buf = allocator.alloc(u8, want) catch {
+        // 여기서 못 얻으면 안내를 통째로 잃는다 — 로그에는 줄마다 이미 남아 있다.
+        log.appendLine("config", "notice buffer allocation failed — log only", .{});
+        clearConfigNotice();
+        return;
+    };
+    defer allocator.free(buf);
+    const shown = configNoticeMessage(buf, path, n);
+    // 조립한 **뒤에** 비운다. `n` 의 slice 가 그 버퍼를 가리키고 있다.
+    clearConfigNotice();
+
+    // 두 번째 버튼이 고칠 파일을 연다. 이 안내의 목적이 **사용자가 직접 고치게**
+    // 만드는 것이라, 목록만 보여주고 파일은 알아서 찾으라고 하면 절반만 한 것이다.
+    // 다이얼로그가 `Open Config` 를 **그 자리에서** 실행한다 (창은 남는다). Zig 의 fn
+    // 포인터는 closure 가 아니라 인자를 못 실으므로 모듈 전역에 걸어 둔다 — 다이얼로그가
+    // modal 이라 한 번에 하나만 산다.
+    notice_open_rt = rt;
+    notice_open_allocator = allocator;
+    notice_open_before = before_open;
+    defer notice_open_before = null;
+    dialog.showNoticeWithAction(rt, messages.config_notice_title, shown, messages.button_open_config, openConfigFromNotice);
+}
+
+var notice_open_rt: Runtime = undefined;
+var notice_open_allocator: std.mem.Allocator = undefined;
+var notice_open_before: ?*const fn () void = null;
+
+/// 안내의 `Open Config` 가 눌렸을 때. **다이얼로그는 그대로 있다** — 사용자는 목록을
+/// 보면서 파일을 고친다.
+fn openConfigFromNotice() void {
+    log.appendLine("config", "notice action: opening the config file", .{});
+    if (notice_open_before) |f| f();
+    const path = paths.configPath(notice_open_rt, notice_open_allocator) catch |err| {
+        log.appendLine("config", "open config from notice failed: {s}", .{@errorName(err)});
+        return;
+    };
+    defer notice_open_allocator.free(path);
+    system_open.openInDefaultApp(notice_open_rt, notice_open_allocator, path);
+}
+
 /// Linux host 는 `*const Config` 를 들고 있어 위 함수의 "필드를 비운다" 를 할 수
 /// 없다. 대신 자기 one-shot flag 로 한 번만 부른다 — 문안과 로그는 여기 한 곳이라
 /// 세 platform 이 같은 안내를 낸다.
@@ -3276,8 +3429,21 @@ pub fn showLoadNoticeText(rt: Runtime, notice: []const u8) void {
 /// 가 갈리는 것과 **같은 이유, 같은 모양**이다 (#501).
 pub fn showFatalNoticeIfAny(rt: Runtime) void {
     const notice = pendingFatalNotice() orelse return;
+
+    // #655 — **빠져나갈 길을 함께 적는다.** 여기는 고칠 안내 (`showConfigNotice`) 와 달리
+    // 한 버튼이고, 누르면 앱이 사라진다 (`showFatal` 이 `noreturn` 이다). `Open Config`
+    // 버튼을 달지 않는 이유가 그것이다 — 편집기를 띄운 직후 프로세스가 죽으면 무엇이
+    // 열렸는지 사용자가 알기 어렵고, 두 다이얼로그를 잇달아 띄우게 된다.
+    //
+    // 그래서 *행동* 대신 *길* 을 준다. 여기까지 오는 것은 TOML 구문이 깨진 경우라
+    // 어느 줄을 고치라고 짚어 줄 수조차 없고, 파일을 버리는 것이 사실상 유일한 길이다.
+    // fatal 문구는 `fatal_notice_capacity` 로 상한이 있다 (그쪽은 담을 때 이미 잘린다).
+    // 꼬리를 붙일 자리만 더 잡으면 여기서 다시 잘릴 일이 없다.
+    var buf: [fatal_notice_capacity + messages.config_notice_reset_hint.len + 8]u8 = undefined;
+    const body = std.fmt.bufPrint(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
+
     // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
-    dialog.showFatal(rt, messages.config_error_title, notice);
+    dialog.showFatal(rt, messages.config_error_title, body);
 }
 
 /// #577 — config 오류로 시작을 거부할 때 그 사실을 나르는 error. 문구 자체는
@@ -3295,6 +3461,183 @@ const fatal_notice_capacity: usize = 4096;
 /// 안 들고 있어 넘기려면 재귀 전체에 인자를 하나 더 끼워야 한다.
 var fatal_notice_buf: [fatal_notice_capacity]u8 = undefined;
 var fatal_notice_len: usize = 0;
+
+// ── #655 — 고쳐서 계속 뜨는 항목 (SPEC 원칙 5 · §7.3) ────────────────────────
+//
+// **fatal 과 다른 통로다.** fatal 은 보여 주고 *종료* 하고, 이쪽은 보여 주고 *계속* 뜬다.
+// 통로를 합치면 host 가 "이걸 보고 죽어야 하나 살아야 하나" 를 문구로 판단하게 된다.
+//
+// 두 묶음으로 나눠 담는다 — 사용자가 할 일이 다르기 때문이다. `repaired` 는 *넣거나 고칠*
+// 것이고 `removable` 은 *지울* 것이다. 차례는 `repaired` 가 스키마 순서 (읽는 순서대로
+// 쌓으면 저절로 그렇게 된다), `removable` 은 파일에 나온 순서다.
+//
+// 정적 버퍼인 이유는 fatal 쪽과 같다 — 파싱이 끝나고 한참 뒤에 host 가 그리므로 할당한
+// 메모리로는 수명을 맞추기 어렵다. 상한을 넘기면 **조용히 자르지 않고** 마지막 줄로 알린다
+// (v0.9.3 처럼 `[keys]` 가 15 개 늘어도 이 크기면 넉넉하다).
+/// #655 — 안내를 모으는 자리. **상한이 없다.**
+///
+/// 예전에는 두 묶음이 각각 16 KiB 고정이었고 넘치면 `truncated` 로 표시했다. 그 설계가
+/// 틀린 이유: 목록이 길수록 사용자에게 필요한 정보가 많은데 **바로 그때 잘렸다.** 세
+/// 다이얼로그 backend 는 이미 임의 길이를 받아 스크롤한다 (macOS `NSTextView` + 스크롤뷰,
+/// Windows `dialogEditTextAlloc` 의 EDIT, Linux `message_owned`) — 상한은 우리 쪽에만
+/// 있었다. 이제 늘려 담고, 넘치는 일은 할당이 실패할 때뿐이다.
+var notice_allocator: ?std.mem.Allocator = null;
+var repaired_list: std.ArrayList(u8) = .empty;
+var removable_list: std.ArrayList(u8) = .empty;
+var notice_count: usize = 0;
+var notice_truncated: bool = false;
+
+/// `Config.load` · `Config.parse` 가 시작할 때 심는다. 안내는 그 뒤 `showConfigNotice`
+/// 까지 살아 있어야 하는데, 두 함수가 받는 allocator (host 의 gpa) 가 그보다 오래 산다.
+fn setNoticeAllocator(allocator: std.mem.Allocator) void {
+    notice_allocator = allocator;
+}
+
+/// #655 — config 를 고쳐서 띄웠다는 안내. 고칠 것이 없으면 `null`.
+pub const ConfigNotice = struct {
+    /// 기본값을 썼거나 값을 고친 항목 — 한 줄에 하나, 스키마 순서.
+    repaired: []const u8,
+    /// 지워야 할 키 · 섹션 — 한 줄에 하나.
+    removable: []const u8,
+    /// 담긴 줄 수. 0 이면 이 구조가 만들어지지 않는다.
+    count: usize,
+    /// **할당이 실패해** 일부를 못 담았는가. 상한 때문에 잘리는 일은 없다.
+    /// 로그에는 어느 경우든 전부 남는다.
+    truncated: bool,
+};
+
+pub fn pendingConfigNotice() ?ConfigNotice {
+    if (notice_count == 0) return null;
+    return .{
+        .repaired = repaired_list.items,
+        .removable = removable_list.items,
+        .count = notice_count,
+        .truncated = notice_truncated,
+    };
+}
+
+/// host 가 한 번 보여 준 뒤 부른다. 프로세스당 한 번만 뜨게 하는 것이 목적이다 (SPEC §7.3)
+/// — 창을 여닫을 때마다 뜨면 드롭다운이 마비된다.
+pub fn clearConfigNotice() void {
+    if (notice_allocator) |a| {
+        repaired_list.deinit(a);
+        removable_list.deinit(a);
+    }
+    repaired_list = .empty;
+    removable_list = .empty;
+    notice_count = 0;
+    notice_truncated = false;
+    // **allocator 도 함께 버린다.** 남겨 두면 이미 죽은 arena 를 가리킨 채 다음 호출이
+    // 그리로 할당한다 (test 에서 실제로 크래시로 드러났다). 유효 구간을
+    // `setNoticeAllocator` ~ `clearConfigNotice` 로 못박는다.
+    notice_allocator = null;
+}
+
+/// 한 줄을 묶음에 더한다. **로그에는 언제나 남긴다** — 담지 못해도 원인이 사라지지 않게.
+fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) void {
+    var line_buf: [512]u8 = undefined;
+    // 조립 실패는 **조용히 넘기지 않는다.** 줄은 잃어도 "다 못 담았다" 는 사실은
+    // 남아야 사용자가 로그를 본다.
+    const line = std.fmt.bufPrint(&line_buf, fmt, args) catch {
+        notice_count += 1;
+        notice_truncated = true;
+        return;
+    };
+    log.appendLine("config", "{s}", .{line});
+    notice_count += 1;
+
+    const a = notice_allocator orelse {
+        notice_truncated = true;
+        return;
+    };
+    list.appendSlice(a, line) catch {
+        notice_truncated = true;
+        return;
+    };
+    list.append(a, '\n') catch {
+        notice_truncated = true;
+    };
+}
+
+/// 키가 없어 기본값을 썼다.
+fn noticeMissing(path: []const u8) void {
+    appendNotice(&repaired_list, messages.config_notice_missing_format, .{path});
+}
+
+/// 모르는 키 · 섹션이라 무시했다.
+fn noticeUnknown(path: []const u8) void {
+    appendNotice(&removable_list, messages.config_notice_unknown_format, .{path});
+}
+
+/// 값을 읽을 수 없어 기본값을 썼다.
+fn noticeBadValue(path: []const u8, used: []const u8) void {
+    appendNotice(&repaired_list, messages.config_notice_bad_value_format, .{ path, used });
+}
+
+/// 범위 밖이라 경계로 들였다. **기본값으로 되돌리지 않는다** — "아주 크게" 라고 적은
+/// 사용자의 의도에 경계값이 기본값보다 가깝다 (SPEC §7.3).
+fn noticeClamped(path: []const u8, limit: anytype) void {
+    var buf: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
+    appendNotice(&repaired_list, messages.config_notice_clamped_format, .{ path, text });
+}
+
+/// 여럿 중 하나를 버렸다 (`[keys]` 의 한 항목, 상한을 넘은 fallback 폰트).
+fn noticeDropped(path: []const u8, what: []const u8) void {
+    appendNotice(&repaired_list, messages.config_notice_dropped_format, .{ path, what });
+}
+
+/// `[keys]` 의 키 하나를 버렸다. 어느 액션의 어떤 조합을 왜 버렸는지까지 적는다 —
+/// 액션만 알려 주면 여러 키를 적은 사용자가 어느 줄을 고쳐야 할지 모른다.
+fn noticeKeyDropped(action: []const u8, text: []const u8, why: []const u8) void {
+    appendNotice(
+        &repaired_list,
+        messages.config_notice_key_dropped_format,
+        .{ action, text, why },
+    );
+}
+
+/// 실수 필드 하나. 못 읽으면 기본값, 범위 밖이면 clamp.
+///
+/// `repairStructure` 가 타입이 어긋난 값을 이미 지웠으므로 여기 오는 값은 숫자다.
+/// 그래도 `parseFloat` 실패를 열어 두는 것은, TOML 이 `1e999` 같은 표기를 숫자로
+/// 읽어 놓고 f64 로는 못 담는 경우가 남기 때문이다.
+fn floatInRange(v: toml.Value, path: []const u8, lo: f32, hi: f32, fallback: f32) f32 {
+    const f = parseFloat(v) orelse {
+        noticeBadValue(path, messages.config_notice_used_default);
+        return fallback;
+    };
+    if (!std.math.isFinite(f)) {
+        noticeBadValue(path, messages.config_notice_used_default);
+        return fallback;
+    }
+    if (f < lo) {
+        noticeClamped(path, lo);
+        return lo;
+    }
+    if (f > hi) {
+        noticeClamped(path, hi);
+        return hi;
+    }
+    return f;
+}
+
+/// 정수 필드 하나 — 범위 밖이면 clamp.
+fn intInRange(v: toml.Value, path: []const u8, lo: i64, hi: i64, fallback: i64) i64 {
+    if (v != .integer) {
+        noticeBadValue(path, messages.config_notice_used_default);
+        return fallback;
+    }
+    if (v.integer < lo) {
+        noticeClamped(path, lo);
+        return lo;
+    }
+    if (v.integer > hi) {
+        noticeClamped(path, hi);
+        return hi;
+    }
+    return v.integer;
+}
 
 /// #577 — host 가 다이얼로그를 그릴 수 있게 된 뒤 읽는다. 담긴 것이 없으면 `null`.
 ///
@@ -3423,68 +3766,160 @@ fn resetFatalNoticeForTest() void {
 /// #493 — `std.json.Value` 트리 비교에서 `toml.Value` 트리 비교로 옮겼다. 구조는
 /// 그대로다: 사용자 문서와 `defaultConfigToml` 을 파싱한 기준 문서를 같은 자리에서
 /// 비교해 key set · 중첩 · 타입을 검사한다.
-fn validateStructure(rt: Runtime, user: toml.Value, def: toml.Value, ctx: []const u8, config_path: []const u8) LoadError!void {
+/// #655 — 사용자 트리를 **스키마에 맞게 고친다.** 예전 이름은 `validateStructure` 였고 하는
+/// 일은 *거부* 였다 — 키가 없거나, 모르거나, 타입이 다르면 그 자리에서 종료했다.
+///
+/// 이제 셋 다 고치고 안내에 담는다 (SPEC 원칙 5 · §7.3):
+///
+///   - **없는 키** — 아무것도 안 한다. `parse` 가 `root.table.get(...)` 으로 읽으므로 없으면
+///     `Config` 구조체의 기본값이 그대로 남는다. 안내만 담는다.
+///   - **모르는 키 · 섹션** — 트리에서 **지운다.** `parse` 는 아는 이름만 꺼내 보므로 지우지
+///     않아도 무해하지만, 지워 두면 이 함수가 "고친 트리" 를 넘긴다는 계약이 단순해진다.
+///     섹션이면 그 하나만 담는다 — 안의 키를 다 나열하면 안내가 쓸데없이 길어진다.
+///   - **타입이 다른 값** — 트리에서 **지운다.** 이것이 지워야 하는 진짜 이유다: 안 지우면
+///     `parse` 가 `v.boolean` · `v.string` 으로 읽다가 **터진다** (`auto_start = "yes"`).
+///     지우면 없는 키와 같은 길을 타서 기본값이 남는다.
+///
+/// 숫자끼리는 (`integer` ↔ `float`) 타입이 달라도 지우지 않는다 — `parseFloat` 가 둘 다 받고,
+/// `size_point = 14.0` 같은 표기를 오류로 만들 이유가 없다.
+///
+/// **해시맵을 돌면서 지우지 않는다.** 지울 키를 먼저 모아 두고 순회가 끝난 뒤 지운다 —
+/// `StringHashMap` 은 순회 중 수정이 안전하지 않다.
+fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
-    if (user_tag != def_tag) {
-        const both_numeric = (user_tag == .integer or user_tag == .float) and
-            (def_tag == .integer or def_tag == .float);
-        if (!both_numeric) {
-            var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                messages.config_type_mismatch_format,
-                .{ ctx, @tagName(def_tag), @tagName(user_tag) },
-            ) catch messages.config_type_mismatch_fallback_msg;
-            return recordConfigFatalMsg(rt, config_path, msg);
-        }
+    if (user_tag != .table or def_tag != .table) return;
+
+    // ① 스키마에 있는데 파일에 없는 키 — 안내만.
+    //
+    // **차례가 기본 문서의 차례다.** `toml.Table` 은 `StringHashMap` 이라 순회가 해시
+    // 순서고, 그대로 쓰면 `fullscreen · switch_tab7 · split_down · switch_tab5 …` 처럼
+    // 무작위로 나온다. 사용자는 이 목록을 **파일과 한 줄씩 대조**하는데 (v0.9.2 → v0.9.3
+    // 업그레이드가 45 줄짜리였다) 순서가 섞이면 대조 자체가 안 된다. SPEC §7.3 이
+    // "스키마 순서대로" 라고 적은 것이 이 뜻이다.
+    var order_buf: [MAX_SCHEMA_KEYS][]const u8 = undefined;
+    const ordered = schemaKeyOrder(doc, ctx, &order_buf);
+    for (ordered) |key| {
+        if (def.table.get(key) == null) continue;
+        if (user.table.get(key) != null) continue;
+        var path_buf: [256]u8 = undefined;
+        noticeMissing(joinPath(&path_buf, ctx, key));
     }
-
-    if (user_tag != .table) return;
-
+    // 문서에서 못 찾은 키가 남아 있으면 (스키마와 문서가 갈린 경우) 빠뜨리지 않는다 —
+    // 차례는 잃어도 **안내를 잃지는 않는다**.
     var def_iter = def.table.iterator();
     while (def_iter.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (user.table.get(key) == null) {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                messages.config_missing_key_format,
-                .{ key, ctx },
-            ) catch messages.config_missing_key_fallback_msg;
-            return recordConfigFatalMsg(rt, config_path, msg);
-        }
-    }
-
-    var user_iter = user.table.iterator();
-    while (user_iter.next()) |entry| {
-        const key = entry.key_ptr.*;
-        if (def.table.get(key) == null) {
-            // #493 — `_` prefix key 를 주석 대용으로 허용하던 예외를 없앴다 (#173).
-            // JSON 에 주석이 없어서 두었던 우회인데, TOML 은 `#` 으로 진짜 주석을
-            // 쓸 수 있으므로 필요가 사라졌다. 남겨 두면 `_shell` 같은 오타가 조용히
-            // 무시돼 "왜 설정이 안 먹지" 가 된다 — 모르는 key 는 전부 알린다.
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(
-                &buf,
-                messages.config_unknown_key_format,
-                .{ key, ctx },
-            ) catch messages.config_unknown_key_fallback_msg;
-            return recordConfigFatalMsg(rt, config_path, msg);
-        }
-    }
-
-    var rec_iter = def.table.iterator();
-    while (rec_iter.next()) |entry| {
-        const key = entry.key_ptr.*;
-        const u_val = user.table.get(key).?;
+        if (user.table.get(key) != null) continue;
+        if (containsKey(ordered, key)) continue;
         var path_buf: [256]u8 = undefined;
-        const path = if (std.mem.eql(u8, ctx, "(top-level)"))
-            std.fmt.bufPrint(&path_buf, "{s}", .{key}) catch key
-        else
-            std.fmt.bufPrint(&path_buf, "{s}.{s}", .{ ctx, key }) catch key;
-        try validateStructure(rt, u_val, entry.value_ptr.*, path, config_path);
+        noticeMissing(joinPath(&path_buf, ctx, key));
     }
+
+    // ② 파일에 있는데 스키마에 없는 키 — 지우고 "지우세요" 로.
+    while (true) {
+        var drop_buf: [64][]const u8 = undefined;
+        var drop_n: usize = 0;
+        var user_iter = user.table.iterator();
+        while (user_iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (def.table.get(key) != null) continue;
+            // #493 — `_` prefix 를 주석 대용으로 허용하던 예외는 없앤 채로 둔다. TOML 에는 `#`
+            // 주석이 있으므로 우회가 필요 없고, `_shell` 같은 오타가 조용히 무시되면 안 된다.
+            var path_buf: [256]u8 = undefined;
+            noticeUnknown(joinPath(&path_buf, ctx, key));
+            drop_buf[drop_n] = key;
+            drop_n += 1;
+            if (drop_n == drop_buf.len) break;
+        }
+        // 순회 중 지우면 iterator 가 깨진다 — 다 훑은 뒤에 지운다. 지우지 못한 채
+        // 다음 pass 로 넘어가면 같은 키를 또 안내하게 되므로, 남김없이 지운다.
+        for (drop_buf[0..drop_n]) |key| _ = user.table.remove(key);
+        if (drop_n < drop_buf.len) break;
+    }
+
+    // ③ 양쪽에 있는 키 — 타입을 보고, 테이블이면 한 단계 더 들어간다.
+    //
+    // 타입이 어긋난 값은 **반드시** 트리에서 빠져야 한다. 남겨 두면 `parse` 가
+    // `v.boolean` · `v.string` 으로 읽다가 터진다 — 부팅을 막지 않겠다는 것이
+    // 이 이슈이므로 여기서 새는 것이 곧 이슈의 재발이다. 그래서 한 자리도 놓치지
+    // 않도록, 버퍼가 가득 차면 (= 아직 남았을 수 있다) 다시 훑는다. 지울 것이
+    // 없는 pass 에서 끝나므로 유한하다.
+    while (true) {
+        var bad_buf: [64][]const u8 = undefined;
+        var bad_n: usize = 0;
+        var rec_iter = def.table.iterator();
+        while (rec_iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const u_val = user.table.get(key) orelse continue;
+            var path_buf: [256]u8 = undefined;
+            const path = joinPath(&path_buf, ctx, key);
+
+            const ut = std.meta.activeTag(u_val);
+            const dt = std.meta.activeTag(entry.value_ptr.*);
+            if (ut != dt) {
+                // TOML 은 `8` 을 integer, `8.0` 을 float 으로 읽는다. 숫자 자리에 숫자를
+                // 적은 것을 타입 오류로 보면 안 된다 — 값 폴백이 둘 다 받는다.
+                const both_numeric = (ut == .integer or ut == .float) and (dt == .integer or dt == .float);
+                if (!both_numeric) {
+                    noticeBadValue(path, messages.config_notice_used_default);
+                    bad_buf[bad_n] = key;
+                    bad_n += 1;
+                    if (bad_n == bad_buf.len) break;
+                    continue;
+                }
+            }
+            if (ut == .table) repairStructure(u_val, entry.value_ptr.*, path, doc);
+        }
+        // 순회 중 지우면 iterator 가 깨진다 — 다 훑은 뒤에 지운다.
+        for (bad_buf[0..bad_n]) |key| _ = user.table.remove(key);
+        if (bad_n < bad_buf.len) break;
+    }
+}
+
+/// 한 섹션이 가질 수 있는 키 수의 상한. `[keys]` 가 38 개로 가장 크다.
+const MAX_SCHEMA_KEYS = 128;
+
+fn containsKey(list: []const []const u8, key: []const u8) bool {
+    for (list) |k| if (std.mem.eql(u8, k, key)) return true;
+    return false;
+}
+
+/// 기본 문서에서 `section` 에 속한 키를 **적힌 차례대로** 뽑는다. 최상위는
+/// `"(top-level)"` — 첫 `[header]` 앞의 키들이다.
+///
+/// 값 트리가 아니라 **문서 본문**을 보는 이유: 파서가 주는 것은 해시맵이라 차례가
+/// 없다. 생성기가 적은 차례가 곧 사용자 파일의 차례이므로, 안내를 그 차례로 세우면
+/// 위에서 아래로 훑으며 고칠 수 있다.
+fn schemaKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const []const u8 {
+    const want_top = std.mem.eql(u8, section, "(top-level)");
+    var n: usize = 0;
+    var in_section = want_top;
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            const name = line[1..close];
+            in_section = !want_top and std.mem.eql(u8, name, section);
+            continue;
+        }
+        if (!in_section) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (key.len == 0) continue;
+        if (n == out.len) break;
+        out[n] = key;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+/// `ctx.key` 를 만든다. 최상위면 `key` 그대로다.
+fn joinPath(buf: []u8, ctx: []const u8, key: []const u8) []const u8 {
+    if (std.mem.eql(u8, ctx, "(top-level)")) return key;
+    return std.fmt.bufPrint(buf, "{s}.{s}", .{ ctx, key }) catch key;
 }
 
 // --- Tests ---
@@ -3531,9 +3966,12 @@ test "#501 안내는 Config 소유이고 deinit 이 정확히 한 번 해제한�
 }
 
 test "#316 · #495 config 오류는 경로를 첫 줄에 정확히 한 번 담는다" {
+    // #655 로 값 오류가 전부 폴백이 된 뒤, 이 봉투를 실제로 쓰는 것은 **남은 fatal**
+    // 뿐이다 (TOML 구문 오류 · 전역 hotkey 중복). 본보기도 그중 하나로 든다 —
+    // 없어진 문구를 본보기로 쓰면 test 가 죽은 상수를 붙잡아 둔다.
     const message = try configErrorMessageAlloc(
         std.testing.allocator,
-        messages.config_font_family_empty_msg,
+        messages.config_parse_failed_fallback_msg,
         "/home/user/.config/tildaz/config_7.toml",
     );
     defer std.testing.allocator.free(message);
@@ -3541,7 +3979,7 @@ test "#316 · #495 config 오류는 경로를 첫 줄에 정확히 한 번 담�
     // #495 — 경로가 **첫 줄**이다. 사용자가 오류 내용을 읽기 전에 눈에 들어와야 한다.
     try std.testing.expectEqualStrings(
         "Config: /home/user/.config/tildaz/config_7.toml\n\n" ++
-            "Configuration: \"font.family\" must not be empty.",
+            "Failed to parse config file.",
         message,
     );
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, message, "/home/user/.config/tildaz/config_7.toml"));
@@ -3554,9 +3992,11 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
         "Failed to parse config file.\n\nError: UnexpectedToken",
         "Configuration: failed to parse \"hotkey\" value \"plain-t\".",
         "Configuration: \"window.width_percent\" must be a number.",
+        // #655 — 본보기는 **지금 존재하는** 문구여야 한다. 예전에는 여기 세 줄이
+        // `missing required key` · `unknown key` · `type mismatch` 였는데, 그 갈래가
+        // 전부 폴백이 되면서 문구 자체가 없어졌다. 봉투는 남은 fatal 이 그대로 쓴다.
         "Configuration: unknown theme \"Missing\"\n\nAvailable themes:\nTilda",
-        "Configuration: missing required key \"font\" in (top-level).",
-        "Configuration: unknown key \"extra\" in (top-level).",
+        "Failed to parse config file.",
     };
     const config_paths = [_][]const u8{
         "/home/user/.config/tildaz/config_0.toml",
@@ -3586,18 +4026,38 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, long_message, &long_path));
 }
 
-/// #577 — 늦은 단계 config 오류는 `parse` 가 버리는 부분 할당을 남긴다 (`load` 의
-/// catch 주석). arena 로 감싸 어느 단계에서 걸려도 test 가 누수로 실패하지 않게 한다.
-fn expectParseInvalid(content: []const u8, config_path: []const u8) !void {
+/// 기본 template 의 한 줄을 바꿔 파싱한다 — 값 폴백 test 의 공통 뼈대.
+///
+/// 부분 할당이 남을 수 있어 (`load` 의 catch 주석) arena 로 감싼다.
+const ValueCase = struct {
+    arena: std.heap.ArenaAllocator,
+    config: Config,
+
+    fn deinit(self: *ValueCase) void {
+        // **안내를 먼저 비운다.** `parse` 가 이 arena 를 안내용 allocator 로 심었으므로
+        // arena 를 먼저 내리면 죽은 allocator 로 해제하게 된다.
+        clearConfigNotice();
+        self.arena.deinit();
+        resetFatalNoticeForTest();
+    }
+
+    fn notice() ConfigNotice {
+        return pendingConfigNotice() orelse @panic("안내가 비어 있다 — 폴백이 조용히 지나갔다");
+    }
+};
+
+fn parseWithReplaced(needle: []const u8, with: []const u8) !ValueCase {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
+    const broken = try replaceFirst(a, full, needle, with);
     const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
-    // **죽지 않고 오류로 돌아온다.** 예전에는 이 자리가 `dialog.showFatal` +
-    // `exit(1)` 이라 이런 test 자체를 쓸 수 없었다 — 그것이 #577 의 원인이다.
-    try std.testing.expectError(
-        error.InvalidConfig,
-        Config.parse(rt, arena.allocator(), content, config_path),
-    );
+    // **어떤 값이 와도 돌아온다.** 여기서 에러가 나면 원칙 5 가 깨진 것이다.
+    const config = try Config.parse(rt, a, broken, "/home/user/.config/tildaz/config_0.toml");
+    return .{ .arena = arena, .config = config };
 }
 
 /// 기본 template 에서 한 section 을 통째로 지운다 — "예전 버전이 쓴 config" 를
@@ -3609,67 +4069,124 @@ fn tomlWithoutSection(allocator: std.mem.Allocator, doc: []const u8, header: []c
     return std.mem.concat(allocator, u8, &.{ doc[0..from], doc[to..] });
 }
 
-test "#577 스키마가 넓어진 뒤의 옛 config 는 프로세스를 죽이지 않고 문구를 담아 돌아온다" {
+test "#655 [input] 이 없는 v0.9.2 config 도 뜬다 — 기본값 + 안내" {
     const allocator = std.testing.allocator;
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
 
-    // v0.9.2 가 더한 `[input]` 이 없는 config — #577 의 실제 재현 조건이다.
+    // #577 이 재현 조건으로 쓰던 그 파일이다. 그때는 **죽었고** (문구만 담았다) 지금은 뜬다 —
+    // SPEC 원칙 5 가 바꾼 것이 정확히 이 줄이다.
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
     const old = try tomlWithoutSection(allocator, full, "\n[input]\n", "\n[keys]\n");
     defer allocator.free(old);
 
-    const path = "/home/user/.config/tildaz/config_0.toml";
-    try expectParseInvalid(old, path);
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    var config = try Config.parse(rt, allocator, old, "/home/user/.config/tildaz/config_0.toml");
+    defer config.deinit(allocator);
 
-    // 문구가 담겨 있어야 한다. 담기지 않으면 host 가 보여줄 것이 없어 증상이 그대로다.
-    const notice = pendingFatalNotice() orelse return error.TestUnexpectedResult;
-    // #495 형식 — 경로가 첫 줄, 정확히 한 번.
-    try std.testing.expect(std.mem.startsWith(u8, notice, "Config: " ++ path));
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, notice, path));
-    // 사용자가 무엇을 고쳐야 하는지 — 빠진 key 이름이 들어 있어야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, notice, "\"input\"") != null);
+    // 부팅을 막지 않는다. fatal 은 담기지 않아야 한다.
+    try std.testing.expect(pendingFatalNotice() == null);
+    // 그 자리는 기본값이다.
+    try std.testing.expectEqual(default_macos_option_as_alt, config.macos_option_as_alt);
+
+    // 안내에는 빠진 키가 나와야 한다 — 사용자가 무엇을 넣어야 하는지 알아야 고친다.
+    const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "input") != null);
+    try std.testing.expectEqual(@as(usize, 0), notice.removable.len);
 }
 
-test "#577 pane 액션이 빠진 v0.9.2 config 도 같은 경로로 안내된다" {
+test "#655 pane 액션이 빠진 config 도 뜬다 — 빠진 액션마다 한 줄" {
     const allocator = std.testing.allocator;
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
 
-    // v0.9.3 이 더한 15 개 pane 액션이 없는 config. `[keys]` 를 통째로 지우면 첫
-    // 액션에서 걸리므로, 여기서는 **pane 그룹만** 지운 상태를 만든다.
+    // v0.9.3 이 더한 pane 액션 15 개가 없는 config.
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
     const old = try tomlWithoutSection(allocator, full, "\n# Panes\n", "\n# Clipboard\n");
     defer allocator.free(old);
 
-    try expectParseInvalid(old, "/home/user/.config/tildaz/config_0.toml");
-    const notice = pendingFatalNotice() orelse return error.TestUnexpectedResult;
-    // 빠진 액션 이름이 나와야 한다 — 15 개 중 어느 것이든 첫 번째가 지목된다.
-    try std.testing.expect(std.mem.indexOf(u8, notice, "in keys") != null);
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    var config = try Config.parse(rt, allocator, old, "/home/user/.config/tildaz/config_0.toml");
+    defer config.deinit(allocator);
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+
+    // **한 번에 다 알려 준다.** 예전에는 첫 오류 하나만 담아서, 15 개를 고치려면 고치고
+    // 재시작하기를 15 번 해야 했다 (`#577 첫 오류만 담는다` 테스트가 그 동작을 고정했다).
+    try std.testing.expect(notice.count >= 15);
+    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "keys.split_left") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "keys.zoom_pane") != null);
+
+    // 빠진 액션은 기본 바인딩으로 돈다.
+    try std.testing.expect(config.key_binding_count > 0);
 }
 
-test "#577 첫 오류만 담는다 — 뒤 오류가 앞 문구를 덮지 않는다" {
+test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는다" {
     const allocator = std.testing.allocator;
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
 
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
-    const no_input = try tomlWithoutSection(allocator, full, "\n[input]\n", "\n[keys]\n");
-    defer allocator.free(no_input);
+    const with_junk = try std.fmt.allocPrint(allocator, "{s}\nbogus_key = 1\n", .{full});
+    defer allocator.free(with_junk);
 
-    try expectParseInvalid(no_input, "/first/config_0.toml");
-    const first = pendingFatalNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.startsWith(u8, first, "Config: /first/config_0.toml"));
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    var config = try Config.parse(rt, allocator, with_junk, "/home/user/.config/tildaz/config_0.toml");
+    defer config.deinit(allocator);
 
-    // 두 번째 오류는 담기지 않는다. 사용자가 고칠 지점은 첫 오류이고, 예전 동작
-    // (첫 오류에서 즉시 종료) 과 보이는 문구가 같아야 한다.
-    try expectParseInvalid(no_input, "/second/config_0.toml");
-    const still_first = pendingFatalNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.startsWith(u8, still_first, "Config: /first/config_0.toml"));
-    try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, still_first, "/second/"));
+    try std.testing.expect(pendingFatalNotice() == null);
+    const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    // "지울 것" 묶음에 들어가야 한다 — "넣을 것" 과 사용자가 할 일이 다르다.
+    try std.testing.expect(std.mem.indexOf(u8, notice.removable, "bogus_key") != null);
+    try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
+}
+
+test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse 가 터지지 않는다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
+
+    // `auto_start` 는 bool 인데 문자열을 적었다. 트리에서 지우지 않으면 `parse` 가
+    // `v.boolean` 으로 읽다가 **터진다** — 이 테스트가 그 자리를 지킨다.
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const broken = try replaceFirst(allocator, full, "auto_start       = true", "auto_start       = \"yes\"");
+    defer allocator.free(broken);
+
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    var config = try Config.parse(rt, allocator, broken, "/home/user/.config/tildaz/config_0.toml");
+    defer config.deinit(allocator);
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    try std.testing.expectEqual(Defaults.auto_start, config.auto_start);
+    const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "auto_start") != null);
+}
+
+/// 테스트용 — 첫 번째 `needle` 을 `with` 로 바꾼다.
+///
+/// 못 찾으면 **에러**다. 조용히 원본을 돌려주면 기본 config 의 서식이 바뀐 날
+/// 테스트가 아무것도 검사하지 않으면서 통과한다.
+fn replaceFirst(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, with: []const u8) ![]u8 {
+    const at = std.mem.indexOf(u8, haystack, needle) orelse return error.NeedleNotFound;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, haystack[0..at]);
+    try out.appendSlice(allocator, with);
+    try out.appendSlice(allocator, haystack[at + needle.len ..]);
+    return out.toOwnedSlice(allocator);
 }
 
 test "#577 정상 config 는 문구를 담지 않는다" {
@@ -3686,6 +4203,15 @@ test "#577 정상 config 는 문구를 담지 않는다" {
 
     // 담긴 것이 없어야 한다 — 있으면 host 가 정상 부팅을 오류로 끊는다.
     try std.testing.expectEqual(@as(?[]const u8, null), pendingFatalNotice());
+
+    // #655 — **안내도 없어야 한다.** 이것이 이 이슈에서 가장 위험한 회귀 자리다:
+    // `repairStructure` 가 대조하는 기준 (`schemaReferenceToml`) 과 생성기가 적는 문서
+    // (`defaultConfigToml`) 가 갈리면, 아무 잘못 없는 사용자가 **뜰 때마다** 다이얼로그를
+    // 본다. 지금은 앞이 뒤를 그대로 부르지만 그 사실을 test 가 붙잡고 있어야 한다.
+    if (pendingConfigNotice()) |n| {
+        std.debug.print("\n정상 config 가 안내를 만들었다 ({d} 줄):\n{s}{s}\n", .{ n.count, n.repaired, n.removable });
+        return error.CleanConfigProducedNotice;
+    }
 }
 
 test "DockPosition.fromString" {
@@ -3766,4 +4292,282 @@ test "#558 기본 config 가 Windows 의 공백 경로 인용법을 알려 준�
     ;
     try std.testing.expect(std.mem.indexOf(u8, doc, quoted_example) != null);
     try std.testing.expect(std.mem.indexOf(u8, doc, "the first space ends the executable path") != null);
+}
+
+// ---------------------------------------------------------------------------
+// #655 — 값 폴백. 예전에는 아래 30 여 자리가 전부 `error.InvalidConfig` 였고
+// **단 한 자리도 test 가 없었다** (`expectParseInvalid` 를 쓰는 test 가 0 건이었다).
+// 폴백으로 바꾸면서 자리마다 갈래를 하나씩 고정한다.
+// ---------------------------------------------------------------------------
+
+test "#655 범위 밖 숫자는 기본값이 아니라 경계로 clamp 한다" {
+    // 사용자가 `1000` 이라고 적은 것은 "아주 넓게" 라는 뜻이다. 기본값 100 으로
+    // 되돌리면 그 의도에서 더 멀어진다 (SPEC §7.3).
+    var c = try parseWithReplaced("width_percent   = 50.0", "width_percent   = 1000.0");
+    defer c.deinit();
+    try std.testing.expectEqual(@as(f32, 100.0), c.config.width_percent);
+    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "window.width_percent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "100") != null);
+}
+
+test "#655 아래쪽 범위 밖도 경계로 들어온다" {
+    var c = try parseWithReplaced("max_scroll_lines = 10000", "max_scroll_lines = 1");
+    defer c.deinit();
+    try std.testing.expectEqual(@as(u32, 100), c.config.max_scroll_lines);
+}
+
+test "#655 정수 필드의 범위 밖 — font.size_point" {
+    var c = try parseWithReplaced("size_point        = 15", "size_point        = 9999");
+    defer c.deinit();
+    try std.testing.expectEqual(@as(u8, 72), c.config.font_size_point);
+}
+
+test "#655 모르는 이름의 enum 값은 기본값으로 돌고, 부팅은 막지 않는다" {
+    var c = try parseWithReplaced("dock_position   = \"top\"", "dock_position   = \"sideways\"");
+    defer c.deinit();
+    try std.testing.expectEqual(default_dock_position, c.config.dock_position);
+    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "window.dock_position") != null);
+}
+
+test "#655 모르는 테마 이름 — 기본 테마로 돌고 목록은 로그로 간다" {
+    var c = try parseWithReplaced("theme            = \"Tilda\"", "theme            = \"Nonesuch\"");
+    defer c.deinit();
+    try std.testing.expectEqual(default_theme, c.config.theme);
+    const n = ValueCase.notice();
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "theme") != null);
+    // 18 개 테마 이름이 다이얼로그로 쏟아지면 나머지 안내가 밀린다 — 한 줄만 선다.
+    try std.testing.expect(std.mem.count(u8, n.repaired, "\n") == 1);
+}
+
+test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된다" {
+    var c = try parseWithReplaced("hotkey           = \"F1\"", "hotkey           = \"nosuchkey\"");
+    defer c.deinit();
+    try std.testing.expect(pendingFatalNotice() == null);
+    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "hotkey") != null);
+}
+
+test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액션의 나머지 키는 남는다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
+    const a = arena.allocator();
+    const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
+    // `copy` 의 목록에 쓰레기 하나를 끼워 넣는다.
+    const at = std.mem.indexOf(u8, full, "copy") orelse return error.TestUnexpectedResult;
+    const line_end = std.mem.indexOfScalarPos(u8, full, at, '\n') orelse return error.TestUnexpectedResult;
+    const close = std.mem.lastIndexOfScalar(u8, full[at..line_end], ']') orelse return error.TestUnexpectedResult;
+    const broken = try std.mem.concat(a, u8, &.{
+        full[0 .. at + close],
+        ", \"ctrl+shift+nosuchkey\"",
+        full[at + close ..],
+    });
+
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = try Config.parse(rt, a, broken, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "nosuchkey") != null);
+    // 버린 것은 **그 항목 하나**다 — 기본 config 의 바인딩 수가 그대로여야 한다.
+    var clean_arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer clean_arena.deinit();
+    clearConfigNotice();
+    const clean = try Config.parse(rt, clean_arena.allocator(), full, "/home/user/.config/tildaz/config_0.toml");
+    try std.testing.expectEqual(clean.key_binding_count, config.key_binding_count);
+}
+
+test "#655 [keys] 충돌은 먼저 나온 것이 이긴다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
+    const a = arena.allocator();
+    // 두 액션이 같은 조합을 쓴다. 예전에는 fatal 이었다.
+    const doc =
+        \\shell = "/bin/sh"
+        \\[keys]
+        \\new_tab = ["ctrl+shift+9"]
+        \\close_tab = ["ctrl+shift+9"]
+        \\
+    ;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = try Config.parse(rt, a, doc, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    // 먼저 적힌 액션이 그 조합을 가진다 — 파일을 위에서 아래로 읽는 순서 그대로다.
+    const combo = Hotkey.fromString("ctrl+shift+9") orelse return error.TestUnexpectedResult;
+    var found: ?KeyAction = null;
+    var seen: usize = 0;
+    for (config.key_bindings[0..config.key_binding_count]) |b| {
+        if (std.meta.eql(b.hotkey, combo)) {
+            found = b.action;
+            seen += 1;
+        }
+    }
+    // 같은 조합이 두 번 실리면 조회가 어느 쪽을 줄지 순서에 달린다 — 한 번뿐이어야 한다.
+    try std.testing.expectEqual(@as(usize, 1), seen);
+    try std.testing.expectEqual(KeyAction.new_tab, found.?);
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "close_tab") != null);
+}
+
+test "#655 [font] 섹션이 통째로 없어도 뜬다 — 기본 폰트 chain 이 남는다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
+    const a = arena.allocator();
+    const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
+    const no_font = try tomlWithoutSection(a, full, "\n[font]\n", "\n[input]\n");
+
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    // 예전 코드는 `root.table.get("font").?` 로 여기서 **패닉** 했다. 스키마가
+    // 거부해 주던 덕에 닿지 않던 자리인데, 거부를 걷어 내면 바로 열린다.
+    const config = try Config.parse(rt, a, no_font, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    try std.testing.expectEqual(DEFAULT_FONT_CHAIN_COUNT, config.font_family_count);
+    try std.testing.expectEqualStrings(Defaults.font_family, config.font_families[0]);
+}
+
+test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이름을 host 로 넘기지 않는다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
+    // 기본 폰트 이름이 platform 마다 달라 치환 대신 최소 문서를 쓴다.
+    const doc =
+        \\shell = "/bin/sh"
+        \\[font]
+        \\family = ""
+        \\
+    ;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = try Config.parse(rt, arena.allocator(), doc, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    // 빈 이름을 그대로 넘기면 host 의 폰트 검증이 시작을 막는다 (#282 C2).
+    try std.testing.expect(config.font_families[0].len > 0);
+    try std.testing.expectEqual(DEFAULT_FONT_CHAIN_COUNT, config.font_family_count);
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family") != null);
+}
+
+test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, null, .{
+        .repaired = "  input -- missing, using the default\n",
+        .removable = "  bogus_key\n",
+        .count = 2,
+        .truncated = false,
+    });
+    // 사용자가 파일에서 할 일이 반대다 — 섞어 세우면 줄마다 어느 쪽인지 다시 읽어야 한다.
+    // 마지막 줄은 **빠져나갈 길**이다 — 고칠 것이 너무 많으면 파일을 버리는 쪽이 빠르다.
+    try std.testing.expectEqualStrings(
+        messages.config_notice_repaired_header ++ "\n" ++
+            "  input -- missing, using the default\n" ++
+            "\n" ++ messages.config_notice_removable_header ++ "\n" ++
+            "  bogus_key\n" ++
+            "\n\n" ++ messages.config_notice_reset_hint,
+        body,
+    );
+}
+
+test "#655 빈 묶음의 머리글은 세우지 않는다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, null, .{
+        .repaired = "",
+        .removable = "  bogus_key\n",
+        .count = 1,
+        .truncated = false,
+    });
+    // "지울 것" 만 있는데 "넣을 것" 머리글이 서면, 사용자는 없는 목록을 찾는다.
+    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_repaired_header) == null);
+    try std.testing.expect(std.mem.startsWith(u8, body, messages.config_notice_removable_header));
+}
+
+test "#655 잘렸으면 본문이 그 사실을 말한다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, null, .{
+        .repaired = "  a\n",
+        .removable = "",
+        .count = 999,
+        .truncated = true,
+    });
+    // 여기서 빠지면 사용자는 목록이 전부인 줄 알고 고친 뒤, 다음 실행에서 처음 보는
+    // 항목을 또 만난다. 잘림 문구는 **목록의 끝**에 서고, 빠져나갈 길이 그 뒤에 온다 —
+    // 잘린 목록일수록 파일을 버리는 쪽이 빠르므로 순서가 이래야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_truncated_msg) != null);
+    try std.testing.expect(std.mem.endsWith(u8, body, messages.config_notice_reset_hint));
+    const cut = std.mem.indexOf(u8, body, messages.config_notice_truncated_msg).?;
+    const hint = std.mem.indexOf(u8, body, messages.config_notice_reset_hint).?;
+    try std.testing.expect(cut < hint);
+}
+
+test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 없다" {
+    clearConfigNotice();
+    setNoticeAllocator(std.testing.allocator);
+    defer clearConfigNotice();
+    noticeMissing("input");
+    try std.testing.expect(pendingConfigNotice() != null);
+    // `showConfigNotice` 가 조립 뒤 비우는 것과 같은 동작. 창을 여닫을 때마다 뜨면
+    // 드롭다운이 마비된다 (SPEC §7.3).
+    clearConfigNotice();
+    try std.testing.expect(pendingConfigNotice() == null);
+}
+
+test "#655 목록이 아무리 길어도 잘리지 않는다 — 상한 대신 스크롤이다" {
+    clearConfigNotice();
+    setNoticeAllocator(std.testing.allocator);
+    defer clearConfigNotice();
+
+    // 예전에는 두 묶음이 각각 16 KiB 고정이라 여기서 잘렸다. 목록이 길수록 사용자에게
+    // 필요한 정보가 많은데 **바로 그때** 잘리는 설계였다. 세 다이얼로그 backend 는 이미
+    // 임의 길이를 받아 스크롤한다 — 상한은 우리 쪽에만 있었다.
+    var long_path: [400]u8 = undefined;
+    @memset(&long_path, 'k');
+    var i: usize = 0;
+    while (i < 200) : (i += 1) noticeMissing(&long_path);
+
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!n.truncated);
+    try std.testing.expectEqual(@as(usize, 200), n.count);
+    // 200 줄이 **전부** 담겼다 — 16 KiB 를 훌쩍 넘는다.
+    try std.testing.expectEqual(@as(usize, 200), std.mem.count(u8, n.repaired, "\n"));
+    try std.testing.expect(n.repaired.len > 16 * 1024);
+}
+
+test "#655 allocator 가 없으면 줄은 잃어도 잘렸다는 사실은 남는다" {
+    clearConfigNotice(); // allocator 까지 버린다
+    defer clearConfigNotice();
+    // 이 경로는 `Config.load` · `parse` 를 거치지 않은 호출뿐이다. 조용히 넘기지 않는다.
+    noticeMissing("input");
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(n.truncated);
+    try std.testing.expectEqual(@as(usize, 1), n.count);
 }

@@ -35,6 +35,23 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
    resource 만 default 값 platform 별 다름. 필드 이름 / 구조 동일 (#118).
 4. **검증 후 commit.** 빌드 + smoke 통과만으로 commit 안 함. 사용자 시연 OK
    후에만 commit / amend / push.
+5. **언제나 부팅은 되게 한다.** 사용자가 고칠 수 있는 입력 (config · theme 파일 · 폰트 ·
+   확장 …) 이 잘못됐다고 **앱이 안 뜨는 일은 없다.** 그 자리는 기본값으로 대체하고 **무엇이
+   잘못됐고 무엇으로 바꿨는지 안내한 뒤** 계속 띄운다 (2026-09-17 사용자 결정,
+   [#655](https://github.com/ensky0/tildaz/issues/655)).
+
+   **터미널이라서 더 그렇다** — config 가 깨져 터미널이 안 뜨면 *그 config 를 고칠 터미널이
+   없다.* 다른 편집기나 다른 터미널이 있어야 탈출된다. 일반 앱보다 훨씬 비싼 실패다.
+
+   안내는 **막는다 (blocking)** — 확인을 눌러야 진행된다. 조용히 넘어가면 사용자가 자기
+   설정이 안 먹는 것을 모르고, 그러면 "기본값으로 돌렸다" 가 "설정이 사라졌다" 가 된다.
+   고칠 때까지 매번 마주치게 하는 것이 목적이다. 반대로 **자동으로 파일을 고쳐 주지는
+   않는다** — 고치는 주체는 사용자다 (원칙 3 의 "schema 는 동일" 과 같은 방향: 우리는
+   사용자 파일의 주인이 아니다).
+
+   경계 하나 — **입력이 아니라 환경이 없어서 못 뜨는 것은 이 원칙 밖이다.** 권한 거부
+   ([#510](https://github.com/ensky0/tildaz/issues/510)) 처럼 앱이 제 일을 아예 할 수 없는
+   자리는 안내하고 종료하는 것이 맞다.
 
 ---
 
@@ -803,7 +820,7 @@ Windows 실측).
 | 탭바 — `…` command menu ([#329](https://github.com/ensky0/tildaz/issues/329)) | 2.2pt diameter로 광학 보정한 원 3개 procedural icon (`+`/`×`는 1.5pt stroke 유지). Show / Hide TildaZ + 현재 instance의 실제 configured hotkey / 구분선 / New Tab / Close Active Tab / Copy Selection / Paste / Toggle Full Screen (hint 는 상태 의존 — workarea 전체화면 중에는 해제 키 `Shift+Alt+Enter`/`Shift+Cmd+Enter` 표시, 클릭은 어떤 모드든 상태 기준 토글) / Open Config / 구분선 / Keyboard Shortcuts / About TildaZ. Copy에는 drag, Paste에는 right-click 안내를 함께 표시. Keyboard Shortcuts는 canonical [`KEYBINDINGS.md`](KEYBINDINGS.md) URL을 기본 브라우저로 연다. **메뉴가 열린 동안은 modal 계층**: 모든 키는 메뉴가 소비 — Esc 닫기, Up/Down/Home/End/Tab/Shift+Tab focus 이동, Enter/Space 실행, 그 외 noop (PTY 로 안 감). pointer 가 항목 위로 오면 keyboard focus 도 그 항목으로 동기화 (표준 메뉴 — 마우스로 건너뛴 뒤 ↑↓ 가 그 자리에서 이어감). 단축키·명시적 paste·**Ctrl+C(interrupt — 2026-07-23 확정)** 는 메뉴를 닫고 정상 실행, global hotkey hide 도 메뉴를 닫음. menu 밖 click 은 닫고 그 click 은 terminal 에 전달하지 않음 — **우클릭도 닫기만 하고 paste 하지 않음**. 그 규칙은 창 *안* click 전제이고, **창이 focus 를 잃으면 메뉴를 닫는다** ([#390](https://github.com/ensky0/tildaz/issues/390) 2026-08-06 확정) — 창 *밖* click 은 OS/compositor 가 다른 창으로 라우팅해 pointer event 가 애초에 우리에게 오지 않는다 (native menu 를 닫아 주는 pointer grab 이, 창 안에 그리는 overlay 인 우리 메뉴에는 없다). 그래서 훅은 focus 상실뿐이다: mac `applicationDidResignActive` / Windows `WM_ACTIVATEAPP`(wParam=0) → `app_event.focus_lost` (menu 상태가 `App` 에 있어 `Window` 가 직접 못 닫음) / Linux `wl_keyboard.leave` (**main surface 만** — leave 는 client 전체 대상이라 자체 dialog surface 가 focus 를 받아도 main 에 온다). 세 훅 모두 다른 *앱/창* 활성화에만 와서 자체 dialog 로는 안 뜨고, 이미 있던 focus-loss 지점 그대로다 — mac · Windows 는 z-order 양보(#195), Linux 는 preedit commit (§4.1) 자리다 (Linux 는 z-order 양보가 platform-limit 로 미적용 — 아래 §3 표). **pointer 가 창을 떠나는 것은 훅이 아니다** (`wl_pointer.leave` · mouse leave) — 마우스만 창 밖으로 움직여도 닫히면 native menu 와 다르다. focus 를 잃어도 창은 visible 로 남으므로(#195) 닫을 때의 재그리기가 필수다 — `closeCommandMenu` 가 세 platform 모두 redraw 요청을 포함한다. viewport 높이가 모자라면 entry 단위로 잘라 wheel/키로 scroll (부분 행 없음, wheel 은 세 platform 모두 delta 누적 + 나머지 보존) 하고 **상/하단에 chevron 스크롤 표시 행** 이 생김 (탭바 `<`/`>` 관례 — 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤 + 메뉴 유지). 좁은 폭·긴 hotkey 에서는 shortcut hint 를 먼저 숨김 (label 우선). 행 높이 22pt / 폭 320pt (#334 피드백 — 시연 튜닝). **색**: 배경 = `TAB_BAR_BG`, 항목 label = `MENU_LABEL_COLOR`, 우측 hint = `MENU_HINT_COLOR`, hover/focus 강조 = `MENU_HOVER_BG`, 내부 구분선 = `TAB_SEPARATOR_COLOR` (탭바와 한 문법 — #334 2026-07-22 확정). **외곽선은 없다** ([#342](https://github.com/ensky0/tildaz/issues/342) 2026-07-27 시연 확정) — 탭바에서 가로 경계선을 없앤 것과 같은 문법으로 chrome/terminal 경계는 배경 명도 차이만으로 둔다. 내부 구분선은 면의 경계가 아니라 항목 그룹이라 역할이 달라 유지한다. (이전 테두리는 `menu_y − line` 이라 탭바 마지막 행을 1pt 침범했는데 같은 색 가로 경계선이 덮고 있어 보이지 않던 것 — 가로선 제거로 드러난 지오메트리 오류였다.) 메뉴 명령 실행은 열기/실행 모두 pending 입력(terminal preedit) commit 후 — keyboard shortcut 과 같은 입력 정책 경유 | 공통 `command_menu.zig` View/hit/onKey + D3D11 overlay + `resolveWindowsInput` 경유 action | 공통 View/hit/onKey + Metal overlay + mouseDown 공통 commit 경유 action | 공통 View/hit/onKey + software overlay + `commitPendingInput` 경유 action | ✅ | ✅ | ✅ |
 | 비활성 창의 첫 클릭 (click-through) ([#391](https://github.com/ensky0/tildaz/issues/391) 2026-08-06 확정) | 어디든 — **view 전체** (탭바만 아님). tildaz 는 focus 를 잃어도 숨지 않고 visible 로 남는 drop-down 이라 (#195 — z-order 만 양보) "비활성인데 화면에 보이는 창" 이 정상 상태이고, 그 상태의 첫 클릭을 버리면 탭바 `+`/`×`/`…` 를 포함해 **모든 클릭이 두 번**이 된다. 좌클릭만 해당 — 우클릭 paste (#119) 는 macOS 도 비활성 창에 `rightMouseDown:` 을 전달한다 | `WM_MOUSEACTIVATE` 핸들러를 두지 않아 `DefWindowProc` 기본값 `MA_ACTIVATE` (≠ `MA_ACTIVATEANDEAT`) 가 활성화 후 `WM_LBUTTONDOWN` 을 그대로 전달 | `acceptsFirstMouse:` → YES (`tildazAcceptsFirstMouse`). AppKit 기본값 NO 는 그 클릭을 창 활성화에만 쓰고 view 로 보내지 않는다 — Apple 문서가 override 예로 드는 것이 창 title-bar 버튼의 click-through 다 | pointer event 는 keyboard focus 와 무관하게 커서 아래 surface 로 간다 (Wayland 모델). layer-shell `on_demand` 라 그 클릭으로 keyboard focus 도 함께 받는다 | ✅ | ✅ | ✅ |
 | OS mouse cursor shape (#193) | 아래 §3.1 표 참고 | `WM_SETCURSOR` 가 `App.cursorRegion` 호출 → `IDC_IBEAM` · `IDC_ARROW` · `IDC_HAND` (링크, #647) `SetCursor` ([src/window.zig](src/window.zig)). 수식키만 눌러 영역이 바뀐 순간에는 `Window.refreshCursor` 가 같은 판정을 한 번 더 태운다 | NSView `resetCursorRects` 가 cell rect 에 `NSCursor.IBeamCursor` add, 링크 셀에는 `pointingHandCursor` ([src/host/macos.zig](src/host/macos.zig) `tildazResetCursorRects`) | `wp_cursor_shape_v1.set_shape(serial, text=9 / pointer=4 / default=1)` ([30e94f0](https://github.com/ensky0/tildaz/commit/30e94f0), #193). compositor advertise 미지원 환경 graceful degrade | ✅ | ✅ | ✅ |
-| z-order 양보 on focus loss (#195) | 다른 app 활성화 시 우리 z-order *level* 만 떨어뜨려서 그 app 이 위로. 우리는 *visible 유지* (hide 안 함, 다른 app 뒤에 보임). 다시 우리 app 활성화 시 원래 level 복귀. **Linux 미적용 — layer-shell categorical 한계, 아래 note** | `WM_ACTIVATEAPP wParam=0` → `SetWindowPos(HWND_NOTOPMOST)`, wParam=1 → `SetWindowPos(HWND_TOPMOST)` ([src/window.zig](src/window.zig)) | `applicationDidResignActive:` → `setMainWindowLevel(NSNormalWindowLevel)`, `applicationDidBecomeActive:` → `setPopupWindowLevel()` ([src/host/macos.zig](src/host/macos.zig)) | **❌ platform-limit** — layer-shell 의 4 단계 categorical layer (background/bottom/top/overlay) 가 normal app z-order 와 mix 안 됨. layer=top + exclusive 유지 ([aa59753](https://github.com/ensky0/tildaz/commit/aa59753), 아래 §3.1 note 참조) | ✅ | ✅ | ❌ (platform-limit) |
+| z-order 양보 on focus loss (#195) | 다른 app 활성화 시 우리 z-order *level* 만 떨어뜨려서 그 app 이 위로. 우리는 *visible 유지* (hide 안 함, 다른 app 뒤에 보임). 다시 우리 app 활성화 시 원래 level 복귀. **Linux 미적용 — layer-shell categorical 한계, 아래 note** | `WM_ACTIVATEAPP wParam=0` → `SetWindowPos(HWND_NOTOPMOST)`, wParam=1 → `SetWindowPos(HWND_TOPMOST)` ([src/window.zig](src/window.zig)) | `applicationDidResignActive:` → `setMainWindowLevel(NSNormalWindowLevel)`, `applicationDidBecomeActive:` → `setPopupWindowLevel()` ([src/host/macos.zig](src/host/macos.zig)) | **❌ platform-limit** — layer-shell 의 4 단계 categorical layer (background/bottom/top/overlay) 가 normal app z-order 와 mix 안 됨. layer=top + exclusive 유지 ([aa59753](https://github.com/ensky0/tildaz/commit/aa59753), 아래 §3.1 note 참조). **우리가 직접 바깥 앱을 띄울 때의 일회성 양보는 별개로 구현돼 있다** — §11.2 ([#655](https://github.com/ensky0/tildaz/issues/655)) | ✅ | ✅ | ❌ (platform-limit) |
 | **TUI mouse reporting** ([#502](https://github.com/ensky0/tildaz/issues/502)) | cell 영역만 (탭바 · 스크롤바 · command menu 는 언제나 우리 chrome 이 먼저 먹는다). 앱이 DECSET 으로 켠 tracking 에 따라 클릭 · 드래그 · 휠을 escape sequence 로 PTY 에 보낸다 — `?9` x10 (왼·가운데·오른쪽 **누름만**, modifier 없음, 좌표 223 상한) / `?1000` normal (누름+뗌) / `?1002` button (버튼 누른 채 이동) / `?1003` any (모든 이동). 좌표 형식은 `?1006` SGR (`CSI < Cb ; Cx ; Cy M`, 뗌은 소문자 `m` — 현대 표준) / `?1005` utf8 / `?1015` urxvt / `?1016` SGR-pixels. `Cb` = 버튼 (왼 0 · 가운데 1 · 오른 2 · 휠 64/65 · 가로 휠 66/67 · 뒤로/앞으로 128/129) + modifier (shift +4 · alt +8 · ctrl +16) + motion (+32). **휠은 `1 notch = 보고 1 건`** 이고, 연속 delta 를 주는 장치는 **누적 + 나머지 보존**으로 notch 를 센다 (버리면 느린 스크롤이 무동작이 되고, 이벤트마다 1 notch 로 세면 트랙패드에서 수십 배로 부푼다 — [#502](https://github.com/ensky0/tildaz/issues/502) macOS 실기에서 한 번 훑기에 66~86 건이 나갔다). 좌표는 내부 0-based → 전송 시 +1. **뗌의 버튼 번호는 SGR 계열만 유지**하고 legacy 는 항상 3. motion 은 **cell 이 바뀔 때만** 보낸다 (`?1016` 은 픽셀이 정보라 예외). viewport 밖은 **뗌은 항상** 보내고 motion 은 버튼이 눌린 경우만 — **그러려면 host 가 창 밖으로 나간 드래그의 이벤트를 계속 받아야 한다** (Windows `SetCapture`, macOS 는 `mouseDown` 받은 view 가 자동, Linux 는 Wayland implicit grab). 이것이 빠지면 인코더가 손쓸 수 없다: 창 밖에서 뗀 버튼의 이벤트가 아예 오지 않아 앱이 그 버튼을 영원히 눌린 것으로 안다 ([#502](https://github.com/ensky0/tildaz/issues/502) Windows 실기에서 가운데 버튼이 그랬다). **`Shift` 는 우리 것** — Shift+드래그 / Shift+휠은 앱에 보내지 않고 selection / scrollback 으로 남긴다 (xterm · iTerm2 · Windows Terminal 관례). 단 앱이 XTSHIFTESCAPE (`CSI > 1 s`) 로 Shift 를 요구하면 넘긴다. 더블클릭은 press 로만 보내고 word selection 으로 가로채지 않는다 (의미는 앱이 정한다). 가운데 버튼은 chrome 에 역할이 없어 reporting 전용. **가로 휠 · 뒤로/앞으로 버튼은 인코더만 있고 host 배선은 미구현** | 공통 `mouse_report.zig` + `terminal_interaction.routeMouse` → `app_controller` 의 `.mouse_*` / `.scroll` 분기. `WM_MBUTTONDOWN`/`UP` 신규 — **왼쪽과 같이 `SetCapture` 를 잡고**, 뗌은 보고 대상 버튼 (왼쪽 · 가운데) 이 하나도 안 남았을 때만 `ReleaseCapture` (capture 가 스레드당 하나라, 무조건 놓으면 함께 누른 다른 버튼의 드래그가 끊긴다). `WM_MOUSEWHEEL` 은 `ScreenToClient` 로 좌표 변환 (screen 좌표로 옴) + `WHEEL_DELTA` (120) 눈금이 곧 notch | 같은 공통 모듈 + `tildazMouseDown/Dragged/Up` · `scrollWheel:` (**`hasPreciseScrollingDeltas` 로 단위를 가른다** — 트랙패드는 논리 pt 라 cell 높이당 1 notch, 마우스 휠은 tick 이라 그대로. 느린 한 칸이 `0.1` 로 오므로 최소 1 tick 으로 올린다) · `mouseMoved:` · `otherMouseDown:`/**`otherMouseDragged:`**/`otherMouseUp:` (가운데 버튼, 신규 등록 — Cocoa 는 버튼별 selector 라 가운데 드래그가 `mouseDragged:` 로 오지 않는다) | 같은 공통 모듈 + `wl_pointer.button`/`motion`/`axis`. **버튼 상태를 직접 추적** (`wl_pointer.motion` 은 눌린 버튼을 싣지 않는다) + modifier 는 `wl_keyboard.modifiers` 쪽 (`keyboard.{shift,ctrl,alt}Active()`). `BTN_MIDDLE` (0x112) 신규. 휠은 `wl_fixed` 를 120 단위로 누적 (`report_wheel_accum`) | ✅ | ✅ | ✅ |
 | alternate scroll ([#502](https://github.com/ensky0/tildaz/issues/502)) | tracking 이 **꺼져 있고** alt screen + `?1007` (ghostty 기본 on) 이면 휠을 화살표 키로 바꿔 보낸다 — notch 당 3 줄, DECCKM (`?1`) 이 켜져 있으면 `SS3` (`ESC O A/B`) 아니면 `CSI` (`ESC [ A/B`). alt screen 은 scrollback 이 없어서 그대로 두면 휠이 무동작이다. Shift+휠은 여기서도 우리 scrollback 이다 | `routeWheel` (`app_controller`) | `routeWheelMac` | `routeWheelLinux` | ✅ | ✅ | ✅ |
 | **링크 클릭 → 기본 브라우저** ([#647](https://github.com/ensky0/tildaz/issues/647), 요청 [#643](https://github.com/ensky0/tildaz/issues/643)) | cell 영역. **OSC 8** (앱이 `ESC ] 8 ; ; <uri> ESC \` 로 명시한 링크) 이 먼저고, 없으면 **화면 글자에서 찾은 URL** — 후자가 이 기능의 본체다 (`gh` 는 OSC 8 을 쓰지 않고 PR URL 을 맨 글자로 뱉는다). 스캐너는 ghostty 의 정규식을 쓰지 않고 순수 Zig 로 옮겼다 ([`url_scan.zig`](src/url_scan.zig) — `ghostty-vt` 모듈 밖이라 oniguruma 를 새 의존성으로 들일 수 없다). scheme 접두 + 허용 문자 + **후행 구두점 · 괄호 휴리스틱** (마침표로 끝나는 매치를 뺀다; 닫는 괄호로 끝나는 매치는 여는 괄호가 짝 없이 앞에 있을 때만 포함한다) 이고 `row.wrap` 으로 줄 넘김을 잇는다. **확정 동작은 "밑줄이 보이면 클릭하면 열린다"** — 앱이 mouse tracking 을 **안** 켠 평소에는 hover 만으로 밑줄 · 손 커서가 나오고 **수식키 없이 그냥 클릭**하면 열린다. 앱이 켠 동안 (vim · htop) 은 **`Ctrl`** (macOS `⌘`) 을 누르는 동안만 밑줄이 보이고 그때만 열리며, 아니면 클릭은 앱 것이다 (kitty 의 `ungrabbed` 조건 · ghostty `Surface.zig` 의 `ctrlOrSuper` 와 같다 — *보이는데 안 열리는* 어긋남을 만들지 않는다). **누름이 아니라 뗌에서 연다** — URL 위 드래그는 선택이다. 수식키를 누르거나 뗀 **그 순간** 마지막 포인터 자리 (`link_pointer`) 로 다시 판정하므로 마우스가 정지해 있어도 즉시 반영된다. **포인터가 창에 들어오고 나가는 순간에도 같은 판정을 한다** — 들어오는 이벤트가 좌표를 함께 실어 오는 platform (Wayland `wl_pointer.enter`) 에서는 들어온 뒤 마우스가 멈춰 있으면 이동 이벤트가 오지 않아, 이것이 없으면 링크 위로 들어와도 1 px 움직이기 전까지 밑줄 · 손 커서가 없다. 나갈 때 강조를 풀지 않으면 창을 떠난 뒤에도 밑줄이 남는다 ([#647](https://github.com/ensky0/tildaz/issues/647) — Linux · Windows 실기에서 각각 216 px 이 남았다). **이탈 훅은 세 host 가 같은 일을 한다** (`link_hover.clear` + 아래 탭바 컨트롤 hover 해제) — Windows `WM_MOUSELEAVE` · macOS `tildazMouseExited` · Linux `handlePointerLeave`. Windows 의 그것은 `TrackMouseEvent(TME_LEAVE)` 로 **요청해야 오고 한 번 발동하면 스스로 풀리므로** 이동마다 다시 건다 (`Window.tracking_mouse_leave`). 여는 자리는 [`link.open`](src/link.zig) 한 곳이고 `[link] opening link: <url>` 을 남긴다 — 그래야 *우리가 안 불렀다* 와 *OS 가 무시했다* 가 갈린다 | `WM_KEYDOWN` · `WM_KEYUP` 의 `VK_CONTROL` 에서 재판정 + `Window.refreshCursor` (`WM_SETCURSOR` 는 마우스가 움직일 때만 온다) · 이탈은 `WM_MOUSELEAVE` · `ShellExecuteW` | `flagsChanged:` 에서 재판정 · 이탈은 `tildazMouseExited` · `/usr/bin/open` | `wl_keyboard.modifiers` 에서 재판정 · 진입 · 이탈은 `handlePointerEnter` / `handlePointerLeave` · `xdg-open` | ✅ | ✅ | ✅ |
@@ -843,6 +860,8 @@ Windows 실측).
 > **참조 비교:** VSCode / Chrome 탭바 동등 패턴 — 셀(내용 영역) I-beam, 탭바는 항상 arrow. (탭 inline rename 은 [#341](https://github.com/ensky0/tildaz/issues/341) 로 제거 — rename 활성 탭 text 영역의 I-beam 예외도 함께 삭제.)
 
 > **z-order 양보 — Linux 미적용 (#195):** Linux Wayland 의 `zwlr_layer_shell_v1` 은 *categorical* 4 단계 (background / bottom / top / overlay) 라 *normal xdg_toplevel z-order level* 자체가 없음. `set_layer(bottom)` 으로 떨어뜨려도 *desktop wallpaper 바로 위 + 모든 일반 windows 아래* — 사용자 의도 (*다른 새 창 → tildaz → 그 외*) 와 어긋남 (tildaz 가 모든 일반 windows 아래로 가버림). mac `NSWindow.setLevel(NSNormalWindowLevel)` / Win `SetWindowPos(HWND_NOTOPMOST)` 은 우연히 *normal app z-order* 와 mix 자연이라 한 줄 toggle 로 완벽 — Linux 의 categorical 한계 우회 불가. *layer-shell destroy + xdg_toplevel 재생성* 도 시도 가능하나 DE / compositor 마다 동작 다양 + animation glitch + 매 toggle 마다 수십~수백 ms latency 라 사용자가 알아챔. 회피 — layer=top + `keyboard_interactivity=exclusive` 유지. drop-down 본분 (yakuake / guake / Tilda 등 모든 Linux drop-down 동등 한계). 사용자가 hotkey 로 hide 후 다른 app 사용.
+>
+> **단, *우리가* 바깥 앱을 띄울 때는 `set_layer(bottom)` 으로 한 번 비켜 준다** ([#655](https://github.com/ensky0/tildaz/issues/655) — §11.2). 같은 categorical 한계를 쓰는데 결론이 다른 이유는 **지속 시간**이다: #195 는 focus 를 잃을 때마다 상시로 걸려 *모든 일반 창 아래* 라는 부작용을 늘 안고 가야 하지만, #655 는 사용자가 방금 연 편집기를 보라고 한 번 내려갔다 다음 show 에 `top` 으로 돌아온다. 비켜 주지 않으면 편집기가 우리 뒤에 열려 **버튼이 아무 일도 안 한 것처럼 보인다** (Linux 실측: 터미널 800x1000 이 편집기의 오른쪽 절반을 덮었다).
 
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
@@ -1137,9 +1156,9 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
 | 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (`MessageBoxW` + key capture window + overflow read-only EDIT window) | `dialog/macos.zig` (NSAlert + overflow NSScrollView + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
-| 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정 | 짧은 info/error/confirm은 `MessageBoxW`, prompt 본문은 `STATIC`; overflow 때 read-only multiline `EDIT` + OS scrollbar로 전환 | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
+| 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정. **본문은 화면 높이의 절반을 넘지 않는다** (`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT` = 50, [#655](https://github.com/ensky0/tildaz/issues/655)) — 넘치면 스크롤하므로 목록은 하나도 잃지 않는다. **모달 경고창은 화면을 덮는 물건이 아니다**: config 안내는 업그레이드 한 번에 45 줄이 뜨는데, 창이 화면을 다 먹으면 뒤에 있는 config 와 대조할 수가 없다. 상한이 **본문** 기준인 것이 중요하다 — 창 전체를 자르면 제목·버튼·아이콘 같은 고정 chrome 이 본문을 더 밀어내 짧은 목록에서도 스크롤이 생긴다. 세 host 가 같은 상수를 쓴다 (실측: Linux 안내 39 줄이 955 → **755** / 화면 1000) | 짧은 info/error/confirm은 `MessageBoxW`, prompt 본문은 `STATIC`; overflow 때 read-only multiline `EDIT` + OS scrollbar로 전환 | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid / config / log 경로를 잘림 없이 표시. 실제 입력 길이만큼 본문을 할당하고 화면 높이를 넘을 때만 세로 scroll ([#314](https://github.com/ensky0/tildaz/issues/314)) | read-only multiline EDIT 전용 modal window. wheel·scrollbar drag·selection·Ctrl+C는 OS control 동작 | NSAlert accessoryView의 NSScrollView + selectable NSTextView. scrollbar 자동 숨김 | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → layer-shell overlay. 아이콘 + Title + separator + body + OK 버튼. overflow 때 아이콘을 생략하고 wheel/touchpad·scrollbar drag 지원 | ✅ | ✅ | ✅ |
-| Config 에러 (잘못된 값) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 짧으면 `MessageBoxW`, 화면 또는 4096 UTF-16 변환 상한을 넘으면 read-only multiline EDIT 전용 window | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전이라 동적 본문 전체를 stderr + log에 남기고 exit(1). 연결 후 startup 검증(예: shell)은 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback). **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
+| Config 에러 (**남은 fatal** — TOML 구문 오류 · 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이 폴백 + 안내로 돌려 여기 오지 않는다) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 짧으면 `MessageBoxW`, 화면 또는 4096 UTF-16 변환 상한을 넘으면 read-only multiline EDIT 전용 window | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전이라 동적 본문 전체를 stderr + log에 남기고 exit(1). 연결 후 startup 검증(예: shell)은 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback). **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit(1) | 동일 | **dialog 호출 안 함** — `showPanic` 이 log(`panic`) + `std.debug.defaultPanic` (stderr 에 file:line + backtrace 후 abort). panic 은 renderer/wayland state 가 이미 불안정할 수 있어 overlay 대신 표준 abort 경로 (의도된 차이). | ✅ | ✅ | 🟨 (dialog 없이 log+abort) |
 | 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 짧으면 `MessageBoxW MB_OKCANCEL`, overflow면 고정 OK/Cancel + scroll 본문 — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | native dialog 또는 소유자 window를 disable한 overflow modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. overflow scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
@@ -1318,13 +1337,24 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 >
 > Linux 는 해석 결과의 `path` 와 함께 **face `index` 도 `FT_New_Face` 로 넘긴다** — `.ttc` / `.otc` 는 한 파일에 face 가 여러 벌이라 index 를 빼면 요청과 다른 face 가 열린다 (`Noto Sans CJK KR` 은 `NotoSansCJK-Regular.ttc` 의 index 1 이고 index 0 은 JP 다; [#428](https://github.com/ensky0/tildaz/issues/428)). 같은 이유로 face 동일성 판정 (chain dedup · styled 변종의 "regular 와 같은 파일" 검사) 도 (path, index) 쌍으로 한다. libfontconfig 자체를 못 여는 환경은 판정 불가로 두고 loader 의 에러 경로에 맡긴다 (미설치 오판 방지). **#428 은 Linux 전용이다** — macOS `CTFontCreateWithName` 과 Windows `FindFamilyName` → `CreateFontFace` 는 face 를 직접 받아, 파일 경로 + index 로 face 를 여는 곳이 Linux 의 FreeType 경로뿐이다.
 >
-> schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은 별도 fatal — `font_validate.showFamilyMustBeStringFatal` / `showGlyphFallbackMustBeListFatal`.
+> schema 위반 (`font.family` 가 string 아님 / `font.glyph_fallback` 이 string list 아님) 은
+> **#655 이후 fatal 이 아니다** — `repairStructure` 가 그 값을 지워 기본 폰트 chain 이 남고
+> 안내에 담긴다. 배열 *안쪽* 의 string 아닌 항목은 그 항목만 버린다.
 
-> **schema strict 검증** (Windows + macOS 동일, v0.4.1 통일 — #118 후속):
-> - 모든 키 (`window.*`, `font.*`, `theme`, `shell`, `hotkey`, `auto_start`, `hidden_start`, `max_scroll_lines`) 가 *required*. 한 개라도 missing 이면 fatal `missing required key "..."` (사용자 의도하는 위치에 적었는데 silently 무시되는 사고 방지). [#483](https://github.com/ensky0/tildaz/issues/483) (2026-08-27) — 새 버전이 키를 더하면 (예: `[keys]` 의 pane 액션) 이전 파일이 여기서 걸리는데, 기본값으로 조용히 채우지 않고 **strict 를 유지**한다. 대신 메시지가 할 일을 알려 준다: 파일을 옮겨 두고 (지우지 말고) 다시 띄워 기본 파일을 새로 만들고, 바꿔 둔 값을 다시 옮겨 적는다. 세 platform 같은 문구 (`messages.config_missing_key_format`).
-> - 알 수 없는 키 (오타 / 잘못된 위치) 면 fatal `unknown key "..."`. 예외는 없다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할 이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다).
-> - Type mismatch (예: `width_percent` 에 string) 면 fatal `type mismatch at "..."`. `font.family` / `font.glyph_fallback` 의 type 위반은 더 친절한 별도 메시지 (`font_validate` 의 helper).
-> - 위 검증 모두 `validateStructure(user, default, ctx)` 한 함수가 재귀로 처리 — `defaultConfigToml(allocator, shell_resolved)` 결과와 user config 를 비교.
+> **schema 대조** (세 platform 동일). **[#655](https://github.com/ensky0/tildaz/issues/655)
+> 에서 정책이 뒤집혔다** — 아래는 지금 동작이고, 판단 근거와 갈래별 처리표는 §7.3 에 있다.
+> - 없는 키는 **기본값** 으로 돌고 안내에 담긴다. 예전에는 fatal `missing required key "..."`
+>   이었고, 새 버전이 키를 더할 때마다 (`[keys]` 의 pane 액션 15 개 · `[input]`) 이전 파일을
+>   쓰던 사용자 전원이 **터미널을 열 수 없었다**. v0.9.x 에서 두 번 일어났다.
+> - 알 수 없는 키 (오타 / 잘못된 위치) 는 **무시하고 "지우세요" 로 안내**한다. 조용히
+>   넘기지 않는 이유는 그대로다 — TOML 은 `#` 주석을 지원하므로 주석 용도의 key 를 인정할
+>   이유가 없다 (JSON 시절의 `_` prefix convention 은 #493 에서 걷어냈다). 모르는 **섹션**
+>   은 통째로 무시하고 테이블 하나로만 안내한다 (안의 키를 나열하지 않는다).
+> - Type mismatch (예: `width_percent` 에 string) 는 그 값만 **트리에서 지워** 기본값이
+>   남게 한다. 지우는 것이 중요하다 — 남기면 뒤의 `parse` 가 `v.boolean` 으로 읽다가 터진다.
+> - 위 처리 모두 `repairStructure(user, default, ctx)` 한 함수가 재귀로 한다 —
+>   `schemaReferenceToml` (= 기본 문서) 의 값 트리와 user config 를 비교한다. 예전 이름은
+>   `validateStructure` 였고, 이름 그대로 *거부* 가 일이었다.
 
 ### 7.1 hotkey 상세
 
@@ -1492,6 +1522,92 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 ---
 
+### 7.3 config 로드 — **부팅을 막지 않는다** ([#655](https://github.com/ensky0/tildaz/issues/655))
+
+원칙 5 (`## 0. 원칙`) 의 첫 적용이다. **사용자가 고칠 수 있는 입력이 잘못됐다고 앱이 안 뜨는
+일은 없다.** 그 자리는 기본값으로 대체하고, 무엇이 잘못됐고 무엇으로 바꿨는지 안내한 뒤 뜬다.
+
+예전에는 **키 하나가 없어도 못 떴다.** 0.9.x 에서 두 번 일어났다 — v0.9.2 의 `[input]` 추가
+(#533), v0.9.3 의 `[keys]` 액션 15 개 추가 (#483). 키를 더하는 릴리스마다 기존 사용자 전원이
+강제 초기화를 겪었다. 반면 #501 이후 **파일을 아예 못 읽으면** 기본값으로 돌며 떴다 — 더 큰
+사고에 더 관대해서 규칙이 스스로와 어긋나 있었다.
+
+#### 읽는 방식 — 거부하지 않고 모은다
+
+값 오류마다 그 자리에서 죽는 대신 **스키마를 순회하며 기록하고, 다 읽은 뒤 한 번에 처리한다.**
+
+1. 있어야 할 키와 기본값을 메모리에 둔다 — `defaultConfigToml` 이 만든 기본 문서의 값 트리가
+   그것이다 (지금까지 `validateStructure` 가 *거부하는* 기준으로 쓰던 바로 그 자료다).
+2. 사용자 파일을 읽으며 **없는 키 · 모르는 키 · 값이 틀린 키** 세 갈래로 기록만 한다.
+3. 스키마 **순서대로** 훑으며 기본값을 채우고 안내 문구를 만든다.
+
+이 구조라서 **폴백을 빠뜨릴 수 없다** — 스키마에 있는 키는 전부 순회에 걸리므로, 폴백이 없는
+필드가 있으면 그 자리에서 드러난다. 값 오류 30 여 곳을 하나씩 고치는 방식은 빠뜨린 자리가
+그대로 fatal 로 남는다.
+
+#### 갈래별 처리
+
+| 갈래 | 처리 | 안내 |
+|---|---|---|
+| 없는 키 | 기본값 — **메모리에서만** | "없어서 기본값을 씁니다. 파일에 넣어 두세요" |
+| 모르는 키 | 무시 | "이제 없습니다. 지우세요" |
+| 모르는 **섹션** | 통째로 무시 | **테이블 하나로** 안내 (안의 키를 나열하지 않는다) |
+| 값 오류 | 그 값만 기본값 | "읽을 수 없어 기본값 `X` 를 씁니다" |
+| 범위 밖 숫자 | **clamp** | "100 으로 제한했습니다" — 기본값으로 되돌리지 않는다. 사용자 의도 ("아주 크게") 에 더 가깝다 |
+| `[keys]` 리스트의 한 항목 | **나쁜 항목만** 버린다 | 나머지는 그대로 쓴다. 다 빠지면 그 액션은 기본 바인딩 |
+| `[keys]` 충돌 (두 액션이 같은 조합) | **먼저 나온 것을 살린다** | 파일을 위에서 아래로 읽는 순서와 같아 설명하기 쉽다 |
+| `[keys]` 개수 초과 | 상한까지만 | 나머지는 버렸다고 안내 |
+| 이름이 바뀐 키 | 위 둘로 저절로 처리된다 | 옛 이름은 "지우세요", 새 이름은 "기본값을 씁니다" 가 함께 뜬다 |
+
+**안내에는 상한이 없다.** 목록이 길수록 사용자에게 필요한 정보가 많은데, 고정 버퍼로
+자르면 **바로 그때** 잘린다. 세 다이얼로그 backend 는 이미 임의 길이를 받아 스크롤하므로
+(macOS `NSTextView` + `NSScrollView`, Windows `dialogEditTextAlloc` 의 `EDIT`, Linux
+`message_owned`) 자를 이유가 없다 — 넘치는 높이는 §6 의 본문 50 % 상한이 스크롤로 받는다.
+잘리는 경우는 **할당이 실패할 때뿐**이고, 그때도 로그에는 줄마다 이미 남아 있다.
+
+첫 줄은 **config 파일의 절대 경로**다 (§11.4 의 봉투와 같다). 본문 끝이 *"파일을 지우면
+새로 만들어 준다"* 고 말하는데 어느 파일인지 안 적혀 있으면 지울 수가 없다 — 이름이
+인스턴스마다 다르고 (`config_8.toml`) 자리도 OS 마다 다르다. `Open Config` 버튼이 여는
+파일이기도 하다.
+
+**파일은 고치지 않는다.** 채우는 것은 메모리뿐이다 — 재직렬화하면 사용자 주석이 날아가고
+(파서가 값 트리다), TOML 은 `[table]` 헤더 소속 규칙 때문에 파일 끝에 덧붙일 수도 없다. 그리고
+고치는 주체는 사용자다 (원칙 5).
+
+**이름이 바뀐 키를 위한 별도 장치는 두지 않는다.** 릴리스된 rename 이 0 건이라 지금 만들면
+항목이 없는 빈 표다. 위 두 줄이 "무슨 일이 있었는지" 를 알려 주므로 첫 rename 때 정한다.
+
+#### 예외 하나 — 전역 hotkey 중복은 종료한다
+
+다른 인스턴스가 이미 그 키를 쓰는 경우 (`lowerIndexHotkeyConflict`) 는 *파일 값이 틀린 것이
+아니라 바깥과 부딪히는 것* 이라 스키마 대조로 잡히지 않는다.
+
+**순서**: config 의 핫키가 중복 → 인스턴스 번호에서 파생한 기본 핫키 (`Defaults.index_hotkeys`,
+`F{n+1}`) 로 갈아탄다 → **그 값으로 중복 검사를 다시 돌린다** → 그래도 충돌이면 안내하고
+종료한다. 재검사를 빼먹으면 "기본값으로 바꿨다" 고 안내해 놓고 실제로는 또 겹친 채 뜬다.
+
+원칙 5 의 경계 안이다 — *입력이 아니라 **환경** 이 없어서 못 뜨는 자리*. #510 이 OS 등록 거부를
+같은 이유로 종료로 바꿨다 (*"남이 그 키를 쥐고 있다는 앎을 버리는 것이 아깝다"*). 파생 기본값은
+인스턴스마다 유일해 **구조상 안 겹치므로**, 여기까지 오는 것은 다른 인스턴스가 자기 config 에 그
+키를 명시했을 때뿐이고 그때는 사용자가 실제로 정리해야 한다.
+
+#### 안내 다이얼로그
+
+- **막는다 (blocking).** 확인을 눌러야 진행된다. 조용히 넘어가면 사용자에게는 "기본값으로
+  돌렸다" 가 **"설정이 사라졌다"** 가 된다. 고칠 때까지 매번 마주치게 하는 것이 목적이다.
+- **프로세스 시작 시 한 번.** 창이 보일 때마다 (F1 토글) 가 아니다 — 드롭다운은 하루에 수십 번
+  여닫으므로 그때마다 모달이면 도구가 마비된다.
+- **버튼 둘** — `확인` 과 `config 열기`. 목적이 "직접 고치게" 이니 고치러 가는 길이 짧아야 한다.
+- **차례** — 스키마 순서로 "기본값을 쓴 것" 을 먼저, 그다음 "지울 것". 모르는 키는 스키마에
+  없으므로 따로 묶는다.
+- **길이 상한 없음** — overflow 스크롤바 (#314 의 About 다이얼로그가 선례). `[keys]` 가 15 개
+  늘었던 v0.9.3 같은 경우 한 번에 수십 줄이 나온다.
+- **`-e` 측정 모드는 로그만.** blocking 다이얼로그가 뜨면 세 OS 자동 검증 하네스가 거기서 멈춘다.
+  `-e` 는 이미 전역 핫키 · worker lock 을 건너뛰는 측정 전용 모드라 같은 자리에 둔다.
+
+TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 + 안내** 다 — #501 의 기존 경로와 같다.
+
+
 ## 8. PTY 자식 종료
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -1602,6 +1718,36 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 
+**바깥 앱을 띄우기 전에 z-order 를 비켜 준다** ([#655](https://github.com/ensky0/tildaz/issues/655)).
+우리 창은 항상-위라, 비켜 주지 않으면 편집기 · 브라우저가 **우리 뒤에 열려 사용자 눈에 띄지
+않는다** — 버튼을 눌렀는데 아무 일도 안 일어난 것처럼 보인다. **다음 show 가 원래 높이로
+되돌린다** (따로 복구 코드를 두지 않는다).
+
+바깥 앱을 띄우는 자리는 **여섯이고 세 platform 이 모두 같다.** 같은 앱을 같은 이유로 띄우는데
+들어온 문 (단축키 · 메뉴 · 안내 버튼) 이 다르다고 동작이 갈리면 안 된다.
+
+| 들어온 문 | 자리 |
+|---|---|
+| 단축키 | `Open Config` (Ctrl+Shift+P / Shift+Cmd+P) · `Open Log` (Ctrl+Shift+L / Shift+Cmd+L) |
+| command menu | `Open Config` · `Open Log` · `Keyboard Shortcuts` |
+| config 안내 다이얼로그 | `Open Config` 버튼 ([§7.3](#73-config-로드--부팅을-막지-않는다-655)) |
+
+| | 비켜 주는 방법 | 되돌리는 자리 |
+|---|---|---|
+| Windows | `Window.yieldTopmostUntilNextShow` → `SetWindowPos(HWND_NOTOPMOST)` | 다음 `showWindow` |
+| macOS | `setMainWindowLevel(NSNormalWindowLevel)` | 다음 `showWindow` 의 `setPopupWindowLevel` |
+| Linux | `zwlr_layer_surface_v1.set_layer(bottom)` + commit | 다음 `sendLayerSurfaceLayout` 이 `top` 을 재송신 |
+
+**Linux 만 내려가는 깊이가 다르다.** layer-shell 에는 "보통 창과 같은 높이" 가 없고 normal
+xdg_toplevel 은 `bottom` 과 `top` **사이**에 있어서, 위로 보내려면 `bottom` 까지 내려가야 한다
+— 그동안 우리 창은 *다른 모든 일반 창 아래*다 (mac · Windows 는 일반 창과 같은 높이). 이것이
+아래 §3 의 *z-order 양보 (#195)* 가 Linux 미적용인 이유와 같은 한계인데, **쓰는 자리가 달라서
+여기서는 받아들인다** — #195 는 *focus 를 잃을 때마다* 상시로 걸리는 것이라 그 깊이가 문제지만,
+여기서는 *우리가 방금 띄운 앱을 보라고* 한 번 내려갔다 다음 show 에 돌아온다.
+
+두 경우에는 아무것도 하지 않는다 — `set_layer` 는 since v2 라 v1 환경에서 보내면 protocol
+error 가 되고, xdg_toplevel fallback (GNOME · Cinnamon · sway) 은 애초에 항상-위가 아니다.
+
 `dump_perf`의 구간별 성능 계측은 system sleep/hibernate를 제외한 working-state
 elapsed time을 사용한다. Linux는 `CLOCK_MONOTONIC`, macOS는 `CLOCK_UPTIME_RAW`,
 Windows는 `QueryUnbiasedInterruptTimePrecise`를 사용하고 `src/perf.zig`에서 모두
@@ -1661,7 +1807,16 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 
 ### 11.4 config error 시 dialog 경로 안내
 
-잘못된 config 값 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)). `Config.load`가 연 path를 `Config.parse`에 직접 전달하고, TOML parse와 모든 semantic/schema 오류가 동적 message 조립을 사용한다. TOML parse 실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
+**#655 이후 이 절이 다루는 것은 "남은 fatal" 뿐이다.** 값이 틀린 경우는 더 이상 여기로
+오지 않는다 — §7.3 이 그것을 폴백 + 안내로 돌렸다. 여기 남은 것은 둘이다:
+**TOML 구문 오류** (파일을 값 트리로 만들 수조차 없어 고칠 자리를 짚어 줄 기준이 없다) 와
+**전역 hotkey 중복** (§7.3 의 예외 — 갈아탈 자리까지 없는 경우).
+
+잘못된 config 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해
+사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)).
+`Config.load`가 연 path를 `Config.parse`에 직접 전달하고 동적 message 를 조립한다. TOML parse
+실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와
+실제 파일이 갈리지 않는다.
 
 **안내는 담아 두고 host 가 그릴 수 있게 된 뒤에 띄운다** ([#577](https://github.com/ensky0/tildaz/issues/577)). config 파싱은 세 platform 공통이고 Linux 에서는 dialog backend (layer-shell overlay) 가 등록되기 **전에** 돈다 — `Client` 가 config 을 인자로 받아 만들어지기 때문이다. 그 자리에서 `dialog.showFatal` 을 부르면 안내가 stderr + 로그로만 가고, `.desktop` (메뉴 · autostart) 로 띄운 사용자에게는 **창도 다이얼로그도 없이 조용히 죽는 것**만 보였다.
 
@@ -1686,10 +1841,17 @@ Linux 가 공통 함수를 쓰지 않는 이유는 그쪽 `dialog.showFatal` 이
 ```
 Config: /home/user/.config/tildaz/config_0.toml
 
-Configuration: missing required key "window" in (top-level).
+Failed to parse config file.
+
+Line 12, column 3
+Error: UnexpectedToken
 ```
 
-예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 (`missing required key "window"`) 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
+예전에는 두 형식이 있었고 경로 위치가 오류 종류에 따라 달랐다 — 파싱 오류는 본문 셋째 줄 (`Path: {s}`), 의미 오류는 맨 끝 (`Config path:\n  {s}`). 의미 오류가 대부분인데 그쪽이 맨 끝이라, 읽는 순서상 *오류를 읽고 → 고쳐야겠다 판단하고 → 다이얼로그를 닫은 뒤* 경로가 필요해졌다. 위쪽 문구가 명확할수록 더 빨리 닫으므로 더 잘 놓쳤다. 사용자가 실제로 겪었다 (2026-08-22).
+
+**본보기가 `missing required key "window"` 였다** — #655 이후 그 문구는 존재하지 않는다 (없는
+키는 기본값으로 돌고 안내에 담긴다). 이 봉투를 지금 쓰는 것은 남은 fatal 뿐이라 본보기도 그중
+하나로 든다.
 
 조립 지점은 **`configErrorMessageAlloc` 한 곳**이다. 형식이 갈라진 원인이 파싱 오류만 그 함수를 지나지 않고 `dialog.showFatal` 을 직접 부른 것이었으므로, 그 경로도 `recordConfigFatalMsg` 를 지나게 했다. 파싱 오류 본문은 경로를 담지 않는다 — 담으면 두 번 나온다.
 
@@ -1705,14 +1867,16 @@ Configuration: missing required key "window" in (top-level).
 
 ### 11.5 config 를 읽지 못하거나 만들지 못했을 때 ([#501](https://github.com/ensky0/tildaz/issues/501))
 
-**fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.** 내용이 틀린 config (§11.4) 와 정책이 다르며, 그 차이가 의도적이다.
+**fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.**
 
-| 상황 | 결과 상태 | 한 문장으로 설명되는가 | 정책 |
-|---|---|---|---|
-| 파일이 없거나 못 읽음 / 못 만듦 | **전부** 기본값 | ✅ "설정을 하나도 읽지 못했다" | 안내 + 계속 |
-| 파일은 읽혔는데 내용이 틀림 | **부분** 적용 | ❌ 어느 필드가 살고 어느 필드가 죽었나 | fatal (§11.4) |
+시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너).
 
-시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너). 반면 내용이 틀린 경우는 부분 적용이 되어 "테마는 먹었는데 핫키는 안 먹은" 상태를 설명할 수 없으므로 fatal 이 정직하다.
+**#655 이전에는 여기에 표가 하나 더 있었다** — "파일은 읽혔는데 내용이 틀림" 은 부분 적용이라
+*"테마는 먹었는데 핫키는 안 먹은"* 상태를 한 문장으로 설명할 수 없으므로 fatal 이 정직하다는
+것이었다. 그 논리가 뒤집혔다. 부분 적용을 **설명하지 못한다는 것이 문제라면 설명하면 된다** —
+§7.3 의 안내가 바뀐 자리를 한 줄씩 적는다. 그리고 위 문단의 "스스로 잠긴다" 는 내용이 틀린
+경우에 **더 크게** 적용된다: 키 하나를 잘못 적은 사용자가 그 키를 고칠 터미널을 잃었다
+(v0.9.2 · v0.9.3 에서 실제로 두 번). 지금은 두 경우가 같은 정책이고, 그 일관성이 원칙 5 다.
 
 **안내는 창이 뜬 뒤에 한 번 나온다.** config 로드 시점에 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어 다이얼로그가 stderr · log 로만 가고 (`dialog/linux.zig`), 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다. Windows (`MessageBoxW`) 와 macOS (`osascript display dialog`) 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세 platform 의 시점이 갈리고 안내가 두 번 뜰 수 있어 한 곳으로 모았다.
 

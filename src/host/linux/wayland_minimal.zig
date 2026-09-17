@@ -174,6 +174,10 @@ const zwlr_layer_surface_v1_event_closed: u16 = 1;
 // layer enum: 0=background, 1=bottom, 2=top, 3=overlay. drop-down 은 normal
 // window 위 / lock screen 아래 → top (2). overlay 면 panel / 알림 위까지 덮음.
 const zwlr_layer_shell_layer_top: u32 = 2;
+/// #655 — 바깥 앱 (편집기 · 브라우저) 을 띄울 때 잠시 내려가는 자리. layer-shell 에는
+/// "보통 창과 같은 높이" 가 없고 normal xdg_toplevel 은 `bottom` 과 `top` **사이**에
+/// 있으므로, 그 위로 보내려면 `bottom` 까지 내려가야 한다.
+const zwlr_layer_shell_layer_bottom: u32 = 1;
 // #203 Phase C — 대화상자는 main surface (`top`) 위로 떠야 modal 가시화 보장.
 // `overlay` 면 panel / 알림 위까지 덮어 native NSAlert / MessageBoxW 동등.
 const zwlr_layer_shell_layer_overlay: u32 = 3;
@@ -686,6 +690,10 @@ pub const DialogOverlay = struct {
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
     prompt_available: bool = false,
+    /// #655 — Cancel 자리에 세울 글자. 비어 있으면 표준 `Cancel`. 호출자의 stack 을
+    /// 가리키지 않도록 복사해 둔다 (`title_buf` 와 같은 이유).
+    secondary_buf: [64]u8 = undefined,
+    secondary_len: usize = 0,
     wrap_width: i32 = 1,
     message_rows: usize = 1,
     visible_message_rows: usize = 1,
@@ -1271,6 +1279,12 @@ const Client = struct {
     /// (`dialog/linux.zig` 참고). 문자열은 `Config` 소유이고 그쪽이 우리보다 오래
     /// 산다. non-null 이면 아직 안 보여준 것이다.
     pending_config_notice: ?[]const u8 = null,
+    /// #655 — config 를 고쳐서 띄웠다는 안내가 밀려 있는가. 문구 자체는 `config.zig` 가
+    /// 들고 있어 (`pendingConfigNotice`) 여기는 한 번만 부르게 하는 빗장이다.
+    pending_config_repair: bool = false,
+    /// #655 — 안내 오버레이의 Cancel 자리 버튼이 할 일. `null` 이면 그 자리는 평소대로
+    /// 창을 닫는 취소다. **누르면 실행만 하고 창은 남는다.**
+    notice_inline_action: ?*const fn () void = null,
     /// #496 1-a — 라벨 binding 이 현재 keymap 으로 **닿지 않을 때** 쓸 대체 위치.
     /// `config.key_bindings` 와 같은 인덱스다. keymap 이 바뀔 때마다 다시 계산한다
     /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
@@ -1687,6 +1701,7 @@ const Client = struct {
             // #501 — 로드 실패 안내를 loop 로 넘긴다. `Config` 가 문자열을 소유하고
             // 우리보다 오래 산다.
             .pending_config_notice = cfg.load_notice,
+            .pending_config_repair = config_mod.pendingConfigNotice() != null,
             .run_opts = opts,
             .extra_env_storage = .{
                 .{ .name = "TERM", .value = "xterm-256color" },
@@ -1874,6 +1889,7 @@ const Client = struct {
             .show_info = Client.dialogShowInfoCb,
             .show_about = Client.dialogShowAboutCb,
             .show_confirm = Client.dialogShowConfirmCb,
+            .show_notice_action = Client.dialogShowNoticeActionCb,
             .prompt_hotkey = Client.dialogPromptHotkeyCb,
         });
         defer dialog_linux.unregisterCallbacks();
@@ -2704,6 +2720,30 @@ const Client = struct {
     /// no-op → physical 단위 그대로 송신 → KWin 이 logical 단위로 해석해 surface
     /// 가 over-scaled 됨. preferred_scale event handler 가 이 함수 재호출 하면
     /// 새 scale 로 정확히 변환된 layout 송신 + 두 번째 configure event 가 정확.
+    /// 새로 뜨는 앱 (config · log 를 여는 편집기, 브라우저) 이 **우리 위로 오게** 잠시
+    /// 비켜 준다. 다음 relayout 이 `set_layer(top)` 을 다시 보내 되돌린다 —
+    /// `sendLayerSurfaceLayout` 에 그 줄이 이미 있다 (#205 의 재송신).
+    ///
+    /// #655 — Windows 는 `Window.yieldTopmostUntilNextShow` 로 예전부터, macOS 는 이번에
+    /// 넣었고 **Linux 만 없었다.** 실측 (2026-09-17 · #655 Linux 회차): 안내의 `Open Config`
+    /// 가 띄운 `kate` 를 터미널 layer surface (800x1000) 가 오른쪽 절반 덮었다.
+    ///
+    /// 두 경우에 아무것도 하지 않는다 — `set_layer` 가 since v2 라 v1 환경에서 보내면
+    /// unknown opcode 로 protocol error 가 나고, xdg_toplevel fallback (GNOME 등) 은
+    /// 애초에 항상-위가 아니라 비켜 줄 것이 없다.
+    fn yieldTopmostUntilNextShow(self: *Client) void {
+        if (self.layer_surface_id == 0) return;
+        if (self.caps.layer_shell.version < 2) return;
+        self.sendArgs(
+            self.layer_surface_id,
+            zwlr_layer_surface_v1_request_set_layer,
+            &.{zwlr_layer_shell_layer_bottom},
+        ) catch return;
+        // wl_surface.commit (opcode 6) — layer 는 double-buffered 라 commit 해야 먹는다.
+        self.sendNoArgs(self.surface_id, 6) catch return;
+        log.appendLineVerbose("wayland", "yielded topmost — layer set to bottom until the next relayout (#655)", .{});
+    }
+
     fn sendLayerSurfaceLayout(self: *Client, initial_safe: bool) !void {
         if (self.layer_surface_id == 0) return;
         // #351 — 초기 안전 commit 의 configure 를 기다리는 중이면 실제 layout 송신을
@@ -7429,13 +7469,17 @@ const Client = struct {
             .switch_tab => self.handleSwitchTab(@intCast(tab_index orelse return)),
             // #213 — About 은 reentrancy 밖 drainAboutRequest 가 열도록 flag 만.
             .show_about => self.pending_about_request = true,
+            // 둘 다 **바깥 앱을 띄운다** — 먼저 비켜 주지 않으면 우리 창 뒤에 열린다
+            // (#655). macOS · Windows 의 같은 갈래와 짝이 맞는다.
             .open_config => {
                 const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(cfg_path);
+                self.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, cfg_path);
             },
             .open_log => {
                 const log_path = log.filePath() orelse return;
+                self.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, log_path);
             },
             .reset_terminal => {
@@ -7484,16 +7528,23 @@ const Client = struct {
             // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
             // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
             .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
+            // 셋 다 **바깥 앱을 띄운다** — 먼저 비켜 준다 (#655). macOS 의 같은 세 갈래와
+            // 짝이 맞는다.
             .open_config => {
                 const path = paths.configPath(self.rt, self.allocator) catch return;
                 defer self.allocator.free(path);
+                self.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, path);
             },
             .open_log => {
                 const log_path = log.filePath() orelse return;
+                self.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, log_path);
             },
-            .keyboard_shortcuts => system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url),
+            .keyboard_shortcuts => {
+                self.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
+            },
             .about => self.pending_about_request = true,
         }
         self.needs_redraw = true;
@@ -7864,6 +7915,13 @@ const Client = struct {
                     if (self.dialog.kind == .prompt and self.pending_prompt_result == null) return;
                     self.requestDismissDialog();
                 } else if (self.hitDialogRect(self.renderer.last_dialog_cancel_rect)) {
+                    // #655 — 안내 모드면 이 자리가 취소가 아니라 **행동**이고, 창을
+                    // **닫지 않는다**. 사용자는 목록을 보면서 파일을 고친다.
+                    if (self.notice_inline_action) |inline_action| {
+                        log.appendLineVerbose("dialog", "notice action hit — keeping the dialog open", .{});
+                        inline_action();
+                        return;
+                    }
                     log.appendLineVerbose("dialog", "Cancel hit — dismiss request", .{});
                     if (self.dialog.kind == .confirm) self.pending_confirm_result = false;
                     if (self.dialog.kind == .prompt) self.pending_prompt_result = false;
@@ -10306,6 +10364,7 @@ const Client = struct {
             self.dialog.visible_message_rows,
             self.dialog.message_scroll_row,
             self.dialog.show_icon,
+            if (self.dialog.secondary_len > 0) self.dialog.secondary_buf[0..self.dialog.secondary_len] else null,
         );
     }
 
@@ -10625,10 +10684,28 @@ const Client = struct {
     /// 돈다. 다른 다이얼로그가 떠 있으면 다음 iteration 으로 미룬다 (info 경로처럼
     /// 그냥 버리지 않는다 — 이 안내는 사용자가 놓치면 증상만 남는다).
     fn drainConfigNotice(self: *Client) void {
-        const notice = self.pending_config_notice orelse return;
         if (self.dialog.active()) return;
-        self.pending_config_notice = null;
-        config_mod.showLoadNoticeText(self.rt, notice);
+        if (self.pending_config_notice) |notice| {
+            self.pending_config_notice = null;
+            config_mod.showLoadNoticeText(self.rt, notice);
+            // 한 iteration 에 하나만 낸다 — 위 호출이 방금 다이얼로그를 걸었으므로
+            // 이어서 내면 `drainInfoRequest` 가 뒤엣것을 버린다.
+            return;
+        }
+        // #655 — config 를 고쳐서 띄운 경우. 위 안내와 **같은 자리**에서 낸다: Wayland
+        // backend 가 붙기 전에는 다이얼로그가 보이지 않아, 아이콘으로 띄운 사용자에게
+        // 안내가 한 번도 닿지 않는다 (#501 이 고친 바로 그 구멍이다).
+        if (self.pending_config_repair) {
+            self.pending_config_repair = false;
+            // #655 Linux 회차에서 **실제로 가려지는 것을 확인했다** — 터미널 layer surface 가
+            // 편집기의 절반을 덮었다. `yieldTopmostUntilNextShow` 가 `set_layer` 로 비켜 준다
+            // (version 가드는 그 함수 안에 있다). 콜백에 ctx 자리가 없어 (세 host 공용
+            // 시그니처) macOS `g_window` · Windows `g_notice_window` 처럼 파일 전역을 쓴다 —
+            // `showConfigNotice` 가 동기라 이 호출 동안만 산다.
+            g_notice_client = self;
+            defer g_notice_client = null;
+            config_mod.showConfigNotice(self.rt, self.allocator, self.run_opts.isStressRun(), yieldTopmostForNotice);
+        }
     }
 
     fn drainInfoRequest(self: *Client) void {
@@ -10667,7 +10744,21 @@ const Client = struct {
     /// roundtrip 도 main loop 의 drain 시점에서 *outer pump cycle 밖* 에 처리.
     fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
         const self: *Client = @ptrCast(@alignCast(ctx));
+        self.dialog.secondary_len = 0;
         return self.runConfirmDialog(.confirm, title, message);
+    }
+
+    /// #655 — 안내 + 그 자리에서 할 수 있는 일. `runConfirmDialog` 를 그대로 타되 두 번째
+    /// 버튼의 글자를 갈아 끼우고, 그 버튼이 **창을 닫지 않게** 한다.
+    fn dialogShowNoticeActionCb(ctx: *anyopaque, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        const n = @min(action_label.len, self.dialog.secondary_buf.len);
+        @memcpy(self.dialog.secondary_buf[0..n], action_label[0..n]);
+        self.dialog.secondary_len = n;
+        defer self.dialog.secondary_len = 0;
+        self.notice_inline_action = on_action;
+        defer self.notice_inline_action = null;
+        _ = self.runConfirmDialog(.confirm, title, message);
     }
 
     /// [#521](https://github.com/ensky0/tildaz/issues/521) — 다이얼로그 펌프가 `SIGTERM` 을
@@ -11298,6 +11389,15 @@ fn fillBuffer(memory: []u8, width: i32, height: i32, stride: i32) void {
 /// 포인터가 main surface 의 어디에 있는가 — 커서 모양의 근거. #483 4c 로 분할선 둘이 늘었다.
 /// #647 — `link` 는 포인터 아래가 클릭 가능한 링크일 때. 밑줄과 같은 규칙으로 **수식키를
 /// 보지 않는다** (여는 데만 `Ctrl` 이 필요하다).
+/// #655 — config 안내의 `Open Config` 가 바깥 앱을 띄우기 직전에 비켜 주기 위한 자리.
+/// `showConfigNotice` 의 콜백이 ctx 를 받지 않아 (세 host 공용 시그니처) 여기에 둔다.
+/// 그 호출이 동기라 **그 동안만** 살아 있고, 부르는 쪽이 `defer` 로 비운다.
+var g_notice_client: ?*Client = null;
+
+fn yieldTopmostForNotice() void {
+    if (g_notice_client) |c| c.yieldTopmostUntilNextShow();
+}
+
 const PointerRegion = enum { other, cell, separator_v, separator_h, link };
 
 /// #483 4c — 분할선 드래그 상태 (`Client.sep_drag`).

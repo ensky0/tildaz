@@ -40,6 +40,15 @@ pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) nore
     std.process.exit(1);
 }
 
+/// #655 — config 안내의 `Open Config` 가 편집기를 우리 **앞으로** 띄우게 한다.
+/// 우리 창은 `WS_EX_TOPMOST` 라 비켜 주지 않으면 편집기가 뒤에 열린다 (메뉴의
+/// `Open Config` 가 예전부터 하던 일과 같다 — `Window.yieldTopmostUntilNextShow`).
+var g_notice_window: ?*Window = null;
+
+fn yieldTopmostForNotice() void {
+    if (g_notice_window) |w| w.yieldTopmostUntilNextShow();
+}
+
 pub fn showFatalRunError(rt: Runtime, allocator: std.mem.Allocator, err: anyerror) void {
     // #577 — `rt` 를 인자로 받는다. 예전에는 `g_rt` 를 읽었는데 그것은 `run()` 안에서만
     // 심어지고, **launcher 실패 경로는 `run()` 을 거치지 않는다** (`main.zig` 의
@@ -233,6 +242,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 아니다** — 기본값으로 계속 돈다. 창이 뜬 뒤인 것은 세 platform 을 같은 시점으로
     // 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
     config_mod.showLoadNotice(rt, &config);
+    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
+    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
+    // 멈추면 안 되므로 로그로만 남긴다.
+    // `before_open` 은 `*const fn () void` 라 method 를 그대로 못 넘긴다. 창을 잠깐
+    // 모듈 전역에 걸어 두고 shim 을 넘긴다 — 다이얼로그가 modal 이라 그 사이 다른
+    // 창이 끼어들지 않는다.
+    g_notice_window = &app.window;
+    defer g_notice_window = null;
+    config_mod.showConfigNotice(rt, alloc, opts.isStressRun(), yieldTopmostForNotice);
     defer app.window.deinit();
 
     // Scale tab bar / scrollbar / padding constants by the startup DPI.

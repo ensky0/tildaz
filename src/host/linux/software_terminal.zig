@@ -1968,6 +1968,8 @@ pub const Renderer = struct {
         visible_message_rows: usize,
         message_scroll_row: usize,
         show_icon: bool,
+        /// #655 — Cancel 자리의 글자. `null` 이면 표준 `Cancel`.
+        secondary_label: ?[]const u8,
     ) void {
         const cw: i32 = @intCast(self.dialogFont().cell_width_px);
         const ch: i32 = @intCast(self.dialogFont().cell_height_px);
@@ -2120,7 +2122,7 @@ pub const Renderer = struct {
             const cancel_x: i32 = group_x;
             self.last_dialog_cancel_rect = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h };
             fillRoundedRect(memory, buffer_w, buffer_h, stride, cancel_x, button_y, button_w, button_h, button_r, dialog_cancel_color);
-            const cancel_text = messages.button_cancel;
+            const cancel_text = secondary_label orelse messages.button_cancel;
             const cancel_text_w: i32 = button_measure.width(cancel_text);
             const cancel_text_x: i32 = cancel_x + @divTrunc(button_w - cancel_text_w, 2);
             self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, cancel_text_x, button_text_y, cancel_text, dialog_cancel_text_color);
@@ -3245,6 +3247,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
 }
 
@@ -3285,6 +3290,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     // #368 — dialog 폰트는 지연 생성이라 이 시점엔 이미 만들어져 있어야 한다
     // (`drawDialogContent` 가 위에서 불렸다). 없으면 그 자체가 회귀다.
@@ -3350,6 +3358,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         0,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     const error_separator = std.mem.readInt(u32, buf[separator_center_off..][0..4], .little) & 0x00FF_FFFF;
     try std.testing.expectEqual(info_separator, error_separator);
@@ -3371,6 +3382,9 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         layout.visible_message_rows,
         layout.message_scroll_max,
         layout.show_icon,
+        // #655 — About 다이얼로그는 행동 버튼이 없다. `null` 이면 표준 `Cancel` 이라
+        // 이 인자가 생기기 전과 같은 그림이다.
+        null,
     );
     try std.testing.expect(r.last_dialog_scrollbar_thumb_rect.y > first_thumb_y);
 }

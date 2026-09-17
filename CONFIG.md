@@ -36,18 +36,31 @@ instance you create.
 Only files TildaZ generates carry these defaults. An existing `config_N.toml` is
 read exactly as written, and nothing rewrites its `hotkey`.
 
-> **Strict schema validation** — every key is required, unknown keys are rejected, type mismatches are fatal. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and for validating user config). Linux, macOS, and Windows apply the same policy.
+> **TildaZ always starts.** A config problem you can fix is never a reason for the app not to open. Whatever TildaZ cannot use, it replaces with the default, and it tells you what it replaced so you can fix the file yourself. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and as the schema your file is checked against). Linux, macOS, and Windows apply the same policy.
 >
-> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version fails to load with `missing required key …`. The message tells you what to do: move the file aside (add `.bak` to its name), start TildaZ to get a fresh default file, then copy back the values you had changed. TildaZ never edits your file for you.
+> | What is wrong | What TildaZ does |
+> |---|---|
+> | A key is missing | Uses the default. Add the key to keep it. |
+> | A key it does not know | Ignores it. Delete it. |
+> | A value it cannot read | Uses the default. |
+> | A number out of range | Clamps it to the nearest limit — it does not fall back to the default. |
+> | One entry in a `[keys]` list is unusable | Drops that entry only; the other keys for that action still work. |
+> | Two actions share a combination | The one written first keeps it. |
+>
+> On startup you get one dialog listing everything it changed, split into "add or fix these" and "delete these", with a button that opens the file. It appears once per launch, not every time you open the window.
+>
+> **TildaZ never edits your file for you.** The defaults live in memory only — rewriting the file would throw away your comments, and fixing it is your call.
+>
+> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version now starts fine. The new keys run on their defaults and the dialog lists them so you can add them at your leisure. Before v0.9.6 the same file refused to load.
 >
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
 >
-> Note that commenting a field **out** is not the same as leaving it at its default: every field listed in the table above is required, so removing one is an error rather than a fallback. To go back to a default, set the value explicitly.
+> Commenting a field **out** leaves it at its default, and TildaZ names it in the startup dialog so a field you dropped by accident does not go unnoticed. If you meant it, set the value explicitly instead and the dialog stays quiet.
 
 ## Examples
 
-Every field below is required, so a real config also carries the `[keys]`
-table -- see [Keyboard shortcuts](#keyboard-shortcuts). The examples omit it
+A file written by TildaZ carries every field, so a real config also carries the
+`[keys]` table -- see [Keyboard shortcuts](#keyboard-shortcuts). The examples omit it
 only to stay readable; TildaZ writes the whole file for you on first launch.
 
 These show `config_0.toml`, so `hotkey` reads `"F1"`. In `config_1.toml` that
@@ -150,6 +163,11 @@ macos_option_as_alt = "none"   # none | both | left | right -- macOS only
 
 Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). String / boolean fields are self-evident.
 
+The **Range** column is enforced, not advisory: a number outside it is clamped to
+the nearest limit (`width_percent = 1000` runs as `100`), and a value TildaZ
+cannot read at all falls back to the **Default** column. Either way the startup
+dialog names the field.
+
 | Key | Type | Range | Linux default | macOS default | Windows default | Description |
 |-----|------|-------|---------------|---------------|-----------------|-------------|
 | `window.dock_position` | string | top / bottom / left / right | "top" | "top" | "top" | Edge to dock to |
@@ -169,7 +187,7 @@ Every numeric field name carries its unit (`_percent`, `_point`, `_ratio`). Stri
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
-| `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 38 of them, all required. An empty list unbinds the action |
+| `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 38 of them. An action you leave out runs on its default binding; an empty list `[]` unbinds it, and the two are different |
 
 ### Font names
 
@@ -272,8 +290,10 @@ quit      = []
 - **A list, not a single value** — an action can have several keys.
 - **An empty list unbinds the action.** That is the only way to express "no
   key"; the entry itself always stays in the file.
-- **Every key may trigger only one action.** Binding the same combination twice
-  is an error at startup, and the message names both actions.
+- **Every key may trigger only one action.** If you bind the same combination
+  twice, the action written **first** keeps it and the later one loses that key;
+  the startup dialog names both. Reading the file top to bottom tells you which
+  one won.
 - **The defaults are not the same on every OS.** macOS follows Apple's
   convention (`Cmd+T`, `Shift+Cmd+[`), Linux and Windows use `Ctrl+Shift+T`.
   A modifier swap is not enough to express that, so the two default tables are
@@ -366,8 +386,10 @@ the equivalent work.
 `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
 `Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
 `Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
-Case does not matter. Anything else is an error at startup — including
-layout-specific characters such as `²` on French AZERTY.
+Case does not matter. Anything else is dropped at startup and named in the
+dialog — including layout-specific characters such as `²` on French AZERTY. Only
+that one entry goes; the other keys you gave the action still work, and an action
+left with nothing falls back to its default binding.
 
 The label set is deliberately narrow. Widening it would mean giving `-` a value,
 and the only fixed values available (`VK_OEM_MINUS`, `kVK_ANSI_Minus`) are not
@@ -447,7 +469,7 @@ safest choice there, being identical on every layout.
 
 `hotkey` accepts a single key optionally combined with modifiers, joined by `+`
 (e.g. `"F1"`, `"Ctrl+Space"`, `"Shift+Cmd+T"`). Rules (validated at startup — an
-invalid value shows an error dialog and exits):
+invalid value falls back to the default hotkey and is named in the dialog):
 
 - **Modifiers**: `Ctrl`, `Alt`, `Shift`, and the platform key written as `Cmd`
   (Win key on Windows / Command on macOS / Super on Linux). The `cmd` token maps
@@ -470,8 +492,9 @@ invalid value shows an error dialog and exits):
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same
   way. Widening it means verifying real key codes on Linux, macOS, and Windows,
-  which has not been done yet. A rejected value shows an error dialog naming the
-  accepted keys rather than failing silently.
+  which has not been done yet. A rejected value falls back to the default hotkey
+  and is named in the startup dialog rather than failing silently; the log lists
+  the accepted keys.
 - **The position form works here too**, with one caveat below. TildaZ registers
   the hotkey with your desktop, and the desktops differ in what they accept.
   sway, Hyprland, GNOME and Cinnamon take a key position directly. COSMIC and KDE

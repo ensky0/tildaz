@@ -163,10 +163,20 @@ selection behavior, config schema, dialogs, and child shell environment. OS
 conventions remain native: Windows uses Ctrl/Alt patterns; macOS uses Cmd/Shift
 Cmd patterns and AppKit input callbacks.
 
-**Strict config.** `src/config.zig` is the source of truth for the TOML schema
-and defaults. Every key is required and unknown keys are fatal, with no
-exception -- TOML has real `#` comments, so there is no need for comment-shaped
-keys. Numeric fields include their units (`_percent`, `_point`, `_ratio`).
+**Config that always boots.** `src/config.zig` is the source of truth for the TOML
+schema and defaults. A config problem the user can fix never stops the app from
+opening: a missing key falls back to its default, an unknown key is ignored, an
+unreadable value falls back, a number outside its range is clamped, and one bad
+entry in a `[keys]` list is dropped on its own. Everything replaced goes into a
+single startup dialog so the user can fix the file themselves -- TildaZ never
+rewrites it. Unknown keys are still called out rather than tolerated: TOML has
+real `#` comments, so there is no need for comment-shaped keys. Numeric fields
+include their units (`_percent`, `_point`, `_ratio`).
+
+Two things still stop startup, and neither is a value the user got wrong: a TOML
+syntax error (the file cannot become a value tree at all) and a global hotkey
+that collides with a lower-numbered instance when even the derived default is
+taken. See SPEC.md 7.3.
 
 **Wayland-only on Linux.** Wayland is where modern Linux desktops are heading,
 which matches the goal of behaving well on current desktop managers. X11 is not
