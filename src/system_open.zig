@@ -45,23 +45,72 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
         defer allocator.free(wparams);
         // notepad.exe 는 Windows 10 / 11 에 항상 있다 (메모장이 Store 앱이 된 뒤에도
         // System32 의 실행 스텁이 남는다).
-        const notepad_w = std.unicode.utf8ToUtf16LeStringLiteral("notepad.exe");
-        _ = ShellExecuteW(null, verb_w, notepad_w, wparams.ptr, null, 1);
+        //
+        // ⚠️ **이름이 아니라 전체 경로로 지정한다** ([#655](https://github.com/ensky0/tildaz/issues/655)
+        // Windows 회차 실측). `lpFile` 에 `"notepad.exe"` 만 주면 `ShellExecuteW` 가 PATH 보다
+        // 먼저 **App Paths** (`HKCU\…\App Paths\notepad.exe`) 를 조회하는데, Store 메모장이
+        // 깔린 Windows 11 에서 그 값이 `C:\Program Files\WindowsApps\Microsoft.WindowsNotepad_…`
+        // 를 가리킨다. 그 디렉터리는 TrustedInstaller 소유라 사용자가 접근할 수 없어 실행이
+        // `SE_ERR_ACCESSDENIED` (rc=5) 로 막히고 **편집기가 조용히 안 뜬다.** 같은 회차에서
+        // 이름만 주면 rc=5, `System32\notepad.exe` 전체 경로면 rc=42 로 갈렸다.
+        var notepad_buf: [max_notepad_path]u16 = undefined;
+        const notepad_path = systemFilePath(&notepad_buf, "notepad.exe") orelse {
+            log.appendLine("open", "cannot build the notepad path; giving up", .{});
+            return;
+        };
+        launch(verb_w, notepad_path, wparams.ptr, "notepad");
         return;
     }
 
-    _ = ShellExecuteW(null, verb_w, wpath.ptr, null, null, 1);
+    launch(verb_w, wpath.ptr, null, "the associated app");
+}
+
+/// `GetSystemDirectoryW` 아래의 실행 파일 전체 경로. 버퍼가 모자라면 null.
+///
+/// 하드코딩한 `C:\Windows\System32` 를 쓰지 않는 이유는 시스템 디렉터리가 그 자리라는
+/// 보장이 없어서다 (다른 드라이브에 설치된 Windows · WoW64 리다이렉션).
+fn systemFilePath(buf: []u16, comptime name: []const u8) ?[*:0]const u16 {
+    const name_w = std.unicode.utf8ToUtf16LeStringLiteral("\\" ++ name);
+    const dir_len = GetSystemDirectoryW(buf.ptr, @intCast(buf.len));
+    // 0 은 실패, `buf.len` 이상이면 필요한 크기를 돌려준 것이라 담지 못한 것이다.
+    if (dir_len == 0 or dir_len >= buf.len) return null;
+    if (dir_len + name_w.len + 1 > buf.len) return null;
+    @memcpy(buf[dir_len..][0..name_w.len], name_w[0..name_w.len]);
+    buf[dir_len + name_w.len] = 0;
+    return @ptrCast(buf.ptr);
+}
+
+/// `\notepad.exe` 같은 이름까지 담을 수 있는 크기. `MAX_PATH` (260) 에 이름 몫을 더한다.
+const max_notepad_path = 260 + 32;
+
+/// 열기를 시도하고 **실패를 반드시 남긴다.** 반환값 32 이하가 오류라는 것은
+/// `ShellExecuteW` 계약이다. 이 값을 버리던 동안 #655 의 `ACCESS_DENIED` 가 로그 한 줄
+/// 없이 조용히 실패했고, 사용자에게는 *"눌러도 아무 일도 안 난다"* 로만 보였다.
+///
+/// 반대로 **rc > 32 가 "편집기가 떴다" 를 뜻하지는 않는다** (#456 — "앱 선택" 프롬프트로
+/// 넘어가도 성공으로 보고한다). 그래서 성공 쪽은 로그를 남기지 않고, 연결 유무 판정은
+/// 위의 `hasOpenAssociation` 이 계속 맡는다.
+fn launch(verb_w: [*:0]const u16, file_w: [*:0]const u16, params_w: ?[*:0]const u16, what: []const u8) void {
+    const rc = @intFromPtr(ShellExecuteW(null, verb_w, file_w, params_w, null, 1));
+    if (rc <= 32) log.appendLine("open", "failed to open {s}: ShellExecuteW rc={d}", .{ what, rc });
 }
 
 fn openSpawn(rt: Runtime, cmd: []const u8, path: []const u8) void {
     // #451 — `Child.init` + 필드 설정 + `spawn` ➡️ `std.process.spawn(io, options)`
     // (릴리즈 노트 *Process*). stdio 는 `.Ignore` → `.ignore` 로 이름만 바뀌었다.
+    // #655 — 실패를 조용히 삼키지 않는다. Windows 쪽에서 `ShellExecuteW` 반환값을 버린
+    // 탓에 `ACCESS_DENIED` 가 로그 한 줄 없이 지나갔고, 사용자에게는 *"눌러도 아무 일도
+    // 안 난다"* 로만 보였다. 여기도 같은 모양이었다 — `open` · `xdg-open` 이 없거나
+    // 실행되지 않으면 아무 흔적이 남지 않는다.
     const child = std.process.spawn(rt.io, .{
         .argv = &.{ cmd, path },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
-    }) catch return;
+    }) catch |err| {
+        log.appendLine("open", "failed to spawn {s}: {s}", .{ cmd, @errorName(err) });
+        return;
+    };
 
     // #457 — 자식을 거두지 않으면 `[xdg-open] <defunct>` 가 worker 수명 동안 상한
     // 없이 쌓인다. `open` / `xdg-open` 은 편집기를 띄우고 곧 끝나므로 이 thread 도
@@ -98,6 +147,8 @@ extern "shell32" fn ShellExecuteW(
     lpDirectory: ?[*:0]const u16,
     nShowCmd: c_int,
 ) callconv(.c) ?*anyopaque;
+
+extern "kernel32" fn GetSystemDirectoryW(lpBuffer: [*]u16, uSize: u32) callconv(.c) u32;
 
 // ── 확장자 연결 조회 (Windows-only, #456) ────────────────────────────────────
 //
@@ -190,4 +241,31 @@ fn hasOpenAssociation(allocator: std.mem.Allocator, path: []const u8) bool {
 
     var command_buf: [512]u16 = undefined;
     return regReadString(allocator, HKEY_CLASSES_ROOT, command_key, null, &command_buf) != null;
+}
+
+// ── test ─────────────────────────────────────────────────────────────────────
+//
+// #655 — 이 자리에 test 가 없어서 "이름만 주면 App Paths 가 접근 불가 경로로 보낸다" 는
+// 결함이 Windows 실기에서야 드러났다. 경로를 **만드는** 부분은 순수 계산이라 고정할 수 있다
+// (실제 실행은 OS 상태에 달려 있어 test 대상이 아니다).
+
+test "systemFilePath — 시스템 디렉터리 아래의 절대 경로를 만든다" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var buf: [max_notepad_path]u16 = undefined;
+    const p = systemFilePath(&buf, "notepad.exe") orelse return error.TestUnexpectedResult;
+
+    var utf8: [1024]u8 = undefined;
+    const n = try std.unicode.utf16LeToUtf8(&utf8, std.mem.span(p));
+    const got = utf8[0..n];
+
+    // 이름만이 아니라 **절대 경로** 여야 한다 — 그것이 이 함수의 존재 이유다.
+    try std.testing.expect(std.mem.endsWith(u8, got, "\\notepad.exe"));
+    try std.testing.expect(std.mem.indexOf(u8, got, ":\\") != null);
+    try std.testing.expect(got.len > "notepad.exe".len);
+}
+
+test "systemFilePath — 버퍼가 모자라면 null (잘린 경로를 실행하지 않는다)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var tiny: [8]u16 = undefined;
+    try std.testing.expect(systemFilePath(&tiny, "notepad.exe") == null);
 }
