@@ -1,4 +1,4 @@
-# #655 — config 가 망가져도 **뜨는지**, 그리고 무엇을 고쳤다고 알리는지를 자동 검증한다.
+﻿# #655 — config 가 망가져도 **뜨는지**, 그리고 무엇을 고쳤다고 알리는지를 자동 검증한다.
 # Windows 몫 (Linux · macOS 는 `tool/config-notice-check.sh` — 회차 이름과 판정이 같다).
 #
 # ```powershell
@@ -93,9 +93,15 @@ function Invoke-App([int]$i, [int]$WaitSeconds = 8) {
 }
 
 # `-e` 로 돈다 — 다이얼로그가 뜨지 않는 경로 그 자체를 재는 회차에서만 쓴다.
+#
+# **`-e` 의 값은 따옴표로 감싸야 한다.** `Start-Process -ArgumentList` 는 배열 원소를 공백으로
+# 이어 붙일 뿐 공백이 있는 원소를 감싸 주지 않아서, 그냥 넘기면 앱이 `-e cmd.exe /c exit` 로
+# 읽고 `unknown option "/c"` (exit 2) 로 거부한다 — 로그 파일 자체가 생기지 않아 "앱이 조용하다"
+# 가 아니라 "앱이 뜨지도 않았다" 가 된다. 레포의 다른 Windows 도구 (`key-bytes-check` ·
+# `search-bar-check` · `link-click-check` · `render-ab-shot`) 가 전부 이 형태다.
 function Invoke-AppQuiet([int]$i) {
     Use-IsolatedAppData {
-        Start-Process -FilePath $Bin -ArgumentList '--instance', "$i", '-e', 'cmd.exe /c exit' `
+        Start-Process -FilePath $Bin -ArgumentList '--instance', "$i", '-e', "`"cmd.exe /c exit`"" `
             -Wait -WindowStyle Hidden | Out-Null
     }
 }
@@ -306,7 +312,17 @@ function Case-hotkey {
     if (-not (New-Base $idx)) { Write-Result hotkey FAIL '준비 실패'; return }
     $taken = (Select-String -Path (Get-Cfg 0) -Pattern '^hotkey\s*=\s*"(.*)"').Matches[0].Groups[1].Value
     $p = Get-Cfg $idx
-    & python -c "import sys,re; p=r'''$p'''; s=open(p,encoding='utf-8').read(); open(p,'w',encoding='utf-8').write(re.sub(r'^hotkey\s*=.*$', 'hotkey = \"$taken\"', s, count=1, flags=re.M))"
+    # **한 줄 `-c` 에 `\"` 를 쓰지 않는다.** PowerShell 5.1 이 네이티브 인자로 넘기며 그
+    # 따옴표를 인자 경계로 다시 읽어 python 코드가 잘린다 (`unterminated string literal`).
+    # 이 파일의 다른 자리처럼 here-string 으로 넘기고, 큰따옴표는 `chr(34)` 로 만든다.
+    & python -c @"
+import re
+p, taken = r'''$p''', r'''$taken'''
+q = chr(34)
+s = open(p, encoding='utf-8').read()
+open(p, 'w', encoding='utf-8').write(
+    re.sub(r'^hotkey\s*=.*$', 'hotkey = ' + q + taken + q, s, count=1, flags=re.M))
+"@
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
     # 죽지 않고 파생 기본값 F{N+1} 로 갈아탄다 (SPEC §7.3 의 유일한 예외 — 갈아탈
