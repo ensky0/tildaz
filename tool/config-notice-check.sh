@@ -320,30 +320,36 @@ PY
   fi
 }
 
-case_truncate() {
-  env_reset; mkbase "$IDX" >/dev/null || { result truncate FAIL "준비 실패"; return; }
-  # 긴 이름의 모르는 키를 넣어 안내 버퍼 (16 KiB) 를 넘긴다.
+case_no_cap() {
+  env_reset; mkbase "$IDX" >/dev/null || { result no-cap FAIL "준비 실패"; return; }
+  # 긴 이름의 모르는 키를 잔뜩 넣는다. 예전에는 안내 버퍼가 16 KiB 고정이라 여기서
+  # 잘렸다 — **목록이 길수록 필요한 정보가 많은데 바로 그때** 잘리는 설계였다.
   #
-  # **config 파일은 64 KiB 를 넘기면 안 된다** (`Config.load` 의 `allocRemaining` 상한).
-  # 넘기면 파일이 통째로 거부돼 `load failed — running with defaults` 로 빠지고 —
-  # 그것도 부팅은 되니 원칙 5 에는 맞지만 — 이 회차가 재려던 잘림은 일어나지 않는다.
-  # 150 × 200 자 ≈ 30 KiB 로 상한 안에 들면서 안내 버퍼만 넘긴다.
-  python3 - "$(CFG "$IDX")" <<'PY'
+  # config 파일은 64 KiB 를 넘기면 안 된다 (`Config.load` 의 `allocRemaining` 상한).
+  # 넘기면 파일이 통째로 거부돼 `load failed` 로 빠져 이 회차가 재려던 것이 안 일어난다.
+  # 150 x 200 자 ~ 30 KiB 로 상한 안에 들면서 옛 16 KiB 버퍼는 훌쩍 넘긴다.
+  python3 - "$(CFG "$IDX")" <<'MKBIG'
 import sys
 p = sys.argv[1]
 with open(p, 'a', encoding='utf-8') as f:
     f.write('\n')
     for i in range(150):
-        f.write(f'{"k" * 200}{i} = 1\n')
-PY
+        f.write('k' * 200 + str(i) + ' = 1\n')
+MKBIG
   rm -f "$(LOG "$IDX")"; run_app "$IDX"
-  # 버퍼가 넘쳐도 **몇 개였는지는 정확**하고, 로그에는 전부 남는다.
-  grep -q 'notice shown: [0-9]* item(s) (truncated)' "$(LOG "$IDX")" 2>/dev/null \
-    && result truncate PASS "넘친 것을 잘렸다고 표시했다" \
-    || result truncate FAIL "잘림 표시가 없다 — 사용자가 목록이 전부인 줄 안다"
+  local log; log="$(LOG "$IDX")"
+  local shown; shown=$(sed -n 's/.*notice shown: \([0-9]*\) item.*/\1/p' "$log" | head -1)
+  # **잘리지 않는다.** 세 다이얼로그 backend 가 임의 길이를 받아 스크롤한다.
+  if grep -q '(truncated)' "$log" 2>/dev/null; then
+    result no-cap FAIL "잘렸다 — 상한이 남아 있다 (스크롤로 가야 한다)"
+  elif [ -n "${shown:-}" ] && [ "$shown" -ge 150 ]; then
+    result no-cap PASS "${shown} 줄을 전부 담았다 (옛 16 KiB 상한의 3 배 가까이)"
+  else
+    result no-cap FAIL "안내가 비었거나 항목이 모자란다 (${shown:-없음})"
+  fi
 }
 
-CASES="boots order clamp first-wins drop-one unknown font-missing quiet clean hotkey truncate"
+CASES="boots order clamp first-wins drop-one unknown font-missing quiet clean hotkey no-cap"
 
 usage() {
   echo "회차: $CASES"

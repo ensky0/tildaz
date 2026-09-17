@@ -40,7 +40,7 @@ $work = if ($env:TZCN_WORK) { $env:TZCN_WORK } else { Join-Path $env:TEMP 'tilda
 $idx = 9
 $script:failCount = 0
 
-$allCases = @('boots','order','clamp','first-wins','drop-one','unknown','font-missing','quiet','clean','hotkey','truncate')
+$allCases = @('boots','order','clamp','first-wins','drop-one','unknown','font-missing','quiet','clean','hotkey','no-cap')
 
 function Show-Usage {
     Write-Host "회차: $($allCases -join ' ')"
@@ -333,21 +333,30 @@ open(p, 'w', encoding='utf-8').write(
     else { Write-Result hotkey FAIL '중복에서 죽었거나 갈아탔다는 안내가 없다' }
 }
 
-function Case-truncate {
+function Case-no-cap {
     Reset-Env
-    if (-not (New-Base $idx)) { Write-Result truncate FAIL '준비 실패'; return }
-    # **config 파일은 64 KiB 를 넘기면 안 된다** (`Config.load` 의 `allocRemaining` 상한).
-    # 넘기면 파일이 통째로 거부돼 `load failed — running with defaults` 로 빠지고, 이
-    # 회차가 재려던 잘림은 일어나지 않는다. 150 × 200 자 ≈ 30 KiB 로 상한 안에 든다.
+    if (-not (New-Base $idx)) { Write-Result no-cap FAIL '준비 실패'; return }
+    # 긴 이름의 모르는 키를 잔뜩 넣는다. 예전에는 안내 버퍼가 16 KiB 고정이라 여기서
+    # 잘렸다 — **목록이 길수록 필요한 정보가 많은데 바로 그때** 잘리는 설계였다.
+    #
+    # config 파일은 64 KiB 를 넘기면 안 된다 (`Config.load` 의 `allocRemaining` 상한).
+    # 넘기면 파일이 통째로 거부돼 `load failed` 로 빠져 이 회차가 재려던 것이 안 일어난다.
+    # 150 x 200 자 ~ 30 KiB 로 상한 안에 들면서 옛 16 KiB 버퍼는 훌쩍 넘긴다.
     $p = Get-Cfg $idx
-    & python -c "p=r'''$p'''; f=open(p,'a',encoding='utf-8'); f.write('\n'); [f.write('k'*200+str(i)+' = 1\n') for i in range(150)]; f.close()"
+    & python -c "p=r'''$p'''; f=open(p,'a',encoding='utf-8'); f.write(chr(10)); [f.write('k'*200+str(i)+' = 1'+chr(10)) for i in range(150)]; f.close()"
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
-    # 버퍼가 넘쳐도 **몇 개였는지는 정확**하고, 로그에는 전부 남는다.
-    if (Select-String -Path (Get-Log $idx) -Pattern 'notice shown: \d+ item\(s\) \(truncated\)' -Quiet -ErrorAction SilentlyContinue) {
-        Write-Result truncate PASS '넘친 것을 잘렸다고 표시했다'
+    $log = Get-Log $idx
+    # **잘리지 않는다.** 세 다이얼로그 backend 가 임의 길이를 받아 스크롤한다.
+    if (Select-String -Path $log -Pattern '\(truncated\)' -Quiet -ErrorAction SilentlyContinue) {
+        Write-Result no-cap FAIL '잘렸다 — 상한이 남아 있다 (스크롤로 가야 한다)'
+        return
+    }
+    $m = Select-String -Path $log -Pattern 'notice shown: (\d+) item' | Select-Object -First 1
+    if ($m -and [int]$m.Matches[0].Groups[1].Value -ge 150) {
+        Write-Result no-cap PASS "$($m.Matches[0].Groups[1].Value) 줄을 전부 담았다 (옛 16 KiB 상한의 3 배 가까이)"
     } else {
-        Write-Result truncate FAIL '잘림 표시가 없다 — 사용자가 목록이 전부인 줄 안다'
+        Write-Result no-cap FAIL '안내가 비었거나 항목이 모자란다'
     }
 }
 

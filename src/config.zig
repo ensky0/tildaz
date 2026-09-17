@@ -2602,6 +2602,10 @@ pub const Config = struct {
     /// 모든 경로에서 shell / font_families 가 owned → `deinit` 이 일관 free.
     /// 따라서 `shell_resolved` 는 호출처가 항상 *owned* 로 넘겨야 한다.
     pub fn load(rt: Runtime, allocator: std.mem.Allocator, shell_resolved: []const u8) Config {
+        // #655 — 안내를 담을 allocator 를 여기서 심는다. `parse` 보다 앞이어야 한다 —
+        // 파일이 없거나 못 읽는 경로도 `resolveHotkeyConflict` 로 안내를 만든다.
+        clearConfigNotice();
+        setNoticeAllocator(allocator);
         const path = paths.configPath(rt, allocator) catch {
             return defaultOwned(allocator, shell_resolved);
         };
@@ -2712,8 +2716,7 @@ pub const Config = struct {
             {
                 var key_buf: [64]u8 = undefined;
                 appendNotice(
-                    &repaired_buf,
-                    &repaired_len,
+                    &repaired_list,
                     messages.config_notice_hotkey_taken_format,
                     .{ owner, hotkeyDisplay(&key_buf, derived) },
                 );
@@ -2790,8 +2793,9 @@ pub const Config = struct {
         var config = Config{};
         // #655 — 이 한 번의 읽기가 만든 안내만 담는다. 한 프로세스에서 두 번 읽으면
         // (launcher 가 instance 별로 훑는 경로) 같은 줄이 두 벌 쌓여 다이얼로그가
-        // 같은 말을 반복한다.
+        // 같은 말을 반복한다. `load` 를 거치지 않고 부르는 test 를 위해 여기서도 심는다.
         clearConfigNotice();
+        setNoticeAllocator(allocator);
         // #493 — TOML. `toml.Table` 로 받아 **값 트리**를 직접 훑는다. 구조체 매핑을
         // 쓰지 않는 이유는 아래 필드별 오류 메시지다 — 매핑에 맡기면 "어느 필드가 왜
         // 틀렸는지" 가 파서의 일반 오류로 퇴화한다.
@@ -3065,8 +3069,7 @@ pub const Config = struct {
         for (config.key_bindings[0..count]) |existing| {
             if (std.meta.eql(existing.hotkey, hotkey)) {
                 appendNotice(
-                    &repaired_buf,
-                    &repaired_len,
+                    &repaired_list,
                     messages.config_notice_key_conflict_format,
                     .{ name, text, existing.action.configName() },
                 );
@@ -3237,35 +3240,95 @@ pub fn showLoadNotice(rt: Runtime, config: *Config) void {
 /// 두 묶음을 나눠 세우는 것이 이 함수의 요점이다. "넣거나 고치세요" 와 "지우세요" 는
 /// 사용자가 파일에서 할 일이 반대라, 한 줄로 섞으면 어느 쪽인지 다시 읽어야 한다.
 /// 비어 있는 묶음의 머리글은 세우지 않는다.
-pub fn configNoticeMessage(buf: []u8, n: ConfigNotice) []const u8 {
-    var w: std.Io.Writer = .fixed(buf);
+pub fn configNoticeMessage(buf: []u8, path: ?[]const u8, n: ConfigNotice) []const u8 {
+    // **꼬리 두 조각을 미리 떼어 둔다.** Linux overlay 는 상한 (4096) 을 넘으면 앞을
+    // 남기고 **뒤를 자른다** (`dialog/linux.zig` 의 `copyMessage`). 목록을 먼저 다 쓰고
+    // 뒤에 붙이면, 목록이 긴 바로 그 경우에 — 파일을 버리는 쪽이 빠른 그 경우에 —
+    // 탈출구가 잘려 나간다. 그래서 자리를 먼저 잡고 목록을 그 앞까지만 쓴다.
+    const tail = "\n\n" ++ messages.config_notice_reset_hint;
+    const cut_note = "\n" ++ messages.config_notice_truncated_msg;
+    const reserve = tail.len + cut_note.len;
+    if (buf.len <= reserve) return "";
+
+    var w: std.Io.Writer = .fixed(buf[0 .. buf.len - reserve]);
+    // 경로가 첫 줄이다 (#495 — 남은 fatal 과 같은 봉투). 본문 끝이 "파일을 지우면 새로
+    // 만들어 준다" 고 말하는데 어느 파일인지 안 적혀 있었다 — 이름이 인스턴스마다 다르고
+    // (`config_8.toml`) 자리도 OS 마다 달라서 경로 없이는 지울 수가 없다.
+    var overflow = false;
+    if (path) |pth| {
+        w.print(messages.config_error_path_prefix_format, .{pth}) catch {
+            overflow = true;
+        };
+    }
     if (n.repaired.len > 0) {
-        w.writeAll(messages.config_notice_repaired_header) catch {};
+        w.writeAll(messages.config_notice_repaired_header) catch {
+            overflow = true;
+        };
         w.writeAll("\n") catch {};
-        w.writeAll(n.repaired) catch {};
+        w.writeAll(n.repaired) catch {
+            overflow = true;
+        };
     }
     if (n.removable.len > 0) {
         if (n.repaired.len > 0) w.writeAll("\n") catch {};
-        w.writeAll(messages.config_notice_removable_header) catch {};
+        w.writeAll(messages.config_notice_removable_header) catch {
+            overflow = true;
+        };
         w.writeAll("\n") catch {};
-        w.writeAll(n.removable) catch {};
+        w.writeAll(n.removable) catch {
+            overflow = true;
+        };
     }
+    const body_len = w.buffered().len;
+
     // 잘렸으면 그 사실을 **본문 안에** 적는다. 여기서 빠지면 사용자는 목록이 전부인 줄
-    // 알고 고친 뒤, 다음 실행에서 처음 보는 항목을 또 만난다.
-    if (n.truncated) {
-        w.writeAll("\n") catch {};
-        w.writeAll(messages.config_notice_truncated_msg) catch {};
+    // 알고 고친 뒤, 다음 실행에서 처음 보는 항목을 또 만난다. 수집기가 넘친 경우
+    // (`n.truncated`) 와 이 버퍼가 모자란 경우 둘 다 같은 줄을 세운다.
+    var end = body_len;
+    if (n.truncated or overflow) {
+        @memcpy(buf[end..][0..cut_note.len], cut_note);
+        end += cut_note.len;
     }
-    // 목록 뒤에 **빠져나갈 길**을 둔다. 45 줄을 한 줄씩 고치는 것보다 파일을 버리는
-    // 쪽이 빠른 경우가 있는데, 그 길이 있다는 것을 모르면 고치거나 포기한다.
-    w.writeAll("\n\n") catch {};
-    w.writeAll(messages.config_notice_reset_hint) catch {};
-    return w.buffered();
+    // 목록 뒤에 **빠져나갈 길**. 예약해 둔 자리라 언제나 들어간다.
+    @memcpy(buf[end..][0..tail.len], tail);
+    end += tail.len;
+    return buf[0..end];
 }
 
-/// 안내 본문의 상한. Linux overlay 가 받는 상한 (`dialog/linux.zig` 의
-/// `message_capacity`) 과 **같은 값**이다 — 여기서 더 담아도 그쪽에서 잘린다.
-const config_notice_message_capacity: usize = 4096;
+/// 조립에 필요한 여유 — 머리글 · 경로 봉투 · 꼬리 두 조각. 목록 길이에 이것을 더해
+/// 버퍼를 잡으므로 **상한이 아니다.**
+const config_notice_overhead: usize = 1024;
+
+/// 안내 본문 앞에 **경로를 첫 줄로** 붙인다 (#495 — 남은 fatal 과 같은 봉투).
+///
+/// 본문 끝이 *"파일을 지우면 새로 만들어 준다"* 고 말하는데 어느 파일인지는 안 적혀
+/// 있었다. 파일 이름이 인스턴스마다 다르고 (`config_8.toml`) 자리도 OS 마다 달라서,
+/// 경로 없이는 지울 수가 없다. `Open Config` 버튼이 여는 파일이기도 하다.
+///
+/// 자리가 모자라면 **본문을 살린다** — 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
+fn configNoticeWithPath(buf: []u8, path: []const u8, body: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
+}
+
+test "#655 안내는 경로를 첫 줄에 붙인다 — 어느 파일을 지울지 알려 준다" {
+    var buf: [1024]u8 = undefined;
+    const out = configNoticeWithPath(&buf, "/home/user/.config/tildaz/config_8.toml", "BODY");
+    try std.testing.expectEqualStrings(
+        "Config: /home/user/.config/tildaz/config_8.toml\n\nBODY",
+        out,
+    );
+    // 남은 fatal 과 **같은 봉투**다 — 두 다이얼로그가 다른 형식을 쓰면 안 된다.
+    try std.testing.expect(std.mem.startsWith(u8, out, "Config: "));
+}
+
+test "#655 자리가 모자라면 경로 대신 본문을 살린다" {
+    var tiny: [8]u8 = undefined;
+    // 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
+    try std.testing.expectEqualStrings(
+        "BODY",
+        configNoticeWithPath(&tiny, "/very/long/path/config_0.toml", "BODY"),
+    );
+}
 
 /// #655 — 고친 것이 있으면 **한 번** 알린다. 담긴 것이 없으면 아무 일도 하지 않으므로
 /// host 는 조건 없이 부르면 된다.
@@ -3285,13 +3348,35 @@ pub fn showConfigNotice(
     before_open: ?*const fn () void,
 ) void {
     const n = pendingConfigNotice() orelse return;
-    var buf: [config_notice_message_capacity]u8 = undefined;
-    const body = configNoticeMessage(&buf, n);
+    log.appendLine("config", "notice shown: {d} item(s){s}", .{ n.count, if (n.truncated) " (truncated)" else "" });
+    // `-e` 는 다이얼로그를 띄우지 않는다 — 조립도 하지 않는다. 줄마다 이미 로그에 있다.
+    if (quiet) {
+        clearConfigNotice();
+        return;
+    }
+
+    const path = paths.configPath(rt, allocator) catch |err| blk: {
+        // 경로를 못 얻어도 **목록은 보여 준다** — 안내를 통째로 잃는 것이 더 나쁘다.
+        log.appendLine("config", "config path unavailable for the notice: {s}", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (path) |pth| allocator.free(pth);
+
+    // **상한이 없다.** 목록 길이에 조립 여유만 더해 잡는다 — 세 다이얼로그 backend 가
+    // 임의 길이를 받아 스크롤하므로 (macOS `NSTextView`, Windows `dialogEditTextAlloc`,
+    // Linux `message_owned`) 여기서 자를 이유가 없다.
+    const want = n.repaired.len + n.removable.len +
+        (if (path) |pth| pth.len else 0) + config_notice_overhead;
+    const buf = allocator.alloc(u8, want) catch {
+        // 여기서 못 얻으면 안내를 통째로 잃는다 — 로그에는 줄마다 이미 남아 있다.
+        log.appendLine("config", "notice buffer allocation failed — log only", .{});
+        clearConfigNotice();
+        return;
+    };
+    defer allocator.free(buf);
+    const shown = configNoticeMessage(buf, path, n);
     // 조립한 **뒤에** 비운다. `n` 의 slice 가 그 버퍼를 가리키고 있다.
     clearConfigNotice();
-
-    log.appendLine("config", "notice shown: {d} item(s){s}", .{ n.count, if (n.truncated) " (truncated)" else "" });
-    if (quiet) return;
 
     // 두 번째 버튼이 고칠 파일을 연다. 이 안내의 목적이 **사용자가 직접 고치게**
     // 만드는 것이라, 목록만 보여주고 파일은 알아서 찾으라고 하면 절반만 한 것이다.
@@ -3302,7 +3387,7 @@ pub fn showConfigNotice(
     notice_open_allocator = allocator;
     notice_open_before = before_open;
     defer notice_open_before = null;
-    dialog.showNoticeWithAction(rt, messages.config_notice_title, body, messages.button_open_config, openConfigFromNotice);
+    dialog.showNoticeWithAction(rt, messages.config_notice_title, shown, messages.button_open_config, openConfigFromNotice);
 }
 
 var notice_open_rt: Runtime = undefined;
@@ -3352,7 +3437,9 @@ pub fn showFatalNoticeIfAny(rt: Runtime) void {
     //
     // 그래서 *행동* 대신 *길* 을 준다. 여기까지 오는 것은 TOML 구문이 깨진 경우라
     // 어느 줄을 고치라고 짚어 줄 수조차 없고, 파일을 버리는 것이 사실상 유일한 길이다.
-    var buf: [config_notice_message_capacity]u8 = undefined;
+    // fatal 문구는 `fatal_notice_capacity` 로 상한이 있다 (그쪽은 담을 때 이미 잘린다).
+    // 꼬리를 붙일 자리만 더 잡으면 여기서 다시 잘릴 일이 없다.
+    var buf: [fatal_notice_capacity + messages.config_notice_reset_hint.len + 8]u8 = undefined;
     const body = std.fmt.bufPrint(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
 
     // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
@@ -3387,13 +3474,24 @@ var fatal_notice_len: usize = 0;
 // 정적 버퍼인 이유는 fatal 쪽과 같다 — 파싱이 끝나고 한참 뒤에 host 가 그리므로 할당한
 // 메모리로는 수명을 맞추기 어렵다. 상한을 넘기면 **조용히 자르지 않고** 마지막 줄로 알린다
 // (v0.9.3 처럼 `[keys]` 가 15 개 늘어도 이 크기면 넉넉하다).
-const config_notice_capacity = 16 * 1024;
-var repaired_buf: [config_notice_capacity]u8 = undefined;
-var repaired_len: usize = 0;
-var removable_buf: [config_notice_capacity]u8 = undefined;
-var removable_len: usize = 0;
+/// #655 — 안내를 모으는 자리. **상한이 없다.**
+///
+/// 예전에는 두 묶음이 각각 16 KiB 고정이었고 넘치면 `truncated` 로 표시했다. 그 설계가
+/// 틀린 이유: 목록이 길수록 사용자에게 필요한 정보가 많은데 **바로 그때 잘렸다.** 세
+/// 다이얼로그 backend 는 이미 임의 길이를 받아 스크롤한다 (macOS `NSTextView` + 스크롤뷰,
+/// Windows `dialogEditTextAlloc` 의 EDIT, Linux `message_owned`) — 상한은 우리 쪽에만
+/// 있었다. 이제 늘려 담고, 넘치는 일은 할당이 실패할 때뿐이다.
+var notice_allocator: ?std.mem.Allocator = null;
+var repaired_list: std.ArrayList(u8) = .empty;
+var removable_list: std.ArrayList(u8) = .empty;
 var notice_count: usize = 0;
 var notice_truncated: bool = false;
+
+/// `Config.load` · `Config.parse` 가 시작할 때 심는다. 안내는 그 뒤 `showConfigNotice`
+/// 까지 살아 있어야 하는데, 두 함수가 받는 allocator (host 의 gpa) 가 그보다 오래 산다.
+fn setNoticeAllocator(allocator: std.mem.Allocator) void {
+    notice_allocator = allocator;
+}
 
 /// #655 — config 를 고쳐서 띄웠다는 안내. 고칠 것이 없으면 `null`.
 pub const ConfigNotice = struct {
@@ -3403,15 +3501,16 @@ pub const ConfigNotice = struct {
     removable: []const u8,
     /// 담긴 줄 수. 0 이면 이 구조가 만들어지지 않는다.
     count: usize,
-    /// 자리를 넘겨 일부를 못 담았는가. 로그에는 전부 남는다.
+    /// **할당이 실패해** 일부를 못 담았는가. 상한 때문에 잘리는 일은 없다.
+    /// 로그에는 어느 경우든 전부 남는다.
     truncated: bool,
 };
 
 pub fn pendingConfigNotice() ?ConfigNotice {
     if (notice_count == 0) return null;
     return .{
-        .repaired = repaired_buf[0..repaired_len],
-        .removable = removable_buf[0..removable_len],
+        .repaired = repaired_list.items,
+        .removable = removable_list.items,
         .count = notice_count,
         .truncated = notice_truncated,
     };
@@ -3420,14 +3519,22 @@ pub fn pendingConfigNotice() ?ConfigNotice {
 /// host 가 한 번 보여 준 뒤 부른다. 프로세스당 한 번만 뜨게 하는 것이 목적이다 (SPEC §7.3)
 /// — 창을 여닫을 때마다 뜨면 드롭다운이 마비된다.
 pub fn clearConfigNotice() void {
-    repaired_len = 0;
-    removable_len = 0;
+    if (notice_allocator) |a| {
+        repaired_list.deinit(a);
+        removable_list.deinit(a);
+    }
+    repaired_list = .empty;
+    removable_list = .empty;
     notice_count = 0;
     notice_truncated = false;
+    // **allocator 도 함께 버린다.** 남겨 두면 이미 죽은 arena 를 가리킨 채 다음 호출이
+    // 그리로 할당한다 (test 에서 실제로 크래시로 드러났다). 유효 구간을
+    // `setNoticeAllocator` ~ `clearConfigNotice` 로 못박는다.
+    notice_allocator = null;
 }
 
-/// 한 줄을 묶음에 더한다. **로그에는 언제나 남긴다** — 버퍼가 차도 원인이 사라지지 않게.
-fn appendNotice(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype) void {
+/// 한 줄을 묶음에 더한다. **로그에는 언제나 남긴다** — 담지 못해도 원인이 사라지지 않게.
+fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) void {
     var line_buf: [512]u8 = undefined;
     // 조립 실패는 **조용히 넘기지 않는다.** 줄은 잃어도 "다 못 담았다" 는 사실은
     // 남아야 사용자가 로그를 본다.
@@ -3439,29 +3546,32 @@ fn appendNotice(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype)
     log.appendLine("config", "{s}", .{line});
     notice_count += 1;
 
-    const need = line.len + 1; // 줄바꿈
-    if (len.* + need > buf.len) {
+    const a = notice_allocator orelse {
         notice_truncated = true;
         return;
-    }
-    @memcpy(buf[len.*..][0..line.len], line);
-    buf[len.* + line.len] = '\n';
-    len.* += need;
+    };
+    list.appendSlice(a, line) catch {
+        notice_truncated = true;
+        return;
+    };
+    list.append(a, '\n') catch {
+        notice_truncated = true;
+    };
 }
 
 /// 키가 없어 기본값을 썼다.
 fn noticeMissing(path: []const u8) void {
-    appendNotice(&repaired_buf, &repaired_len, messages.config_notice_missing_format, .{path});
+    appendNotice(&repaired_list, messages.config_notice_missing_format, .{path});
 }
 
 /// 모르는 키 · 섹션이라 무시했다.
 fn noticeUnknown(path: []const u8) void {
-    appendNotice(&removable_buf, &removable_len, messages.config_notice_unknown_format, .{path});
+    appendNotice(&removable_list, messages.config_notice_unknown_format, .{path});
 }
 
 /// 값을 읽을 수 없어 기본값을 썼다.
 fn noticeBadValue(path: []const u8, used: []const u8) void {
-    appendNotice(&repaired_buf, &repaired_len, messages.config_notice_bad_value_format, .{ path, used });
+    appendNotice(&repaired_list, messages.config_notice_bad_value_format, .{ path, used });
 }
 
 /// 범위 밖이라 경계로 들였다. **기본값으로 되돌리지 않는다** — "아주 크게" 라고 적은
@@ -3469,20 +3579,19 @@ fn noticeBadValue(path: []const u8, used: []const u8) void {
 fn noticeClamped(path: []const u8, limit: anytype) void {
     var buf: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
-    appendNotice(&repaired_buf, &repaired_len, messages.config_notice_clamped_format, .{ path, text });
+    appendNotice(&repaired_list, messages.config_notice_clamped_format, .{ path, text });
 }
 
 /// 여럿 중 하나를 버렸다 (`[keys]` 의 한 항목, 상한을 넘은 fallback 폰트).
 fn noticeDropped(path: []const u8, what: []const u8) void {
-    appendNotice(&repaired_buf, &repaired_len, messages.config_notice_dropped_format, .{ path, what });
+    appendNotice(&repaired_list, messages.config_notice_dropped_format, .{ path, what });
 }
 
 /// `[keys]` 의 키 하나를 버렸다. 어느 액션의 어떤 조합을 왜 버렸는지까지 적는다 —
 /// 액션만 알려 주면 여러 키를 적은 사용자가 어느 줄을 고쳐야 할지 모른다.
 fn noticeKeyDropped(action: []const u8, text: []const u8, why: []const u8) void {
     appendNotice(
-        &repaired_buf,
-        &repaired_len,
+        &repaired_list,
         messages.config_notice_key_dropped_format,
         .{ action, text, why },
     );
@@ -3925,8 +4034,10 @@ const ValueCase = struct {
     config: Config,
 
     fn deinit(self: *ValueCase) void {
-        self.arena.deinit();
+        // **안내를 먼저 비운다.** `parse` 가 이 arena 를 안내용 allocator 로 심었으므로
+        // arena 를 먼저 내리면 죽은 allocator 로 해제하게 된다.
         clearConfigNotice();
+        self.arena.deinit();
         resetFatalNoticeForTest();
     }
 
@@ -4237,12 +4348,15 @@ test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된�
 
 test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액션의 나머지 키는 남는다" {
     clearConfigNotice();
-    defer clearConfigNotice();
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
     const a = arena.allocator();
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
     // `copy` 의 목록에 쓰레기 하나를 끼워 넣는다.
@@ -4271,12 +4385,15 @@ test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액�
 
 test "#655 [keys] 충돌은 먼저 나온 것이 이긴다" {
     clearConfigNotice();
-    defer clearConfigNotice();
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
     const a = arena.allocator();
     // 두 액션이 같은 조합을 쓴다. 예전에는 fatal 이었다.
     const doc =
@@ -4309,12 +4426,15 @@ test "#655 [keys] 충돌은 먼저 나온 것이 이긴다" {
 
 test "#655 [font] 섹션이 통째로 없어도 뜬다 — 기본 폰트 chain 이 남는다" {
     clearConfigNotice();
-    defer clearConfigNotice();
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
     const a = arena.allocator();
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
     const no_font = try tomlWithoutSection(a, full, "\n[font]\n", "\n[input]\n");
@@ -4331,12 +4451,15 @@ test "#655 [font] 섹션이 통째로 없어도 뜬다 — 기본 폰트 chain �
 
 test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이름을 host 로 넘기지 않는다" {
     clearConfigNotice();
-    defer clearConfigNotice();
     resetFatalNoticeForTest();
     defer resetFatalNoticeForTest();
 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    // **arena 보다 늦게 선언한다.** defer 는 역순이라 이래야 안내를 먼저 비운다 —
+    // `parse` 가 이 arena 를 안내용 allocator 로 심으므로, arena 가 먼저 죽으면
+    // 죽은 allocator 로 해제하게 된다.
+    defer clearConfigNotice();
     // 기본 폰트 이름이 platform 마다 달라 치환 대신 최소 문서를 쓴다.
     const doc =
         \\shell = "/bin/sh"
@@ -4357,7 +4480,7 @@ test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이�
 
 test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" {
     var buf: [1024]u8 = undefined;
-    const body = configNoticeMessage(&buf, .{
+    const body = configNoticeMessage(&buf, null, .{
         .repaired = "  input -- missing, using the default\n",
         .removable = "  bogus_key\n",
         .count = 2,
@@ -4377,7 +4500,7 @@ test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" 
 
 test "#655 빈 묶음의 머리글은 세우지 않는다" {
     var buf: [1024]u8 = undefined;
-    const body = configNoticeMessage(&buf, .{
+    const body = configNoticeMessage(&buf, null, .{
         .repaired = "",
         .removable = "  bogus_key\n",
         .count = 1,
@@ -4390,7 +4513,7 @@ test "#655 빈 묶음의 머리글은 세우지 않는다" {
 
 test "#655 잘렸으면 본문이 그 사실을 말한다" {
     var buf: [1024]u8 = undefined;
-    const body = configNoticeMessage(&buf, .{
+    const body = configNoticeMessage(&buf, null, .{
         .repaired = "  a\n",
         .removable = "",
         .count = 999,
@@ -4408,6 +4531,7 @@ test "#655 잘렸으면 본문이 그 사실을 말한다" {
 
 test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 없다" {
     clearConfigNotice();
+    setNoticeAllocator(std.testing.allocator);
     defer clearConfigNotice();
     noticeMissing("input");
     try std.testing.expect(pendingConfigNotice() != null);
@@ -4417,19 +4541,33 @@ test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 �
     try std.testing.expect(pendingConfigNotice() == null);
 }
 
-test "#655 버퍼가 넘쳐도 잘렸다는 사실은 남는다" {
+test "#655 목록이 아무리 길어도 잘리지 않는다 — 상한 대신 스크롤이다" {
     clearConfigNotice();
+    setNoticeAllocator(std.testing.allocator);
     defer clearConfigNotice();
+
+    // 예전에는 두 묶음이 각각 16 KiB 고정이라 여기서 잘렸다. 목록이 길수록 사용자에게
+    // 필요한 정보가 많은데 **바로 그때** 잘리는 설계였다. 세 다이얼로그 backend 는 이미
+    // 임의 길이를 받아 스크롤한다 — 상한은 우리 쪽에만 있었다.
     var long_path: [400]u8 = undefined;
     @memset(&long_path, 'k');
-    // 16 KiB 를 넘기도록 충분히 넣는다.
     var i: usize = 0;
     while (i < 200) : (i += 1) noticeMissing(&long_path);
 
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(n.truncated);
-    // 담긴 줄은 버퍼 안에 머문다 — 넘친 만큼 버렸을 뿐 뭉개지 않는다.
-    try std.testing.expect(n.repaired.len <= config_notice_capacity);
-    // 그래도 **몇 개였는지**는 정확하다. 로그에는 전부 남아 있다.
+    try std.testing.expect(!n.truncated);
     try std.testing.expectEqual(@as(usize, 200), n.count);
+    // 200 줄이 **전부** 담겼다 — 16 KiB 를 훌쩍 넘는다.
+    try std.testing.expectEqual(@as(usize, 200), std.mem.count(u8, n.repaired, "\n"));
+    try std.testing.expect(n.repaired.len > 16 * 1024);
+}
+
+test "#655 allocator 가 없으면 줄은 잃어도 잘렸다는 사실은 남는다" {
+    clearConfigNotice(); // allocator 까지 버린다
+    defer clearConfigNotice();
+    // 이 경로는 `Config.load` · `parse` 를 거치지 않은 호출뿐이다. 조용히 넘기지 않는다.
+    noticeMissing("input");
+    const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(n.truncated);
+    try std.testing.expectEqual(@as(usize, 1), n.count);
 }
