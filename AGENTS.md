@@ -887,6 +887,18 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
 - **⚠️ 한 줄 `python -c "…"` 안에 `\"` 를 쓰지 말아요.** PowerShell 5.1 이 네이티브 인자로 넘기며 그 따옴표를 **인자 경계로
   다시 읽어** python 코드가 잘려요 (`SyntaxError: unterminated string literal`). here-string (`@"…"@`) 으로 넘기고 큰따옴표가
   필요하면 `chr(34)` 로 만들어요.
+- **⚠️ 애초에 Windows 도구는 python 에 기대지 말아요 — 없는 기기가 있어요.** `# 실행 환경` 의 i5-1240P 노트북에는
+  `python` 이 **Microsoft Store 스텁**뿐이라 (`Python was not found`) 그 도구의 회차가 통째로 안 돌아요. 2026-09-17 #655
+  재검증에서 `config-notice-check_windows.ps1` 의 여섯 자리가 그랬어요 — TOML 편집은 .NET 정규식 (`[regex]`) 으로 충분해서
+  PowerShell 로 옮겼어요. 반대로 `clusters.py` 처럼 **셋이 공유하는 화면 생성기**는 python 이 맞아요 (그건 있는 기기에서 씁니다).
+- **⚠️ `Start-Process -WindowStyle Hidden` 은 그 프로세스가 띄우는 **다이얼로그까지** 숨겨요.** `STARTUPINFO` 의 `SW_HIDE`
+  가 앱의 `ShowWindow(nCmdShow)` 로 흘러서, 창은 멀쩡히 있는데 `IsWindowVisible` 이 **false** 예요 — 창을 `EnumWindows` +
+  가시성으로 찾는 도구가 "다이얼로그가 안 떴다" 로 읽어요 (2026-09-17 #655 실측 — 로그에는 `notice shown: 39 item(s)` 이
+  또렷이 있었어요). 로그만 보는 회차는 Hidden 이 좋지만, **창을 찍거나 키를 보내는 회차는 Hidden 없이** 띄워요.
+- **⚠️ `PrintWindow` 는 자식 컨트롤이 빈 캡처를 **간헐적으로** 내요.** 같은 창을 200 ms 간격으로 여섯 번 찍었더니 여섯째만
+  본문 `EDIT` 과 버튼이 사라졌고, **같은 순간 `CopyFromScreen` 은 정상**이었어요 (2026-09-17 #655 — 어두운 표본
+  `print 0` vs `screen 433`). 그 한 장만 보면 "본문이 안 그려진다" 는 없는 결함을 만들어요. 캡처가 비면 **같은 순간 화면
+  캡처와 견주고**, 판정은 여러 장으로 해요.
 - **PowerShell 은 원소가 하나인 배열을 평탄화해요** — `@(@($Shift, $A))` 는 `@(16, 65)` 가 되어 chord 가 **키 두 개를 따로**
   누르는 것으로 바뀌어요 (2026-09-03: `Shift+a` 가 `a` 로 나와 앱 결함으로 보일 뻔했어요). chord 는 `,@(…)` (단항 콤마) 로
   감싸요. 원소가 둘 이상인 배열은 그대로 남아서 `deadkey-check` 의 `Shift+6` 은 우연히 살아남았어요.
