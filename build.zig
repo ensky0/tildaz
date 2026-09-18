@@ -110,6 +110,21 @@ pub fn build(b: *std.Build) void {
     const git = git_version.detect(b);
     build_opts.addOption([]const u8, "commit", git.commit);
     build_opts.addOption(bool, "commit_dirty", git.dirty);
+
+    // #654 — 개발 빌드와 릴리즈가 config · 로그 · lock · 신원을 공유하면 버전이 다른
+    // 둘이 같은 파일을 쓴다. 실제로 패키지 0.9.5 를 깔아 둔 기기에서 개발 빌드
+    // v0.9.3 이 떠 v0.9.0 스키마 config 로 아무 안내 없이 죽었다.
+    //
+    // **기본이 true 인 것은 `-Dsimd` 와 반대인데 이유가 다르다** — 옵션을 깜빡했을 때
+    // 사용자 config 를 건드리지 않는 쪽으로 실패해야 한다. 릴리즈 CI 와 패키징이
+    // `-Ddev=false` 를 명시한다 (`release.yml` · `zig build package`).
+    const dev = b.option(
+        bool,
+        "dev",
+        "개발 빌드 — config · 로그 · lock · 신원을 tildaz-dev 로 가른다 (default: true; 공식 릴리즈는 false 를 명시)",
+    ) orelse true;
+    build_opts.addOption(bool, "dev", dev);
+
     exe_mod.addOptions("build_options", build_opts);
 
     // #19 — 현재 Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
