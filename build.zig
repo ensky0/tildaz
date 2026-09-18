@@ -714,6 +714,15 @@ pub fn build(b: *std.Build) void {
     // 기본 Windows 개발 환경에서도 같은 native 경로로 동작한다 (#332).
     // macOS / Linux package만 각 host의 시스템 Bash를 사용한다.
     const package_step = b.step("package", "릴리즈 artifact + SHA256 sidecar 생성 (Windows zip / macOS dmg / Linux tar.gz·deb·rpm·AppImage)");
+
+    // #654 — package 는 **릴리즈 산출물**이라 dev 이름 (`tildaz-dev` · `TildaZ-dev.app` ·
+    // `me.ensky0.tildaz.dev`) 으로 나가면 안 된다. `-Ddev` 기본값이 true 라 CI 나 사람이
+    // 한 번 빠뜨리면 그대로 배포될 자리이므로, 여기서 아예 막는다. 릴리즈를 만들 때는
+    // `-Ddev=false` 를 명시한다 (release.yml · macos-signing-check.yml).
+    if (dev) {
+        const dev_fail = b.addFail("`zig build package` 는 릴리즈 산출물이라 `-Ddev=false` 가 필요합니다 (#654). dev 이름으로 배포되는 것을 막는 가드입니다.");
+        package_step.dependOn(&dev_fail.step);
+    }
     if (is_windows_target) {
         const package_cmd = b.addSystemCommand(&.{
             "powershell.exe",
