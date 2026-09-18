@@ -34,6 +34,7 @@
 //! 가는지 가를 수 있다.
 
 const std = @import("std");
+const app_id = @import("app_id.zig");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 
@@ -269,7 +270,7 @@ fn waitForProducerStart(rt: Runtime, base: []const u8, id: pane_layout.PaneId) !
 }
 
 fn doneTitle(buf: []u8, id: pane_layout.PaneId) ![]const u8 {
-    return std.fmt.bufPrint(buf, "tildaz-stress-done-{d}", .{id});
+    return std.fmt.bufPrint(buf, "{s}-stress-done-{d}", .{ app_id.name, id });
 }
 
 fn writeDoneMarker(rt: Runtime, out: std.Io.File, id: pane_layout.PaneId) !void {
@@ -885,7 +886,7 @@ const ProducerSession = struct {
         defer self.alloc.free(temp_dir);
 
         var name_buf: [96]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buf, "tildaz-stress-{d}-{d}", .{ stressCurrentPid(), perf.now() orelse 0 });
+        const name = try std.fmt.bufPrint(&name_buf, "{s}-stress-{d}-{d}", .{ app_id.name, stressCurrentPid(), perf.now() orelse 0 });
         const path = try std.Io.Dir.path.join(self.alloc, &.{ temp_dir, name });
         defer self.alloc.free(path);
         if (path.len > self.barrier_path.len) return error.NameTooLong;

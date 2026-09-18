@@ -4,7 +4,7 @@
 //! config 등) 에서 `tildaz --toggle` 명령 등록 → 그 단축키가 두 번째 tildaz
 //! 인스턴스 시작 → 우리는 Unix domain socket 으로 첫 인스턴스에 신호 + exit.
 //!
-//! worker N은 시작 시 `$XDG_RUNTIME_DIR/tildaz-N.sock` listen. `--toggle N` process는
+//! worker N은 시작 시 `$XDG_RUNTIME_DIR/<name>/run/instanceN.sock` listen. `--toggle N` process는
 //! 해당 socket에 connect + 1 byte ('T') 송신 + exit. worker N의 main loop가
 //! accept + read → 공통 `handleActivatedToggle` 경로로 hide/show.
 //!
@@ -26,6 +26,7 @@
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
+const app_id = @import("../../app_id.zig");
 const unix_socket = @import("unix_socket.zig");
 const checkErr = unix_socket.checkErr;
 const unixAddress = unix_socket.unixAddress;
@@ -41,19 +42,43 @@ pub const cmd_new_instance: u8 = 'N';
 
 pub const Command = enum { toggle, new_instance };
 
-/// Socket path. `$XDG_RUNTIME_DIR/tildaz-N.sock` (정상 표준) 또는
-/// fallback `/tmp/tildaz-<uid>-N.sock`. `$XDG_RUNTIME_DIR` 는 systemd / elogind
+/// Socket path. `$XDG_RUNTIME_DIR/<name>/run/instanceN.sock` (정상 표준) 또는
+/// fallback `/tmp/<name>-<uid>-N.sock`. `$XDG_RUNTIME_DIR` 는 systemd / elogind
 /// 가 user session 마다 설정 (`/run/user/<uid>`) — 거의 모든 모던 Linux
 /// 데스크탑 환경 보장.
+///
+/// **`paths.lockDir` 과 같은 디렉터리에 둔다** ([#654](https://github.com/ensky0/tildaz/issues/654) ⓒ).
+/// 예전에는 lock 이 `$XDG_RUNTIME_DIR/tildaz/` 안인데 소켓만 그 **형제**인
+/// `$XDG_RUNTIME_DIR/tildaz-N.sock` 이라, 같은 인스턴스의 흔적이 두 자리로 흩어졌다.
+/// 이름도 `app_id.name` 을 타므로 개발 빌드와 릴리즈가 서로의 인스턴스를 잡지 않는다 —
+/// 안 갈리면 launcher 가 엉뚱한 인스턴스에 toggle 을 보낸다.
+///
+/// `sun_path` 는 108 바이트다. 가장 긴 조합이 `/run/user/<uid>/tildaz-dev/run/instanceN.sock`
+/// 로 45 자 남짓이라 여유가 크다 (`unixAddress` 가 초과를 잡는다).
 ///
 /// #451 — `std.posix.getenv` 가 없어졌다. `Environ.getPosix` 가 그 자리이고, POSIX 에서는
 /// 블록을 그대로 훑어 **할당이 없다** — 이 함수가 고정 버퍼만 쓰는 성질이 유지된다.
 fn socketPath(rt: Runtime, buf: []u8, index: u32) ![:0]const u8 {
     if (rt.environ.getPosix("XDG_RUNTIME_DIR")) |runtime_dir| {
-        return std.fmt.bufPrintSentinel(buf, "{s}/tildaz-{d}.sock", .{ runtime_dir, index }, 0);
+        return std.fmt.bufPrintSentinel(buf, "{s}/{s}/run/instance{d}.sock", .{ runtime_dir, app_id.name, index }, 0);
     }
     const uid = linux.getuid();
-    return std.fmt.bufPrintSentinel(buf, "/tmp/tildaz-{d}-{d}.sock", .{ uid, index }, 0);
+    return std.fmt.bufPrintSentinel(buf, "/tmp/{s}-{d}-{d}.sock", .{ app_id.name, uid, index }, 0);
+}
+
+/// bind 전에 소켓 디렉터리를 만든다. 예전 경로는 `$XDG_RUNTIME_DIR` 바로 아래라 만들 것이
+/// 없었지만, 이제 두 단계가 더 생긴다 (`<name>/run`). `paths.instanceLockPath` 도 같은
+/// 디렉터리를 만들지만 **순서에 기대지 않는다** — 먼저 도는 쪽이 만들면 뒤는 EEXIST 다.
+/// 실패는 무시한다: 진짜로 못 만들면 그다음 `bind` 가 `BindFailed` 로 말해 준다.
+fn ensureSocketDir(rt: Runtime) void {
+    const runtime_dir = rt.environ.getPosix("XDG_RUNTIME_DIR") orelse return; // `/tmp` fallback 은 이미 있다
+    var buf: [256]u8 = undefined;
+    // `mkdir` 은 한 단계씩만 만든다 — 부모부터 차례로.
+    const parent = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ runtime_dir, app_id.name }, 0) catch return;
+    _ = posix.system.mkdir(parent.ptr, 0o700);
+    var run_buf: [256]u8 = undefined;
+    const dir = std.fmt.bufPrintSentinel(&run_buf, "{s}/{s}/run", .{ runtime_dir, app_id.name }, 0) catch return;
+    _ = posix.system.mkdir(dir.ptr, 0o700);
 }
 
 /// `tildaz --toggle N` 진입점 — 짧게 실행된 process가 worker N에 toggle 신호.
@@ -117,6 +142,7 @@ pub fn createListener(rt: Runtime) !posix.fd_t {
 
     // probe 에서 connect 실패 = stale 또는 없음 → 남은 socket file 정리 후 bind.
     // 파일이 없으면 `ENOENT` 인데 그게 정상 경로라 반환값을 보지 않는다.
+    ensureSocketDir(rt);
     _ = posix.system.unlink(path.ptr);
 
     if (checkErr(posix.system.bind(fd, @ptrCast(&ua.addr), ua.len)) != null) return error.BindFailed;

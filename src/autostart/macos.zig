@@ -20,10 +20,13 @@
 // 살아남는다 — 같은 로그의 사용자 수동 실행 경로에서 대조 확인했다.
 
 const std = @import("std");
+const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
-const LABEL = "com.tildaz.app";
+/// LaunchAgent label — `~/Library/LaunchAgents/` 가 공용 디렉터리라 이름으로 가른다.
+/// bundle id 와 같은 값을 써서 launchd · TCC · LaunchServices 가 보는 신원을 하나로 맞춘다 (#654).
+const LABEL = app_id.bundle_id;
 
 /// `.app` 번들 안에서 실행 중일 때 쓰는 `ProgramArguments` 항목 — 정상 경로.
 /// `open` 이 LaunchServices 에 요청을 넘겨 앱을 별개 job 으로 띄운다.

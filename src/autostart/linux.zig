@@ -17,10 +17,12 @@
 // 같은 내용이면 file 안 건드림 (timestamp 보존) — macOS 패턴 동등.
 
 const std = @import("std");
+const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
-const ENTRY_NAME = "tildaz.desktop";
+/// `$XDG_CONFIG_HOME/autostart/` 는 공용 디렉터리라 이름으로 가른다 (#654).
+const ENTRY_NAME = app_id.name ++ ".desktop";
 
 /// XDG user autostart 경로. config base와 같은 `paths.configHome`을 사용해
 /// 본체 config와 autostart가 서로 다른 XDG 해석을 갖지 않게 한다.

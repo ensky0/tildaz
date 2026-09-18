@@ -12,6 +12,7 @@
 //     §Known limitations 의 "TildaZ" task) 는 우리가 건드리지 않음.
 
 const std = @import("std");
+const app_id = @import("../app_id.zig");
 const windows = std.os.windows;
 const Runtime = @import("../runtime.zig").Runtime;
 
@@ -34,7 +35,9 @@ extern "advapi32" fn RegDeleteValueW(HKEY, [*:0]const WCHAR) callconv(.c) DWORD;
 extern "advapi32" fn RegCloseKey(HKEY) callconv(.c) DWORD;
 
 const RUN_KEY = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const VALUE_NAME = std.unicode.utf8ToUtf16LeStringLiteral("TildaZ");
+/// 레지스트리 `Run` 값 이름. 예전에는 여기만 `TildaZ` (대문자) 라 다른 자리의
+/// 소문자 표기와 어긋났다 (#654 ⓔ). 이제 `app_id.name` 하나를 탄다.
+const VALUE_NAME = std.unicode.utf8ToUtf16LeStringLiteral(app_id.name);
 
 extern "kernel32" fn GetModuleFileNameW(?HANDLE, [*]WCHAR, DWORD) callconv(.c) DWORD;
 
