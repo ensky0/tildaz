@@ -299,13 +299,45 @@ fi
 # placement / lifecycle(launch·show·hide) 을 extension 이 담당한다 (#228). GNOME
 # 환경에서만 의미(다른 DE 는 gnome-shell 이 없어 무시). 복사는 항상, enable 은
 # gnome-extensions 명령이 있을 때. Wayland 는 enable 후 로그아웃/로그인해야 적용.
-EXT_UUID="tildaz@ensky0.github.io"
-EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_UUID"
+# 확장 소스는 레포에 **한 벌**이고 `__TILDAZ_*__` 토큰을 담는다 (#654) — 개발 빌드와
+# 릴리즈가 각자의 UUID 로 깔리도록 복사하면서 치환한다. `src/host/linux/shell_extension.zig`
+# 의 `substitutions` 와 **같은 토큰**이어야 한다 (앱도 기동 때 같은 파일을 쓴다).
+# 소스 디렉터리 이름은 릴리즈 UUID 로 고정돼 있다 (git 에 담긴 이름).
+EXT_SRC_UUID="tildaz@ensky0.github.io"
+if [[ "$IS_DEV" -eq 1 ]]; then
+    EXT_UUID="tildaz-dev@ensky0.github.io"
+    EXT_NAME="TildaZ Drop-down (dev)"
+else
+    EXT_UUID="tildaz@ensky0.github.io"
+    EXT_NAME="TildaZ Drop-down"
+fi
+EXT_SCHEMA="org.gnome.shell.extensions.$TILDAZ_ID"
+
+# 확장 리소스를 토큰 치환하며 복사한다. gschema 는 파일 이름도 스키마 id 를 따라간다 —
+# `glib-compile-schemas` 가 디렉터리를 통째로 읽으므로 이름이 겹치면 서로를 덮어쓴다.
+render_extension() {
+    local src="$1" dst="$2" rel out
+    mkdir -p "$dst"
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        case "$rel" in
+            schemas/*.gschema.xml) out="$dst/schemas/$EXT_SCHEMA.gschema.xml" ;;
+            *) out="$dst/$rel" ;;
+        esac
+        mkdir -p "$(dirname "$out")"
+        sed -e "s|__TILDAZ_EXT_UUID__|$EXT_UUID|g" \
+            -e "s|__TILDAZ_EXT_SCHEMA__|$EXT_SCHEMA|g" \
+            -e "s|__TILDAZ_EXT_NAME__|$EXT_NAME|g" \
+            -e "s|__TILDAZ_APP__|$TILDAZ_ID|g" \
+            "$f" > "$out"
+    done < <(find "$src" -type f -print0)
+}
+
+EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
     EXT_DST="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
-    mkdir -p "$EXT_DST"
-    cp -r "$EXT_SRC/." "$EXT_DST/"
+    render_extension "$EXT_SRC" "$EXT_DST"
     if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d "$EXT_DST/schemas" ]]; then
         glib-compile-schemas "$EXT_DST/schemas" 2>/dev/null || true
     fi
@@ -322,13 +354,12 @@ fi
 # Cinnamon on Wayland 세션에서만 의미 (tildaz=Wayland client → X11 Cinnamon 세션엔
 # 못 뜸; 다른 DE 는 cinnamon 셸이 없어 무시). 복사는 항상, enable 은 gsettings
 # org.cinnamon enabled-extensions 에 uuid 추가 (스키마 있을 때만). 재로그인 후 적용.
-CIN_UUID="tildaz@ensky0.github.io"
-CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$CIN_UUID"
+CIN_UUID="$EXT_UUID"   # GNOME 과 같은 UUID 규칙 (#654) — 셸만 다르다.
+CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$EXT_SRC_UUID"
 CIN_MSG=""
 if [[ -d "$CIN_SRC" ]]; then
     CIN_DST="$HOME/.local/share/cinnamon/extensions/$CIN_UUID"
-    mkdir -p "$CIN_DST"
-    cp -r "$CIN_SRC/." "$CIN_DST/"
+    render_extension "$CIN_SRC" "$CIN_DST"
     if command -v gsettings >/dev/null 2>&1 && gsettings writable org.cinnamon enabled-extensions >/dev/null 2>&1; then
         CUR="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || echo '@as []')"
         if [[ "$CUR" == *"'$CIN_UUID'"* ]]; then

@@ -59,10 +59,9 @@ done
 SWAY_CFG="$HOME/.config/sway/config"
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
 HYPR_LUA="$HOME/.config/hypr/hyprland.lua"
-GNOME_EXT_UUID="tildaz@ensky0.github.io"
-GNOME_EXT="$HOME/.local/share/gnome-shell/extensions/$GNOME_EXT_UUID"
-CINNAMON_EXT_UUID="tildaz@ensky0.github.io"
-CINNAMON_EXT="$HOME/.local/share/cinnamon/extensions/$CINNAMON_EXT_UUID"
+# 확장 UUID 도 두 갈래다 (#654). 예전에는 하나뿐이라 **개발 빌드를 지우면 릴리즈의
+# 확장까지 지워졌다** (실기 확인). 위 `TILDAZ_IDS` 와 같은 이유로 둘 다 훑는다.
+TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
 # install.sh 와 *글자 단위로 동일해야* 매칭됨. sway/hyprlang(.conf) 는 `#` 주석,
 # Hyprland Lua 는 `--` 주석이라 marker 가 두 가지.
 TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
@@ -108,19 +107,23 @@ done
 
 # install.sh가 복사·활성화한 Shell extension. GNOME은 먼저 disable해 현재 session의
 # signal/key grab을 해제하고, Cinnamon은 enabled-extensions 목록에서 UUID만 제거한다.
-if command -v gnome-extensions >/dev/null 2>&1; then
-    gnome-extensions disable "$GNOME_EXT_UUID" 2>/dev/null || true
-fi
-if [[ -d "$GNOME_EXT" ]]; then
-    rm -rf "$GNOME_EXT"
-    echo "Removed: $GNOME_EXT"
-    removed=$((removed + 1))
-fi
+# 두 UUID 를 모두 훑는다 — 어느 쪽으로 깔았는지 uninstall 시점에는 알 수 없다.
+for ext_uuid in "${TILDAZ_EXT_UUIDS[@]}"; do
+    if command -v gnome-extensions >/dev/null 2>&1; then
+        gnome-extensions disable "$ext_uuid" 2>/dev/null || true
+    fi
+    gnome_ext="$HOME/.local/share/gnome-shell/extensions/$ext_uuid"
+    if [[ -d "$gnome_ext" ]]; then
+        rm -rf "$gnome_ext"
+        echo "Removed: $gnome_ext"
+        removed=$((removed + 1))
+    fi
 
-if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    CINNAMON_ENABLED="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || true)"
-    if [[ "$CINNAMON_ENABLED" == *"'$CINNAMON_EXT_UUID'"* ]]; then
-        CINNAMON_UPDATED="$(python3 - "$CINNAMON_ENABLED" "$CINNAMON_EXT_UUID" <<'PY'
+    if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        for shell_schema in org.cinnamon org.gnome.shell; do
+            enabled="$(gsettings get "$shell_schema" enabled-extensions 2>/dev/null || true)"
+            [[ "$enabled" == *"'$ext_uuid'"* ]] || continue
+            updated="$(python3 - "$enabled" "$ext_uuid" <<'PY'
 import sys
 cur, uuid = sys.argv[1].strip(), sys.argv[2]
 i = cur.find('[')
@@ -132,14 +135,17 @@ items = [x for x in items if x != uuid]
 print('[' + ', '.join("'%s'" % x for x in items) + ']')
 PY
 )"
-        gsettings set org.cinnamon enabled-extensions "$CINNAMON_UPDATED" 2>/dev/null || true
+            gsettings set "$shell_schema" enabled-extensions "$updated" 2>/dev/null || true
+        done
     fi
-fi
-if [[ -d "$CINNAMON_EXT" ]]; then
-    rm -rf "$CINNAMON_EXT"
-    echo "Removed: $CINNAMON_EXT"
-    removed=$((removed + 1))
-fi
+
+    cinnamon_ext="$HOME/.local/share/cinnamon/extensions/$ext_uuid"
+    if [[ -d "$cinnamon_ext" ]]; then
+        rm -rf "$cinnamon_ext"
+        echo "Removed: $cinnamon_ext"
+        removed=$((removed + 1))
+    fi
+done
 
 # GNOME / Cinnamon 이 영구 저장하는 custom keybinding 제거 (#292 E2). runtime
 # 이 extension 비활성 fallback 으로 gsettings 에 등록(gsettings_hotkey.zig)한 뒤
