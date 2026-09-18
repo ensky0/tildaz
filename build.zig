@@ -719,10 +719,18 @@ pub fn build(b: *std.Build) void {
     // `me.ensky0.tildaz.dev`) 으로 나가면 안 된다. `-Ddev` 기본값이 true 라 CI 나 사람이
     // 한 번 빠뜨리면 그대로 배포될 자리이므로, 여기서 아예 막는다. 릴리즈를 만들 때는
     // `-Ddev=false` 를 명시한다 (release.yml · macos-signing-check.yml).
-    if (dev) {
+    //
+    // **가드는 `package_step` 이 아니라 패키징 명령 자체에 건다.** 같은 step 의 의존 둘은
+    // 서로 순서가 없어서 zig 가 **병렬로** 돌린다 — 2026-09-18 Windows 실기에서
+    // `zig build package` (dev) 가 오류를 내고도 `tildaz-v…-win-x64.zip` 과 `.sha256` 을
+    // 실제로 만들어 놨고, 그 zip 안의 exe 는 dev 판이었다 (md5 로 확인). 빌드가 실패로
+    // 끝나도 **디스크에 남은 산출물은 그대로 올릴 수 있다.** 명령이 가드에 의존하게 하면
+    // 가드가 먼저 실패해 명령이 아예 돌지 않는다.
+    const dev_package_guard: ?*std.Build.Step = if (dev) guard: {
         const dev_fail = b.addFail("`zig build package` 는 릴리즈 산출물이라 `-Ddev=false` 가 필요합니다 (#654). dev 이름으로 배포되는 것을 막는 가드입니다.");
         package_step.dependOn(&dev_fail.step);
-    }
+        break :guard &dev_fail.step;
+    } else null;
     if (is_windows_target) {
         const package_cmd = b.addSystemCommand(&.{
             "powershell.exe",
@@ -735,6 +743,7 @@ pub fn build(b: *std.Build) void {
             app_version.full,
         });
         package_cmd.step.dependOn(b.getInstallStep());
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else if (is_macos_target) {
         // macOS (#133) — package.sh 가 두 target (arm64 + x86_64) 자체 빌드 +
@@ -751,6 +760,7 @@ pub fn build(b: *std.Build) void {
             "--simd",
             simd_arg,
         });
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else if (is_linux_target) {
         // Linux (#202) — 4 format (tar.gz / deb / rpm / AppImage) × 2 arch
@@ -788,6 +798,7 @@ pub fn build(b: *std.Build) void {
             format,
         });
         package_cmd.step.dependOn(b.getInstallStep());
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else {
         const package_fail = b.addFail("package step은 Windows / macOS / Linux 대상에서만 동작합니다.");
