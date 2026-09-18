@@ -1826,6 +1826,31 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 로직은 **지우면 안 되는 표본을 섞은 입력** 으로 한 번 돌려 보고 넣어요 — 그 회차가 "우리 것만
 지우고 남의 것은 남기는지" 를 한 번에 보여줘요.
 
+**⚠️ `zig build` 는 같은 step 의 의존 둘을 *병렬로* 돌려요 — `addFail` 가드가 산출물을 못 막아요.**
+`package_step.dependOn(&dev_fail.step)` 과 `package_step.dependOn(&package_cmd.step)` 을 나란히 걸면
+둘 사이에 순서가 없어서, 가드가 실패하는 동안 패키징 명령이 **이미 돌아 있어요.** 2026-09-18
+[#654](https://github.com/ensky0/tildaz/issues/654) Windows 실기에서 `zig build package` (dev) 가
+오류를 내고도 `tildaz-v…-win-x64.zip` 과 `.sha256` 을 실제로 만들어 놨고, 그 zip 안의 exe 는
+**dev 판**이었어요 (md5 로 확인). 빌드가 실패로 끝나도 **디스크에 남은 산출물은 그대로 올릴 수
+있어요.** 막으려면 가드를 *명령 자체*에 걸어요 — `package_cmd.step.dependOn(&dev_fail.step)`.
+그리고 **가드를 검증할 때는 오류 메시지가 아니라 산출물이 없는지를 봐요.**
+
+**⚠️ `.bat` 은 ASCII 로만 써요 — 비ASCII 한 글자가 스크립트를 통째로 깨요.** `.ps1` 의 BOM 규칙과
+짝이고 방향은 반대예요. 주석에 em dash (`—`) 하나를 넣었더니 파일이 UTF-8 이 되고, cmd 가 그것을
+ANSI (한국어 환경은 cp949) 로 읽어 **그 뒤 줄들의 앞 글자가 잘렸어요** (`setlocal` → `tlocal` ·
+`REM` → `M`). 오류는 `'tlocal' is not recognized…` 로 수십 줄 쏟아지는데 **종료 코드는 0** 이라
+성공으로 읽혀요. 확인은 `grep -nP '[^\x00-\x7F]' <파일>` 또는 `file <파일>` 이 `ASCII text` 인지예요.
+
+**⚠️ 배치의 `( … )` 블록 안에서 변수를 따옴표 없이 확장하지 말아요.** 값에 `)` 가 있으면 그것이
+블록을 닫아 배치가 **즉사**해요 (`.lnk was unexpected at this time.` · exit 255). cmd 는 블록을
+*실행 전에 파싱하면서* 확장하므로 **`if` 조건이 거짓이어도 죽어요.** #654 가 `TildaZ (dev).lnk`
+라는 이름을 들여오며 `uninstall.bat` 이 그 줄에서 죽었고, 죽는 자리가 설치 폴더 · state 삭제
+**앞**이라 uninstall 이 **아무것도 못 지웠어요** (재실행해도 같아요). 고치는 길은 셋이에요 —
+`echo … "%VAR%"` 처럼 따옴표를 씌우거나, `setlocal enabledelayedexpansion` + `!VAR!`, 또는
+**블록을 아예 안 쓰는 한 줄 `if defined` 형태** (`uninstall.bat` 이 이미 쓰던 모양이라 그걸 택했어요).
+**사용자 프로필 경로에 괄호가 있으면 우리 이름과 무관하게 같은 일이 나니** 그 파일의 블록은 전부
+풀어 둬요.
+
 **Bash 도구의 작업 디렉터리는 앞 호출의 `cd` 가 그대로 남아요 — 검증 명령은 저장소 경로를 명시해요.**
 2026-09-03 에 문서용 worktree 로 `cd` 한 호출 뒤에 `zig build check` · `zig build test` 를 돌렸는데, 그것이
 **검증하려던 브랜치가 아니라 그 worktree (다른 브랜치) 에서 돌았어요.** 출력만 보면 통과라 알아채지 못했고,
@@ -2092,6 +2117,32 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
   의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.
   치환 뒤 토큰이 남는지는 zig 테스트와 `package.sh` 가 양쪽에서 검사해요.
+- **Windows 는 창 이름이 IPC 주소예요 — 가르는 것은 *클래스* 하나예요** (2026-09-18 실기).
+  `instances.zig` 의 `window_class_name` · `window_title_prefix` 가 리터럴이던 동안 두 판의
+  창이 클래스도 제목도 **글자 그대로 같았고**, `FindWindowW` 는 그중 **하나만** 돌려줘요 —
+  어느 쪽인지는 *뜨는 순서*가 정해요 (dev 를 먼저 띄우면 릴리즈 창을, 릴리즈를 먼저 띄우면
+  dev 창을 집었어요). 그러면 릴리즈 launcher 의 새-instance 요청이 개발 빌드로 가요.
+  **Linux 는 IPC 가 소켓이라 이 문제가 없어요** — 창 이름으로 남을 찾는 것은 Windows 뿐이에요.
+- **⚠️ 그런데 창 *제목* 은 따라 가르면 안 돼요 — Linux 가 조용히 깨져요.** `FindWindowW` 는
+  클래스와 제목이 **둘 다** 맞아야 창을 주므로 클래스만 갈라도 목적은 달성돼요 (실측: 교차
+  조회가 모두 0). 반면 그 제목은 **Linux 의 `xdg_toplevel` 제목으로도 쓰이고**
+  (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension 의
+  `workerIndex()` 가 그것을 `/^TildaZ-(0|[1-9][0-9]*)$/` 로 파싱해 번호를 얻어요 — `-dev` 가
+  섞이면 **확장이 개발 빌드의 창을 통째로 놓쳐** 배치 · 토글 · 전역 hotkey 가 죽어요 (Linux
+  회차 결함 8 과 같은 증상). 2026-09-18 회차에서 실제로 한 번 그렇게 갔다가 되돌렸고,
+  `instances.zig` 테스트가 이제 **"제목은 두 판이 같다"** 를 단언으로 박아 둬요. 창 클래스는
+  Windows 에만 있는 개념이라 그것만 가르면 Linux 는 한 글자도 안 바뀌어요.
+- **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
+  zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
+  README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은
+  `install.sh` 를 담아요). 그래서 `install.bat` 의 릴리즈 판별 분기는 *배포 경로로는 도달하지
+  않고*, 누군가 스크립트를 압축 푼 폴더에 복사했을 때만 타요. 이슈 절차에 *"릴리즈 zip 안의
+  install.bat 을 돌려 본다"* 가 있으면 **Windows 에서는 전제가 성립하지 않아요.**
+- **Windows 의 옛 autostart 잔재는 `install.bat` 이 치워요.** 레지스트리 값 이름은
+  **대소문자를 구별하지 않아서** 옛 `TildaZ` 와 새 릴리즈 이름 `tildaz` 가 *같은 값*이에요 —
+  그래서 릴리즈 사용자에게는 ⓔ 의 이름 변경이 덮어쓰기로 끝나고, **잔재가 남는 것은 dev 판
+  뿐**이에요 (새로 `tildaz-dev` 를 쓰고 옛 값은 그대로 두니 로그온 때 둘 다 떠요). 판정은
+  Linux `install.sh` 와 같은 **"값 데이터가 zig-out 을 가리키는가"** 하나예요.
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
