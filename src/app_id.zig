@@ -26,5 +26,9 @@ pub const name = if (build_options.dev) "tildaz-dev" else "tildaz";
 /// 앱을 식별하므로, 반대로 경로만 바꾸면 권한은 유지되지만 분리도 되지 않는다.
 pub const bundle_id = if (build_options.dev) "me.ensky0.tildaz.dev" else "me.ensky0.tildaz";
 
-/// 사람이 읽는 앱 이름 — 설치 항목 · 창 제목처럼 사용자에게 보이는 자리.
+/// 사람이 읽는 앱 이름 — 설치 항목처럼 메뉴에 보이는 자리.
 pub const display_name = if (build_options.dev) "TildaZ (dev)" else "TildaZ";
+
+/// 공백을 넣을 수 없는 자리의 이름 — 창 제목 (`TildaZ_N`) 처럼 데스크톱 확장이
+/// 문자열로 찾는 값이다. `display_name` 과 갈라 둔 이유가 그 공백 · 괄호다.
+pub const window_base = if (build_options.dev) "TildaZ-dev" else "TildaZ";

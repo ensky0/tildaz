@@ -7,8 +7,11 @@ const paths = @import("../../paths.zig");
 /// 값은 desktop entry 삭제 스윕이 순회할 최대 번호로도 쓰인다.
 pub const max_index = @import("../../instances.zig").max_config_index;
 
+/// **`ensureDesktopEntry` 의 파일 이름과 짝이어야 한다** — portal · 데스크톱 환경이
+/// 창의 `app_id` 로 desktop 항목을 찾는다. 한쪽만 `app_id.name` 을 타면 그 연결이
+/// 끊어진다 (#654).
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "tildaz.instance{d}", .{index}, 0);
+    return std.fmt.bufPrintSentinel(buf, "{s}.instance{d}", .{ app_id.name, index }, 0);
 }
 
 /// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
@@ -22,7 +25,7 @@ pub fn appId(buf: []u8, index: u32) ![:0]u8 {
 ///
 /// extension 이 이 창을 **아예 관리하지 않는 것이 의도한 결과**다 — 측정 창은 사용자의
 /// 드롭다운이 아니다.
-pub const stress_app_id: [:0]const u8 = "tildaz.stress";
+pub const stress_app_id: [:0]const u8 = app_id.name ++ ".stress";
 
 /// 현재 역할의 app_id. Wayland `xdg_toplevel.set_app_id` 와 KDE 단축키 component 가
 /// 같은 값을 써야 하므로 파생을 한 곳에 둔다.
@@ -34,8 +37,12 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
     };
 }
 
+/// 창 제목. GNOME · Cinnamon 확장이 이 문자열로 사용자의 드롭다운 창을 찾으므로
+/// dev 판은 다른 이름을 써서 **확장이 개발 창을 사용자 창으로 오인하지 않게** 한다
+/// (`stress_app_id` 를 가른 것과 같은 이유다). 확장 경로 자체를 시연할 때는
+/// `-Ddev=false` 로 빌드한다.
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "TildaZ_{d}", .{index}, 0);
+    return std.fmt.bufPrintSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
 }
 
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
@@ -142,8 +149,8 @@ pub fn syncDesktopEntries(rt: Runtime, allocator: std.mem.Allocator, indices: []
 
 test "numbered Linux identity is canonical" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("tildaz.instance12", try appId(&buf, 12));
-    try std.testing.expectEqualStrings("TildaZ_12", try displayName(&buf, 12));
+    try std.testing.expectEqualStrings(app_id.name ++ ".instance12", try appId(&buf, 12));
+    try std.testing.expectEqualStrings(app_id.window_base ++ "_12", try displayName(&buf, 12));
     try std.testing.expectEqualStrings("toggle-12", try shortcutId(&buf, 12));
     try std.testing.expectEqualStrings("Show / hide TildaZ 12", try shortcutDescription(&buf, 12));
     try std.testing.expectEqualStrings("app-tildaz.instance12-345.scope", try scopeName(&buf, 12, 345));
