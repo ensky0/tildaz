@@ -25,8 +25,6 @@ Internal changes belong in neither.
   files stay where they are and can be deleted.
   ([#654](https://github.com/ensky0/tildaz/issues/654))
 
-(none yet)
-
 ## Body candidates
 
 (none yet)

@@ -1818,6 +1818,14 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 `set -o pipefail`, 또는 `zig build check; echo "CHECK=$?"` 처럼 exit code 를 따로 찍기, 또는 `${PIPESTATUS[0]}`.
 `| tail && echo OK` 로 가짜 통과를 보고한 적이 있어요.
 
+**⚠️ 이름 목록을 정규식으로 조립해 `awk -v` 로 넘기지 말아요.** `-v` 는 값의 escape sequence 를
+*먼저* 처리해서 `\[` 가 `[` 로 풀리고, 그러면 awk 가 `invalid regexp` 로 **치명적 오류**를 내요 —
+`set -e` 스크립트면 거기서 통째로 멈춰요. 2026-09-18 `uninstall.sh` 를 그렇게 고쳤다가 표본으로
+확인하니 **그룹을 하나도 못 지운 채 종료**했어요 (경고 세 줄 뒤 `fatal: invalid regexp`). 헤더를
+문자열 비교로 가르고 숫자 판정만 리터럴 정규식 (`/^[0-9]+$/`) 으로 둬요. 그리고 스크립트의 치환
+로직은 **지우면 안 되는 표본을 섞은 입력** 으로 한 번 돌려 보고 넣어요 — 그 회차가 "우리 것만
+지우고 남의 것은 남기는지" 를 한 번에 보여줘요.
+
 **Bash 도구의 작업 디렉터리는 앞 호출의 `cd` 가 그대로 남아요 — 검증 명령은 저장소 경로를 명시해요.**
 2026-09-03 에 문서용 worktree 로 `cd` 한 호출 뒤에 `zig build check` · `zig build test` 를 돌렸는데, 그것이
 **검증하려던 브랜치가 아니라 그 worktree (다른 브랜치) 에서 돌았어요.** 출력만 보면 통과라 알아채지 못했고,
@@ -2042,16 +2050,35 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
   (`host/macos.zig` 의 `accessibilityPermissionLabel`).
 
 **개발 빌드는 `-Ddev` 로 릴리즈와 갈려요 (기본값 `true`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
-`config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · macOS bundle id 가 전부
-`tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도 **설치된 릴리즈의 설정을 건드리지 않아요.**
+`config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
+layer-shell namespace · macOS bundle id 가 전부 `tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도
+**설치된 릴리즈의 설정을 건드리지 않아요.**
 
 - **기본이 `true` 인 것은 `-Dsimd` 와 반대인데 이유가 달라요** — 옵션을 깜빡했을 때 사용자
   config 를 건드리지 않는 쪽으로 실패해야 하거든요. 그래서 *릴리즈가* `-Ddev=false` 를 명시해요.
 - **`zig build package` 는 `-Ddev=false` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로
   나가는 것을 막는 가드예요 — CI 나 사람이 한 번 빠뜨리면 그대로 배포될 자리라서요.
-- **이름은 [`src/app_id.zig`](src/app_id.zig) 한 곳이 정해요.** 격리할 자리가 아홉 군데라
+- **이름은 [`src/app_id.zig`](src/app_id.zig) 한 곳이 정해요.** 격리할 자리가 열 곳이 넘어서
   자리마다 조건을 쓰면 반드시 하나를 빠뜨려요 (실제로 이 작업 중에 Wayland `app_id` 와
   codesign 대상 둘을 그렇게 놓칠 뻔했어요).
+- **⚠️ 파일 *이름* 만 가르고 그 *내용* 을 안 가르는 것이 이 작업의 대표적인 함정이에요.**
+  2026-09-18 Linux 실기에서 셋이 나왔어요 — `tildaz-dev.instance9.desktop` 안의
+  `StartupWMClass` 가 `tildaz.instance9` 여서 **개발 창이 자기 항목이 아니라 릴리즈 항목과
+  묶이려 했고**, autostart 항목은 `Name=TildaZ` 라 KDE 자동 시작 목록에서 릴리즈와 구별되지
+  않았어요 (이 이슈가 없애려던 *"어느 쪽이 도는지 알 수 없다"* 가 그 화면에 그대로 남는
+  거예요). 이름을 가른 자리마다 **그 파일이 담는 문자열까지** 같이 봐요.
+- **⚠️ 남의 것을 *지우는* 경로가 가장 위험해요.** 이름으로 자기 항목을 찾아 정리하는 코드가
+  안 갈리면 개발 빌드가 **사용자의 릴리즈 전역 단축키를 지워요** — 개발 빌드의 config 에 그
+  번호가 없으면 정확히 그렇게 됩니다. 같은 회차에서 세 곳이 그랬어요:
+  [`kglobalaccel.numberedComponentIndex`](src/host/linux/kglobalaccel.zig) (KDE 컴포넌트
+  sweep) · [`gsettings_hotkey.gsettingsTildazIndex`](src/host/linux/gsettings_hotkey.zig)
+  (GNOME · Cinnamon dconf) · [`uninstall.sh`](dist/linux/uninstall.sh) 의 그룹 제거.
+  판정 함수에는 **"개발 빌드가 릴리즈 이름을 자기 것으로 보지 않는다"** 를 테스트로 박아
+  둬요 (앞의 두 파일에 그 단언이 있어요).
+- **`install.sh` 는 `-Ddev` 이전 판이 남긴 잔재를 치워요 — 판정은 "zig-out 을 가리키는가"
+  하나예요.** 예전 스크립트는 개발 빌드도 릴리즈 이름으로 깔아서, 그 `~/.local/bin/tildaz` 가
+  PATH 에서 `/usr/bin/tildaz` 를 가려요 (이 이슈의 원래 증상 절반이 그것이에요). 반대로
+  사용자가 **릴리즈 tarball 로 깐 정상 설치** 는 `Exec` 이 압축 해제 폴더라 그대로 보존돼요.
 - **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
   `TildaZ-dev_N` 이고 config 는 `<XDG_CONFIG>/tildaz-dev/` 예요.
 - 데스크톱 확장 (GNOME · Cinnamon) 은 릴리즈 창만 잡아요 — 확장 경로 자체를 시연할 때는
