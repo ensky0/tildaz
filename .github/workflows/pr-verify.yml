@@ -47,9 +47,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux, os: ubuntu-latest }
-          - { name: macos, os: macos-15 }
-          - { name: windows, os: windows-2022 }
+          - { name: linux, os: ubuntu-26.04 }
+          - { name: macos, os: macos-26 }
+          - { name: windows, os: windows-2025-vs2026 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
