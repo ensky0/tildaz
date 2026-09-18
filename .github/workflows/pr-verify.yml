@@ -56,6 +56,27 @@ jobs:
         with:
           fetch-depth: 1
 
+      # zig 는 빌드 산출물을 수만 개의 작은 파일로 쓰는데, GitHub Windows 러너는
+      # Defender 실시간 검사가 켜져 있어 그 I/O 마다 스캔이 걸린다. 같은 x64 러너인데
+      # `Build (simd)` 가 Linux 67s · Windows 231s (3.4 배) 인 것이 #652 의 출발점이고,
+      # 러너 이미지를 올려도 (#670) 그 차이는 그대로였다.
+      #
+      # 제외는 두 곳이 필요하다 — 로컬 캐시 (`.zig-cache` · `zig-pkg`) 가 있는 workspace 와,
+      # Windows 에서 zig 글로벌 캐시를 두는 RUNNER_TEMP (setup-zig action 머리 주석).
+      # 실패해도 빌드를 막지 않는다 (`continue-on-error`) — 느려질 뿐이다.
+      - name: Exclude build paths from Defender (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "${{ runner.temp }}"
+          Add-MpPreference -ExclusionProcess "zig.exe"
+          $p = Get-MpPreference
+          Write-Host "ExclusionPath   : $($p.ExclusionPath -join ' | ')"
+          Write-Host "ExclusionProcess: $($p.ExclusionProcess -join ' | ')"
+          Write-Host "RealTimeProtectionEnabled: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
+
       # zig 버전은 `build.zig.zon` 한 곳 — action 이 읽는다 (#607 ②). fetch 는 action 이 재시도로 돈다
       # (ziglang.org · GitHub tarball 의 일시적 HTTP 실패).
       - uses: ./.github/actions/setup-zig
