@@ -267,23 +267,26 @@ pub fn build(b: *std.Build) void {
         // 가 우리를 \"정식 앱\" 으로 인식해 글로벌 핫키 dispatch 가 동작.
         //
         // 결과 경로:
-        //   zig-out/TildaZ.app/Contents/MacOS/tildaz
-        //   zig-out/TildaZ.app/Contents/Info.plist
+        //   zig-out/<TildaZ|TildaZ-dev>.app/Contents/MacOS/tildaz
+        //   zig-out/<TildaZ|TildaZ-dev>.app/Contents/Info.plist
         //
         // 실행: `./zig-out/TildaZ.app/Contents/MacOS/tildaz` (터미널 attach,
         // Ctrl+C 로 종료) 또는 `open ./zig-out/TildaZ.app` (LaunchServices).
-        const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), "TildaZ.app/Contents/MacOS/tildaz");
+        // #654 — dev 는 별도 번들 (`TildaZ-dev.app`) 이고 bundle id 도 다르다. 경로만
+        // 가르면 LaunchServices 가 같은 bundle id 를 한 앱으로 묶어 메뉴 · `open` 이
+        // 어느 쪽을 열지 모호해진다.
+        const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), b.fmt("{s}/Contents/MacOS/tildaz", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_exe.step);
         // ConfigHeader는 모든 출력 첫 줄에 C 주석을 넣으므로 XML plist에는 쓸
         // 수 없다. build runner가 @embedFile로 template 변경을 추적하고,
         // WriteFile은 주석 없이 정확한 XML만 생성한다.
         const macos_metadata = b.addWriteFiles();
-        const macos_plist = macos_metadata.add("Info.plist", renderMacosPlist(b, app_version));
-        const install_macos_plist = b.addInstallFile(macos_plist, "TildaZ.app/Contents/Info.plist");
+        const macos_plist = macos_metadata.add("Info.plist", renderMacosPlist(b, app_version, dev));
+        const install_macos_plist = b.addInstallFile(macos_plist, b.fmt("{s}/Contents/Info.plist", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_plist.step);
         // App icon — Info.plist 의 CFBundleIconFile=AppIcon 이 Resources/AppIcon.icns
         // 를 찾음 (#145). docs/favicon.svg 에서 sips + iconutil 로 만든 .icns commit.
-        const install_macos_icon = b.addInstallFile(b.path("dist/macos/AppIcon.icns"), "TildaZ.app/Contents/Resources/AppIcon.icns");
+        const install_macos_icon = b.addInstallFile(b.path("dist/macos/AppIcon.icns"), b.fmt("{s}/Contents/Resources/AppIcon.icns", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_icon.step);
         // 코드 서명 identity. default `-` = ad-hoc (인증서 없이). macOS TCC
         // (Privacy & Security 권한 데이터베이스) 는 "signing identity + bundle
@@ -297,7 +300,7 @@ pub fn build(b: *std.Build) void {
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
         // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
-        const app_path = b.fmt("{s}/TildaZ.app", .{b.install_path});
+        const app_path = b.fmt("{s}/{s}", .{ b.install_path, macosBundleDir(dev) });
         const sign = b.addSystemCommand(&.{
             "codesign",
             "--force",
@@ -783,20 +786,45 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn renderMacosPlist(b: *std.Build, version: versioning.Derived) []const u8 {
+/// `.app` 번들 디렉터리 이름. dev 판은 릴리즈와 나란히 설치되므로 이름이 달라야 한다 (#654).
+fn macosBundleDir(dev: bool) []const u8 {
+    return if (dev) "TildaZ-dev.app" else "TildaZ.app";
+}
+
+fn renderMacosPlist(b: *std.Build, version: versioning.Derived, dev: bool) []const u8 {
     const template = @embedFile("dist/macos/Info.plist.in");
     const short_token = "@MACOS_SHORT_VERSION@";
     const build_token = "@MACOS_BUILD_VERSION@";
+    const id_token = "@BUNDLE_ID@";
+    const name_token = "@BUNDLE_NAME@";
     if (std.mem.count(u8, template, short_token) != 1 or
-        std.mem.count(u8, template, build_token) != 1)
+        std.mem.count(u8, template, build_token) != 1 or
+        std.mem.count(u8, template, id_token) != 1 or
+        std.mem.count(u8, template, name_token) != 1)
     {
-        @panic("dist/macos/Info.plist.in must contain each version token exactly once");
+        @panic("dist/macos/Info.plist.in must contain each token exactly once");
     }
 
-    const with_short = std.mem.replaceOwned(
+    const with_id = std.mem.replaceOwned(
         u8,
         b.allocator,
         template,
+        id_token,
+        // `src/app_id.zig` 의 `bundle_id` 와 **같은 값이어야 한다** — launchd label ·
+        // TCC · LaunchServices 가 보는 신원이 하나로 맞아야 한다.
+        if (dev) "me.ensky0.tildaz.dev" else "me.ensky0.tildaz",
+    ) catch @panic("OOM rendering macOS Info.plist");
+    const with_name = std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        with_id,
+        name_token,
+        if (dev) "TildaZ (dev)" else "TildaZ",
+    ) catch @panic("OOM rendering macOS Info.plist");
+    const with_short = std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        with_name,
         short_token,
         version.macos_short,
     ) catch @panic("OOM rendering macOS Info.plist");
