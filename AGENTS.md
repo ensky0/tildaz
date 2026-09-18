@@ -2051,8 +2051,10 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 
 **개발 빌드는 `-Ddev` 로 릴리즈와 갈려요 (기본값 `true`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
 `config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
-layer-shell namespace · macOS bundle id 가 전부 `tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도
-**설치된 릴리즈의 설정을 건드리지 않아요.**
+layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bundle id 가 전부
+`tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도 **설치된 릴리즈의 설정을 건드리지 않아요.**
+기본 hotkey 도 갈려요 — 릴리즈는 index 0 → `F1`, 개발 빌드는 0 → `F10` 으로 **표를 거꾸로**
+읽어요 (같은 조합을 둘이 등록하면 먼저 등록한 쪽만 발화하고 재등록으로 못 빼앗아서예요).
 
 - **기본이 `true` 인 것은 `-Dsimd` 와 반대인데 이유가 달라요** — 옵션을 깜빡했을 때 사용자
   config 를 건드리지 않는 쪽으로 실패해야 하거든요. 그래서 *릴리즈가* `-Ddev=false` 를 명시해요.
@@ -2081,8 +2083,15 @@ layer-shell namespace · macOS bundle id 가 전부 `tildaz-dev` 쪽을 써서, 
   사용자가 **릴리즈 tarball 로 깐 정상 설치** 는 `Exec` 이 압축 해제 폴더라 그대로 보존돼요.
 - **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
   `TildaZ-dev_N` 이고 config 는 `<XDG_CONFIG>/tildaz-dev/` 예요.
-- 데스크톱 확장 (GNOME · Cinnamon) 은 릴리즈 창만 잡아요 — 확장 경로 자체를 시연할 때는
-  `-Ddev=false` 로 빌드해요.
+- **데스크톱 확장 (GNOME · Cinnamon) 도 UUID 가 갈려요** (`tildaz-dev@ensky0.github.io`).
+  예전에는 하나를 공유해서 ① 개발 빌드를 지우면 릴리즈의 확장까지 꺼졌고, ② 개발 빌드는
+  **전역 hotkey 를 아무 데도 등록하지 않았어요** — 확장이 개발 창을 안 잡는데도 앱은
+  "확장이 담당한다" 로 보고 gsettings 등록을 건너뛰었거든요. 이제 각자의 확장이 자기 창을
+  잡으니 GNOME · Cinnamon 에서도 개발 빌드가 그대로 동작해요.
+- **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
+  디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
+  의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.
+  치환 뒤 토큰이 남는지는 zig 테스트와 `package.sh` 가 양쪽에서 검사해요.
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
