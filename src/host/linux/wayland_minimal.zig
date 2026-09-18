@@ -2699,7 +2699,8 @@ const Client = struct {
         try msg.putU32(self.surface_id);
         try msg.putU32(0);
         try msg.putU32(zwlr_layer_shell_layer_top);
-        try msg.putString("tildaz");
+        // namespace 도 신원을 탄다 (#654) — 근거는 `instance_identity.layer_namespace`.
+        try msg.putString(instance_identity.layer_namespace);
         try msg.send(self.wayland_fd);
 
         // #336 — 첫 commit 은 preferred_scale 확정 전이라 scale=1.0 로 물리 margin 을

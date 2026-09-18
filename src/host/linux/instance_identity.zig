@@ -45,26 +45,17 @@ pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
 }
 
+/// wlr-layer-shell surface 의 namespace. compositor 가 **창 규칙을 거는 키**라 개발
+/// 빌드와 릴리즈가 같은 값을 쓰면 사용자가 릴리즈에 건 규칙이 개발 창에도 걸린다 (#654).
+/// layer surface 에는 `app_id` 가 없어 이 문자열이 그 자리를 대신하므로, 여기서 가른다.
+pub const layer_namespace: [:0]const u8 = app_id.name;
+
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
 }
 
 pub fn shortcutDescription(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
-}
-
-pub fn scopeName(buf: []u8, index: u32, pid: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid }, 0);
-}
-
-pub fn isScopeForIndex(leaf: []const u8, index: u32) bool {
-    var prefix_buf: [48]u8 = undefined;
-    const prefix = std.fmt.bufPrint(&prefix_buf, "app-tildaz.instance{d}-", .{index}) catch return false;
-    if (!std.mem.startsWith(u8, leaf, prefix) or !std.mem.endsWith(u8, leaf, ".scope")) return false;
-    const pid_text = leaf[prefix.len .. leaf.len - ".scope".len];
-    if (pid_text.len == 0) return false;
-    _ = std.fmt.parseInt(u32, pid_text, 10) catch return false;
-    return true;
 }
 
 /// 이름 앞부분은 `app_id.name` 을 탄다 (#654) — 개발 빌드가 만든 항목과 릴리즈가 만든
@@ -108,21 +99,25 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     const exe = exe_buf[0..exe_len];
     if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
+    // **본문도 `app_id` 를 탄다** — 파일 *이름*만 가르면 그 항목이 릴리즈 창을 가리킨다.
+    // `StartupWMClass` 는 데스크톱 · portal 이 창과 이 항목을 묶는 열쇠라 위 `appId` 와
+    // 글자 단위로 같아야 하고, `Name` 은 창 제목 (`displayName`) 과, `Icon` 은
+    // `install.sh` 가 까는 아이콘 파일 이름 (`<name>.svg`) 과 짝이다.
     const content = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]
         \\Type=Application
-        \\Name=TildaZ_{d}
+        \\Name={s}_{d}
         \\GenericName=Drop-down Terminal Instance
         \\Comment=Independent TildaZ terminal instance {d}
         \\Exec="{s}" --instance {d}
-        \\Icon=tildaz
+        \\Icon={s}
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
-        \\StartupWMClass=tildaz.instance{d}
+        \\StartupWMClass={s}.instance{d}
         \\StartupNotify=false
         \\NoDisplay=true
         \\
-    , .{ index, index, exe, index, index });
+    , .{ app_id.window_base, index, index, exe, index, app_id.name, app_id.name, index });
     defer allocator.free(content);
 
     _ = try paths.writeFileIfChanged(rt, allocator, path, content);
@@ -153,10 +148,6 @@ test "numbered Linux identity is canonical" {
     try std.testing.expectEqualStrings(app_id.window_base ++ "_12", try displayName(&buf, 12));
     try std.testing.expectEqualStrings("toggle-12", try shortcutId(&buf, 12));
     try std.testing.expectEqualStrings("Show / hide TildaZ 12", try shortcutDescription(&buf, 12));
-    try std.testing.expectEqualStrings("app-tildaz.instance12-345.scope", try scopeName(&buf, 12, 345));
-    try std.testing.expect(isScopeForIndex("app-tildaz.instance12-345.scope", 12));
-    try std.testing.expect(!isScopeForIndex("app-tildaz.instance1-345.scope", 12));
-    try std.testing.expect(!isScopeForIndex("app-tildaz.instance12-other.scope", 12));
     try std.testing.expectEqual(@as(?u32, 0), parseDesktopFileName(app_id.name ++ ".instance0.desktop"));
     try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".instance01.desktop"));
     try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".desktop"));

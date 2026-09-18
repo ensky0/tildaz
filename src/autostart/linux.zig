@@ -77,8 +77,12 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
     const path = try entryPath(rt, allocator);
     defer allocator.free(path);
 
-    // `StartupWMClass=tildaz` 는 launcher identity다. Worker 창은 번호별
-    // `tildaz.instanceN`을 사용하므로 launcher와 실행 중 앱으로 묶이지 않는다.
+    // `StartupWMClass=<name>` 은 launcher identity다. Worker 창은 번호별
+    // `<name>.instanceN`을 사용하므로 launcher와 실행 중 앱으로 묶이지 않는다.
+    //
+    // **`Name` · `Icon` · `StartupWMClass` 도 `app_id` 를 탄다** (#654) — 파일 이름만
+    // 가르면 자동 시작 목록에 개발 빌드와 릴리즈가 *같은 이름*으로 나란히 보여서,
+    // 이 이슈가 없애려던 "어느 쪽이 도는지 알 수 없다" 가 그 화면에 그대로 남는다.
     // launcher 자신은 창을 만들지 않고 worker를 spawn/request한 뒤 종료하므로
     // StartupNotify=false로 시작 완료 창을 기다리지 않게 한다.
     //
@@ -95,20 +99,20 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
     const entry = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]
         \\Type=Application
-        \\Name=TildaZ
+        \\Name={s}
         \\GenericName=Drop-down Terminal
         \\Comment=Quake-style drop-down terminal for Wayland
         \\Exec="{s}" --autostart
-        \\Icon=tildaz
+        \\Icon={s}
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
-        \\StartupWMClass=tildaz
+        \\StartupWMClass={s}
         \\StartupNotify=false
         \\Hidden=false
         \\X-GNOME-Autostart-enabled=true
         \\NotShowIn=GNOME;
         \\
-    , .{exe});
+    , .{ app_id.display_name, exe, app_id.name, app_id.name });
     defer allocator.free(entry);
 
     _ = try paths.writeFileIfChanged(rt, allocator, path, entry);
