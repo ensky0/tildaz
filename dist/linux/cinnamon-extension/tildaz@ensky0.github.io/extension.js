@@ -66,15 +66,25 @@ const Meta = imports.gi.Meta;
 const Cinnamon = imports.gi.Cinnamon;
 const Main = imports.ui.main;
 
-const WORKER_APP_ID_PREFIX = "tildaz.instance";
-const DIALOG_APP_ID = "tildaz-dialog";
+/**
+ * 개발 빌드와 릴리즈를 가르는 이름 (#654). `shell_extension.zig` (앱이 이 파일을 사용자
+ * 디렉터리에 쓸 때) 와 `install.sh` (배포물에서 복사할 때) 가 이 토큰을 치환한다 —
+ * `dist/linux/tildaz.desktop` 의 치환 토큰과 같은 방식이다.
+ *
+ * ⚠️ **이 파일을 그대로 복사하면 동작하지 않는다.** 토큰이 남은 채로는 `tildaz` 도
+ * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
+ */
+const APP = "__TILDAZ_APP__";
+
+const WORKER_APP_ID_PREFIX = `${APP}.instance`;
+const DIALOG_APP_ID = `${APP}-dialog`;
 
 function configDirPath() {
   const xdgConfigHome = GLib.getenv("XDG_CONFIG_HOME");
   const base = xdgConfigHome && GLib.path_is_absolute(xdgConfigHome)
     ? xdgConfigHome
     : GLib.build_filenamev([GLib.get_home_dir(), ".config"]);
-  return GLib.build_filenamev([base, "tildaz"]);
+  return GLib.build_filenamev([base, APP]);
 }
 
 /**
@@ -91,11 +101,11 @@ function configDirPath() {
 function hotkeyStateDirPath() {
   const runtime = GLib.getenv("XDG_RUNTIME_DIR");
   if (runtime && GLib.path_is_absolute(runtime))
-    return GLib.build_filenamev([runtime, "tildaz"]);
+    return GLib.build_filenamev([runtime, APP]);
   const cache = GLib.getenv("XDG_CACHE_HOME");
   if (cache && GLib.path_is_absolute(cache))
-    return GLib.build_filenamev([cache, "tildaz", "run"]);
-  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", "tildaz", "run"]);
+    return GLib.build_filenamev([cache, APP, "run"]);
+  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", APP, "run"]);
 }
 
 function hotkeyStatePath(index) {
@@ -478,7 +488,7 @@ function normalizeAccel(accel) {
 function conflictingHotkeyOwner(index, accel) {
   const want = normalizeAccel(accel);
   if (!want) return null;
-  const mine = `tildaz-toggle-${index}`;
+  const mine = `${APP}-toggle-${index}`;
   try {
     for (const b of Main.keybindingManager.bindings.values()) {
       if (!b || b.name === mine) continue; // 우리 자신의 재등록은 충돌이 아니다
@@ -494,7 +504,7 @@ function conflictingHotkeyOwner(index, accel) {
 }
 
 function registerHotkey(index, cfg) {
-  const name = `tildaz-toggle-${index}`;
+  const name = `${APP}-toggle-${index}`;
   if (!cfg.accel) {
     // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치 이름 등).
     global.logError(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
@@ -531,7 +541,7 @@ function registerHotkey(index, cfg) {
 
 function syncHotkeys(nextConfigs) {
   for (const [name, accel] of st.hotkeys) {
-    const match = /^tildaz-toggle-(0|[1-9][0-9]*)$/.exec(name);
+    const match = new RegExp(`^${APP}-toggle-(0|[1-9][0-9]*)$`).exec(name);
     const next = match ? nextConfigs.get(Number(match[1])) : null;
     if (next?.accel === accel) continue;
     try { Main.keybindingManager.removeHotKey(name); } catch (_e) {}

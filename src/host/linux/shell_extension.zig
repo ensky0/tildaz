@@ -7,7 +7,41 @@ pub const Kind = enum {
     cinnamon,
 };
 
-const uuid = "tildaz@ensky0.github.io";
+const app_id = @import("../../app_id.zig");
+
+const uuid = app_id.extension_uuid;
+
+/// 소스의 토큰 → 이 빌드의 값 (#654). `dist/linux/tildaz.desktop` 의 `__TILDAZ_*__` 와
+/// 같은 방식이다 — 확장 소스를 **두 벌 두지 않고** 쓰는 시점에 치환한다. 두 벌이면 하나만
+/// 고치는 사고가 나고, 그 둘이 어긋나면 확장이 잡는 창과 앱이 내는 창이 갈라진다.
+///
+/// `install.sh` 도 같은 토큰을 치환한다 (배포물에서 셸이 확장을 먼저 읽어야 하는 경로).
+/// 한쪽만 바뀌면 토큰이 남은 파일이 깔리므로 **토큰 이름을 바꿀 때는 두 곳을 함께** 본다.
+const substitutions = [_]struct { token: []const u8, value: []const u8 }{
+    .{ .token = "__TILDAZ_EXT_UUID__", .value = app_id.extension_uuid },
+    .{ .token = "__TILDAZ_EXT_SCHEMA__", .value = app_id.extension_schema },
+    .{ .token = "__TILDAZ_EXT_NAME__", .value = if (app_id.is_dev) "TildaZ Drop-down (dev)" else "TildaZ Drop-down" },
+    // 마지막에 둔다 — 위 토큰들이 이 문자열을 품고 있지 않지만, 접두어가 겹치는 토큰을
+    // 나중에 더할 때 짧은 것을 먼저 치환하면 긴 토큰이 깨진다.
+    .{ .token = "__TILDAZ_APP__", .value = app_id.name },
+};
+
+/// 토큰을 모두 치환한 사본. 소유권을 넘긴다 (치환할 것이 없어도 복사본이다 — 호출부가
+/// 해제 조건을 따지지 않게 하려고 한 가지로 맞춘다. 파일이 다섯 개뿐이라 비용은 무시할 수 있다).
+fn render(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var current = try allocator.dupe(u8, source);
+    errdefer allocator.free(current);
+    for (substitutions) |sub| {
+        const count = std.mem.count(u8, current, sub.token);
+        if (count == 0) continue;
+        const size = current.len - count * sub.token.len + count * sub.value.len;
+        const next = try allocator.alloc(u8, size);
+        _ = std.mem.replace(u8, current, sub.token, sub.value, next);
+        allocator.free(current);
+        current = next;
+    }
+    return current;
+}
 
 const Resource = struct {
     relative_path: []const u8,
@@ -20,7 +54,9 @@ const gnome_resources = [_]Resource{
     .{ .relative_path = "extension.js", .content = @embedFile("gnome_extension_js") },
     .{ .relative_path = "metadata.json", .content = @embedFile("gnome_extension_metadata") },
     .{
-        .relative_path = "schemas/org.gnome.shell.extensions.tildaz.gschema.xml",
+        // 파일 이름도 스키마 id 를 따라간다 — `glib-compile-schemas` 는 디렉터리를 통째로
+        // 읽으므로 이름이 겹치면 개발 빌드와 릴리즈가 서로의 스키마를 덮어쓴다.
+        .relative_path = "schemas/" ++ app_id.extension_schema ++ ".gschema.xml",
         .content = @embedFile("gnome_extension_gschema"),
     },
 };
@@ -63,7 +99,9 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         const destination = try std.Io.Dir.path.join(allocator, &.{ destination_dir, resource.relative_path });
         defer allocator.free(destination);
         if (std.Io.Dir.path.dirname(destination)) |parent| try paths.ensureDir(rt, parent);
-        changed = (try paths.writeFileIfChanged(rt, allocator, destination, resource.content)) or changed;
+        const content = try render(allocator, resource.content);
+        defer allocator.free(content);
+        changed = (try paths.writeFileIfChanged(rt, allocator, destination, content)) or changed;
     }
 
     if (kind == .gnome) {
@@ -136,9 +174,31 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
     // 파일이 서로 바뀌지 않았는지 — 각 종류의 표식을 본다.
     try std.testing.expect(std.mem.indexOf(u8, gnome_resources[0].content, "imports.gi") != null or
         std.mem.indexOf(u8, gnome_resources[0].content, "import ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[1].content, uuid) != null);
     try std.testing.expect(std.mem.indexOf(u8, gnome_resources[2].content, "<schemalist") != null);
-    try std.testing.expect(std.mem.indexOf(u8, cinnamon_resources[1].content, uuid) != null);
+
+    // #654 — 리소스는 `__TILDAZ_*__` 토큰을 담고 쓰는 시점에 치환된다. 그래서 metadata 가
+    // 맞는 파일인지는 **치환 결과**로 본다.
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ gnome_resources[1].content, cinnamon_resources[1].content }) |metadata| {
+        const rendered = try render(allocator, metadata);
+        defer allocator.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, uuid) != null);
+    }
+    // gschema 의 id 는 파일 **이름** (`relative_path`) 과 같은 값에서 나온다 — 둘이 어긋나면
+    // `glib-compile-schemas` 가 읽는 id 와 우리가 만든 파일 이름이 갈린다.
+    {
+        const rendered = try render(allocator, gnome_resources[2].content);
+        defer allocator.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, app_id.extension_schema) != null);
+    }
+    // **치환 뒤에 토큰이 남으면 안 된다.** 남은 채로 깔리면 셸이 그 확장을 읽지 못하고 그
+    // 실패는 사용자 화면에서 조용하다. `package.sh` 의 같은 검사와 짝이다 (그쪽은 배포물을,
+    // 이쪽은 앱이 사용자 홈에 쓰는 경로를 본다).
+    for (gnome_resources ++ cinnamon_resources) |resource| {
+        const rendered = try render(allocator, resource.content);
+        defer allocator.free(rendered);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "__TILDAZ_") == null);
+    }
     // GNOME 과 Cinnamon 의 extension.js 는 다른 셸 API 를 쓰는 다른 파일이다.
     try std.testing.expect(!std.mem.eql(u8, gnome_resources[0].content, cinnamon_resources[0].content));
 }

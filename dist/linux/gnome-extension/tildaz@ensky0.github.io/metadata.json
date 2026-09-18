@@ -1,8 +1,8 @@
 {
-  "uuid": "tildaz@ensky0.github.io",
-  "name": "TildaZ Drop-down",
-  "description": "Drop-down placement and numbered global hotkeys for TildaZ on GNOME. Reads $XDG_CONFIG_HOME/tildaz/config_N.toml files (with the standard ~/.config fallback) as the source of truth.",
+  "uuid": "__TILDAZ_EXT_UUID__",
+  "name": "__TILDAZ_EXT_NAME__",
+  "description": "Drop-down placement and numbered global hotkeys for TildaZ on GNOME. Reads $XDG_CONFIG_HOME/__TILDAZ_APP__/config_N.toml files (with the standard ~/.config fallback) as the source of truth.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
-  "settings-schema": "org.gnome.shell.extensions.tildaz",
+  "settings-schema": "__TILDAZ_EXT_SCHEMA__",
   "url": "https://github.com/ensky0/tildaz"
 }

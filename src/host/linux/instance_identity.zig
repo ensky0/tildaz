@@ -50,6 +50,12 @@ pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
 /// layer surface 에는 `app_id` 가 없어 이 문자열이 그 자리를 대신하므로, 여기서 가른다.
 pub const layer_namespace: [:0]const u8 = app_id.name;
 
+/// 다이얼로그 toplevel 의 `app_id`. 메인 창과 **다른** 값이어야 GNOME · Cinnamon 확장이
+/// 이것을 드롭다운으로 가로채지 않는다 (#231). 그 확장이 `<name>-dialog` 로 찾으므로
+/// 여기도 이름을 탄다 (#654) — 안 그러면 개발 빌드의 다이얼로그를 릴리즈 확장이 자기
+/// 것으로 보고 옮긴다.
+pub const dialog_app_id: [:0]const u8 = app_id.name ++ "-dialog";
+
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
 }
