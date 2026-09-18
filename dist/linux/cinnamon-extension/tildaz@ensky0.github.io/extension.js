@@ -701,6 +701,9 @@ function wmClassEq(win, id) {
 }
 
 /** app_id(wm_class)와 title이 모두 같은 번호인 worker면 index, 아니면 null. */
+/* #654 — 이 정규식은 `instances.zig` 의 `window_title_prefix` 와 짝이다. 개발 빌드도
+ * 같은 타이틀 (`TildaZ-N`) 을 쓰고 신원은 app_id (`__TILDAZ_APP__.instanceN`) 로 가른다 —
+ * 타이틀에 `-dev` 를 섞으면 여기서 번호를 못 읽어 확장이 그 창을 통째로 놓친다. */
 function workerIndex(win) {
   if (!win) return null;
   const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");

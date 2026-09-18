@@ -1,5 +1,6 @@
 const std = @import("std");
 const toml = @import("toml");
+const app_id = @import("app_id.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
 const runtime = @import("runtime.zig");
@@ -34,17 +35,42 @@ pub const max_config_index: u32 = 9;
 /// 같은 클래스명·타이틀 형식을 써야 한다(불일치 시 hotkey_capture 는 무음
 /// no-op, instance_request 는 CoordinatorNotRunning 오해석). Linux 는 같은
 /// 타이틀 형식을 xdg_toplevel 표시 타이틀로 재사용(형식 일관성).
-pub const window_class_name = "TildaZWindow";
+///
+/// **#654 — 클래스 이름은 `app_id.window_base` 를 탄다.** 예전에는 리터럴이라 개발
+/// 빌드와 릴리즈의 창이 클래스도 타이틀도 **글자 그대로 같았다.** 그러면 위 세 조회가
+/// 어느 판의 창을 집을지 *뜨는 순서*가 정한다 — 2026-09-18 Windows 실기에서 두 판을
+/// `--instance 9` 로 동시에 띄워 확인했다: dev 를 먼저 띄우면 `FindWindowW` 가 릴리즈
+/// 창을, 릴리즈를 먼저 띄우면 dev 창을 돌려줬다. 즉 **릴리즈 launcher 의 새-instance
+/// 요청이 개발 빌드로 갈 수 있다.** 파일 · 소켓처럼 자리를 나눌 수 없는 자리(창 클래스는
+/// 세션 전역 이름공간)라 이름으로 가른다.
+pub const window_class_name = app_id.window_base ++ "Window";
+
+/// **타이틀은 일부러 가르지 않는다 — 클래스만으로 충분하고, 가르면 Linux 가 깨진다.**
+/// `FindWindowW` 는 클래스와 타이틀이 **둘 다** 맞아야 창을 돌려주므로 클래스가 갈린
+/// 순간 두 판의 조회는 이미 섞이지 않는다 (실측: 교차 조회가 모두 0). 반면 창 클래스는
+/// Windows 에만 있는 개념이고 **이 타이틀은 Linux 의 xdg_toplevel 표시 타이틀로도 쓰인다**
+/// (`wayland_minimal.zig` 의 `createXdgToplevel`). GNOME · Cinnamon extension 의
+/// `workerIndex()` 가 그 타이틀을 `/^TildaZ-(0|[1-9][0-9]*)$/` 로 파싱해 번호를 얻으므로,
+/// 여기에 `-dev` 를 섞으면 **개발 빌드의 창을 확장이 못 잡는다** — 배치 · 토글 · 전역
+/// hotkey 가 통째로 죽는, Linux 회차 결함 8 과 같은 증상이다. Linux 쪽 신원은 이미
+/// `app_id` (`tildaz-dev.instanceN`) 와 확장 UUID 로 갈려 있고, 확장은 타이틀과 app_id 를
+/// **함께** 대조하므로 타이틀이 같아도 남의 창을 잡지 않는다.
 pub const window_title_prefix = "TildaZ-";
 
-/// 창 타이틀 = `TildaZ-<worker index>` (예 "TildaZ-0" = coordinator).
+/// 숨은 owner 창의 타이틀. worker 조회 대상은 아니지만 (클래스가 이미 갈린다) 창 목록을
+/// 눈으로 읽을 때 어느 판의 것인지 보여야 해서 같이 탄다. 리터럴이 `window.zig` 에 흩어져
+/// 있던 것을 이 단일 소스로 모았다 (#654).
+pub const owner_window_title = app_id.window_base ++ "Owner";
+
+/// 창 타이틀 = `TildaZ-<worker index>` (예 "TildaZ-0" = coordinator). 개발 빌드도 같다 —
+/// 위 `window_title_prefix` 주석의 이유다.
 pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
     return std.fmt.bufPrint(buf, window_title_prefix ++ "{d}", .{index});
 }
 
 /// 측정용 인스턴스 (#382 의 `-e`) 의 창 타이틀. **worker 의 타이틀과 절대 겹치지 않는
 /// 이름이어야 한다** — Windows 의 `instance_request.send` 와 `hotkey_capture.broadcast`
-/// 는 worker 창을 `FindWindowW(window_class_name, "TildaZ-<index>")` 로 찾으므로, 측정
+/// 는 worker 창을 `FindWindowW(window_class_name, window_title_prefix ++ "<index>")` 로 찾으므로, 측정
 /// 창이 같은 타이틀을 쓰면 그 조회가 worker 대신 측정 창을 집을 수 있다. 측정 인스턴스는
 /// worker 가 아니다 — worker lock 도 endpoint 상태도 갖지 않는다.
 ///
@@ -88,9 +114,28 @@ test "창 타이틀은 역할에서 갈린다" {
     var buf: [32]u8 = undefined;
     instance_context.setWorkerIndex(0);
     instance_context.setRole(.worker);
-    try std.testing.expectEqualStrings("TildaZ-0", try windowTitleForCurrentRole(&buf));
+    try std.testing.expectEqualStrings(window_title_prefix ++ "0", try windowTitleForCurrentRole(&buf));
     instance_context.setRole(.stress);
     try std.testing.expectEqualStrings(stress_window_title, try windowTitleForCurrentRole(&buf));
+
+    // #654 — **개발 빌드는 릴리즈의 창 *클래스* 를 쓰지 않는다.** 파생으로만 단언하면 두
+    // 상수가 같은 값이어도 통과하므로, 판마다 실제 문자열을 박는다. 릴리즈 쪽 리터럴은
+    // 동작이 바뀌지 않았다는 회귀 가드이기도 하다 (`zig build test` 와
+    // `zig build test -Ddev=false` 가 각각 한 갈래를 돈다).
+    //
+    // **타이틀은 반대로 "두 판이 같다" 를 박는다.** Linux 의 GNOME · Cinnamon extension 이
+    // 이 타이틀을 `/^TildaZ-(0|[1-9][0-9]*)$/` 로 파싱하므로 여기에 `-dev` 가 섞이면 개발
+    // 빌드의 창을 확장이 못 잡는다. 클래스를 가르다가 타이틀까지 따라가기 쉬운 자리라
+    // 단언으로 못 박는다 (실제로 이 회차에서 한 번 그렇게 갔다).
+    instance_context.setRole(.worker);
+    try std.testing.expectEqualStrings("TildaZ-0", try windowTitleForCurrentRole(&buf));
+    if (app_id.is_dev) {
+        try std.testing.expectEqualStrings("TildaZ-devWindow", window_class_name);
+        try std.testing.expectEqualStrings("TildaZ-devOwner", owner_window_title);
+    } else {
+        try std.testing.expectEqualStrings("TildaZWindow", window_class_name);
+        try std.testing.expectEqualStrings("TildaZOwner", owner_window_title);
+    }
 }
 
 pub const ProcessLock = struct {

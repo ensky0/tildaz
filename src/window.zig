@@ -707,7 +707,7 @@ pub const Window = struct {
         self.owner_hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
             CLASS_NAME,
-            std.unicode.utf8ToUtf16LeStringLiteral("TildaZOwner"),
+            std.unicode.utf8ToUtf16LeStringLiteral(@import("instances.zig").owner_window_title),
             WS_POPUP,
             0,
             0,
@@ -727,7 +727,7 @@ pub const Window = struct {
         var title_utf8_buf: [32]u8 = undefined;
         // #382 — 타이틀은 이 프로세스의 **역할**에서 나온다 (`instance_context.Role`).
         // Windows 는 worker 창을 타이틀로 찾으므로 (`instance_request.send` 의
-        // `FindWindowW(class, "TildaZ-0")` · `hotkey_capture.broadcast` 의 같은 조회)
+        // `FindWindowW(class, windowTitle(0))` · `hotkey_capture.broadcast` 의 같은 조회)
         // 측정 창이 worker 타이틀을 쓰면 그 조회가 측정 창을 집을 수 있다.
         //
         // Linux 도 같은 함수를 쓴다 — GNOME · Cinnamon extension 이 창 타이틀과 app_id 로
