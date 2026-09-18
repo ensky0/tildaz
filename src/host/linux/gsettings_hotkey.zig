@@ -64,7 +64,9 @@ const cinnamon_id = app_id.name;
 const schema_gnome_shell = "org.gnome.shell";
 const schema_cinnamon_shell = "org.cinnamon";
 const key_enabled_extensions = "enabled-extensions"; // GNOME · Cinnamon 동일 key 이름.
-const extension_uuid = "tildaz@ensky0.github.io";
+/// `app_id.extension_uuid` 하나가 정한다 (#654) — 개발 빌드와 릴리즈가 같은 UUID 를
+/// 쓰면 서로의 확장을 자기 것으로 보고, `uninstall.sh` 가 남의 확장을 지운다.
+const extension_uuid = app_id.extension_uuid;
 
 /// 일반 xdg-shell TildaZ 창의 placement/show/hide lifecycle을 맡는 Shell extension.
 /// GNOME과 Cinnamon이 같은 소유권 계약을 공유하도록 startup 판정의 단일 결과로 쓴다.
