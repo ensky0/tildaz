@@ -249,6 +249,35 @@ extern fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: dispatch_f
 extern const kCFRunLoopCommonModes: CFStringRef;
 
 // Input Monitoring 권한 (macOS 10.15+).
+/// 이 Mac 의 macOS 메이저 버전. 못 읽으면 0.
+///
+/// `NSProcessInfo` 대신 `sysctlbyname` 을 쓴다 — `operatingSystemVersion` 은 구조체를
+/// 주고받아 objc 호출의 ABI 를 타지만, 이쪽은 평범한 C 함수라 확인할 것이 적다.
+/// `kern.osproductversion` 은 제품 버전 문자열 ("27.0") 을 그대로 준다.
+fn macosMajorVersion() u32 {
+    var buf: [64]u8 = undefined;
+    var len: usize = buf.len;
+    if (std.c.sysctlbyname("kern.osproductversion", &buf, &len, null, 0) != 0) return 0;
+    if (len == 0) return 0;
+    const text = buf[0 .. len - 1]; // 끝의 NUL 제외
+    const dot = std.mem.indexOfScalar(u8, text, '.') orelse text.len;
+    return std.fmt.parseInt(u32, text[0..dot], 10) catch 0;
+}
+
+/// 사용자 화면에 실제로 있는 권한 이름 ([#674](https://github.com/ensky0/tildaz/issues/674)).
+///
+/// macOS 27 이 `Accessibility` 를 `Device Control and Data Access` 로 바꿨다. 두 문자열은
+/// 그 OS 의 `SecurityPrivacyExtension` 리소스에서 읽은 값이고, 경계가 27 인 것은 macOS 26 의
+/// Apple 지원 문서에 새 이름이 없는 것으로 확인했다.
+///
+/// **버전을 못 읽으면 새 이름을 쓴다.** 앞으로 27 이상이 다수가 되고, 틀렸을 때 잃는 것이
+/// 양쪽 다 "없는 메뉴 이름을 읽는 것" 으로 같기 때문이다.
+fn accessibilityPermissionLabel() []const u8 {
+    const major = macosMajorVersion();
+    if (major != 0 and major < 27) return messages.macos_accessibility_label_legacy;
+    return messages.macos_accessibility_label_modern;
+}
+
 extern fn CGPreflightListenEventAccess() bool;
 extern fn CGRequestListenEventAccess() bool;
 
@@ -5286,13 +5315,17 @@ fn installEventTap() !void {
         // .app 으로 띄우면 stdout 안 보고 다이얼로그를 봐야 함.
         var hotkey_buf: [64]u8 = undefined;
         const hotkey = config.hotkeyDisplay(&hotkey_buf, g_config.hotkey);
+        const ax_label = accessibilityPermissionLabel();
         var msg_buf: [2048]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
             messages.macos_permission_required_format,
             .{
                 hotkey,
+                ax_label,
+                ax_label,
                 if (has_input) messages.permission_status_granted else messages.permission_status_missing,
+                ax_label,
                 if (has_ax) messages.permission_status_granted else messages.permission_status_missing,
             },
         ) catch messages.macos_permission_required_fallback_msg;

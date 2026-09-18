@@ -19,7 +19,7 @@ zig build -Doptimize=ReleaseFast -Dsimd=true
 ```
 
 `codesign --sign -` (ad-hoc) 으로 서명. 매 빌드마다 hash 변경 → macOS 가 새
-앱으로 인식 → Input Monitoring + Accessibility 권한 다시 요구. 권한 부여
+앱으로 인식 → Input Monitoring + 기기 제어 및 데이터 접근 (macOS 26 이하 Accessibility) 권한 다시 요구. 권한 부여
 방법은 README 또는 앱 첫 실행 시 stderr 안내 참고.
 
 ## 옵션 B: GUI 로 self-signed cert 만들기 (권장)
@@ -77,7 +77,11 @@ open zig-out/TildaZ.app
 
 F1 첫 누름에 macOS 권한 요구:
 - System Settings → Privacy & Security → Input Monitoring → tildaz ON
-- System Settings → Privacy & Security → Accessibility → tildaz ON
+- System Settings → Privacy & Security → **Device Control and Data Access** → tildaz ON
+  - **macOS 27 에서 이름이 바뀌었어요** — 그 전에는 `Accessibility` (손쉬운 사용) 였어요
+    ([#674](https://github.com/ensky0/tildaz/issues/674)). 한국어는 `기기 제어 및 데이터 접근`
+    이고, `Input Monitoring` (입력 모니터링) 은 그대로예요. TCC 서비스 키
+    (`kTCCServiceAccessibility`) 도 안 바뀌어서 동작에는 영향이 없어요 — 이름만이에요.
 
 이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true` 로 빌드 + 다시 실행해도
 **권한 유지** — signing identity stable. (codesign 창이나 권한 재요구가 다시
