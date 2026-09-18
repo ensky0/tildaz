@@ -23,6 +23,11 @@ name: pr-verify
 
 on:
   pull_request:
+  # main 에서도 돈다. GitHub 캐시는 **base 브랜치에서 만든 것만 모든 PR 이 읽을 수
+  # 있어서**, 여기서 채우지 않으면 아래 `.zig-cache` 캐시가 PR 에 닿지 않는다 (#652).
+  # 부수 효과로 머지 뒤 main 이 성한지도 바로 드러난다.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -71,6 +76,22 @@ jobs:
           path: zig-pkg
           key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
 
+      # zig 의 **빌드 산출물** 캐시 (위 zig-pkg 는 의존성 *소스* 다). ghostty 와 SIMD
+      # C++ (highway · simdutf) 재컴파일을 건너뛰는 것이 목적이다 — Windows 의
+      # `Build (simd)` 231s 가 전체 PR 대기를 정한다 (#652).
+      #
+      # 키에 커밋 sha 를 넣어 회차마다 새로 저장하되 `restore-keys` 로 직전 것을 받아
+      # 온다. zig 캐시는 내용 해시 기반이라 우리 소스만 바뀌면 의존성 오브젝트는 그대로
+      # 재사용된다. 오래된 항목은 GitHub 이 LRU 로 치운다.
+      - name: Cache zig build outputs
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-build-${{ matrix.name }}-${{ hashFiles('build.zig.zon', 'build.zig') }}-${{ github.sha }}
+          restore-keys: |
+            zig-build-${{ matrix.name }}-${{ hashFiles('build.zig.zon', 'build.zig') }}-
+            zig-build-${{ matrix.name }}-
+
       # 세 platform × 두 arch compile-only. **가장 먼저 돈다** — cross-platform
       # 회귀가 이 workflow 의 주된 존재 이유이고, native 빌드보다 빠르다. platform 과
       # 무관하므로 linux 에서만.
@@ -93,3 +114,10 @@ jobs:
       - name: Test
         shell: bash
         run: zig build test
+
+      # 캐시 전략은 크기가 정한다. #652 본문의 "1.0 GB" 는 로컬 추정이었는데 실제로는
+      # 훨씬 작았다 (macOS 로컬 137 MB). OS 마다 다르므로 각 잡에서 찍어 둔다.
+      - name: Report zig cache size
+        if: ${{ always() }}
+        shell: bash
+        run: du -sh .zig-cache 2>/dev/null || echo "(no .zig-cache)"
