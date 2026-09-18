@@ -93,6 +93,40 @@ if [[ ! -x "$TILDAZ_EXE" ]]; then
 fi
 TILDAZ_EXE="$(realpath "$TILDAZ_EXE")"
 
+# `-Ddev` (#654) 이전의 install.sh 는 개발 빌드도 **릴리즈 이름** (`tildaz`) 으로 깔았다.
+# 그 잔재가 남으면 `~/.local/bin/tildaz` 가 PATH 에서 `/usr/bin/tildaz` 를 가려
+# `which tildaz` 가 개발 빌드를 가리키고, `tildaz.desktop` 은 패키지 항목을 통째로
+# 가린다 — 이 이슈가 없애려던 shadowing 그 자체다.
+#
+# **판정은 "zig-out 을 가리키는가" 하나다.** 그 조건이면 우리가 만든 개발 빌드 잔재가
+# 확실하고, 사용자가 릴리즈 tarball 로 깐 정상 설치 (Exec 이 압축 해제 폴더) 는 그대로
+# 남는다. 같은 규칙을 위 `--exe` 출처 판별에도 쓴다. 아이콘 (`tildaz.svg`) 은 dev·릴리즈
+# 구별 근거가 없어 건드리지 않는다 — 항목이 없으면 아이콘만 남아도 무해하다.
+remove_stale_dev_entry() {
+    local kind="$1" path="$2"
+    case "$kind" in
+        link)
+            [[ -L "$path" ]] || return 0
+            local target
+            target="$(readlink -f "$path" 2>/dev/null || true)"
+            [[ "$target" == */zig-out/* ]] || return 0
+            ;;
+        desktop)
+            [[ -f "$path" ]] || return 0
+            grep -qE '^Exec=("?)[^"]*/zig-out/' "$path" || return 0
+            ;;
+    esac
+    rm -f "$path"
+    STALE_REMOVED+=("$path")
+}
+
+STALE_REMOVED=()
+if [[ "$IS_DEV" -eq 1 ]]; then
+    remove_stale_dev_entry link    "$HOME/.local/bin/tildaz"
+    remove_stale_dev_entry desktop "$HOME/.local/share/applications/tildaz.desktop"
+    remove_stale_dev_entry desktop "$CONFIG_HOME/autostart/tildaz.desktop"
+fi
+
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$APP_DIR" "$ICON_DIR"
@@ -325,6 +359,12 @@ PY
     else
         CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings 미설치, 다른 DE 에선 무시)"
     fi
+fi
+
+if [[ ${#STALE_REMOVED[@]} -gt 0 ]]; then
+    echo "Removed stale entries from a pre-dev install (they pointed at zig-out):"
+    for f in "${STALE_REMOVED[@]}"; do echo "  $f"; done
+    echo ""
 fi
 
 echo "Installed:"
