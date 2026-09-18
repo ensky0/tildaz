@@ -19,6 +19,12 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- **macOS log files moved into their own folder.** They are now
+  `~/Library/Logs/tildaz/tildaz_N.log` instead of `~/Library/Logs/tildaz_N.log`, which is
+  what the other platforms already did. About and "Open Log" follow automatically; old
+  files stay where they are and can be deleted.
+  ([#654](https://github.com/ensky0/tildaz/issues/654))
+
 (none yet)
 
 ## Body candidates

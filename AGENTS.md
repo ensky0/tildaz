@@ -576,7 +576,7 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
    launchctl print gui/$(id -u)/com.tildaz.app        # job 이 등록됐는지 · coalition · minimum runtime
    log show --predicate 'process == "launchd"' --start "YYYY-MM-DD HH:MM:SS" --info --debug \
      | grep com.tildaz.app                            # spawn → exit → service inactive → removing child 흐름
-   tail -40 ~/Library/Logs/tildaz_0.log               # worker 가 어디까지 갔는지
+   tail -40 ~/Library/Logs/tildaz/tildaz_0.log        # worker 가 어디까지 갔는지 (dev 빌드는 tildaz-dev/)
    ```
 
    - **앱 로그에 `[boot]` 만 있고 `config loaded` 가 없으면** worker 가 밖에서 끊긴 거예요. 우리 코드가 죽은 게 아니라 job 정리에 끌려간 신호로 먼저 의심해요.
@@ -873,7 +873,7 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
   stdout 에 `.cmd` 래퍼 (`chcp 65001` → `type` → `timeout` 대기) 를 내요. 그 전에는 stdout 이 cp949 라 결합 기호에서
   `UnicodeEncodeError` 로 죽었는데, 스크립트가 stdout 을 UTF-8 로 고정해 `PYTHONUTF8` 없이도 돌아요.
 - **`-e` 회차는 config 를 만들지도 hotkey 를 등록하지도 않아요** (`global hotkey not registered (stress run)`) — 사용자의
-  `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 예요. 단축키가
+  `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` (개발 빌드는 `%APPDATA%\tildaz-dev\`) 예요. 단축키가
   필요한 회차 (`-NewTab`) 만 `config_0.toml` 을 복사해 `config_9.toml` 을 잠깐 만들고 (`auto_start = false`) 끝나면 지워요.
 - **창은 `EnumWindows` + pid + 보이는 · 크기 있는 조건으로** 찾아요. `Process.MainWindowHandle` 은 `TildaZOwner` (0x0)
   가 owner 로 달린 진짜 창을 건너뛰어 0 이고, `FindWindow(class)` 는 그 0x0 창을 집어요 (#584).
@@ -1090,7 +1090,7 @@ dconf reset -f /org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-<N>/
 ls /run/user/$(id -u)/tildaz/                                            # instance<N>.lock · .endpoint — 안 도는 N 은 죽은 것
 ```
 
-`$XDG_RUNTIME_DIR/tildaz` 의 `instanceN.lock` · `instanceN.endpoint` 와 `tildaz-N.sock` 도 같이 봐요
+`$XDG_RUNTIME_DIR/tildaz/run` 의 `instanceN.lock` · `instanceN.endpoint` · `instanceN.sock` 도 같이 봐요 (개발 빌드는 `tildaz-dev/run`)
 (재부팅하면 사라지지만, 그 전까지 "떠 있는 인스턴스" 로 오독돼요). `launcher.lock` 과 도는 인스턴스의
 `instance0.*` 는 남겨요.
 
@@ -2022,7 +2022,7 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 - `open` 은 LaunchServices 를 거치니 TildaZ.app 이 자기 identity 로 뜨고 `Info.plist` 키
   (Accessory mode 등) 도 정상 적용돼요.
 - 터미널에 붙여서 로그를 보려고 직접 실행하는 건 **권한이 필요 없는 검증** (렌더링 / 파싱 / PTY 왕복)
-  에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz_N.log` 로 봐요.
+  에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz/tildaz_N.log` (dev 빌드는 `tildaz-dev/`) 로 봐요.
 - ad-hoc 서명은 매 빌드마다 바이너리 해시가 바뀌어서 Input Monitoring 권한이 stale 해져요 (#109).
   핫키가 갑자기 안 들으면 시스템 설정에서 토글 OFF/ON 하거나 `tccutil reset All me.ensky0.tildaz`
   로 초기화하고 다시 허용해요.
@@ -2039,6 +2039,22 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
   `zig build test` 는 **포맷을 보지 않으므로 따로 돌려야 해요.** 2026-09-11
   [#651](https://github.com/ensky0/tildaz/pull/651) 이 빈 줄 둘 때문에 CI 에서 떨어졌어요 — 로컬
   검증 (`check` 6 타겟 · `test`) 은 전부 통과한 상태였습니다. 어긋났으면 `zig fmt src/ build.zig` 로 고쳐요.
+
+**개발 빌드는 `-Ddev` 로 릴리즈와 갈려요 (기본값 `true`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
+`config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · macOS bundle id 가 전부
+`tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도 **설치된 릴리즈의 설정을 건드리지 않아요.**
+
+- **기본이 `true` 인 것은 `-Dsimd` 와 반대인데 이유가 달라요** — 옵션을 깜빡했을 때 사용자
+  config 를 건드리지 않는 쪽으로 실패해야 하거든요. 그래서 *릴리즈가* `-Ddev=false` 를 명시해요.
+- **`zig build package` 는 `-Ddev=false` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로
+  나가는 것을 막는 가드예요 — CI 나 사람이 한 번 빠뜨리면 그대로 배포될 자리라서요.
+- **이름은 [`src/app_id.zig`](src/app_id.zig) 한 곳이 정해요.** 격리할 자리가 아홉 군데라
+  자리마다 조건을 쓰면 반드시 하나를 빠뜨려요 (실제로 이 작업 중에 Wayland `app_id` 와
+  codesign 대상 둘을 그렇게 놓칠 뻔했어요).
+- **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
+  `TildaZ-dev_N` 이고 config 는 `<XDG_CONFIG>/tildaz-dev/` 예요.
+- 데스크톱 확장 (GNOME · Cinnamon) 은 릴리즈 창만 잡아요 — 확장 경로 자체를 시연할 때는
+  `-Ddev=false` 로 빌드해요.
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는

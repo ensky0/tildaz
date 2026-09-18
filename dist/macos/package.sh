@@ -81,10 +81,14 @@ cd "$REPO_ROOT"
 
 echo "--- 1. Build aarch64-macos (Apple Silicon) ---"
 rm -rf "$ARM_PREFIX"
+# `-Ddev=false` 는 고정이다 — package 는 늘 릴리즈 산출물이라 `TildaZ.app` ·
+# `me.ensky0.tildaz` 로 나가야 한다 (#654). 이 인자를 빠뜨리면 기본값이 dev 라
+# `TildaZ-dev.app` 이 만들어지고 아래 `lipo` 가 `TildaZ.app` 을 못 찾는다.
 zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=ReleaseFast \
     "-Dsimd=$SIMD" \
+    -Ddev=false \
     -p "$ARM_PREFIX"
 
 echo "--- 2. Build x86_64-macos (Intel) ---"
@@ -93,6 +97,7 @@ zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=ReleaseFast \
     "-Dsimd=$SIMD" \
+    -Ddev=false \
     -p "$X86_PREFIX"
 
 echo "--- 3. Universal binary via lipo ---"
