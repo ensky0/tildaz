@@ -39,8 +39,22 @@ for %%V in (tildaz tildaz-dev TildaZ) do (
 )
 
 REM --- Start Menu shortcut ---
-if exist "%SHORTCUT%" ( del /F /Q "%SHORTCUT%" & echo Removed: %SHORTCUT% )
-if exist "%SHORTCUT_DEV%" ( del /F /Q "%SHORTCUT_DEV%" & echo Removed: %SHORTCUT_DEV% )
+REM #654 - do NOT expand these unquoted inside a ( ... ) block. "TildaZ (dev).lnk" has a
+REM closing paren, and cmd expands variables while PARSING the block, so the ) ends the
+REM block early and the whole script dies with ".lnk was unexpected at this time." (exit
+REM 255) - even when the if condition is false. Measured 2026-09-18 on Windows 11: it died
+REM right here, so the install dirs and state below were never removed and re-running did
+REM not help. The one-line "if defined" form below has no block to break; it is the same
+REM shape the install-dir section already used.
+set "HAD_SHORTCUT="
+if exist "%SHORTCUT%" set "HAD_SHORTCUT=1"
+if defined HAD_SHORTCUT del /F /Q "%SHORTCUT%"
+if defined HAD_SHORTCUT echo Removed: %SHORTCUT%
+
+set "HAD_SHORTCUT_DEV="
+if exist "%SHORTCUT_DEV%" set "HAD_SHORTCUT_DEV=1"
+if defined HAD_SHORTCUT_DEV del /F /Q "%SHORTCUT_DEV%"
+if defined HAD_SHORTCUT_DEV echo Removed: %SHORTCUT_DEV%
 
 REM --- installed files (report accurately; folder may be locked if TildaZ is still up) ---
 set "HAD_DEST="
@@ -56,17 +70,36 @@ if defined HAD_DEST_DEV if exist "%DEST_DEV%" echo WARNING: %DEST_DEV% still pre
 if defined HAD_DEST_DEV if not exist "%DEST_DEV%" echo Removed: %DEST_DEV%
 
 REM --- state (run/lock) ---
-if exist "%STATE%" ( rmdir /S /Q "%STATE%" & echo Removed: %STATE% [state] )
-if exist "%STATE_DEV%" ( rmdir /S /Q "%STATE_DEV%" & echo Removed: %STATE_DEV% [state] )
+REM Same no-block rule as the shortcuts above: a user profile path may contain parens too.
+set "HAD_STATE="
+if exist "%STATE%" set "HAD_STATE=1"
+if defined HAD_STATE rmdir /S /Q "%STATE%"
+if defined HAD_STATE echo Removed: %STATE% [state]
 
-if "%PURGE%"=="0" (
-    echo.
-    echo Preserved [use --purge to remove]:
-    echo   %CONFIG%\   [config + log]
-    echo   %CONFIG_DEV%\   [config + log, dev build]
-)
-if "%PURGE%"=="1" if exist "%CONFIG%" ( rmdir /S /Q "%CONFIG%" & echo Removed: %CONFIG% [config + log] )
-if "%PURGE%"=="1" if exist "%CONFIG_DEV%" ( rmdir /S /Q "%CONFIG_DEV%" & echo Removed: %CONFIG_DEV% [config + log] )
+set "HAD_STATE_DEV="
+if exist "%STATE_DEV%" set "HAD_STATE_DEV=1"
+if defined HAD_STATE_DEV rmdir /S /Q "%STATE_DEV%"
+if defined HAD_STATE_DEV echo Removed: %STATE_DEV% [state]
+
+if "%PURGE%"=="1" goto :purge
+echo.
+echo Preserved [use --purge to remove]:
+echo   %CONFIG%\   [config + log]
+echo   %CONFIG_DEV%\   [config + log, dev build]
+goto :after_purge
+
+:purge
+set "HAD_CONFIG="
+if exist "%CONFIG%" set "HAD_CONFIG=1"
+if defined HAD_CONFIG rmdir /S /Q "%CONFIG%"
+if defined HAD_CONFIG echo Removed: %CONFIG% [config + log]
+
+set "HAD_CONFIG_DEV="
+if exist "%CONFIG_DEV%" set "HAD_CONFIG_DEV=1"
+if defined HAD_CONFIG_DEV rmdir /S /Q "%CONFIG_DEV%"
+if defined HAD_CONFIG_DEV echo Removed: %CONFIG_DEV% [config + log, dev build]
+
+:after_purge
 
 echo.
 echo Note: if you manually created an admin Task Scheduler "TildaZ" task (see README),
