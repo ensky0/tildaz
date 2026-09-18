@@ -1,5 +1,6 @@
 const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
+const app_id = @import("../../app_id.zig");
 const paths = @import("../../paths.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
@@ -59,9 +60,14 @@ pub fn isScopeForIndex(leaf: []const u8, index: u32) bool {
     return true;
 }
 
+/// 이름 앞부분은 `app_id.name` 을 탄다 (#654) — 개발 빌드가 만든 항목과 릴리즈가 만든
+/// 항목이 같은 `~/.local/share/applications/` 에 놓이므로, 여기가 안 갈리면 서로의
+/// 인스턴스 항목을 자기 것으로 읽는다. `.desktop` 은 XDG 규격상 공용 디렉터리라
+/// 디렉터리로는 가를 수 없어 이름에 섞는다.
 fn parseDesktopFileName(name: []const u8) ?u32 {
-    if (!std.mem.startsWith(u8, name, "tildaz.instance") or !std.mem.endsWith(u8, name, ".desktop")) return null;
-    const digits = name["tildaz.instance".len .. name.len - ".desktop".len];
+    const prefix = app_id.name ++ ".instance";
+    if (!std.mem.startsWith(u8, name, prefix) or !std.mem.endsWith(u8, name, ".desktop")) return null;
+    const digits = name[prefix.len .. name.len - ".desktop".len];
     if (digits.len == 0 or (digits.len > 1 and digits[0] == '0')) return null;
     const index = std.fmt.parseInt(u32, digits, 10) catch return null;
     return if (index <= max_index) index else null;
@@ -84,7 +90,7 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
     try paths.ensureDir(rt, dir);
 
-    const file_name = try std.fmt.allocPrint(allocator, "tildaz.instance{d}.desktop", .{index});
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.instance{d}.desktop", .{ app_id.name, index });
     defer allocator.free(file_name);
     const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
@@ -144,7 +150,7 @@ test "numbered Linux identity is canonical" {
     try std.testing.expect(isScopeForIndex("app-tildaz.instance12-345.scope", 12));
     try std.testing.expect(!isScopeForIndex("app-tildaz.instance1-345.scope", 12));
     try std.testing.expect(!isScopeForIndex("app-tildaz.instance12-other.scope", 12));
-    try std.testing.expectEqual(@as(?u32, 0), parseDesktopFileName("tildaz.instance0.desktop"));
-    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName("tildaz.instance01.desktop"));
-    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName("tildaz.desktop"));
+    try std.testing.expectEqual(@as(?u32, 0), parseDesktopFileName(app_id.name ++ ".instance0.desktop"));
+    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".instance01.desktop"));
+    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".desktop"));
 }
