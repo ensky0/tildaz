@@ -44,9 +44,12 @@ fi
 TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
 
 TILDAZ_EXE=""
+IS_DEV=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --exe) TILDAZ_EXE="$2"; shift 2 ;;
+        --dev) IS_DEV=1; shift ;;
+        --no-dev) IS_DEV=0; shift ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \?//'
             exit 0
@@ -55,14 +58,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# 개발 빌드인지 배포물인지 — #654. 개발 빌드는 `tildaz-dev` 이름으로 깔려 패키지와
+# 공존한다. 무조건 `-dev` 로 깔면 **tarball 을 받은 일반 사용자가 "TildaZ (dev)" 를
+# 보게 되므로**, 바이너리가 어디서 왔는지로 가른다. `--dev` / `--no-dev` 로 덮어쓸 수 있다.
 if [[ -z "$TILDAZ_EXE" ]]; then
     # tar.gz release tarball 안 install.sh — binary 가 script 와 같은 폴더에 있음.
     # repo dev 환경 — zig-out/bin/tildaz.
     if [[ -x "$SCRIPT_DIR/tildaz" ]]; then
         TILDAZ_EXE="$SCRIPT_DIR/tildaz"
+        [[ -z "$IS_DEV" ]] && IS_DEV=0
     else
         TILDAZ_EXE="$REPO_ROOT/zig-out/bin/tildaz"
+        [[ -z "$IS_DEV" ]] && IS_DEV=1
     fi
+fi
+
+# `--exe` 로 직접 준 경우는 출처를 알 수 없다 — 경로에 zig-out 이 있으면 개발 빌드로 본다.
+if [[ -z "$IS_DEV" ]]; then
+    if [[ "$TILDAZ_EXE" == */zig-out/* ]]; then IS_DEV=1; else IS_DEV=0; fi
+fi
+
+if [[ "$IS_DEV" -eq 1 ]]; then
+    TILDAZ_ID="tildaz-dev"
+    TILDAZ_LABEL="TildaZ (dev)"
+else
+    TILDAZ_ID="tildaz"
+    TILDAZ_LABEL="TildaZ"
 fi
 
 if [[ ! -x "$TILDAZ_EXE" ]]; then
@@ -76,14 +97,18 @@ APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$APP_DIR" "$ICON_DIR"
 
-DESKTOP_OUT="$APP_DIR/tildaz.desktop"
-ICON_OUT="$ICON_DIR/tildaz.svg"
+DESKTOP_OUT="$APP_DIR/$TILDAZ_ID.desktop"
+ICON_OUT="$ICON_DIR/$TILDAZ_ID.svg"
 
 ESCAPED_EXE="${TILDAZ_EXE//\\/\\\\}"
 ESCAPED_EXE="${ESCAPED_EXE//&/\\&}"
 ESCAPED_EXE="${ESCAPED_EXE//|/\\|}"
-sed "s|__TILDAZ_EXE__|$ESCAPED_EXE|" "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
-if grep -qF '__TILDAZ_EXE__' "$DESKTOP_OUT" || ! grep -qxF "Exec=$TILDAZ_EXE" "$DESKTOP_OUT"; then
+sed -e "s|__TILDAZ_EXE__|$ESCAPED_EXE|" \
+    -e "s|__TILDAZ_NAME__|$TILDAZ_LABEL|" \
+    -e "s|__TILDAZ_ICON__|$TILDAZ_ID|" \
+    -e "s|__TILDAZ_WMCLASS__|$TILDAZ_ID|" \
+    "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
+if grep -qF '__TILDAZ_' "$DESKTOP_OUT" || ! grep -qxF "Exec=$TILDAZ_EXE" "$DESKTOP_OUT"; then
     echo "ERROR: failed to resolve desktop Exec path: $DESKTOP_OUT" >&2
     exit 1
 fi
@@ -109,7 +134,7 @@ gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 # ~/.local/bin/tildaz symlink — dmenu 등 launcher 는 `.desktop` 이 아니라 $PATH
 # 의 실행파일만 나열하므로, PATH 의 이 symlink 가 있어야 `tildaz` 로 실행/재실행
 # 된다. ln -sf 라 재실행 idempotent.
-BIN_LINK="$HOME/.local/bin/tildaz"
+BIN_LINK="$HOME/.local/bin/$TILDAZ_ID"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 

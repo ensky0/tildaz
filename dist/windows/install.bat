@@ -5,19 +5,41 @@ REM a Start Menu shortcut. No admin rights needed (writes only to the user
 REM profile). Same role as Linux install.sh / macOS build_and_install.sh:
 REM "installed = shows up in the (Start) menu".
 REM
-REM Source auto-detect:
-REM   - tildaz.exe next to this script  -> use it (extracted release zip)
+REM Source auto-detect (this also decides release vs dev naming - #654):
+REM   - tildaz.exe next to this script  -> release (extracted release zip)
 REM   - otherwise                       -> repo zig-out\bin (dev; run zig build first)
 REM Override: install.bat C:\path\to\bin
 REM
 REM Uninstall: uninstall.bat  (keeps config)  /  uninstall.bat --purge (removes all)
 
 set "SRC=%~1"
-if "%SRC%"=="" if exist "%~dp0tildaz.exe" set "SRC=%~dp0."
-if "%SRC%"=="" set "SRC=%~dp0..\..\zig-out\bin"
+set "IS_DEV="
+if "%SRC%"=="" if exist "%~dp0tildaz.exe" (
+    set "SRC=%~dp0."
+    set "IS_DEV=0"
+)
+if "%SRC%"=="" (
+    set "SRC=%~dp0..\..\zig-out\bin"
+    set "IS_DEV=1"
+)
+REM Source given explicitly: treat a zig-out path as a dev build (#654).
+if "%IS_DEV%"=="" (
+    echo %SRC% | find /I "zig-out" >nul && (set "IS_DEV=1") || (set "IS_DEV=0")
+)
 
-set "DEST=%LOCALAPPDATA%\Programs\TildaZ"
-set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\TildaZ.lnk"
+REM A dev build installs beside the release one instead of overwriting it (#654).
+REM Installing a dev build under the release name is what made a packaged 0.9.5
+REM launch an old 0.9.3 dev binary on Linux; Windows had the same overwrite.
+if "%IS_DEV%"=="1" (
+    set "APP_NAME=TildaZ-dev"
+    set "APP_LABEL=TildaZ (dev)"
+) else (
+    set "APP_NAME=TildaZ"
+    set "APP_LABEL=TildaZ"
+)
+
+set "DEST=%LOCALAPPDATA%\Programs\%APP_NAME%"
+set "SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\%APP_LABEL%.lnk"
 
 if not exist "%SRC%\tildaz.exe" (
     echo ERROR: "%SRC%\tildaz.exe" not found.
@@ -41,6 +63,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -ComObjec
 echo Created: %SHORTCUT%
 
 echo.
-echo Done. Launch "TildaZ" from the Start Menu.
+echo Done. Launch "%APP_LABEL%" from the Start Menu.
 echo Auto-start is managed inside the app (config "auto_start"); the installer does not force it.
 endlocal

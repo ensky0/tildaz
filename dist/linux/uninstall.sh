@@ -37,14 +37,25 @@ if [[ "${XDG_STATE_HOME:-}" == /* ]]; then
 else
     STATE_HOME="$HOME/.local/state"
 fi
+# 릴리즈 판과 개발 판 (`-dev`) 을 **둘 다** 치운다 (#654). uninstall 시점에는 바이너리가
+# 이미 없을 수 있어 어느 쪽으로 깔았는지 판별할 수 없고, 사용자가 원하는 것은 "내가 깐
+# 것을 지워라" 이기 때문이다. `/usr` 아래 시스템 패키지는 예전처럼 건드리지 않는다.
+TILDAZ_IDS=(tildaz tildaz-dev)
+
 TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
 TILDAZ_STATE_DIR="$STATE_HOME/tildaz"
+TILDAZ_CONFIG_DIR_DEV="$CONFIG_HOME/tildaz-dev"
+TILDAZ_STATE_DIR_DEV="$STATE_HOME/tildaz-dev"
 
-DESKTOP="$HOME/.local/share/applications/tildaz.desktop"
-ICON="$HOME/.local/share/icons/hicolor/scalable/apps/tildaz.svg"
-AUTOSTART="$CONFIG_HOME/autostart/tildaz.desktop"
-LEGACY_AUTOSTART="$HOME/.config/autostart/tildaz.desktop"
-SYMLINK="$HOME/.local/bin/tildaz"
+USER_FILES=()
+for id in "${TILDAZ_IDS[@]}"; do
+    USER_FILES+=(
+        "$HOME/.local/share/applications/$id.desktop"
+        "$HOME/.local/share/icons/hicolor/scalable/apps/$id.svg"
+        "$CONFIG_HOME/autostart/$id.desktop"
+        "$HOME/.config/autostart/$id.desktop"
+    )
+done
 SWAY_CFG="$HOME/.config/sway/config"
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
 HYPR_LUA="$HOME/.config/hypr/hyprland.lua"
@@ -58,7 +69,7 @@ TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes 
 TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
 
 removed=0
-for f in "$DESKTOP" "$ICON" "$AUTOSTART" "$LEGACY_AUTOSTART"; do
+for f in "${USER_FILES[@]}"; do
     if [[ -f "$f" ]]; then
         rm "$f"
         echo "Removed: $f"
@@ -69,24 +80,31 @@ done
 # Runtime이 config_N에 맞춰 생성하는 숨김 desktop identity. 정확한 canonical
 # filename만 제거하고 비슷한 이름의 사용자 파일은 보존한다.
 shopt -s nullglob
-for f in "$HOME/.local/share/applications"/tildaz.instance*.desktop; do
-    name="$(basename "$f")"
-    if [[ "$name" =~ ^tildaz\.instance(0|[1-9][0-9]*)\.desktop$ ]]; then
-        rm "$f"
-        echo "Removed: $f"
-        removed=$((removed + 1))
-    fi
+for id in "${TILDAZ_IDS[@]}"; do
+    for f in "$HOME/.local/share/applications/$id".instance*.desktop; do
+        name="$(basename "$f")"
+        if [[ "$name" =~ ^"$id"\.instance(0|[1-9][0-9]*)\.desktop$ ]]; then
+            rm "$f"
+            echo "Removed: $f"
+            removed=$((removed + 1))
+        fi
+    done
 done
 shopt -u nullglob
 
-# ~/.local/bin/tildaz — symlink 일 때만 제거. 사용자가 직접 둔 실제 binary 는 보존.
-if [[ -L "$SYMLINK" ]]; then
-    rm "$SYMLINK"
-    echo "Removed: $SYMLINK (symlink)"
-    removed=$((removed + 1))
-elif [[ -e "$SYMLINK" ]]; then
-    echo "Preserved: $SYMLINK (실제 파일 — install.sh 가 만든 게 아님)"
-fi
+# ~/.local/bin/<id> — symlink 일 때만 제거. 사용자가 직접 둔 실제 binary 는 보존한다.
+# `-L` 로 보는 것이 중요하다: 가리키던 빌드가 이미 지워진 **깨진 심링크**도 우리가 만든
+# 것이라 치워야 하는데, `-f` 로는 그것을 놓친다.
+for id in "${TILDAZ_IDS[@]}"; do
+    link="$HOME/.local/bin/$id"
+    if [[ -L "$link" ]]; then
+        rm "$link"
+        echo "Removed: $link (symlink)"
+        removed=$((removed + 1))
+    elif [[ -e "$link" ]]; then
+        echo "Preserved: $link (실제 파일 — install.sh 가 만든 게 아님)"
+    fi
+done
 
 # install.sh가 복사·활성화한 Shell extension. GNOME은 먼저 disable해 현재 session의
 # signal/key grab을 해제하고, Cinnamon은 enabled-extensions 목록에서 UUID만 제거한다.
@@ -260,3 +278,5 @@ echo ""
 echo "Preserved (delete manually if desired):"
 echo "  $TILDAZ_CONFIG_DIR/   (config)"
 echo "  $TILDAZ_STATE_DIR/   (log)"
+echo "  $TILDAZ_CONFIG_DIR_DEV/   (config, dev build)"
+echo "  $TILDAZ_STATE_DIR_DEV/   (log, dev build)"

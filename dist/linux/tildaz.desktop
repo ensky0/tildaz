@@ -1,21 +1,24 @@
 [Desktop Entry]
 Type=Application
-Name=TildaZ
+Name=__TILDAZ_NAME__
 GenericName=Drop-down Terminal
 Comment=Quake-style drop-down terminal for Wayland
 # install/package 시 실제 실행 경로로 치환. Portable install은 bundle binary의
 # 절대경로, system package는 /usr/bin/tildaz를 사용한다.
 Exec=__TILDAZ_EXE__
-# hicolor theme scalable apps 의 `tildaz.svg` (install.sh 가 함께 install).
+# hicolor theme scalable apps 의 `<id>.svg` (install.sh 가 함께 install).
+# 개발 빌드는 `tildaz-dev` 라 릴리즈 항목과 아이콘까지 갈린다 (#654).
 # docs/favicon.svg 와 동일 출처 — macOS `AppIcon.icns` / Windows `tildaz.ico`
 # 와 cross-platform 일관성.
-Icon=tildaz
+Icon=__TILDAZ_ICON__
 Terminal=false
 Categories=System;TerminalEmulator;
 # 사용자가 클릭하는 launcher identity. Worker 창은 번호별
 # tildaz.instanceN app_id와 NoDisplay desktop entry를 사용하므로 이 항목과
 # 실행 중 앱으로 묶이지 않는다. 따라서 재클릭도 Exec을 다시 호출한다.
-StartupWMClass=tildaz
+# 창의 app_id 와 **같은 값이어야** 데스크톱이 창과 이 항목을 묶는다.
+# 앱은 `tildaz.instanceN` 을 쓰므로 여기는 그 접두어다 (#654).
+StartupWMClass=__TILDAZ_WMCLASS__
 # StartupNotify=false — tildaz 는 Wayland `xdg-activation` 토큰을 소비하지 않아
 # startup notification 시퀀스를 *완료*시키지 못한다. true 면 GNOME 이 만든 시퀀스가
 # 타임아웃(~16s)까지 매달려 그동안 `Shell.App.state` 가 STARTING 에 머물고, 그 사이
