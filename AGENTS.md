@@ -1993,7 +1993,7 @@ open /Applications/TildaZ.app       # ✅ 실행
 **identity 가 사라졌으면 새로 만들지 말고 백업에서 되살려요** ([#444](https://github.com/ensky0/tildaz/issues/444)).
 login keychain 이 밀리면 (`login_renamed_N.keychain-db` 가 생기는 경우 — 2026-08-10 에 실제로
 겪었고 그 머신에서 두 번째였어요) 인증서와 private key 가 함께 없어져요. 새로 만들면 서명 해시가
-바뀌어 **Input Monitoring · Accessibility 권한 재부여 + GitHub secrets 2개 + 워크플로우의
+바뀌어 **Input Monitoring · 기기 제어 및 데이터 접근 권한 재부여 + GitHub secrets 2개 + 워크플로우의
 `MACOS_CERTIFICATE_SHA1` 갱신**이 따라와요.
 
 ```sh
@@ -2016,7 +2016,7 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 ```
 
 - 터미널에서 바이너리를 직접 띄우면 그 프로세스의 권한 요청을 macOS 가 **부모 (터미널 앱) 기준**으로
-  평가해요. 그래서 TildaZ.app 자신에게 부여해 둔 *Input Monitoring* · *Accessibility* 권한을 쓰지
+  평가해요. 그래서 TildaZ.app 자신에게 부여해 둔 *Input Monitoring* · *기기 제어 및 데이터 접근* 권한을 쓰지
   못하고, 전역 핫키 (CGEventTap, [`src/host/macos.zig`](src/host/macos.zig)) 가 안 먹어요. 권한
   설정 절차는 [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 에 있어요.
 - `open` 은 LaunchServices 를 거치니 TildaZ.app 이 자기 identity 로 뜨고 `Info.plist` 키
@@ -2039,6 +2039,28 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
   `zig build test` 는 **포맷을 보지 않으므로 따로 돌려야 해요.** 2026-09-11
   [#651](https://github.com/ensky0/tildaz/pull/651) 이 빈 줄 둘 때문에 CI 에서 떨어졌어요 — 로컬
   검증 (`check` 6 타겟 · `test`) 은 전부 통과한 상태였습니다. 어긋났으면 `zig fmt src/ build.zig` 로 고쳐요.
+
+**macOS 27 이 `Accessibility` 권한 이름을 `Device Control and Data Access` 로 바꿨어요**
+([#674](https://github.com/ensky0/tildaz/issues/674)). 한국어는 `기기 제어 및 데이터 접근`,
+일본어는 `デバイスの制御とデータへのアクセス` 예요. `Input Monitoring` (입력 모니터링) 은 그대로예요.
+
+- **동작에는 영향이 없어요** — API (`CGPreflightListenEventAccess`) 도 TCC 서비스 키
+  (`kTCCServiceAccessibility`) 도 그대로예요. 바뀐 것은 **사용자에게 보여 줄 이름**뿐이고,
+  그래서 안내 문구가 없는 메뉴를 가리키는 것이 문제였어요.
+- **이름은 OS 리소스에서 읽어 확정했어요** — 추측하지 말고 여기를 보세요.
+
+  ```sh
+  F=/System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex/Contents/Resources/Localizable.loctable
+  plutil -extract en.ACCESSIBILITY raw "$F"     # Device Control and Data Access
+  plutil -extract ko.ACCESSIBILITY raw "$F"     # 기기 제어 및 데이터 접근
+  plutil -extract en.LISTEN_EVENT  raw "$F"     # Input Monitoring
+  ```
+
+- **경계는 27 이에요.** macOS 26 의 Apple 지원 가이드에는 새 이름이 없어요
+  (`support.apple.com/guide/mac-help/mh43185/26/mac/26`). **Apple 문서는 27 판도 아직 옛 이름**
+  이라 문서만 보면 틀려요 — 위 loctable 이 단일 출처예요.
+- 앱은 `sysctlbyname("kern.osproductversion")` 의 메이저로 이름을 골라요
+  (`host/macos.zig` 의 `accessibilityPermissionLabel`).
 
 **개발 빌드는 `-Ddev` 로 릴리즈와 갈려요 (기본값 `true`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
 `config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · macOS bundle id 가 전부
