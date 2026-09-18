@@ -635,11 +635,10 @@ tool/zig-floath-patch_macos.sh --revert   # 백업에서 되돌리기
 - **⚠️ zig 를 업그레이드하면 패치가 사라져요.** zig 설치본을 고치는 것이니까요. 업그레이드 뒤에는
   스크립트를 한 번 돌려요 — 새 zig 가 규약을 스스로 구현하면 *"패치 불필요"* 로 끝나고, 그러면
   이 절과 스크립트를 **걷어낼 때**예요.
-- **CI 는 `macos-15` 로 핀 고정이라 자동으로 끌려가지 않아요** — `release.yml` ·
-  `macos-signing-check.yml` · `pr-verify.yml` 셋 다 그렇고 `macos-latest` 를 안 써요 (그 라벨은
-  2026-06~07 에 이미 `macos-26` 으로 옮겨졌는데 우리는 영향이 없었어요). 게다가 **SDK 26.5 는
-  해당 없으니 `macos-26` 으로 옮겨도 무사해요.** 깨지는 것은 **SDK 27 을 담은 runner** 예요.
-  `macos-15` 가 은퇴해 옮겨야 할 때 (macOS 14 는 2026-11-02 지원 종료) 이 절을 먼저 보세요.
+- **CI 는 `macos-26` 으로 핀 고정이고 이 결함에 안 걸려요** — SDK 26.5 는 `INFINITY` 를 무조건
+  정의하거든요 (실측). `release.yml` · `macos-signing-check.yml` · `pr-verify.yml` 셋 다 라벨을
+  고정하고 `macos-latest` 를 안 써요 (위 `# 릴리즈` 의 runner 고정 정책). **`xcode-27` (Beta) 로는
+  가지 않아요** — 그게 SDK 27 이라 정확히 이 결함을 부릅니다.
 - **SDK 를 낮춰 물리는 우회는 안 먹어요** — `SDKROOT=…MacOSX26.5.sdk` 도 `--sysroot` 도 결과가
   같았어요 (2026-09-18 실측).
 
@@ -2041,7 +2040,7 @@ Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
 - 켜는 법 (Windows 11): **설정 → 시스템 → 개발자용 (고급) → 개발자 모드 ON**. 재부팅 없이 바로 적용.
 - 이유: ghostty tarball 이 upstream [c09ade22](https://github.com/ghostty-org/ghostty/commit/c09ade22) (2026-05-29) 부터 `CLAUDE.md → AGENTS.md` **심볼릭 링크**를 담고 있어요. 우리 pin 은 [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d) (#266, 2026-07-08) 부터 해당. 심볼릭 링크 생성 권한이 없으면 fetch 가 `error: unable to unpack tarball ... unable to create symlink from 'CLAUDE.md' to 'AGENTS.md': AccessDenied` 로 실패해요 (Windows 실기에서 실측, 개발자 모드 ON 으로 해결 확인).
 - 그 이전 pin (3a1482d, 2026-04-21) 은 symlink 가 없어서 개발자 모드 없이도 빌드됐어요 — 과거 문서의 "Developer Mode 없어도 됩니다" 는 그 시점 기준.
-- CI (windows-2022 러너) 는 **별도 조치 없이 ghostty 본체 tarball unpack 성공 확인** — [`windows-fetch-check.yml`](.github/workflows/windows-fetch-check.yml) 수동 실행으로 검증 ([run 28923076087](https://github.com/ensky0/tildaz/actions/runs/28923076087), 2026-07-08 success). 현재 workflow 는 release.yml 의 top-level fetch와 같은 `-Dsimd=true`를 쓰지만, Zig 0.15의 empty-cache `--fetch`는 Ghostty 내부 highway/simdutf lazy dependency의 compile/link 검증이 아니에요. 그 검증은 실제 package job이 담당해요. ghostty pin을 올리면 태그 전에 fetch-check와 package를 모두 다시 실행해요.
+- CI (**당시** `windows-2022` 러너 — 지금은 `windows-2025-vs2026`) 는 **별도 조치 없이 ghostty 본체 tarball unpack 성공 확인** — [`windows-fetch-check.yml`](.github/workflows/windows-fetch-check.yml) 수동 실행으로 검증 ([run 28923076087](https://github.com/ensky0/tildaz/actions/runs/28923076087), 2026-07-08 success). 현재 workflow 는 release.yml 의 top-level fetch와 같은 `-Dsimd=true`를 쓰지만, Zig 0.15의 empty-cache `--fetch`는 Ghostty 내부 highway/simdutf lazy dependency의 compile/link 검증이 아니에요. 그 검증은 실제 package job이 담당해요. ghostty pin을 올리면 태그 전에 fetch-check와 package를 모두 다시 실행해요.
 
 libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문단) — 개발자 모드는 ghostty 자체 tarball 때문에 필요한 것. 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
 
@@ -2056,7 +2055,33 @@ WSL 설정이나 token이 있다고 가정하지 말고, 필요하면 Windows Po
 릴리즈 바이너리는 **반드시 GitHub Actions를 통해 생성**해요.
 로컬에서 만든 zip은 업로드하지 않아요.
 `v*` 태그 push가 `.github/workflows/release.yml`을 트리거해서 Linux · macOS · Windows
-runner에서 각 platform/architecture 아티팩트와 SHA256을 만들고 GitHub Release까지 한 번에 처리해요.
+runner에서 각 platform/architecture 아티팩트와 SHA256을 만들어요.
+
+**발행은 `publish` 잡 한 곳에서만 해요** ([#668](https://github.com/ensky0/tildaz/issues/668)).
+빌드 잡 12 개는 `actions/upload-artifact` 로 아티팩트만 남기고, `publish` 가 전부 내려받아
+**자산 24 개 (조합 12 × 본체 + `.sha256`)** 를 확인한 뒤 Release 를 한 번에 만들어요.
+
+- 예전에는 12 개 잡이 각자 `action-gh-release` 로 **같은 Release 를 동시에** 건드렸고, 그
+  경합이 두 증상을 만들었어요 — v0.10.1 에서 `.sha256` 두 개가 빠져 **22/24** 로 나갔고
+  (`Error creating asset temp dir`), v0.10.0 에서는 같은 초에 **빈 draft** 가 하나 더 생겼어요.
+- **24 개가 다 모여야 발행해요.** 빌드 잡이 하나라도 실패하면 `publish` 가 아예 돌지 않아요 —
+  반쪽 릴리즈가 조용히 나가는 것을 막는 게 목적이라, 한 조합이 깨지면 고쳐서 전체를 다시
+  돌려요 (2026-09-18 결정).
+
+**CI runner 는 버전을 고정해요 — `-latest` 라벨을 쓰지 않아요** (2026-09-18 사용자 결정 ·
+[#670](https://github.com/ensky0/tildaz/issues/670)). **언제 무엇으로 바뀔지 모르기 때문이에요**
+— `macos-latest` 는 2026-06~07 에 `macos-26` 으로, `windows-latest` · `windows-2025` 는
+2026-06 에 VS 2026 으로 조용히 옮겨졌어요. 올릴 때는 **우리가 검증하고 올려요.**
+
+| | 지금 쓰는 라벨 |
+|---|---|
+| Linux | `ubuntu-26.04` (ARM 은 `ubuntu-26.04-arm`) |
+| macOS | `macos-26` — **`xcode-27` 로 가지 않아요** (SDK 27 은 위 `# macOS — zig 번들 float.h …` 절의 결함에 걸려요) |
+| Windows | `windows-2025-vs2026` — VS 판을 라벨에 명시해 기본값이 또 움직여도 안 흔들려요 |
+
+GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 만료돼요. 올릴 때는 `pr-verify`
+세 OS 가 PR 에서 돌고, `release.yml` 은 PR 로 안 도니 **`-dev.N` prerelease 태그**로 한 바퀴
+돌려 24/24 를 확인해요.
 
 순서는 아래와 같아요.
 

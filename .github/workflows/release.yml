@@ -25,7 +25,7 @@ env:
 
 jobs:
   release-windows:
-    # x64 + arm64 두 architecture 를 windows-2022 (x86_64 호스트) 에서 cross-build.
+    # x64 + arm64 두 architecture 를 windows-2025-vs2026 (x86_64 호스트) 에서 cross-build.
     # zig 가 PE/COFF 양쪽 모두 cross 가능 + 우리 의존성 (kernel32 / user32 / ConPTY
     # bundle) 은 arch 별 binary 를 빌드 시점에 선택 ([build.zig:166](build.zig#L166)).
     # ARM64 실 device smoke test 는 별도 후속 작업 (#191 완료 조건의 별 항목).
@@ -37,7 +37,7 @@ jobs:
             zig_target: x86_64-windows
           - arch: arm64
             zig_target: aarch64-windows
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     steps:
       - name: Resolve tag / version
         id: vars
@@ -204,26 +204,19 @@ jobs:
           }
           Write-Host "  -> LICENSE + THIRD-PARTY-NOTICES.md confirmed"
 
-      # 두 matrix 작업이 *같은 release tag* 에 artifact append.
-      # action-gh-release 는 동일 tag 의 release 가 이미 있으면 metadata
-      # (name / body / prerelease) 갱신 + files 만 추가. 두 작업이 순서
-      # 무관하게 동작.
-      - name: Create / append GitHub Release (${{ matrix.arch }})
-        uses: softprops/action-gh-release@v3
+      # 아티팩트만 남기고 발행은 publish 잡이 한 번에 한다 (#668). 12 개 잡이
+      # 각자 같은 Release 를 건드리던 것이 자산 누락 · 빈 draft 의 원인이었다.
+      - name: Upload build artifact (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: ${{ steps.vars.outputs.tag }}
-          # body_path는 optional. stable은 sanity에서 파일을 강제하고,
-          # 파일 없는 prerelease test는 빈 값으로 release body를 생략한다.
-          body_path: ${{ steps.sanity.outputs.notes_path }}
-          files: |
+          name: release-windows-${{ matrix.arch }}
+          path: |
             ${{ steps.verify.outputs.zip }}
             ${{ steps.verify.outputs.sha }}
-          draft: false
-          prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
-          fail_on_unmatched_files: true
+          if-no-files-found: error
+          retention-days: 1
 
-  # macOS 빌드는 Apple Silicon runner (macos-15 = aarch64) 에서 cross-build 로
+  # macOS 빌드는 Apple Silicon runner (macos-26 = aarch64) 에서 cross-build 로
   # aarch64-macos + x86_64-macos 두 target 을 만든 후 `lipo -create` 로 universal
   # binary (Mach-O fat) 로 합쳐 단일 DMG 로 배포 — Intel + Apple Silicon 모두 실행
   # 가능 (#133, dist/macos/package.sh).
@@ -234,7 +227,7 @@ jobs:
   # Developer ID/notarization은 아니므로 첫 다운로드의 quarantine/Gatekeeper
   # 처리는 여전히 별개다.
   release-macos:
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       MACOS_SIGN_IDENTITY: TildazLocal
       MACOS_CERTIFICATE_SHA1: B9B06C62774FCC8FF873B8AD73C4A19C8A67A70E
@@ -337,21 +330,16 @@ jobs:
             --artifact "${{ steps.verify.outputs.dmg }}" \
             --format dmg
 
-      # Windows job 과 같은 tag 면 같은 release 에 file 추가 (append).
-      # softprops/action-gh-release 의 default 동작.
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v3
+      # 발행은 publish 잡 한 곳에서 한다 (#668).
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: ${{ steps.vars.outputs.tag }}
-          files: |
+          name: release-macos
+          path: |
             ${{ steps.verify.outputs.dmg }}
             ${{ steps.verify.outputs.sha }}
-          draft: false
-          # supported prerelease는 full SemVer에서 '-'가 있으므로 dev/alpha/beta/rc를
-          # 개별 나열하지 않고 같은 규칙으로 GitHub prerelease 표시.
-          prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
-          fail_on_unmatched_files: true
+          if-no-files-found: error
+          retention-days: 1
 
       # cleanup은 upload 뒤에 둔다. trustd/Keychain cleanup이 지연돼도 이미
       # 검증된 DMG upload를 막지 않으며, always()로 실패 경로에서도 실행한다.
@@ -363,7 +351,7 @@ jobs:
           fi
 
   # Linux 배포 — 4 format × 2 arch = 8 artifact (#202).
-  # ubuntu-22.04 단일 runner 에서 모든 (arch, format) cross-build / cross-package:
+  # ubuntu-26.04 단일 runner 에서 모든 (arch, format) cross-build / cross-package:
   #   - zig 가 x86_64 호스트에서 aarch64-linux-gnu 빌드 가능 (LLVM cross)
   #   - 우리 의존성 모두 runtime dlopen → host glibc 와 무관
   #   - dpkg-deb / rpmbuild / appimagetool 모두 binary metadata 만 다루지 host
@@ -380,16 +368,16 @@ jobs:
             zig_target: x86_64-linux-gnu.2.28
           - arch: aarch64
             zig_target: aarch64-linux-gnu.2.28
-          # #211 — aarch64 rpm 은 ubuntu-22.04(x86_64 host)의 rpm package 에
+          # #211 — aarch64 rpm 은 ubuntu-26.04(x86_64 host)의 rpm package 에
           # `aarch64-linux` platform 정의가 없어 cross-build 가 "No compatible
           # architectures found for build" 로 fail (v0.5.0-rc4 확정). 다른
           # (arch,format) 은 x86 runner cross-build OK (dpkg/tar/appimage 는
           # metadata only) 지만 rpm 만 platform lookup 이 필요. → ARM64 runner
-          # (ubuntu-24.04-arm, 공개 repo 무료)에서 *native* rpmbuild 로 해결.
+          # (ubuntu-26.04-arm, 공개 repo 무료)에서 *native* rpmbuild 로 해결.
           # zig 도 같은 arch 라 native build (cross 아님).
           - arch: aarch64
             format: rpm
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
           # Arch Linux (.pkg.tar.zst) — base 매트릭스에 없는 format 이라 include 로
           # 단일 조합만 추가. archlinux 컨테이너에서 root 로 zig 빌드 후, makepkg 는
           # 비root 가 필요 → build_pkg 가 root 면 `builder` 유저로 떨어뜨려 실행.
@@ -400,7 +388,7 @@ jobs:
             container: archlinux:base-devel
     # 기본은 x86_64 호스트 cross-build, aarch64 rpm 만 ARM runner (#211),
     # pkg 만 archlinux 컨테이너 (matrix.container 없으면 빈 값 = 컨테이너 미사용).
-    runs-on: ${{ matrix.runner || 'ubuntu-22.04' }}
+    runs-on: ${{ matrix.runner || 'ubuntu-26.04' }}
     container: ${{ matrix.container }}
     steps:
       - name: Resolve tag / version
@@ -549,14 +537,96 @@ jobs:
             --artifact "${{ steps.artifact.outputs.path }}" \
             --format "${{ matrix.format }}"
 
-      - name: Upload to GitHub Release
+      # 발행은 publish 잡 한 곳에서 한다 (#668).
+      - name: Upload build artifact (${{ matrix.arch }} / ${{ matrix.format }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}-${{ matrix.format }}
+          path: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  # 발행은 여기 한 곳뿐이다 (#668). 12 개 빌드 잡이 각자 action-gh-release 로 같은
+  # Release 를 건드리던 것이 두 증상의 원인이었다 — ① 자산 누락 (v0.10.1 이 22/24 로
+  # 나갔다: `Error creating asset temp dir`) 과 ② 같은 초에 생긴 빈 draft (v0.10.0).
+  #
+  # 24 개가 다 모였을 때만 발행한다. needs 가 하나라도 실패하면 이 잡이 아예 돌지
+  # 않으므로 반쪽 릴리즈가 조용히 나가지 않는다 (2026-09-18 결정). 대신 한 조합이
+  # 깨지면 고친 뒤 워크플로를 다시 돌려야 한다.
+  publish:
+    needs: [release-windows, release-macos, release-linux]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Resolve tag / version
+        id: vars
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout at tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.vars.outputs.tag }}
+          fetch-depth: 1
+
+      # 정식 버전의 릴리즈 노트 존재는 빌드 잡의 sanity 가 이미 강제한다. 여기서는
+      # 파일을 body 로 쓸 뿐이고, 노트를 생략할 수 있는 prerelease 는 빈 값이 된다.
+      - name: Resolve release notes
+        id: notes
+        run: |
+          NOTES="dist/release-notes/${{ steps.vars.outputs.tag }}.md"
+          if [[ -f "$NOTES" ]]; then
+            echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+          else
+            echo "notes file not found: $NOTES (prerelease 는 생략 가능)"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: assets
+
+      # 조합 12 개 (windows 2 + macos 1 + linux 9) × (본체 + .sha256) = 24.
+      # 숫자가 어긋나면 발행하지 않는다 — 자산이 빠진 릴리즈가 사람 눈에 안 띈 채
+      # 발행되는 것을 막는 것이 이 검사의 목적이다 (#668 의 "확인할 것").
+      - name: Verify asset count
+        run: |
+          EXPECTED_TOTAL=24
+          EXPECTED_SHA=12
+          find assets -type f | sort | sed 's|^|  |'
+          TOTAL=$(find assets -type f | wc -l | tr -d ' ')
+          SHA=$(find assets -type f -name '*.sha256' | wc -l | tr -d ' ')
+          echo "total=$TOTAL (expected $EXPECTED_TOTAL) / sha256=$SHA (expected $EXPECTED_SHA)"
+          fail=0
+          if [ "$TOTAL" -ne "$EXPECTED_TOTAL" ]; then
+            echo "::error::release assets: expected $EXPECTED_TOTAL, got $TOTAL"
+            fail=1
+          fi
+          if [ "$SHA" -ne "$EXPECTED_SHA" ]; then
+            echo "::error::checksum files: expected $EXPECTED_SHA, got $SHA"
+            fail=1
+          fi
+          exit $fail
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.tag }}
-          files: |
-            ${{ steps.artifact.outputs.path }}
-            ${{ steps.artifact.outputs.path }}.sha256
+          body_path: ${{ steps.notes.outputs.path }}
+          files: assets/*
           draft: false
+          # full SemVer 에 '-' 가 있으면 prerelease (dev / alpha / beta / rc 공통).
           prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true

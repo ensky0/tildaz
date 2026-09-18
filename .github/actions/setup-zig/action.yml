@@ -46,7 +46,7 @@ runs:
         version: ${{ steps.ver.outputs.version }}
         use-cache: false
 
-    # windows-2022 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는 C:\ 라 크로스 드라이브 —
+    # Windows 러너의 checkout 은 D:\ 에 떨어지는데 기본 zig global cache 는 C:\ 라 크로스 드라이브 —
     # 위 머리 주석. RUNNER_TEMP 는 checkout 과 같은 드라이브다.
     - name: Keep zig global cache on the checkout drive (Windows)
       if: runner.os == 'Windows'

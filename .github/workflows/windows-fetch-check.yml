@@ -1,4 +1,4 @@
-# windows-2022 러너가 pin 된 의존성 tarball 을 unpack 할 수 있는지 태그 없이
+# windows-2025-vs2026 러너가 pin 된 의존성 tarball 을 unpack 할 수 있는지 태그 없이
 # 검증하는 수동 실행 workflow (#266).
 #
 # 배경: ghostty tarball 이 upstream c09ade22 (2026-05-29) 부터 심볼릭 링크
@@ -17,7 +17,7 @@ on:
 
 jobs:
   fetch:
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
         with:
