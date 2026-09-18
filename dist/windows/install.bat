@@ -6,9 +6,16 @@ REM profile). Same role as Linux install.sh / macOS build_and_install.sh:
 REM "installed = shows up in the (Start) menu".
 REM
 REM Source auto-detect (this also decides release vs dev naming - #654):
-REM   - tildaz.exe next to this script  -> release (extracted release zip)
+REM   - tildaz.exe next to this script  -> release (script sitting next to a release build)
 REM   - otherwise                       -> repo zig-out\bin (dev; run zig build first)
 REM Override: install.bat C:\path\to\bin
+REM
+REM NOTE (#654, verified 2026-09-18): unlike the Linux tar.gz, the Windows release zip does
+REM NOT ship this script - it holds tildaz.exe, README.txt, LICENSE, THIRD-PARTY-NOTICES.md
+REM and _internal\ only (dist\windows\package.ps1), and README.txt tells the user to run
+REM tildaz.exe directly. That is the intended Windows install path (decided 2026-09-18), so
+REM the release branch above is reached only when someone copies this script next to an
+REM extracted build - not by unpacking the zip.
 REM
 REM Uninstall: uninstall.bat  (keeps config)  /  uninstall.bat --purge (removes all)
 
@@ -46,6 +53,20 @@ if not exist "%SRC%\tildaz.exe" (
     echo Run "zig build" first, or run this from inside the extracted release zip.
     exit /b 1
 )
+
+REM #654 - a pre-dev install registered the DEV build under the RELEASE autostart name.
+REM The app now writes "tildaz-dev", so the old value is left behind and BOTH fire at
+REM logon, which is the "you cannot tell which build is running" symptom this issue
+REM removes. Registry value names are case-insensitive, so the release name and the old
+REM "TildaZ" are the same value - the test is the DATA, exactly like install.sh on Linux:
+REM only an entry pointing at zig-out is our dev leftover. A real release install (its
+REM path is the install dir) is preserved.
+if not "%IS_DEV%"=="1" goto :no_stale_autostart
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v tildaz 2>nul | find /I "zig-out" >nul
+if errorlevel 1 goto :no_stale_autostart
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v tildaz /f >nul 2>&1
+echo Removed stale autostart from a pre-dev install [HKCU\...\Run\tildaz pointed at zig-out]
+:no_stale_autostart
 
 echo --- Install to: %DEST% ---
 if not exist "%DEST%" mkdir "%DEST%"
