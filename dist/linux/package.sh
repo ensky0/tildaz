@@ -94,7 +94,7 @@ write_sha256() {
 
 validate_desktop_exec() {
     local desktop="$1" expected="$2"
-    if grep -qF '__TILDAZ_EXE__' "$desktop" || ! grep -qxF "Exec=$expected" "$desktop"; then
+    if grep -qF '__TILDAZ_' "$desktop" || ! grep -qxF "Exec=$expected" "$desktop"; then
         echo "ERROR: invalid desktop Exec in $desktop (expected: Exec=$expected)" >&2
         sed -n '/^Exec=/p' "$desktop" >&2
         exit 1
@@ -103,7 +103,13 @@ validate_desktop_exec() {
 
 render_system_desktop() {
     local output="$1"
-    sed 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' "$DESKTOP_TEMPLATE" > "$output"
+    # 패키지는 늘 릴리즈 판이다 (`-Ddev=false`) — 토큰을 전부 릴리즈 이름으로 채운다.
+    # install.sh 쪽은 개발 빌드면 `tildaz-dev` 로 채운다 (#654).
+    sed -e 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' \
+        -e 's|__TILDAZ_NAME__|TildaZ|g' \
+        -e 's|__TILDAZ_ICON__|tildaz|g' \
+        -e 's|__TILDAZ_WMCLASS__|tildaz|g' \
+        "$DESKTOP_TEMPLATE" > "$output"
     validate_desktop_exec "$output" "/usr/bin/tildaz"
     chmod 644 "$output"
 }
