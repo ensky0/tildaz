@@ -88,9 +88,13 @@ jobs:
         with:
           path: .zig-cache
           key: zig-build-${{ matrix.name }}-${{ hashFiles('build.zig.zon', 'build.zig') }}-${{ github.sha }}
+          # 접두사는 **의존성 해시까지** 만 둔다. 여기에 `zig-build-<os>-` 를 더하면
+          # `build.zig.zon` 이 바뀐 회차 (= zig 버전 · 의존성 변경) 가 **옛 캐시를 통째로
+          # 끌어온다.** zig 는 컴파일러 버전을 해시에 넣으므로 그 항목을 쓰지는 않지만
+          # (정확성 문제는 없다), 쓰이지 않는 파일이 그대로 남아 다시 저장되며 캐시가
+          # 눈덩이처럼 불어난다 — zig 는 `.zig-cache` 를 스스로 청소하지 않는다.
           restore-keys: |
             zig-build-${{ matrix.name }}-${{ hashFiles('build.zig.zon', 'build.zig') }}-
-            zig-build-${{ matrix.name }}-
 
       # 세 platform × 두 arch compile-only. **가장 먼저 돈다** — cross-platform
       # 회귀가 이 workflow 의 주된 존재 이유이고, native 빌드보다 빠르다. platform 과
