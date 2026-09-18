@@ -114,13 +114,32 @@ render_system_desktop() {
     chmod 644 "$output"
 }
 
+# 확장 소스는 `__TILDAZ_*__` 토큰을 담는다 (#654) — 개발 빌드와 릴리즈가 각자의 UUID 로
+# 깔리게 하려고 레포에는 한 벌만 둔다. **배포물에는 릴리즈 값으로 치환해 담는다** (패키지는
+# 언제나 릴리즈다). 토큰이 남으면 사용자가 그 파일을 수동 설치했을 때 셸이 확장을 못 읽는다 —
+# `validate_extension_resources` 가 그것을 막는다. 치환 규칙은 `install.sh` ·
+# `src/host/linux/shell_extension.zig` 와 같아야 한다.
+render_extension_tree() {
+    local src="$1" dst="$2" rel out
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        out="$dst/$rel"
+        mkdir -p "$(dirname "$out")"
+        sed -e 's|__TILDAZ_EXT_UUID__|tildaz@ensky0.github.io|g' \
+            -e 's|__TILDAZ_EXT_SCHEMA__|org.gnome.shell.extensions.tildaz|g' \
+            -e 's|__TILDAZ_EXT_NAME__|TildaZ Drop-down|g' \
+            -e 's|__TILDAZ_APP__|tildaz|g' \
+            "$f" > "$out"
+    done < <(find "$src" -type f -print0)
+}
+
 install_extension_resources() {
     local root="$1"
     local gnome="$root/gnome-extension/tildaz@ensky0.github.io"
     local cinnamon="$root/cinnamon-extension/tildaz@ensky0.github.io"
     mkdir -p "$gnome" "$cinnamon"
-    cp -a "$GNOME_EXT_SRC/." "$gnome/"
-    cp -a "$CINNAMON_EXT_SRC/." "$cinnamon/"
+    render_extension_tree "$GNOME_EXT_SRC" "$gnome"
+    render_extension_tree "$CINNAMON_EXT_SRC" "$cinnamon"
 }
 
 validate_extension_resources() {
@@ -136,6 +155,15 @@ validate_extension_resources() {
     for relative in "${required[@]}"; do
         if [[ ! -f "$root/$relative" ]]; then
             echo "ERROR: Shell extension resource missing: $root/$relative" >&2
+            exit 1
+        fi
+        # desktop 파일의 토큰 검사와 같은 이유 (#654) — 치환이 빠진 채 배포되면 셸이 그
+        # 확장을 읽지 못하고, 그 실패는 사용자 화면에서 조용하다.
+        #
+        # **토큰 *형태* 로 찾는다.** `grep -F '__TILDAZ_'` 로는 소스 주석이 토큰을 *설명하는*
+        # 문장까지 걸려 패키징이 멈춘다 (작성 중 실측).
+        if grep -qE '__TILDAZ_[A-Z_]+__' "$root/$relative"; then
+            echo "ERROR: unresolved __TILDAZ_ token in $root/$relative" >&2
             exit 1
         fi
     done
