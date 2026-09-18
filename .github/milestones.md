@@ -15,11 +15,14 @@
 | 0.7.0 | 2026-08-02 | 탭바 예쁘게. Linux GPU 렌더링 추가 |
 | 0.8.0 | 2026-08-09 | 텍스트 속성 (밑줄 · 취소선 · blink · italic/bold face) 구현. 새 탭이 현재 디렉토리에서 시작. cluster 렌더 성능 |
 | 0.9.0 | 2026-08-26 | 설정 파일 변경. 다양한 레이아웃의 키보드 지원. 마우스 지원 |
+| 0.9.3 | 2026-08-30 | split pane 기능 추가 |
+| 0.10.0 | 2026-09-17 | find 지원. url open 지원 |
 
-## 기록과 대조한 근거 (2026-08-03, 2026-08-26 보강)
+## 기록과 대조한 근거 (2026-08-03, 2026-08-26 · 2026-09-18 보강)
 
 기억을 태그 · 커밋 · 릴리즈 노트와 맞춰 본 결과. 대부분 일치했고 두 곳을 고쳤다.
-2026-08-26 에 빠져 있던 0.8.0 을 채우고 0.9.0 을 더했다.
+2026-08-26 에 빠져 있던 0.8.0 을 채우고 0.9.0 을 더했다. 2026-09-18 에 0.9.3 과 0.10.0 을
+더했다.
 
 - **0.0.1** — 첫 커밋 `Initial project scaffold: Zig 0.15.2 + tildaz skeleton`, 이어서
   ConPTY backend + ghostty-vt 통합.
@@ -55,5 +58,26 @@
   은 확장, Windows 는 `WH_KEYBOARD_LL` 훅). macOS 는 활성 layout 의 라벨로 매칭한다.
   **마우스**: TUI 앱이 요청하면 클릭 · 드래그 · 휠을 escape sequence 로 보낸다 (#502) —
   vim · tmux · htop 안에서 마우스가 동작한다. 세 platform 전부 배선했다.
+- **0.9.3** — 릴리즈 노트 헤드라인은 *"Tabs can be split into panes."* 화살표로 분할 방향을
+  고르고 (`Ctrl+Shift`, macOS 는 `Option+Cmd`), 포커스 이동 · 닫기 · zoom · 균등 분배 ·
+  경계선 드래그까지 한 번에 들어왔다 (#483). 곁가지 셋도 같은 릴리즈다 — 클릭이 4 pt 는
+  움직여야 선택이 시작되고 (손 떨린 클릭이 클립보드를 덮지 않게, #483), 비라틴 layout 에서
+  `Alt+n` 이 layout 의 글자 대신 `ESC n` 을 보내고 (#533), Linux 기본 GPU 경로에서 한자 ·
+  일본어 IME 후보창이 다시 커서를 따라간다 (#535).
+  → 0.9.0 의 키보드 · 마우스 작업이 여기까지 이어진다. split pane 만 있는 릴리즈가 아니다.
+  **config 는 자동 이관되지 않는다** — `[keys]` 에 15 개 action 이 늘어서, 예전 파일이면
+  `missing required key "focus_pane_left"` 로 앱이 아예 안 떴다. 이게 0.10.0 의 배경이다.
+- **0.10.0** — 릴리즈 노트 헤드라인은 *"Search your scrollback, click links, and start even
+  when the config is wrong."* scrollback 검색은 포커스된 pane 기준이고 화면에 보이는 곳부터
+  훑는다 (#642). 링크는 OSC 8 과 화면에서 찾아낸 맨 URL 둘 다 열고, 앱이 마우스를 쓰는
+  중이면 `Ctrl` (macOS 는 `⌘`) 을 누른 채로 누른다 (#643). 키보드 잔손질도 있다 — `Ctrl+[`
+  가 다시 `ESC` 를 보내고, `Ctrl+Shift+<letter>` 가 요청하지도 않은 프로그램에 `CSI u` 를
+  흘리지 않고, Windows 의 `Ctrl+H` · `Shift+Tab` 이 다른 platform 과 같아졌다
+  (#650 · #648 · #653).
+  → 표에 **세 번째 축이 빠져 있었다**. config 가 틀려도 이제 뜬다 — 못 읽는 값은 기본값으로
+  내려가고, 무엇을 바꿨는지 시작 알림이 적어 주며 파일 여는 버튼이 붙는다 (#655). 파일을
+  대신 고쳐 주지는 않는다. 0.9.3 에서 config 하나로 앱이 안 뜨던 걸 막는 릴리즈다.
+  이어진 **0.10.1** (2026-09-18) 은 `[keys]` 이름을 메뉴와 맞췄다 — `open_search` → `find`,
+  `copy_selection` → `copy` (#666).
 
 각 버전의 상세는 `dist/release-notes/vX.Y.Z.md` 와 GitHub Releases 에 있다.
