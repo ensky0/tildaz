@@ -34,6 +34,7 @@ const hotkey_format = @import("hotkey_format.zig");
 const physical_key = @import("../../physical_key.zig");
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
+const app_id = @import("../../app_id.zig");
 const shell_extension = @import("shell_extension.zig");
 const paths = @import("../../paths.zig");
 const instances = @import("../../instances.zig");
@@ -48,14 +49,17 @@ const c = struct {
 const gnome_list_schema = "org.gnome.settings-daemon.plugins.media-keys";
 const gnome_list_key = "custom-keybindings";
 const gnome_kb_schema = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
-const gnome_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz/";
+// dconf 의 custom-keybinding 은 데스크톱 하나가 공유하는 자리라 **이름으로 가른다**
+// (#654). 안 가르면 개발 빌드와 릴리즈가 같은 항목을 써서 서로의 단축키를 덮어쓰고,
+// 아래 `gsettingsTildazIndex` 의 정리 경로가 **남의 것을 지운다**.
+const gnome_path = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/" ++ app_id.name ++ "/";
 
 // --- Cinnamon (cinnamon-settings-daemon keybindings) ---
 const cinnamon_list_schema = "org.cinnamon.desktop.keybindings";
 const cinnamon_list_key = "custom-list";
 const cinnamon_kb_schema = "org.cinnamon.desktop.keybindings.custom-keybinding";
-const cinnamon_path = "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz/";
-const cinnamon_id = "tildaz";
+const cinnamon_path = "/org/cinnamon/desktop/keybindings/custom-keybindings/" ++ app_id.name ++ "/";
+const cinnamon_id = app_id.name;
 
 const schema_gnome_shell = "org.gnome.shell";
 const schema_cinnamon_shell = "org.cinnamon";
@@ -223,9 +227,9 @@ pub fn registerToggleHotkey(rt: Runtime, allocator: std.mem.Allocator, cfg: *con
     var gnome_path_buf: [128]u8 = undefined;
     var cinnamon_path_buf: [128]u8 = undefined;
     var cinnamon_id_buf: [32]u8 = undefined;
-    const gp = std.fmt.bufPrintSentinel(&gnome_path_buf, "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-{d}/", .{index}, 0) catch return;
-    const cp = std.fmt.bufPrintSentinel(&cinnamon_path_buf, "/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-{d}/", .{index}, 0) catch return;
-    const ci = std.fmt.bufPrintSentinel(&cinnamon_id_buf, "tildaz-{d}", .{index}, 0) catch return;
+    const gp = std.fmt.bufPrintSentinel(&gnome_path_buf, "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/{s}-{d}/", .{ app_id.name, index }, 0) catch return;
+    const cp = std.fmt.bufPrintSentinel(&cinnamon_path_buf, "/org/cinnamon/desktop/keybindings/custom-keybindings/{s}-{d}/", .{ app_id.name, index }, 0) catch return;
+    const ci = std.fmt.bufPrintSentinel(&cinnamon_id_buf, "{s}-{d}", .{ app_id.name, index }, 0) catch return;
     var gnome_instance = gnome_variant;
     gnome_instance.path = gp.ptr;
     gnome_instance.list_value = gp.ptr;
@@ -324,11 +328,14 @@ fn containsIndex(indices: []const u32, needle: u32) bool {
     return false;
 }
 
+/// **`app_id.name` 을 탄다** (#654) — 호출처가 이 판정에 걸린 항목을 리스트에서 빼고
+/// dconf 서브트리를 지우므로, 안 갈리면 개발 빌드가 릴리즈의 `tildaz-N` 단축키를
+/// 지운다 (위 `kglobalaccel.numberedComponentIndex` 와 같은 모양의 함정이다).
 fn gsettingsTildazIndex(value: []const u8, gnome: bool) ?u32 {
     const prefix = if (gnome)
-        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-"
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/" ++ app_id.name ++ "-"
     else
-        "tildaz-";
+        app_id.name ++ "-";
     const suffix = if (gnome) "/" else "";
     if (!std.mem.startsWith(u8, value, prefix) or !std.mem.endsWith(u8, value, suffix)) return null;
     const end = value.len - suffix.len;
@@ -339,12 +346,16 @@ fn gsettingsTildazIndex(value: []const u8, gnome: bool) ?u32 {
 
 test "GSettings numbered TildaZ entries are identified without user entries" {
     try std.testing.expectEqual(@as(?u32, 2), gsettingsTildazIndex(
-        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-2/",
+        "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/" ++ app_id.name ++ "-2/",
         true,
     ));
-    try std.testing.expectEqual(@as(?u32, 3), gsettingsTildazIndex("tildaz-3", false));
+    try std.testing.expectEqual(@as(?u32, 3), gsettingsTildazIndex(app_id.name ++ "-3", false));
     try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex("custom0", false));
-    try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex("tildaz-03", false));
+    try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex(app_id.name ++ "-03", false));
+    // #654 — 개발 빌드가 **릴리즈의** 항목을 자기 것으로 보면 그것을 지운다.
+    if (comptime !std.mem.eql(u8, app_id.name, "tildaz")) {
+        try std.testing.expectEqual(@as(?u32, null), gsettingsTildazIndex("tildaz-3", false));
+    }
 }
 
 /// `Variant` 의 리스트 schema 와 relocatable per-binding schema 가 모두 설치돼
