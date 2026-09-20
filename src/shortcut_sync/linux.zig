@@ -8,6 +8,7 @@ const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const physical_key = @import("../physical_key.zig");
 const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
+const app_id = @import("../app_id.zig");
 
 pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(rt, allocator, indices);
@@ -303,7 +304,7 @@ test "Hyprland binds JSON keeps the fields needed for cleanup" {
 test "COSMIC entries are identified by our own description marker, not the command" {
     // writer(`appendCosmicEntries`)가 만드는 형태.
     try std.testing.expect(isTildazCosmicEntry(
-        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
     ));
 
     // #484 회귀 — 바이너리 **이름**이 `tildaz` 가 아니면 이전 구현은 자기 항목을 못
@@ -311,15 +312,15 @@ test "COSMIC entries are identified by our own description marker, not the comma
     // 없다 (하이픈이 끼어서). 못 지우고 하나 더 써서 같은 맵 키가 중복되고, 중복 키가
     // 있는 RON 은 COSMIC 이 파일 전체를 버린다 — 사용자 단축키까지 사라졌다.
     try std.testing.expect(isTildazCosmicEntry(
-        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/opt/bin/tildaz-dev --toggle 0\"),",
+        "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/opt/bin/tildaz-dev --toggle 0\"),",
     ));
     // 경로만 바뀐 경우도 같이 고정한다.
     try std.testing.expect(isTildazCosmicEntry(
-        "    (modifiers: [Ctrl, Shift], key: \"F2\", description: Some(\"TildaZ_3\")): Spawn(\"/home/u/bin/tz --toggle 3\"),",
+        "    (modifiers: [Ctrl, Shift], key: \"F2\", description: Some(\"" ++ app_id.window_base ++ "_3\")): Spawn(\"/home/u/bin/tz --toggle 3\"),",
     ));
     // 여러 자리 index.
     try std.testing.expect(isTildazCosmicEntry(
-        "    (modifiers: [Super], key: \"grave\", description: Some(\"TildaZ_12\")): Spawn(\"/usr/bin/tildaz --toggle 12\"),",
+        "    (modifiers: [Super], key: \"grave\", description: Some(\"" ++ app_id.window_base ++ "_12\")): Spawn(\"/usr/bin/tildaz --toggle 12\"),",
     ));
 
     // #484 거울상 — 사용자 항목의 **명령**에 `tildaz --toggle` 이 들어 있으면 이전
@@ -345,6 +346,17 @@ test "COSMIC entries are identified by our own description marker, not the comma
     try std.testing.expect(!isTildazCosmicEntry(
         "    (modifiers: [Super], key: \"e\", description: Some(\"My file manager\")): Spawn(\"nautilus\"),",
     ));
+    // #654 — **개발 빌드는 릴리즈의 표식 (`TildaZ_N`) 을 자기 것으로 보지 않는다.** 이 판정에
+    // 걸린 줄은 `syncCosmic` 이 지우고 다시 쓰므로, 여기가 틀리면 dev 가 사용자의 릴리즈
+    // 단축키를 자기 exe 로 바꿔 쓴다. 릴리즈 쪽 리터럴은 동작이 안 바뀌었다는 회귀 가드다.
+    if (app_id.is_dev) {
+        try std.testing.expect(!isTildazCosmicEntry(
+            "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        ));
+        try std.testing.expectEqualStrings("description: Some(\"TildaZ-dev_", cosmic_entry_marker);
+    } else {
+        try std.testing.expectEqualStrings("description: Some(\"TildaZ_", cosmic_entry_marker);
+    }
     // 맵 경계 줄.
     try std.testing.expect(!isTildazCosmicEntry("{"));
     try std.testing.expect(!isTildazCosmicEntry("}"));
@@ -364,7 +376,7 @@ test "COSMIC closing map line is the last one" {
     // 중첩된 `}` 가 있으면 **마지막** 것이 맵의 끝이다.
     const nested =
         "{\n" ++
-        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"x\"),\n" ++
+        "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"x\"),\n" ++
         "}\n";
     const offset = findClosingMapLine(nested).?;
     try std.testing.expectEqualStrings("}", nested[offset .. offset + 1]);
@@ -425,12 +437,16 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
         //
         // #514 — 표식 없는 옛 `install.sh` 줄은 **우리가 그 index 를 실제로 관리할 때만**
         // 흡수한다. config 를 지운 인스턴스의 줄까지 지우면 판정 근거가 다시 넓어진다.
+        //
+        // #654 — **개발 빌드는 흡수하지 않는다.** 옛 줄의 basename 은 dev 도 `tildaz` 라 (zig-out
+        // 의 바이너리 이름) 릴리즈가 남긴 것과 구별할 수 없다. 남의 것을 지우는 쪽이 더
+        // 위험하다 (dconf 잔재 `tildaz-N` 을 두는 것과 같은 판단).
         const keep = if (tildazCosmicEntryIndex(line)) |idx|
             cosmicDeferredToWorker(rt, allocator, idx)
-        else if (legacyInstallScriptEntryIndex(line)) |idx|
-            std.mem.findScalar(u32, indices, idx) == null
-        else
-            true;
+        else if (!app_id.is_dev) legacy: {
+            const idx = legacyInstallScriptEntryIndex(line) orelse break :legacy true;
+            break :legacy std.mem.findScalar(u32, indices, idx) == null;
+        } else true;
         if (keep) {
             try output.appendSlice(allocator, line);
             try output.append(allocator, '\n');
@@ -565,7 +581,7 @@ test "#514 · #583 B18 표식 없는 옛 install.sh 줄은 명령의 *모양* �
 
     // 표식이 있으면 여기 소관이 아니다 — 우리 줄이든 사용자가 이름 붙인 줄이든.
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
-        "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
     ));
     try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
         "    (modifiers: [], key: \"F1\", description: Some(\"My toggle\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
@@ -634,7 +650,12 @@ fn cosmicDeferredToWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32)
 /// 표식을 쓰게 묶어 둔다. 이 둘이 갈라진 게 #484 의 원인이었다 — matcher 는
 /// `TildaZ instance ` 를 찾는데 writer 는 `TildaZ_<index>` 를 써서 그 절이 죽어 있었고,
 /// 그래서 명령 문자열 매칭으로 떨어졌다.
-const cosmic_entry_marker = "description: Some(\"TildaZ_";
+///
+/// **`app_id.window_base` 를 탄다** (#654) — `TildaZ_<index>` · `TildaZ-dev_<index>`. 두 판이 같은
+/// 표식을 쓰면 `syncCosmic` 의 "자기 항목 전부 삭제 후 재작성" 이 **릴리즈의 항목을 지우고 dev 의
+/// exe 로 다시 쓴다.** kglobalaccel · dconf 와 같은 부류의 함정이고 (Linux 회차 결함 5 · 6),
+/// 그 회차가 KDE 기기여서 COSMIC 만 남아 있었다.
+const cosmic_entry_marker = "description: Some(\"" ++ app_id.window_base ++ "_";
 
 fn appendCosmicEntries(
     rt: Runtime,
@@ -781,44 +802,43 @@ test "#496 1-c dead key layout withdraws the previous position entry" {
     // 실기 (cosmic-comp 1.0.0): fr 에서 `twosuperior` 로 쓰인 뒤 de 로 바꾸면 그 줄이
     // 그대로 남아 사용자 단축키 목록에 죽은 항목이 됐다. 거두는 쪽이 사용자 항목과 남의
     // 인스턴스는 건드리지 않는 것까지 함께 고정한다.
+    // 표식은 빌드마다 다르다 (`-Ddev` · #654) — `M` 으로 조립한다.
+    const M = app_id.window_base;
     const before =
-        \\{
-        \\    (modifiers: [], key: "F1"): Spawn("/usr/bin/tildaz --toggle 0"),
-        \\    (modifiers: [Ctrl], key: "twosuperior", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
-        \\    (modifiers: [Super], key: "b", description: Some("TildaZ_3")): Spawn("/usr/bin/tildaz --toggle 3"),
-        \\}
-        \\
-    ;
+        "{\n" ++
+        "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),\n" ++
+        "    (modifiers: [Ctrl], key: \"twosuperior\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
+        "    (modifiers: [Super], key: \"b\", description: Some(\"" ++ M ++ "_3\")): Spawn(\"/usr/bin/tildaz --toggle 3\"),\n" ++
+        "}\n";
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
     try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, null, 0);
     try std.testing.expectEqualStrings(
-        \\{
-        \\    (modifiers: [], key: "F1"): Spawn("/usr/bin/tildaz --toggle 0"),
-        \\    (modifiers: [Super], key: "b", description: Some("TildaZ_3")): Spawn("/usr/bin/tildaz --toggle 3"),
-        \\}
-        \\
-    , output.items);
+        "{\n" ++
+            "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),\n" ++
+            "    (modifiers: [Super], key: \"b\", description: Some(\"" ++ M ++ "_3\")): Spawn(\"/usr/bin/tildaz --toggle 3\"),\n" ++
+            "}\n",
+        output.items,
+    );
 }
 
 test "#496 1-c rewriting a position entry replaces our line instead of adding one" {
     // 같은 map 키가 둘 생기면 COSMIC 이 파일 전체를 버린다 (#484). 재등록이 layout 마다
     // 도는 경로라 이 성질이 특히 중요하다 — 실기에서 us · fr · ru · de 를 오갔다.
+    const M = app_id.window_base;
     const before =
-        \\{
-        \\    (modifiers: [Ctrl], key: "grave", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
-        \\}
-        \\
-    ;
+        "{\n" ++
+        "    (modifiers: [Ctrl], key: \"grave\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
+        "}\n";
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
     try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, "twosuperior", config.Hotkey.MOD_CTRL);
     try std.testing.expectEqualStrings(
-        \\{
-        \\    (modifiers: [Ctrl], key: "twosuperior", description: Some("TildaZ_9")): Spawn("/usr/bin/tildaz --toggle 9"),
-        \\}
-        \\
-    , output.items);
+        "{\n" ++
+            "    (modifiers: [Ctrl], key: \"twosuperior\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
+            "}\n",
+        output.items,
+    );
 }
 
 /// 파일 내용 → 파일 내용. I/O 를 걷어 낸 순수부라 test 가 두 경로를 다 밟을 수 있다.
