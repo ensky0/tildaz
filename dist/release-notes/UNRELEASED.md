@@ -32,4 +32,7 @@ Internal changes belong in neither.
 
 ## Body candidates
 
-(none yet)
+- Linux tarball: `install.sh` now actually enables the GNOME Shell extension. It used to
+  call `gnome-extensions enable`, which fails silently before the next login, so the
+  extension never turned on. Cinnamon was not affected.
+  ([#654](https://github.com/ensky0/tildaz/issues/654))
