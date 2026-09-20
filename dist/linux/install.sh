@@ -357,7 +357,7 @@ render_extension() {
 }
 
 # gsettings 의 문자열 목록 (strv) 에 항목을 더하거나 뺀다. `@as []` 와 `['a', 'b']` 를 둘 다 읽고,
-# 바뀐 것이 없으면 쓰지 않는다. 키가 없거나 (예: `disabled-extensions` 는 GNOME 47 부터)
+# 바뀐 것이 없으면 쓰지 않는다. 키가 없거나 (예: `org.cinnamon` 에는 `disabled-extensions` 가 없다)
 # gsettings · python3 이 없으면 1 을 돌려준다 — 호출부가 안내 문구로 갈라 쓴다.
 gsettings_strv_edit() {   # <schema> <key> add|remove <value>
     local schema="$1" key="$2" op="$3" value="$4" cur new

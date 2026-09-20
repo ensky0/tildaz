@@ -1203,7 +1203,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 
   - **미결 — 앱은 `disabled-extensions` 를 안 봐요.** `gsettings_hotkey.zig` 의 `isExtensionEnabledInSchema` · `ensureInList` 가
     `enabled-extensions` 만 보므로, 사용자가 GNOME 에서 확장을 끄면 (→ disabled 에 들어감) 앱은 "확장이 담당한다" 로 보고
-    gsettings hotkey 도 등록하지 않아요 — 전역 hotkey 가 아무 데도 없어요. 릴리즈에도 있는 결함이고 방향은 #654 에서 정해요.
+    gsettings hotkey 도 등록하지 않아요 — 전역 hotkey 가 아무 데도 없어요. 릴리즈에도 있는 결함이고 [#676](https://github.com/ensky0/tildaz/issues/676) 으로 뺐어요 (GNOME 만 — `org.cinnamon` 에는 그 키가 없어요).
 - **실제 GNOME 세션의 전역 hotkey 는 [`tool/ukbd_linux.py`](tool/ukbd_linux.py) 로 눌러요.** `zwp_virtual_keyboard_v1` 은 GNOME 이
   안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
   `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.
