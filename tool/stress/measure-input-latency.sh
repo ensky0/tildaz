@@ -130,8 +130,8 @@ EXE="$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
 # macOS 는 서명된 번들 안 바이너리를 먼저 본다 (`check-input-loss_linux_macos.sh` 와 같은 규칙). `-e` ·
 # `-size` 인자가 필요해서 `open` 이 아니라 직접 띄우는데, 전역 핫키를 안 쓰므로 권한이
 # 없어도 된다 (AGENTS.md 의 macOS `open` 절).
-if [ "$HYG_PLATFORM" = macos ] && [ -x "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" ]; then
-    EXE="$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz"
+if [ "$HYG_PLATFORM" = macos ] && [ -x "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" ]; then
+    EXE="$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz"
 fi
 STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress$EXE_SUFFIX"
 SENDKEYS="$REPO_ROOT/tool/send-keys_windows.ps1"
@@ -140,8 +140,8 @@ MACINPUT_SRC="$REPO_ROOT/tool/input_macos.m"
 # `paths.zig` 의 `logDir` 와 같은 규칙이다 (`measure-repeat.sh` 와 같은 표).
 case "$HYG_PLATFORM" in
     linux)   LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
-    macos)   LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
-    windows) LOG="$(cygpath -u "$APPDATA")/tildaz/tildaz_stress.log" ;;
+    macos)   LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
+    windows) LOG="$(cygpath -u "$APPDATA")/tildaz-dev/tildaz_stress.log" ;;
 esac
 
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }

@@ -35,7 +35,7 @@ R=/run/user/$(id -u)/tz647
 VPTR=$R/vptr.fifo
 VKBD=$R/vkbd.fifo
 XDG=$WORK/xdg
-SLOG=$XDG/state/tildaz/tildaz_stress.log
+SLOG=$XDG/state/tildaz-dev/tildaz_stress.log
 SHOT=$ROOT/tool/link-shot_linux.py
 # ⚠️ sway 에서는 `-size` 를 쓸 수 없다 — tildaz 가 sway 에서 layer-shell 대신 scratchpad 를 쓰므로
 # (#454) 창 크기를 우리가 못 정하고, 앱이 그 인자를 거부하며 부팅을 멈춘다 (실측 2026-09-15:

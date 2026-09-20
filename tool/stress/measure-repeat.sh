@@ -28,7 +28,7 @@
 #
 # ⚠️ **macOS 경로는 아직 실기 검증하지 않았다** (2026-08-07 현재). Linux (KDE Plasma Wayland ·
 # Intel i5-1240P) 와 Windows (같은 기기) 에서만 돌려 봤다. macOS 에서 처음 쓸 때는
-# `caffeinate` 가 실제로 붙었는지와 로그 경로 (`~/Library/Logs/tildaz_stress.log`) 를 먼저 확인해요.
+# `caffeinate` 가 실제로 붙었는지와 로그 경로 (`~/Library/Logs/tildaz-dev/tildaz_stress.log`) 를 먼저 확인해요.
 
 set -eu
 
@@ -116,7 +116,7 @@ EXE_SUFFIX=""
 # 에서만 검증됐었다).
 EXE=""
 for _cand in \
-    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
     "$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
 do
     [ -x "$_cand" ] && EXE="$_cand" && break
@@ -128,10 +128,10 @@ case "$HYG_PLATFORM" in
     # paths.zig 의 `logDir` 와 같은 규칙이다. 여기서 어긋나면 회차는 도는데 표가 비어서
     # 원인을 찾기 어려우니, 그 파일이 단일 출처라는 것을 기억해요.
     linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
-    macos) LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
+    macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     # `$APPDATA` 는 `C:\Users\…\AppData\Roaming` 형태로 오므로 POSIX 경로로 바꿔서 쓴다 —
     # 아래에서 `wc -c` · `tail -c` 로 직접 읽는 대상이기 때문이다.
-    windows) LOG="$(cygpath -u "$APPDATA")/tildaz/tildaz_stress.log" ;;
+    windows) LOG="$(cygpath -u "$APPDATA")/tildaz-dev/tildaz_stress.log" ;;
     *) echo "모르는 platform 이에요 ($(uname -s)) — Linux · macOS · Windows(Git Bash) 만 돌아요." >&2; exit 2 ;;
 esac
 

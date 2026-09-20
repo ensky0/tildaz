@@ -573,9 +573,9 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
    자동 시작이 안 될 때 진단 순서:
 
    ```sh
-   launchctl print gui/$(id -u)/com.tildaz.app        # job 이 등록됐는지 · coalition · minimum runtime
+   launchctl print gui/$(id -u)/me.ensky0.tildaz     # job 이 등록됐는지 · coalition · minimum runtime (dev 빌드는 me.ensky0.tildaz.dev)
    log show --predicate 'process == "launchd"' --start "YYYY-MM-DD HH:MM:SS" --info --debug \
-     | grep com.tildaz.app                            # spawn → exit → service inactive → removing child 흐름
+     | grep me.ensky0.tildaz                          # spawn → exit → service inactive → removing child 흐름
    tail -40 ~/Library/Logs/tildaz/tildaz_0.log        # worker 가 어디까지 갔는지 (dev 빌드는 tildaz-dev/)
    ```
 
@@ -1087,7 +1087,7 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 dconf dump /org/cinnamon/desktop/keybindings/custom-keybindings/          # 항목 (목록과 별개로 남는다)
 dconf dump /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
 dconf reset -f /org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-<N>/
-ls /run/user/$(id -u)/tildaz/                                            # instance<N>.lock · .endpoint — 안 도는 N 은 죽은 것
+ls /run/user/$(id -u)/tildaz-dev/run/                                    # instance<N>.lock · .endpoint · .sock — 안 도는 N 은 죽은 것 (릴리즈 판은 tildaz/run/)
 ```
 
 `$XDG_RUNTIME_DIR/tildaz/run` 의 `instanceN.lock` · `instanceN.endpoint` · `instanceN.sock` 도 같이 봐요 (개발 빌드는 `tildaz-dev/run`)
@@ -1392,7 +1392,7 @@ grim shot.png                                                          # sway �
 - **`applied ratios cell_w=` 는 로그에 두 번 찍혀요 (터미널 폰트 · UI 폰트).** `tail -1` 로 집으면 8 이 나오는데 격자는
   9 예요 (2026-09-15 실측). 셀 폭은 **캡처에서 재요** — `link-shot_linux.py grid` 가 글자 줄 두 개의 잉크 폭을 각각 나눠
   서로 맞는지 보고, 안 맞으면 좌표를 안 쓰고 실패해요.
-- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz.stress` 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
+- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz-dev.stress` (릴리즈 판은 `tildaz.stress`) 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
   브라우저를 치우려고 `swaymsg '[app_id=".*"] kill'` 을 쓰면 **앱에도 닫기 요청이 가서 확인 다이얼로그가 떠요** — 회차가
   거기서 엉켜요. `app_id` 가 `tildaz` 로 시작하는 것을 빼고 지워요.
 - **⚠️ headless sway 가 커서 그림을 화면에 아예 안 그리는 구간이 있어요.** 같은 sway · 같은 앱인데 회차에 따라 갈렸고,
@@ -1969,7 +1969,7 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
   |---|---|---|
   | **GSettings / dconf** | 읽기는 `$XDG_CONFIG_HOME/dconf/user` 를 **mmap** 하고, 쓰기는 세션 버스의 `dconf-service` 가 **자기 환경**으로 해요 | 격리하면 **읽기는 통째로 비고** (스키마 기본값만 보임) **쓰기는 실제 세션에 남아요** |
   | **`hyprctl`** | 진짜 `XDG_RUNTIME_DIR/hypr/<signature>` 를 찾아요 | 격리하면 인스턴스를 못 찾아 조회가 실패해요 |
-  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz.instance9]` 가 생기고 **앱을 내려도 남아요** |
+  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz-dev.instance9]` (릴리즈 판은 `tildaz.instance9`) 가 생기고 **앱을 내려도 남아요** |
 
   셋째는 **`XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 함께 빼면** 막혀요 (`de=(unset)`
   이면 등록 경로를 아예 안 타요 — 위 `# 전역 hotkey` 절의 첫 함정과 같은 성질을 이번엔 *이용*하는
@@ -1979,7 +1979,7 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
 
   ```sh
   gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
-      --method org.kde.KGlobalAccel.unregister "tildaz.instance9" "toggle-9"
+      --method org.kde.KGlobalAccel.unregister "tildaz-dev.instance9" "toggle-9"    # 릴리즈 판이 남긴 것이면 tildaz.instance9
   ```
 
   그래서 **GNOME · Cinnamon 검증은 격리하지 말고 실제 홈으로 돌리고 뒤에 치워요.** 격리한 채
@@ -2128,7 +2128,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   PATH 에서 `/usr/bin/tildaz` 를 가려요 (이 이슈의 원래 증상 절반이 그것이에요). 반대로
   사용자가 **릴리즈 tarball 로 깐 정상 설치** 는 `Exec` 이 압축 해제 폴더라 그대로 보존돼요.
 - **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
-  `TildaZ-dev_N` 이고 config 는 `<XDG_CONFIG>/tildaz-dev/` 예요.
+  `TildaZ-dev-N` (KDE 단축키 목록 · desktop 항목의 표시 이름은 `TildaZ-dev_N`) 이고 config 는
+  `<XDG_CONFIG>/tildaz-dev/` 예요.
 - **데스크톱 확장 (GNOME · Cinnamon) 도 UUID 가 갈려요** (`tildaz-dev@ensky0.github.io`).
   예전에는 하나를 공유해서 ① 개발 빌드를 지우면 릴리즈의 확장까지 꺼졌고, ② 개발 빌드는
   **전역 hotkey 를 아무 데도 등록하지 않았어요** — 확장이 개발 창을 안 잡는데도 앱은
@@ -2138,21 +2139,50 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
   의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.
   치환 뒤 토큰이 남는지는 zig 테스트와 `package.sh` 가 양쪽에서 검사해요.
-- **Windows 는 창 이름이 IPC 주소예요 — 가르는 것은 *클래스* 하나예요** (2026-09-18 실기).
+- **Windows 는 창 이름이 IPC 주소예요 — 클래스와 제목이 다 갈려요** (2026-09-18 · 2026-09-20 실기).
   `instances.zig` 의 `window_class_name` · `window_title_prefix` 가 리터럴이던 동안 두 판의
   창이 클래스도 제목도 **글자 그대로 같았고**, `FindWindowW` 는 그중 **하나만** 돌려줘요 —
   어느 쪽인지는 *뜨는 순서*가 정해요 (dev 를 먼저 띄우면 릴리즈 창을, 릴리즈를 먼저 띄우면
   dev 창을 집었어요). 그러면 릴리즈 launcher 의 새-instance 요청이 개발 빌드로 가요.
   **Linux 는 IPC 가 소켓이라 이 문제가 없어요** — 창 이름으로 남을 찾는 것은 Windows 뿐이에요.
-- **⚠️ 그런데 창 *제목* 은 따라 가르면 안 돼요 — Linux 가 조용히 깨져요.** `FindWindowW` 는
-  클래스와 제목이 **둘 다** 맞아야 창을 주므로 클래스만 갈라도 목적은 달성돼요 (실측: 교차
-  조회가 모두 0). 반면 그 제목은 **Linux 의 `xdg_toplevel` 제목으로도 쓰이고**
-  (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension 의
-  `workerIndex()` 가 그것을 `/^TildaZ-(0|[1-9][0-9]*)$/` 로 파싱해 번호를 얻어요 — `-dev` 가
-  섞이면 **확장이 개발 빌드의 창을 통째로 놓쳐** 배치 · 토글 · 전역 hotkey 가 죽어요 (Linux
-  회차 결함 8 과 같은 증상). 2026-09-18 회차에서 실제로 한 번 그렇게 갔다가 되돌렸고,
-  `instances.zig` 테스트가 이제 **"제목은 두 판이 같다"** 를 단언으로 박아 둬요. 창 클래스는
-  Windows 에만 있는 개념이라 그것만 가르면 Linux 는 한 글자도 안 바뀌어요.
+- **⚠️ 창 *제목*을 가를 때는 확장의 토큰을 함께 봐요.** 그 제목은 **Linux 의 `xdg_toplevel`
+  제목으로도 쓰이고** (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension
+  의 `workerIndex()` 가 그것으로 번호를 읽어요. 처음에는 확장이 `/^TildaZ-(\d+)$/` 리터럴로
+  파싱해서 제목에 `-dev` 를 섞으면 **확장이 개발 빌드의 창을 통째로 놓쳐** 배치 · 토글 · 전역
+  hotkey 가 죽었고 (Linux 회차 결함 8 과 같은 증상 — 2026-09-18 회차에서 실제로 한 번 그렇게
+  갔다가 되돌렸어요), 그래서 제목은 두 판이 같게 두었어요. 그러면 Alt+Tab · 창 목록에서 어느
+  판인지 구별이 안 돼요 — 이 이슈의 원래 증상이 제목에 남아요. 2026-09-20 에 **제목도 가르기로**
+  했어요 (`TildaZ-N` · `TildaZ-dev-N`): 값은 `app_id.window_title_prefix` 하나이고, 확장은
+  `__TILDAZ_TITLE_PREFIX__` 토큰으로 같은 값을 받아 정규식 대신 접두어를 떼고 번호를 읽어요.
+  `shell_extension.zig` 테스트가 치환 결과의 접두어와 `instances.zig` 의 제목이 같은지 봐요.
+- **⚠️ 확장의 경로 규칙은 앱과 *모양까지* 같아야 해요 — 이름만 보는 테스트는 놓쳐요.** ⓑ 로
+  lock 디렉터리가 `<base>/<앱>/run` 이 됐는데 확장의 `hotkeyStateDirPath()` 는 runtime 갈래에
+  `/run` 이 없는 옛 모양을 그대로 들고 있었어요 — 앱은 `…/run/instanceN.hotkey` 를 읽고 확장은
+  한 단계 위에 쓰니 **grab 실패 통보가 다시 조용해졌어요** (#510 회귀 · 릴리즈에도 해당). `paths.zig`
+  의 #510 테스트는 `XDG_RUNTIME_DIR` · `XDG_CACHE_HOME` · `.cache` 라는 *이름*만 봐서 통과했고,
+  2026-09-20 재점검에서야 코드 읽기로 찾았어요. 지금은 그 테스트가 세 갈래의
+  `GLib.build_filenamev([…, APP, "run"])` 문자열까지 봐요. **두 언어에 복제된 규칙은 이름이 아니라
+  결과 문자열로 검사해요.**
+- **⚠️ "남의 것을 지우는 판정" 은 데스크톱마다 하나씩 있어요 — 실기 못 한 데스크톱을 코드로
+  훑어요.** Linux 회차 (KDE 기기) 가 kglobalaccel · dconf 를 잡았지만 **COSMIC 표식**
+  (`description: Some("TildaZ_N")`) 은 남아 있었어요 — dev 의 `syncCosmic` 이 릴리즈 항목을 자기
+  것으로 보고 지운 뒤 자기 exe 로 다시 쓰는 자리예요. 지금은 `app_id.window_base` 를 타요
+  (`TildaZ-dev_N`). 옛 `install.sh` 줄 흡수 (`legacyInstallScriptEntryIndex`) 도 dev 는 하지 않아요 —
+  basename 이 둘 다 `tildaz` 라 구별할 수 없어서요.
+- **macOS 는 LaunchAgent label 이 실제로 바뀐 유일한 자리예요** (`com.tildaz.app` →
+  `me.ensky0.tildaz`). 옛 plist 는 **앱이 지우지 않아요** — 사용자당 한 번이면 끝나는 정리를 매
+  실행마다 확인하는 코드로 두지 않기로 했어요 (2026-09-20 사용자 결정: *"딱 1 회만 필요한 작업을
+  프로그램 코드에 계속 넣어놓고 있고 싶지 않아"*). dmg 드래그 설치라 설치 · 제거 훅이 없으니
+  (`.pkg` 도 제거 훅은 없어요) 대신 README 와 릴리즈 노트 `Upgrade notes` 에 한 줄 명령
+  (`launchctl bootout gui/$(id -u)/com.tildaz.app; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`)
+  을 적었고 `uninstall.sh` 가 옛 label 도 치워요. 같은 종류의 결정이 앞으로 또 나오면 이 기준을
+  따라요 — **일회성 마이그레이션은 코드가 아니라 문서의 명령 한 줄.** 그리고
+  `autostart/macos.zig` 의 테스트는 **macOS 에서만 돌아요** (`autostart.zig` 의 comptime switch) —
+  Linux · Windows 의 `zig build test` 통과가 그 파일을 보증하지 않아요. label 리터럴이 옛 값인 채로
+  두 회차를 지나간 이유예요.
+- **sway · Hyprland autostart 블록의 marker 에도 id 가 들어가요** (`# tildaz-dev autostart …`).
+  하나로 두면 두 번째로 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 릴리즈 marker
+  는 예전과 글자 단위로 같아서 기존 설치와 호환되고, `uninstall.sh` 는 두 marker 를 다 지워요.
 - **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
   zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
   README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은

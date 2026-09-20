@@ -67,7 +67,7 @@ EXE_SUFFIX=""
 [ "$HYG_PLATFORM" = windows ] && EXE_SUFFIX=".exe"
 EXE=""
 for _cand in \
-    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
     "$REPO_ROOT/zig-out/bin/tildaz$EXE_SUFFIX"
 do
     [ -x "$_cand" ] && EXE="$_cand" && break
@@ -77,8 +77,8 @@ done
 
 case "$HYG_PLATFORM" in
     linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
-    macos) LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
-    windows) LOG="$(cygpath -u "$APPDATA")/tildaz/tildaz_stress.log" ;;
+    macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
+    windows) LOG="$(cygpath -u "$APPDATA")/tildaz-dev/tildaz_stress.log" ;;
     *) echo "모르는 platform 이에요 ($(uname -s))." >&2; exit 2 ;;
 esac
 

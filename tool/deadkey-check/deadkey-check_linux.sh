@@ -207,9 +207,9 @@ if [[ $USE_STRACE = 1 ]]; then
     grep -E 'write\([0-9]+, "(\\x03|\\x0d|\\xc3|\\x5e|\\x61|\\x60|\\x65)' "$T/strace.log" 2>/dev/null | sed 's/^[0-9]* *//' | head -24
 fi
 echo "--- compose lines in app log"
-grep -h -i 'compose\|keyboard keymap loaded' "$T"/state/tildaz/*.log 2>/dev/null || echo "(no compose line — 앱 로그가 없거나 compose 초기화 전에 끝났어요)"
+grep -h -i 'compose\|keyboard keymap loaded' "$T"/state/tildaz-dev/*.log 2>/dev/null || echo "(no compose line — 앱 로그가 없거나 compose 초기화 전에 끝났어요)"
 echo "--- composition owner (text_input lines in app log — must be 0: an IME in the path means we did not measure tildaz)"
-IME_LINES=$(grep -h 'text_input \(preedit\|commit\)' "$T"/state/tildaz/*.log 2>/dev/null | wc -l | tr -d ' ')
+IME_LINES=$(grep -h 'text_input \(preedit\|commit\)' "$T"/state/tildaz-dev/*.log 2>/dev/null | wc -l | tr -d ' ')
 echo "text_input preedit/commit lines: $IME_LINES"
 if [[ $CASE == pane-exit ]]; then
     # #583 B14 — 형제 pane 이 받은 바이트가 판정이다. 조합을 버렸으면 'e' (65) 가 그대로,
@@ -220,7 +220,7 @@ if [[ $CASE == pane-exit ]]; then
     echo "pane 1 EXPECT 650d (e CR)   GOT ${GOT1:-(empty)}"
     echo "pane 2 EXPECT (empty)       GOT ${GOT2:-(empty)}"
     echo "--- 탭 close 로그 (활성 pane 이 실제로 바뀌었는지)"
-    grep -h "exited\|pane" "$T"/state/tildaz/*.log 2>/dev/null | tail -5
+    grep -h "exited\|pane" "$T"/state/tildaz-dev/*.log 2>/dev/null | tail -5
     if [[ "$GOT1" == "650d" && "$IME_LINES" == "0" ]]; then
         echo "##### PASS ##### (활성 pane 의 셸이 스스로 끝날 때 조합을 버린다)"
         exit 0

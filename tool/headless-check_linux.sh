@@ -24,8 +24,8 @@ WORK=${TZHL_WORK:-${TMPDIR:-/tmp}/tildaz-headless}
 R=/run/user/$(id -u)/tzhl
 FIFO=$R/vkbd.fifo
 XDG=$WORK/xdg
-LOG=$XDG/state/tildaz/tildaz_0.log
-SLOG=$XDG/state/tildaz/tildaz_stress.log
+LOG=$XDG/state/tildaz-dev/tildaz_0.log
+SLOG=$XDG/state/tildaz-dev/tildaz_stress.log
 CFG=$XDG/config/tildaz/config_0.toml
 
 die() { echo "$*" >&2; exit 1; }
@@ -189,7 +189,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
     kill_tz
     # 빈 config 홈 — 앱이 이 회차에 config_0.toml 을 만들지만, 그 회차의 **메모리 config** 는 기본값 경로다.
     export XDG_CONFIG_HOME=$OUT/xdg/config XDG_STATE_HOME=$OUT/xdg/state
-    local LOG0=$OUT/xdg/state/tildaz/tildaz_0.log
+    local LOG0=$OUT/xdg/state/tildaz-dev/tildaz_0.log
     TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 4
     kill -0 $WPID 2>/dev/null || die "worker 가 뜨지 않았다 — $LOG0"
     focus_probe
@@ -205,7 +205,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
     wait_file $M2 || true
     grim $OUT/screen.png
     local bindings; bindings=$(grep -oE 'key bindings=[0-9]+' $LOG0 | tail -1)
-    echo "   config: $(ls $OUT/xdg/config/tildaz/ | tr '\n' ' ') · $bindings"
+    echo "   config: $(ls $OUT/xdg/config/tildaz-dev/ | tr '\n' ' ') · $bindings"
     # 로그의 `shell exited` 수 = 종료 시점의 탭 수 (보조 증거).
     if [ -f $M2 ]; then
         echo "RESULT first-run: OK — 첫 실행에서 Ctrl+Shift+T 가 새 탭을 열었다"
@@ -218,7 +218,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
 }
 
 cmd_scale() {
-    env_sway; OUT=$WORK/scale; rm -rf $OUT; mkdir -p $OUT $XDG/state/tildaz
+    env_sway; OUT=$WORK/scale; rm -rf $OUT; mkdir -p $OUT $XDG/state/tildaz-dev
     kill_tz
     python3 "$ROOT/tool/clusters.py" bands > $WORK/bands.sh && chmod +x $WORK/bands.sh
     # 논리 높이 H 를 골라 H × scale 의 소수부가 .5 이상인 회차 (내림과 반올림이 갈리는 곳) 와 0 인 대조 회차를 나란히 둔다.

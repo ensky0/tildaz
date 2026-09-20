@@ -33,7 +33,7 @@ WORK="${TZCN_WORK:-${TMPDIR:-/tmp}/tildaz-config-notice}"
 IDX=9
 
 case "$(uname -s)" in
-  Darwin) DEFAULT_BIN="$ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" ;;
+  Darwin) DEFAULT_BIN="$ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" ;;
   *)      DEFAULT_BIN="$ROOT/zig-out/bin/tildaz" ;;
 esac
 BIN="${TILDAZ:-$DEFAULT_BIN}"
@@ -52,13 +52,13 @@ env_reset() {
   mkdir -p "$WORK/run/config" "$WORK/run/state" "$WORK/run/home"
 }
 
-CFG() { echo "$WORK/run/config/tildaz/config_$1.toml"; }
+CFG() { echo "$WORK/run/config/tildaz-dev/config_$1.toml"; }
 
 # `-e` 로 돌린 회차는 로그 이름이 다르다 — 측정 인스턴스는 index 대신 `stress` 를 쓴다.
 LOG() { # <index|stress>
   case "$(uname -s)" in
-    Darwin) echo "$WORK/run/home/Library/Logs/tildaz_$1.log" ;;
-    *)      echo "$WORK/run/state/tildaz/tildaz_$1.log" ;;
+    Darwin) echo "$WORK/run/home/Library/Logs/tildaz-dev/tildaz_$1.log" ;;
+    *)      echo "$WORK/run/state/tildaz-dev/tildaz_$1.log" ;;
   esac
 }
 
