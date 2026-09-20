@@ -356,6 +356,35 @@ render_extension() {
     done < <(find "$src" -type f -print0)
 }
 
+# gsettings 의 문자열 목록 (strv) 에 항목을 더하거나 뺀다. `@as []` 와 `['a', 'b']` 를 둘 다 읽고,
+# 바뀐 것이 없으면 쓰지 않는다. 키가 없거나 (예: `disabled-extensions` 는 GNOME 47 부터)
+# gsettings · python3 이 없으면 1 을 돌려준다 — 호출부가 안내 문구로 갈라 쓴다.
+gsettings_strv_edit() {   # <schema> <key> add|remove <value>
+    local schema="$1" key="$2" op="$3" value="$4" cur new
+    command -v gsettings >/dev/null 2>&1 || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    gsettings writable "$schema" "$key" >/dev/null 2>&1 || return 1
+    cur="$(gsettings get "$schema" "$key" 2>/dev/null || echo '@as []')"
+    new="$(python3 - "$cur" "$op" "$value" <<'PY'
+import sys
+cur, op, value = sys.argv[1].strip(), sys.argv[2], sys.argv[3]
+i = cur.find('[')
+items = []
+if i >= 0:
+    body = cur[i + 1:cur.rfind(']')]
+    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
+if op == 'add' and value not in items:
+    items.append(value)
+if op == 'remove':
+    items = [x for x in items if x != value]
+print('[' + ', '.join("'%s'" % x for x in items) + ']')
+PY
+)"
+    [[ -n "$new" ]] || return 1
+    [[ "$new" == "$cur" ]] && return 0
+    gsettings set "$schema" "$key" "$new" 2>/dev/null
+}
+
 EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
@@ -364,8 +393,17 @@ if [[ -d "$EXT_SRC" ]]; then
     if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d "$EXT_DST/schemas" ]]; then
         glib-compile-schemas "$EXT_DST/schemas" 2>/dev/null || true
     fi
-    if command -v gnome-extensions >/dev/null 2>&1; then
-        gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
+    # `gnome-extensions enable` 을 쓰지 않는다 (#654 GNOME 실기). 셸은 재로그인 전에는 새로 깐
+    # 확장 디렉터리를 읽지 않아서, 그 UUID 로 enable 을 걸면 **"확장 기능이 없습니다" (exit 2)**
+    # 로 실패한다. 예전 코드는 그것을 `|| true` 로 삼키고 "(enabled)" 라고 적었는데, 실제로는
+    # `enabled-extensions` 에 들어가지 못해 **재로그인 뒤에도 켜지지 않았다.** Cinnamon 경로처럼
+    # gsettings 를 직접 쓴다 — 로그인 때 셸이 그 목록을 읽어 켠다.
+    #
+    # `disabled-extensions` 에서도 뺀다. `uninstall.sh` 가 부르는 `gnome-extensions disable` 이 거기
+    # UUID 를 남기고, GNOME 은 그 목록을 `enabled-extensions` 보다 **우선**한다 (실측: 양쪽에 있으면
+    # 확장이 INITIALIZED 에 멈추고 켜지지 않는다). 재설치가 켜지려면 여기서 치워야 한다.
+    if gsettings_strv_edit org.gnome.shell enabled-extensions add "$EXT_UUID"; then
+        gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_UUID" || true
         EXT_MSG="$EXT_DST  (enabled — GNOME 로그아웃/로그인 후 적용)"
     else
         EXT_MSG="$EXT_DST  (복사됨 — GNOME 세션에서: gnome-extensions enable $EXT_UUID + 재로그인)"
@@ -383,35 +421,11 @@ CIN_MSG=""
 if [[ -d "$CIN_SRC" ]]; then
     CIN_DST="$HOME/.local/share/cinnamon/extensions/$CIN_UUID"
     render_extension "$CIN_SRC" "$CIN_DST"
-    if command -v gsettings >/dev/null 2>&1 && gsettings writable org.cinnamon enabled-extensions >/dev/null 2>&1; then
-        CUR="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || echo '@as []')"
-        if [[ "$CUR" == *"'$CIN_UUID'"* ]]; then
-            CIN_MSG="$CIN_DST  (이미 enabled — Cinnamon Wayland 재로그인 후 적용)"
-        elif command -v python3 >/dev/null 2>&1; then
-            # 기존 목록 보존 + uuid 추가 (gsettings 의 @as [] / ['a','b'] 둘 다 파싱).
-            NEW="$(python3 - "$CUR" "$CIN_UUID" <<'PY'
-import sys
-cur, uuid = sys.argv[1].strip(), sys.argv[2]
-i = cur.find('[')
-items = []
-if i >= 0:
-    body = cur[i + 1:cur.rfind(']')]
-    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
-if uuid not in items:
-    items.append(uuid)
-print('[' + ', '.join("'%s'" % x for x in items) + ']')
-PY
-)"
-            if gsettings set org.cinnamon enabled-extensions "$NEW" 2>/dev/null; then
-                CIN_MSG="$CIN_DST  (enabled — Cinnamon Wayland 세션 재로그인 후 적용)"
-            else
-                CIN_MSG="$CIN_DST  (복사됨 — 시스템 설정 > 확장에서 활성화 + 재로그인)"
-            fi
-        else
-            CIN_MSG="$CIN_DST  (복사됨 — python3 없음, 시스템 설정 > 확장에서 활성화 + 재로그인)"
-        fi
+    # GNOME 과 같은 함수 (`gsettings_strv_edit`) 로 켠다 — 두 셸의 목록 편집 로직을 한 곳에 둔다.
+    if gsettings_strv_edit org.cinnamon enabled-extensions add "$CIN_UUID"; then
+        CIN_MSG="$CIN_DST  (enabled — Cinnamon Wayland 세션 재로그인 후 적용)"
     else
-        CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings 미설치, 다른 DE 에선 무시)"
+        CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings·python3 미설치, 시스템 설정 > 확장에서 활성화 + 재로그인)"
     fi
 fi
 

@@ -121,11 +121,18 @@ for ext_uuid in "${TILDAZ_EXT_UUIDS[@]}"; do
         removed=$((removed + 1))
     fi
 
+    # 두 셸의 `enabled-extensions` 에서 빼고, GNOME 은 `disabled-extensions` 에서도 뺀다. 위
+    # `gnome-extensions disable` 이 거기 UUID 를 **남기는데**, 지운 확장이 그 목록에 남으면 다음
+    # `install.sh` 가 `enabled-extensions` 에 넣어도 GNOME 이 disabled 를 우선해 켜지지 않는다
+    # (#654 GNOME 실기 — 양쪽에 있으면 INITIALIZED 에 멈춘다). 키가 없는 셸 (`disabled-extensions`
+    # 는 GNOME 47 부터) 은 `gsettings writable` 이 거절해 조용히 건너뛴다.
     if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-        for shell_schema in org.cinnamon org.gnome.shell; do
-            enabled="$(gsettings get "$shell_schema" enabled-extensions 2>/dev/null || true)"
-            [[ "$enabled" == *"'$ext_uuid'"* ]] || continue
-            updated="$(python3 - "$enabled" "$ext_uuid" <<'PY'
+        for pair in "org.cinnamon enabled-extensions" "org.gnome.shell enabled-extensions" "org.gnome.shell disabled-extensions"; do
+            read -r shell_schema shell_key <<< "$pair"
+            gsettings writable "$shell_schema" "$shell_key" >/dev/null 2>&1 || continue
+            current="$(gsettings get "$shell_schema" "$shell_key" 2>/dev/null || true)"
+            [[ "$current" == *"'$ext_uuid'"* ]] || continue
+            updated="$(python3 - "$current" "$ext_uuid" <<'PY'
 import sys
 cur, uuid = sys.argv[1].strip(), sys.argv[2]
 i = cur.find('[')
@@ -137,7 +144,7 @@ items = [x for x in items if x != uuid]
 print('[' + ', '.join("'%s'" % x for x in items) + ']')
 PY
 )"
-            gsettings set "$shell_schema" enabled-extensions "$updated" 2>/dev/null || true
+            gsettings set "$shell_schema" "$shell_key" "$updated" 2>/dev/null || true
         done
     fi
 
