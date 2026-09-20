@@ -1183,6 +1183,31 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 - **실기 전에 유휴 잠금을 막아요** — `systemd-inhibit --what=idle:sleep --mode=block sleep infinity &` 를 먼저 걸고, 끝나면 그 PID 를 `kill` 해요. "기기를 건드리지 말아 달라" 는 부탁이 세션을 유휴로 만들어 **KDE 잠금 화면이 떴고 주입한 키가 암호 입력란으로 들어갔어요** ([#530 KDE 회차](https://github.com/ensky0/tildaz/issues/530#issuecomment-5434640115)). layout 이 fr 인 채로 잠기면 사용자가 암호를 제대로 못 치니 해제 전에 `setLayout 0` 으로 되돌려요. 자동 잠금 설정 자체 (`kscreenlockerrc`) 는 건드리지 않아요.
 - **⚠️ 주입한 키는 "그때 포커스를 가진 창" 으로 가요 — 대상 창을 고를 수 없어요.** 측정 중에 사용자가 다른 창을 만지면 **그 창에 그대로 타이핑돼요**. [#483 KDE 회차](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149) 에서 배열을 추가받는 동안 포커스가 옮겨간 걸 모르고 쳐서, 사용자의 대화창에 `cat -v > ~/kfr.txt` 와 `€` · `é` 가 들어갔어요 (위 잠금 화면 항목과 같은 뿌리예요). 그래서 **타이핑 전에 두 가지를 해요** — ① 창 안을 클릭해 포커스를 잡고, ② `touch ~/probe` 를 보내 **파일이 생기는지로 포커스를 확인**해요. 확인이 안 되면 한 글자도 보내지 않고 멈춰요. 그리고 **단계마다 앱이 살아 있는지 다시 봐요** — `Ctrl+Shift+W` 를 pane 수보다 많이 보내 앱이 스스로 끝난 뒤에도 계속 키를 보내다 타임아웃까지 갔어요 (`pgrep` 으로 확인하고, 죽었으면 중단해요).
 - **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
+- **GNOME 은 새로 깐 확장 UUID 를 재로그인 전에는 아예 몰라요 — `gnome-extensions enable` 이 exit 2 로 조용히 실패해요**
+  (2026-09-20 [#654](https://github.com/ensky0/tildaz/issues/654) GNOME 50.5 실기). 디렉터리를 `~/.local/share/gnome-shell/extensions/`
+  에 놓아도 셸은 로그인 때 읽은 목록만 알아서 *"확장 기능이 없습니다"* 로 거절해요. `install.sh` 가 그것을 `|| true` 로 삼키고
+  **"(enabled)" 라고 적었는데 실제로는 `enabled-extensions` 에 들어가지 못해 재로그인 뒤에도 켜지지 않았어요.** 그래서 지금은
+  Cinnamon 경로처럼 **gsettings 를 직접 써요** (`gsettings_strv_edit`) — 로그인 때 셸이 그 목록을 읽어 켜요. 판정은
+  `gsettings get org.gnome.shell enabled-extensions` 에 UUID 가 있는지로 해요. 명령의 종료 코드가 아니에요.
+- **`org.gnome.shell disabled-extensions` 가 `enabled-extensions` 보다 우선이에요.** 같은 UUID 가 양쪽에 있으면 확장이
+  `INITIALIZED` 에 멈추고 켜지지 않아요 (같은 회차 실측 — 9/18 회차의 `uninstall.sh` 가 부른 `gnome-extensions disable` 이
+  거기 릴리즈 UUID 를 남겨, GNOME 로그인 뒤 릴리즈 확장이 그 상태였어요). `gnome-extensions disable` 은 **끄면서 그 목록에
+  적어요.** 그래서 `uninstall.sh` 가 그 키에서도 UUID 를 빼고, `install.sh` 도 켤 때 함께 빼요. 확장이 안 켜지면 두 목록을
+  **둘 다** 봐요 — `gnome-extensions info <uuid>` 의 `State:` 와 함께.
+
+    ```sh
+    gsettings get org.gnome.shell enabled-extensions
+    gsettings get org.gnome.shell disabled-extensions        # 여기 있으면 enabled 에 있어도 안 켜져요
+    gnome-extensions info tildaz-dev@ensky0.github.io | grep State
+    ```
+
+  - **미결 — 앱은 `disabled-extensions` 를 안 봐요.** `gsettings_hotkey.zig` 의 `isExtensionEnabledInSchema` · `ensureInList` 가
+    `enabled-extensions` 만 보므로, 사용자가 GNOME 에서 확장을 끄면 (→ disabled 에 들어감) 앱은 "확장이 담당한다" 로 보고
+    gsettings hotkey 도 등록하지 않아요 — 전역 hotkey 가 아무 데도 없어요. 릴리즈에도 있는 결함이고 방향은 #654 에서 정해요.
+- **실제 GNOME 세션의 전역 hotkey 는 [`tool/ukbd_linux.py`](tool/ukbd_linux.py) 로 눌러요.** `zwp_virtual_keyboard_v1` 은 GNOME 이
+  안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
+  `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.
+  키는 **그때 포커스를 가진 창으로 가요** (위 경고와 같아요) — 시작 전에 알리고, `systemd-inhibit` 로 유휴 잠금을 막아요.
 - **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
@@ -2194,6 +2219,12 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   그래서 릴리즈 사용자에게는 ⓔ 의 이름 변경이 덮어쓰기로 끝나고, **잔재가 남는 것은 dev 판
   뿐**이에요 (새로 `tildaz-dev` 를 쓰고 옛 값은 그대로 두니 로그온 때 둘 다 떠요). 판정은
   Linux `install.sh` 와 같은 **"값 데이터가 zig-out 을 가리키는가"** 하나예요.
+- **GNOME 에서 두 확장 (`tildaz@…` · `tildaz-dev@…`) 이 함께 ACTIVE 로 공존하는 것을 실기로 확인했어요**
+  (2026-09-20 · i5-1240P 노트북 · GNOME Shell 50.5). 릴리즈 0.9.5 (`/usr/bin/tildaz`) 와 dev 를 같이 띄워 `F1` 은 릴리즈만,
+  `F10` 은 dev 만 토글했고 확장 실패 로그는 0 이었어요. 다만 **새 UUID 는 재로그인 뒤에야 셸이 읽어요** — `install.sh` 를
+  돌린 세션에서 바로 `gnome-extensions enable` 로 켜려 하면 exit 2 로 실패해요 (위 `# 전역 hotkey` 절의 함정). 그래서 GNOME
+  실기는 *설치 → 재로그인 → 측정* 순서고, 재로그인은 사용자에게 부탁해요. 확장의 셸 로그에 `config directory read failed` 가
+  **한 건** 남는 것은 정상이에요 — 첫 설치라 `~/.config/tildaz-dev/` 가 아직 없을 때 확장이 autostart 판정으로 읽은 자리예요.
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
