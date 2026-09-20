@@ -62,7 +62,10 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 3. **작업 수행**: 작업하면서 중간 결과, 결정 사항, 변경 이유 등을 계속 이슈에 댓글로 기록해요.
 4. **검증**: 빌드와 테스트를 직접 실행해서 작업 내용이 올바른지 확인해요.
 5. **완료**: 검증이 끝나면 커밋해요. (릴리즈는 별도 타이밍 — 여러 작업을 모아 새 버전으로 내요.)
-6. **이슈 닫기**: 릴리즈가 아니라 **검증이 끝나 해결되면 바로** 이슈를 닫아요. 릴리즈 여부는 닫기를 막지 않아요.
+6. **이슈 닫기**: 릴리즈가 아니라 **검증이 끝나 해결되면** 이슈를 닫아요. 릴리즈 여부는 닫기를 막지 않아요.
+   **PR 로 가는 작업은 PR 본문의 `Closes #N` 으로 머지가 닫아요** — 검증이 끝났어도 PR 이 아직이면 손으로
+   먼저 닫지 않아요. 머지와 이슈 닫힘이 한 사건이어야 이력이 맞아요 (2026-09-21 사용자 결정: *"이슈는 항상
+   PR 머지로 닫는다"*). PR 없는 작업 (문서 직행) 만 검증 뒤 바로 닫아요.
 
 **닫지 않고 레이블로 남기는 경우가 있어요 — ⑥ 의 예외예요.** 원인 규명이 끝났는데도 남은 일이 있으면 닫지 않고 **왜 열려 있는지**를 레이블로 표시해요. 표시가 없으면 다음 세션이 ⑥ 대로 닫아 버리거나, 반대로 왜 열려 있는지 몰라 **이미 끝난 조사를 다시** 해요.
 
@@ -2206,6 +2209,17 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   `autostart/macos.zig` 의 테스트는 **macOS 에서만 돌아요** (`autostart.zig` 의 comptime switch) —
   Linux · Windows 의 `zig build test` 통과가 그 파일을 보증하지 않아요. label 리터럴이 옛 값인 채로
   두 회차를 지나간 이유예요.
+- **`-Ddev` 이전 개발 빌드가 릴리즈 이름으로 남긴 dconf 항목 (`…/custom-keybindings/tildaz-N/`) 은
+  아무도 안 치워요.** 릴리즈가 남긴 것과 구별할 수 없어 앱도 `install.sh` 도 건드리지 않아요. 개발 기기에만
+  생기는 잔재라 릴리즈 노트가 아니라 여기에 적어요 (2026-09-21 사용자 결정). `command` 가 `zig-out` 을
+  가리키는 항목을 찾아 손으로 지워요.
+
+  ```sh
+  dconf dump /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/     # GNOME
+  dconf dump /org/cinnamon/desktop/keybindings/custom-keybindings/                # Cinnamon
+  dconf reset -f /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-1/
+  ```
+
 - **sway · Hyprland autostart 블록의 marker 에도 id 가 들어가요** (`# tildaz-dev autostart …`).
   하나로 두면 두 번째로 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 릴리즈 marker
   는 예전과 글자 단위로 같아서 기존 설치와 호환되고, `uninstall.sh` 는 두 marker 를 다 지워요.
