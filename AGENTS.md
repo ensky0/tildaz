@@ -2234,6 +2234,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   바인딩이 없는 것은 결함이 아니에요 — config 가 없으니 등록할 hotkey 도 없어요. 앱을 launcher 로 띄우면 config 가
   생기고, 확장의 디렉터리 감시가 그것을 읽어 등록해요. 판정은 `org.Cinnamon.Eval` 로 `Main.keybindingManager.bindings`
   와 `meta_window.minimized` 를 읽으면 사람 손 없이 끝나요 (위 `# Linux — headless sway …` 절의 `G` 함수).
+  **셸 로그의 접두어로 어느 판이 낸 줄인지 갈라요** — 두 확장 다 `LOG_TAG` (`[tildaz]` · `[tildaz-dev]`) 를 써요.
+  처음엔 리터럴 `[tildaz]` 여서 dev 확장의 줄이 릴리즈 것으로 읽혔어요 (2026-09-21 사용자 결정으로 고쳤어요).
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는

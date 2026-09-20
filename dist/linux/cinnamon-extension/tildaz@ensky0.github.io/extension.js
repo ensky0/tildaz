@@ -75,6 +75,9 @@ const Main = imports.ui.main;
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+// 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
+// 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
+const LOG_TAG = `[${APP}]`;
 /**
  * worker 창 제목의 접두어 (`TildaZ-` · `TildaZ-dev-`) — `app_id.zig` 의 `window_title_prefix`
  * 와 같은 값이어야 한다. 제목은 `<접두어><index>` 이고 `workerIndex()` 가 이것으로 번호를
@@ -137,7 +140,7 @@ function writeHotkeyState(index, hotkey, ok) {
       `v1 ${ok ? "ok" : "failed"} ${hotkey}\n`
     );
   } catch (e) {
-    global.logError("[tildaz] could not record hotkey state for index " + index + ": " + e);
+    global.logError(LOG_TAG + " could not record hotkey state for index " + index + ": " + e);
   }
 }
 
@@ -146,7 +149,7 @@ function clearHotkeyState(index) {
   try {
     GLib.unlink(hotkeyStatePath(index));
   } catch (e) {
-    global.logError("[tildaz] could not clear hotkey state for index " + index + ": " + e);
+    global.logError(LOG_TAG + " could not clear hotkey state for index " + index + ": " + e);
   }
 }
 
@@ -221,7 +224,7 @@ function enable() {
       };
     }
   } catch (e) {
-    global.logError("[tildaz] isExpoWindow patch failed: " + e);
+    global.logError(LOG_TAG + " isExpoWindow patch failed: " + e);
   }
 
   // hotkey 등록 (config = source of truth). addHotKey(name, accel, cb) — accel 은
@@ -243,7 +246,7 @@ function enable() {
       });
     });
   } catch (e) {
-    global.logError("[tildaz] config monitor failed: " + e);
+    global.logError(LOG_TAG + " config monitor failed: " + e);
   }
 
   // #616 — Cinnamon 의 단축키 목록이 바뀌면 겹침 판정을 **다시** 한다.
@@ -269,7 +272,7 @@ function enable() {
       st.keybindingSettingIds.push(settings.connect("changed", () => scheduleHotkeyResync()));
       st.keybindingSettings.push(settings);
     } catch (e) {
-      global.logError(`[tildaz] keybinding watch failed for ${schema}: ${e}`);
+      global.logError(`${LOG_TAG} keybinding watch failed for ${schema}: ${e}`);
     }
   }
 
@@ -316,7 +319,7 @@ function replaceAllForMonitorChange() {
       if (!cfg) continue;
       place(win, cfg);
     } catch (e) {
-      global.logError("[tildaz] monitors-changed replace failed: " + e);
+      global.logError(LOG_TAG + " monitors-changed replace failed: " + e);
     }
   }
 }
@@ -418,7 +421,7 @@ function readConfig(index) {
       if (typeof w.offset_percent === "number") out.op = w.offset_percent;
     }
   } catch (e) {
-    global.logError("[tildaz] config read failed: " + e);
+    global.logError(LOG_TAG + " config read failed: " + e);
   }
   return out;
 }
@@ -435,7 +438,7 @@ function readConfigs() {
     }
     dir.close();
   } catch (e) {
-    global.logError("[tildaz] config directory read failed: " + e);
+    global.logError(LOG_TAG + " config directory read failed: " + e);
   }
   return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
 }
@@ -508,7 +511,7 @@ function conflictingHotkeyOwner(index, accel) {
       }
     }
   } catch (e) {
-    global.logError(`[tildaz] hotkey conflict scan failed: ${e}`);
+    global.logError(`${LOG_TAG} hotkey conflict scan failed: ${e}`);
     return null;
   }
   return null;
@@ -518,7 +521,7 @@ function registerHotkey(index, cfg) {
   const name = `${APP}-toggle-${index}`;
   if (!cfg.accel) {
     // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치 이름 등).
-    global.logError(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
+    global.logError(`${LOG_TAG} no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
     writeHotkeyState(index, cfg.hotkey, false);
     return;
   }
@@ -531,7 +534,7 @@ function registerHotkey(index, cfg) {
   // 우리 자신의 옛 바인딩은 바로 위에서 뗐으므로 여기서 자기 자신에 걸리지 않는다.
   const taken = conflictingHotkeyOwner(index, cfg.accel);
   if (taken) {
-    global.logError(`[tildaz] hotkey already claimed by "${taken}" — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+    global.logError(`${LOG_TAG} hotkey already claimed by "${taken}" — index ${index} accel ${JSON.stringify(cfg.accel)}`);
     writeHotkeyState(index, cfg.hotkey, false);
     return;
   }
@@ -542,7 +545,7 @@ function registerHotkey(index, cfg) {
   // #510 — 로그는 Cinnamon 쪽 journal 이라 tildaz 가 못 읽는다. 같은 사실을 worker 가
   // 읽을 수 있는 자리에도 남긴다. 그래야 "부를 수 없는 창" 대신 안내 후 종료가 된다.
   if (Main.keybindingManager.addHotKey(name, cfg.accel, () => toggle(index)) === false) {
-    global.logError(`[tildaz] hotkey registration failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+    global.logError(`${LOG_TAG} hotkey registration failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
     writeHotkeyState(index, cfg.hotkey, false);
     return;
   }
@@ -684,7 +687,7 @@ function toAccel(s) {
   if (position) {
     const code = POSITION_KEYCODES[position[1]];
     if (code === undefined) {
-      console.log(`[tildaz] unknown position "${key}" in hotkey "${s}"`);
+      console.log(`${LOG_TAG} unknown position "${key}" in hotkey "${s}"`);
       return null;
     }
     return mods + "0x" + code.toString(16).padStart(2, "0");
@@ -818,7 +821,7 @@ function toggle(index) {
     place(win, st.configs.get(index));
     Main.activateWindow(win);
   } catch (e) {
-    global.logError("[tildaz] toggle failed: " + e);
+    global.logError(LOG_TAG + " toggle failed: " + e);
   }
 }
 
@@ -845,7 +848,7 @@ function defocusAfterHide(win) {
       global.display.unset_input_focus(now);
     }
   } catch (e) {
-    global.logError("[tildaz] defocus after hide failed: " + e);
+    global.logError(LOG_TAG + " defocus after hide failed: " + e);
   }
 }
 

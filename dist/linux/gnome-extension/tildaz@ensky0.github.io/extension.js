@@ -36,6 +36,9 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+// 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
+// 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
+const LOG_TAG = `[${APP}]`;
 /**
  * worker 창 제목의 접두어 (`TildaZ-` · `TildaZ-dev-`) — `app_id.zig` 의 `window_title_prefix`
  * 와 같은 값이어야 한다. 제목은 `<접두어><index>` 이고 `workerIndex()` 가 이것으로 번호를
@@ -102,7 +105,7 @@ function writeHotkeyState(index, hotkey, ok) {
       `v1 ${ok ? "ok" : "failed"} ${hotkey}\n`
     );
   } catch (e) {
-    console.log(`[tildaz] could not record hotkey state for index ${index}: ${e}`);
+    console.log(`${LOG_TAG} could not record hotkey state for index ${index}: ${e}`);
   }
 }
 
@@ -111,7 +114,7 @@ function clearHotkeyState(index) {
   try {
     GLib.unlink(hotkeyStatePath(index));
   } catch (e) {
-    console.log(`[tildaz] could not clear hotkey state for index ${index}: ${e}`);
+    console.log(`${LOG_TAG} could not clear hotkey state for index ${index}: ${e}`);
   }
 }
 
@@ -312,7 +315,7 @@ export default class TildazExtension extends Extension {
       if (!cfg.accel) {
         // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치
         // 이름 등). 셸에서는 grab 을 시도조차 못 하므로 여기서 실패로 기록한다.
-        console.log(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
+        console.log(`${LOG_TAG} no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
         writeHotkeyState(index, cfg.hotkey, false);
         continue;
       }
@@ -331,7 +334,7 @@ export default class TildazExtension extends Extension {
         //
         // #510 — 로그는 셸 journal 이라 tildaz 가 못 읽는다. 같은 사실을 worker 가
         // 읽을 수 있는 자리에도 남긴다. 그래야 "부를 수 없는 창" 대신 안내 후 종료가 된다.
-        console.log(`[tildaz] accelerator grab failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+        console.log(`${LOG_TAG} accelerator grab failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
         writeHotkeyState(index, cfg.hotkey, false);
       }
     }
@@ -450,7 +453,7 @@ export default class TildazExtension extends Extension {
         if (typeof j.hidden_start === "boolean") out.hiddenStart = j.hidden_start;
       }
     } catch (e) {
-      console.log(`[tildaz] config read failed: ${e}`);
+      console.log(`${LOG_TAG} config read failed: ${e}`);
     }
     return out;
   }
@@ -467,7 +470,7 @@ export default class TildazExtension extends Extension {
       }
       dir.close();
     } catch (e) {
-      console.log(`[tildaz] config directory read failed: ${e}`);
+      console.log(`${LOG_TAG} config directory read failed: ${e}`);
     }
     return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
   }
@@ -498,7 +501,7 @@ export default class TildazExtension extends Extension {
     if (position) {
       const code = POSITION_KEYCODES[position[1]];
       if (code === undefined) {
-        console.log(`[tildaz] unknown position "${key}" in hotkey "${s}"`);
+        console.log(`${LOG_TAG} unknown position "${key}" in hotkey "${s}"`);
         return null;
       }
       return mods + "0x" + code.toString(16).padStart(2, "0");
@@ -581,7 +584,7 @@ export default class TildazExtension extends Extension {
         global.display.unset_input_focus(now);
       }
     } catch (e) {
-      global.logError("[tildaz] defocus after hide failed: " + e);
+      global.logError(LOG_TAG + " defocus after hide failed: " + e);
     }
   }
 
@@ -779,7 +782,7 @@ export default class TildazExtension extends Extension {
     try {
       Gio.Subprocess.new([exe, "--autostart"], Gio.SubprocessFlags.NONE);
     } catch (e) {
-      console.log(`[tildaz] autostart launch failed: ${e}`);
+      console.log(`${LOG_TAG} autostart launch failed: ${e}`);
     }
   }
 
@@ -856,7 +859,7 @@ export default class TildazExtension extends Extension {
         if (!cfg) continue;
         this._place(win, cfg);
       } catch (e) {
-        console.log(`[tildaz] monitors-changed replace failed: ${e}`);
+        console.log(`${LOG_TAG} monitors-changed replace failed: ${e}`);
       }
     }
   }
