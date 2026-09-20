@@ -84,5 +84,6 @@ echo "Open it from Applications to refresh its LaunchAgent path if auto-start is
 if [[ "$TILDAZ_DEV" -eq 1 ]]; then
     echo
     echo "This is a dev build: bundle id me.ensky0.tildaz.dev, config/logs under tildaz-dev."
-    echo "macOS treats it as a separate app, so grant Input Monitoring / Accessibility once."
+    echo "macOS treats it as a separate app, so grant Input Monitoring and"
+    echo "Device Control and Data Access (Accessibility before macOS 27) once."
 fi

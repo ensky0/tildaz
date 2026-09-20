@@ -36,7 +36,6 @@ APP="${APPS[0]}"
 LAUNCH_LABELS=("me.ensky0.tildaz" "me.ensky0.tildaz.dev" "com.tildaz.app")
 CONFIG_BASE="$HOME/.config"
 [[ "${XDG_CONFIG_HOME:-}" == /* ]] && CONFIG_BASE="$XDG_CONFIG_HOME"
-CONFIG_DIR="$CONFIG_BASE/tildaz"
 CERT_NAME="TildazLocal"
 CERT_CRT="$HOME/.tildaz/${CERT_NAME}.crt"
 CERT_P12="$HOME/.tildaz/${CERT_NAME}.p12"        # private key 백업 (cert-common.sh, #444)
@@ -143,7 +142,10 @@ fi
 if [[ "$PURGE" != "1" ]]; then
     echo ""
     echo "Preserved (--purge 로 지울 수 있음):"
-    echo "  $CONFIG_DIR/                  (config)"
-    echo "  ~/Library/Logs/tildaz_*.log   (log)"
+    for id in "${TILDAZ_IDS[@]}"; do
+        echo "  $CONFIG_BASE/$id/          (config)"
+        echo "  ~/Library/Logs/$id/          (log)"
+    done
+    echo "  ~/Library/Logs/tildaz_*.log   (log, pre-#654 layout)"
     echo "  code-signing cert '$CERT_NAME' (재빌드 시 유지)"
 fi

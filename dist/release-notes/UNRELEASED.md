@@ -24,6 +24,11 @@ Internal changes belong in neither.
   what the other platforms already did. About and "Open Log" follow automatically; old
   files stay where they are and can be deleted.
   ([#654](https://github.com/ensky0/tildaz/issues/654))
+- **macOS auto-start uses a new LaunchAgent name** (`me.ensky0.tildaz`, the app's bundle id;
+  it used to be `com.tildaz.app`). The old entry is not removed for you. If TildaZ starts
+  twice at login, or keeps starting after you turned `auto_start` off, run this once:
+  `launchctl bootout gui/$(id -u)/com.tildaz.app 2>/dev/null; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`
+  ([#654](https://github.com/ensky0/tildaz/issues/654))
 
 ## Body candidates
 
