@@ -21,6 +21,9 @@ const substitutions = [_]struct { token: []const u8, value: []const u8 }{
     .{ .token = "__TILDAZ_EXT_UUID__", .value = app_id.extension_uuid },
     .{ .token = "__TILDAZ_EXT_SCHEMA__", .value = app_id.extension_schema },
     .{ .token = "__TILDAZ_EXT_NAME__", .value = if (app_id.is_dev) "TildaZ Drop-down (dev)" else "TildaZ Drop-down" },
+    // worker 창 제목의 접두어 — 확장의 `workerIndex()` 가 이것으로 번호를 읽는다. `instances.zig`
+    // 의 `window_title_prefix` 와 같은 단일 소스 (`app_id.window_title_prefix`) 다.
+    .{ .token = "__TILDAZ_TITLE_PREFIX__", .value = app_id.window_title_prefix },
     // 마지막에 둔다 — 위 토큰들이 이 문자열을 품고 있지 않지만, 접두어가 겹치는 토큰을
     // 나중에 더할 때 짧은 것을 먼저 치환하면 긴 토큰이 깨진다.
     .{ .token = "__TILDAZ_APP__", .value = app_id.name },
@@ -190,6 +193,14 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
         const rendered = try render(allocator, gnome_resources[2].content);
         defer allocator.free(rendered);
         try std.testing.expect(std.mem.indexOf(u8, rendered, app_id.extension_schema) != null);
+    }
+    // 창 제목 접두어 — 확장이 이 값으로 worker 창을 찾으므로 `instances.zig` 가 내는 제목과
+    // 글자 단위로 같아야 한다 (#654).
+    for ([_][]const u8{ gnome_resources[0].content, cinnamon_resources[0].content }) |js| {
+        const rendered = try render(allocator, js);
+        defer allocator.free(rendered);
+        const needle = "const WINDOW_TITLE_PREFIX = \"" ++ @import("../../instances.zig").window_title_prefix ++ "\";";
+        try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
     }
     // **치환 뒤에 토큰이 남으면 안 된다.** 남은 채로 깔리면 셸이 그 확장을 읽지 못하고 그
     // 실패는 사용자 화면에서 조용하다. `package.sh` 의 같은 검사와 짝이다 (그쪽은 배포물을,

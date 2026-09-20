@@ -36,6 +36,13 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+/**
+ * worker 창 제목의 접두어 (`TildaZ-` · `TildaZ-dev-`) — `app_id.zig` 의 `window_title_prefix`
+ * 와 같은 값이어야 한다. 제목은 `<접두어><index>` 이고 `workerIndex()` 가 이것으로 번호를
+ * 읽는다. 개발 빌드가 릴리즈와 같은 제목을 쓰면 창 목록에서 어느 판인지 구별할 수 없어
+ * 갈랐다 (#654).
+ */
+const WINDOW_TITLE_PREFIX = "__TILDAZ_TITLE_PREFIX__";
 
 const WORKER_APP_ID_PREFIX = `${APP}.instance`;
 const DIALOG_APP_ID = `${APP}-dialog`;
@@ -54,7 +61,11 @@ function configDirPath() {
  *
  * **zig 의 `paths.lockDir` 와 규칙이 같아야 한다.** 한쪽만 바뀌면 worker 가 파일을 못
  * 찾고, 그러면 grab 실패가 다시 조용해진다 (증상은 "가끔 안 잡힌다" 로 보인다).
- * 순서: `$XDG_RUNTIME_DIR/tildaz` → `$XDG_CACHE_HOME/tildaz/run` → `~/.cache/tildaz/run`.
+ * 순서: `$XDG_RUNTIME_DIR/<앱>/run` → `$XDG_CACHE_HOME/<앱>/run` → `~/.cache/<앱>/run`
+ * (#654 가 세 갈래를 같은 모양으로 맞췄다 — 그 전에는 runtime 갈래에만 `/run` 이 없었고,
+ * 그때 이 파일이 그 옛 모양을 그대로 들고 있다가 앱과 어긋난 적이 있다. `paths.zig` 의
+ * "#510 the Shell extensions record hotkey state where the worker reads it" 테스트가 이제
+ * 세 갈래의 모양까지 본다).
  *
  * **config 디렉터리에 두지 않는 이유**는 이 확장 자신이 그 디렉터리를 `FileMonitor` 로
  * 감시하기 때문이다 — 거기 쓰면 감시가 깨어나 config 재독 → 재등록 → 재실패 → 재기록의
@@ -63,7 +74,7 @@ function configDirPath() {
 function hotkeyStateDirPath() {
   const runtime = GLib.getenv("XDG_RUNTIME_DIR");
   if (runtime && GLib.path_is_absolute(runtime))
-    return GLib.build_filenamev([runtime, APP]);
+    return GLib.build_filenamev([runtime, APP, "run"]);
   const cache = GLib.getenv("XDG_CACHE_HOME");
   if (cache && GLib.path_is_absolute(cache))
     return GLib.build_filenamev([cache, APP, "run"]);
@@ -104,12 +115,15 @@ function clearHotkeyState(index) {
   }
 }
 
-/* #654 — 이 정규식은 `instances.zig` 의 `window_title_prefix` 와 짝이다. 개발 빌드도
- * 같은 타이틀 (`TildaZ-N`) 을 쓰고 신원은 app_id (`__TILDAZ_APP__.instanceN`) 로 가른다 —
- * 타이틀에 `-dev` 를 섞으면 여기서 번호를 못 읽어 확장이 그 창을 통째로 놓친다. */
+/* #654 — 제목의 접두어는 `WINDOW_TITLE_PREFIX` 토큰으로 받는다 (`instances.zig` 의
+ * `window_title_prefix` 와 짝). 한쪽만 바뀌면 여기서 번호를 못 읽어 확장이 그 창을 통째로
+ * 놓친다 — 배치 · 토글 · 전역 hotkey 가 죽는다. 그래서 정규식에 접두어를 박지 않고, 접두어를
+ * 문자열로 떼어 낸 뒤 남은 자리만 정수인지 본다. */
 function workerIndex(win) {
   if (!win) return null;
-  const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");
+  const title = win.get_title?.() || "";
+  if (!title.startsWith(WINDOW_TITLE_PREFIX)) return null;
+  const match = /^(0|[1-9][0-9]*)$/.exec(title.slice(WINDOW_TITLE_PREFIX.length));
   if (!match) return null;
   const index = Number(match[1]);
   const expected = `${WORKER_APP_ID_PREFIX}${index}`;

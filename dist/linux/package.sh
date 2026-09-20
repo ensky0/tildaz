@@ -128,6 +128,7 @@ render_extension_tree() {
         sed -e 's|__TILDAZ_EXT_UUID__|tildaz@ensky0.github.io|g' \
             -e 's|__TILDAZ_EXT_SCHEMA__|org.gnome.shell.extensions.tildaz|g' \
             -e 's|__TILDAZ_EXT_NAME__|TildaZ Drop-down|g' \
+            -e 's|__TILDAZ_TITLE_PREFIX__|TildaZ-|g' \
             -e 's|__TILDAZ_APP__|tildaz|g' \
             "$f" > "$out"
     done < <(find "$src" -type f -print0)

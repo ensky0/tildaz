@@ -52,3 +52,12 @@ pub const extension_schema = "org.gnome.shell.extensions." ++ name;
 /// 공백을 넣을 수 없는 자리의 이름 — 창 제목 (`TildaZ_N`) 처럼 데스크톱 확장이
 /// 문자열로 찾는 값이다. `display_name` 과 갈라 둔 이유가 그 공백 · 괄호다.
 pub const window_base = if (build_options.dev) "TildaZ-dev" else "TildaZ";
+
+/// worker 창 제목의 접두어 — 제목은 `<접두어><index>` 다 (`TildaZ-0` · `TildaZ-dev-0`).
+///
+/// **세 곳이 같은 값을 봐야 한다**: Windows 는 `FindWindowW(class, title)` 로 worker 를
+/// 찾고, Linux 는 이 값을 `xdg_toplevel` 제목으로 내고, GNOME · Cinnamon 확장은 그 제목을
+/// `__TILDAZ_TITLE_PREFIX__` 토큰으로 받아 번호를 읽는다. 개발 빌드가 릴리즈와 같은 제목을
+/// 쓰면 Alt+Tab · 창 목록에서 어느 판인지 구별할 수 없다 — 이 이슈가 없애려던 "어느 쪽이
+/// 도는지 알 수 없다" 가 창 제목에 그대로 남는다 (2026-09-20 사용자 결정으로 가른다).
+pub const window_title_prefix = window_base ++ "-";

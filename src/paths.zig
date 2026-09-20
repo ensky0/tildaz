@@ -487,6 +487,19 @@ test "#510 the Shell extensions record hotkey state where the worker reads it" {
                 return error.ExtensionHotkeyStateOutOfSync;
             }
         }
+        // 세 갈래의 **모양**도 같아야 한다 — `<base>/<앱>/run` (#654 ⓑ). 이름만 보는 위 검사는
+        // runtime 갈래에 `/run` 이 빠진 것을 잡지 못했고, 실제로 그 상태로 커밋됐다 — 앱은
+        // `$XDG_RUNTIME_DIR/<앱>/run/instanceN.hotkey` 를 읽는데 확장은 한 단계 위에 썼다.
+        for ([_][]const u8{
+            "GLib.build_filenamev([runtime, APP, \"run\"])",
+            "GLib.build_filenamev([cache, APP, \"run\"])",
+            "GLib.build_filenamev([GLib.get_home_dir(), \".cache\", APP, \"run\"])",
+        }) |needle| {
+            if (std.mem.indexOf(u8, source.js, needle) == null) {
+                std.debug.print("{s} extension 의 상태 디렉터리가 <base>/<앱>/run 모양이 아니다: {s}\n", .{ source.label, needle });
+                return error.ExtensionHotkeyStateOutOfSync;
+            }
+        }
         // 줄 형식 — `shellExtensionHotkeyFailed` 가 읽는 판별자와 두 상태.
         if (std.mem.indexOf(u8, source.js, "v1 ${ok ? \"ok\" : \"failed\"}") == null) {
             std.debug.print("{s} extension 의 상태 줄 형식이 v1 <ok|failed> 가 아니다\n", .{source.label});

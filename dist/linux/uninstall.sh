@@ -64,8 +64,10 @@ HYPR_LUA="$HOME/.config/hypr/hyprland.lua"
 TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
 # install.sh 와 *글자 단위로 동일해야* 매칭됨. sway/hyprlang(.conf) 는 `#` 주석,
 # Hyprland Lua 는 `--` 주석이라 marker 가 두 가지.
-TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
-TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
+# marker 는 id 마다 하나다 (#654) — 릴리즈는 예전 그대로 `# tildaz autostart …`, dev 는
+# `# tildaz-dev autostart …`. 아래 `remove_tildaz_block` 이 두 id 를 다 돈다.
+marker_for() { echo "# $1 autostart (added by install.sh — uninstall.sh removes this)"; }
+marker_lua_for() { echo "-- $1 autostart (added by install.sh — uninstall.sh removes this)"; }
 
 removed=0
 for f in "${USER_FILES[@]}"; do
@@ -267,13 +269,16 @@ remove_tildaz_block() {
         removed=$((removed + 1))
     fi
 }
-remove_tildaz_block "$SWAY_CFG"  "$TILDAZ_MARKER"     "marker + exec 2줄"
-remove_tildaz_block "$HYPR_CONF" "$TILDAZ_MARKER"     "marker + exec-once 2줄"
-remove_tildaz_block "$HYPR_LUA"  "$TILDAZ_MARKER_LUA" "marker + hl.on 2줄"
+for id in "${TILDAZ_IDS[@]}"; do
+    remove_tildaz_block "$SWAY_CFG"  "$(marker_for "$id")"     "$id · marker + exec 2줄"
+    remove_tildaz_block "$HYPR_CONF" "$(marker_for "$id")"     "$id · marker + exec-once 2줄"
+    remove_tildaz_block "$HYPR_LUA"  "$(marker_lua_for "$id")" "$id · marker + hl.on 2줄"
+done
 
 # COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 줄 단위로 지운다.
 # 지우는 것은 둘뿐이다.
-#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")`. 바이너리 경로 · 이름과
+#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")` 또는 dev 판의
+#      `Some("TildaZ-dev_<index>")` (#654 · `app_id.window_base`). 바이너리 경로 · 이름과
 #      무관하게 우리 것이다.
 #   ② 표식이 아예 없고 명령이 `tildaz --toggle[ N]` 인 줄 — 예전 install.sh 가 쓴 것
 #      (#514). 지금 install.sh 는 COSMIC 항목을 쓰지 않는다.
@@ -284,7 +289,7 @@ COSMIC_CUSTOM="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/cus
 if [[ -f "$COSMIC_CUSTOM" ]]; then
     tmp="$COSMIC_CUSTOM.tildaz-uninstall-tmp"
     awk '
-        /description: Some\("TildaZ_[0-9]+"\)/ { next }
+        /description: Some\("TildaZ(-dev)?_[0-9]+"\)/ { next }
         /description:/ { print; next }
         /Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)/ { next }
         { print }
