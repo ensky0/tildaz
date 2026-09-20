@@ -423,7 +423,7 @@ if [[ -d "$CIN_SRC" ]]; then
     render_extension "$CIN_SRC" "$CIN_DST"
     # GNOME 과 같은 함수 (`gsettings_strv_edit`) 로 켠다 — 두 셸의 목록 편집 로직을 한 곳에 둔다.
     if gsettings_strv_edit org.cinnamon enabled-extensions add "$CIN_UUID"; then
-        CIN_MSG="$CIN_DST  (enabled — Cinnamon Wayland 세션 재로그인 후 적용)"
+        CIN_MSG="$CIN_DST  (enabled — Cinnamon 이 바로 읽음. 앱은 메뉴에서 실행하거나 다음 로그인의 autostart 로)"
     else
         CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings·python3 미설치, 시스템 설정 > 확장에서 활성화 + 재로그인)"
     fi
@@ -449,7 +449,8 @@ echo "  - KDE Plasma 6: Alt+F2 → 'TildaZ' 또는 메뉴에서 실행 (portal a
 echo "  - GNOME: 위 extension 이 drop-down 위치/단축키/자동시작을 담당."
 echo "           Wayland 라 로그아웃→로그인해야 extension 이 활성화됨."
 echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinnamon on Wayland)."
-echo "              Wayland 라 로그아웃→로그인해야 활성화됨. X11 세션엔 tildaz 안 뜸."
+echo "              extension 은 재로그인 없이 바로 켜짐 (#654 실측). 앱은 메뉴에서 실행하거나"
+echo "              다음 로그인의 autostart 로 뜸. X11 세션엔 tildaz 안 뜸."
 echo "  - sway: ~/.config/sway/config 의 exec 로 자동실행(없으면 위에서 생성)."
 echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
 echo "  - Hyprland: layer-shell drop-down. hotkey 는 실행 시 config_N별 hyprctl bind→'tildaz --toggle N'."

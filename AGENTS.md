@@ -1189,6 +1189,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
   **"(enabled)" 라고 적었는데 실제로는 `enabled-extensions` 에 들어가지 못해 재로그인 뒤에도 켜지지 않았어요.** 그래서 지금은
   Cinnamon 경로처럼 **gsettings 를 직접 써요** (`gsettings_strv_edit`) — 로그인 때 셸이 그 목록을 읽어 켜요. 판정은
   `gsettings get org.gnome.shell enabled-extensions` 에 UUID 가 있는지로 해요. 명령의 종료 코드가 아니에요.
+  **Cinnamon 은 반대로 재로그인 없이 바로 읽어요** (2026-09-21 실측 — `enabled-extensions` 변경 즉시 `Loaded extension …`).
 - **`org.gnome.shell disabled-extensions` 가 `enabled-extensions` 보다 우선이에요.** 같은 UUID 가 양쪽에 있으면 확장이
   `INITIALIZED` 에 멈추고 켜지지 않아요 (같은 회차 실측 — 9/18 회차의 `uninstall.sh` 가 부른 `gnome-extensions disable` 이
   거기 릴리즈 UUID 를 남겨, GNOME 로그인 뒤 릴리즈 확장이 그 상태였어요). `gnome-extensions disable` 은 **끄면서 그 목록에
@@ -2225,6 +2226,14 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   돌린 세션에서 바로 `gnome-extensions enable` 로 켜려 하면 exit 2 로 실패해요 (위 `# 전역 hotkey` 절의 함정). 그래서 GNOME
   실기는 *설치 → 재로그인 → 측정* 순서고, 재로그인은 사용자에게 부탁해요. 확장의 셸 로그에 `config directory read failed` 가
   **한 건** 남는 것은 정상이에요 — 첫 설치라 `~/.config/tildaz-dev/` 가 아직 없을 때 확장이 autostart 판정으로 읽은 자리예요.
+- **Cinnamon 에서도 두 확장이 함께 ACTIVE 로 공존하는 것을 실기로 확인했어요** (2026-09-21 · 같은 노트북 ·
+  Cinnamon 6.6.9 Wayland). 바인딩 `tildaz-toggle-0=F1` · `tildaz-dev-toggle-0=F10` 이 둘 다 등록되고 서로 다른 창만
+  움직였어요. **GNOME 과 두 가지가 달라요.** ① Cinnamon 은 새 확장 UUID 를 **재로그인 없이 바로** 읽어요 —
+  `enabled-extensions` 가 바뀌면 그 자리에서 로드하고, 빼면 그 자리에서 내려요. ② Cinnamon 확장은 **앱을 스스로
+  띄우지 않아요** (헤더 주석대로 창을 잡고 hotkey 만 등록해요 — 앱은 XDG autostart · 메뉴 몫). 그래서 설치 직후
+  바인딩이 없는 것은 결함이 아니에요 — config 가 없으니 등록할 hotkey 도 없어요. 앱을 launcher 로 띄우면 config 가
+  생기고, 확장의 디렉터리 감시가 그것을 읽어 등록해요. 판정은 `org.Cinnamon.Eval` 로 `Main.keybindingManager.bindings`
+  와 `meta_window.minimized` 를 읽으면 사람 손 없이 끝나요 (위 `# Linux — headless sway …` 절의 `G` 함수).
 
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
