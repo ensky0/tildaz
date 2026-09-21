@@ -699,6 +699,20 @@ pub const linux_hotkey_failed_format =
 pub const linux_hotkey_failed_fallback_msg =
     "TildaZ could not claim its global hotkey and cannot run without one. Edit this instance's config file and start TildaZ again.";
 
+/// #676 — GNOME · Cinnamon은 Shell extension이 창 배치와 hotkey를 함께 맡는다.
+/// 일반 xdg-shell 창 + GSettings hotkey는 제대로 된 drop-down이 아니므로 더는
+/// fallback하지 않는다. desktop 이름만 인자로 받아 두 host에서 같은 문구를 쓴다.
+pub const linux_shell_extension_required_title = "TildaZ Shell Extension Required";
+pub const linux_shell_extension_required_format =
+    \\TildaZ requires its {s} Shell extension to provide the drop-down window and global hotkey.
+    \\
+    \\Enable TildaZ Drop-down in your desktop's Extensions settings, then start TildaZ again. If you just installed it and it is not listed yet, log out and back in first.
+    \\
+    \\TildaZ stops here instead of opening as a regular window because that window cannot provide the drop-down behavior.
+;
+pub const linux_shell_extension_required_fallback_msg =
+    "TildaZ requires its Shell extension. Enable TildaZ Drop-down in Extensions, then start TildaZ again.";
+
 /// 위 format 의 두 번째 인자 — 등록 상대의 이름. 데스크톱 이름을 그대로 쓰지 않고 실제
 /// **등록 상대**를 적는다 (KDE 의 상대는 Plasma 가 아니라 KGlobalAccel 데몬이다).
 pub const hotkey_owner_kglobalaccel = "KGlobalAccel";

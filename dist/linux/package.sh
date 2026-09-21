@@ -639,7 +639,7 @@ license=('AGPL-3.0-or-later')
 depends=('libxkbcommon' 'freetype2' 'fontconfig')
 optdepends=('harfbuzz: ligature rendering'
             'dbus: KDE Plasma KGlobalAccel global hotkey'
-            'glib2: GNOME/Cinnamon gsettings global hotkey')
+            'glib2: GNOME/Cinnamon Shell extension settings and legacy hotkey cleanup')
 source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz'
         'LICENSE' 'THIRD-PARTY-NOTICES.md')
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')

@@ -533,9 +533,9 @@ working there while a non-Latin layout is active.
 
 **Punctuation is the riskier choice**, and not only on non-Latin layouts. German
 and Spanish cannot type `` ` `` at all — the key in that position is a dead accent
-— so a ``Ctrl+` `` hotkey is silently dead there. GNOME's fallback does not rescue
-it either, because that fallback only triggers when the layout is missing the
-Latin *alphabet*.
+— so a ``Ctrl+` `` hotkey is silently dead there. The GNOME and Cinnamon Shell
+extensions cannot make a dead key usable either. Choose a function key or a key
+that the active layout can type.
 
 KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
 sway / Hyprland limitation it matters most for.

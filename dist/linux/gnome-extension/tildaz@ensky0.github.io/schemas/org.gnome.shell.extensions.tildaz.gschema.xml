@@ -3,8 +3,8 @@
   <schema id="__TILDAZ_EXT_SCHEMA__" path="/org/gnome/shell/extensions/__TILDAZ_APP__/">
     <key name="toggle-hotkey" type="as">
       <default><![CDATA[['<Super>grave']]]></default>
-      <summary>Toggle the TildaZ drop-down</summary>
-      <description>GTK accelerator fallback. Numbered accelerators are read from $XDG_CONFIG_HOME/__TILDAZ_APP__/config_N.toml files, with the standard ~/.config fallback.</description>
+      <summary>Legacy default toggle accelerator</summary>
+      <description>Compatibility key. Numbered accelerators are read from $XDG_CONFIG_HOME/__TILDAZ_APP__/config_N.toml files, with the standard ~/.config fallback.</description>
     </key>
   </schema>
 </schemalist>

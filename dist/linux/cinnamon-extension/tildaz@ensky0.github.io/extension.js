@@ -16,12 +16,13 @@
  *   - 실행(autostart/메뉴) → map 시그널에서 tildaz 창을 잡아 config 위치로 배치.
  *     배치 모니터 = 마우스 커서가 있는 모니터(SPEC: Windows show() 와 동일 — 전
  *     platform 정규 스펙). `global.display.get_current_monitor()`.
- *   - hotkey(F1 등) → extension 이 직접 minimize/unminimize 로 토글. gsettings
+ *   - hotkey(F1 등) → extension 이 직접 minimize/unminimize 로 토글. 예전 gsettings
  *     `tildaz --toggle` 에 맡기지 않는다 — tildaz 의 --toggle 은 wl_surface.attach
  *     (NULL) 로 숨겼다 재-attach 하는데, 그 재표시 때 muffin 이 'map' 재발동 없이
  *     위치를 리셋해 extension 배치가 깨진다(#229 실측). minimize/unminimize 는
  *     surface 를 unmap 하지 않아 muffin 이 frame geometry 를 보존한다(GNOME 동일).
- *     그래서 zig 는 Cinnamon+extension 이면 gsettings hotkey 를 skip 한다.
+ *     그래서 #676부터 Shell extension이 hotkey를 전담하고 앱은 gsettings
+ *     fallback을 만들지 않는다.
  *   - hotkey = toggle 전용: tildaz 가 안 떠 있으면 무동작(전 platform/DE 일관).
  *   - hidden_start=true → map 시 배치 후 minimize (로그인 시 숨김, 첫 hotkey 로 등장).
  *   - 목록 숨김(패널 window-list / Alt-Tab / grouped-list / workspace-switcher):
@@ -369,6 +370,10 @@ function disable() {
   st?.dialogIdleIds.clear();
   for (const win of st?.managed || []) {
     try {
+      // #676 — 확장을 끌 때 숨겨 둔 터미널을 최소화 상태로 남기면 사용자가
+      // 전역 단축키도 창 목록도 없는 창을 잃는다. map handler를 위에서 먼저
+      // 끊었으므로 여기서 복원해도 hidden_start가 다시 minimize하지 않는다.
+      if (win.minimized) win.unminimize();
       win.unmake_above();
       win.unstick();
     } catch (_e) {}
@@ -678,8 +683,8 @@ function toAccel(s) {
   if (!key) return null;
   // #496 1-c — 위치 표기 `[Backquote]` 는 **자리**다. GTK 의 `is_keycode()` 가 `0x` +
   // **정확히 두 자리** hex 만 keycode 로 인정하고, Muffin 은 그 값을 변환 없이
-  // `combo->keycode` 에 넣어 xkb keycode (= evdev + 8) 와 견준다. zig 쪽
-  // `buildGtkAccel` (gsettings fallback 경로) 이 내는 형식과 같다.
+  // `combo->keycode` 에 넣어 xkb keycode (= evdev + 8) 와 견준다. 값은
+  // `src/physical_key.zig` 의 Linux xkb keycode 표와 같다.
   //
   // 실측 (GNOME 50.4, nested): `<Control>[backquote]` 는 `grab_accelerator` 가 0
   // (`KeyBindingAction.NONE`) 을 내고 `<Control>0x31` 은 받는다 (#496 1-c).

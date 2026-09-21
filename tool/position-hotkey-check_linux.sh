@@ -195,9 +195,8 @@ cat <<'MSG'
    KDE             us: Ctrl+`   fr: Ctrl+²   ru: Ctrl+Ё   de: 등록 안 됨 (dead key)
    COSMIC          key: "grave" / "twosuperior" / "Cyrillic_io" / de 는 등록 안 됨
 
-   ⚠️ GNOME · Cinnamon 은 **확장이 켜져 있으면 위 GSettings 값이 안 나온다.** 확장이
-   hotkey 를 전담하고 gsettings 등록은 건너뛰기 때문이다 (로그의 `extension active`).
-   그때의 근거는 셸 로그다 — `journalctl --user -b -o cat | grep tildaz`.
+   GNOME · Cinnamon은 Shell extension만 쓴다. GSettings fallback 값은 없어야 한다
+   (#676). 등록 근거는 셸 로그다 — `journalctl --user -b -o cat | grep tildaz`.
 
    layout 을 바꿔 가며 보려면 KDE 에서는 아래로 전환할 수 있다 (배열을 먼저 추가해 둔다).
    전환은 **창을 띄우지 않고** 해야 D-Bus 통지 경로가 검증된다.

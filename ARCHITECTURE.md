@@ -138,14 +138,15 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    both the Wayland host and software renderer. The decorative icon is omitted
    only when the full message and buttons otherwise need the vertical space.
 
-The host probes compositor capabilities at startup and degrades gracefully:
-`xdg_wm_base` (baseline window — fatal if missing), `zwlr_layer_shell_v1` (true
-drop-down; falls back to a normal `xdg-shell` window or a Shell extension on
-mutter / muffin), `libxkbcommon` (keymaps), Wayland data-device (clipboard),
-and `zwp_text_input_v3` (IME). Global hotkeys use native desktop paths:
-direct KGlobalAccel on KDE Plasma, GSettings / Shell extensions on GNOME and
-Cinnamon, and compositor bindings to `tildaz --toggle N` on COSMIC, Hyprland,
-and sway. An unrecognized desktop can bind that IPC command manually.
+The host checks compositor capabilities at startup: `xdg_wm_base` (baseline
+window — fatal if missing), `zwlr_layer_shell_v1` (true drop-down),
+`libxkbcommon` (keymaps), Wayland data-device (clipboard), and
+`zwp_text_input_v3` (IME). GNOME and Cinnamon require the bundled Shell
+extension to turn the baseline `xdg-shell` window into a drop-down and own its
+global hotkey. Other global hotkeys use native desktop paths: direct
+KGlobalAccel on KDE Plasma and compositor bindings to `tildaz --toggle N` on
+COSMIC, Hyprland, and sway. An unrecognized desktop can bind that IPC command
+manually.
 
 ## Design Choices
 

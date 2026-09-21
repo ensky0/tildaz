@@ -500,7 +500,7 @@ test "#510 the Shell extensions record hotkey state where the worker reads it" {
                 return error.ExtensionHotkeyStateOutOfSync;
             }
         }
-        // 줄 형식 — `shellExtensionHotkeyFailed` 가 읽는 판별자와 두 상태.
+        // 줄 형식 — `shellExtensionHotkeyState` 가 읽는 판별자와 두 상태.
         if (std.mem.indexOf(u8, source.js, "v1 ${ok ? \"ok\" : \"failed\"}") == null) {
             std.debug.print("{s} extension 의 상태 줄 형식이 v1 <ok|failed> 가 아니다\n", .{source.label});
             return error.ExtensionHotkeyStateOutOfSync;

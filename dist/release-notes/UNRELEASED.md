@@ -20,6 +20,11 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 - Linux tarball: run `./install.sh --release` to install. ([#654](https://github.com/ensky0/tildaz/issues/654))
+- **GNOME and Cinnamon now require the TildaZ Drop-down Shell extension.** TildaZ
+  enables it on first setup. If you turned it off, enable it in Extensions before
+  starting TildaZ again. Disabling it while TildaZ is running restores any hidden
+  terminal window instead of closing its shell session.
+  ([#676](https://github.com/ensky0/tildaz/issues/676))
 - **macOS log files moved into their own folder.** They are now
   `~/Library/Logs/tildaz/tildaz_N.log` instead of `~/Library/Logs/tildaz_N.log`, which is
   what the other platforms already did. About and "Open Log" follow automatically; old
@@ -33,6 +38,10 @@ Internal changes belong in neither.
 
 ## Body candidates
 
+- GNOME and Cinnamon no longer fall back to an incomplete regular window when the
+  Shell extension is disabled. Existing terminal sessions stay open and hidden
+  windows are restored.
+  ([#676](https://github.com/ensky0/tildaz/issues/676))
 - Linux tarball: `install.sh` now actually enables the GNOME Shell extension. It used to
   call `gnome-extensions enable`, which fails silently before the next login, so the
   extension never turned on. Cinnamon was not affected.
