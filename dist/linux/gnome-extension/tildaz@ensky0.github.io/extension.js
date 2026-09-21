@@ -27,16 +27,36 @@ import Gio from "gi://Gio";
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
-const WORKER_APP_ID_PREFIX = "tildaz.instance";
-const DIALOG_APP_ID = "tildaz-dialog";
-const DESKTOP_ID = "tildaz.desktop";
+/**
+ * 개발 빌드와 릴리즈를 가르는 이름 (#654). `shell_extension.zig` (앱이 이 파일을 사용자
+ * 디렉터리에 쓸 때) 와 `install.sh` (배포물에서 복사할 때) 가 이 토큰을 치환한다 —
+ * `dist/linux/tildaz.desktop` 의 치환 토큰과 같은 방식이다.
+ *
+ * ⚠️ **이 파일을 그대로 복사하면 동작하지 않는다.** 토큰이 남은 채로는 `tildaz` 도
+ * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
+ */
+const APP = "__TILDAZ_APP__";
+// 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
+// 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
+const LOG_TAG = `[${APP}]`;
+/**
+ * worker 창 제목의 접두어 (`TildaZ-` · `TildaZ-dev-`) — `app_id.zig` 의 `window_title_prefix`
+ * 와 같은 값이어야 한다. 제목은 `<접두어><index>` 이고 `workerIndex()` 가 이것으로 번호를
+ * 읽는다. 개발 빌드가 릴리즈와 같은 제목을 쓰면 창 목록에서 어느 판인지 구별할 수 없어
+ * 갈랐다 (#654).
+ */
+const WINDOW_TITLE_PREFIX = "__TILDAZ_TITLE_PREFIX__";
+
+const WORKER_APP_ID_PREFIX = `${APP}.instance`;
+const DIALOG_APP_ID = `${APP}-dialog`;
+const DESKTOP_ID = `${APP}.desktop`;
 
 function configDirPath() {
   const xdgConfigHome = GLib.getenv("XDG_CONFIG_HOME");
   const base = xdgConfigHome && GLib.path_is_absolute(xdgConfigHome)
     ? xdgConfigHome
     : GLib.build_filenamev([GLib.get_home_dir(), ".config"]);
-  return GLib.build_filenamev([base, "tildaz"]);
+  return GLib.build_filenamev([base, APP]);
 }
 
 /**
@@ -44,7 +64,11 @@ function configDirPath() {
  *
  * **zig 의 `paths.lockDir` 와 규칙이 같아야 한다.** 한쪽만 바뀌면 worker 가 파일을 못
  * 찾고, 그러면 grab 실패가 다시 조용해진다 (증상은 "가끔 안 잡힌다" 로 보인다).
- * 순서: `$XDG_RUNTIME_DIR/tildaz` → `$XDG_CACHE_HOME/tildaz/run` → `~/.cache/tildaz/run`.
+ * 순서: `$XDG_RUNTIME_DIR/<앱>/run` → `$XDG_CACHE_HOME/<앱>/run` → `~/.cache/<앱>/run`
+ * (#654 가 세 갈래를 같은 모양으로 맞췄다 — 그 전에는 runtime 갈래에만 `/run` 이 없었고,
+ * 그때 이 파일이 그 옛 모양을 그대로 들고 있다가 앱과 어긋난 적이 있다. `paths.zig` 의
+ * "#510 the Shell extensions record hotkey state where the worker reads it" 테스트가 이제
+ * 세 갈래의 모양까지 본다).
  *
  * **config 디렉터리에 두지 않는 이유**는 이 확장 자신이 그 디렉터리를 `FileMonitor` 로
  * 감시하기 때문이다 — 거기 쓰면 감시가 깨어나 config 재독 → 재등록 → 재실패 → 재기록의
@@ -53,11 +77,11 @@ function configDirPath() {
 function hotkeyStateDirPath() {
   const runtime = GLib.getenv("XDG_RUNTIME_DIR");
   if (runtime && GLib.path_is_absolute(runtime))
-    return GLib.build_filenamev([runtime, "tildaz"]);
+    return GLib.build_filenamev([runtime, APP, "run"]);
   const cache = GLib.getenv("XDG_CACHE_HOME");
   if (cache && GLib.path_is_absolute(cache))
-    return GLib.build_filenamev([cache, "tildaz", "run"]);
-  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", "tildaz", "run"]);
+    return GLib.build_filenamev([cache, APP, "run"]);
+  return GLib.build_filenamev([GLib.get_home_dir(), ".cache", APP, "run"]);
 }
 
 function hotkeyStatePath(index) {
@@ -81,7 +105,7 @@ function writeHotkeyState(index, hotkey, ok) {
       `v1 ${ok ? "ok" : "failed"} ${hotkey}\n`
     );
   } catch (e) {
-    console.log(`[tildaz] could not record hotkey state for index ${index}: ${e}`);
+    console.log(`${LOG_TAG} could not record hotkey state for index ${index}: ${e}`);
   }
 }
 
@@ -90,13 +114,19 @@ function clearHotkeyState(index) {
   try {
     GLib.unlink(hotkeyStatePath(index));
   } catch (e) {
-    console.log(`[tildaz] could not clear hotkey state for index ${index}: ${e}`);
+    console.log(`${LOG_TAG} could not clear hotkey state for index ${index}: ${e}`);
   }
 }
 
+/* #654 — 제목의 접두어는 `WINDOW_TITLE_PREFIX` 토큰으로 받는다 (`instances.zig` 의
+ * `window_title_prefix` 와 짝). 한쪽만 바뀌면 여기서 번호를 못 읽어 확장이 그 창을 통째로
+ * 놓친다 — 배치 · 토글 · 전역 hotkey 가 죽는다. 그래서 정규식에 접두어를 박지 않고, 접두어를
+ * 문자열로 떼어 낸 뒤 남은 자리만 정수인지 본다. */
 function workerIndex(win) {
   if (!win) return null;
-  const match = /^TildaZ-(0|[1-9][0-9]*)$/.exec(win.get_title?.() || "");
+  const title = win.get_title?.() || "";
+  if (!title.startsWith(WINDOW_TITLE_PREFIX)) return null;
+  const match = /^(0|[1-9][0-9]*)$/.exec(title.slice(WINDOW_TITLE_PREFIX.length));
   if (!match) return null;
   const index = Number(match[1]);
   const expected = `${WORKER_APP_ID_PREFIX}${index}`;
@@ -285,7 +315,7 @@ export default class TildazExtension extends Extension {
       if (!cfg.accel) {
         // #510 — accel 로 옮기지 못한 것도 "hotkey 를 못 잡았다" 다 (알 수 없는 위치
         // 이름 등). 셸에서는 grab 을 시도조차 못 하므로 여기서 실패로 기록한다.
-        console.log(`[tildaz] no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
+        console.log(`${LOG_TAG} no usable accelerator — index ${index} hotkey ${JSON.stringify(cfg.hotkey)}`);
         writeHotkeyState(index, cfg.hotkey, false);
         continue;
       }
@@ -304,7 +334,7 @@ export default class TildazExtension extends Extension {
         //
         // #510 — 로그는 셸 journal 이라 tildaz 가 못 읽는다. 같은 사실을 worker 가
         // 읽을 수 있는 자리에도 남긴다. 그래야 "부를 수 없는 창" 대신 안내 후 종료가 된다.
-        console.log(`[tildaz] accelerator grab failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
+        console.log(`${LOG_TAG} accelerator grab failed — index ${index} accel ${JSON.stringify(cfg.accel)}`);
         writeHotkeyState(index, cfg.hotkey, false);
       }
     }
@@ -423,7 +453,7 @@ export default class TildazExtension extends Extension {
         if (typeof j.hidden_start === "boolean") out.hiddenStart = j.hidden_start;
       }
     } catch (e) {
-      console.log(`[tildaz] config read failed: ${e}`);
+      console.log(`${LOG_TAG} config read failed: ${e}`);
     }
     return out;
   }
@@ -440,7 +470,7 @@ export default class TildazExtension extends Extension {
       }
       dir.close();
     } catch (e) {
-      console.log(`[tildaz] config directory read failed: ${e}`);
+      console.log(`${LOG_TAG} config directory read failed: ${e}`);
     }
     return new Map([...configs.entries()].sort((a, b) => a[0] - b[0]));
   }
@@ -471,7 +501,7 @@ export default class TildazExtension extends Extension {
     if (position) {
       const code = POSITION_KEYCODES[position[1]];
       if (code === undefined) {
-        console.log(`[tildaz] unknown position "${key}" in hotkey "${s}"`);
+        console.log(`${LOG_TAG} unknown position "${key}" in hotkey "${s}"`);
         return null;
       }
       return mods + "0x" + code.toString(16).padStart(2, "0");
@@ -554,7 +584,7 @@ export default class TildazExtension extends Extension {
         global.display.unset_input_focus(now);
       }
     } catch (e) {
-      global.logError("[tildaz] defocus after hide failed: " + e);
+      global.logError(LOG_TAG + " defocus after hide failed: " + e);
     }
   }
 
@@ -752,7 +782,7 @@ export default class TildazExtension extends Extension {
     try {
       Gio.Subprocess.new([exe, "--autostart"], Gio.SubprocessFlags.NONE);
     } catch (e) {
-      console.log(`[tildaz] autostart launch failed: ${e}`);
+      console.log(`${LOG_TAG} autostart launch failed: ${e}`);
     }
   }
 
@@ -829,7 +859,7 @@ export default class TildazExtension extends Extension {
         if (!cfg) continue;
         this._place(win, cfg);
       } catch (e) {
-        console.log(`[tildaz] monitors-changed replace failed: ${e}`);
+        console.log(`${LOG_TAG} monitors-changed replace failed: ${e}`);
       }
     }
   }

@@ -807,9 +807,9 @@ pub const macos_permission_required_format =
     \\       • If not, click the "+" button at the bottom,
     \\         find TildaZ.app, click Open, then turn it ON.
     \\
-    \\Step 2 — Accessibility
+    \\Step 2 — {s}
     \\  1. Click "< Privacy & Security" to go back.
-    \\  2. Click "Accessibility" instead.
+    \\  2. Click "{s}" instead.
     \\  3. Same as above: turn "tildaz" ON,
     \\     or click "+" to add TildaZ.app and then turn it ON.
     \\
@@ -818,9 +818,22 @@ pub const macos_permission_required_format =
     \\
     \\Current status:
     \\  Input Monitoring : {s}
-    \\  Accessibility    : {s}
+    \\  {s} : {s}
 ;
-pub const macos_permission_required_fallback_msg = "TildaZ needs Input Monitoring and Accessibility permissions. Open System Settings -> Privacy & Security and enable both for tildaz.";
+
+/// macOS 27 이 `Accessibility` 를 `Device Control and Data Access` 로 바꿨다
+/// ([#674](https://github.com/ensky0/tildaz/issues/674)). 두 값은 그 OS 의
+/// `SecurityPrivacyExtension` 리소스 (`Localizable.loctable` 의 `ACCESSIBILITY` 키) 에서
+/// 그대로 읽은 것이다 — 우리가 지어낸 말이 아니다. `Input Monitoring` (`LISTEN_EVENT`) 은
+/// 바뀌지 않았다.
+///
+/// 이름만 바뀌었고 API · TCC 서비스 키는 그대로라 판정 · 부여 동작에는 영향이 없다.
+/// 문제는 **사용자가 이 안내를 그대로 따라가면 없는 메뉴를 찾게 된다**는 것이다.
+pub const macos_accessibility_label_legacy = "Accessibility";
+pub const macos_accessibility_label_modern = "Device Control and Data Access";
+/// `bufPrint` 가 실패했을 때만 쓰는 짧은 안내다. 여기서는 권한 이름을 주입할 수 없으므로
+/// **양쪽 macOS 에서 다 통하는 표현**을 쓴다 (#674).
+pub const macos_permission_required_fallback_msg = "TildaZ needs two permissions: Input Monitoring, and the one that lets apps control your Mac (\"Device Control and Data Access\" on macOS 27 and later, \"Accessibility\" before that). Open System Settings -> Privacy & Security and enable both for tildaz.";
 pub const permission_status_granted = "GRANTED";
 pub const permission_status_missing = "MISSING";
 

@@ -2,12 +2,22 @@
 // 표준 위치를 따른다 (SPEC.md §11.1, AGENTS.md "platform native first").
 // 로그 파일명은 config 파일명 (config_N.toml) 과 같은 `이름_번호` 형식.
 //
-//   Windows: %APPDATA%\tildaz\config_N.toml   (Microsoft 표준)
-//            %APPDATA%\tildaz\tildaz_N.log
-//   macOS:   $XDG_CONFIG_HOME/tildaz/config_N.toml (fallback: $HOME/.config)
-//            $HOME/Library/Logs/tildaz_N.log    (Apple HIG — Console.app 인덱싱)
-//   Linux:   $XDG_CONFIG_HOME/tildaz/config_N.toml (fallback: $HOME/.config)
-//            $XDG_STATE_HOME/tildaz/tildaz_N.log (fallback: $HOME/.local/state)
+// 디렉터리 이름은 `app_id.name` 하나가 정한다 — 개발 빌드는 `tildaz-dev` 라 릴리즈와
+// 파일이 겹치지 않는다 ([#654](https://github.com/ensky0/tildaz/issues/654)). 아래 표의
+// `<name>` 이 그 값이다.
+//
+//   Windows: %APPDATA%\<name>\config_N.toml   (Microsoft 표준)
+//            %APPDATA%\<name>\tildaz_N.log
+//   macOS:   $XDG_CONFIG_HOME/<name>/config_N.toml (fallback: $HOME/.config)
+//            $HOME/Library/Logs/<name>/tildaz_N.log  (Apple HIG — Console.app 인덱싱)
+//   Linux:   $XDG_CONFIG_HOME/<name>/config_N.toml (fallback: $HOME/.config)
+//            $XDG_STATE_HOME/<name>/tildaz_N.log (fallback: $HOME/.local/state)
+//
+// 파일 이름 (`config_N.toml` · `tildaz_N.log`) 에는 dev 를 섞지 않는다 — 디렉터리가 이미
+// 갈렸으므로 충분하고, 두 군데에 같은 구분을 두면 한쪽만 갱신된다. **macOS 로그만
+// 예외였다** — 예전에는 `~/Library/Logs/` 바로 아래 파일로 두어 디렉터리에 앱 이름이
+// 없었고, 그래서 dev 를 가를 자리가 없었다. 이제 다른 OS 와 같이 앱 디렉터리를 둔다
+// (릴리즈 경로도 `~/Library/Logs/tildaz/` 로 옮겨졌다 — 릴리즈 노트에 적었다).
 //
 // 모두 allocator-based — 호출처가 free 책임. 부모 디렉토리는 자동 생성
 // (이미 존재하면 무시). config 모듈과 log 모듈에서 사용한다. 로그 경로는
@@ -19,6 +29,7 @@
 // (릴리즈 노트가 지정한 두 길 중 "context struct" — `runtime.zig` 주석 참고).
 const std = @import("std");
 const builtin = @import("builtin");
+const app_id = @import("app_id.zig");
 const instance_context = @import("instance_context.zig");
 const Runtime = @import("runtime.zig").Runtime;
 
@@ -68,15 +79,18 @@ fn logDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
         const appdata = try rt.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
+        return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ appdata, app_id.name });
     } else if (builtin.os.tag == .macos) {
+        // `~/Library/Logs/<name>/` — 예전에는 `~/Library/Logs/` 바로 아래에 파일을 두어
+        // 세 OS 중 여기만 앱 디렉터리가 없었다 (#654 ⓓ). Apple HIG 는 앱 디렉터리도
+        // 표준으로 인정하고, 이 자리가 갈려야 dev 와 릴리즈 로그가 섞이지 않는다.
         const home = try rt.envAlloc(allocator, "HOME");
         defer allocator.free(home);
-        return std.fmt.allocPrint(allocator, "{s}/Library/Logs", .{home});
+        return std.fmt.allocPrint(allocator, "{s}/Library/Logs/{s}", .{ home, app_id.name });
     } else {
         const base = try stateHome(rt, allocator);
         defer allocator.free(base);
-        return std.fmt.allocPrint(allocator, "{s}/tildaz", .{base});
+        return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
     }
 }
 
@@ -89,11 +103,11 @@ pub fn configDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
         const appdata = try rt.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\tildaz", .{appdata});
+        return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ appdata, app_id.name });
     }
     const base = try configHome(rt, allocator);
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/tildaz", .{base});
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
 }
 
 /// Linux · macOS 사용자 config base. 유효한 절대 XDG_CONFIG_HOME을 우선하고
@@ -140,17 +154,21 @@ pub fn ensureConfigDir(rt: Runtime, allocator: std.mem.Allocator) !void {
 /// Linux는 login session runtime 경로를 우선하고, 나머지는 OS 표준 local
 /// cache 경로를 사용한다. XDG_RUNTIME_DIR가 없는 Linux session은 XDG cache로
 /// fallback한다.
+///
+/// **이름과 모양을 세 OS 에서 맞춘다** ([#654](https://github.com/ensky0/tildaz/issues/654)).
+/// 예전에는 macOS 만 `TildaZ` (대문자) 였고 (ⓐ), `/run` 이 Windows · Linux cache 에는
+/// 붙고 macOS · Linux runtime 에는 없었다 (ⓑ). 이제 전부 `<base>/<name>/run` 이다.
 pub fn lockDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
         const local_appdata = try rt.envAlloc(allocator, "LOCALAPPDATA");
         defer allocator.free(local_appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\tildaz\\run", .{local_appdata});
+        return std.fmt.allocPrint(allocator, "{s}\\{s}\\run", .{ local_appdata, app_id.name });
     }
 
     if (builtin.os.tag == .macos) {
         const home = try rt.envAlloc(allocator, "HOME");
         defer allocator.free(home);
-        return std.fmt.allocPrint(allocator, "{s}/Library/Caches/TildaZ", .{home});
+        return std.fmt.allocPrint(allocator, "{s}/Library/Caches/{s}/run", .{ home, app_id.name });
     }
 
     if (rt.envAlloc(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
@@ -166,15 +184,18 @@ pub fn lockDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return linuxLockDir(allocator, null, null, home);
 }
 
+/// 세 갈래 모두 `<base>/<name>/run` 으로 맞춘다 — 예전에는 runtime 갈래에만 `/run` 이
+/// 없었다 (#654 ⓑ). `$XDG_RUNTIME_DIR` 갈래가 한 단계 깊어지므로 단일 인스턴스 소켓의
+/// `sun_path` (108 바이트) 여유를 `single_instance.zig` 에서 함께 본다.
 fn linuxLockDir(
     allocator: std.mem.Allocator,
     runtime_dir: ?[]const u8,
     cache_dir: ?[]const u8,
     home: []const u8,
 ) ![]u8 {
-    if (runtime_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/tildaz", .{dir});
-    if (cache_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/tildaz/run", .{dir});
-    return std.fmt.allocPrint(allocator, "{s}/.cache/tildaz/run", .{home});
+    if (runtime_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/{s}/run", .{ dir, app_id.name });
+    if (cache_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/{s}/run", .{ dir, app_id.name });
+    return std.fmt.allocPrint(allocator, "{s}/.cache/{s}/run", .{ home, app_id.name });
 }
 
 pub fn instanceLockPath(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
@@ -311,11 +332,15 @@ test "로그 경로가 OS 표준 위치와 worker index 를 따른다" {
     const path = try logPathFromDir(allocator, dir, name);
     defer allocator.free(path);
 
-    try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
-        .windows => "\\tildaz\\tildaz_7.log",
-        .macos => "/Library/Logs/tildaz_7.log",
-        else => "/tildaz/tildaz_7.log",
-    }));
+    // 기대값은 `app_id.name` 으로 만든다 — `-Drelease` 로 이름이 갈리므로 리터럴로 박으면
+    // 한쪽 빌드에서만 통과한다 (#654). macOS 도 이제 앱 디렉터리를 거친다 (ⓓ).
+    const expected = switch (builtin.os.tag) {
+        .windows => try std.fmt.allocPrint(allocator, "\\{s}\\tildaz_7.log", .{app_id.name}),
+        .macos => try std.fmt.allocPrint(allocator, "/Library/Logs/{s}/tildaz_7.log", .{app_id.name}),
+        else => try std.fmt.allocPrint(allocator, "/{s}/tildaz_7.log", .{app_id.name}),
+    };
+    defer allocator.free(expected);
+    try std.testing.expect(std.mem.endsWith(u8, path, expected));
 }
 
 test "측정 인스턴스는 worker 의 로그 파일에 쓰지 않는다" {
@@ -351,17 +376,26 @@ test "log path builder preserves paths beyond the old fixed limit" {
 test "Linux lock directory follows runtime then cache fallback order" {
     const allocator = std.testing.allocator;
 
+    // 세 갈래가 **같은 모양** (`<base>/<name>/run`) 인지도 함께 본다 — 예전에는 runtime
+    // 갈래에만 `/run` 이 없었다 (#654 ⓑ). 기대값은 `app_id.name` 으로 만든다. `-Drelease` 로
+    // 이름이 갈리므로 리터럴로 박으면 한쪽 빌드에서만 통과한다.
     const runtime = try linuxLockDir(allocator, "/run/user/1000", "/cache", "/home/test");
     defer allocator.free(runtime);
-    try std.testing.expectEqualStrings("/run/user/1000/tildaz", runtime);
+    const expect_runtime = try std.fmt.allocPrint(allocator, "/run/user/1000/{s}/run", .{app_id.name});
+    defer allocator.free(expect_runtime);
+    try std.testing.expectEqualStrings(expect_runtime, runtime);
 
     const cache = try linuxLockDir(allocator, null, "/cache", "/home/test");
     defer allocator.free(cache);
-    try std.testing.expectEqualStrings("/cache/tildaz/run", cache);
+    const expect_cache = try std.fmt.allocPrint(allocator, "/cache/{s}/run", .{app_id.name});
+    defer allocator.free(expect_cache);
+    try std.testing.expectEqualStrings(expect_cache, cache);
 
     const home = try linuxLockDir(allocator, null, null, "/home/test");
     defer allocator.free(home);
-    try std.testing.expectEqualStrings("/home/test/.cache/tildaz/run", home);
+    const expect_home = try std.fmt.allocPrint(allocator, "/home/test/.cache/{s}/run", .{app_id.name});
+    defer allocator.free(expect_home);
+    try std.testing.expectEqualStrings(expect_home, home);
 }
 
 test "XDG home accepts only absolute non-empty values" {
@@ -450,6 +484,19 @@ test "#510 the Shell extensions record hotkey state where the worker reads it" {
         for ([_][]const u8{ "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", ".cache" }) |needle| {
             if (std.mem.indexOf(u8, source.js, needle) == null) {
                 std.debug.print("{s} extension 의 상태 디렉터리 규칙에 {s} 가 없다\n", .{ source.label, needle });
+                return error.ExtensionHotkeyStateOutOfSync;
+            }
+        }
+        // 세 갈래의 **모양**도 같아야 한다 — `<base>/<앱>/run` (#654 ⓑ). 이름만 보는 위 검사는
+        // runtime 갈래에 `/run` 이 빠진 것을 잡지 못했고, 실제로 그 상태로 커밋됐다 — 앱은
+        // `$XDG_RUNTIME_DIR/<앱>/run/instanceN.hotkey` 를 읽는데 확장은 한 단계 위에 썼다.
+        for ([_][]const u8{
+            "GLib.build_filenamev([runtime, APP, \"run\"])",
+            "GLib.build_filenamev([cache, APP, \"run\"])",
+            "GLib.build_filenamev([GLib.get_home_dir(), \".cache\", APP, \"run\"])",
+        }) |needle| {
+            if (std.mem.indexOf(u8, source.js, needle) == null) {
+                std.debug.print("{s} extension 의 상태 디렉터리가 <base>/<앱>/run 모양이 아니다: {s}\n", .{ source.label, needle });
                 return error.ExtensionHotkeyStateOutOfSync;
             }
         }

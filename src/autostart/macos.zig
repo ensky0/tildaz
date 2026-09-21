@@ -1,4 +1,5 @@
-// macOS auto-start: `~/Library/LaunchAgents/com.tildaz.app.plist`
+// macOS auto-start: `~/Library/LaunchAgents/<bundle id>.plist`
+// (`me.ensky0.tildaz` · 개발 빌드는 `me.ensky0.tildaz.dev` — #654 이전에는 `com.tildaz.app`)
 //
 // 사용자 로그인 시 launchd 가 plist 따라 `open -a TildaZ.app --args --autostart`
 // 을 실행 — LaunchServices 가 우리 앱을 띄운다. Windows 의
@@ -20,11 +21,19 @@
 // 살아남는다 — 같은 로그의 사용자 수동 실행 경로에서 대조 확인했다.
 
 const std = @import("std");
+const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
-const LABEL = "com.tildaz.app";
+/// LaunchAgent label — `~/Library/LaunchAgents/` 가 공용 디렉터리라 이름으로 가른다.
+/// bundle id 와 같은 값을 써서 launchd · TCC · LaunchServices 가 보는 신원을 하나로 맞춘다 (#654).
+const LABEL = app_id.bundle_id;
 
+/// #654 이전의 label 은 `com.tildaz.app` 이었다 (개발 빌드도 릴리즈도 그 이름 하나). **그 옛 plist 를
+/// 여기서 지우지 않는다** — 사용자당 한 번이면 끝나는 정리를 매 실행마다 확인하는 코드로 두지
+/// 않기로 했다 (2026-09-20 사용자 결정). 대신 `README.md` 와 릴리즈 노트 `Upgrade notes` 에 한 줄
+/// 명령을 적어 두었고, `dist/macos/uninstall.sh` 는 옛 label 도 함께 치운다. 남겨 두면 옛 job 이
+/// 로그인 때 하나 더 뜨고 `auto_start = false` 로도 안 꺼지는데, 그 증상과 명령이 그 두 곳에 있다.
 /// `.app` 번들 안에서 실행 중일 때 쓰는 `ProgramArguments` 항목 — 정상 경로.
 /// `open` 이 LaunchServices 에 요청을 넘겨 앱을 별개 job 으로 띄운다.
 const PROGRAM_ARGS_VIA_OPEN =
@@ -43,7 +52,7 @@ const PROGRAM_ARGS_DIRECT =
     \\        <string>--autostart</string>
 ;
 
-/// `~/Library/LaunchAgents/com.tildaz.app.plist` 경로 (allocator-based).
+/// `~/Library/LaunchAgents/<LABEL>.plist` 경로 (allocator-based).
 fn plistPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
@@ -123,7 +132,7 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
 
 /// auto-start 비활성화 — plist 파일 삭제. 다음 로그인부터 효과 발생 (launchd 가
 /// plist 없으면 등록 안 함). 즉시 현재 세션 bootout 이 필요하면 수동:
-///   `launchctl bootout gui/$(id -u)/com.tildaz.app`
+///   `launchctl bootout gui/$(id -u)/me.ensky0.tildaz`
 pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
     const path = plistPath(rt, allocator) catch return;
     defer allocator.free(path);
@@ -143,17 +152,28 @@ test "appBundlePath 는 .app 번들 root 만 인정한다" {
     try std.testing.expect(appBundlePath("/tmp/Foo/Contents/MacOS/tildaz") == null);
 }
 
+test "LaunchAgent label 은 bundle id 이고 dev 와 릴리즈가 갈린다" {
+    // #654 — 파생으로만 단언하면 두 값이 같아도 통과하므로 판마다 실제 문자열을 박는다.
+    // 릴리즈 쪽 리터럴은 `uninstall.sh` 의 `LAUNCH_LABELS` 와 글자 단위로 같아야 한다.
+    if (app_id.is_dev) {
+        try std.testing.expectEqualStrings("me.ensky0.tildaz.dev", LABEL);
+    } else {
+        try std.testing.expectEqualStrings("me.ensky0.tildaz", LABEL);
+    }
+}
+
 test "renderPlist 는 번들 실행을 open 경유로 적는다" {
     const allocator = std.testing.allocator;
     const plist = try renderPlist(allocator, "/Applications/TildaZ.app/Contents/MacOS/tildaz");
     defer allocator.free(plist);
-    try std.testing.expectEqualStrings(
+    // label 은 빌드마다 다르므로 (`-Drelease`) 기대값도 `LABEL` 로 만든다.
+    const expected = try std.fmt.allocPrint(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
         \\<dict>
         \\    <key>Label</key>
-        \\    <string>com.tildaz.app</string>
+        \\    <string>{s}</string>
         \\    <key>ProgramArguments</key>
         \\    <array>
         \\        <string>/usr/bin/open</string>
@@ -167,20 +187,22 @@ test "renderPlist 는 번들 실행을 open 경유로 적는다" {
         \\</dict>
         \\</plist>
         \\
-    , plist);
+    , .{LABEL});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, plist);
 }
 
 test "renderPlist 는 번들 밖 실행이면 바이너리를 직접 적는다" {
     const allocator = std.testing.allocator;
     const plist = try renderPlist(allocator, "/usr/local/bin/tildaz");
     defer allocator.free(plist);
-    try std.testing.expectEqualStrings(
+    const expected = try std.fmt.allocPrint(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
         \\<dict>
         \\    <key>Label</key>
-        \\    <string>com.tildaz.app</string>
+        \\    <string>{s}</string>
         \\    <key>ProgramArguments</key>
         \\    <array>
         \\        <string>/usr/local/bin/tildaz</string>
@@ -191,5 +213,7 @@ test "renderPlist 는 번들 밖 실행이면 바이너리를 직접 적는다" 
         \\</dict>
         \\</plist>
         \\
-    , plist);
+    , .{LABEL});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, plist);
 }

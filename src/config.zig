@@ -13,6 +13,7 @@ const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const windows = std.os.windows;
 const themes = @import("themes.zig");
+const app_id = @import("app_id.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const log = @import("log.zig");
@@ -1623,8 +1624,19 @@ pub const Defaults = struct {
     /// `instances.max_config_index` 주석에 있다.
     ///
     /// 새로 **만드는** 파일에만 적용된다 — 이미 있는 config 는 읽은 값 그대로다.
+    ///
+    /// **개발 빌드는 표를 거꾸로 읽는다** (#654) — index 0 → `F10`, 1 → `F9`. 릴리즈와
+    /// 개발 빌드를 나란히 띄워도 기본 키가 부딪히지 않게 하는 것이 목적이다. 같은 조합을
+    /// 둘이 등록하면 **먼저 등록된 쪽만 발화하고 재등록으로 되찾지 못하므로**
+    /// ([#616](https://github.com/ensky0/tildaz/issues/616) 실측), 이기고 지는 문제로 두지
+    /// 않고 아예 안 만나게 한다.
+    ///
+    /// 두 규칙이 같은 집합 (`F1`..`F10`) 을 쓰므로 `dev i` 와 `릴리즈 (9-i)` 는 여전히
+    /// 같은 키다. 가장 흔한 조합 (양쪽 다 index 0 → `F10` vs `F1`) 이 갈리는 것이 요점이고,
+    /// 부딪히려면 반대쪽 끝 번호를 동시에 써야 한다.
     pub fn hotkeyFor(index: u32) []const u8 {
         std.debug.assert(index < index_hotkeys.len);
+        if (app_id.is_dev) return index_hotkeys[index_hotkeys.len - 1 - index];
         return index_hotkeys[index];
     }
 
@@ -4340,7 +4352,11 @@ test "#655 모르는 테마 이름 — 기본 테마로 돌고 목록은 로그�
 }
 
 test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된다" {
-    var c = try parseWithReplaced("hotkey           = \"F1\"", "hotkey           = \"nosuchkey\"");
+    // 기준 문서의 hotkey 는 `Defaults.hotkeyFor(0)` 파생이다 — 개발 빌드는 표를 거꾸로
+    // 읽어 `F10` 이므로 (#654) 리터럴 `"F1"` 로 찾으면 그 빌드에서만 못 찾는다.
+    var needle_buf: [32]u8 = undefined;
+    const needle = try std.fmt.bufPrint(&needle_buf, "hotkey           = \"{s}\"", .{Defaults.hotkeyFor(0)});
+    var c = try parseWithReplaced(needle, "hotkey           = \"nosuchkey\"");
     defer c.deinit();
     try std.testing.expect(pendingFatalNotice() == null);
     try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "hotkey") != null);

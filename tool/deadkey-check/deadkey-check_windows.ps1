@@ -9,7 +9,7 @@
 # 무엇을 하나 —
 # 1. `--instance 9 -e <자식.ps1>` 로 tildaz 를 띄운다. 자식은 `Read-Host` 로 줄을 N 개 받아 **UTF-8 바이트 hex** 로
 #    파일에 적고 끝난다 (자식이 끝나면 앱도 끝난다 — 정리가 자동이다). `-e` 는 stress run 이라 hotkey 도 config 도
-#    만들지 않는다. 로그는 `%APPDATA%\tildaz\tildaz_stress.log`.
+#    만들지 않는다. 로그는 `%APPDATA%\tildaz-dev\tildaz_stress.log`.
 # 2. `LoadKeyboardLayoutW("00020409", 0)` 로 **US-International** 을 세션에 올린다 — `'` `` ` `` `^` `~` `"` 가 dead key 다.
 #    활성화는 하지 않고 (flags=0) `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에 보내 **그 스레드만** 전환한다. 우리 셸도
 #    사용자의 다른 창도 layout 이 바뀌지 않는다. 전환됐는지 `GetKeyboardLayout(thread)` 로 확인하고 안 됐으면 키를 안 보낸다.
@@ -269,7 +269,7 @@ if (Test-Path $result) {
 } else {
     "❌ 자식이 결과 파일을 남기지 않았다 ($result)"; $ok = $false
 }
-"보낸 줄 $sent / $($cases.Count) · 결과: $result · 로그: $env:APPDATA\tildaz\tildaz_stress.log"
+"보낸 줄 $sent / $($cases.Count) · 결과: $result · 로그: $env:APPDATA\tildaz-dev\tildaz_stress.log"
 if ($Capture -and $capCounts.Count -eq 2) {
     $capOk = ($capCounts[0] -gt 0) -and ($capCounts[1] -eq 0)
     "표시 판정: dead key 직후 $($capCounts[0]) px · 조합 직후 $($capCounts[1]) px → $(if ($capOk) { 'OK' } else { 'FAIL' })"

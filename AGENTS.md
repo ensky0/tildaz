@@ -62,7 +62,10 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 3. **작업 수행**: 작업하면서 중간 결과, 결정 사항, 변경 이유 등을 계속 이슈에 댓글로 기록해요.
 4. **검증**: 빌드와 테스트를 직접 실행해서 작업 내용이 올바른지 확인해요.
 5. **완료**: 검증이 끝나면 커밋해요. (릴리즈는 별도 타이밍 — 여러 작업을 모아 새 버전으로 내요.)
-6. **이슈 닫기**: 릴리즈가 아니라 **검증이 끝나 해결되면 바로** 이슈를 닫아요. 릴리즈 여부는 닫기를 막지 않아요.
+6. **이슈 닫기**: 릴리즈가 아니라 **검증이 끝나 해결되면** 이슈를 닫아요. 릴리즈 여부는 닫기를 막지 않아요.
+   **PR 로 가는 작업은 PR 본문의 `Closes #N` 으로 머지가 닫아요** — 검증이 끝났어도 PR 이 아직이면 손으로
+   먼저 닫지 않아요. 머지와 이슈 닫힘이 한 사건이어야 이력이 맞아요 (2026-09-21 사용자 결정: *"이슈는 항상
+   PR 머지로 닫는다"*). PR 없는 작업 (문서 직행) 만 검증 뒤 바로 닫아요.
 
 **닫지 않고 레이블로 남기는 경우가 있어요 — ⑥ 의 예외예요.** 원인 규명이 끝났는데도 남은 일이 있으면 닫지 않고 **왜 열려 있는지**를 레이블로 표시해요. 표시가 없으면 다음 세션이 ⑥ 대로 닫아 버리거나, 반대로 왜 열려 있는지 몰라 **이미 끝난 조사를 다시** 해요.
 
@@ -573,10 +576,10 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
    자동 시작이 안 될 때 진단 순서:
 
    ```sh
-   launchctl print gui/$(id -u)/com.tildaz.app        # job 이 등록됐는지 · coalition · minimum runtime
+   launchctl print gui/$(id -u)/me.ensky0.tildaz     # job 이 등록됐는지 · coalition · minimum runtime (dev 빌드는 me.ensky0.tildaz.dev)
    log show --predicate 'process == "launchd"' --start "YYYY-MM-DD HH:MM:SS" --info --debug \
-     | grep com.tildaz.app                            # spawn → exit → service inactive → removing child 흐름
-   tail -40 ~/Library/Logs/tildaz_0.log               # worker 가 어디까지 갔는지
+     | grep me.ensky0.tildaz                          # spawn → exit → service inactive → removing child 흐름
+   tail -40 ~/Library/Logs/tildaz/tildaz_0.log        # worker 가 어디까지 갔는지 (dev 빌드는 tildaz-dev/)
    ```
 
    - **앱 로그에 `[boot]` 만 있고 `config loaded` 가 없으면** worker 가 밖에서 끊긴 거예요. 우리 코드가 죽은 게 아니라 job 정리에 끌려간 신호로 먼저 의심해요.
@@ -873,7 +876,7 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
   stdout 에 `.cmd` 래퍼 (`chcp 65001` → `type` → `timeout` 대기) 를 내요. 그 전에는 stdout 이 cp949 라 결합 기호에서
   `UnicodeEncodeError` 로 죽었는데, 스크립트가 stdout 을 UTF-8 로 고정해 `PYTHONUTF8` 없이도 돌아요.
 - **`-e` 회차는 config 를 만들지도 hotkey 를 등록하지도 않아요** (`global hotkey not registered (stress run)`) — 사용자의
-  `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 예요. 단축키가
+  `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` (개발 빌드는 `%APPDATA%\tildaz-dev\`) 예요. 단축키가
   필요한 회차 (`-NewTab`) 만 `config_0.toml` 을 복사해 `config_9.toml` 을 잠깐 만들고 (`auto_start = false`) 끝나면 지워요.
 - **창은 `EnumWindows` + pid + 보이는 · 크기 있는 조건으로** 찾아요. `Process.MainWindowHandle` 은 `TildaZOwner` (0x0)
   가 owner 로 달린 진짜 창을 건너뛰어 0 이고, `FindWindow(class)` 는 그 0x0 창을 집어요 (#584).
@@ -1087,10 +1090,10 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 dconf dump /org/cinnamon/desktop/keybindings/custom-keybindings/          # 항목 (목록과 별개로 남는다)
 dconf dump /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/
 dconf reset -f /org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-<N>/
-ls /run/user/$(id -u)/tildaz/                                            # instance<N>.lock · .endpoint — 안 도는 N 은 죽은 것
+ls /run/user/$(id -u)/tildaz-dev/run/                                    # instance<N>.lock · .endpoint · .sock — 안 도는 N 은 죽은 것 (릴리즈 판은 tildaz/run/)
 ```
 
-`$XDG_RUNTIME_DIR/tildaz` 의 `instanceN.lock` · `instanceN.endpoint` 와 `tildaz-N.sock` 도 같이 봐요
+`$XDG_RUNTIME_DIR/tildaz/run` 의 `instanceN.lock` · `instanceN.endpoint` · `instanceN.sock` 도 같이 봐요 (개발 빌드는 `tildaz-dev/run`)
 (재부팅하면 사라지지만, 그 전까지 "떠 있는 인스턴스" 로 오독돼요). `launcher.lock` 과 도는 인스턴스의
 `instance0.*` 는 남겨요.
 
@@ -1183,6 +1186,32 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 - **실기 전에 유휴 잠금을 막아요** — `systemd-inhibit --what=idle:sleep --mode=block sleep infinity &` 를 먼저 걸고, 끝나면 그 PID 를 `kill` 해요. "기기를 건드리지 말아 달라" 는 부탁이 세션을 유휴로 만들어 **KDE 잠금 화면이 떴고 주입한 키가 암호 입력란으로 들어갔어요** ([#530 KDE 회차](https://github.com/ensky0/tildaz/issues/530#issuecomment-5434640115)). layout 이 fr 인 채로 잠기면 사용자가 암호를 제대로 못 치니 해제 전에 `setLayout 0` 으로 되돌려요. 자동 잠금 설정 자체 (`kscreenlockerrc`) 는 건드리지 않아요.
 - **⚠️ 주입한 키는 "그때 포커스를 가진 창" 으로 가요 — 대상 창을 고를 수 없어요.** 측정 중에 사용자가 다른 창을 만지면 **그 창에 그대로 타이핑돼요**. [#483 KDE 회차](https://github.com/ensky0/tildaz/issues/483#issuecomment-5459875149) 에서 배열을 추가받는 동안 포커스가 옮겨간 걸 모르고 쳐서, 사용자의 대화창에 `cat -v > ~/kfr.txt` 와 `€` · `é` 가 들어갔어요 (위 잠금 화면 항목과 같은 뿌리예요). 그래서 **타이핑 전에 두 가지를 해요** — ① 창 안을 클릭해 포커스를 잡고, ② `touch ~/probe` 를 보내 **파일이 생기는지로 포커스를 확인**해요. 확인이 안 되면 한 글자도 보내지 않고 멈춰요. 그리고 **단계마다 앱이 살아 있는지 다시 봐요** — `Ctrl+Shift+W` 를 pane 수보다 많이 보내 앱이 스스로 끝난 뒤에도 계속 키를 보내다 타임아웃까지 갔어요 (`pgrep` 으로 확인하고, 죽었으면 중단해요).
 - **GNOME 확장은 파일을 고쳐도 `disable`/`enable` 로 다시 안 읽어요.** ESM import 캐시라 셸이 새로 떠야 해요. 계측 로그를 심어 재려면 **nested 로 새로 띄워요** — 로그인 세션을 건드리지 않아요.
+- **GNOME 은 새로 깐 확장 UUID 를 재로그인 전에는 아예 몰라요 — `gnome-extensions enable` 이 exit 2 로 조용히 실패해요**
+  (2026-09-20 [#654](https://github.com/ensky0/tildaz/issues/654) GNOME 50.5 실기). 디렉터리를 `~/.local/share/gnome-shell/extensions/`
+  에 놓아도 셸은 로그인 때 읽은 목록만 알아서 *"확장 기능이 없습니다"* 로 거절해요. `install.sh` 가 그것을 `|| true` 로 삼키고
+  **"(enabled)" 라고 적었는데 실제로는 `enabled-extensions` 에 들어가지 못해 재로그인 뒤에도 켜지지 않았어요.** 그래서 지금은
+  Cinnamon 경로처럼 **gsettings 를 직접 써요** (`gsettings_strv_edit`) — 로그인 때 셸이 그 목록을 읽어 켜요. 판정은
+  `gsettings get org.gnome.shell enabled-extensions` 에 UUID 가 있는지로 해요. 명령의 종료 코드가 아니에요.
+  **Cinnamon 은 반대로 재로그인 없이 바로 읽어요** (2026-09-21 실측 — `enabled-extensions` 변경 즉시 `Loaded extension …`).
+- **`org.gnome.shell disabled-extensions` 가 `enabled-extensions` 보다 우선이에요.** 같은 UUID 가 양쪽에 있으면 확장이
+  `INITIALIZED` 에 멈추고 켜지지 않아요 (같은 회차 실측 — 9/18 회차의 `uninstall.sh` 가 부른 `gnome-extensions disable` 이
+  거기 릴리즈 UUID 를 남겨, GNOME 로그인 뒤 릴리즈 확장이 그 상태였어요). `gnome-extensions disable` 은 **끄면서 그 목록에
+  적어요.** 그래서 `uninstall.sh` 가 그 키에서도 UUID 를 빼고, `install.sh` 도 켤 때 함께 빼요. 확장이 안 켜지면 두 목록을
+  **둘 다** 봐요 — `gnome-extensions info <uuid>` 의 `State:` 와 함께.
+
+    ```sh
+    gsettings get org.gnome.shell enabled-extensions
+    gsettings get org.gnome.shell disabled-extensions        # 여기 있으면 enabled 에 있어도 안 켜져요
+    gnome-extensions info tildaz-dev@ensky0.github.io | grep State
+    ```
+
+  - **미결 — 앱은 `disabled-extensions` 를 안 봐요.** `gsettings_hotkey.zig` 의 `isExtensionEnabledInSchema` · `ensureInList` 가
+    `enabled-extensions` 만 보므로, 사용자가 GNOME 에서 확장을 끄면 (→ disabled 에 들어감) 앱은 "확장이 담당한다" 로 보고
+    gsettings hotkey 도 등록하지 않아요 — 전역 hotkey 가 아무 데도 없어요. 릴리즈에도 있는 결함이고 [#676](https://github.com/ensky0/tildaz/issues/676) 으로 뺐어요 (GNOME 만 — `org.cinnamon` 에는 그 키가 없어요).
+- **실제 GNOME 세션의 전역 hotkey 는 [`tool/ukbd_linux.py`](tool/ukbd_linux.py) 로 눌러요.** `zwp_virtual_keyboard_v1` 은 GNOME 이
+  안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
+  `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.
+  키는 **그때 포커스를 가진 창으로 가요** (위 경고와 같아요) — 시작 전에 알리고, `systemd-inhibit` 로 유휴 잠금을 막아요.
 - **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
@@ -1392,7 +1421,7 @@ grim shot.png                                                          # sway �
 - **`applied ratios cell_w=` 는 로그에 두 번 찍혀요 (터미널 폰트 · UI 폰트).** `tail -1` 로 집으면 8 이 나오는데 격자는
   9 예요 (2026-09-15 실측). 셀 폭은 **캡처에서 재요** — `link-shot_linux.py grid` 가 글자 줄 두 개의 잉크 폭을 각각 나눠
   서로 맞는지 보고, 안 맞으면 좌표를 안 쓰고 실패해요.
-- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz.stress` 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
+- **⚠️ sway 에서 tildaz 는 `app_id` 가 `tildaz-dev.stress` (릴리즈 판은 `tildaz.stress`) 인 toplevel 이에요** (layer surface 가 아니에요). 그래서 회차 뒤
   브라우저를 치우려고 `swaymsg '[app_id=".*"] kill'` 을 쓰면 **앱에도 닫기 요청이 가서 확인 다이얼로그가 떠요** — 회차가
   거기서 엉켜요. `app_id` 가 `tildaz` 로 시작하는 것을 빼고 지워요.
 - **⚠️ headless sway 가 커서 그림을 화면에 아예 안 그리는 구간이 있어요.** 같은 sway · 같은 앱인데 회차에 따라 갈렸고,
@@ -1839,6 +1868,39 @@ magick /tmp/site.png -crop 1280x1000+0+3350 +repage /tmp/crop.png    # 볼 절�
 `set -o pipefail`, 또는 `zig build check; echo "CHECK=$?"` 처럼 exit code 를 따로 찍기, 또는 `${PIPESTATUS[0]}`.
 `| tail && echo OK` 로 가짜 통과를 보고한 적이 있어요.
 
+**⚠️ 이름 목록을 정규식으로 조립해 `awk -v` 로 넘기지 말아요.** `-v` 는 값의 escape sequence 를
+*먼저* 처리해서 `\[` 가 `[` 로 풀리고, 그러면 awk 가 `invalid regexp` 로 **치명적 오류**를 내요 —
+`set -e` 스크립트면 거기서 통째로 멈춰요. 2026-09-18 `uninstall.sh` 를 그렇게 고쳤다가 표본으로
+확인하니 **그룹을 하나도 못 지운 채 종료**했어요 (경고 세 줄 뒤 `fatal: invalid regexp`). 헤더를
+문자열 비교로 가르고 숫자 판정만 리터럴 정규식 (`/^[0-9]+$/`) 으로 둬요. 그리고 스크립트의 치환
+로직은 **지우면 안 되는 표본을 섞은 입력** 으로 한 번 돌려 보고 넣어요 — 그 회차가 "우리 것만
+지우고 남의 것은 남기는지" 를 한 번에 보여줘요.
+
+**⚠️ `zig build` 는 같은 step 의 의존 둘을 *병렬로* 돌려요 — `addFail` 가드가 산출물을 못 막아요.**
+`package_step.dependOn(&dev_fail.step)` 과 `package_step.dependOn(&package_cmd.step)` 을 나란히 걸면
+둘 사이에 순서가 없어서, 가드가 실패하는 동안 패키징 명령이 **이미 돌아 있어요.** 2026-09-18
+[#654](https://github.com/ensky0/tildaz/issues/654) Windows 실기에서 `zig build package` (dev) 가
+오류를 내고도 `tildaz-v…-win-x64.zip` 과 `.sha256` 을 실제로 만들어 놨고, 그 zip 안의 exe 는
+**dev 판**이었어요 (md5 로 확인). 빌드가 실패로 끝나도 **디스크에 남은 산출물은 그대로 올릴 수
+있어요.** 막으려면 가드를 *명령 자체*에 걸어요 — `package_cmd.step.dependOn(&dev_fail.step)`.
+그리고 **가드를 검증할 때는 오류 메시지가 아니라 산출물이 없는지를 봐요.**
+
+**⚠️ `.bat` 은 ASCII 로만 써요 — 비ASCII 한 글자가 스크립트를 통째로 깨요.** `.ps1` 의 BOM 규칙과
+짝이고 방향은 반대예요. 주석에 em dash (`—`) 하나를 넣었더니 파일이 UTF-8 이 되고, cmd 가 그것을
+ANSI (한국어 환경은 cp949) 로 읽어 **그 뒤 줄들의 앞 글자가 잘렸어요** (`setlocal` → `tlocal` ·
+`REM` → `M`). 오류는 `'tlocal' is not recognized…` 로 수십 줄 쏟아지는데 **종료 코드는 0** 이라
+성공으로 읽혀요. 확인은 `grep -nP '[^\x00-\x7F]' <파일>` 또는 `file <파일>` 이 `ASCII text` 인지예요.
+
+**⚠️ 배치의 `( … )` 블록 안에서 변수를 따옴표 없이 확장하지 말아요.** 값에 `)` 가 있으면 그것이
+블록을 닫아 배치가 **즉사**해요 (`.lnk was unexpected at this time.` · exit 255). cmd 는 블록을
+*실행 전에 파싱하면서* 확장하므로 **`if` 조건이 거짓이어도 죽어요.** #654 가 `TildaZ (dev).lnk`
+라는 이름을 들여오며 `uninstall.bat` 이 그 줄에서 죽었고, 죽는 자리가 설치 폴더 · state 삭제
+**앞**이라 uninstall 이 **아무것도 못 지웠어요** (재실행해도 같아요). 고치는 길은 셋이에요 —
+`echo … "%VAR%"` 처럼 따옴표를 씌우거나, `setlocal enabledelayedexpansion` + `!VAR!`, 또는
+**블록을 아예 안 쓰는 한 줄 `if defined` 형태** (`uninstall.bat` 이 이미 쓰던 모양이라 그걸 택했어요).
+**사용자 프로필 경로에 괄호가 있으면 우리 이름과 무관하게 같은 일이 나니** 그 파일의 블록은 전부
+풀어 둬요.
+
 **Bash 도구의 작업 디렉터리는 앞 호출의 `cd` 가 그대로 남아요 — 검증 명령은 저장소 경로를 명시해요.**
 2026-09-03 에 문서용 worktree 로 `cd` 한 호출 뒤에 `zig build check` · `zig build test` 를 돌렸는데, 그것이
 **검증하려던 브랜치가 아니라 그 worktree (다른 브랜치) 에서 돌았어요.** 출력만 보면 통과라 알아채지 못했고,
@@ -1936,7 +1998,7 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
   |---|---|---|
   | **GSettings / dconf** | 읽기는 `$XDG_CONFIG_HOME/dconf/user` 를 **mmap** 하고, 쓰기는 세션 버스의 `dconf-service` 가 **자기 환경**으로 해요 | 격리하면 **읽기는 통째로 비고** (스키마 기본값만 보임) **쓰기는 실제 세션에 남아요** |
   | **`hyprctl`** | 진짜 `XDG_RUNTIME_DIR/hypr/<signature>` 를 찾아요 | 격리하면 인스턴스를 못 찾아 조회가 실패해요 |
-  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz.instance9]` 가 생기고 **앱을 내려도 남아요** |
+  | **kglobalaccel (KDE 전역 단축키)** | 앱이 `XDG_CURRENT_DESKTOP=KDE` 와 `DBUS_SESSION_BUS_ADDRESS` 를 물려받아 **사용자 세션 버스**에 등록해요 | `~/.config/kglobalshortcutsrc` 에 `[tildaz-dev.instance9]` (릴리즈 판은 `tildaz.instance9`) 가 생기고 **앱을 내려도 남아요** |
 
   셋째는 **`XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 함께 빼면** 막혀요 (`de=(unset)`
   이면 등록 경로를 아예 안 타요 — 위 `# 전역 hotkey` 절의 첫 함정과 같은 성질을 이번엔 *이용*하는
@@ -1946,7 +2008,7 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
 
   ```sh
   gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
-      --method org.kde.KGlobalAccel.unregister "tildaz.instance9" "toggle-9"
+      --method org.kde.KGlobalAccel.unregister "tildaz-dev.instance9" "toggle-9"    # 릴리즈 판이 남긴 것이면 tildaz.instance9
   ```
 
   그래서 **GNOME · Cinnamon 검증은 격리하지 말고 실제 홈으로 돌리고 뒤에 치워요.** 격리한 채
@@ -1977,7 +2039,7 @@ worker 를 내리는 것 자체는 측정 절차의 일부라 그대로 진행�
 
 ```sh
 dist/macos/build_and_install.sh     # ✅ 빌드 + 서명 + /Applications 설치 + 서명 검증
-open /Applications/TildaZ.app       # ✅ 실행
+open /Applications/TildaZ-dev.app   # ✅ 실행
 ```
 
 스크립트가 하는 일:
@@ -1986,14 +2048,14 @@ open /Applications/TildaZ.app       # ✅ 실행
   ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
   ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
 - `-Doptimize=ReleaseFast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
-- `/Applications/TildaZ.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
+- `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
 - **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절.
 
 **identity 가 사라졌으면 새로 만들지 말고 백업에서 되살려요** ([#444](https://github.com/ensky0/tildaz/issues/444)).
 login keychain 이 밀리면 (`login_renamed_N.keychain-db` 가 생기는 경우 — 2026-08-10 에 실제로
 겪었고 그 머신에서 두 번째였어요) 인증서와 private key 가 함께 없어져요. 새로 만들면 서명 해시가
-바뀌어 **Input Monitoring · Accessibility 권한 재부여 + GitHub secrets 2개 + 워크플로우의
+바뀌어 **Input Monitoring · 기기 제어 및 데이터 접근 권한 재부여 + GitHub secrets 2개 + 워크플로우의
 `MACOS_CERTIFICATE_SHA1` 갱신**이 따라와요.
 
 ```sh
@@ -2007,29 +2069,29 @@ security find-identity -v -p codesigning     # TildazLocal 이 안 보이면
 - 백업이 없어 새로 만들 수밖에 없다면 위의 갱신 목록을 전부 처리해요. 자세한 절차는
   [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 의 "identity 가 사라졌어요" 절.
 
-**앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ.app` 은 서명 전 중간 산출물이라
+**앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ-dev.app` 은 서명 전 중간 산출물이라
 실행 대상이 아니고, 번들 안의 바이너리를 직접 띄우면 권한이 안 붙어요.
 
 ```sh
-open /Applications/TildaZ.app                        # ✅ 이걸 써요
-/Applications/TildaZ.app/Contents/MacOS/tildaz       # ⚠️ 권한 문제 — 아래 참고
+open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
+/Applications/TildaZ-dev.app/Contents/MacOS/tildaz       # ⚠️ 권한 문제 — 아래 참고
 ```
 
 - 터미널에서 바이너리를 직접 띄우면 그 프로세스의 권한 요청을 macOS 가 **부모 (터미널 앱) 기준**으로
-  평가해요. 그래서 TildaZ.app 자신에게 부여해 둔 *Input Monitoring* · *Accessibility* 권한을 쓰지
+  평가해요. 그래서 TildaZ.app 자신에게 부여해 둔 *Input Monitoring* · *기기 제어 및 데이터 접근* 권한을 쓰지
   못하고, 전역 핫키 (CGEventTap, [`src/host/macos.zig`](src/host/macos.zig)) 가 안 먹어요. 권한
   설정 절차는 [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 에 있어요.
 - `open` 은 LaunchServices 를 거치니 TildaZ.app 이 자기 identity 로 뜨고 `Info.plist` 키
   (Accessory mode 등) 도 정상 적용돼요.
 - 터미널에 붙여서 로그를 보려고 직접 실행하는 건 **권한이 필요 없는 검증** (렌더링 / 파싱 / PTY 왕복)
-  에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz_N.log` 로 봐요.
+  에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz/tildaz_N.log` (dev 빌드는 `tildaz-dev/`) 로 봐요.
 - ad-hoc 서명은 매 빌드마다 바이너리 해시가 바뀌어서 Input Monitoring 권한이 stale 해져요 (#109).
   핫키가 갑자기 안 들으면 시스템 설정에서 토글 OFF/ON 하거나 `tccutil reset All me.ensky0.tildaz`
   로 초기화하고 다시 허용해요.
 
-**빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`-Clean` / `-Optimize` / `-Check` / `-Test` / `-NoSimd` 지원). 직접 호출 시:
+**빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`--release` / `--clean` / `--optimize` / `--check` / `--test` / `--no-simd` 지원). 직접 호출 시:
 - 전체 빌드: `zig build -Doptimize=ReleaseFast -Dsimd=true`
-- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true`
+- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
 - 단위 테스트: `zig build test`.
@@ -2040,10 +2102,179 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
   [#651](https://github.com/ensky0/tildaz/pull/651) 이 빈 줄 둘 때문에 CI 에서 떨어졌어요 — 로컬
   검증 (`check` 6 타겟 · `test`) 은 전부 통과한 상태였습니다. 어긋났으면 `zig fmt src/ build.zig` 로 고쳐요.
 
+**macOS 27 이 `Accessibility` 권한 이름을 `Device Control and Data Access` 로 바꿨어요**
+([#674](https://github.com/ensky0/tildaz/issues/674)). 한국어는 `기기 제어 및 데이터 접근`,
+일본어는 `デバイスの制御とデータへのアクセス` 예요. `Input Monitoring` (입력 모니터링) 은 그대로예요.
+
+- **동작에는 영향이 없어요** — API (`CGPreflightListenEventAccess`) 도 TCC 서비스 키
+  (`kTCCServiceAccessibility`) 도 그대로예요. 바뀐 것은 **사용자에게 보여 줄 이름**뿐이고,
+  그래서 안내 문구가 없는 메뉴를 가리키는 것이 문제였어요.
+- **이름은 OS 리소스에서 읽어 확정했어요** — 추측하지 말고 여기를 보세요.
+
+  ```sh
+  F=/System/Library/ExtensionKit/Extensions/SecurityPrivacyExtension.appex/Contents/Resources/Localizable.loctable
+  plutil -extract en.ACCESSIBILITY raw "$F"     # Device Control and Data Access
+  plutil -extract ko.ACCESSIBILITY raw "$F"     # 기기 제어 및 데이터 접근
+  plutil -extract en.LISTEN_EVENT  raw "$F"     # Input Monitoring
+  ```
+
+- **경계는 27 이에요.** macOS 26 의 Apple 지원 가이드에는 새 이름이 없어요
+  (`support.apple.com/guide/mac-help/mh43185/26/mac/26`). **Apple 문서는 27 판도 아직 옛 이름**
+  이라 문서만 보면 틀려요 — 위 loctable 이 단일 출처예요.
+- 앱은 `sysctlbyname("kern.osproductversion")` 의 메이저로 이름을 골라요
+  (`host/macos.zig` 의 `accessibilityPermissionLabel`).
+
+**빌드·설치 스크립트는 세 OS 모두 기본 dev, 릴리즈만 `--release`예요**
+([#654](https://github.com/ensky0/tildaz/issues/654)). dev/릴리즈용 파일을 따로 나누지 않아요.
+`--dev` · `--no-dev` · `TILDAZ_DEV`로 종류를 고르거나 경로로 추측하지 않아요.
+
+| OS | dev 빌드·설치 | 릴리즈 빌드·설치 |
+|---|---|---|
+| Linux | `bash dist/linux/install.sh` | 같은 명령에 `--release` |
+| macOS | `bash dist/macos/build_and_install.sh` | 같은 명령에 `--release` |
+| Windows | `dist\windows\install.bat` | 같은 명령에 `--release` |
+
+- 저장소 설치는 선택한 종류로 **먼저 빌드해요**. 이전 `zig-out/bin`을 경로만 보고 dev로 설치하지 않아요.
+- Linux는 심링크 대상이 다른 종류의 빌드로 덮이지 않도록 `zig-out/install-dev/bin/tildaz`와
+  `zig-out/install-release/bin/tildaz`를 써요. macOS는 번들 이름, Windows는 복사한 설치 폴더로 갈려요.
+- Linux tarball에도 **같은 `install.sh`**를 넣고 사용자가 `./install.sh --release`로 불러요.
+  옵션이 없으면 설치 전에 거부해요. 배포물의 바이너리를 옮긴 경우만 `--exe <경로>`를 함께 써요.
+- Windows `build.ps1`도 기본 dev예요. 릴리즈는 `--release`, 나머지도 `--clean` · `--optimize` ·
+  `--cache-dir` · `--check` · `--test` · `--no-simd` 표기를 써요.
+- macOS 설치 경로를 바꿔도 번들 이름은 `TildaZ-dev.app` / `TildaZ.app` 중 선택한 종류와 같아야 해요.
+- `ReleaseFast`는 최적화 수준이에요. dev도 ReleaseFast로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
+
+**빌드는 기본 dev예요. 릴리즈만 `-Drelease=true`를 명시해요 (기본값 `false`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
+`config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
+layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bundle id 가 전부
+`tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도 **설치된 릴리즈의 설정을 건드리지 않아요.**
+기본 hotkey 도 갈려요 — 릴리즈는 index 0 → `F1`, 개발 빌드는 0 → `F10` 으로 **표를 거꾸로**
+읽어요 (같은 조합을 둘이 등록하면 먼저 등록한 쪽만 발화하고 재등록으로 못 빼앗아서예요).
+
+- **`release` 기본값은 `false`예요.** 옵션을 생략해도 설치된 릴리즈의 설정을 건드리지 않아요.
+  `zig build`는 dev, `zig build -Drelease=true`는 릴리즈예요. 옛 `-Ddev` 옵션은 쓰지 않아요.
+- **`zig build package` 는 `-Drelease=true` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로
+  나가는 것을 막는 가드예요 — CI 나 사람이 한 번 빠뜨리면 그대로 배포될 자리라서요.
+- **이름은 [`src/app_id.zig`](src/app_id.zig) 한 곳이 정해요.** 격리할 자리가 열 곳이 넘어서
+  자리마다 조건을 쓰면 반드시 하나를 빠뜨려요 (실제로 이 작업 중에 Wayland `app_id` 와
+  codesign 대상 둘을 그렇게 놓칠 뻔했어요).
+- **⚠️ 파일 *이름* 만 가르고 그 *내용* 을 안 가르는 것이 이 작업의 대표적인 함정이에요.**
+  2026-09-18 Linux 실기에서 셋이 나왔어요 — `tildaz-dev.instance9.desktop` 안의
+  `StartupWMClass` 가 `tildaz.instance9` 여서 **개발 창이 자기 항목이 아니라 릴리즈 항목과
+  묶이려 했고**, autostart 항목은 `Name=TildaZ` 라 KDE 자동 시작 목록에서 릴리즈와 구별되지
+  않았어요 (이 이슈가 없애려던 *"어느 쪽이 도는지 알 수 없다"* 가 그 화면에 그대로 남는
+  거예요). 이름을 가른 자리마다 **그 파일이 담는 문자열까지** 같이 봐요.
+- **⚠️ 남의 것을 *지우는* 경로가 가장 위험해요.** 이름으로 자기 항목을 찾아 정리하는 코드가
+  안 갈리면 개발 빌드가 **사용자의 릴리즈 전역 단축키를 지워요** — 개발 빌드의 config 에 그
+  번호가 없으면 정확히 그렇게 됩니다. 같은 회차에서 세 곳이 그랬어요:
+  [`kglobalaccel.numberedComponentIndex`](src/host/linux/kglobalaccel.zig) (KDE 컴포넌트
+  sweep) · [`gsettings_hotkey.gsettingsTildazIndex`](src/host/linux/gsettings_hotkey.zig)
+  (GNOME · Cinnamon dconf) · [`uninstall.sh`](dist/linux/uninstall.sh) 의 그룹 제거.
+  판정 함수에는 **"개발 빌드가 릴리즈 이름을 자기 것으로 보지 않는다"** 를 테스트로 박아
+  둬요 (앞의 두 파일에 그 단언이 있어요).
+- **`install.sh`는 개발판 분리 이전 판의 옛 기본 경로 `zig-out/bin/tildaz`를 가리키는 잔재만 치워요.**
+  새 릴리즈 설치 경로 `zig-out/install-release/`는 보존해요. 예전 스크립트는 개발 빌드도 릴리즈 이름으로 깔아서, 그 `~/.local/bin/tildaz` 가
+  PATH 에서 `/usr/bin/tildaz` 를 가려요 (이 이슈의 원래 증상 절반이 그것이에요). 반대로
+  사용자가 **릴리즈 tarball 로 깐 정상 설치** 는 `Exec` 이 압축 해제 폴더라 그대로 보존돼요.
+- **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
+  `TildaZ-dev-N` (KDE 단축키 목록 · desktop 항목의 표시 이름은 `TildaZ-dev_N`) 이고 config 는
+  `<XDG_CONFIG>/tildaz-dev/` 예요.
+- **데스크톱 확장 (GNOME · Cinnamon) 도 UUID 가 갈려요** (`tildaz-dev@ensky0.github.io`).
+  예전에는 하나를 공유해서 ① 개발 빌드를 지우면 릴리즈의 확장까지 꺼졌고, ② 개발 빌드는
+  **전역 hotkey 를 아무 데도 등록하지 않았어요** — 확장이 개발 창을 안 잡는데도 앱은
+  "확장이 담당한다" 로 보고 gsettings 등록을 건너뛰었거든요. 이제 각자의 확장이 자기 창을
+  잡으니 GNOME · Cinnamon 에서도 개발 빌드가 그대로 동작해요.
+- **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
+  디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
+  의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.
+  치환 뒤 토큰이 남는지는 zig 테스트와 `package.sh` 가 양쪽에서 검사해요.
+- **Windows 는 창 이름이 IPC 주소예요 — 클래스와 제목이 다 갈려요** (2026-09-18 · 2026-09-20 실기).
+  `instances.zig` 의 `window_class_name` · `window_title_prefix` 가 리터럴이던 동안 두 판의
+  창이 클래스도 제목도 **글자 그대로 같았고**, `FindWindowW` 는 그중 **하나만** 돌려줘요 —
+  어느 쪽인지는 *뜨는 순서*가 정해요 (dev 를 먼저 띄우면 릴리즈 창을, 릴리즈를 먼저 띄우면
+  dev 창을 집었어요). 그러면 릴리즈 launcher 의 새-instance 요청이 개발 빌드로 가요.
+  **Linux 는 IPC 가 소켓이라 이 문제가 없어요** — 창 이름으로 남을 찾는 것은 Windows 뿐이에요.
+- **⚠️ 창 *제목*을 가를 때는 확장의 토큰을 함께 봐요.** 그 제목은 **Linux 의 `xdg_toplevel`
+  제목으로도 쓰이고** (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension
+  의 `workerIndex()` 가 그것으로 번호를 읽어요. 처음에는 확장이 `/^TildaZ-(\d+)$/` 리터럴로
+  파싱해서 제목에 `-dev` 를 섞으면 **확장이 개발 빌드의 창을 통째로 놓쳐** 배치 · 토글 · 전역
+  hotkey 가 죽었고 (Linux 회차 결함 8 과 같은 증상 — 2026-09-18 회차에서 실제로 한 번 그렇게
+  갔다가 되돌렸어요), 그래서 제목은 두 판이 같게 두었어요. 그러면 Alt+Tab · 창 목록에서 어느
+  판인지 구별이 안 돼요 — 이 이슈의 원래 증상이 제목에 남아요. 2026-09-20 에 **제목도 가르기로**
+  했어요 (`TildaZ-N` · `TildaZ-dev-N`): 값은 `app_id.window_title_prefix` 하나이고, 확장은
+  `__TILDAZ_TITLE_PREFIX__` 토큰으로 같은 값을 받아 정규식 대신 접두어를 떼고 번호를 읽어요.
+  `shell_extension.zig` 테스트가 치환 결과의 접두어와 `instances.zig` 의 제목이 같은지 봐요.
+- **⚠️ 확장의 경로 규칙은 앱과 *모양까지* 같아야 해요 — 이름만 보는 테스트는 놓쳐요.** ⓑ 로
+  lock 디렉터리가 `<base>/<앱>/run` 이 됐는데 확장의 `hotkeyStateDirPath()` 는 runtime 갈래에
+  `/run` 이 없는 옛 모양을 그대로 들고 있었어요 — 앱은 `…/run/instanceN.hotkey` 를 읽고 확장은
+  한 단계 위에 쓰니 **grab 실패 통보가 다시 조용해졌어요** (#510 회귀 · 릴리즈에도 해당). `paths.zig`
+  의 #510 테스트는 `XDG_RUNTIME_DIR` · `XDG_CACHE_HOME` · `.cache` 라는 *이름*만 봐서 통과했고,
+  2026-09-20 재점검에서야 코드 읽기로 찾았어요. 지금은 그 테스트가 세 갈래의
+  `GLib.build_filenamev([…, APP, "run"])` 문자열까지 봐요. **두 언어에 복제된 규칙은 이름이 아니라
+  결과 문자열로 검사해요.**
+- **⚠️ "남의 것을 지우는 판정" 은 데스크톱마다 하나씩 있어요 — 실기 못 한 데스크톱을 코드로
+  훑어요.** Linux 회차 (KDE 기기) 가 kglobalaccel · dconf 를 잡았지만 **COSMIC 표식**
+  (`description: Some("TildaZ_N")`) 은 남아 있었어요 — dev 의 `syncCosmic` 이 릴리즈 항목을 자기
+  것으로 보고 지운 뒤 자기 exe 로 다시 쓰는 자리예요. 지금은 `app_id.window_base` 를 타요
+  (`TildaZ-dev_N`). 옛 `install.sh` 줄 흡수 (`legacyInstallScriptEntryIndex`) 도 dev 는 하지 않아요 —
+  basename 이 둘 다 `tildaz` 라 구별할 수 없어서요.
+- **macOS 는 LaunchAgent label 이 실제로 바뀐 유일한 자리예요** (`com.tildaz.app` →
+  `me.ensky0.tildaz`). 옛 plist 는 **앱이 지우지 않아요** — 사용자당 한 번이면 끝나는 정리를 매
+  실행마다 확인하는 코드로 두지 않기로 했어요 (2026-09-20 사용자 결정: *"딱 1 회만 필요한 작업을
+  프로그램 코드에 계속 넣어놓고 있고 싶지 않아"*). dmg 드래그 설치라 설치 · 제거 훅이 없으니
+  (`.pkg` 도 제거 훅은 없어요) 대신 README 와 릴리즈 노트 `Upgrade notes` 에 한 줄 명령
+  (`launchctl bootout gui/$(id -u)/com.tildaz.app; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`)
+  을 적었고 `uninstall.sh` 가 옛 label 도 치워요. 같은 종류의 결정이 앞으로 또 나오면 이 기준을
+  따라요 — **일회성 마이그레이션은 코드가 아니라 문서의 명령 한 줄.** 그리고
+  `autostart/macos.zig` 의 테스트는 **macOS 에서만 돌아요** (`autostart.zig` 의 comptime switch) —
+  Linux · Windows 의 `zig build test` 통과가 그 파일을 보증하지 않아요. label 리터럴이 옛 값인 채로
+  두 회차를 지나간 이유예요.
+- **개발판 분리 이전 개발 빌드가 릴리즈 이름으로 남긴 dconf 항목 (`…/custom-keybindings/tildaz-N/`) 은
+  아무도 안 치워요.** 릴리즈가 남긴 것과 구별할 수 없어 앱도 `install.sh` 도 건드리지 않아요. 개발 기기에만
+  생기는 잔재라 릴리즈 노트가 아니라 여기에 적어요 (2026-09-21 사용자 결정). `command` 가 `zig-out` 을
+  가리키는 항목을 찾아 손으로 지워요.
+
+  ```sh
+  dconf dump /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/     # GNOME
+  dconf dump /org/cinnamon/desktop/keybindings/custom-keybindings/                # Cinnamon
+  dconf reset -f /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-1/
+  ```
+
+- **sway · Hyprland autostart 블록의 marker 에도 id 가 들어가요** (`# tildaz-dev autostart …`).
+  하나로 두면 두 번째로 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 릴리즈 marker
+  는 예전과 글자 단위로 같아서 기존 설치와 호환되고, `uninstall.sh` 는 두 marker 를 다 지워요.
+- **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
+  zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
+  README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은
+  `install.sh` 를 담아요). `install.bat --release`는 저장소에서 릴리즈를 빌드·설치하는 명령이고,
+  zip 설치용 명령이 아니에요. 이슈 절차에 *"릴리즈 zip 안의 install.bat을 돌려 본다"*가 있으면
+  **Windows에서는 전제가 성립하지 않아요.**
+- **Windows 의 옛 autostart 잔재는 `install.bat` 이 치워요.** 레지스트리 값 이름은
+  **대소문자를 구별하지 않아서** 옛 `TildaZ` 와 새 릴리즈 이름 `tildaz` 가 *같은 값*이에요 —
+  그래서 릴리즈 사용자에게는 ⓔ 의 이름 변경이 덮어쓰기로 끝나고, **잔재가 남는 것은 dev 판
+  뿐**이에요 (새로 `tildaz-dev` 를 쓰고 옛 값은 그대로 두니 로그온 때 둘 다 떠요). 판정은
+  Linux `install.sh` 와 같은 **"값 데이터가 zig-out 을 가리키는가"** 하나예요.
+- **GNOME 에서 두 확장 (`tildaz@…` · `tildaz-dev@…`) 이 함께 ACTIVE 로 공존하는 것을 실기로 확인했어요**
+  (2026-09-20 · i5-1240P 노트북 · GNOME Shell 50.5). 릴리즈 0.9.5 (`/usr/bin/tildaz`) 와 dev 를 같이 띄워 `F1` 은 릴리즈만,
+  `F10` 은 dev 만 토글했고 확장 실패 로그는 0 이었어요. 다만 **새 UUID 는 재로그인 뒤에야 셸이 읽어요** — `install.sh` 를
+  돌린 세션에서 바로 `gnome-extensions enable` 로 켜려 하면 exit 2 로 실패해요 (위 `# 전역 hotkey` 절의 함정). 그래서 GNOME
+  실기는 *설치 → 재로그인 → 측정* 순서고, 재로그인은 사용자에게 부탁해요. 확장의 셸 로그에 `config directory read failed` 가
+  **한 건** 남는 것은 정상이에요 — 첫 설치라 `~/.config/tildaz-dev/` 가 아직 없을 때 확장이 autostart 판정으로 읽은 자리예요.
+- **Cinnamon 에서도 두 확장이 함께 ACTIVE 로 공존하는 것을 실기로 확인했어요** (2026-09-21 · 같은 노트북 ·
+  Cinnamon 6.6.9 Wayland). 바인딩 `tildaz-toggle-0=F1` · `tildaz-dev-toggle-0=F10` 이 둘 다 등록되고 서로 다른 창만
+  움직였어요. **GNOME 과 두 가지가 달라요.** ① Cinnamon 은 새 확장 UUID 를 **재로그인 없이 바로** 읽어요 —
+  `enabled-extensions` 가 바뀌면 그 자리에서 로드하고, 빼면 그 자리에서 내려요. ② Cinnamon 확장은 **앱을 스스로
+  띄우지 않아요** (헤더 주석대로 창을 잡고 hotkey 만 등록해요 — 앱은 XDG autostart · 메뉴 몫). 그래서 설치 직후
+  바인딩이 없는 것은 결함이 아니에요 — config 가 없으니 등록할 hotkey 도 없어요. 앱을 launcher 로 띄우면 config 가
+  생기고, 확장의 디렉터리 감시가 그것을 읽어 등록해요. 판정은 `org.Cinnamon.Eval` 로 `Main.keybindingManager.bindings`
+  와 `meta_window.minimized` 를 읽으면 사람 손 없이 끝나요 (위 `# Linux — headless sway …` 절의 `G` 함수).
+  **셸 로그의 접두어로 어느 판이 낸 줄인지 갈라요** — 두 확장 다 `LOG_TAG` (`[tildaz]` · `[tildaz-dev]`) 를 써요.
+  처음엔 리터럴 `[tildaz]` 여서 dev 확장의 줄이 릴리즈 것으로 읽혔어요 (2026-09-21 사용자 결정으로 고쳤어요).
+
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
 C++ toolchain/SDK를 모든 cross target에 요구하지 않도록 기본 false를 유지해요. scalar 비교
-진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 -NoSimd`를 사용해요. macOS package는
+진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 --no-simd`를 사용해요. macOS package는
 `build.zig`이 이 값을 universal binary의 arm64/x86_64 내부 빌드 양쪽에 전달해요.
 
 **Windows target ABI (#19):** Zig는 ABI를 생략한 Windows target을 GNU로 resolve하지만,

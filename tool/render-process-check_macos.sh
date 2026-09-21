@@ -7,7 +7,7 @@
 #
 # ```sh
 # tool/render-process-check_macos.sh <앱.app> <화면.sh> <격자> [장수=30] [간격초=0.03] [태그]
-# tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33
+# tool/render-process-check_macos.sh zig-out/TildaZ-dev.app /tmp/many.sh 88x33
 # ```
 #
 # - 첫 장이 최종과 크게 다르면 **"present 전 투명 창"** 인지 먼저 가른다 — 배경색이 `srgba(0,0,0,0)`

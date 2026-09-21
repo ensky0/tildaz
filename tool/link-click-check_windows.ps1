@@ -14,7 +14,7 @@
 #   므로 오염이 없다). ② 커서 모양 — `GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 의 공유 핸들과 견준다.
 #   ③ 열림 — `tildaz_stress.log` 의 `[link] opening link:` 줄이 케이스마다 **정확히 한 줄** 늘었는지.
 # - `--instance 9` + `-e` 로만 띄운다 — config 를 만들지 않고 (#382) hotkey 도 등록하지 않아 사용자의
-#   instance 0 과 부딪히지 않는다. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 다.
+#   instance 0 과 부딪히지 않는다. 로그는 `%APPDATA%\tildaz-dev\tildaz_stress.log` 다.
 # - **키 · 마우스마다 포커스 가드**다 (`tool/send-keys_windows.ps1` 과 같은 규칙) — foreground 가 tildaz 창이
 #   아니면 멈춘다. 합성 입력은 포커스된 창으로 가니 회차 동안 사용자가 다른 창을 만지면 거기에 간다.
 # - 실기라서 **시작 전에 알리고 동의를 받는다** (AGENTS.md `# 실행 환경`). A2 에서 `https://example.com` 이
@@ -223,8 +223,8 @@ public static class TzLink {
 $Out = Join-Path $env:TEMP "tildaz-link-check\$Mode"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Get-ChildItem $Out -Filter *.png -ErrorAction SilentlyContinue | Remove-Item -Force
-$Log = Join-Path $env:APPDATA "tildaz\tildaz_stress.log"
-$Cfg9 = Join-Path $env:APPDATA "tildaz\config_9.toml"
+$Log = Join-Path $env:APPDATA "tildaz-dev\tildaz_stress.log"
+$Cfg9 = Join-Path $env:APPDATA "tildaz-dev\config_9.toml"
 if (Test-Path $Cfg9) { throw "config_9.toml 이 이미 있다 — 사용자 설정을 건드리지 않으려고 멈춘다: $Cfg9" }
 if (-not (Test-Path $Screen)) { throw "화면 스크립트 없음: $Screen" }
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }

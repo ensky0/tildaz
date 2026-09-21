@@ -245,7 +245,7 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   명령까지만 규칙으로 받고 나머지를 focus 창에 즉시 실행) + map 후 `move`(ppt) 로,
   토글은 scratchpad 로 한다 (sway 1.12 실기 확인). hotkey 는 `$SWAYSOCK`의 i3-ipc
   `RUN_COMMAND`로 `bindsym <accel> exec <self_exe> --toggle N` 를 런타임 등록.
-  hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/tildaz-N.sock`).
+  hotkey 실동작은 번호별 socket (`$XDG_RUNTIME_DIR/<앱이름>/run/instanceN.sock`).
   runtime-only 라 매 실행 등록 = config 가 source of truth. 단 sway IPC 는 현재
   binding 열거 요청을 제공하지 않아 세션 중 stale binding 증분 제거는 지원하지
   않는다. config 삭제/변경 전에 등록된 binding 은 sway 세션 재시작 때 사라진다.
@@ -1315,7 +1315,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | `font.line_height_ratio` | float 0.5..2.0 (측정된 ascent+descent+leading 배율) | 1.1 | 1.1 | 1.1 | ✅ | ✅ | ✅ |
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
-| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/com.tildaz.app.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/tildaz.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
+| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
@@ -1679,18 +1679,33 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 
 ### 11.1 파일 위치
 
+저장소의 Linux · macOS · Windows 빌드·설치는 기본 dev이며, 릴리즈를 선택할 때만
+`--release`를 명시한다. 종류별 설치 스크립트를 따로 두지 않는다. 저장소에서는 선택한
+종류로 빌드한 뒤 설치한다. Linux tarball의 같은 `install.sh`도 `--release`로 실행하며,
+옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`ReleaseFast` 등)은 앱 신원과 별개다.
+
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
-| **config** | `%APPDATA%\tildaz\config_N.toml` (Microsoft 표준) | `$XDG_CONFIG_HOME/tildaz/config_N.toml` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/tildaz/config_N.toml` (fallback `~/.config`) |
-| **log** | `%APPDATA%\tildaz\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱) | `$XDG_STATE_HOME/tildaz/tildaz_N.log` (fallback `~/.local/state`) |
-| **process / endpoint state** | `%LOCALAPPDATA%\tildaz\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/TildaZ/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/tildaz/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`; `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/tildaz/run/` |
+| **config** | `%APPDATA%\<앱이름>\config_N.toml` (Microsoft 표준) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`) |
+| **log** | `%APPDATA%\<앱이름>\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/<앱이름>/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱. v0.10.2 부터 앱 디렉터리 안 — 그 전에는 `~/Library/Logs/tildaz_N.log`) | `$XDG_STATE_HOME/<앱이름>/tildaz_N.log` (fallback `~/.local/state`) |
+| **process / endpoint state** | `%LOCALAPPDATA%\<앱이름>\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/<앱이름>/run/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/<앱이름>/run/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`, `instanceN.sock` (단일 인스턴스 소켓 — lock 과 같은 디렉터리), `instanceN.hotkey` (GNOME · Cinnamon 확장의 grab 결과, #510); `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/<앱이름>/run/` |
+
+**`<앱이름>` 은 릴리즈가 `tildaz`, 개발 빌드 (`-Drelease=false`, 기본값) 가 `tildaz-dev` 다**
+([#654](https://github.com/ensky0/tildaz/issues/654)). 둘이 같은 파일을 쓰면 버전이 다른
+판끼리 스키마가 어긋나 조용히 죽는다. 이름은 `src/app_id.zig` 한 곳이 정하고 config · 로그 ·
+lock · 소켓 · desktop 항목 · autostart 가 모두 그것을 탄다. macOS 는 bundle id 까지 갈린다
+(`me.ensky0.tildaz` / `me.ensky0.tildaz.dev`) — 경로만 바꾸면 LaunchServices 가 한 앱으로
+묶는다. 세 OS 의 state 디렉터리는 모두 `<base>/<앱이름>/run` 모양이다 — 예전에는 macOS 만
+대문자 `TildaZ` 였고 `/run` 이 붙다 말았다 (#654 ⓐⓑ). 확장이 쓰는 `instanceN.hotkey` 도
+같은 디렉터리라, 확장 소스의 경로 규칙은 `paths.lockDir` 와 **모양까지** 같아야 한다
+(`paths.zig` 의 #510 테스트가 본다).
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
 
 Linux · macOS config는 유효한 절대 `XDG_CONFIG_HOME`을 우선하고, Linux log는
 유효한 절대 `XDG_STATE_HOME`을 우선한다. unset/empty/relative 값은 위 표의
 기본 경로로 fallback한다. Linux user autostart도 같은 config base의
-`autostart/tildaz.desktop`을 사용한다. custom XDG를 처음 적용할 때는 사용자
+`autostart/<앱이름>.desktop`을 사용한다. custom XDG를 처음 적용할 때는 사용자
 config/log를 복사·이동하지 않으며, 구버전이 기본 위치에 만든 TildaZ autostart
 entry만 중복 실행 방지를 위해 정리한다 ([XDG Base Directory](https://specifications.freedesktop.org/basedir/), [Desktop Application Autostart](https://specifications.freedesktop.org/autostart/0.5/)).
 
@@ -1787,7 +1802,7 @@ exe   : /Applications/TildaZ.app/Contents/MacOS/tildaz   (mac)
 pid   : 12345
 config: /Users/<u>/.config/tildaz/config_0.toml            (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\config_0.toml   (win)
-log   : /Users/<u>/Library/Logs/tildaz_0.log               (mac)
+log   : /Users/<u>/Library/Logs/tildaz/tildaz_0.log        (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\tildaz_0.log    (win)
 
 Tip: Shift+Cmd+P opens config in default editor.       (mac)
@@ -2615,8 +2630,8 @@ frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이�
 | 드래그 selection 자동 copy | ✅ | #122 | `selection.finish()` 자동 + 더블클릭 word selection 후 자동 copy + ghostty selectWord 직접 구현 (wide char 처리, boundary 시작 reject). |
 | 마우스 우클릭 paste (양쪽 변경) | ✅ | #119 | Windows 가운데 버튼 (`WM_MBUTTONDOWN`, deprecated) → 우클릭 (`WM_RBUTTONDOWN`). macOS 우클릭 추가. |
 | 스크롤바 마우스 클릭 + 드래그 | ✅ | #123 | `scrollbarScrollToY` (Windows `scrollToY` 패턴 그대로). cross-platform `ScrollbarDragState` + ghostty `Pin` 기반 selection 으로 viewport 이동해도 selection 유지. |
-| autostart (LaunchAgent) | ✅ | #126, #442 | `~/Library/LaunchAgents/com.tildaz.app.plist` (RunAtLoad), Windows Registry Run 동등. `ProgramArguments` 는 `/usr/bin/open -a` 경유 — 번들 밖 실행은 바이너리 직접 지목으로 fallback (#442) |
-| 로그 시스템 (`~/Library/Logs/tildaz_N.log`) | ✅ | #124 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
+| autostart (LaunchAgent) | ✅ | #126, #442, #654 | `~/Library/LaunchAgents/me.ensky0.tildaz.plist` (RunAtLoad; label = bundle id, 개발 빌드는 `me.ensky0.tildaz.dev`. #654 이전의 `com.tildaz.app.plist` 는 앱이 지우지 않는다 — 1 회성 정리를 코드에 두지 않기로 했고 (2026-09-20), README · 릴리즈 노트의 한 줄 명령과 `uninstall.sh` 가 치운다), Windows Registry Run 동등. `ProgramArguments` 는 `/usr/bin/open -a` 경유 — 번들 밖 실행은 바이너리 직접 지목으로 fallback (#442) |
+| 로그 시스템 (`~/Library/Logs/tildaz/tildaz_N.log`) | ✅ | #124, #654 | Windows 와 공통 `src/log.zig` (+ OS 별 `src/log/{windows,macos,linux}.zig`) 동등. `[exit]` 는 `atexit()` hook 으로 기록 — NSApp `terminate:` 가 `exit()` 직행이라 main 의 `defer` 안 거침. |
 | Developer ID 코드사인 + notarization | 🔴 (환경 한계) | #109 | 회사 keychain 정책 — fallback은 stable self-signed TildaZ identity |
 | config schema 확장 (font.* / shell / max_scroll_lines) | ✅ | #118 | Linux · macOS · Windows가 같은 schema를 사용하고 default만 OS별로 다름. |
 | SIGHUP 무시 셸 fallback (SIGKILL) | ✅ | #129 | `Pty.deinit` 에 grace period (500ms / 5ms polling) + `child_exited` atomic flag. wait_thread 의 waitpid 가 깨어나면 즉시 break, 안 깨어나면 SIGKILL. Cmd+W / 탭 close button 으로만 트리거 (Cmd+Q 는 NSApp `terminate:` → `exit()` 직행). |

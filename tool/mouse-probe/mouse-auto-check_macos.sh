@@ -4,8 +4,8 @@
 # 돌릴 수 있다. 프로브는 `mouse-probe.sh --log` 그대로다 — 사람 검증과 같은 것을 본다.
 #
 # ```sh
-# tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ.app 1000 1015      # tracking 1000 · format 1015
-# tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ.app 1000 1005 1006 1015 1016   # 형식 여럿
+# tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ-dev.app 1000 1015      # tracking 1000 · format 1015
+# tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ-dev.app 1000 1005 1006 1015 1016   # 형식 여럿
 # ```
 #
 # 판정 (press 뒤 release 한 번 — 셀 (C,R) 은 창 위치 · cell 크기에 딸려 가므로 값이 아니라 **형태**만):
@@ -62,5 +62,5 @@ for FMT in "$@"; do
   echo "[?$TRACKING;$FMT] $verdict  창 $sz @ ($X,$Y)  받은 바이트: ${bytes:-(없음)}"
   [ "$FMT" = 1016 ] && echo "        (1016 은 좌표가 픽셀 — 같은 클릭의 1006 값보다 커야 한다)"
 done
-rm -f "$HOME/.config/tildaz/config_9.toml"
+rm -f "$HOME/.config/tildaz-dev/config_9.toml"
 exit $fail

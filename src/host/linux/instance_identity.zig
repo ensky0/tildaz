@@ -1,13 +1,17 @@
 const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
+const app_id = @import("../../app_id.zig");
 const paths = @import("../../paths.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
 /// 값은 desktop entry 삭제 스윕이 순회할 최대 번호로도 쓰인다.
 pub const max_index = @import("../../instances.zig").max_config_index;
 
+/// **`ensureDesktopEntry` 의 파일 이름과 짝이어야 한다** — portal · 데스크톱 환경이
+/// 창의 `app_id` 로 desktop 항목을 찾는다. 한쪽만 `app_id.name` 을 타면 그 연결이
+/// 끊어진다 (#654).
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "tildaz.instance{d}", .{index}, 0);
+    return std.fmt.bufPrintSentinel(buf, "{s}.instance{d}", .{ app_id.name, index }, 0);
 }
 
 /// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
@@ -21,7 +25,7 @@ pub fn appId(buf: []u8, index: u32) ![:0]u8 {
 ///
 /// extension 이 이 창을 **아예 관리하지 않는 것이 의도한 결과**다 — 측정 창은 사용자의
 /// 드롭다운이 아니다.
-pub const stress_app_id: [:0]const u8 = "tildaz.stress";
+pub const stress_app_id: [:0]const u8 = app_id.name ++ ".stress";
 
 /// 현재 역할의 app_id. Wayland `xdg_toplevel.set_app_id` 와 KDE 단축키 component 가
 /// 같은 값을 써야 하므로 파생을 한 곳에 둔다.
@@ -33,9 +37,24 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
     };
 }
 
+/// 창 제목. GNOME · Cinnamon 확장이 이 문자열로 사용자의 드롭다운 창을 찾으므로
+/// dev 판은 다른 이름을 써서 **확장이 개발 창을 사용자 창으로 오인하지 않게** 한다
+/// (`stress_app_id` 를 가른 것과 같은 이유다). 확장 경로 자체를 시연할 때는
+/// `-Drelease=true` 로 빌드한다.
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "TildaZ_{d}", .{index}, 0);
+    return std.fmt.bufPrintSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
 }
+
+/// wlr-layer-shell surface 의 namespace. compositor 가 **창 규칙을 거는 키**라 개발
+/// 빌드와 릴리즈가 같은 값을 쓰면 사용자가 릴리즈에 건 규칙이 개발 창에도 걸린다 (#654).
+/// layer surface 에는 `app_id` 가 없어 이 문자열이 그 자리를 대신하므로, 여기서 가른다.
+pub const layer_namespace: [:0]const u8 = app_id.name;
+
+/// 다이얼로그 toplevel 의 `app_id`. 메인 창과 **다른** 값이어야 GNOME · Cinnamon 확장이
+/// 이것을 드롭다운으로 가로채지 않는다 (#231). 그 확장이 `<name>-dialog` 로 찾으므로
+/// 여기도 이름을 탄다 (#654) — 안 그러면 개발 빌드의 다이얼로그를 릴리즈 확장이 자기
+/// 것으로 보고 옮긴다.
+pub const dialog_app_id: [:0]const u8 = app_id.name ++ "-dialog";
 
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
@@ -45,23 +64,14 @@ pub fn shortcutDescription(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
 }
 
-pub fn scopeName(buf: []u8, index: u32, pid: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "app-tildaz.instance{d}-{d}.scope", .{ index, pid }, 0);
-}
-
-pub fn isScopeForIndex(leaf: []const u8, index: u32) bool {
-    var prefix_buf: [48]u8 = undefined;
-    const prefix = std.fmt.bufPrint(&prefix_buf, "app-tildaz.instance{d}-", .{index}) catch return false;
-    if (!std.mem.startsWith(u8, leaf, prefix) or !std.mem.endsWith(u8, leaf, ".scope")) return false;
-    const pid_text = leaf[prefix.len .. leaf.len - ".scope".len];
-    if (pid_text.len == 0) return false;
-    _ = std.fmt.parseInt(u32, pid_text, 10) catch return false;
-    return true;
-}
-
+/// 이름 앞부분은 `app_id.name` 을 탄다 (#654) — 개발 빌드가 만든 항목과 릴리즈가 만든
+/// 항목이 같은 `~/.local/share/applications/` 에 놓이므로, 여기가 안 갈리면 서로의
+/// 인스턴스 항목을 자기 것으로 읽는다. `.desktop` 은 XDG 규격상 공용 디렉터리라
+/// 디렉터리로는 가를 수 없어 이름에 섞는다.
 fn parseDesktopFileName(name: []const u8) ?u32 {
-    if (!std.mem.startsWith(u8, name, "tildaz.instance") or !std.mem.endsWith(u8, name, ".desktop")) return null;
-    const digits = name["tildaz.instance".len .. name.len - ".desktop".len];
+    const prefix = app_id.name ++ ".instance";
+    if (!std.mem.startsWith(u8, name, prefix) or !std.mem.endsWith(u8, name, ".desktop")) return null;
+    const digits = name[prefix.len .. name.len - ".desktop".len];
     if (digits.len == 0 or (digits.len > 1 and digits[0] == '0')) return null;
     const index = std.fmt.parseInt(u32, digits, 10) catch return null;
     return if (index <= max_index) index else null;
@@ -84,7 +94,7 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
     try paths.ensureDir(rt, dir);
 
-    const file_name = try std.fmt.allocPrint(allocator, "tildaz.instance{d}.desktop", .{index});
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.instance{d}.desktop", .{ app_id.name, index });
     defer allocator.free(file_name);
     const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
@@ -95,21 +105,25 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     const exe = exe_buf[0..exe_len];
     if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
+    // **본문도 `app_id` 를 탄다** — 파일 *이름*만 가르면 그 항목이 릴리즈 창을 가리킨다.
+    // `StartupWMClass` 는 데스크톱 · portal 이 창과 이 항목을 묶는 열쇠라 위 `appId` 와
+    // 글자 단위로 같아야 하고, `Name` 은 창 제목 (`displayName`) 과, `Icon` 은
+    // `install.sh` 가 까는 아이콘 파일 이름 (`<name>.svg`) 과 짝이다.
     const content = try std.fmt.allocPrint(allocator,
         \\[Desktop Entry]
         \\Type=Application
-        \\Name=TildaZ_{d}
+        \\Name={s}_{d}
         \\GenericName=Drop-down Terminal Instance
         \\Comment=Independent TildaZ terminal instance {d}
         \\Exec="{s}" --instance {d}
-        \\Icon=tildaz
+        \\Icon={s}
         \\Terminal=false
         \\Categories=System;TerminalEmulator;
-        \\StartupWMClass=tildaz.instance{d}
+        \\StartupWMClass={s}.instance{d}
         \\StartupNotify=false
         \\NoDisplay=true
         \\
-    , .{ index, index, exe, index, index });
+    , .{ app_id.window_base, index, index, exe, index, app_id.name, app_id.name, index });
     defer allocator.free(content);
 
     _ = try paths.writeFileIfChanged(rt, allocator, path, content);
@@ -136,15 +150,11 @@ pub fn syncDesktopEntries(rt: Runtime, allocator: std.mem.Allocator, indices: []
 
 test "numbered Linux identity is canonical" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("tildaz.instance12", try appId(&buf, 12));
-    try std.testing.expectEqualStrings("TildaZ_12", try displayName(&buf, 12));
+    try std.testing.expectEqualStrings(app_id.name ++ ".instance12", try appId(&buf, 12));
+    try std.testing.expectEqualStrings(app_id.window_base ++ "_12", try displayName(&buf, 12));
     try std.testing.expectEqualStrings("toggle-12", try shortcutId(&buf, 12));
     try std.testing.expectEqualStrings("Show / hide TildaZ 12", try shortcutDescription(&buf, 12));
-    try std.testing.expectEqualStrings("app-tildaz.instance12-345.scope", try scopeName(&buf, 12, 345));
-    try std.testing.expect(isScopeForIndex("app-tildaz.instance12-345.scope", 12));
-    try std.testing.expect(!isScopeForIndex("app-tildaz.instance1-345.scope", 12));
-    try std.testing.expect(!isScopeForIndex("app-tildaz.instance12-other.scope", 12));
-    try std.testing.expectEqual(@as(?u32, 0), parseDesktopFileName("tildaz.instance0.desktop"));
-    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName("tildaz.instance01.desktop"));
-    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName("tildaz.desktop"));
+    try std.testing.expectEqual(@as(?u32, 0), parseDesktopFileName(app_id.name ++ ".instance0.desktop"));
+    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".instance01.desktop"));
+    try std.testing.expectEqual(@as(?u32, null), parseDesktopFileName(app_id.name ++ ".desktop"));
 }

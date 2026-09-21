@@ -3,7 +3,7 @@
 #
 # ```sh
 # tool/render-ab-shot/render-ab-shot_macos.sh <화면.sh> <격자> <대기초> <A.app> <B.app>
-# tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/main.app zig-out/TildaZ.app
+# tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/main.app zig-out/TildaZ-dev.app
 # ```
 #
 # - 기준판은 main 을 **별도 worktree** 에서 빌드한다 (`.zig-cache` 가 갈려야 한다 — 캐시를 나누지

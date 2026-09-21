@@ -67,7 +67,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
 EXE=""
 for _cand in \
-    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
     "$REPO_ROOT/zig-out/bin/tildaz"
 do
     [ -x "$_cand" ] && EXE="$_cand" && break
@@ -79,7 +79,7 @@ case "$HYG_PLATFORM" in
     # `paths.zig` 의 `logDir` 와 같은 규칙이다. `-e` 로 띄운 회차는 **`tildaz_stress.log`**
     # 로 간다 (`instance_context.isStress`) — 평소의 `tildaz_N.log` 가 아니다.
     linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
-    macos) LOG="$HOME/Library/Logs/tildaz_stress.log" ;;
+    macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     *)
         echo "이 스크립트는 Linux · macOS 전용이에요 ($(uname -s))." >&2
         echo "Windows 는 tool/stress/README.md 의 '입력 손실' 절에 수동 절차가 있어요." >&2

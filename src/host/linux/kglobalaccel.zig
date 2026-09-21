@@ -12,6 +12,7 @@ const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
 const instance_context = @import("../../instance_context.zig");
 const instance_identity = @import("instance_identity.zig");
+const app_id = @import("../../app_id.zig");
 const log = @import("../../log.zig");
 const dialog = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
@@ -205,8 +206,12 @@ fn componentUniqueName(allocator: std.mem.Allocator, bus: *dbus.SessionBus, path
     return allocator.dupe(u8, if (value_c) |value| std.mem.span(value) else "");
 }
 
+/// **`app_id.name` 을 탄다** (#654). 호출처가 이 판정에 걸린 컴포넌트의 단축키를
+/// `unregisterShortcut` 으로 *지우므로*, 여기가 안 갈리면 개발 빌드가 릴리즈의
+/// `tildaz.instanceN` 을 자기 것으로 보고 **사용자의 전역 단축키를 지운다** — 개발 빌드의
+/// config 에 그 번호가 없으면 정확히 그렇게 된다.
 fn numberedComponentIndex(component_name: []const u8) ?u32 {
-    const prefix = "tildaz.instance";
+    const prefix = app_id.name ++ ".instance";
     if (!std.mem.startsWith(u8, component_name, prefix)) return null;
     const number = component_name[prefix.len..];
     if (number.len == 0 or (number.len > 1 and number[0] == '0')) return null;
@@ -222,7 +227,10 @@ pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
     const desktop = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return;
     if (!isKdeDesktopValue(desktop)) return;
 
-    const legacy_component: [*:0]const u8 = "tildaz";
+    // **여기도 `app_id.name` 을 탄다** (#654). 개발 빌드가 `"tildaz"` 를 지우면 그것은
+    // *릴리즈의* 옛 항목이다 — 번호가 없던 시절의 등록이라 개발 빌드 것과 구별할 수 없다.
+    // `tildaz-dev` 로는 그런 항목이 존재한 적이 없으므로 개발 빌드에서는 조용히 no-op 다.
+    const legacy_component: [*:0]const u8 = app_id.name;
     if (instance_context.requireWorkerIndex() == 0) {
         unregisterShortcut(&bus.api, bus.conn, legacy_component, "toggle") catch |err| {
             log.appendLineVerbose("kglobalaccel", "legacy KDE action cleanup skipped: {s}", .{@errorName(err)});
@@ -1004,12 +1012,18 @@ pub fn isCurrentDesktop(rt: Runtime) bool {
 }
 
 test "numbered KDE component identity is parsed strictly" {
-    try std.testing.expectEqual(@as(?u32, 0), numberedComponentIndex("tildaz.instance0"));
-    try std.testing.expectEqual(@as(?u32, 42), numberedComponentIndex("tildaz.instance42"));
-    try std.testing.expect(numberedComponentIndex("tildaz.instance") == null);
-    try std.testing.expect(numberedComponentIndex("tildaz.instance01") == null);
-    try std.testing.expect(numberedComponentIndex("tildaz.instance2.extra") == null);
+    try std.testing.expectEqual(@as(?u32, 0), numberedComponentIndex(app_id.name ++ ".instance0"));
+    try std.testing.expectEqual(@as(?u32, 42), numberedComponentIndex(app_id.name ++ ".instance42"));
+    try std.testing.expect(numberedComponentIndex(app_id.name ++ ".instance") == null);
+    try std.testing.expect(numberedComponentIndex(app_id.name ++ ".instance01") == null);
+    try std.testing.expect(numberedComponentIndex(app_id.name ++ ".instance2.extra") == null);
     try std.testing.expect(numberedComponentIndex("other.instance2") == null);
+    // #654 — 개발 빌드는 **릴리즈의** 컴포넌트를 자기 것으로 보면 안 된다. 이 판정에
+    // 걸린 컴포넌트는 호출처에서 `unregisterShortcut` 되므로, 여기가 틀리면 사용자의
+    // 전역 단축키가 지워진다.
+    if (comptime !std.mem.eql(u8, app_id.name, "tildaz")) {
+        try std.testing.expect(numberedComponentIndex("tildaz.instance0") == null);
+    }
 }
 
 test "KDE desktop token is exact and case insensitive" {

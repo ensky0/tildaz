@@ -19,13 +19,15 @@
 #
 # desktop database / icon cache refresh 는 best-effort (없으면 skip).
 #
-# binary 자체는 build 결과물이거나 사용자가 PATH 위치로 옮긴 것 — 이 script 는
-# 옮기지 않는다. `--exe` 옵션으로 명시 가능, 없으면 `realpath zig-out/bin/tildaz`
-# 시도.
+# 저장소에서는 선택한 종류로 빌드한 뒤 설치한다. 기본 dev, --release 만 릴리즈다.
+# tarball에서는 이미 빌드된 릴리즈를 설치한다 (--release 필수).
+# --exe 는 tarball 바이너리를 다른 디렉터리로 옮긴 경우에만 쓴다.
 #
 # 사용법:
-#   bash dist/linux/install.sh                    # repo zig-out/bin/tildaz
-#   bash dist/linux/install.sh --exe /usr/bin/tildaz
+#   bash dist/linux/install.sh                    # dev 빌드 + 설치
+#   bash dist/linux/install.sh --release          # 릴리즈 빌드 + 설치
+#   ./install.sh --release                        # 릴리즈 tarball 설치
+#   ./install.sh --release --exe /usr/local/bin/tildaz
 #
 # KDE Plasma 6 환경: install 후 KRunner (Alt+F2) 또는 Application Menu 에서
 # "TildaZ" 검색 + 실행 → launcher desktop entry의 Exec 호출. Worker별
@@ -41,49 +43,117 @@ if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
 else
     CONFIG_HOME="$HOME/.config"
 fi
-TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
-
 TILDAZ_EXE=""
+IS_DEV=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --exe) TILDAZ_EXE="$2"; shift 2 ;;
+        --exe)
+            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                echo "ERROR: --exe requires a path" >&2; exit 2
+            fi
+            TILDAZ_EXE="$2"; shift 2 ;;
+        --release) IS_DEV=0; shift ;;
         -h|--help)
-            grep '^#' "$0" | sed 's/^# \?//'
+            echo "Usage: $0 [--release] [--exe <path>]"
+            echo "Build and install dev by default; --release selects the release identity."
+            echo "Release archives require --release. --exe is only for a relocated archive binary."
             exit 0
             ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
-if [[ -z "$TILDAZ_EXE" ]]; then
-    # tar.gz release tarball 안 install.sh — binary 가 script 와 같은 폴더에 있음.
-    # repo dev 환경 — zig-out/bin/tildaz.
-    if [[ -x "$SCRIPT_DIR/tildaz" ]]; then
-        TILDAZ_EXE="$SCRIPT_DIR/tildaz"
-    else
-        TILDAZ_EXE="$REPO_ROOT/zig-out/bin/tildaz"
-    fi
+if [[ "$IS_DEV" -eq 1 ]]; then
+    TILDAZ_ID="tildaz-dev"
+    TILDAZ_LABEL="TildaZ (dev)"
+    # 창 제목 접두어 — `src/app_id.zig` 의 `window_title_prefix` 와 같은 값. 확장이 이것으로
+    # worker 창을 찾는다 (#654).
+    TILDAZ_TITLE_PREFIX="TildaZ-dev-"
+else
+    TILDAZ_ID="tildaz"
+    TILDAZ_LABEL="TildaZ"
+    TILDAZ_TITLE_PREFIX="TildaZ-"
 fi
+# 앱이 읽는 config 디렉터리도 같은 이름을 탄다 — 안내 문구에 쓴다.
+TILDAZ_CONFIG_DIR="$CONFIG_HOME/$TILDAZ_ID"
 
+# 경로는 소스/배포물의 위치를 찾는 데만 쓴다. dev 여부는 위 옵션 하나가 정한다.
+if [[ -f "$REPO_ROOT/build.zig" && -f "$REPO_ROOT/src/main.zig" ]]; then
+    if [[ -n "$TILDAZ_EXE" ]]; then
+        echo "ERROR: --exe is only supported in a release archive; repository installs build from source." >&2
+        exit 2
+    fi
+    RELEASE_VALUE=false
+    BUILD_KIND=dev
+    if [[ "$IS_DEV" -eq 0 ]]; then RELEASE_VALUE=true; BUILD_KIND=release; fi
+    # symlink 대상이 다음 릴리즈 빌드로 바뀌지 않게 설치용 산출물을 판별로 나눈다.
+    INSTALL_PREFIX="$REPO_ROOT/zig-out/install-$BUILD_KIND"
+    (cd "$REPO_ROOT" && zig build "-Drelease=$RELEASE_VALUE" -Doptimize=ReleaseFast -Dsimd=true -p "$INSTALL_PREFIX")
+    TILDAZ_EXE="$INSTALL_PREFIX/bin/tildaz"
+else
+    if [[ "$IS_DEV" -eq 1 ]]; then
+        echo "ERROR: this archive contains a release build. Run ./install.sh --release." >&2
+        exit 2
+    fi
+    TILDAZ_EXE="${TILDAZ_EXE:-$SCRIPT_DIR/tildaz}"
+fi
 if [[ ! -x "$TILDAZ_EXE" ]]; then
     echo "ERROR: tildaz binary not found at: $TILDAZ_EXE" >&2
-    echo "       Build first (zig build) or pass --exe /path/to/tildaz" >&2
     exit 1
 fi
 TILDAZ_EXE="$(realpath "$TILDAZ_EXE")"
+
+# 개발판 분리 (#654) 이전의 install.sh 는 개발 빌드도 **릴리즈 이름** (`tildaz`) 으로 깔았다.
+# 그 잔재가 남으면 `~/.local/bin/tildaz` 가 PATH 에서 `/usr/bin/tildaz` 를 가려
+# `which tildaz` 가 개발 빌드를 가리키고, `tildaz.desktop` 은 패키지 항목을 통째로
+# 가린다 — 이 이슈가 없애려던 shadowing 그 자체다.
+#
+# **옛 기본 경로 `zig-out/bin/tildaz`만 정리한다.** 새 `install-release` 경로까지 지우면
+# dev 재설치가 정상 릴리즈 설치를 없애므로 넓은 `zig-out/*` 판정은 쓰지 않는다. 이 경로면
+# 확실하고, 사용자가 릴리즈 tarball 로 깐 정상 설치 (Exec 이 압축 해제 폴더) 는 그대로
+# 남는다. 이 조건은 옛 잔재 정리 전용이고 새 설치의 dev 판정에는 쓰지 않는다. 아이콘 (`tildaz.svg`) 은 dev·릴리즈
+# 구별 근거가 없어 건드리지 않는다 — 항목이 없으면 아이콘만 남아도 무해하다.
+remove_stale_dev_entry() {
+    local kind="$1" path="$2"
+    case "$kind" in
+        link)
+            [[ -L "$path" ]] || return 0
+            local target
+            target="$(readlink -f "$path" 2>/dev/null || true)"
+            [[ "$target" == */zig-out/bin/tildaz ]] || return 0
+            ;;
+        desktop)
+            [[ -f "$path" ]] || return 0
+            grep -qE '^Exec=("?)[^"]*/zig-out/bin/tildaz("|[[:space:]]|$)' "$path" || return 0
+            ;;
+    esac
+    rm -f "$path"
+    STALE_REMOVED+=("$path")
+}
+
+STALE_REMOVED=()
+if [[ "$IS_DEV" -eq 1 ]]; then
+    remove_stale_dev_entry link    "$HOME/.local/bin/tildaz"
+    remove_stale_dev_entry desktop "$HOME/.local/share/applications/tildaz.desktop"
+    remove_stale_dev_entry desktop "$CONFIG_HOME/autostart/tildaz.desktop"
+fi
 
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$APP_DIR" "$ICON_DIR"
 
-DESKTOP_OUT="$APP_DIR/tildaz.desktop"
-ICON_OUT="$ICON_DIR/tildaz.svg"
+DESKTOP_OUT="$APP_DIR/$TILDAZ_ID.desktop"
+ICON_OUT="$ICON_DIR/$TILDAZ_ID.svg"
 
 ESCAPED_EXE="${TILDAZ_EXE//\\/\\\\}"
 ESCAPED_EXE="${ESCAPED_EXE//&/\\&}"
 ESCAPED_EXE="${ESCAPED_EXE//|/\\|}"
-sed "s|__TILDAZ_EXE__|$ESCAPED_EXE|" "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
-if grep -qF '__TILDAZ_EXE__' "$DESKTOP_OUT" || ! grep -qxF "Exec=$TILDAZ_EXE" "$DESKTOP_OUT"; then
+sed -e "s|__TILDAZ_EXE__|$ESCAPED_EXE|" \
+    -e "s|__TILDAZ_NAME__|$TILDAZ_LABEL|" \
+    -e "s|__TILDAZ_ICON__|$TILDAZ_ID|" \
+    -e "s|__TILDAZ_WMCLASS__|$TILDAZ_ID|" \
+    "$SCRIPT_DIR/tildaz.desktop" > "$DESKTOP_OUT"
+if grep -qF '__TILDAZ_' "$DESKTOP_OUT" || ! grep -qxF "Exec=$TILDAZ_EXE" "$DESKTOP_OUT"; then
     echo "ERROR: failed to resolve desktop Exec path: $DESKTOP_OUT" >&2
     exit 1
 fi
@@ -109,7 +179,7 @@ gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 # ~/.local/bin/tildaz symlink — dmenu 등 launcher 는 `.desktop` 이 아니라 $PATH
 # 의 실행파일만 나열하므로, PATH 의 이 symlink 가 있어야 `tildaz` 로 실행/재실행
 # 된다. ln -sf 라 재실행 idempotent.
-BIN_LINK="$HOME/.local/bin/tildaz"
+BIN_LINK="$HOME/.local/bin/$TILDAZ_ID"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 
@@ -127,7 +197,34 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 #   - config 있음 + 이미 있음 → 변경 없음 (중복 방지). 기존 본문은 절대 안 덮음.
 # 자동실행 블록 식별 marker — install.sh ↔ uninstall.sh 글자 단위 동일해야 매칭됨.
 # sway/Hyprland 두 config 에 같은 marker 를 쓴다(파일은 따로 처리).
-TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
+#
+# **marker 에 `$TILDAZ_ID` 가 들어간다** (#654) — 릴리즈는 예전과 글자 단위로 같은
+# `# tildaz autostart …` 이고, dev 는 `# tildaz-dev autostart …` 다. 하나로 두면 두 번째로
+# 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행된다. uninstall.sh 는 두 marker 를
+# 모두 지운다.
+TILDAZ_MARKER="# $TILDAZ_ID autostart (added by install.sh — uninstall.sh removes this)"
+# 새 설치뿐 아니라 옛 zig-out/bin을 가리키는 자동실행 줄도 갱신한다.
+# 다른 판의 marker와 사용자 본문은 그대로 둔다. awk -v의 역슬래시 해석을 피해
+# marker/명령은 환경으로 넘긴다 (#654).
+sync_marked() {
+    local cfg="$1" marker="$2" line="$3" tmp
+    if grep -qxF -e "$marker" "$cfg"; then
+        tmp="$(mktemp "$cfg.tildaz.XXXXXX")" || exit 1
+        cp -p "$cfg" "$tmp" || exit 1
+        TILDAZ_MARKER_VALUE="$marker" TILDAZ_COMMAND_VALUE="$line" awk '
+            replace { print ENVIRON["TILDAZ_COMMAND_VALUE"]; replace=0; next }
+            { print }
+            $0 == ENVIRON["TILDAZ_MARKER_VALUE"] { replace=1 }
+            END { if (replace) print ENVIRON["TILDAZ_COMMAND_VALUE"] }
+        ' "$cfg" > "$tmp" || exit 1
+        if cmp -s "$cfg" "$tmp"; then rm -f "$tmp"; return 1; fi
+        mv "$tmp" "$cfg" || exit 1
+        return 0
+    fi
+    grep -qxF -e "$line" "$cfg" && return 1
+    printf '\n%s\n%s\n' "$marker" "$line" >> "$cfg" || exit 1
+    return 0
+}
 SWAY_CFG="$HOME/.config/sway/config"
 if [[ ! -e "$SWAY_CFG" ]]; then
     mkdir -p "$(dirname "$SWAY_CFG")"
@@ -136,12 +233,11 @@ include /etc/sway/config
 $TILDAZ_MARKER
 exec $TILDAZ_EXE --autostart
 EOF
-    SWAY_MSG="$SWAY_CFG  (생성 — stock 상속 + tildaz 자동실행 블록)"
-elif grep -qF -e "$TILDAZ_MARKER" "$SWAY_CFG" || grep -qE '^[[:space:]]*exec[[:space:]].*tildaz' "$SWAY_CFG"; then
-    SWAY_MSG="$SWAY_CFG  (이미 tildaz 자동실행 줄 있음 — 변경 없음)"
+    SWAY_MSG="$SWAY_CFG  (생성 — stock 상속 + $TILDAZ_ID 자동실행 블록)"
+elif sync_marked "$SWAY_CFG" "$TILDAZ_MARKER" "exec $TILDAZ_EXE --autostart"; then
+    SWAY_MSG="$SWAY_CFG  (updated $TILDAZ_ID autostart)"
 else
-    printf '\n%s\nexec %s --autostart\n' "$TILDAZ_MARKER" "$TILDAZ_EXE" >> "$SWAY_CFG"
-    SWAY_MSG="$SWAY_CFG  (기존 config 에 tildaz 자동실행 2줄 append)"
+    SWAY_MSG="$SWAY_CFG  ($TILDAZ_ID autostart is already current)"
 fi
 
 # ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`). Hyprland 은
@@ -152,19 +248,11 @@ fi
 #   - .lua  → `hl.on(...exec_cmd)` (주석 --)
 #   - 둘 다 없음 → Hyprland 설치돼 있으면 `Hyprland --verify-config` 로 기본 config 생성
 #     (세션 안 띄움) 후 append. 미설치면 안내만 (`command -v` 로 먼저 걸러 안 깨짐).
-# 기존 본문 안 건드리고 append 만. 각 줄 앞에 marker — uninstall 이 marker+다음줄 제거.
+# 기존 본문은 보존하고, 우리 marker 아래 실행 경로만 현재 설치로 맞춘다.
 HYPR_DIR="$HOME/.config/hypr"
 HYPR_CONF="$HYPR_DIR/hyprland.conf"
 HYPR_LUA="$HYPR_DIR/hyprland.lua"
-TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
-
-# config 에 marker+line 을 idempotent append (needle 정규식이 이미 있으면 skip → return 1).
-append_marked() {
-    local cfg="$1" marker="$2" needle="$3" line="$4"
-    grep -qE "$needle" "$cfg" && return 1
-    printf '\n%s\n%s\n' "$marker" "$line" >> "$cfg"
-    return 0
-}
+TILDAZ_MARKER_LUA="-- $TILDAZ_ID autostart (added by install.sh — uninstall.sh removes this)"
 
 # 과거 install.sh가 만든 정적 Hyprland hotkey marker+다음 줄만 제거한다.
 # config_N별 런타임 등록과 함께 남으면 같은 키가 두 번 toggle될 수 있다.
@@ -211,7 +299,7 @@ if [[ -f "$HYPR_CONF" ]]; then
         sed -i '/^[[:space:]]*autogenerated[[:space:]]*=/d' "$HYPR_CONF"
         hypr_added+=("배너제거")
     fi
-    if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" '^[[:space:]]*exec-once[[:space:]]*=.*tildaz' "exec-once = $TILDAZ_EXE --autostart"; then hypr_added+=("autostart"); fi
+    if sync_marked "$HYPR_CONF" "$TILDAZ_MARKER" "exec-once = $TILDAZ_EXE --autostart"; then hypr_added+=("autostart"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_CONF  (hyprlang ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_CONF  (이미 설정됨 — 변경 없음)"; fi
 elif [[ -f "$HYPR_LUA" ]]; then
     remove_legacy_hypr_hotkey "$HYPR_LUA" "$TILDAZ_MARKER_LUA" lua
@@ -223,7 +311,7 @@ elif [[ -f "$HYPR_LUA" ]]; then
         sed -i '/hl\.config(.*autogenerated/d' "$HYPR_LUA"
         hypr_added+=("배너제거")
     fi
-    if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" 'hl\.on\(.*tildaz' "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE --autostart\") end)"; then hypr_added+=("autostart"); fi
+    if sync_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE --autostart\") end)"; then hypr_added+=("autostart"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_LUA  (Lua ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_LUA  (이미 설정됨 — 변경 없음)"; fi
 fi
 
@@ -240,18 +328,94 @@ fi
 # placement / lifecycle(launch·show·hide) 을 extension 이 담당한다 (#228). GNOME
 # 환경에서만 의미(다른 DE 는 gnome-shell 이 없어 무시). 복사는 항상, enable 은
 # gnome-extensions 명령이 있을 때. Wayland 는 enable 후 로그아웃/로그인해야 적용.
-EXT_UUID="tildaz@ensky0.github.io"
-EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_UUID"
+# 확장 소스는 레포에 **한 벌**이고 `__TILDAZ_*__` 토큰을 담는다 (#654) — 개발 빌드와
+# 릴리즈가 각자의 UUID 로 깔리도록 복사하면서 치환한다. `src/host/linux/shell_extension.zig`
+# 의 `substitutions` 와 **같은 토큰**이어야 한다 (앱도 기동 때 같은 파일을 쓴다).
+# 소스 디렉터리 이름은 릴리즈 UUID 로 고정돼 있다 (git 에 담긴 이름).
+EXT_SRC_UUID="tildaz@ensky0.github.io"
+if [[ "$IS_DEV" -eq 1 ]]; then
+    EXT_UUID="tildaz-dev@ensky0.github.io"
+    EXT_NAME="TildaZ Drop-down (dev)"
+else
+    EXT_UUID="tildaz@ensky0.github.io"
+    EXT_NAME="TildaZ Drop-down"
+fi
+EXT_SCHEMA="org.gnome.shell.extensions.$TILDAZ_ID"
+
+# 확장 리소스를 토큰 치환하며 복사한다. gschema 는 파일 이름도 스키마 id 를 따라간다 —
+# `glib-compile-schemas` 가 디렉터리를 통째로 읽으므로 이름이 겹치면 서로를 덮어쓴다.
+render_extension() {
+    local src="$1" dst="$2" rel out
+    mkdir -p "$dst"
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        case "$rel" in
+            schemas/*.gschema.xml) out="$dst/schemas/$EXT_SCHEMA.gschema.xml" ;;
+            *) out="$dst/$rel" ;;
+        esac
+        mkdir -p "$(dirname "$out")"
+        sed -e "s|__TILDAZ_EXT_UUID__|$EXT_UUID|g" \
+            -e "s|__TILDAZ_EXT_SCHEMA__|$EXT_SCHEMA|g" \
+            -e "s|__TILDAZ_EXT_NAME__|$EXT_NAME|g" \
+            -e "s|__TILDAZ_TITLE_PREFIX__|$TILDAZ_TITLE_PREFIX|g" \
+            -e "s|__TILDAZ_APP__|$TILDAZ_ID|g" \
+            "$f" > "$out"
+        # 토큰이 남으면 셸이 그 확장을 못 읽고 그 실패는 조용하다 — 여기서 세운다.
+        if grep -qE '__TILDAZ_[A-Z_]+__' "$out"; then
+            echo "ERROR: unresolved __TILDAZ_ token in $out" >&2
+            exit 1
+        fi
+    done < <(find "$src" -type f -print0)
+}
+
+# gsettings 의 문자열 목록 (strv) 에 항목을 더하거나 뺀다. `@as []` 와 `['a', 'b']` 를 둘 다 읽고,
+# 바뀐 것이 없으면 쓰지 않는다. 키가 없거나 (예: `org.cinnamon` 에는 `disabled-extensions` 가 없다)
+# gsettings · python3 이 없으면 1 을 돌려준다 — 호출부가 안내 문구로 갈라 쓴다.
+gsettings_strv_edit() {   # <schema> <key> add|remove <value>
+    local schema="$1" key="$2" op="$3" value="$4" cur new
+    command -v gsettings >/dev/null 2>&1 || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    gsettings writable "$schema" "$key" >/dev/null 2>&1 || return 1
+    cur="$(gsettings get "$schema" "$key" 2>/dev/null || echo '@as []')"
+    new="$(python3 - "$cur" "$op" "$value" <<'PY'
+import sys
+cur, op, value = sys.argv[1].strip(), sys.argv[2], sys.argv[3]
+i = cur.find('[')
+items = []
+if i >= 0:
+    body = cur[i + 1:cur.rfind(']')]
+    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
+if op == 'add' and value not in items:
+    items.append(value)
+if op == 'remove':
+    items = [x for x in items if x != value]
+print('[' + ', '.join("'%s'" % x for x in items) + ']')
+PY
+)"
+    [[ -n "$new" ]] || return 1
+    [[ "$new" == "$cur" ]] && return 0
+    gsettings set "$schema" "$key" "$new" 2>/dev/null
+}
+
+EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
     EXT_DST="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
-    mkdir -p "$EXT_DST"
-    cp -r "$EXT_SRC/." "$EXT_DST/"
+    render_extension "$EXT_SRC" "$EXT_DST"
     if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d "$EXT_DST/schemas" ]]; then
         glib-compile-schemas "$EXT_DST/schemas" 2>/dev/null || true
     fi
-    if command -v gnome-extensions >/dev/null 2>&1; then
-        gnome-extensions enable "$EXT_UUID" 2>/dev/null || true
+    # `gnome-extensions enable` 을 쓰지 않는다 (#654 GNOME 실기). 셸은 재로그인 전에는 새로 깐
+    # 확장 디렉터리를 읽지 않아서, 그 UUID 로 enable 을 걸면 **"확장 기능이 없습니다" (exit 2)**
+    # 로 실패한다. 예전 코드는 그것을 `|| true` 로 삼키고 "(enabled)" 라고 적었는데, 실제로는
+    # `enabled-extensions` 에 들어가지 못해 **재로그인 뒤에도 켜지지 않았다.** Cinnamon 경로처럼
+    # gsettings 를 직접 쓴다 — 로그인 때 셸이 그 목록을 읽어 켠다.
+    #
+    # `disabled-extensions` 에서도 뺀다. `uninstall.sh` 가 부르는 `gnome-extensions disable` 이 거기
+    # UUID 를 남기고, GNOME 은 그 목록을 `enabled-extensions` 보다 **우선**한다 (실측: 양쪽에 있으면
+    # 확장이 INITIALIZED 에 멈추고 켜지지 않는다). 재설치가 켜지려면 여기서 치워야 한다.
+    if gsettings_strv_edit org.gnome.shell enabled-extensions add "$EXT_UUID"; then
+        gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_UUID" || true
         EXT_MSG="$EXT_DST  (enabled — GNOME 로그아웃/로그인 후 적용)"
     else
         EXT_MSG="$EXT_DST  (복사됨 — GNOME 세션에서: gnome-extensions enable $EXT_UUID + 재로그인)"
@@ -263,43 +427,24 @@ fi
 # Cinnamon on Wayland 세션에서만 의미 (tildaz=Wayland client → X11 Cinnamon 세션엔
 # 못 뜸; 다른 DE 는 cinnamon 셸이 없어 무시). 복사는 항상, enable 은 gsettings
 # org.cinnamon enabled-extensions 에 uuid 추가 (스키마 있을 때만). 재로그인 후 적용.
-CIN_UUID="tildaz@ensky0.github.io"
-CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$CIN_UUID"
+CIN_UUID="$EXT_UUID"   # GNOME 과 같은 UUID 규칙 (#654) — 셸만 다르다.
+CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$EXT_SRC_UUID"
 CIN_MSG=""
 if [[ -d "$CIN_SRC" ]]; then
     CIN_DST="$HOME/.local/share/cinnamon/extensions/$CIN_UUID"
-    mkdir -p "$CIN_DST"
-    cp -r "$CIN_SRC/." "$CIN_DST/"
-    if command -v gsettings >/dev/null 2>&1 && gsettings writable org.cinnamon enabled-extensions >/dev/null 2>&1; then
-        CUR="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || echo '@as []')"
-        if [[ "$CUR" == *"'$CIN_UUID'"* ]]; then
-            CIN_MSG="$CIN_DST  (이미 enabled — Cinnamon Wayland 재로그인 후 적용)"
-        elif command -v python3 >/dev/null 2>&1; then
-            # 기존 목록 보존 + uuid 추가 (gsettings 의 @as [] / ['a','b'] 둘 다 파싱).
-            NEW="$(python3 - "$CUR" "$CIN_UUID" <<'PY'
-import sys
-cur, uuid = sys.argv[1].strip(), sys.argv[2]
-i = cur.find('[')
-items = []
-if i >= 0:
-    body = cur[i + 1:cur.rfind(']')]
-    items = [x.strip().strip("'\"") for x in body.split(',') if x.strip()]
-if uuid not in items:
-    items.append(uuid)
-print('[' + ', '.join("'%s'" % x for x in items) + ']')
-PY
-)"
-            if gsettings set org.cinnamon enabled-extensions "$NEW" 2>/dev/null; then
-                CIN_MSG="$CIN_DST  (enabled — Cinnamon Wayland 세션 재로그인 후 적용)"
-            else
-                CIN_MSG="$CIN_DST  (복사됨 — 시스템 설정 > 확장에서 활성화 + 재로그인)"
-            fi
-        else
-            CIN_MSG="$CIN_DST  (복사됨 — python3 없음, 시스템 설정 > 확장에서 활성화 + 재로그인)"
-        fi
+    render_extension "$CIN_SRC" "$CIN_DST"
+    # GNOME 과 같은 함수 (`gsettings_strv_edit`) 로 켠다 — 두 셸의 목록 편집 로직을 한 곳에 둔다.
+    if gsettings_strv_edit org.cinnamon enabled-extensions add "$CIN_UUID"; then
+        CIN_MSG="$CIN_DST  (enabled — Cinnamon 이 바로 읽음. 앱은 메뉴에서 실행하거나 다음 로그인의 autostart 로)"
     else
-        CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings 미설치, 다른 DE 에선 무시)"
+        CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings·python3 미설치, 시스템 설정 > 확장에서 활성화 + 재로그인)"
     fi
+fi
+
+if [[ ${#STALE_REMOVED[@]} -gt 0 ]]; then
+    echo "Removed stale entries from a pre-dev install (they pointed at zig-out):"
+    for f in "${STALE_REMOVED[@]}"; do echo "  $f"; done
+    echo ""
 fi
 
 echo "Installed:"
@@ -316,7 +461,8 @@ echo "  - KDE Plasma 6: Alt+F2 → 'TildaZ' 또는 메뉴에서 실행 (portal a
 echo "  - GNOME: 위 extension 이 drop-down 위치/단축키/자동시작을 담당."
 echo "           Wayland 라 로그아웃→로그인해야 extension 이 활성화됨."
 echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinnamon on Wayland)."
-echo "              Wayland 라 로그아웃→로그인해야 활성화됨. X11 세션엔 tildaz 안 뜸."
+echo "              extension 은 재로그인 없이 바로 켜짐 (#654 실측). 앱은 메뉴에서 실행하거나"
+echo "              다음 로그인의 autostart 로 뜸. X11 세션엔 tildaz 안 뜸."
 echo "  - sway: ~/.config/sway/config 의 exec 로 자동실행(없으면 위에서 생성)."
 echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
 echo "  - Hyprland: layer-shell drop-down. hotkey 는 실행 시 config_N별 hyprctl bind→'tildaz --toggle N'."
@@ -327,4 +473,4 @@ echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동
 echo "  - 기타 wlroots: layer-shell drop-down. 자동실행은 compositor 의 exec 류로 직접."
 echo "  - config: $TILDAZ_CONFIG_DIR/config_N.toml (instance별 auto_start/hidden_start/hotkey/위치)"
 echo "  - autostart: 비-GNOME 은 config.auto_start=true 면 $CONFIG_HOME/autostart/"
-echo "    tildaz.desktop 자동 생성. GNOME 은 NotShowIn으로 건너뛰고 extension이 담당."
+echo "    $TILDAZ_ID.desktop 자동 생성. GNOME 은 NotShowIn으로 건너뛰고 extension이 담당."

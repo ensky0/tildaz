@@ -31,7 +31,7 @@ git fetch origin && git checkout <브랜치>
 | platform | 빌드 | 실행 |
 |---|---|---|
 | Linux | `zig build -Doptimize=ReleaseFast -Dsimd=true` | `./zig-out/bin/tildaz --instance 1 -size 88x33 &` |
-| macOS | `dist/macos/build_and_install.sh` (서명 필수) | `/Applications/TildaZ.app/Contents/MacOS/tildaz --instance 1 -size 88x33 &` |
+| macOS | `dist/macos/build_and_install.sh` (서명 필수) | `/Applications/TildaZ-dev.app/Contents/MacOS/tildaz --instance 1 -size 88x33 &` |
 | Windows | `zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache` | `.\zig-out\bin\tildaz.exe --instance 1 -size 88x33` |
 
 macOS 는 마우스 검증에 권한이 필요 없어서 (Input Monitoring 은 전역 핫키용) 번들 안
@@ -59,7 +59,7 @@ A1~A3 이 스크롤로 밀려 올라갔어요). 파일로 함께 받으면 사�
 ```sh
 printf '#!/usr/bin/env bash\nexec sh %s/tool/mouse-probe/mouse-probe.sh 1002 1006 --log /tmp/m.log\n' "$PWD" > /tmp/wrap.sh
 chmod +x /tmp/wrap.sh
-open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33   # macOS
+open -n /Applications/TildaZ-dev.app --args --instance 1 -e /tmp/wrap.sh -size 88x33   # macOS
 ```
 
 **Windows 는 PowerShell 이 아니라 Git Bash** 로 돌려요 (POSIX sh). 두 가지를 주의해요.
@@ -91,7 +91,7 @@ open -n /Applications/TildaZ.app --args --instance 1 -e /tmp/wrap.sh -size 88x33
 `?1005` · `?1015` · `?1016` 처럼 사람 검증 A~E 절에 없는 형식을 돌리는 용도예요 ([#583](https://github.com/ensky0/tildaz/issues/583) A4).
 
 ```sh
-tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ.app 1000 1005 1015 1016
+tool/mouse-probe/mouse-auto-check_macos.sh zig-out/TildaZ-dev.app 1000 1005 1015 1016
 ```
 
 - 창 위치는 `tool/color-capture_macos --list` 의 **위치 열** (pt · 좌상단 원점) 에서 읽어요 — Accessory

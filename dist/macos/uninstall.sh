@@ -26,59 +26,83 @@ for arg in "$@"; do
 done
 
 # 설치 경로는 build_and_install.sh 와 동일 env 로 override 가능.
-APP="${TILDAZ_INSTALL_PATH:-/Applications/TildaZ.app}"
-LAUNCH_LABEL="com.tildaz.app"                                   # autostart/macos.zig
-LAUNCH_AGENT="$HOME/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
-CACHE="$HOME/Library/Caches/TildaZ"                             # paths.zig lockDir
-if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
-    CONFIG_DIR="$XDG_CONFIG_HOME/tildaz"
-else
-    CONFIG_DIR="$HOME/.config/tildaz"
-fi
+# 릴리즈 판과 개발 판 (`-dev`) 을 **둘 다** 치운다 (#654) — 어느 쪽으로 깔았는지
+# uninstall 시점에는 알 수 없고, 사용자가 원하는 것은 "내가 깐 것을 지워라" 다.
+TILDAZ_IDS=(tildaz tildaz-dev)
+APPS=("/Applications/TildaZ.app" "/Applications/TildaZ-dev.app")
+[[ -n "${TILDAZ_INSTALL_PATH:-}" ]] && APPS=("$TILDAZ_INSTALL_PATH")
+APP="${APPS[0]}"
+# launchd label 은 bundle id 와 같은 값이다 (src/app_id.zig · autostart/macos.zig).
+LAUNCH_LABELS=("me.ensky0.tildaz" "me.ensky0.tildaz.dev" "com.tildaz.app")
+CONFIG_BASE="$HOME/.config"
+[[ "${XDG_CONFIG_HOME:-}" == /* ]] && CONFIG_BASE="$XDG_CONFIG_HOME"
 CERT_NAME="TildazLocal"
 CERT_CRT="$HOME/.tildaz/${CERT_NAME}.crt"
 CERT_P12="$HOME/.tildaz/${CERT_NAME}.p12"        # private key 백업 (cert-common.sh, #444)
 SYSTEM_KEYCHAIN="/Library/Keychains/System.keychain"
-BUNDLE_ID="me.ensky0.tildaz"                                    # Info.plist / tccutil
+BUNDLE_IDS=("me.ensky0.tildaz" "me.ensky0.tildaz.dev")          # Info.plist / tccutil
+BUNDLE_ID="${BUNDLE_IDS[0]}"
 
 removed=0
 
 # --- 자동실행 (LaunchAgent) — 안 지우면 삭제된 바이너리를 로그인 때 실행하려 함 ---
 # 현재 세션에 로드돼 있으면 먼저 bootout (best-effort), 그다음 plist 삭제.
-launchctl bootout "gui/$(id -u)/$LAUNCH_LABEL" 2>/dev/null || true
-if [[ -f "$LAUNCH_AGENT" ]]; then
-    rm -f "$LAUNCH_AGENT"
-    echo "Removed: $LAUNCH_AGENT (autostart)"
-    removed=$((removed + 1))
-fi
-
-# --- 앱 번들 ---
-if [[ -d "$APP" ]]; then
-    rm -rf "$APP"
-    echo "Removed: $APP"
-    removed=$((removed + 1))
-fi
-
-# --- state (lock / run cache) ---
-if [[ -d "$CACHE" ]]; then
-    rm -rf "$CACHE"
-    echo "Removed: $CACHE (state)"
-    removed=$((removed + 1))
-fi
-
-if [[ "$PURGE" == "1" ]]; then
-    # --- config ($XDG_CONFIG_HOME/tildaz, fallback ~/.config/tildaz) ---
-    if [[ -d "$CONFIG_DIR" ]]; then
-        rm -rf "$CONFIG_DIR"
-        echo "Removed: $CONFIG_DIR (config)"
+# `com.tildaz.app` 은 #654 이전의 label 이다 — 옛 설치본이 남겼을 수 있어 함께 본다.
+for label in "${LAUNCH_LABELS[@]}"; do
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    agent="$HOME/Library/LaunchAgents/${label}.plist"
+    if [[ -f "$agent" ]]; then
+        rm -f "$agent"
+        echo "Removed: $agent (autostart)"
         removed=$((removed + 1))
     fi
+done
 
-    # --- log (~/Library/Logs/tildaz_N.log) ---
+# --- 앱 번들 ---
+for app in "${APPS[@]}"; do
+    if [[ -d "$app" ]]; then
+        rm -rf "$app"
+        echo "Removed: $app"
+        removed=$((removed + 1))
+    fi
+done
+
+# --- state (lock / run cache) ---
+# 예전에는 `~/Library/Caches/TildaZ` (대문자 · `/run` 없음) 였다 (#654 ⓐⓑ).
+for dir in "$HOME/Library/Caches/TildaZ" "$HOME/Library/Caches/tildaz" "$HOME/Library/Caches/tildaz-dev"; do
+    if [[ -d "$dir" ]]; then
+        rm -rf "$dir"
+        echo "Removed: $dir (state)"
+        removed=$((removed + 1))
+    fi
+done
+
+if [[ "$PURGE" == "1" ]]; then
+    # --- config ($XDG_CONFIG_HOME/<id>, fallback ~/.config/<id>) ---
+    for id in "${TILDAZ_IDS[@]}"; do
+        dir="$CONFIG_BASE/$id"
+        if [[ -d "$dir" ]]; then
+            rm -rf "$dir"
+            echo "Removed: $dir (config)"
+            removed=$((removed + 1))
+        fi
+    done
+
+    # --- log (~/Library/Logs/<id>/) ---
+    # 예전 판은 `~/Library/Logs/tildaz_N.log` 로 앱 디렉터리 없이 두었다 (#654 ⓓ).
+    # 그 자리에 남은 파일도 함께 치운다.
     shopt -s nullglob
+    for id in "${TILDAZ_IDS[@]}"; do
+        dir="$HOME/Library/Logs/$id"
+        if [[ -d "$dir" ]]; then
+            rm -rf "$dir"
+            echo "Removed: $dir/ (log)"
+            removed=$((removed + 1))
+        fi
+    done
     for f in "$HOME/Library/Logs"/tildaz_*.log; do
         rm -f "$f"
-        echo "Removed: $f (log)"
+        echo "Removed: $f (log, pre-#654 layout)"
         removed=$((removed + 1))
     done
     shopt -u nullglob
@@ -103,9 +127,12 @@ if [[ "$PURGE" == "1" ]]; then
 
     # --- TCC 권한 (손쉬운 사용 / 입력 모니터링) reset ---
     # ListenEvent = Input Monitoring, Accessibility = 손쉬운 사용.
-    tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
-    tccutil reset ListenEvent "$BUNDLE_ID" >/dev/null 2>&1 || true
-    echo "Reset: TCC (Accessibility / Input Monitoring) for $BUNDLE_ID"
+    # 두 신원 모두 — dev 판은 bundle id 가 달라 TCC 상 별개 앱이다 (#654).
+    for id in "${BUNDLE_IDS[@]}"; do
+        tccutil reset Accessibility "$id" >/dev/null 2>&1 || true
+        tccutil reset ListenEvent "$id" >/dev/null 2>&1 || true
+        echo "Reset: TCC (Accessibility / Input Monitoring) for $id"
+    done
 fi
 
 if [[ "$removed" -eq 0 ]]; then
@@ -115,7 +142,10 @@ fi
 if [[ "$PURGE" != "1" ]]; then
     echo ""
     echo "Preserved (--purge 로 지울 수 있음):"
-    echo "  $CONFIG_DIR/                  (config)"
-    echo "  ~/Library/Logs/tildaz_*.log   (log)"
+    for id in "${TILDAZ_IDS[@]}"; do
+        echo "  $CONFIG_BASE/$id/          (config)"
+        echo "  ~/Library/Logs/$id/          (log)"
+    done
+    echo "  ~/Library/Logs/tildaz_*.log   (log, pre-#654 layout)"
     echo "  code-signing cert '$CERT_NAME' (재빌드 시 유지)"
 fi

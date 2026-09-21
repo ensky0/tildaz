@@ -1,7 +1,7 @@
-# tildaz Windows 빌드 스크립트 (PowerShell).
+﻿# tildaz Windows 빌드 스크립트 (PowerShell).
 #
 # Windows 기본 셸인 PowerShell 에서 바로 실행해요. 실제 빌드는 zig 가 담당하고,
-# 이 스크립트는 인자 파싱 + 캐시 디렉토리 관리 + clean 옵션 처리만 해요.
+# 이 스크립트는 빌드 종류 선택 + 캐시 디렉터리 관리 + clean 옵션을 맡아요.
 #
 # Windows 로컬 checkout에서 빌드 산출물과 dependency cache를 모두 native
 # filesystem에 두도록 기본 캐시를 C:\ziglang\tildaz-cache 로 잡아요.
@@ -15,25 +15,62 @@
 # 아예 안 받아요 (AGENTS.md "실행 환경" 참고).
 #
 # 사용법:
-#   dist\windows\build.ps1                      # 전체 빌드 (ReleaseFast + SIMD)
-#   dist\windows\build.ps1 -NoSimd              # scalar 진단 빌드
-#   dist\windows\build.ps1 -Clean
-#   dist\windows\build.ps1 -Optimize Debug
-#   dist\windows\build.ps1 -CacheDir C:\tmp\zig-cache
-#   dist\windows\build.ps1 -Check               # 6-target compile-only 검증 (#201)
-#   dist\windows\build.ps1 -Test                # 단위 테스트 (ReleaseSafe)
+#   dist\windows\build.ps1                      # dev 빌드 (ReleaseFast + SIMD)
+#   dist\windows\build.ps1 --release            # 릴리즈 빌드
+#   dist\windows\build.ps1 --no-simd            # scalar 진단 빌드
+#   dist\windows\build.ps1 --clean
+#   dist\windows\build.ps1 --optimize Debug
+#   dist\windows\build.ps1 --cache-dir C:\tmp\zig-cache
+#   dist\windows\build.ps1 --check               # 6-target compile-only 검증 (#201)
+#   dist\windows\build.ps1 --test                # 단위 테스트 (ReleaseSafe)
 
-[CmdletBinding()]
-param(
-    [switch]$Clean,
-    [string]$Optimize = "ReleaseFast",
-    [string]$CacheDir = "C:\ziglang\tildaz-cache",
-    [switch]$Check,
-    [switch]$Test,
-    [switch]$NoSimd
-)
-
+# PowerShell 고유 인자 표기 대신 세 OS 공통 --release 를 그대로 받는다.
+# dev 는 옵션이 없는 기본값이다. 환경변수나 경로로 종류를 추측하지 않는다.
 $ErrorActionPreference = "Stop"
+$Clean = $false
+$Optimize = "ReleaseFast"
+$CacheDir = "C:\ziglang\tildaz-cache"
+$Check = $false
+$Test = $false
+$NoSimd = $false
+$ReleaseValue = "false"
+$ScriptArgs = @($args)
+for ($i = 0; $i -lt $ScriptArgs.Count; $i++) {
+    $arg = $ScriptArgs[$i]
+    switch -CaseSensitive ($arg) {
+        '--release' { $ReleaseValue = "true" }
+        '--clean' { $Clean = $true }
+        '--check' { $Check = $true }
+        '--test' { $Test = $true }
+        '--no-simd' { $NoSimd = $true }
+        { $_ -eq '--optimize' -or $_ -eq '--cache-dir' } {
+            if ($i + 1 -ge $ScriptArgs.Count -or [string]::IsNullOrEmpty($ScriptArgs[$i + 1]) -or $ScriptArgs[$i + 1].StartsWith('--')) {
+                [Console]::Error.WriteLine("ERROR: $arg requires a value")
+                exit 2
+            }
+            $i++
+            if ($arg -eq '--optimize') { $Optimize = $ScriptArgs[$i] }
+            else { $CacheDir = $ScriptArgs[$i] }
+        }
+        { $_ -eq '--help' -or $_ -eq '-h' } {
+            Write-Output "Usage: build.ps1 [--release] [--clean] [--optimize <mode>] [--cache-dir <path>] [--check | --test] [--no-simd]"
+            Write-Output "Build dev by default; --release selects the release identity."
+            exit 0
+        }
+        default {
+            [Console]::Error.WriteLine("Unknown argument: $arg")
+            exit 2
+        }
+    }
+}
+if (@('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall') -cnotcontains $Optimize) {
+    [Console]::Error.WriteLine("ERROR: invalid optimization mode: $Optimize")
+    exit 2
+}
+if ($Check -and $Test) {
+    [Console]::Error.WriteLine("ERROR: choose --check or --test")
+    exit 2
+}
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $RepoRoot
@@ -42,9 +79,9 @@ Set-Location $RepoRoot
 function Invoke-Zig {
     param([string[]]$ZigArgs)
     if ($CacheDir) {
-        & zig build @ZigArgs --cache-dir $CacheDir
+        & zig build "-Drelease=$ReleaseValue" @ZigArgs --cache-dir $CacheDir
     } else {
-        & zig build @ZigArgs
+        & zig build "-Drelease=$ReleaseValue" @ZigArgs
     }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
@@ -70,7 +107,7 @@ if ($Check) {
     Write-Host "--- Pre-build zig-out\bin ---"
     if (Test-Path zig-out\bin) { Get-ChildItem zig-out\bin } else { Write-Host "(no zig-out\bin)" }
 
-    # 공식 구성과 같은 ReleaseFast는 SIMD on. Debug 등 다른 mode와 -NoSimd
+    # 공식 구성과 같은 ReleaseFast는 SIMD on. Debug 등 다른 mode와 --no-simd
     # 진단 빌드는 scalar를 유지한다 (#19).
     $SimdValue = if ($Optimize -eq "ReleaseFast" -and -not $NoSimd) { "true" } else { "false" }
     Write-Host "--- zig build -Doptimize=$Optimize -Dsimd=$SimdValue ---"

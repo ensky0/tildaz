@@ -94,7 +94,7 @@ write_sha256() {
 
 validate_desktop_exec() {
     local desktop="$1" expected="$2"
-    if grep -qF '__TILDAZ_EXE__' "$desktop" || ! grep -qxF "Exec=$expected" "$desktop"; then
+    if grep -qF '__TILDAZ_' "$desktop" || ! grep -qxF "Exec=$expected" "$desktop"; then
         echo "ERROR: invalid desktop Exec in $desktop (expected: Exec=$expected)" >&2
         sed -n '/^Exec=/p' "$desktop" >&2
         exit 1
@@ -103,9 +103,35 @@ validate_desktop_exec() {
 
 render_system_desktop() {
     local output="$1"
-    sed 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' "$DESKTOP_TEMPLATE" > "$output"
+    # 패키지는 늘 릴리즈 판이다 (`-Drelease=true`) — 토큰을 전부 릴리즈 이름으로 채운다.
+    # install.sh 쪽은 개발 빌드면 `tildaz-dev` 로 채운다 (#654).
+    sed -e 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' \
+        -e 's|__TILDAZ_NAME__|TildaZ|g' \
+        -e 's|__TILDAZ_ICON__|tildaz|g' \
+        -e 's|__TILDAZ_WMCLASS__|tildaz|g' \
+        "$DESKTOP_TEMPLATE" > "$output"
     validate_desktop_exec "$output" "/usr/bin/tildaz"
     chmod 644 "$output"
+}
+
+# 확장 소스는 `__TILDAZ_*__` 토큰을 담는다 (#654) — 개발 빌드와 릴리즈가 각자의 UUID 로
+# 깔리게 하려고 레포에는 한 벌만 둔다. **배포물에는 릴리즈 값으로 치환해 담는다** (패키지는
+# 언제나 릴리즈다). 토큰이 남으면 사용자가 그 파일을 수동 설치했을 때 셸이 확장을 못 읽는다 —
+# `validate_extension_resources` 가 그것을 막는다. 치환 규칙은 `install.sh` ·
+# `src/host/linux/shell_extension.zig` 와 같아야 한다.
+render_extension_tree() {
+    local src="$1" dst="$2" rel out
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        out="$dst/$rel"
+        mkdir -p "$(dirname "$out")"
+        sed -e 's|__TILDAZ_EXT_UUID__|tildaz@ensky0.github.io|g' \
+            -e 's|__TILDAZ_EXT_SCHEMA__|org.gnome.shell.extensions.tildaz|g' \
+            -e 's|__TILDAZ_EXT_NAME__|TildaZ Drop-down|g' \
+            -e 's|__TILDAZ_TITLE_PREFIX__|TildaZ-|g' \
+            -e 's|__TILDAZ_APP__|tildaz|g' \
+            "$f" > "$out"
+    done < <(find "$src" -type f -print0)
 }
 
 install_extension_resources() {
@@ -113,8 +139,8 @@ install_extension_resources() {
     local gnome="$root/gnome-extension/tildaz@ensky0.github.io"
     local cinnamon="$root/cinnamon-extension/tildaz@ensky0.github.io"
     mkdir -p "$gnome" "$cinnamon"
-    cp -a "$GNOME_EXT_SRC/." "$gnome/"
-    cp -a "$CINNAMON_EXT_SRC/." "$cinnamon/"
+    render_extension_tree "$GNOME_EXT_SRC" "$gnome"
+    render_extension_tree "$CINNAMON_EXT_SRC" "$cinnamon"
 }
 
 validate_extension_resources() {
@@ -130,6 +156,15 @@ validate_extension_resources() {
     for relative in "${required[@]}"; do
         if [[ ! -f "$root/$relative" ]]; then
             echo "ERROR: Shell extension resource missing: $root/$relative" >&2
+            exit 1
+        fi
+        # desktop 파일의 토큰 검사와 같은 이유 (#654) — 치환이 빠진 채 배포되면 셸이 그
+        # 확장을 읽지 못하고, 그 실패는 사용자 화면에서 조용하다.
+        #
+        # **토큰 *형태* 로 찾는다.** `grep -F '__TILDAZ_'` 로는 소스 주석이 토큰을 *설명하는*
+        # 문장까지 걸려 패키징이 멈춘다 (작성 중 실측).
+        if grep -qE '__TILDAZ_[A-Z_]+__' "$root/$relative"; then
+            echo "ERROR: unresolved __TILDAZ_ token in $root/$relative" >&2
             exit 1
         fi
     done
@@ -170,7 +205,7 @@ validate_legal_docs() {
 }
 
 #-----------------------------------------------------------------------
-# Format: tar.gz — portable, distro 독립. extract → install.sh.
+# Format: tar.gz — portable, distro 독립. extract → install.sh --release.
 #-----------------------------------------------------------------------
 build_tar_gz() {
     local NAME="tildaz-v${VERSION}-linux-${ARCH}"
@@ -199,7 +234,7 @@ build_tar_gz() {
 tildaz v${VERSION} (linux-${ARCH})
 
 Install (user-level, no sudo):
-  ./install.sh
+  ./install.sh --release
 
   → ~/.local/share/applications/tildaz.desktop  (sed-substituted)
   → ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
@@ -207,7 +242,7 @@ Install (user-level, no sudo):
 The tildaz binary stays in this directory by default. Move it
 to a PATH location (e.g. /usr/local/bin/) if you prefer, then
 re-run:
-  ./install.sh --exe /usr/local/bin/tildaz
+  ./install.sh --release --exe /usr/local/bin/tildaz
 
 Uninstall:
   ./uninstall.sh
@@ -230,7 +265,7 @@ END
     VERIFY=$(mktemp -d "$RELEASE_ROOT/tar-install-verify.XXXXXX")
     tar -C "$VERIFY" -xzf "$TARBALL"
     HOME="$VERIFY/home" XDG_CURRENT_DESKTOP=TildaZPackageTest \
-        "$VERIFY/$NAME/install.sh" >/dev/null
+        "$VERIFY/$NAME/install.sh" --release >/dev/null
     validate_desktop_exec \
         "$VERIFY/home/.local/share/applications/tildaz.desktop" \
         "$VERIFY/$NAME/tildaz"

@@ -12,11 +12,11 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TILDAZ=${TILDAZ:-$ROOT/zig-out/bin/tildaz}
 WORK=${TZRS_WORK:-${TMPDIR:-/tmp}/tildaz-real-session}
-mkdir -p $WORK/xdg/config/tildaz $WORK/xdg/state/tildaz   # state/tildaz 까지 — 회차가 로그 파일을 비우려 할 때 앱이 아직 안 만들었다
+mkdir -p $WORK/xdg/config/tildaz-dev $WORK/xdg/state/tildaz-dev   # state/tildaz-dev 까지 — 회차가 로그 파일을 비우려 할 때 앱이 아직 안 만들었다
 die() { echo "$*" >&2; exit 1; }
 [ -x "$TILDAZ" ] || die "빌드가 없다: $TILDAZ"
-[ -f $WORK/xdg/config/tildaz/config_0.toml ] || sed 's|^auto_start  *= .*|auto_start       = false|; s|^width_percent *= .*|width_percent   = 100.0|; s|^height_percent *= .*|height_percent  = 60.0|' \
-    ${XDG_CONFIG_HOME:-$HOME/.config}/tildaz/config_0.toml > $WORK/xdg/config/tildaz/config_0.toml
+[ -f $WORK/xdg/config/tildaz-dev/config_0.toml ] || sed 's|^auto_start  *= .*|auto_start       = false|; s|^width_percent *= .*|width_percent   = 100.0|; s|^height_percent *= .*|height_percent  = 60.0|' \
+    ${XDG_CONFIG_HOME:-$HOME/.config}/tildaz/config_0.toml > $WORK/xdg/config/tildaz-dev/config_0.toml
 python3 "$ROOT/tool/clusters.py" bands > $WORK/bands.sh && chmod +x $WORK/bands.sh
 
 # 창 영역은 **캡처에서 찾는다** (`--locate`). 좌표를 밖에서 계산하면 안 된다 — 2026-09-04 에 Hyprland 의 타일
@@ -140,7 +140,7 @@ cmd_hypr_height() {   # $1 배율  $2.. height_percent 들
     hyprctl -j monitors | python3 -c 'import json,sys; m=json.load(sys.stdin)[0]; print("출력 배율 →", m["scale"], "·", m["width"], "x", m["height"], "· 논리", round(m["width"]/m["scale"]), "x", round(m["height"]/m["scale"]))'
     for pct in "$@"; do
         echo "===== height_percent $pct (배율 $s)"
-        sed -i "s|^height_percent *= .*|height_percent  = $pct|" $WORK/xdg/config/tildaz/config_0.toml
+        sed -i "s|^height_percent *= .*|height_percent  = $pct|" $WORK/xdg/config/tildaz-dev/config_0.toml
         : > $LOG
         TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 -e $WORK/bands.sh >/dev/null 2>&1 </dev/null & local pid=$!; sleep 5
         local line lw lh sc; line=$(grep -E 'layer-surface configure .*logical_w=' $LOG | tail -1)
@@ -156,7 +156,7 @@ for tag, v in (('가로', lw), ('세로', lh)):
         else echo "    configure 로그 없음"; tail -3 $LOG; fi
         kill -TERM $pid 2>/dev/null; sleep 1
     done
-    sed -i "s|^height_percent *= .*|height_percent  = 60.0|" $WORK/xdg/config/tildaz/config_0.toml
+    sed -i "s|^height_percent *= .*|height_percent  = 60.0|" $WORK/xdg/config/tildaz-dev/config_0.toml
     set_scale "$name" "$scale0"; echo "세션 배율 복구 → $scale0"
 }
 

@@ -11,7 +11,7 @@
 #   대기 (`timeout /t 3600 /nobreak >nul`) 가 필요해 배치 파일로 감싼다. `tool/clusters.py` 의 출력에서
 #   heredoc 본문만 UTF-8 (BOM 없음) 텍스트로 저장하고 `type` 으로 뿌린다. 끝의 대기가 없으면 자식이 끝나며 앱도 끝난다.
 # - 판마다 `--instance 9 -e <화면> -size <격자>` 로 띄운다. `-e` 는 stress run 이라 **hotkey 를 등록하지 않고**
-#   (`global hotkey not registered (stress run)`) config 도 만들지 않으며 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 다
+#   (`global hotkey not registered (stress run)`) config 도 만들지 않으며 로그는 `%APPDATA%\tildaz-dev\tildaz_stress.log` 다
 #   (`run_options.zig` 의 `isStressRun` · `paths.zig` 의 `logFileName`). 사용자의 instance 0 은 건드리지 않는다.
 # - **창 찾기** — `Process.MainWindowHandle` 은 `TildaZOwner` (0x0 · `WS_EX_TOOLWINDOW`) 가 owner 로 달린 진짜 창을
 #   건너뛰어 0 을 준다 (#584 실측). `EnumWindows` 로 그 pid 의 **보이는 · 크기 있는** 창을 고른다.
@@ -176,7 +176,7 @@ public static class TzShot {
 
 $Out = Join-Path $env:TEMP "tildaz-ab-shot\$Tag"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$Log = Join-Path $env:APPDATA "tildaz\tildaz_stress.log"
+$Log = Join-Path $env:APPDATA "tildaz-dev\tildaz_stress.log"
 if (-not (Test-Path $Screen)) { throw "화면 없음: $Screen" }
 
 # 인스턴스 9 만 내린다 — 명령줄에 `--instance 9` 가 있는 tildaz 만.

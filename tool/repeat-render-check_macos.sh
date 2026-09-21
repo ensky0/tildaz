@@ -27,7 +27,7 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$REPO/zig-out/TildaZ.app/Contents/MacOS/tildaz"
+APP="$REPO/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz"
 CAP_SRC="$REPO/tool/color-capture_macos.m"
 
 N="${1:-24}"
@@ -137,6 +137,6 @@ fi
 echo
 echo "== 정리 =="
 pkill -f "tildaz --instance 9" 2>/dev/null
-rm -f "$HOME/.config/tildaz/config_9.toml"   # 안 지우면 로그온 때 그 인스턴스가 같이 뜬다
+rm -f "$HOME/.config/tildaz-dev/config_9.toml"   # 안 지우면 로그온 때 그 인스턴스가 같이 뜬다
 echo "  tildaz 프로세스 $(pgrep -x tildaz | wc -l | tr -d ' ') 개 · config_9.toml 제거"
 echo "  캡처는 $OUT 에 남겼다 (판정이 끝나면 지운다)."

@@ -88,11 +88,11 @@ public static class TzFatal {
 [TzFatal]::MakeDpiAware()
 
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
-$c9 = Join-Path $env:APPDATA "tildaz\config_9.toml"
+$c9 = Join-Path $env:APPDATA "tildaz-dev\config_9.toml"
 if (Test-Path $c9) { throw "config_9.toml 이 이미 있다 — 사용자 설정일 수 있어 덮지 않는다: $c9" }
 $Out = Join-Path $env:TEMP "tildaz-launcher-fatal"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$log0 = Join-Path $env:APPDATA "tildaz\tildaz_0.log"
+$log0 = Join-Path $env:APPDATA "tildaz-dev\tildaz_0.log"
 $logLinesBefore = if (Test-Path $log0) { (Get-Content $log0 -Encoding UTF8).Count } else { 0 }
 
 # TOML 문법 오류 — `= =` 는 UnexpectedToken.

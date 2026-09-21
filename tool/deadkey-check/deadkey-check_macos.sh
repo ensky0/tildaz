@@ -3,7 +3,7 @@
 # 들어오는지. `-e` 로 `cat >> 로그` 를 띄우고 `cliclick` 으로 키를 보내 받은 바이트를 본다.
 #
 # ```sh
-# tool/deadkey-check/deadkey-check_macos.sh zig-out/TildaZ.app          # 기대: c3 a9 ('é') 뒤 'x' 78
+# tool/deadkey-check/deadkey-check_macos.sh zig-out/TildaZ-dev.app          # 기대: c3 a9 ('é') 뒤 'x' 78
 # ```
 #
 # - 입력 소스가 ABC / U.S. 가 아니면 Option+e 가 dead key 가 아니다 — 스크립트가 확인하고 멈춘다
@@ -41,7 +41,7 @@ cliclick kd:alt t:e ku:alt; sleep 0.5      # dead key — 조합 중 표시 (pre
 cliclick t:e; sleep 0.3                    # → é
 cliclick t:x; sleep 0.8
 hex=$(od -An -tx1 "$LOG" 2>/dev/null | tr -s ' \n' ' ')
-pkill -f "tildaz --instance 9" 2>/dev/null; rm -f "$HOME/.config/tildaz/config_9.toml"
+pkill -f "tildaz --instance 9" 2>/dev/null; rm -f "$HOME/.config/tildaz-dev/config_9.toml"
 echo "창 $sz @ ($X,$Y) · 입력 소스 $src"
 echo "받은 바이트: ${hex:-(없음)}   텍스트: $(cat "$LOG" 2>/dev/null)"
 case "$hex" in *"c3 a9 78"*) echo "OK — Option+e, e → é (c3 a9), 그 뒤 x"; exit 0;; *) echo "**FAIL** — 기대 'c3 a9 78' (é x)"; exit 1;; esac

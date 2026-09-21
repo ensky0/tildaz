@@ -64,7 +64,7 @@ Download the latest artifact from
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
+| Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh --release` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z-1_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
@@ -78,7 +78,7 @@ First launch creates the default config:
 | Platform | Config | Log |
 |---|---|---|
 | Linux | `$XDG_CONFIG_HOME/tildaz/config_0.toml` | `$XDG_STATE_HOME/tildaz/tildaz_0.log` |
-| macOS | `$XDG_CONFIG_HOME/tildaz/config_0.toml` | `~/Library/Logs/tildaz_0.log` |
+| macOS | `$XDG_CONFIG_HOME/tildaz/config_0.toml` | `~/Library/Logs/tildaz/tildaz_0.log` |
 | Windows | `%APPDATA%\tildaz\config_0.toml` | `%APPDATA%\tildaz\tildaz_0.log` |
 
 On Linux and macOS, `XDG_CONFIG_HOME` defaults to `~/.config`. On Linux,
@@ -93,9 +93,18 @@ open, right-click `TildaZ.app` and choose **Open**, or run:
 xattr -d com.apple.quarantine /Applications/TildaZ.app
 ```
 
-Then grant **Input Monitoring** and **Accessibility** in System Settings →
-Privacy & Security. Those permissions are needed for the global hotkey and
-window control shortcuts.
+Then grant **Input Monitoring** and **Device Control and Data Access** (called
+**Accessibility** before macOS 27) in System Settings → Privacy & Security.
+Those permissions are needed for the global hotkey and window control
+shortcuts.
+
+Upgrading from a release before v0.10.2 on macOS: the auto-start entry changed
+its name, and the old one is not removed for you. If TildaZ starts twice at
+login, or keeps starting after you turned `auto_start` off, run this once:
+
+```sh
+launchctl bootout gui/$(id -u)/com.tildaz.app 2>/dev/null; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist
+```
 
 ## Configure
 

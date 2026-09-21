@@ -37,28 +37,40 @@ if [[ "${XDG_STATE_HOME:-}" == /* ]]; then
 else
     STATE_HOME="$HOME/.local/state"
 fi
+# 릴리즈 판과 개발 판 (`-dev`) 을 **둘 다** 치운다 (#654). uninstall 시점에는 바이너리가
+# 이미 없을 수 있어 어느 쪽으로 깔았는지 판별할 수 없고, 사용자가 원하는 것은 "내가 깐
+# 것을 지워라" 이기 때문이다. `/usr` 아래 시스템 패키지는 예전처럼 건드리지 않는다.
+TILDAZ_IDS=(tildaz tildaz-dev)
+
 TILDAZ_CONFIG_DIR="$CONFIG_HOME/tildaz"
 TILDAZ_STATE_DIR="$STATE_HOME/tildaz"
+TILDAZ_CONFIG_DIR_DEV="$CONFIG_HOME/tildaz-dev"
+TILDAZ_STATE_DIR_DEV="$STATE_HOME/tildaz-dev"
 
-DESKTOP="$HOME/.local/share/applications/tildaz.desktop"
-ICON="$HOME/.local/share/icons/hicolor/scalable/apps/tildaz.svg"
-AUTOSTART="$CONFIG_HOME/autostart/tildaz.desktop"
-LEGACY_AUTOSTART="$HOME/.config/autostart/tildaz.desktop"
-SYMLINK="$HOME/.local/bin/tildaz"
+USER_FILES=()
+for id in "${TILDAZ_IDS[@]}"; do
+    USER_FILES+=(
+        "$HOME/.local/share/applications/$id.desktop"
+        "$HOME/.local/share/icons/hicolor/scalable/apps/$id.svg"
+        "$CONFIG_HOME/autostart/$id.desktop"
+        "$HOME/.config/autostart/$id.desktop"
+    )
+done
 SWAY_CFG="$HOME/.config/sway/config"
 HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
 HYPR_LUA="$HOME/.config/hypr/hyprland.lua"
-GNOME_EXT_UUID="tildaz@ensky0.github.io"
-GNOME_EXT="$HOME/.local/share/gnome-shell/extensions/$GNOME_EXT_UUID"
-CINNAMON_EXT_UUID="tildaz@ensky0.github.io"
-CINNAMON_EXT="$HOME/.local/share/cinnamon/extensions/$CINNAMON_EXT_UUID"
+# 확장 UUID 도 두 갈래다 (#654). 예전에는 하나뿐이라 **개발 빌드를 지우면 릴리즈의
+# 확장까지 지워졌다** (실기 확인). 위 `TILDAZ_IDS` 와 같은 이유로 둘 다 훑는다.
+TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
 # install.sh 와 *글자 단위로 동일해야* 매칭됨. sway/hyprlang(.conf) 는 `#` 주석,
 # Hyprland Lua 는 `--` 주석이라 marker 가 두 가지.
-TILDAZ_MARKER="# tildaz autostart (added by install.sh — uninstall.sh removes this)"
-TILDAZ_MARKER_LUA="-- tildaz autostart (added by install.sh — uninstall.sh removes this)"
+# marker 는 id 마다 하나다 (#654) — 릴리즈는 예전 그대로 `# tildaz autostart …`, dev 는
+# `# tildaz-dev autostart …`. 아래 `remove_tildaz_block` 이 두 id 를 다 돈다.
+marker_for() { echo "# $1 autostart (added by install.sh — uninstall.sh removes this)"; }
+marker_lua_for() { echo "-- $1 autostart (added by install.sh — uninstall.sh removes this)"; }
 
 removed=0
-for f in "$DESKTOP" "$ICON" "$AUTOSTART" "$LEGACY_AUTOSTART"; do
+for f in "${USER_FILES[@]}"; do
     if [[ -f "$f" ]]; then
         rm "$f"
         echo "Removed: $f"
@@ -69,40 +81,58 @@ done
 # Runtime이 config_N에 맞춰 생성하는 숨김 desktop identity. 정확한 canonical
 # filename만 제거하고 비슷한 이름의 사용자 파일은 보존한다.
 shopt -s nullglob
-for f in "$HOME/.local/share/applications"/tildaz.instance*.desktop; do
-    name="$(basename "$f")"
-    if [[ "$name" =~ ^tildaz\.instance(0|[1-9][0-9]*)\.desktop$ ]]; then
-        rm "$f"
-        echo "Removed: $f"
-        removed=$((removed + 1))
-    fi
+for id in "${TILDAZ_IDS[@]}"; do
+    for f in "$HOME/.local/share/applications/$id".instance*.desktop; do
+        name="$(basename "$f")"
+        if [[ "$name" =~ ^"$id"\.instance(0|[1-9][0-9]*)\.desktop$ ]]; then
+            rm "$f"
+            echo "Removed: $f"
+            removed=$((removed + 1))
+        fi
+    done
 done
 shopt -u nullglob
 
-# ~/.local/bin/tildaz — symlink 일 때만 제거. 사용자가 직접 둔 실제 binary 는 보존.
-if [[ -L "$SYMLINK" ]]; then
-    rm "$SYMLINK"
-    echo "Removed: $SYMLINK (symlink)"
-    removed=$((removed + 1))
-elif [[ -e "$SYMLINK" ]]; then
-    echo "Preserved: $SYMLINK (실제 파일 — install.sh 가 만든 게 아님)"
-fi
+# ~/.local/bin/<id> — symlink 일 때만 제거. 사용자가 직접 둔 실제 binary 는 보존한다.
+# `-L` 로 보는 것이 중요하다: 가리키던 빌드가 이미 지워진 **깨진 심링크**도 우리가 만든
+# 것이라 치워야 하는데, `-f` 로는 그것을 놓친다.
+for id in "${TILDAZ_IDS[@]}"; do
+    link="$HOME/.local/bin/$id"
+    if [[ -L "$link" ]]; then
+        rm "$link"
+        echo "Removed: $link (symlink)"
+        removed=$((removed + 1))
+    elif [[ -e "$link" ]]; then
+        echo "Preserved: $link (실제 파일 — install.sh 가 만든 게 아님)"
+    fi
+done
 
 # install.sh가 복사·활성화한 Shell extension. GNOME은 먼저 disable해 현재 session의
 # signal/key grab을 해제하고, Cinnamon은 enabled-extensions 목록에서 UUID만 제거한다.
-if command -v gnome-extensions >/dev/null 2>&1; then
-    gnome-extensions disable "$GNOME_EXT_UUID" 2>/dev/null || true
-fi
-if [[ -d "$GNOME_EXT" ]]; then
-    rm -rf "$GNOME_EXT"
-    echo "Removed: $GNOME_EXT"
-    removed=$((removed + 1))
-fi
+# 두 UUID 를 모두 훑는다 — 어느 쪽으로 깔았는지 uninstall 시점에는 알 수 없다.
+for ext_uuid in "${TILDAZ_EXT_UUIDS[@]}"; do
+    if command -v gnome-extensions >/dev/null 2>&1; then
+        gnome-extensions disable "$ext_uuid" 2>/dev/null || true
+    fi
+    gnome_ext="$HOME/.local/share/gnome-shell/extensions/$ext_uuid"
+    if [[ -d "$gnome_ext" ]]; then
+        rm -rf "$gnome_ext"
+        echo "Removed: $gnome_ext"
+        removed=$((removed + 1))
+    fi
 
-if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    CINNAMON_ENABLED="$(gsettings get org.cinnamon enabled-extensions 2>/dev/null || true)"
-    if [[ "$CINNAMON_ENABLED" == *"'$CINNAMON_EXT_UUID'"* ]]; then
-        CINNAMON_UPDATED="$(python3 - "$CINNAMON_ENABLED" "$CINNAMON_EXT_UUID" <<'PY'
+    # 두 셸의 `enabled-extensions` 에서 빼고, GNOME 은 `disabled-extensions` 에서도 뺀다. 위
+    # `gnome-extensions disable` 이 거기 UUID 를 **남기는데**, 지운 확장이 그 목록에 남으면 다음
+    # `install.sh` 가 `enabled-extensions` 에 넣어도 GNOME 이 disabled 를 우선해 켜지지 않는다
+    # (#654 GNOME 실기 — 양쪽에 있으면 INITIALIZED 에 멈춘다). 키가 없는 셸 (`disabled-extensions`
+    # 는 `org.cinnamon` 에 없다) 은 `gsettings writable` 이 거절해 조용히 건너뛴다.
+    if command -v gsettings >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        for pair in "org.cinnamon enabled-extensions" "org.gnome.shell enabled-extensions" "org.gnome.shell disabled-extensions"; do
+            read -r shell_schema shell_key <<< "$pair"
+            gsettings writable "$shell_schema" "$shell_key" >/dev/null 2>&1 || continue
+            current="$(gsettings get "$shell_schema" "$shell_key" 2>/dev/null || true)"
+            [[ "$current" == *"'$ext_uuid'"* ]] || continue
+            updated="$(python3 - "$current" "$ext_uuid" <<'PY'
 import sys
 cur, uuid = sys.argv[1].strip(), sys.argv[2]
 i = cur.find('[')
@@ -114,14 +144,17 @@ items = [x for x in items if x != uuid]
 print('[' + ', '.join("'%s'" % x for x in items) + ']')
 PY
 )"
-        gsettings set org.cinnamon enabled-extensions "$CINNAMON_UPDATED" 2>/dev/null || true
+            gsettings set "$shell_schema" "$shell_key" "$updated" 2>/dev/null || true
+        done
     fi
-fi
-if [[ -d "$CINNAMON_EXT" ]]; then
-    rm -rf "$CINNAMON_EXT"
-    echo "Removed: $CINNAMON_EXT"
-    removed=$((removed + 1))
-fi
+
+    cinnamon_ext="$HOME/.local/share/cinnamon/extensions/$ext_uuid"
+    if [[ -d "$cinnamon_ext" ]]; then
+        rm -rf "$cinnamon_ext"
+        echo "Removed: $cinnamon_ext"
+        removed=$((removed + 1))
+    fi
+done
 
 # GNOME / Cinnamon 이 영구 저장하는 custom keybinding 제거 (#292 E2). runtime
 # 이 extension 비활성 fallback 으로 gsettings 에 등록(gsettings_hotkey.zig)한 뒤
@@ -185,21 +218,46 @@ PY
 clean_gsettings_keybindings "org.gnome.settings-daemon.plugins.media-keys" "custom-keybindings" "gnome" "GNOME"
 clean_gsettings_keybindings "org.cinnamon.desktop.keybindings" "custom-list" "cinnamon" "Cinnamon"
 
-# KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] component 그룹 제거
+# KDE ~/.config/kglobalshortcutsrc 의 [<id>.instanceN] component 그룹 제거
 # (#292 E2). runtime이 KGlobalAccel.setShortcutKeys(NoAutoloading)로 저장한다
 # (kglobalaccel.zig). 그룹 헤더부터 다음 그룹([...]) 직전까지 삭제. 현재 세션의
 # in-memory grab 은 로그아웃 시 해제되고, 다음 로그인 땐 정리된 파일을 읽는다.
+#
+# **두 이름을 모두 잡는다** (#654) — 파일 맨 위 `TILDAZ_IDS` 와 같은 이유다. 예전
+# 정규식은 `tildaz\.instance` 라 `tildaz-dev.instance9` 를 놓쳤고, 개발 빌드를 지운 뒤에도
+# 그 항목이 시스템 설정의 단축키 목록에 죽은 채 남았다 (실측).
+# ⚠️ id 목록을 **정규식으로 조립해 `awk -v` 로 넘기지 않는다.** `-v` 는 값의 escape
+# sequence 를 먼저 처리해서 `\[` 가 `[` 로 풀리고, 그러면 `invalid regexp` 로 awk 가
+# *치명적 오류* 를 내며 `set -e` 가 uninstall 을 통째로 멈춘다 (작성 중 실측). 그래서
+# 그룹 헤더를 문자열로 가르고, 숫자 판정만 리터럴 정규식으로 둔다.
 KGLOBAL="$HOME/.config/kglobalshortcutsrc"
-if [[ -f "$KGLOBAL" ]] && grep -qE '^\[tildaz\.instance[0-9]+\]' "$KGLOBAL"; then
+if [[ -f "$KGLOBAL" ]]; then
     tmp="$KGLOBAL.tildaz-uninstall-tmp"
-    awk '
-        /^\[/ { skip = ($0 ~ /^\[tildaz\.instance[0-9]+\]$/) }
+    awk -v ids="${TILDAZ_IDS[*]}" '
+        function is_ours(line,    rest, n, a, i, id, num) {
+            if (substr(line, 1, 1) != "[" || substr(line, length(line)) != "]") return 0
+            rest = substr(line, 2, length(line) - 2)
+            n = split(ids, a, " ")
+            for (i = 1; i <= n; i++) {
+                id = a[i] ".instance"
+                if (substr(rest, 1, length(id)) == id) {
+                    num = substr(rest, length(id) + 1)
+                    if (num ~ /^[0-9]+$/) return 1
+                }
+            }
+            return 0
+        }
+        /^\[/ { skip = is_ours($0) }
         skip { next }
         { print }
     ' "$KGLOBAL" > "$tmp"
-    mv "$tmp" "$KGLOBAL"
-    echo "Removed: [tildaz.instanceN] groups in $KGLOBAL"
-    removed=$((removed + 1))
+    if cmp -s "$tmp" "$KGLOBAL"; then
+        rm -f "$tmp"
+    else
+        mv "$tmp" "$KGLOBAL"
+        echo "Removed: [<id>.instanceN] groups in $KGLOBAL"
+        removed=$((removed + 1))
+    fi
 fi
 
 # WM config 에서 install.sh 가 넣은 tildaz 블록(marker 줄 + 바로 다음 줄)만 제거.
@@ -218,13 +276,16 @@ remove_tildaz_block() {
         removed=$((removed + 1))
     fi
 }
-remove_tildaz_block "$SWAY_CFG"  "$TILDAZ_MARKER"     "marker + exec 2줄"
-remove_tildaz_block "$HYPR_CONF" "$TILDAZ_MARKER"     "marker + exec-once 2줄"
-remove_tildaz_block "$HYPR_LUA"  "$TILDAZ_MARKER_LUA" "marker + hl.on 2줄"
+for id in "${TILDAZ_IDS[@]}"; do
+    remove_tildaz_block "$SWAY_CFG"  "$(marker_for "$id")"     "$id · marker + exec 2줄"
+    remove_tildaz_block "$HYPR_CONF" "$(marker_for "$id")"     "$id · marker + exec-once 2줄"
+    remove_tildaz_block "$HYPR_LUA"  "$(marker_lua_for "$id")" "$id · marker + hl.on 2줄"
+done
 
 # COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 줄 단위로 지운다.
 # 지우는 것은 둘뿐이다.
-#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")`. 바이너리 경로 · 이름과
+#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")` 또는 dev 판의
+#      `Some("TildaZ-dev_<index>")` (#654 · `app_id.window_base`). 바이너리 경로 · 이름과
 #      무관하게 우리 것이다.
 #   ② 표식이 아예 없고 명령이 `tildaz --toggle[ N]` 인 줄 — 예전 install.sh 가 쓴 것
 #      (#514). 지금 install.sh 는 COSMIC 항목을 쓰지 않는다.
@@ -235,7 +296,7 @@ COSMIC_CUSTOM="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/cus
 if [[ -f "$COSMIC_CUSTOM" ]]; then
     tmp="$COSMIC_CUSTOM.tildaz-uninstall-tmp"
     awk '
-        /description: Some\("TildaZ_[0-9]+"\)/ { next }
+        /description: Some\("TildaZ(-dev)?_[0-9]+"\)/ { next }
         /description:/ { print; next }
         /Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)/ { next }
         { print }
@@ -260,3 +321,5 @@ echo ""
 echo "Preserved (delete manually if desired):"
 echo "  $TILDAZ_CONFIG_DIR/   (config)"
 echo "  $TILDAZ_STATE_DIR/   (log)"
+echo "  $TILDAZ_CONFIG_DIR_DEV/   (config, dev build)"
+echo "  $TILDAZ_STATE_DIR_DEV/   (log, dev build)"

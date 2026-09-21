@@ -8,6 +8,10 @@ Config file path (per OS standard):
 | macOS | `~/.config/tildaz/config_N.toml` (XDG, Ghostty / Alacritty pattern) |
 | Windows | `%APPDATA%\tildaz\config_N.toml` |
 
+A build made from source with the default `-Drelease=false` uses `tildaz-dev` instead of
+`tildaz` in every one of those paths, so a development build never touches the config of
+an installed release ([#654](https://github.com/ensky0/tildaz/issues/654)).
+
 The first launch creates `config_0.toml` with defaults. Launching TildaZ while
 all configured instances are already running shows the resulting instance count
 and a hotkey capture dialog before writing the next numbered file. Press the

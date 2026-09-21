@@ -2699,7 +2699,8 @@ const Client = struct {
         try msg.putU32(self.surface_id);
         try msg.putU32(0);
         try msg.putU32(zwlr_layer_shell_layer_top);
-        try msg.putString("tildaz");
+        // namespace 도 신원을 탄다 (#654) — 근거는 `instance_identity.layer_namespace`.
+        try msg.putString(instance_identity.layer_namespace);
         try msg.send(self.wayland_fd);
 
         // #336 — 첫 commit 은 preferred_scale 확정 전이라 scale=1.0 로 물리 margin 을
@@ -10238,11 +10239,11 @@ const Client = struct {
             self.dialog.xdg_toplevel_id = self.allocId();
             try self.sendNewId(self.dialog.xdg_surface_id, 1, self.dialog.xdg_toplevel_id);
             try self.sendString(self.dialog.xdg_toplevel_id, 2, self.dialog.title()); // set_title
-            // set_app_id — 메인 창("tildaz")과 *다른* id. GNOME 확장(#228)이
-            // app_id=="tildaz" 인 창을 drop-down 으로 가로채(opacity 0 + 상단 배치)
-            // dialog 가 안 보이던 버그(#231 시연) 회피 — 확장의 exact match 에서
-            // 제외돼 mutter 가 transient child 로 중앙에 정상 표시한다.
-            try self.sendString(self.dialog.xdg_toplevel_id, 3, "tildaz-dialog"); // set_app_id
+            // set_app_id — 메인 창과 *다른* id. GNOME 확장(#228)이 메인 app_id 인 창을
+            // drop-down 으로 가로채(opacity 0 + 상단 배치) dialog 가 안 보이던
+            // 버그(#231 시연) 회피 — 확장의 exact match 에서 제외돼 mutter 가 transient
+            // child 로 중앙에 정상 표시한다. 이름은 신원을 탄다 (#654).
+            try self.sendString(self.dialog.xdg_toplevel_id, 3, instance_identity.dialog_app_id); // set_app_id
             // set_parent(main toplevel) — main 이 xdg_toplevel (layer-shell 없는
             // 환경이라 main 도 xdg) 일 때만. transient grouping + 중앙 배치 유도.
             if (self.toplevel_id != 0) {

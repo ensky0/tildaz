@@ -753,9 +753,12 @@ exec "$SHELL"                              # 폭포 후 셸 — 같은 PTY slave
 
 | platform | 경로 |
 |---|---|
-| Linux | `${XDG_STATE_HOME:-~/.local/state}/tildaz/tildaz_stress.log` |
-| macOS | `~/Library/Logs/tildaz_stress.log` |
-| Windows | `%APPDATA%\tildaz\tildaz_stress.log` |
+| Linux | `${XDG_STATE_HOME:-~/.local/state}/tildaz-dev/tildaz_stress.log` |
+| macOS | `~/Library/Logs/tildaz-dev/tildaz_stress.log` |
+| Windows | `%APPDATA%\tildaz-dev\tildaz_stress.log` |
+
+경로의 `tildaz-dev` 는 **개발 빌드** (`zig build` 기본값) 의 이름이에요 — 도구들은 `zig-out` 의
+바이너리를 띄우니 이쪽을 봐요. 릴리즈 판 (`-Drelease=true`) 은 `tildaz` 예요 ([#654](https://github.com/ensky0/tildaz/issues/654)).
 
 ### ❌ 이렇게는 판정이 안 돼요 — 다시 만들지 않으려고 적어 둬요
 
@@ -782,7 +785,7 @@ exec "$SHELL"                              # 폭포 후 셸 — 같은 PTY slave
    (`zig-out\bin\tildaz-stress.exe throughput --layer pty --mb 64`).
 3. 폭포 중 `Ctrl+Shift+F12` 를 10 회 누르고, 결과가 파일로 남는 명령을 타이핑해요
    (PowerShell 이면 `ni $env:TEMP\tz-ok`).
-4. `%APPDATA%\tildaz\tildaz_stress.log` 에서 `=== snapshot` 블록 수를 세고 파일 생성을 확인해요.
+4. `%APPDATA%\tildaz-dev\tildaz_stress.log` 에서 `=== snapshot` 블록 수를 세고 파일 생성을 확인해요.
 
 ## 응답 **시간** 측정 ([#441](https://github.com/ensky0/tildaz/issues/441) 축 ②)
 
@@ -1165,7 +1168,7 @@ render/present** 예요. 같은 회차 덤프의 `render` · `present` 가 합�
 ### 기록 수치 ③ — macOS (MacBook Pro M5 Pro · macOS 26.6.1 · 내장 Liquid Retina XDR · **120 Hz** · 측정 위생 적용)
 
 **하네스는 손댈 게 없었어요** — macOS 는 POSIX 라 러너가 Linux 와 같고, 로그 경로
-(`~/Library/Logs/tildaz_stress.log`) · EXE 후보 (`zig-out/TildaZ.app/Contents/MacOS/tildaz`) ·
+(`~/Library/Logs/tildaz-dev/tildaz_stress.log`) · EXE 후보 (`zig-out/TildaZ-dev.app/Contents/MacOS/tildaz`) ·
 `hygiene_minimize_macos` 가 이미 다 있어요. 위 Windows 절 같은 platform 분기가 필요 없어요.
 
 빌드는 `zig build -Doptimize=ReleaseFast -Dsimd=true` 예요 (Linux · Windows 회차와 같은 조합).

@@ -110,6 +110,21 @@ pub fn build(b: *std.Build) void {
     const git = git_version.detect(b);
     build_opts.addOption([]const u8, "commit", git.commit);
     build_opts.addOption(bool, "commit_dirty", git.dirty);
+
+    // #654 — 개발 빌드와 릴리즈가 config · 로그 · lock · 신원을 공유하면 버전이 다른
+    // 둘이 같은 파일을 쓴다. 실제로 패키지 0.9.5 를 깔아 둔 기기에서 개발 빌드
+    // v0.9.3 이 떠 v0.9.0 스키마 config 로 아무 안내 없이 죽었다.
+    //
+    // 옵션을 생략하면 dev다. 릴리즈 CI와 패키징만 `-Drelease=true`를 명시한다.
+    // 최적화 수준과 앱 신원은 별개다. ReleaseFast도 이 옵션 없이는 dev다.
+    const release = b.option(
+        bool,
+        "release",
+        "릴리즈 빌드 — 릴리즈 앱 신원을 사용한다 (default: false; 생략하면 dev)",
+    ) orelse false;
+    const dev = !release;
+    build_opts.addOption(bool, "dev", dev);
+
     exe_mod.addOptions("build_options", build_opts);
 
     // #19 — 현재 Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
@@ -252,23 +267,26 @@ pub fn build(b: *std.Build) void {
         // 가 우리를 \"정식 앱\" 으로 인식해 글로벌 핫키 dispatch 가 동작.
         //
         // 결과 경로:
-        //   zig-out/TildaZ.app/Contents/MacOS/tildaz
-        //   zig-out/TildaZ.app/Contents/Info.plist
+        //   zig-out/<TildaZ|TildaZ-dev>.app/Contents/MacOS/tildaz
+        //   zig-out/<TildaZ|TildaZ-dev>.app/Contents/Info.plist
         //
         // 실행: `./zig-out/TildaZ.app/Contents/MacOS/tildaz` (터미널 attach,
         // Ctrl+C 로 종료) 또는 `open ./zig-out/TildaZ.app` (LaunchServices).
-        const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), "TildaZ.app/Contents/MacOS/tildaz");
+        // #654 — dev 는 별도 번들 (`TildaZ-dev.app`) 이고 bundle id 도 다르다. 경로만
+        // 가르면 LaunchServices 가 같은 bundle id 를 한 앱으로 묶어 메뉴 · `open` 이
+        // 어느 쪽을 열지 모호해진다.
+        const install_macos_exe = b.addInstallFile(exe.getEmittedBin(), b.fmt("{s}/Contents/MacOS/tildaz", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_exe.step);
         // ConfigHeader는 모든 출력 첫 줄에 C 주석을 넣으므로 XML plist에는 쓸
         // 수 없다. build runner가 @embedFile로 template 변경을 추적하고,
         // WriteFile은 주석 없이 정확한 XML만 생성한다.
         const macos_metadata = b.addWriteFiles();
-        const macos_plist = macos_metadata.add("Info.plist", renderMacosPlist(b, app_version));
-        const install_macos_plist = b.addInstallFile(macos_plist, "TildaZ.app/Contents/Info.plist");
+        const macos_plist = macos_metadata.add("Info.plist", renderMacosPlist(b, app_version, dev));
+        const install_macos_plist = b.addInstallFile(macos_plist, b.fmt("{s}/Contents/Info.plist", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_plist.step);
         // App icon — Info.plist 의 CFBundleIconFile=AppIcon 이 Resources/AppIcon.icns
         // 를 찾음 (#145). docs/favicon.svg 에서 sips + iconutil 로 만든 .icns commit.
-        const install_macos_icon = b.addInstallFile(b.path("dist/macos/AppIcon.icns"), "TildaZ.app/Contents/Resources/AppIcon.icns");
+        const install_macos_icon = b.addInstallFile(b.path("dist/macos/AppIcon.icns"), b.fmt("{s}/Contents/Resources/AppIcon.icns", .{macosBundleDir(dev)}));
         b.getInstallStep().dependOn(&install_macos_icon.step);
         // 코드 서명 identity. default `-` = ad-hoc (인증서 없이). macOS TCC
         // (Privacy & Security 권한 데이터베이스) 는 "signing identity + bundle
@@ -282,7 +300,7 @@ pub fn build(b: *std.Build) void {
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
         // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
-        const app_path = b.fmt("{s}/TildaZ.app", .{b.install_path});
+        const app_path = b.fmt("{s}/{s}", .{ b.install_path, macosBundleDir(dev) });
         const sign = b.addSystemCommand(&.{
             "codesign",
             "--force",
@@ -684,8 +702,8 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
-    //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
+    //   zig build package -Drelease=true -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
+    //   zig build package -Drelease=true -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + _internal/{conpty.dll,OpenConsole.exe}
     //     → PowerShell dist/windows/package.ps1 -Version <full-version>
     //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)
@@ -696,6 +714,23 @@ pub fn build(b: *std.Build) void {
     // 기본 Windows 개발 환경에서도 같은 native 경로로 동작한다 (#332).
     // macOS / Linux package만 각 host의 시스템 Bash를 사용한다.
     const package_step = b.step("package", "릴리즈 artifact + SHA256 sidecar 생성 (Windows zip / macOS dmg / Linux tar.gz·deb·rpm·AppImage)");
+
+    // #654 — package 는 **릴리즈 산출물**이라 dev 이름 (`tildaz-dev` · `TildaZ-dev.app` ·
+    // `me.ensky0.tildaz.dev`) 으로 나가면 안 된다. `-Drelease` 기본값이 false 라 CI 나 사람이
+    // 한 번 빠뜨리면 그대로 배포될 자리이므로, 여기서 아예 막는다. 릴리즈를 만들 때는
+    // `-Drelease=true` 를 명시한다 (release.yml · macos-signing-check.yml).
+    //
+    // **가드는 `package_step` 이 아니라 패키징 명령 자체에 건다.** 같은 step 의 의존 둘은
+    // 서로 순서가 없어서 zig 가 **병렬로** 돌린다 — 2026-09-18 Windows 실기에서
+    // `zig build package` (dev) 가 오류를 내고도 `tildaz-v…-win-x64.zip` 과 `.sha256` 을
+    // 실제로 만들어 놨고, 그 zip 안의 exe 는 dev 판이었다 (md5 로 확인). 빌드가 실패로
+    // 끝나도 **디스크에 남은 산출물은 그대로 올릴 수 있다.** 명령이 가드에 의존하게 하면
+    // 가드가 먼저 실패해 명령이 아예 돌지 않는다.
+    const dev_package_guard: ?*std.Build.Step = if (dev) guard: {
+        const dev_fail = b.addFail("`zig build package` 는 릴리즈 산출물이라 `-Drelease=true` 가 필요합니다 (#654). dev 이름으로 배포되는 것을 막는 가드입니다.");
+        package_step.dependOn(&dev_fail.step);
+        break :guard &dev_fail.step;
+    } else null;
     if (is_windows_target) {
         const package_cmd = b.addSystemCommand(&.{
             "powershell.exe",
@@ -708,6 +743,7 @@ pub fn build(b: *std.Build) void {
             app_version.full,
         });
         package_cmd.step.dependOn(b.getInstallStep());
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else if (is_macos_target) {
         // macOS (#133) — package.sh 가 두 target (arm64 + x86_64) 자체 빌드 +
@@ -724,6 +760,7 @@ pub fn build(b: *std.Build) void {
             "--simd",
             simd_arg,
         });
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else if (is_linux_target) {
         // Linux (#202) — 4 format (tar.gz / deb / rpm / AppImage) × 2 arch
@@ -761,6 +798,7 @@ pub fn build(b: *std.Build) void {
             format,
         });
         package_cmd.step.dependOn(b.getInstallStep());
+        if (dev_package_guard) |guard| package_cmd.step.dependOn(guard);
         package_step.dependOn(&package_cmd.step);
     } else {
         const package_fail = b.addFail("package step은 Windows / macOS / Linux 대상에서만 동작합니다.");
@@ -768,20 +806,45 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn renderMacosPlist(b: *std.Build, version: versioning.Derived) []const u8 {
+/// `.app` 번들 디렉터리 이름. dev 판은 릴리즈와 나란히 설치되므로 이름이 달라야 한다 (#654).
+fn macosBundleDir(dev: bool) []const u8 {
+    return if (dev) "TildaZ-dev.app" else "TildaZ.app";
+}
+
+fn renderMacosPlist(b: *std.Build, version: versioning.Derived, dev: bool) []const u8 {
     const template = @embedFile("dist/macos/Info.plist.in");
     const short_token = "@MACOS_SHORT_VERSION@";
     const build_token = "@MACOS_BUILD_VERSION@";
+    const id_token = "@BUNDLE_ID@";
+    const name_token = "@BUNDLE_NAME@";
     if (std.mem.count(u8, template, short_token) != 1 or
-        std.mem.count(u8, template, build_token) != 1)
+        std.mem.count(u8, template, build_token) != 1 or
+        std.mem.count(u8, template, id_token) != 1 or
+        std.mem.count(u8, template, name_token) != 1)
     {
-        @panic("dist/macos/Info.plist.in must contain each version token exactly once");
+        @panic("dist/macos/Info.plist.in must contain each token exactly once");
     }
 
-    const with_short = std.mem.replaceOwned(
+    const with_id = std.mem.replaceOwned(
         u8,
         b.allocator,
         template,
+        id_token,
+        // `src/app_id.zig` 의 `bundle_id` 와 **같은 값이어야 한다** — launchd label ·
+        // TCC · LaunchServices 가 보는 신원이 하나로 맞아야 한다.
+        if (dev) "me.ensky0.tildaz.dev" else "me.ensky0.tildaz",
+    ) catch @panic("OOM rendering macOS Info.plist");
+    const with_name = std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        with_id,
+        name_token,
+        if (dev) "TildaZ (dev)" else "TildaZ",
+    ) catch @panic("OOM rendering macOS Info.plist");
+    const with_short = std.mem.replaceOwned(
+        u8,
+        b.allocator,
+        with_name,
         short_token,
         version.macos_short,
     ) catch @panic("OOM rendering macOS Info.plist");

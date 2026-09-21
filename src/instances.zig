@@ -1,5 +1,6 @@
 const std = @import("std");
 const toml = @import("toml");
+const app_id = @import("app_id.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
 const runtime = @import("runtime.zig");
@@ -34,17 +35,41 @@ pub const max_config_index: u32 = 9;
 /// 같은 클래스명·타이틀 형식을 써야 한다(불일치 시 hotkey_capture 는 무음
 /// no-op, instance_request 는 CoordinatorNotRunning 오해석). Linux 는 같은
 /// 타이틀 형식을 xdg_toplevel 표시 타이틀로 재사용(형식 일관성).
-pub const window_class_name = "TildaZWindow";
-pub const window_title_prefix = "TildaZ-";
+///
+/// **#654 — 클래스 이름은 `app_id.window_base` 를 탄다.** 예전에는 리터럴이라 개발
+/// 빌드와 릴리즈의 창이 클래스도 타이틀도 **글자 그대로 같았다.** 그러면 위 세 조회가
+/// 어느 판의 창을 집을지 *뜨는 순서*가 정한다 — 2026-09-18 Windows 실기에서 두 판을
+/// `--instance 9` 로 동시에 띄워 확인했다: dev 를 먼저 띄우면 `FindWindowW` 가 릴리즈
+/// 창을, 릴리즈를 먼저 띄우면 dev 창을 돌려줬다. 즉 **릴리즈 launcher 의 새-instance
+/// 요청이 개발 빌드로 갈 수 있다.** 파일 · 소켓처럼 자리를 나눌 수 없는 자리(창 클래스는
+/// 세션 전역 이름공간)라 이름으로 가른다.
+pub const window_class_name = app_id.window_base ++ "Window";
 
-/// 창 타이틀 = `TildaZ-<worker index>` (예 "TildaZ-0" = coordinator).
+/// **제목도 신원을 탄다** (`TildaZ-N` · `TildaZ-dev-N`). 값은 `app_id.window_title_prefix`
+/// 하나다 — Linux 의 `xdg_toplevel` 제목 (`wayland_minimal.zig` 의 `createXdgToplevel`) 과
+/// GNOME · Cinnamon 확장의 `workerIndex()` 가 같은 문자열을 보므로, 확장은
+/// `__TILDAZ_TITLE_PREFIX__` 토큰으로 이 값을 받는다 (`shell_extension.zig` 의
+/// `substitutions`). **확장 쪽 토큰을 빼먹고 여기만 바꾸면 확장이 개발 빌드의 창을 통째로
+/// 놓친다** — 배치 · 토글 · 전역 hotkey 가 죽는다 (Linux 회차 결함 8 과 같은 증상). 처음에는
+/// 그 위험 때문에 제목을 두 판이 같게 두었는데, 그러면 Alt+Tab · 창 목록에서 어느 판인지
+/// 구별이 안 되어 (이 이슈의 원래 증상) 토큰으로 확장을 함께 따라가게 하고 갈랐다
+/// (2026-09-20 사용자 결정).
+pub const window_title_prefix = app_id.window_title_prefix;
+
+/// 숨은 owner 창의 타이틀. worker 조회 대상은 아니지만 (클래스가 이미 갈린다) 창 목록을
+/// 눈으로 읽을 때 어느 판의 것인지 보여야 해서 같이 탄다. 리터럴이 `window.zig` 에 흩어져
+/// 있던 것을 이 단일 소스로 모았다 (#654).
+pub const owner_window_title = app_id.window_base ++ "Owner";
+
+/// 창 타이틀 = `<window_title_prefix><worker index>` (예 "TildaZ-0" = coordinator, 개발
+/// 빌드는 "TildaZ-dev-0").
 pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
     return std.fmt.bufPrint(buf, window_title_prefix ++ "{d}", .{index});
 }
 
 /// 측정용 인스턴스 (#382 의 `-e`) 의 창 타이틀. **worker 의 타이틀과 절대 겹치지 않는
 /// 이름이어야 한다** — Windows 의 `instance_request.send` 와 `hotkey_capture.broadcast`
-/// 는 worker 창을 `FindWindowW(window_class_name, "TildaZ-<index>")` 로 찾으므로, 측정
+/// 는 worker 창을 `FindWindowW(window_class_name, window_title_prefix ++ "<index>")` 로 찾으므로, 측정
 /// 창이 같은 타이틀을 쓰면 그 조회가 worker 대신 측정 창을 집을 수 있다. 측정 인스턴스는
 /// worker 가 아니다 — worker lock 도 endpoint 상태도 갖지 않는다.
 ///
@@ -88,9 +113,24 @@ test "창 타이틀은 역할에서 갈린다" {
     var buf: [32]u8 = undefined;
     instance_context.setWorkerIndex(0);
     instance_context.setRole(.worker);
-    try std.testing.expectEqualStrings("TildaZ-0", try windowTitleForCurrentRole(&buf));
+    try std.testing.expectEqualStrings(window_title_prefix ++ "0", try windowTitleForCurrentRole(&buf));
     instance_context.setRole(.stress);
     try std.testing.expectEqualStrings(stress_window_title, try windowTitleForCurrentRole(&buf));
+
+    // #654 — **개발 빌드는 릴리즈의 창 클래스도 제목도 쓰지 않는다.** 파생으로만 단언하면 두
+    // 상수가 같은 값이어도 통과하므로, 판마다 실제 문자열을 박는다. 릴리즈 쪽 리터럴은
+    // 동작이 바뀌지 않았다는 회귀 가드이기도 하다 (`zig build test` 와
+    // `zig build test -Drelease=true` 가 각각 한 갈래를 돈다).
+    instance_context.setRole(.worker);
+    if (app_id.is_dev) {
+        try std.testing.expectEqualStrings("TildaZ-dev-0", try windowTitleForCurrentRole(&buf));
+        try std.testing.expectEqualStrings("TildaZ-devWindow", window_class_name);
+        try std.testing.expectEqualStrings("TildaZ-devOwner", owner_window_title);
+    } else {
+        try std.testing.expectEqualStrings("TildaZ-0", try windowTitleForCurrentRole(&buf));
+        try std.testing.expectEqualStrings("TildaZWindow", window_class_name);
+        try std.testing.expectEqualStrings("TildaZOwner", owner_window_title);
+    }
 }
 
 pub const ProcessLock = struct {

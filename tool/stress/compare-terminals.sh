@@ -1588,7 +1588,7 @@ fi
 # 저장소 빌드본을 쓴다 — 설치본은 버전이 다를 수 있다.
 TILDAZ_BIN=""
 for candidate in \
-    "$REPO_ROOT/zig-out/TildaZ.app/Contents/MacOS/tildaz" \
+    "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
     "$REPO_ROOT/zig-out/bin/tildaz" \
     "$REPO_ROOT/zig-out/bin/tildaz.exe"
 do

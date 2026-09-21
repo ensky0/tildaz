@@ -13,7 +13,7 @@
 #
 # 무엇을 하나 —
 # - `--instance 9` + `-e <자식.ps1>` 로만 띄운다. `-e` 는 config 를 만들지 않고 (#382) 전역 hotkey 도 등록하지
-#   않아 사용자의 instance 0 과 부딪히지 않는다. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` 다.
+#   않아 사용자의 instance 0 과 부딪히지 않는다. 로그는 `%APPDATA%\tildaz-dev\tildaz_stress.log` 다.
 # - 자식 (PowerShell) 은 `line N FINDMEk` 300 줄과 마지막 줄 `== MAIN READY ==` 를 찍은 뒤 콘솔 입력을
 #   **`ENABLE_VIRTUAL_TERMINAL_INPUT`** 으로 바꿔 stdin 을 raw 바이트로 읽어 파일에 기록한다. 그래야
 #   "앱이 그 키를 PTY 로 보냈는가" 를 캡처가 아니라 **파일**로 판정할 수 있다 (B14 · B15 · D27).
@@ -320,9 +320,9 @@ $VK = @{
 $Out = Join-Path $env:TEMP "tildaz-search-check\$Mode"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Get-ChildItem $Out -Filter *.png -ErrorAction SilentlyContinue | Remove-Item -Force
-$Log = Join-Path $env:APPDATA "tildaz\tildaz_stress.log"
-$Cfg9 = Join-Path $env:APPDATA "tildaz\config_9.toml"
-$Cfg0 = Join-Path $env:APPDATA "tildaz\config_0.toml"
+$Log = Join-Path $env:APPDATA "tildaz-dev\tildaz_stress.log"
+$Cfg9 = Join-Path $env:APPDATA "tildaz-dev\config_9.toml"
+$Cfg0 = Join-Path $env:APPDATA "tildaz-dev\config_0.toml"
 $madeCfg = $false
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
 if ((Test-Path $Cfg9) -and $SizePoint -le 0) { throw "config_9.toml 이 이미 있다 — 사용자 설정을 건드리지 않으려고 멈춘다: $Cfg9" }
