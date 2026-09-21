@@ -103,7 +103,7 @@ validate_desktop_exec() {
 
 render_system_desktop() {
     local output="$1"
-    # 패키지는 늘 릴리즈 판이다 (`-Ddev=false`) — 토큰을 전부 릴리즈 이름으로 채운다.
+    # 패키지는 늘 릴리즈 판이다 (`-Drelease=true`) — 토큰을 전부 릴리즈 이름으로 채운다.
     # install.sh 쪽은 개발 빌드면 `tildaz-dev` 로 채운다 (#654).
     sed -e 's|__TILDAZ_EXE__|/usr/bin/tildaz|g' \
         -e 's|__TILDAZ_NAME__|TildaZ|g' \
@@ -205,7 +205,7 @@ validate_legal_docs() {
 }
 
 #-----------------------------------------------------------------------
-# Format: tar.gz — portable, distro 독립. extract → install.sh.
+# Format: tar.gz — portable, distro 독립. extract → install.sh --release.
 #-----------------------------------------------------------------------
 build_tar_gz() {
     local NAME="tildaz-v${VERSION}-linux-${ARCH}"
@@ -234,7 +234,7 @@ build_tar_gz() {
 tildaz v${VERSION} (linux-${ARCH})
 
 Install (user-level, no sudo):
-  ./install.sh
+  ./install.sh --release
 
   → ~/.local/share/applications/tildaz.desktop  (sed-substituted)
   → ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
@@ -242,7 +242,7 @@ Install (user-level, no sudo):
 The tildaz binary stays in this directory by default. Move it
 to a PATH location (e.g. /usr/local/bin/) if you prefer, then
 re-run:
-  ./install.sh --exe /usr/local/bin/tildaz
+  ./install.sh --release --exe /usr/local/bin/tildaz
 
 Uninstall:
   ./uninstall.sh
@@ -265,7 +265,7 @@ END
     VERIFY=$(mktemp -d "$RELEASE_ROOT/tar-install-verify.XXXXXX")
     tar -C "$VERIFY" -xzf "$TARBALL"
     HOME="$VERIFY/home" XDG_CURRENT_DESKTOP=TildaZPackageTest \
-        "$VERIFY/$NAME/install.sh" >/dev/null
+        "$VERIFY/$NAME/install.sh" --release >/dev/null
     validate_desktop_exec \
         "$VERIFY/home/.local/share/applications/tildaz.desktop" \
         "$VERIFY/$NAME/tildaz"

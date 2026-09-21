@@ -65,7 +65,7 @@
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 (다른 Windows 도구 셋이 같이 씀) | `# Windows — 합성 입력으로 …` |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
-| [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` · `-Ddev` 절 |
+| [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` · `-Drelease` 절 |
 | [`vkbd_linux.py`](vkbd_linux.py) | Linux | headless sway 안의 가상 키보드 데몬 (`zwp_virtual_keyboard_v1`) | `# Linux — headless sway …` |
 | [`vptr_linux.py`](vptr_linux.py) | Linux | headless sway 안의 가상 포인터 데몬 (`zwlr_virtual_pointer_v1`) — 절대좌표 hover · 클릭 · 드래그 | `# Linux — headless sway …` |
 | [`zig-floath-patch_macos.sh`](zig-floath-patch_macos.sh) | macOS | zig 번들 `float.h` 에 SDK 27 의 `__need_infinity_nan` 규약을 넣어 `-Dsimd=true` 를 살림 (`--check` · `--revert`) | `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` |

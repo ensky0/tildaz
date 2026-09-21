@@ -8,7 +8,7 @@ Config file path (per OS standard):
 | macOS | `~/.config/tildaz/config_N.toml` (XDG, Ghostty / Alacritty pattern) |
 | Windows | `%APPDATA%\tildaz\config_N.toml` |
 
-A build made from source with the default `-Ddev=true` uses `tildaz-dev` instead of
+A build made from source with the default `-Drelease=false` uses `tildaz-dev` instead of
 `tildaz` in every one of those paths, so a development build never touches the config of
 an installed release ([#654](https://github.com/ensky0/tildaz/issues/654)).
 

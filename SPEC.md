@@ -1679,13 +1679,18 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 
 ### 11.1 파일 위치
 
+저장소의 Linux · macOS · Windows 빌드·설치는 기본 dev이며, 릴리즈를 선택할 때만
+`--release`를 명시한다. 종류별 설치 스크립트를 따로 두지 않는다. 저장소에서는 선택한
+종류로 빌드한 뒤 설치한다. Linux tarball의 같은 `install.sh`도 `--release`로 실행하며,
+옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`ReleaseFast` 등)은 앱 신원과 별개다.
+
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
 | **config** | `%APPDATA%\<앱이름>\config_N.toml` (Microsoft 표준) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`) |
 | **log** | `%APPDATA%\<앱이름>\tildaz_N.log` (Microsoft 표준) | `~/Library/Logs/<앱이름>/tildaz_N.log` (Apple HIG — Console.app 자동 인덱싱. v0.10.2 부터 앱 디렉터리 안 — 그 전에는 `~/Library/Logs/tildaz_N.log`) | `$XDG_STATE_HOME/<앱이름>/tildaz_N.log` (fallback `~/.local/state`) |
 | **process / endpoint state** | `%LOCALAPPDATA%\<앱이름>\run\launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `~/Library/Caches/<앱이름>/run/launcher.lock`, `instanceN.lock`, `instanceN.endpoint` | `$XDG_RUNTIME_DIR/<앱이름>/run/launcher.lock`, `instanceN.lock`, `instanceN.endpoint`, `instanceN.sock` (단일 인스턴스 소켓 — lock 과 같은 디렉터리), `instanceN.hotkey` (GNOME · Cinnamon 확장의 grab 결과, #510); `XDG_RUNTIME_DIR`가 없으면 `${XDG_CACHE_HOME:-~/.cache}/<앱이름>/run/` |
 
-**`<앱이름>` 은 릴리즈가 `tildaz`, 개발 빌드 (`-Ddev=true`, 기본값) 가 `tildaz-dev` 다**
+**`<앱이름>` 은 릴리즈가 `tildaz`, 개발 빌드 (`-Drelease=false`, 기본값) 가 `tildaz-dev` 다**
 ([#654](https://github.com/ensky0/tildaz/issues/654)). 둘이 같은 파일을 쓰면 버전이 다른
 판끼리 스키마가 어긋나 조용히 죽는다. 이름은 `src/app_id.zig` 한 곳이 정하고 config · 로그 ·
 lock · 소켓 · desktop 항목 · autostart 가 모두 그것을 탄다. macOS 는 bundle id 까지 갈린다

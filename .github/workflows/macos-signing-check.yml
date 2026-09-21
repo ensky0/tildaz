@@ -44,7 +44,7 @@ jobs:
         run: ./dist/macos/ci-signing.sh install
 
       - name: Build signed universal package
-        run: zig build package -Doptimize=ReleaseFast -Dsimd=true -Ddev=false -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
+        run: zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
 
       - name: Verify signed package
         run: |

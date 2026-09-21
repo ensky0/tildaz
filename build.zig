@@ -115,14 +115,14 @@ pub fn build(b: *std.Build) void {
     // 둘이 같은 파일을 쓴다. 실제로 패키지 0.9.5 를 깔아 둔 기기에서 개발 빌드
     // v0.9.3 이 떠 v0.9.0 스키마 config 로 아무 안내 없이 죽었다.
     //
-    // **기본이 true 인 것은 `-Dsimd` 와 반대인데 이유가 다르다** — 옵션을 깜빡했을 때
-    // 사용자 config 를 건드리지 않는 쪽으로 실패해야 한다. 릴리즈 CI 와 패키징이
-    // `-Ddev=false` 를 명시한다 (`release.yml` · `zig build package`).
-    const dev = b.option(
+    // 옵션을 생략하면 dev다. 릴리즈 CI와 패키징만 `-Drelease=true`를 명시한다.
+    // 최적화 수준과 앱 신원은 별개다. ReleaseFast도 이 옵션 없이는 dev다.
+    const release = b.option(
         bool,
-        "dev",
-        "개발 빌드 — config · 로그 · lock · 신원을 tildaz-dev 로 가른다 (default: true; 공식 릴리즈는 false 를 명시)",
-    ) orelse true;
+        "release",
+        "릴리즈 빌드 — 릴리즈 앱 신원을 사용한다 (default: false; 생략하면 dev)",
+    ) orelse false;
+    const dev = !release;
     build_opts.addOption(bool, "dev", dev);
 
     exe_mod.addOptions("build_options", build_opts);
@@ -702,8 +702,8 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
-    //   zig build package -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
+    //   zig build package -Drelease=true -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
+    //   zig build package -Drelease=true -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + _internal/{conpty.dll,OpenConsole.exe}
     //     → PowerShell dist/windows/package.ps1 -Version <full-version>
     //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)
@@ -716,9 +716,9 @@ pub fn build(b: *std.Build) void {
     const package_step = b.step("package", "릴리즈 artifact + SHA256 sidecar 생성 (Windows zip / macOS dmg / Linux tar.gz·deb·rpm·AppImage)");
 
     // #654 — package 는 **릴리즈 산출물**이라 dev 이름 (`tildaz-dev` · `TildaZ-dev.app` ·
-    // `me.ensky0.tildaz.dev`) 으로 나가면 안 된다. `-Ddev` 기본값이 true 라 CI 나 사람이
+    // `me.ensky0.tildaz.dev`) 으로 나가면 안 된다. `-Drelease` 기본값이 false 라 CI 나 사람이
     // 한 번 빠뜨리면 그대로 배포될 자리이므로, 여기서 아예 막는다. 릴리즈를 만들 때는
-    // `-Ddev=false` 를 명시한다 (release.yml · macos-signing-check.yml).
+    // `-Drelease=true` 를 명시한다 (release.yml · macos-signing-check.yml).
     //
     // **가드는 `package_step` 이 아니라 패키징 명령 자체에 건다.** 같은 step 의 의존 둘은
     // 서로 순서가 없어서 zig 가 **병렬로** 돌린다 — 2026-09-18 Windows 실기에서
@@ -727,7 +727,7 @@ pub fn build(b: *std.Build) void {
     // 끝나도 **디스크에 남은 산출물은 그대로 올릴 수 있다.** 명령이 가드에 의존하게 하면
     // 가드가 먼저 실패해 명령이 아예 돌지 않는다.
     const dev_package_guard: ?*std.Build.Step = if (dev) guard: {
-        const dev_fail = b.addFail("`zig build package` 는 릴리즈 산출물이라 `-Ddev=false` 가 필요합니다 (#654). dev 이름으로 배포되는 것을 막는 가드입니다.");
+        const dev_fail = b.addFail("`zig build package` 는 릴리즈 산출물이라 `-Drelease=true` 가 필요합니다 (#654). dev 이름으로 배포되는 것을 막는 가드입니다.");
         package_step.dependOn(&dev_fail.step);
         break :guard &dev_fail.step;
     } else null;

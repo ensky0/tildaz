@@ -802,7 +802,7 @@ test "#496 1-c dead key layout withdraws the previous position entry" {
     // 실기 (cosmic-comp 1.0.0): fr 에서 `twosuperior` 로 쓰인 뒤 de 로 바꾸면 그 줄이
     // 그대로 남아 사용자 단축키 목록에 죽은 항목이 됐다. 거두는 쪽이 사용자 항목과 남의
     // 인스턴스는 건드리지 않는 것까지 함께 고정한다.
-    // 표식은 빌드마다 다르다 (`-Ddev` · #654) — `M` 으로 조립한다.
+    // 표식은 빌드마다 다르다 (`-Drelease` · #654) — `M` 으로 조립한다.
     const M = app_id.window_base;
     const before =
         "{\n" ++

@@ -19,13 +19,15 @@
 #
 # desktop database / icon cache refresh 는 best-effort (없으면 skip).
 #
-# binary 자체는 build 결과물이거나 사용자가 PATH 위치로 옮긴 것 — 이 script 는
-# 옮기지 않는다. `--exe` 옵션으로 명시 가능, 없으면 `realpath zig-out/bin/tildaz`
-# 시도.
+# 저장소에서는 선택한 종류로 빌드한 뒤 설치한다. 기본 dev, --release 만 릴리즈다.
+# tarball에서는 이미 빌드된 릴리즈를 설치한다 (--release 필수).
+# --exe 는 tarball 바이너리를 다른 디렉터리로 옮긴 경우에만 쓴다.
 #
 # 사용법:
-#   bash dist/linux/install.sh                    # repo zig-out/bin/tildaz
-#   bash dist/linux/install.sh --exe /usr/bin/tildaz
+#   bash dist/linux/install.sh                    # dev 빌드 + 설치
+#   bash dist/linux/install.sh --release          # 릴리즈 빌드 + 설치
+#   ./install.sh --release                        # 릴리즈 tarball 설치
+#   ./install.sh --release --exe /usr/local/bin/tildaz
 #
 # KDE Plasma 6 환경: install 후 KRunner (Alt+F2) 또는 Application Menu 에서
 # "TildaZ" 검색 + 실행 → launcher desktop entry의 Exec 호출. Worker별
@@ -42,39 +44,24 @@ else
     CONFIG_HOME="$HOME/.config"
 fi
 TILDAZ_EXE=""
-IS_DEV=""
+IS_DEV=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --exe) TILDAZ_EXE="$2"; shift 2 ;;
-        --dev) IS_DEV=1; shift ;;
-        --no-dev) IS_DEV=0; shift ;;
+        --exe)
+            if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+                echo "ERROR: --exe requires a path" >&2; exit 2
+            fi
+            TILDAZ_EXE="$2"; shift 2 ;;
+        --release) IS_DEV=0; shift ;;
         -h|--help)
-            grep '^#' "$0" | sed 's/^# \?//'
+            echo "Usage: $0 [--release] [--exe <path>]"
+            echo "Build and install dev by default; --release selects the release identity."
+            echo "Release archives require --release. --exe is only for a relocated archive binary."
             exit 0
             ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-
-# 개발 빌드인지 배포물인지 — #654. 개발 빌드는 `tildaz-dev` 이름으로 깔려 패키지와
-# 공존한다. 무조건 `-dev` 로 깔면 **tarball 을 받은 일반 사용자가 "TildaZ (dev)" 를
-# 보게 되므로**, 바이너리가 어디서 왔는지로 가른다. `--dev` / `--no-dev` 로 덮어쓸 수 있다.
-if [[ -z "$TILDAZ_EXE" ]]; then
-    # tar.gz release tarball 안 install.sh — binary 가 script 와 같은 폴더에 있음.
-    # repo dev 환경 — zig-out/bin/tildaz.
-    if [[ -x "$SCRIPT_DIR/tildaz" ]]; then
-        TILDAZ_EXE="$SCRIPT_DIR/tildaz"
-        [[ -z "$IS_DEV" ]] && IS_DEV=0
-    else
-        TILDAZ_EXE="$REPO_ROOT/zig-out/bin/tildaz"
-        [[ -z "$IS_DEV" ]] && IS_DEV=1
-    fi
-fi
-
-# `--exe` 로 직접 준 경우는 출처를 알 수 없다 — 경로에 zig-out 이 있으면 개발 빌드로 본다.
-if [[ -z "$IS_DEV" ]]; then
-    if [[ "$TILDAZ_EXE" == */zig-out/* ]]; then IS_DEV=1; else IS_DEV=0; fi
-fi
 
 if [[ "$IS_DEV" -eq 1 ]]; then
     TILDAZ_ID="tildaz-dev"
@@ -90,21 +77,41 @@ fi
 # 앱이 읽는 config 디렉터리도 같은 이름을 탄다 — 안내 문구에 쓴다.
 TILDAZ_CONFIG_DIR="$CONFIG_HOME/$TILDAZ_ID"
 
+# 경로는 소스/배포물의 위치를 찾는 데만 쓴다. dev 여부는 위 옵션 하나가 정한다.
+if [[ -f "$REPO_ROOT/build.zig" && -f "$REPO_ROOT/src/main.zig" ]]; then
+    if [[ -n "$TILDAZ_EXE" ]]; then
+        echo "ERROR: --exe is only supported in a release archive; repository installs build from source." >&2
+        exit 2
+    fi
+    RELEASE_VALUE=false
+    BUILD_KIND=dev
+    if [[ "$IS_DEV" -eq 0 ]]; then RELEASE_VALUE=true; BUILD_KIND=release; fi
+    # symlink 대상이 다음 릴리즈 빌드로 바뀌지 않게 설치용 산출물을 판별로 나눈다.
+    INSTALL_PREFIX="$REPO_ROOT/zig-out/install-$BUILD_KIND"
+    (cd "$REPO_ROOT" && zig build "-Drelease=$RELEASE_VALUE" -Doptimize=ReleaseFast -Dsimd=true -p "$INSTALL_PREFIX")
+    TILDAZ_EXE="$INSTALL_PREFIX/bin/tildaz"
+else
+    if [[ "$IS_DEV" -eq 1 ]]; then
+        echo "ERROR: this archive contains a release build. Run ./install.sh --release." >&2
+        exit 2
+    fi
+    TILDAZ_EXE="${TILDAZ_EXE:-$SCRIPT_DIR/tildaz}"
+fi
 if [[ ! -x "$TILDAZ_EXE" ]]; then
     echo "ERROR: tildaz binary not found at: $TILDAZ_EXE" >&2
-    echo "       Build first (zig build) or pass --exe /path/to/tildaz" >&2
     exit 1
 fi
 TILDAZ_EXE="$(realpath "$TILDAZ_EXE")"
 
-# `-Ddev` (#654) 이전의 install.sh 는 개발 빌드도 **릴리즈 이름** (`tildaz`) 으로 깔았다.
+# 개발판 분리 (#654) 이전의 install.sh 는 개발 빌드도 **릴리즈 이름** (`tildaz`) 으로 깔았다.
 # 그 잔재가 남으면 `~/.local/bin/tildaz` 가 PATH 에서 `/usr/bin/tildaz` 를 가려
 # `which tildaz` 가 개발 빌드를 가리키고, `tildaz.desktop` 은 패키지 항목을 통째로
 # 가린다 — 이 이슈가 없애려던 shadowing 그 자체다.
 #
-# **판정은 "zig-out 을 가리키는가" 하나다.** 그 조건이면 우리가 만든 개발 빌드 잔재가
+# **옛 기본 경로 `zig-out/bin/tildaz`만 정리한다.** 새 `install-release` 경로까지 지우면
+# dev 재설치가 정상 릴리즈 설치를 없애므로 넓은 `zig-out/*` 판정은 쓰지 않는다. 이 경로면
 # 확실하고, 사용자가 릴리즈 tarball 로 깐 정상 설치 (Exec 이 압축 해제 폴더) 는 그대로
-# 남는다. 같은 규칙을 위 `--exe` 출처 판별에도 쓴다. 아이콘 (`tildaz.svg`) 은 dev·릴리즈
+# 남는다. 이 조건은 옛 잔재 정리 전용이고 새 설치의 dev 판정에는 쓰지 않는다. 아이콘 (`tildaz.svg`) 은 dev·릴리즈
 # 구별 근거가 없어 건드리지 않는다 — 항목이 없으면 아이콘만 남아도 무해하다.
 remove_stale_dev_entry() {
     local kind="$1" path="$2"
@@ -113,11 +120,11 @@ remove_stale_dev_entry() {
             [[ -L "$path" ]] || return 0
             local target
             target="$(readlink -f "$path" 2>/dev/null || true)"
-            [[ "$target" == */zig-out/* ]] || return 0
+            [[ "$target" == */zig-out/bin/tildaz ]] || return 0
             ;;
         desktop)
             [[ -f "$path" ]] || return 0
-            grep -qE '^Exec=("?)[^"]*/zig-out/' "$path" || return 0
+            grep -qE '^Exec=("?)[^"]*/zig-out/bin/tildaz("|[[:space:]]|$)' "$path" || return 0
             ;;
     esac
     rm -f "$path"
@@ -196,13 +203,29 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 # 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행된다. uninstall.sh 는 두 marker 를
 # 모두 지운다.
 TILDAZ_MARKER="# $TILDAZ_ID autostart (added by install.sh — uninstall.sh removes this)"
-SWAY_CFG="$HOME/.config/sway/config"
-# "이미 있음" 판정은 자기 marker 또는 **자기 실행 파일**을 부르는 exec 줄이다. 예전에는
-# `exec .*tildaz` 였는데, dev 의 경로 (`…/tildaz/zig-out/bin/tildaz`) 에도 `tildaz` 가 들어가
-# 릴리즈 블록이 있으면 dev 를 (또 반대로) 건너뛰었다.
-sway_has_ours() {
-    grep -qF -e "$TILDAZ_MARKER" "$SWAY_CFG" || grep -qF -e "exec $TILDAZ_EXE --autostart" "$SWAY_CFG"
+# 새 설치뿐 아니라 옛 zig-out/bin을 가리키는 자동실행 줄도 갱신한다.
+# 다른 판의 marker와 사용자 본문은 그대로 둔다. awk -v의 역슬래시 해석을 피해
+# marker/명령은 환경으로 넘긴다 (#654).
+sync_marked() {
+    local cfg="$1" marker="$2" line="$3" tmp
+    if grep -qxF -e "$marker" "$cfg"; then
+        tmp="$(mktemp "$cfg.tildaz.XXXXXX")" || exit 1
+        cp -p "$cfg" "$tmp" || exit 1
+        TILDAZ_MARKER_VALUE="$marker" TILDAZ_COMMAND_VALUE="$line" awk '
+            replace { print ENVIRON["TILDAZ_COMMAND_VALUE"]; replace=0; next }
+            { print }
+            $0 == ENVIRON["TILDAZ_MARKER_VALUE"] { replace=1 }
+            END { if (replace) print ENVIRON["TILDAZ_COMMAND_VALUE"] }
+        ' "$cfg" > "$tmp" || exit 1
+        if cmp -s "$cfg" "$tmp"; then rm -f "$tmp"; return 1; fi
+        mv "$tmp" "$cfg" || exit 1
+        return 0
+    fi
+    grep -qxF -e "$line" "$cfg" && return 1
+    printf '\n%s\n%s\n' "$marker" "$line" >> "$cfg" || exit 1
+    return 0
 }
+SWAY_CFG="$HOME/.config/sway/config"
 if [[ ! -e "$SWAY_CFG" ]]; then
     mkdir -p "$(dirname "$SWAY_CFG")"
     cat > "$SWAY_CFG" <<EOF
@@ -211,11 +234,10 @@ $TILDAZ_MARKER
 exec $TILDAZ_EXE --autostart
 EOF
     SWAY_MSG="$SWAY_CFG  (생성 — stock 상속 + $TILDAZ_ID 자동실행 블록)"
-elif sway_has_ours; then
-    SWAY_MSG="$SWAY_CFG  (이미 $TILDAZ_ID 자동실행 줄 있음 — 변경 없음)"
+elif sync_marked "$SWAY_CFG" "$TILDAZ_MARKER" "exec $TILDAZ_EXE --autostart"; then
+    SWAY_MSG="$SWAY_CFG  (updated $TILDAZ_ID autostart)"
 else
-    printf '\n%s\nexec %s --autostart\n' "$TILDAZ_MARKER" "$TILDAZ_EXE" >> "$SWAY_CFG"
-    SWAY_MSG="$SWAY_CFG  (기존 config 에 $TILDAZ_ID 자동실행 2줄 append)"
+    SWAY_MSG="$SWAY_CFG  ($TILDAZ_ID autostart is already current)"
 fi
 
 # ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`). Hyprland 은
@@ -226,21 +248,11 @@ fi
 #   - .lua  → `hl.on(...exec_cmd)` (주석 --)
 #   - 둘 다 없음 → Hyprland 설치돼 있으면 `Hyprland --verify-config` 로 기본 config 생성
 #     (세션 안 띄움) 후 append. 미설치면 안내만 (`command -v` 로 먼저 걸러 안 깨짐).
-# 기존 본문 안 건드리고 append 만. 각 줄 앞에 marker — uninstall 이 marker+다음줄 제거.
+# 기존 본문은 보존하고, 우리 marker 아래 실행 경로만 현재 설치로 맞춘다.
 HYPR_DIR="$HOME/.config/hypr"
 HYPR_CONF="$HYPR_DIR/hyprland.conf"
 HYPR_LUA="$HYPR_DIR/hyprland.lua"
 TILDAZ_MARKER_LUA="-- $TILDAZ_ID autostart (added by install.sh — uninstall.sh removes this)"
-
-# config 에 marker+line 을 idempotent append — 자기 marker 나 **그 줄 자체**가 이미 있으면
-# skip (return 1). 예전에는 `exec-once .*tildaz` 같은 정규식이었는데, dev 의 경로에도
-# `tildaz` 가 들어가 다른 판의 블록을 자기 것으로 봤다 (#654). 줄은 고정 문자열로 본다.
-append_marked() {
-    local cfg="$1" marker="$2" line="$3"
-    { grep -qF -e "$marker" "$cfg" || grep -qF -e "$line" "$cfg"; } && return 1
-    printf '\n%s\n%s\n' "$marker" "$line" >> "$cfg"
-    return 0
-}
 
 # 과거 install.sh가 만든 정적 Hyprland hotkey marker+다음 줄만 제거한다.
 # config_N별 런타임 등록과 함께 남으면 같은 키가 두 번 toggle될 수 있다.
@@ -287,7 +299,7 @@ if [[ -f "$HYPR_CONF" ]]; then
         sed -i '/^[[:space:]]*autogenerated[[:space:]]*=/d' "$HYPR_CONF"
         hypr_added+=("배너제거")
     fi
-    if append_marked "$HYPR_CONF" "$TILDAZ_MARKER" "exec-once = $TILDAZ_EXE --autostart"; then hypr_added+=("autostart"); fi
+    if sync_marked "$HYPR_CONF" "$TILDAZ_MARKER" "exec-once = $TILDAZ_EXE --autostart"; then hypr_added+=("autostart"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_CONF  (hyprlang ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_CONF  (이미 설정됨 — 변경 없음)"; fi
 elif [[ -f "$HYPR_LUA" ]]; then
     remove_legacy_hypr_hotkey "$HYPR_LUA" "$TILDAZ_MARKER_LUA" lua
@@ -299,7 +311,7 @@ elif [[ -f "$HYPR_LUA" ]]; then
         sed -i '/hl\.config(.*autogenerated/d' "$HYPR_LUA"
         hypr_added+=("배너제거")
     fi
-    if append_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE --autostart\") end)"; then hypr_added+=("autostart"); fi
+    if sync_marked "$HYPR_LUA" "$TILDAZ_MARKER_LUA" "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"$TILDAZ_EXE --autostart\") end)"; then hypr_added+=("autostart"); fi
     if [[ ${#hypr_added[@]} -gt 0 ]]; then HYPR_MSG="$HYPR_LUA  (Lua ${hypr_added[*]} 추가)"; else HYPR_MSG="$HYPR_LUA  (이미 설정됨 — 변경 없음)"; fi
 fi
 

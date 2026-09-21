@@ -120,7 +120,7 @@ test "창 타이틀은 역할에서 갈린다" {
     // #654 — **개발 빌드는 릴리즈의 창 클래스도 제목도 쓰지 않는다.** 파생으로만 단언하면 두
     // 상수가 같은 값이어도 통과하므로, 판마다 실제 문자열을 박는다. 릴리즈 쪽 리터럴은
     // 동작이 바뀌지 않았다는 회귀 가드이기도 하다 (`zig build test` 와
-    // `zig build test -Ddev=false` 가 각각 한 갈래를 돈다).
+    // `zig build test -Drelease=true` 가 각각 한 갈래를 돈다).
     instance_context.setRole(.worker);
     if (app_id.is_dev) {
         try std.testing.expectEqualStrings("TildaZ-dev-0", try windowTitleForCurrentRole(&buf));

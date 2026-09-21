@@ -40,7 +40,7 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
 /// 창 제목. GNOME · Cinnamon 확장이 이 문자열로 사용자의 드롭다운 창을 찾으므로
 /// dev 판은 다른 이름을 써서 **확장이 개발 창을 사용자 창으로 오인하지 않게** 한다
 /// (`stress_app_id` 를 가른 것과 같은 이유다). 확장 경로 자체를 시연할 때는
-/// `-Ddev=false` 로 빌드한다.
+/// `-Drelease=true` 로 빌드한다.
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
     return std.fmt.bufPrintSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
 }

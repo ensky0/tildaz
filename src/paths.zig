@@ -332,7 +332,7 @@ test "로그 경로가 OS 표준 위치와 worker index 를 따른다" {
     const path = try logPathFromDir(allocator, dir, name);
     defer allocator.free(path);
 
-    // 기대값은 `app_id.name` 으로 만든다 — `-Ddev` 로 이름이 갈리므로 리터럴로 박으면
+    // 기대값은 `app_id.name` 으로 만든다 — `-Drelease` 로 이름이 갈리므로 리터럴로 박으면
     // 한쪽 빌드에서만 통과한다 (#654). macOS 도 이제 앱 디렉터리를 거친다 (ⓓ).
     const expected = switch (builtin.os.tag) {
         .windows => try std.fmt.allocPrint(allocator, "\\{s}\\tildaz_7.log", .{app_id.name}),
@@ -377,7 +377,7 @@ test "Linux lock directory follows runtime then cache fallback order" {
     const allocator = std.testing.allocator;
 
     // 세 갈래가 **같은 모양** (`<base>/<name>/run`) 인지도 함께 본다 — 예전에는 runtime
-    // 갈래에만 `/run` 이 없었다 (#654 ⓑ). 기대값은 `app_id.name` 으로 만든다. `-Ddev` 로
+    // 갈래에만 `/run` 이 없었다 (#654 ⓑ). 기대값은 `app_id.name` 으로 만든다. `-Drelease` 로
     // 이름이 갈리므로 리터럴로 박으면 한쪽 빌드에서만 통과한다.
     const runtime = try linuxLockDir(allocator, "/run/user/1000", "/cache", "/home/test");
     defer allocator.free(runtime);

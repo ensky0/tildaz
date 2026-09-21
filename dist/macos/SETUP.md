@@ -182,7 +182,7 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 ## ReleaseFast 빌드 + Applications 설치
 
 `TildazLocal` identity가 이미 유효하면 아래 스크립트가 ReleaseFast 빌드와
-`/Applications/TildaZ.app` 설치를 한 번에 수행해요. identity가 없으면
+`/Applications/TildaZ-dev.app` 설치를 한 번에 수행해요. identity가 없으면
 `setup-cert.sh`를 먼저 실행하고, 출력된 system trust 명령까지 완료되지 않은
 경우에는 안전하게 중단해요.
 
@@ -190,10 +190,15 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 ./dist/macos/build_and_install.sh
 ```
 
+기본은 dev예요. 릴리즈를 설치할 때만 `--release`를 붙여요. 이때 번들은 `TildaZ.app`이에요.
+Linux · macOS · Windows 설치 스크립트가 모두 같은 옵션을 써요.
+`ReleaseFast`는 최적화 수준이고 dev/릴리즈 구분과는 별개예요.
+
 설치 경로 또는 identity를 바꿔야 하면 환경변수로 지정할 수 있어요.
+번들 이름은 선택한 종류와 같아야 해요 (`TildaZ-dev.app` 또는 `TildaZ.app`).
 
 ```bash
-TILDAZ_INSTALL_PATH="$HOME/Applications/TildaZ.app" \
+TILDAZ_INSTALL_PATH="$HOME/Applications/TildaZ-dev.app" \
 TILDAZ_SIGN_IDENTITY=TildazLocal \
 ./dist/macos/build_and_install.sh
 ```

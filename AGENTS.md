@@ -2039,7 +2039,7 @@ worker 를 내리는 것 자체는 측정 절차의 일부라 그대로 진행�
 
 ```sh
 dist/macos/build_and_install.sh     # ✅ 빌드 + 서명 + /Applications 설치 + 서명 검증
-open /Applications/TildaZ.app       # ✅ 실행
+open /Applications/TildaZ-dev.app   # ✅ 실행
 ```
 
 스크립트가 하는 일:
@@ -2048,7 +2048,7 @@ open /Applications/TildaZ.app       # ✅ 실행
   ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
   ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
 - `-Doptimize=ReleaseFast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
-- `/Applications/TildaZ.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
+- `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
 - **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절.
 
@@ -2069,12 +2069,12 @@ security find-identity -v -p codesigning     # TildazLocal 이 안 보이면
 - 백업이 없어 새로 만들 수밖에 없다면 위의 갱신 목록을 전부 처리해요. 자세한 절차는
   [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 의 "identity 가 사라졌어요" 절.
 
-**앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ.app` 은 서명 전 중간 산출물이라
+**앱은 항상 `open` 으로 `.app` 번들을 열어요.** `zig-out/TildaZ-dev.app` 은 서명 전 중간 산출물이라
 실행 대상이 아니고, 번들 안의 바이너리를 직접 띄우면 권한이 안 붙어요.
 
 ```sh
-open /Applications/TildaZ.app                        # ✅ 이걸 써요
-/Applications/TildaZ.app/Contents/MacOS/tildaz       # ⚠️ 권한 문제 — 아래 참고
+open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
+/Applications/TildaZ-dev.app/Contents/MacOS/tildaz       # ⚠️ 권한 문제 — 아래 참고
 ```
 
 - 터미널에서 바이너리를 직접 띄우면 그 프로세스의 권한 요청을 macOS 가 **부모 (터미널 앱) 기준**으로
@@ -2089,9 +2089,9 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
   핫키가 갑자기 안 들으면 시스템 설정에서 토글 OFF/ON 하거나 `tccutil reset All me.ensky0.tildaz`
   로 초기화하고 다시 허용해요.
 
-**빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`-Clean` / `-Optimize` / `-Check` / `-Test` / `-NoSimd` 지원). 직접 호출 시:
+**빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`--release` / `--clean` / `--optimize` / `--check` / `--test` / `--no-simd` 지원). 직접 호출 시:
 - 전체 빌드: `zig build -Doptimize=ReleaseFast -Dsimd=true`
-- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true`
+- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
 - 단위 테스트: `zig build test`.
@@ -2124,16 +2124,36 @@ open /Applications/TildaZ.app                        # ✅ 이걸 써요
 - 앱은 `sysctlbyname("kern.osproductversion")` 의 메이저로 이름을 골라요
   (`host/macos.zig` 의 `accessibilityPermissionLabel`).
 
-**개발 빌드는 `-Ddev` 로 릴리즈와 갈려요 (기본값 `true`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
+**빌드·설치 스크립트는 세 OS 모두 기본 dev, 릴리즈만 `--release`예요**
+([#654](https://github.com/ensky0/tildaz/issues/654)). dev/릴리즈용 파일을 따로 나누지 않아요.
+`--dev` · `--no-dev` · `TILDAZ_DEV`로 종류를 고르거나 경로로 추측하지 않아요.
+
+| OS | dev 빌드·설치 | 릴리즈 빌드·설치 |
+|---|---|---|
+| Linux | `bash dist/linux/install.sh` | 같은 명령에 `--release` |
+| macOS | `bash dist/macos/build_and_install.sh` | 같은 명령에 `--release` |
+| Windows | `dist\windows\install.bat` | 같은 명령에 `--release` |
+
+- 저장소 설치는 선택한 종류로 **먼저 빌드해요**. 이전 `zig-out/bin`을 경로만 보고 dev로 설치하지 않아요.
+- Linux는 심링크 대상이 다른 종류의 빌드로 덮이지 않도록 `zig-out/install-dev/bin/tildaz`와
+  `zig-out/install-release/bin/tildaz`를 써요. macOS는 번들 이름, Windows는 복사한 설치 폴더로 갈려요.
+- Linux tarball에도 **같은 `install.sh`**를 넣고 사용자가 `./install.sh --release`로 불러요.
+  옵션이 없으면 설치 전에 거부해요. 배포물의 바이너리를 옮긴 경우만 `--exe <경로>`를 함께 써요.
+- Windows `build.ps1`도 기본 dev예요. 릴리즈는 `--release`, 나머지도 `--clean` · `--optimize` ·
+  `--cache-dir` · `--check` · `--test` · `--no-simd` 표기를 써요.
+- macOS 설치 경로를 바꿔도 번들 이름은 `TildaZ-dev.app` / `TildaZ.app` 중 선택한 종류와 같아야 해요.
+- `ReleaseFast`는 최적화 수준이에요. dev도 ReleaseFast로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
+
+**빌드는 기본 dev예요. 릴리즈만 `-Drelease=true`를 명시해요 (기본값 `false`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
 `config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
 layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bundle id 가 전부
 `tildaz-dev` 쪽을 써서, 개발 빌드를 띄워도 **설치된 릴리즈의 설정을 건드리지 않아요.**
 기본 hotkey 도 갈려요 — 릴리즈는 index 0 → `F1`, 개발 빌드는 0 → `F10` 으로 **표를 거꾸로**
 읽어요 (같은 조합을 둘이 등록하면 먼저 등록한 쪽만 발화하고 재등록으로 못 빼앗아서예요).
 
-- **기본이 `true` 인 것은 `-Dsimd` 와 반대인데 이유가 달라요** — 옵션을 깜빡했을 때 사용자
-  config 를 건드리지 않는 쪽으로 실패해야 하거든요. 그래서 *릴리즈가* `-Ddev=false` 를 명시해요.
-- **`zig build package` 는 `-Ddev=false` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로
+- **`release` 기본값은 `false`예요.** 옵션을 생략해도 설치된 릴리즈의 설정을 건드리지 않아요.
+  `zig build`는 dev, `zig build -Drelease=true`는 릴리즈예요. 옛 `-Ddev` 옵션은 쓰지 않아요.
+- **`zig build package` 는 `-Drelease=true` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로
   나가는 것을 막는 가드예요 — CI 나 사람이 한 번 빠뜨리면 그대로 배포될 자리라서요.
 - **이름은 [`src/app_id.zig`](src/app_id.zig) 한 곳이 정해요.** 격리할 자리가 열 곳이 넘어서
   자리마다 조건을 쓰면 반드시 하나를 빠뜨려요 (실제로 이 작업 중에 Wayland `app_id` 와
@@ -2152,8 +2172,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   (GNOME · Cinnamon dconf) · [`uninstall.sh`](dist/linux/uninstall.sh) 의 그룹 제거.
   판정 함수에는 **"개발 빌드가 릴리즈 이름을 자기 것으로 보지 않는다"** 를 테스트로 박아
   둬요 (앞의 두 파일에 그 단언이 있어요).
-- **`install.sh` 는 `-Ddev` 이전 판이 남긴 잔재를 치워요 — 판정은 "zig-out 을 가리키는가"
-  하나예요.** 예전 스크립트는 개발 빌드도 릴리즈 이름으로 깔아서, 그 `~/.local/bin/tildaz` 가
+- **`install.sh`는 개발판 분리 이전 판의 옛 기본 경로 `zig-out/bin/tildaz`를 가리키는 잔재만 치워요.**
+  새 릴리즈 설치 경로 `zig-out/install-release/`는 보존해요. 예전 스크립트는 개발 빌드도 릴리즈 이름으로 깔아서, 그 `~/.local/bin/tildaz` 가
   PATH 에서 `/usr/bin/tildaz` 를 가려요 (이 이슈의 원래 증상 절반이 그것이에요). 반대로
   사용자가 **릴리즈 tarball 로 깐 정상 설치** 는 `Exec` 이 압축 해제 폴더라 그대로 보존돼요.
 - **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
@@ -2209,7 +2229,7 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   `autostart/macos.zig` 의 테스트는 **macOS 에서만 돌아요** (`autostart.zig` 의 comptime switch) —
   Linux · Windows 의 `zig build test` 통과가 그 파일을 보증하지 않아요. label 리터럴이 옛 값인 채로
   두 회차를 지나간 이유예요.
-- **`-Ddev` 이전 개발 빌드가 릴리즈 이름으로 남긴 dconf 항목 (`…/custom-keybindings/tildaz-N/`) 은
+- **개발판 분리 이전 개발 빌드가 릴리즈 이름으로 남긴 dconf 항목 (`…/custom-keybindings/tildaz-N/`) 은
   아무도 안 치워요.** 릴리즈가 남긴 것과 구별할 수 없어 앱도 `install.sh` 도 건드리지 않아요. 개발 기기에만
   생기는 잔재라 릴리즈 노트가 아니라 여기에 적어요 (2026-09-21 사용자 결정). `command` 가 `zig-out` 을
   가리키는 항목을 찾아 손으로 지워요.
@@ -2226,9 +2246,9 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
 - **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
   zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
   README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은
-  `install.sh` 를 담아요). 그래서 `install.bat` 의 릴리즈 판별 분기는 *배포 경로로는 도달하지
-  않고*, 누군가 스크립트를 압축 푼 폴더에 복사했을 때만 타요. 이슈 절차에 *"릴리즈 zip 안의
-  install.bat 을 돌려 본다"* 가 있으면 **Windows 에서는 전제가 성립하지 않아요.**
+  `install.sh` 를 담아요). `install.bat --release`는 저장소에서 릴리즈를 빌드·설치하는 명령이고,
+  zip 설치용 명령이 아니에요. 이슈 절차에 *"릴리즈 zip 안의 install.bat을 돌려 본다"*가 있으면
+  **Windows에서는 전제가 성립하지 않아요.**
 - **Windows 의 옛 autostart 잔재는 `install.bat` 이 치워요.** 레지스트리 값 이름은
   **대소문자를 구별하지 않아서** 옛 `TildaZ` 와 새 릴리즈 이름 `tildaz` 가 *같은 값*이에요 —
   그래서 릴리즈 사용자에게는 ⓔ 의 이름 변경이 덮어쓰기로 끝나고, **잔재가 남는 것은 dev 판
@@ -2254,7 +2274,7 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
 **SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
 C++ toolchain/SDK를 모든 cross target에 요구하지 않도록 기본 false를 유지해요. scalar 비교
-진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 -NoSimd`를 사용해요. macOS package는
+진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 --no-simd`를 사용해요. macOS package는
 `build.zig`이 이 값을 universal binary의 arm64/x86_64 내부 빌드 양쪽에 전달해요.
 
 **Windows target ABI (#19):** Zig는 ABI를 생략한 Windows target을 GNU로 resolve하지만,

@@ -758,7 +758,7 @@ exec "$SHELL"                              # 폭포 후 셸 — 같은 PTY slave
 | Windows | `%APPDATA%\tildaz-dev\tildaz_stress.log` |
 
 경로의 `tildaz-dev` 는 **개발 빌드** (`zig build` 기본값) 의 이름이에요 — 도구들은 `zig-out` 의
-바이너리를 띄우니 이쪽을 봐요. 릴리즈 판 (`-Ddev=false`) 은 `tildaz` 예요 ([#654](https://github.com/ensky0/tildaz/issues/654)).
+바이너리를 띄우니 이쪽을 봐요. 릴리즈 판 (`-Drelease=true`) 은 `tildaz` 예요 ([#654](https://github.com/ensky0/tildaz/issues/654)).
 
 ### ❌ 이렇게는 판정이 안 돼요 — 다시 만들지 않으려고 적어 둬요
 

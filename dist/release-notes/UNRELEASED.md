@@ -19,6 +19,7 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- Linux tarball: run `./install.sh --release` to install. ([#654](https://github.com/ensky0/tildaz/issues/654))
 - **macOS log files moved into their own folder.** They are now
   `~/Library/Logs/tildaz/tildaz_N.log` instead of `~/Library/Logs/tildaz_N.log`, which is
   what the other platforms already did. About and "Open Log" follow automatically; old

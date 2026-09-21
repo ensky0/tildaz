@@ -166,7 +166,7 @@ test "renderPlist 는 번들 실행을 open 경유로 적는다" {
     const allocator = std.testing.allocator;
     const plist = try renderPlist(allocator, "/Applications/TildaZ.app/Contents/MacOS/tildaz");
     defer allocator.free(plist);
-    // label 은 빌드마다 다르므로 (`-Ddev`) 기대값도 `LABEL` 로 만든다.
+    // label 은 빌드마다 다르므로 (`-Drelease`) 기대값도 `LABEL` 로 만든다.
     const expected = try std.fmt.allocPrint(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
