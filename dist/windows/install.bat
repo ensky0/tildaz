@@ -23,7 +23,7 @@ exit /b 2
 :release_arg
 set "IS_DEV=0"
 set "BUILD_ARGS=--release"
-shift
+shift /1
 goto :parse_args
 :help
 echo Usage: install.bat [--release]
