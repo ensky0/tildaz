@@ -8,8 +8,8 @@
 #   $XDG_CONFIG_HOME/autostart/tildaz.desktop  (fallback: ~/.config)
 #   ~/.local/bin/tildaz  (symlink 일 때만 — 사용자가 둔 실제 파일은 보존)
 #   GNOME / Cinnamon TildaZ extension
-#   GNOME / Cinnamon gsettings custom keybinding tildaz-N (extension 비활성 시
-#     runtime 이 등록) — 리스트 항목 + dconf 서브트리
+#   GNOME / Cinnamon 이전판의 gsettings custom keybinding tildaz-N
+#     — 리스트 항목 + dconf 서브트리
 #   KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] 그룹
 #   ~/.config/sway/config 의 tildaz 블록 (install.sh 가 넣은 marker+exec 2줄만.
 #     파일/본문은 보존, marker 없는 사용자 작성 줄은 안 건드림)
@@ -156,9 +156,9 @@ PY
     fi
 done
 
-# GNOME / Cinnamon 이 영구 저장하는 custom keybinding 제거 (#292 E2). runtime
-# 이 extension 비활성 fallback 으로 gsettings 에 등록(gsettings_hotkey.zig)한 뒤
-# uninstall 이 안 지우면 삭제된 binary 를 가리키는 hotkey grab 이 남는다.
+# GNOME / Cinnamon 이전 버전이 영구 저장한 custom keybinding 제거 (#292 E2,
+# #676). 현재 버전은 Shell extension만 쓰지만, uninstall이 옛 항목을 안 지우면
+# 삭제된 binary를 가리키는 hotkey grab이 남는다.
 # 리스트(custom-keybindings / custom-list)에서 tildaz 항목만 빼고, 해당 dconf
 # 서브트리(`.../custom-keybindings/tildaz-N/`)를 reset 한다. install↔uninstall 대칭.
 # 리스트 요소는 GNOME=full dconf path, Cinnamon=id(tildaz-N) 로 형식이 다르다.

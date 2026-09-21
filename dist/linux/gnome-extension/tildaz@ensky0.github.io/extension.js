@@ -36,6 +36,7 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+const EXTENSION_UUID = "__TILDAZ_EXT_UUID__";
 // 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
 // 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
 const LOG_TAG = `[${APP}]`;
@@ -244,6 +245,8 @@ export default class TildazExtension extends Extension {
     this._placed = new Set();
     this._taskbarPatched = new Set();
     this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
+    this._shellSettings = null;
+    this._shellSettingsId = 0;
     this._monitorsChangedId = 0; // #373 해상도 / 모니터 구성 변경 시 재배치
     this._workAreasChangedId = 0; // #373 work-area 확정 시점의 재계산
 
@@ -307,7 +310,7 @@ export default class TildazExtension extends Extension {
     // 숨김, hotkey 로 등장). auto_start=false 면 로그인 시 안 뜨고(앱 그리드/터미널로
     // 수동 실행), F1 은 실행 중일 때만 toggle(미실행 시 무동작). zig 는 GNOME 에서
     // autostart .desktop 을 삭제하므로 launch lifecycle 은 여기(extension)가 담당한다.
-    if (this._configs.size === 0 || [...this._configs.values()].some(c => c.autoStart)) this._launchAutostart();
+    if (this._configs.size === 0 || [...this._configs.values()].some(c => c.autoStart)) this._scheduleAutostart();
   }
 
   _registerAccelerators() {
@@ -388,6 +391,12 @@ export default class TildazExtension extends Extension {
     this._dialogIdleIds?.clear();
     for (const win of this._managed || []) {
       try {
+        // #676 — 확장을 끌 때 숨겨 둔 터미널을 최소화 상태로 남기면 사용자가
+        // 전역 단축키도 창 목록도 없는 창을 잃는다. map handler를 위에서 먼저
+        // 끊었으므로 여기서 복원해도 hidden_start가 다시 minimize하지 않는다.
+        const actor = win.get_compositor_private();
+        if (actor) actor.opacity = 255;
+        if (win.minimized) win.unminimize();
         win.unmake_above();
         win.unstick();
       } catch (_e) {}
@@ -404,6 +413,11 @@ export default class TildazExtension extends Extension {
       } catch (_e) {}
       this._startupHookId = 0;
     }
+    if (this._shellSettingsId) {
+      this._shellSettings.disconnect(this._shellSettingsId);
+      this._shellSettingsId = 0;
+    }
+    this._shellSettings = null;
     this._appSystem = null;
     this._configs = null;
     this._managed = null;
@@ -412,6 +426,40 @@ export default class TildazExtension extends Extension {
     this._accelerators = null;
     this._dialogClassWatchers = null;
     this._dialogIdleIds = null;
+  }
+
+  // `gnome-extensions enable` 전환 중에는 extension 이 이미 활성인데도
+  // disabled-extensions 에 UUID 가 아직 남아 있다 (#676 GNOME 50.5 실측).
+  // 이 순간 앱을 띄우면 앱은 사용자가 확장을 끈 것으로 올바르게 판정하고
+  // 시작을 멈춘다. 고정 지연으로 덮지 않고, GNOME 이 세 설정을 모두
+  // 활성 상태로 반영했다는 changed 신호를 받은 뒤 실행한다.
+  _scheduleAutostart() {
+    if (this._shellSettingsId) return;
+    try {
+      this._shellSettings = new Gio.Settings({ schema_id: "org.gnome.shell" });
+    } catch (e) {
+      console.log(`${LOG_TAG} Shell settings watch failed: ${e}`);
+      return;
+    }
+
+    const launchWhenEnabled = () => {
+      const enabled = this._shellSettings.get_strv("enabled-extensions").includes(EXTENSION_UUID);
+      const disabled = this._shellSettings.get_strv("disabled-extensions").includes(EXTENSION_UUID);
+      const allDisabled = this._shellSettings.get_boolean("disable-user-extensions");
+      if (!enabled || disabled || allDisabled) return;
+
+      if (this._shellSettingsId) {
+        this._shellSettings.disconnect(this._shellSettingsId);
+        this._shellSettingsId = 0;
+      }
+      // changed 신호를 받은 Shell 프로세스와 달리 지금 띄울 worker 는
+      // 새 GSettings client 다. pending write 를 backend 에 먼저 반영해야 새
+      // 프로세스가 옛 enabled=false / disabled=true 를 읽지 않는다.
+      Gio.Settings.sync();
+      this._launchAutostart();
+    };
+    this._shellSettingsId = this._shellSettings.connect("changed", launchWhenEnabled);
+    launchWhenEnabled();
   }
 
   /** XDG config의 config_N.toml 읽기 (실패 시 해당 항목 제외). */
@@ -492,8 +540,8 @@ export default class TildazExtension extends Extension {
     if (!key) return null;
     // #496 1-c — 위치 표기 `[Backquote]` 는 **자리**다. GTK 의 `is_keycode()` 가 `0x` +
     // **정확히 두 자리** hex 만 keycode 로 인정하고, Mutter 는 그 값을 변환 없이
-    // `combo->keycode` 에 넣어 xkb keycode (= evdev + 8) 와 견준다. zig 쪽
-    // `buildGtkAccel` (gsettings fallback 경로) 이 내는 형식과 같다.
+    // `combo->keycode` 에 넣어 xkb keycode (= evdev + 8) 와 견준다. 값은
+    // `src/physical_key.zig` 의 Linux xkb keycode 표와 같다.
     //
     // 실측 (GNOME 50.4, nested): `<Control>[backquote]` 는 `grab_accelerator` 가 0
     // (`KeyBindingAction.NONE`) 을 내고 `<Control>0x31` 은 받는다 (#496 1-c).

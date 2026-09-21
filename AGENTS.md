@@ -1100,7 +1100,7 @@ ls /run/user/$(id -u)/tildaz-dev/run/                                    # insta
 | 데스크톱 | 받는 것 | 기대값 (`[Backquote]`) |
 |---|---|---|
 | sway · Hyprland | **자리** | `49` = evdev 41 + 8 (`bindcode 49` · `keycode=49`) |
-| GNOME · Cinnamon | **자리** | `0x31`. 확장이 켜져 있으면 **확장이** `grab_accelerator("<Control>0x31")`, 없으면 gsettings `binding=<Control>0x31` |
+| GNOME · Cinnamon | **자리** | `0x31`. 필수 Shell extension이 `grab_accelerator("<Control>0x31")` / `addHotKey`로 잡아요. 확장이 꺼져 있으면 앱을 시작하지 않아요 (#676) |
 | KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
 | Windows | **자리** (raw scan code) | `0x29`. `RegisterHotKey` 가 아니라 `WH_KEYBOARD_LL` 훅으로 잡아요 — 아래 |
 | macOS | 자리 (`kVK_*`) | 변화 없음 |
@@ -1158,15 +1158,20 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
 | KDE (KWin 6.7.4) | us · fr · ru · de + 해제/복구 왕복 | 미니PC Firebat ZY-A8 · CachyOS |
 | sway 1.12 | `bindcode Ctrl+49` | 같은 기기 (nested) |
 | Hyprland 0.56.2 | `keycode=49` | 같은 기기 (nested) |
-| GNOME 50.4 | gsettings `<Control>0x31` + **확장 경로** `action != 0` · fr 단독에서 자리 유지 | 노트북 i5-1240P |
+| GNOME 50.4 | 확장 `grab_accelerator("<Control>0x31")`의 `action != 0` · fr 단독에서 자리 유지 | 노트북 i5-1240P |
 | COSMIC 1.0.0 | us `grave` · fr `twosuperior` · ru `Cyrillic_io` · de 거둠 · 복구 | 같은 노트북 |
-| Cinnamon 6.6.9 (Muffin) | 확장 `<Control>0x31` grab · fallback gsettings `['<Control>0x31']` · fr · ru 단독에서 자리 유지 | 같은 노트북 |
+| Cinnamon 6.6.9 (Muffin) | 확장 `<Control>0x31` grab · fr · ru 단독에서 자리 유지 | 같은 노트북 |
 
 **Windows · macOS 는 미검증이에요.**
 
 **확장 경로는 `TILDAZ_VERBOSE=1` 로 계측 없이 관측해요.** GNOME · Cinnamon 의 확장은 창을 minimize/unminimize 로 토글하므로 앱이 남기는 lifecycle 로그가 없어요. verbose 를 켜면 `[wayland] drainSurfaceOutputs entered=[] …` (숨김) 과 `entered=[11 ] …` (복귀) 가 그대로 보여서, 확장에 로그를 심지 않고도 왕복을 확인할 수 있어요.
 
-**GNOME 은 gsettings 가 주 경로가 아니에요.** tildaz 가 부팅 때 Shell extension 을 스스로 켜고 (`ensureShellExtensionReady`), 켜져 있으면 gsettings 등록을 건너뛰어요 (`extension active — gsettings hotkey skipped`). 그래서 **스크립트의 GSettings 조회가 `''` 인 것이 정상**이고, 그때의 근거는 셸 로그예요 (`journalctl --user -b -o cat | grep tildaz`). gsettings 값을 직접 보려면 확장을 끄고 `~/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io` 를 옮겨 둬야 해요 (설치돼 있으면 tildaz 가 다시 켜요).
+**GNOME · Cinnamon은 Shell extension만 씁니다.** 앱은 처음 설치한 확장만 활성 목록에
+넣어요. 사용자가 끈 확장과 GNOME의 `disable-user-extensions`는 되살리지 않아요. 그
+상태에서 새 worker는 일반 창으로 fallback하지 않고 첫 PTY 전에 안내 후 종료해요.
+예전 GSettings custom-keybinding은 launcher가 모두 거둡니다 (#676). 확장을 실행 중에
+끄면 확장이 최소화된 창을 먼저 복원하고 above/sticky/창 목록 숨김을 해제해, 열린 셸은
+보이는 일반 창에 그대로 남아요.
 
 **함정 — 앞의 넷은 스크립트가 이미 피하고, 나머지는 손으로 잴 때 걸려요.**
 
@@ -1205,9 +1210,11 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
     gnome-extensions info tildaz-dev@ensky0.github.io | grep State
     ```
 
-  - **미결 — 앱은 `disabled-extensions` 를 안 봐요.** `gsettings_hotkey.zig` 의 `isExtensionEnabledInSchema` · `ensureInList` 가
-    `enabled-extensions` 만 보므로, 사용자가 GNOME 에서 확장을 끄면 (→ disabled 에 들어감) 앱은 "확장이 담당한다" 로 보고
-    gsettings hotkey 도 등록하지 않아요 — 전역 hotkey 가 아무 데도 없어요. 릴리즈에도 있는 결함이고 [#676](https://github.com/ensky0/tildaz/issues/676) 으로 뺐어요 (GNOME 만 — `org.cinnamon` 에는 그 키가 없어요).
+  - **앱도 두 목록과 전체 비활성 값을 함께 봐요 (#676).** `enabled-extensions`에 있어도
+    `disabled-extensions`에 있거나 `disable-user-extensions=true`면 비활성으로 판정해요.
+    사용자 선택을 바꾸지 않고 안내 후 시작을 멈춰요. Cinnamon은 차단 목록이 없어서
+    확장 디렉터리가 처음 생긴 경우만 활성 목록에 넣고, 이미 있는 확장이 목록에서 빠졌으면
+    사용자가 끈 것으로 봐요.
 - **실제 GNOME 세션의 전역 hotkey 는 [`tool/ukbd_linux.py`](tool/ukbd_linux.py) 로 눌러요.** `zwp_virtual_keyboard_v1` 은 GNOME 이
   안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
   `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.

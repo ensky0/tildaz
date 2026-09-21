@@ -1495,6 +1495,10 @@ const Client = struct {
     /// 앱을 죽이면 열려 있던 셸 세션이 함께 날아간다 — #510 이 다루는 것은 "앱이 안 뜬다"
     /// 는 기동 시점이다.
     hotkey_claim_failure: ?HotkeyClaimFailure = null,
+    /// #676 — GNOME · Cinnamon에서 설정상 활성인 extension의 실제 상태 파일이 없거나
+    /// 사용자가 extension을 꺼 둔 경우. 일반 창 fallback 대신 첫 PTY 전에 안내한다.
+    shell_extension_required: ?gsettings_hotkey.ShellExtensionOwner = null,
+    shell_extension_status: gsettings_hotkey.Status = .not_applicable,
     // surface visibility toggle state. macOS `g_visible` 동등. false
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
     // commit 송신 끝난 상태). 다음 toggle → flip + re-attach.
@@ -1907,7 +1911,7 @@ const Client = struct {
         //
         // 정체를 바꾸는 것으로는 부족하다 (창 타이틀 · app_id 와 다른 점이다). 이름을
         // 달리해도 KDE 단축키 레지스트리에 측정용 항목이 남으므로 **등록 자체를 건너뛴다** —
-        // 같은 파일의 sway `bindsym` · GSettings 등록과 같은 형태다.
+        // 같은 파일의 sway `bindsym` · Shell extension 등록과 같은 형태다.
         // #496 1-c — **라벨 binding 만 여기서 등록한다.** 위치 표기는 그 자리가 내는
         // keysym 을 알아야 하는데 (KDE 는 자리를 못 받는다) keymap 이 아직 없다. 아래
         // `keyboard ready` roundtrip 뒤로 미루는데, 그 자리는 `hidden_at_start` 판단보다
@@ -2061,7 +2065,7 @@ const Client = struct {
             if (self.run_opts.isStressRun()) {
                 log.appendLine("startup", "hidden_start ignored (stress run) — the measurement needs the window rendering, showing on start", .{});
             } else {
-                log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/GNOME/Cinnamon/COSMIC/Hyprland/sway), showing on start", .{});
+                log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/COSMIC/Hyprland/sway), showing on start", .{});
             }
         }
         if (hidden_at_start) {
@@ -9010,16 +9014,25 @@ const Client = struct {
         // 이미 판정한 결과를 읽는다. 여기서 직접 물을 수 없는 이유는 **셸 안에서만 답이
         // 나오기 때문**이고, 그 결과가 worker 보다 먼저 확정되는 것까지 포함해 자세한
         // 사정은 `paths.instanceHotkeyStatePath` 주석에 있다.
-        if (gsettings_hotkey.shellExtensionHotkeyFailed(
-            self.rt,
-            self.allocator,
-            instance_context.requireWorkerIndex(),
-        )) {
-            const owner = if (currentDesktopContains(self.rt, "cinnamon"))
-                messages.hotkey_owner_cinnamon
-            else
-                messages.hotkey_owner_gnome_shell;
-            self.recordHotkeyClaimFailure(owner, "{s}", .{messages.hotkey_reason_grab_refused_msg});
+        switch (self.shell_extension_status) {
+            .not_applicable => return,
+            .inactive => |owner| {
+                self.shell_extension_required = owner;
+                return;
+            },
+            .active => |owner| switch (gsettings_hotkey.waitForShellExtensionHotkeyState(
+                self.rt,
+                self.allocator,
+                instance_context.requireWorkerIndex(),
+            )) {
+                .unavailable => self.shell_extension_required = owner,
+                .ok => {},
+                .failed => self.recordHotkeyClaimFailure(
+                    if (owner == .cinnamon) messages.hotkey_owner_cinnamon else messages.hotkey_owner_gnome_shell,
+                    "{s}",
+                    .{messages.hotkey_reason_grab_refused_msg},
+                ),
+            },
         }
     }
 
@@ -9030,6 +9043,15 @@ const Client = struct {
     /// 호출 시점은 shell · font 검증과 같은 구간이다 — Wayland globals + keyboard 가
     /// 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 를 아직 안 띄웠다.
     fn fatalIfHotkeyClaimFailed(self: *Client) void {
+        if (self.shell_extension_required) |owner| {
+            var msg_buf: [1536]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, messages.linux_shell_extension_required_format, .{
+                owner.displayName(),
+            }) catch messages.linux_shell_extension_required_fallback_msg;
+            log.userFacing("fatal", msg);
+            self.runFatalDialog(messages.linux_shell_extension_required_title, msg);
+            std.process.exit(1);
+        }
         const failure = self.hotkey_claim_failure orelse return;
 
         var key_buf: [64]u8 = undefined;
@@ -11076,6 +11098,7 @@ pub fn runBaselineWindow(
     allocator: std.mem.Allocator,
     cfg: *const config_mod.Config,
     opts: run_options.RunOptions,
+    shell_extension_status: gsettings_hotkey.Status,
 ) !void {
     // #198 / #230 — single-instance. 이미 살아있는 인스턴스가 있으면 toggle 신호만
     // 보내고 종료해 기존 인스턴스를 보여준다. #267 이후 중복 재실행(앱 아이콘 /
@@ -11104,6 +11127,7 @@ pub fn runBaselineWindow(
     var client = try Client.init(rt, allocator, cfg, opts);
     defer client.deinit();
     client.toggle_listener_fd = listener_fd;
+    client.shell_extension_status = shell_extension_status;
     // #207 — toggle listener가 준비된 직후, sway 세션이면 `tildaz --toggle`을 sway의
     // `bindsym` 으로 자동 등록 (config = source of truth). 비-sway 면 no-op.
     // 측정 모드는 자기 단축키를 DE 에 등록하지 않는다 (#382) — 사용자의 기존 binding 을
@@ -11127,10 +11151,6 @@ pub fn runBaselineWindow(
     // gate 는 `client.is_sway` (peer PID 비교) 다 — SWAYSOCK 존재만 보면 stale 변수가
     // 남은 KDE 세션에서 무의미한 IPC 시도가 나간다 (`isSwayCompositor` 주석).
     if (!opts.isStressRun() and client.is_sway) sway_ipc.registerWindowRuleIfSway(rt, allocator, cfg);
-    // #207 / #229 — GNOME · Cinnamon 세션이면 `tildaz --toggle`을
-    // custom keybinding (GSettings)
-    // 으로 자동 등록. 그 외 DE 면 no-op.
-    if (!opts.isStressRun()) gsettings_hotkey.registerToggleHotkey(rt, allocator, cfg);
     client.run() catch |err| switch (err) {
         // #613 — main loop 의 `pollAndDispatch` 는 이 오류를 안에서 잡지만, 종료를 **write 로 먼저** 만나면
         // (`maybeRedraw` · `maybeRepeatKey` 등 `try` 로 올라오는 송신) 여기까지 온다. 어느 쪽이든 compositor 가

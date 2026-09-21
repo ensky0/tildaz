@@ -117,9 +117,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     log.logConfigLoaded(cfg.*);
 
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
-    // Sync and enable the current DE extension in the user session before the
-    // GNOME lifecycle decision below reads enabled-extensions.
-    gsettings_hotkey.ensureShellExtensionReady(rt, gpa.allocator());
+    // GNOME · Cinnamon은 Shell extension이 drop-down lifecycle과 hotkey를 함께
+    // 맡는다 (#676). 처음 준비한 확장만 활성화하고, 사용자가 꺼 둔 상태는 보존한다.
+    const shell_extension_status = gsettings_hotkey.prepareShellExtension(rt, gpa.allocator());
 
     // GNOME/Cinnamon + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch
@@ -127,12 +127,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 은 extension 이 map 직후 minimize + skip_taskbar 로 처리한다.
     // in-memory 값만 바꾼다. extension 은 disk config 의 원래 hidden_start 를 다시
     // 읽어 최초 minimize 여부를 결정하므로 disk 에 false 를 쓰면 안 된다.
-    if (gsettings_hotkey.enabledShellExtensionOwner(rt)) |owner| {
-        g_config.?.hidden_start = false;
-        log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
+    switch (shell_extension_status) {
+        .active => |owner| {
+            g_config.?.hidden_start = false;
+            log.appendLine("autostart", "{s} + extension — hidden_start override (extension handles show/hide via minimize)", .{owner.displayName()});
+        },
+        else => {},
     }
 
-    try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts);
+    try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts, shell_extension_status);
 }
 
 fn runPtySmoke(rt: Runtime, allocator: std.mem.Allocator) !void {

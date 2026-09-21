@@ -1,8 +1,9 @@
 //! Linux desktop hotkey 표기 공통 helper.
 //!
-//! GNOME/Cinnamon GSettings, sway, KGlobalAccel이 같은 XKB keysym을
-//! 서로 다른 외부 형식으로 보낼 때 key 이름과 사용자 표시 문자열을 한 곳에서
-//! 공유한다. 등록 backend의 수명주기와 무관한 순수 formatting 책임만 둔다.
+//! sway와 KGlobalAccel이 같은 XKB keysym을 서로 다른 외부 형식으로 보낼 때 key
+//! 이름과 사용자 표시 문자열을 한 곳에서 공유한다. GNOME/Cinnamon Shell extension은
+//! JavaScript 안의 같은 표를 정적 테스트로 맞춘다. 등록 backend의 수명주기와 무관한
+//! 순수 formatting 책임만 둔다.
 
 const std = @import("std");
 const config_mod = @import("../../config.zig");

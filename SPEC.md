@@ -208,8 +208,8 @@ tildaz 는 **Wayland 전용** (X11 backend 없음 — §0 / ARCHITECTURE 의 Des
 |---|---|---|---|---|
 | **KWin** | ✅ layer-shell | direct KGlobalAccel D-Bus 등록·Pressed signal | KDE Plasma | ✅완료 (실기 확인) |
 | **wlroots** | Hyprland = ✅ layer-shell · sway = xdg_toplevel + i3 IPC 배치/scratchpad 토글 ([#454](https://github.com/ensky0/tildaz/issues/454) — sway 는 layer-shell `on_demand` 에서 map 시 keyboard focus 를 안 줌) | Hyprland = `hyprctl keyword bind`→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
-| **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치) | gsettings custom keybinding (libgio) + extension 충돌 시 자동 skip | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
-| **muffin** | tildaz 전용 Shell extension | gsettings custom keybinding (Cinnamon strv schema) + extension 충돌 skip | Cinnamon | ✅완료 (실기 확인) |
+| **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치, 필수) | Shell extension `grab_accelerator` | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
+| **muffin** | tildaz 전용 Shell extension (필수) | Shell extension `addHotKey` | Cinnamon | ✅완료 (실기 확인) |
 | **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` | COSMIC | ✅완료 (실기 확인) |
 | **X11 전용** | — (Wayland 아님) | — | XFCE / MATE / LXDE | **범위 밖** (별도 backend 필요) |
 
@@ -297,13 +297,16 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
   xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
-  담당. hotkey 는 gsettings custom keybinding 으로 자동 등록(extension 활성 시
-  중복 grab 회피로 gsettings 등록 skip). launcher 는 config 에 없는 numbered
-  GSettings 항목만 제거하고, Shell extension 은 config directory 변경을 감시해
-  index/accelerator 차이만 remove/add한다. config 가 source of truth. 숨김(minimize)
-  시 extension 이 keyboard focus 를 MRU 다음 창으로 넘긴다 — mutter/muffin 이
+  담당한다. 이 확장은 **필수**다. 첫 설치 때만 앱이 활성 목록에 넣고, 사용자가 끈 상태와
+  GNOME의 전체 사용자 확장 비활성 설정은 바꾸지 않는다. 비활성이면 일반 창으로
+  fallback하지 않고 첫 PTY 전에 안내 후 종료한다. 예전 버전이 만든 GSettings
+  custom-keybinding은 launcher가 모두 제거하되 사용자 항목과 다른 판의 항목은 보존한다.
+  Shell extension은 config directory 변경을 감시해 index/accelerator 차이만 remove/add한다.
+  config가 source of truth다. 숨김(minimize) 시 extension이 keyboard focus를 MRU 다음 창으로 넘긴다 — mutter/muffin 이
   sticky+above 인 tildaz 를 minimize 해도 focus 를 자동 이양하지 않아, 안 그러면
   숨김 중에도 client 가 키를 계속 받아 Alt+Enter 토글 + 타이핑이 새어든다 (#247).
+  실행 중 확장을 끄면 셸 세션은 종료하지 않는다. 확장이 최소화된 창을 먼저 복원하고
+  above/sticky/창 목록 숨김과 전역 hotkey를 해제해 보이는 일반 창으로 남긴다 (#676).
 
 **drop-down 재표시 정책.** 기본은 hide 시 surface destroy → 다음 show 에서
 재생성(destroy/recreate, 모든 compositor 일관). 예외는 **KWin 한 곳** — surface 를
@@ -366,8 +369,6 @@ minimize/restore.
   **다만 그 겹침은 시스템 단축키를 조용히 빼앗는다** — 사용자가 `Super+q` 를 hotkey 로 쓰면 그동안
   COSMIC 의 창 닫기가 안 먹는다. 막지는 않고 **등록할 때 로그 한 줄로 알린다**
   (`cosmicSystemDefaultOverride` — `[cosmic] instance N hotkey overrides a COSMIC system shortcut …`).
-- **GNOME · Cinnamon 에서 extension 이 꺼져 있으면** 등록은 GSettings 경로가 하고, 그쪽은
-  `g_settings_set_*` 의 결과만 알 뿐 mutter · muffin 이 실제로 grab 했는지 모른다.
 - **Cinnamon 의 재판정 범위는 Cinnamon 자신이 반응하는 범위와 같다.** 그쪽 `KeybindingManager` 는
   `changed::custom-list` 와 media-keys 만 듣는다 (`keybindings.js`) — 그래서 *이미 있는* custom 항목의
   조합을 제자리에서 고쳐도 **데스크톱의 실제 등록은 옛 조합 그대로**이고 (2026-09-04 실측) 우리
@@ -505,7 +506,7 @@ AZERTY 에서 `Cmd+W` 가 `Z` 라 인쇄된 키였고, 같은 Mac 의 Safari (Co
 - **전역 `hotkey` 도 위치 표기를 받는다** ([#496](https://github.com/ensky0/tildaz/issues/496)
   1-c). 다만 `[keys]` 와 달리 **OS / compositor 에 *등록* 해야** 해서 경로마다 담을 수 있는 것이
   다르고, 그것이 이 절 아래의 갈림들이다. 등록 경로는 **다섯**이다 — sway `bindcode` · Hyprland
-  keysym · GNOME / Cinnamon GTK accelerator (`buildGtkAccel`) · COSMIC RON `key:` ·
+  keysym · GNOME / Cinnamon Shell extension의 GTK accelerator 변환 · COSMIC RON `key:` ·
   KGlobalAccel `qtKey`. (처음에 "4 경로" 로 적었는데 GNOME · Cinnamon 이 빠져 있었다.)
   - **Windows 는 `RegisterHotKey` 가 아니라 저수준 훅으로 잡는다.** 그 API 는 VK 만 받는데 VK 는
     layout DLL 이 배정하는 슬롯이라 자판마다 자리가 움직인다 (`VK_OEM_3` 이 US `0x29` · 프랑스어
@@ -1358,7 +1359,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. `config_0.toml` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 GSettings·Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
+**Schema**: `string`. `config_0.toml` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 필수 Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
 
 **잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux native backend 변환 가능 여부는 아래 *Key 토큰 표*를 따른다.
 
@@ -1460,7 +1461,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 
 **Hyprland — runtime binding 증분 동기화**: launcher lock 안에서 `hyprctl -j binds` JSON actual 과 `config_N.toml` desired 를 비교한다. accelerator와 현재 TildaZ 실행 파일의 `--toggle N` command가 모두 같은 binding은 유지하고, TildaZ가 소유한 stale binding만 `unbind`, 누락 binding만 `bind`한다. 따라서 config 삭제나 hotkey 변경 뒤 과거 F3/F4 등이 세션에 남아 prompt 입력을 가로채지 않는다. 다른 실행 파일이나 dispatcher의 사용자 binding은 식별 대상이 아니다.
 
-**KDE Plasma / GNOME / Cinnamon — persistent binding 증분 정리**: launcher는 KDE Plasma에서 KGlobalAccel `allComponents()`와 Component `uniqueName`을 조회해 config에서 사라진 `tildaz.instanceN`의 `toggle-N`만 `unregister`한다([KGlobalAccel D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml), [Component interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml)). GNOME/Cinnamon의 GSettings fallback도 custom keybinding 목록에서 TildaZ numbered entry만 식별해 사라진 번호를 제거하며 사용자 항목은 보존한다. GNOME/Cinnamon Shell extension은 config directory monitor로 변경을 받고 동일 index/accelerator는 유지한다.
+**KDE Plasma persistent binding 증분 정리 · GNOME/Cinnamon 이전 항목 제거**: launcher는 KDE Plasma에서 KGlobalAccel `allComponents()`와 Component `uniqueName`을 조회해 config에서 사라진 `tildaz.instanceN`의 `toggle-N`만 `unregister`한다([KGlobalAccel D-Bus interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.KGlobalAccel.xml), [Component interface](https://github.com/KDE/kglobalaccel/blob/master/src/org.kde.kglobalaccel.Component.xml)). GNOME/Cinnamon에서는 예전 GSettings fallback이 만든 TildaZ numbered entry를 custom keybinding 목록에서 모두 제거하며 사용자 항목과 다른 판의 항목은 보존한다. Shell extension은 config directory monitor로 변경을 받고 동일 index/accelerator는 유지한다.
 
 **Display 표기 (사용자 dialog / log)**: `hotkey_format.displayString`이 Title case + `+` 분리(`Meta+A`, `Ctrl+Shift+T`, `Ctrl+F7`)로 표시한다. backend wire 형식과 분리된 사용자용 표기다.
 

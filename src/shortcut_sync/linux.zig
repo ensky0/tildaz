@@ -12,7 +12,9 @@ const app_id = @import("../app_id.zig");
 
 pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(rt, allocator, indices);
-    gsettings_hotkey.syncNumberedEntries(rt, allocator, indices);
+    // #676 — GNOME · Cinnamon의 불완전한 GSettings hotkey fallback은 없어졌다.
+    // 이전 버전이 남긴 우리 항목만 거두고 새 항목은 만들지 않는다.
+    gsettings_hotkey.removeLegacyFallbackEntries(rt, allocator);
     kglobalaccel.syncNumberedIdentities(rt, allocator, indices);
     if (desktopContains(rt, "hyprland")) syncHyprland(rt, allocator, indices) catch |err| {
         log.appendLine("hyprland", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});

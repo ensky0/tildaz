@@ -81,7 +81,7 @@ const cinnamon_resources = [_]Resource{
 /// 실은 바이너리와 늘 같은 버전이다 — extension 이 그 바이너리의 IPC 를 부르므로 이 짝이
 /// 어긋나면 안 된다. 결과 종류 (`synced` · `kept_installed` · `unavailable`) 도 함께 사라졌다:
 /// 이제 실패는 오류이고 성공은 한 가지다.
-pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !void {
+pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
     const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
     const destination_dir = switch (kind) {
@@ -89,6 +89,16 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         .cinnamon => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "cinnamon", "extensions", uuid }),
     };
     defer allocator.free(destination_dir);
+
+    // #676 — Cinnamon은 GNOME의 `disabled-extensions` 같은 명시적 차단 목록이 없다.
+    // 그래서 "처음 설치돼 아직 enabled 목록에 없는 것"과 "사용자가 목록에서 빼 꺼 둔
+    // 것"을 구분할 수 있는 사실은 sync 전 사용자 디렉터리의 존재뿐이다. 처음 준비한
+    // 경우만 호출처가 활성 목록에 넣고, 이미 있던 확장이 빠져 있으면 사용자 선택으로
+    // 보고 되살리지 않는다.
+    const newly_installed = blk: {
+        std.Io.Dir.accessAbsolute(rt.io, destination_dir, .{}) catch break :blk true;
+        break :blk false;
+    };
 
     // #451 — `fs.Dir.makePath` ➡️ `Io.Dir.createDirPath`. 공통 helper 를 쓴다 (#282 G7).
     try paths.ensureDir(rt, destination_dir);
@@ -116,6 +126,7 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         };
         if (changed or !compiled_exists) try compileGnomeSchemas(rt, allocator, destination_dir);
     }
+    return newly_installed;
 }
 
 /// disk → disk 복사. #583 B8 이후 쓰임이 하나 남았다 — `glib-compile-schemas` 가 임시
@@ -166,6 +177,41 @@ test "shell extension manifests contain required runtime files" {
     try std.testing.expectEqualStrings("metadata.json", gnome_resources[1].relative_path);
     try std.testing.expect(std.mem.startsWith(u8, gnome_resources[2].relative_path, "schemas/"));
     try std.testing.expectEqual(@as(usize, 2), cinnamon_resources.len);
+}
+
+test "#676 disabling a Shell extension restores hidden terminal windows" {
+    const sources = [_]struct {
+        js: []const u8,
+        disable_needle: []const u8,
+        map_disconnect_needle: []const u8,
+        restores_opacity: bool,
+    }{
+        .{
+            .js = gnome_resources[0].content,
+            .disable_needle = "  disable() {",
+            .map_disconnect_needle = "global.window_manager.disconnect(this._mapWaitId)",
+            .restores_opacity = true,
+        },
+        .{
+            .js = cinnamon_resources[0].content,
+            .disable_needle = "function disable() {",
+            .map_disconnect_needle = "global.window_manager.disconnect(st.mapId)",
+            .restores_opacity = false,
+        },
+    };
+    for (sources) |source| {
+        const disable_at = std.mem.indexOf(u8, source.js, source.disable_needle) orelse
+            return error.ExtensionDisableMissing;
+        const disable_body = source.js[disable_at..];
+        const disconnect_at = std.mem.indexOf(u8, disable_body, source.map_disconnect_needle) orelse
+            return error.ExtensionMapDisconnectMissing;
+        const restore_at = std.mem.indexOf(u8, disable_body, "if (win.minimized) win.unminimize();") orelse
+            return error.ExtensionWindowRestoreMissing;
+        // 복원이 다시 map handler를 타 hidden_start로 최소화되지 않게 먼저 끊는다.
+        try std.testing.expect(disconnect_at < restore_at);
+        if (source.restores_opacity)
+            try std.testing.expect(std.mem.indexOf(u8, disable_body[0..restore_at], "actor.opacity = 255;") != null);
+    }
 }
 
 test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 실리면 사용자 홈을 비운다)" {
