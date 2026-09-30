@@ -132,6 +132,7 @@ $VK = @{
     Esc = 0x1B                                                    # #650 — VK_ESCAPE
     A = 0x41; C = 0x43; F = 0x46; H = 0x48; I = 0x49; M = 0x4D
     LBracket = 0xDB                                               # VK_OEM_4
+    Slash = 0xBF                                                  # VK_OEM_2 (#684)
     # C0 대응이 없는 문장부호 일곱 (#650 본문 "같이 결정할 것" 1 번 — 2026-09-15 에 함께 닫았다).
     Semi = 0xBA; Quote = 0xDE; Comma = 0xBC; Period = 0xBE        # VK_OEM_1 · 7 · COMMA · PERIOD
     Minus = 0xBD; Backtick = 0xC0; Equal = 0xBB                   # VK_OEM_MINUS · 3 · PLUS
@@ -143,6 +144,8 @@ $rounds = @(
         @{ n = "Ctrl+[";           k = ,@($VK.Ctrl, $VK.LBracket);            e = "1b" }          # #650 — 전에는 CSI 91;5u
         @{ n = "Ctrl+I";           k = ,@($VK.Ctrl, $VK.I);                   e = "09" }          # #650
         @{ n = "Ctrl+M";           k = ,@($VK.Ctrl, $VK.M);                   e = "0d" }          # #650
+        @{ n = "Ctrl+/";           k = ,@($VK.Ctrl, $VK.Slash);               e = "1f" }          # #684 — 전에는 0 바이트 (WM_CHAR 이 안 옴)
+        @{ n = "Ctrl+_";           k = ,@($VK.Ctrl, $VK.Shift, $VK.Minus);    e = "1f" }          # #684 — 회귀 감시 (`@`..`_` 대역)
         @{ n = "Ctrl+Shift+F";     k = ,@($VK.Ctrl, $VK.Shift, $VK.F);        e = "" }            # #648 — 억제
         @{ n = "Ctrl+Shift+Enter"; k = ,@($VK.Ctrl, $VK.Shift, $VK.Enter);    e = "" }            # #648 — 억제
         @{ n = "Ctrl+A";           k = ,@($VK.Ctrl, $VK.A);                   e = "01" }          # 회귀 감시

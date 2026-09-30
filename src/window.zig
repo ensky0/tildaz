@@ -2320,6 +2320,56 @@ pub const Window = struct {
                     }
                 }
 
+                // #684 — legacy `Ctrl`+글자 도 인코더로 보낸다. `Ctrl+/` 이 PTY 로
+                // 아무것도 나가지 않던 결함 — Windows 는 legacy 글자 키를 `WM_CHAR`
+                // 으로만 받았는데, 그 메시지는 조합에 글자가 있을 때만 오고 `Ctrl+/`
+                // 처럼 C0 대응이 레이아웃에 없는 키는 **아예 오지 않는다**. 인코더를
+                // 못 만나니 ghostty `ctrlSeq` 표의 X11 관례 (`/` → `0x1F`) 에도 닿지
+                // 못해 0 바이트였다 (Linux 는 모든 글자 키가 인코더를 지나 `^_`).
+                //
+                // 고치는 방식은 #653 (Backspace · Tab · Enter) 과 같은 모양이다 —
+                // **인코더가 낼 것이 있으면 그것을 보내고 짝꿈 `WM_CHAR` 를 삼키고,
+                // 없으면 (`.fallback`) 예전 `WM_CHAR` 경로로 떨어진다.** 그래서
+                // 인코더에 항목이 없는 키는 지금과 완전히 같다.
+                //
+                // 제외 범위 (legacy 이므로 kitty 규칙이 걸리지 않는다):
+                //   - `Ctrl`+`Shift` 대역은 #648 규칙 ① 이 인코더에서 억제한다
+                //     (앱 단축키 대역 — `Ctrl+Shift+F` 등). 이 경로로 가도 결과는 같다.
+                //   - Alt (AltGr 포함) 는 `WM_SYSKEYDOWN` 이 이미 인코더로 보내므로
+                //     제외한다. AltGr 로 만든 글자는 소비된 modifier 다.
+                //   - IME 조합 중 · dead key 대기 중은 손대지 않는다 (#530).
+                //   - kitty flags 가 켠 앱은 아래 kitty 블록이 이미 같은 일을 한다.
+                //   - modifyOtherKeys=2 (mok2) 앱도 제외한다 — 그 앱은 `CSI 27;…~`
+                //     을 요청했으나 Windows 는 `WM_CHAR` 경로라 받지 못하는 것이
+                //     현재 서술된 동작이다 (SPEC §2.6 표). 이 변경의 범위는 legacy
+                //     뿐이다 — mok2 격차는 별도 이슈로.
+                //
+                // 표의 근거: ghostty `ctrlSeq` (kitty 계승) — `Ctrl+/` → `1f` ·
+                // `Ctrl+2` → `00` · `Ctrl+3` → `1b` · `Ctrl+6` → `1e` ·
+                // `Ctrl+8` → `7f`. Windows Terminal 실측이 같은 값을 낸다 (같은 OS
+                // 기준). 비US 배열에서는 `winCharWithoutCtrlAlt` 의 레이아웃 문자를
+                // 쓰므로 AZERTY `Ctrl+A` → `01` 도 유지된다 (#533 검증과 같은 장치).
+                if (!kitty_active and
+                    !self.keyEncodeOptions().modify_other_keys_state_2 and
+                    GetKeyState(VK_CONTROL) < 0 and
+                    GetKeyState(VK_MENU) >= 0 and
+                    self.imePreeditSlice().len == 0 and
+                    self.compose_preview_len == 0)
+                {
+                    var ctrl_chars: [8]u8 = undefined;
+                    const ctrl_text = winCharWithoutCtrlAlt(
+                        @intCast(wParam),
+                        kd_scan,
+                        GetKeyState(VK_SHIFT) < 0,
+                        &ctrl_chars,
+                    );
+                    if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, keyActionFromLParam(lParam))) {
+                        // 짝꿈 `WM_CHAR` (제어문자) 를 삼킨다 — 안 그러면 C0 이 두 번 나간다.
+                        self.swallow_next_wm_char = true;
+                        return 0;
+                    }
+                }
+
                 // #606 — kitty `report_all` 의 **modifier 단독 누름** (`Shift` → `CSI 57441;2u`). Shift · Ctrl ·
                 // Win 은 `WM_KEYDOWN` 으로 온다 (Alt 는 `WM_SYSKEYDOWN` 이 글자 없이 인코더로 보내 이미 나가고,
                 // Ctrl 을 누른 채의 Alt 만 여기로 온다). 뗌은 `WM_KEYUP` 이 모든 키를 인코더로 보내 이미 나간다.

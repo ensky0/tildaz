@@ -686,6 +686,7 @@ Windows 실측).
 | `Ctrl`/`Shift` + `Enter` | `0d` | `ESC[27;5;13~` · `ESC[27;2;13~` |
 | `Ctrl`/`Shift` + `Escape` | `1b` | `ESC[27;5;27~` · `ESC[27;2;27~` |
 | `Ctrl+Tab` | `09` | `ESC[27;5;9~` |
+| `Ctrl+/` (Windows) | `1f` | (없음) — `WM_CHAR` 이 안 오던 키 (#684) |
 | `Ctrl+;` `'` `,` `.` `-` `` ` `` `=` | (없음) — C0 대응이 없다 | `ESC[59;5u` 등 |
 
 **`Shift+Tab` 의 `ESC[Z` 는 확장이 아니다** — CBT 는 ECMA-48 시절부터 있던 legacy 시퀀스라 규칙이 아예 보지 않는다. `ESC[1;6D` (`Ctrl+Shift+←`) · `ESC[5;6~` (`Ctrl+Shift+PgUp`) 같은 표준 CSI modifier 도 같다.
@@ -693,6 +694,22 @@ Windows 실측).
 **앱이 프로토콜을 켜면 전부 그대로 나간다.** kitty flags 가 있거나 `CSI > 4;2m` 을 켰으면 규칙이 걸리지 않는다 — 그 앱들 (nvim · helix · zellij) 은 `Ctrl+Shift+<글자>` 를 정말로 구분하려고 켠 것이다. 실측으로 kitty · mok2 회차가 `origin/main` 과 바이트 단위로 같다.
 
 **Windows 는 Backspace · Tab · Enter 를 인코더로 보낸다** (#653). 그 전에는 `WM_CHAR` 로 받았는데 그 메시지에는 물리 키도 Shift 도 없어서 Backspace 와 `Ctrl+H` 가 코드포인트 8 하나로 합쳐지고 (둘 다 `7f`) `Shift+Tab` 의 back-tab 이 사라졌다 (`09`). IME 조합 중과 dead key 대기 중에는 손대지 않는다 — 음절 확정이 IME 의 몫이다.
+
+**Windows 는 legacy `Ctrl`+글자 도 인코더로 보낸다** ([#684](https://github.com/ensky0/tildaz/issues/684), 2026-09-30). `Ctrl+/` 이 PTY 로 아무것도 나가지 않던 결함이다 — Windows 는 legacy 글자 키를 `WM_CHAR` 으로만 받았는데 그 메시지는 **조합에 글자가 있을 때만 온다**. `/` 처럼 C0 대응이 레이아웃에 없는 키는 `WM_CHAR` 자체가 없고, 인코더도 못 만나 ghostty `ctrlSeq` 표의 X11 관례 (`/` → `0x1f`) 에 닿지 못해 0 바이트였다. Linux 는 모든 글자 키가 인코더를 지나 처음부터 `^_` 가 나갔다 (세 platform 동등 목표 §0 #1 어긋남).
+
+규칙은 #653 과 같은 모양이다 — **인코더가 낼 것이 있으면 그것을 보내고 짝꿈 `WM_CHAR` 를 삼키고, 없으면 (`.fallback`) 예전 `WM_CHAR` 경로로 떨어진다.** 이 표는 ghostty `ctrlSeq` (kitty 계승) 것이며 Windows Terminal 이 같은 OS 기준으로 같은 값을 낸다 (실측). 제외 — Alt (AltGr 포함 · `WM_SYSKEYDOWN` 이미 인코더) · IME 조합 중 · dead key 대기 중 · kitty flags 가 켜진 앱 (아래 kitty 블록이 이미 같은 일). `Ctrl+Shift` 대역은 규칙 ① 이 그대로 억제한다 (`Ctrl+Shift+F` · `Ctrl+@` 모두 전과 같이 없음).
+
+| 입력 (legacy) | Windows 실측 (2026-09-30 · Win11 26200 · 비US 레이아웃) | Windows Terminal 같은 기기 |
+|---|---|---|
+| `Ctrl+/` | `1f` (전 0 바이트) | `1f` |
+| `Ctrl+_` | `1f` | `1f` |
+| `Ctrl+2` · `Ctrl+6` | `00` · `1e` | `00` · `1e` |
+| `Ctrl+3` · `Ctrl+8` | (표 경유 — US 회차에서 `1b` · `7f` 예상) | `1b` · `7f` |
+| `Ctrl+0` · `1` · `9` | `30` · `31` · `39` (표가 숫자 자신을 돌려줌 — kitty 동등) | (없음) — **알려진 차이** |
+| `Ctrl+A` · `Ctrl+[` · `Ctrl+\` · `Ctrl+H` · `Ctrl+I` · `Ctrl+M` | `01` · `1b` · `1c` · `08` · `09` · `0d` (변화 없음) | 같음 |
+| 일곱 문장부호 · `Ctrl+Shift+F` · `Ctrl+@` | (없음) (변화 없음) | — |
+
+kitty 가 켜진 앱에서는 변하지 않는다 — `Ctrl+/` 은 계속 `CSI 47;5u` (실측).
 
 **macOS 는 세 칸이 아직 다르다** ([#658](https://github.com/ensky0/tildaz/issues/658)) — `Ctrl+Tab` · `Ctrl+Escape` 가 AppKit 의 key-view loop 에 막혀 `keyDown:` 에 도달하지 않고, `Shift+Tab` · `Shift+Enter` · `Shift+Escape` 가 `imeDoCommand` 의 하드코딩 표를 지나 프로토콜을 무시하며, 한글 입력 소스에서 kitty 코드포인트가 자모다. 셋 다 이 규칙 이전부터 있던 것이다.
 
