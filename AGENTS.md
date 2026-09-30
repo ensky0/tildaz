@@ -2090,6 +2090,10 @@ open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
   설정 절차는 [`dist/macos/SETUP.md`](dist/macos/SETUP.md) 에 있어요.
 - `open` 은 LaunchServices 를 거치니 TildaZ.app 이 자기 identity 로 뜨고 `Info.plist` 키
   (Accessory mode 등) 도 정상 적용돼요.
+- **에이전트 셸이 샌드박스 안이면 `open` 으로 띄워도 권한이 빠져요.** 2026-09-30
+  [#682](https://github.com/ensky0/tildaz/issues/682) 에서 샌드박스 안의 `open` 은 로그에
+  `[perm] missing — input_monitoring=missing` 이 찍히고 권한 안내 창이 떴어요. 같은 명령을 샌드박스
+  밖에서 돌리니 정상이었어요. 앱을 띄우는 명령과 합성 입력 (`cliclick`) 은 샌드박스 밖에서 돌려요.
 - 터미널에 붙여서 로그를 보려고 직접 실행하는 건 **권한이 필요 없는 검증** (렌더링 / 파싱 / PTY 왕복)
   에서만 써요. 로그는 `Shift+Cmd+L` 이나 `~/Library/Logs/tildaz/tildaz_N.log` (dev 빌드는 `tildaz-dev/`) 로 봐요.
 - ad-hoc 서명은 매 빌드마다 바이너리 해시가 바뀌어서 Input Monitoring 권한이 stale 해져요 (#109).
