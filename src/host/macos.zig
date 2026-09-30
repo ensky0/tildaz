@@ -562,6 +562,9 @@ var g_tab_scroll_x_px: f32 = 0;
 var g_tab_hover: tab_layout.Area = .none;
 /// #329 command/shortcut menu 표시 상태.
 var g_command_menu_open: bool = false;
+/// #682 — 명령 메뉴 · About Tip 의 단축키 글자. 재료 (`[keys]` · hotkey) 가 config 를 읽을 때만
+/// 정해지므로 `g_config` 를 읽은 직후 한 번 만든다 — 프레임마다 다시 만들 이유가 없다.
+var g_menu_hints: command_menu.Hints = .{};
 var g_command_menu_hover: ?command_menu.Command = null;
 /// #329 — 메뉴 keyboard focus (Up/Down/Home/End/Tab 이동, Enter/Space 실행).
 var g_command_menu_focus: ?command_menu.Command = null;
@@ -4546,6 +4549,13 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     const shell_resolved = resolveShell(rt, g_gpa.allocator());
     g_config = config.Config.load(rt, g_gpa.allocator(), shell_resolved);
     log.logConfigLoaded(g_config);
+    {
+        var hotkey_buf: [64]u8 = undefined;
+        g_menu_hints = config.commandMenuHints(
+            g_config.key_bindings[0..g_config.key_binding_count],
+            config.hotkeyDisplay(&hotkey_buf, g_config.hotkey),
+        );
+    }
 
     // #577 — config 오류가 담겨 있으면 여기서 안내하고 종료한다. `Config.load` 는
     // 더 이상 그 자리에서 죽지 않고 문구를 담아 기본값으로 돌아온다 (Linux 에서
@@ -5221,12 +5231,6 @@ fn renderFrameTick() void {
         tabBarLayout(),
         g_tab_hover,
     );
-    var hotkey_hint_buf: [64]u8 = undefined;
-    // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
-    const menu_hints = config.commandMenuHints(
-        g_config.key_bindings[0..g_config.key_binding_count],
-        config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey),
-    );
     // #483 5단계 — 활성 탭의 pane 마다 `drawPane` (`TabGroup.layout` 순서 — 최대화면 하나). rect 는
     // 탭바를 뺀 영역을 트리로 나눈 것 (pane 하나면 2단계와 같은 값). scrollbar 폭 · thumb 최소 높이는
     // 이전과 같은 `scaledPxF` 값 (f32).
@@ -5297,7 +5301,7 @@ fn renderFrameTick() void {
             .first_visible = g_command_menu_first,
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
-        &menu_hints,
+        &g_menu_hints,
         // #646 — 검색바는 활성 pane 의 상태를 비춘다.
         search_bar.uiFrom(
             &group.activeTab().search,
@@ -5788,10 +5792,9 @@ var g_last_tap_disable_ms: i64 = 0;
 var g_perm_msg_buf: [2048]u8 = undefined;
 var g_perm_msg_len: usize = 0;
 
-/// #682 — About 의 Tip 도 메뉴와 같은 바인딩 표에서 읽는다. Show / Hide 칸은 안 쓰므로 빈다.
+/// #682 — About 의 Tip 도 메뉴와 같은 표에서 읽는다.
 fn showAbout() void {
-    const hints = config.commandMenuHints(g_config.key_bindings[0..g_config.key_binding_count], "");
-    about.showAboutDialog(g_rt, &hints);
+    about.showAboutDialog(g_rt, &g_menu_hints);
 }
 
 /// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어

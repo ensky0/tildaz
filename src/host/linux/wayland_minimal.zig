@@ -1562,6 +1562,9 @@ const Client = struct {
     // L13-α — 사용자 설정. `runBaselineWindow` 가 host 의 g_config 포인터를
     // 전달. SessionCore.init 시 shell / theme / max_scroll_lines 가 여기서.
     config: *const config_mod.Config,
+    /// #682 — 명령 메뉴 · About Tip 의 단축키 글자. 재료 (`[keys]` · hotkey) 가 config 를
+    /// 읽을 때만 정해지므로 `init` 에서 한 번 만든다 — 프레임마다 다시 만들 이유가 없다.
+    menu_hints: command_menu.Hints,
     /// #205 — boot / show phase elapsed log 용 monotonic timer. boot path
     /// 는 `runBaselineWindow` 진입에 start, show path 는 매 `handleActivatedToggle`
     /// show 분기 시작에 reset. 사용자 *체감* 1-2 sec startup latency 가 어느
@@ -1702,6 +1705,13 @@ const Client = struct {
             },
             .renderer = renderer,
             .config = cfg,
+            .menu_hints = blk: {
+                var hotkey_buf: [64]u8 = undefined;
+                break :blk config_mod.commandMenuHints(
+                    cfg.key_bindings[0..cfg.key_binding_count],
+                    config_mod.hotkeyDisplay(&hotkey_buf, cfg.hotkey),
+                );
+            },
             // #501 — 로드 실패 안내를 loop 로 넘긴다. `Config` 가 문자열을 소유하고
             // 우리보다 오래 산다.
             .pending_config_notice = cfg.load_notice,
@@ -4921,7 +4931,6 @@ const Client = struct {
             const theme = self.config.theme orelse fallback_theme;
 
             var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-            var menu_hints: command_menu.Hints = undefined;
             var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
             var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
             var frame: software_terminal.GlFrame = .{
@@ -4938,7 +4947,6 @@ const Client = struct {
                         buffer.width,
                         buffer.height,
                         &titles_storage,
-                        &menu_hints,
                         &pane_storage,
                         &sep_storage,
                     ));
@@ -5119,7 +5127,7 @@ const Client = struct {
     /// 경로(`paintIntoBuffer`)가 같은 함수를 쓴다** — 입력이 갈리면 그리기 목록을
     /// 공유해도 소용이 없다.
     ///
-    /// `titles_storage` / `menu_hints` 는 호출처 stack 이고 반환값이 그 안을
+    /// `titles_storage` 는 호출처 stack 이고 반환값이 그 안을
     /// 가리킨다 — paint 가 끝날 때까지 살아 있어야 한다.
     fn frameInputs(
         self: *Client,
@@ -5127,7 +5135,6 @@ const Client = struct {
         width: i32,
         height: i32,
         titles_storage: *[session_core.MAX_TABS][]const u8,
-        menu_hints: *command_menu.Hints,
         /// #483 — pane 목록과 분할선의 저장 공간. `FrameInputs` 가 이 안을 가리킨다.
         pane_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw,
         sep_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator,
@@ -5264,15 +5271,8 @@ const Client = struct {
                 .first_visible = self.command_menu_first,
                 .fullscreen_workarea = self.fullscreen_mode == .avoid,
             },
-            // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
-            .menu_hints = blk: {
-                var hotkey_buf: [64]u8 = undefined;
-                menu_hints.* = config_mod.commandMenuHints(
-                    self.config.key_bindings[0..self.config.key_binding_count],
-                    config_mod.hotkeyDisplay(&hotkey_buf, self.config.hotkey),
-                );
-                break :blk menu_hints;
-            },
+            // #682 — `init` 에서 한 번 만든 표.
+            .menu_hints = &self.menu_hints,
             // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
@@ -5297,10 +5297,9 @@ const Client = struct {
                 // Titles slice / hotkey 힌트는 **호출처 stack** 에 둔다 —
                 // `FrameInputs` 가 그 안을 가리키므로 paint 동안만 valid 하다.
                 var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-                var menu_hints: command_menu.Hints = undefined;
                 var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
                 var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
-                const in = self.frameInputs(session, width, height, &titles_storage, &menu_hints, &pane_storage, &sep_storage);
+                const in = self.frameInputs(session, width, height, &titles_storage, &pane_storage, &sep_storage);
                 self.renderer.paint(self.allocator, memory, stride, in);
                 return;
             }
@@ -9791,9 +9790,8 @@ const Client = struct {
     fn drainAboutRequest(self: *Client) void {
         if (!self.pending_about_request) return;
         self.pending_about_request = false;
-        // #682 — Tip 도 메뉴와 같은 바인딩 표에서 읽는다. Show / Hide 칸은 안 쓰므로 빈다.
-        const hints = config_mod.commandMenuHints(self.config.key_bindings[0..self.config.key_binding_count], "");
-        about.showAboutDialog(self.rt, &hints);
+        // #682 — Tip 도 메뉴와 같은 표에서 읽는다.
+        about.showAboutDialog(self.rt, &self.menu_hints);
     }
 
     /// #216 — KWin Alt+F4 `closed` 후 메인 surface 를 **깜박임 없이** 교체.
