@@ -28,7 +28,7 @@ const system_open = @import("system_open.zig");
 const dialog = @import("dialog.zig");
 const messages = @import("messages.zig");
 const command_menu = @import("command_menu.zig");
-const version = @import("version.zig");
+const app_version = @import("version.zig");
 const search_bar = @import("search_bar.zig");
 const search_input = @import("search_input.zig");
 const shell_validate = @import("shell_validate.zig");
@@ -1274,7 +1274,7 @@ pub const App = struct {
             },
             .keyboard_shortcuts => if (self.resolveRunAction(.open_shortcuts)) {
                 self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, version.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
             },
             .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt, &self.menu_hints),
         }
@@ -1910,7 +1910,7 @@ pub const App = struct {
                     // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
                     .open_shortcuts => {
                         self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.rt, self.allocator, version.keyboard_shortcuts_url);
+                        system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
                         return true;
                     },
                     .switch_tab => |index| {

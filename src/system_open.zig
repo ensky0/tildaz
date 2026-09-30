@@ -328,8 +328,8 @@ test "#682 — 파일 경로는 URL 이 아니다 (메모장 fallback 이 그대
 
 test "#682 — 그 갈래를 타는 실제 값: 단축키 문서 URL 과 config 경로" {
     // 두 값이 같은 함수에 들어가면서 서로 다른 갈래를 타야 한다는 것이 이 수정의 전부다.
-    const version = @import("version.zig");
-    try std.testing.expect(hasUriScheme(version.keyboard_shortcuts_url));
+    const app_version = @import("version.zig");
+    try std.testing.expect(hasUriScheme(app_version.keyboard_shortcuts_url));
     // 그 URL 의 끝 조각은 `.md` 라, scheme 판정이 없으면 확장자 조회로 갔다.
-    try std.testing.expectEqualStrings(".md", extensionOf(version.keyboard_shortcuts_url));
+    try std.testing.expectEqualStrings(".md", extensionOf(app_version.keyboard_shortcuts_url));
 }

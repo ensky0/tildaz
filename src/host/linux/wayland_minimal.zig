@@ -28,7 +28,6 @@ const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
-// `version` 은 Wayland protocol 버전 지역 변수가 여럿이라 이름을 가른다.
 const app_version = @import("../../version.zig");
 const search_bar = @import("../../search_bar.zig");
 const search_input = @import("../../search_input.zig");
@@ -453,34 +452,34 @@ const Capabilities = struct {
     /// 버그가 아니다 — 다만 KWin · Hyprland · COSMIC 셋은 자동으로 준다). 그래서 sway
     /// 에서는 layer-shell 을 **아예 못 본 것으로 두고**, GNOME · Cinnamon 이 이미 쓰는
     /// xdg_toplevel fallback 경로로 보낸 뒤 배치 · 토글을 i3 IPC 로 한다.
-    fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32, skip_layer_shell: bool) void {
+    fn record(self: *Capabilities, name: u32, interface: []const u8, advertised_version: u32, skip_layer_shell: bool) void {
         if (skip_layer_shell and std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) return;
         if (std.mem.eql(u8, interface, "wl_compositor")) {
-            self.compositor = .{ .name = name, .version = version };
+            self.compositor = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_shm")) {
-            self.shm = .{ .name = name, .version = version };
+            self.shm = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "xdg_wm_base")) {
-            self.xdg_wm_base = .{ .name = name, .version = version };
+            self.xdg_wm_base = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_seat")) {
-            self.seat = .{ .name = name, .version = version };
+            self.seat = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) {
-            self.layer_shell = .{ .name = name, .version = version };
+            self.layer_shell = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_text_input_manager_v3")) {
-            self.text_input_v3 = .{ .name = name, .version = version };
+            self.text_input_v3 = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
-            self.data_device_manager = .{ .name = name, .version = version };
+            self.data_device_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_viewporter")) {
-            self.viewporter = .{ .name = name, .version = version };
+            self.viewporter = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
-            self.fractional_scale_manager = .{ .name = name, .version = version };
+            self.fractional_scale_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_cursor_shape_manager_v1")) {
-            self.cursor_shape_manager = .{ .name = name, .version = version };
+            self.cursor_shape_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "xdg_activation_v1")) {
-            self.xdg_activation = .{ .name = name, .version = version };
+            self.xdg_activation = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_keyboard_shortcuts_inhibit_manager_v1")) {
-            self.keyboard_shortcuts_inhibit = .{ .name = name, .version = version };
+            self.keyboard_shortcuts_inhibit = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_linux_dmabuf_v1")) {
-            self.linux_dmabuf = .{ .name = name, .version = version };
+            self.linux_dmabuf = .{ .name = name, .version = advertised_version };
         }
     }
 };
@@ -2255,15 +2254,15 @@ const Client = struct {
         // 그 대신 tranche 가 **선호 내림차순**으로 오고 scanout 힌트가 붙는다 —
         // v3 의 평면 목록에는 순서 정의가 없어서 우리가 임의로 골라야 했다.
         if (self.caps.linux_dmabuf.name != 0) {
-            const version = @min(self.caps.linux_dmabuf.version, 4);
+            const bind_version = @min(self.caps.linux_dmabuf.version, 4);
             self.linux_dmabuf_id = self.allocId();
             try self.bind(
                 self.caps.linux_dmabuf.name,
                 "zwp_linux_dmabuf_v1",
-                version,
+                bind_version,
                 self.linux_dmabuf_id,
             );
-            if (version >= 4) {
+            if (bind_version >= 4) {
                 // zwp_linux_dmabuf_v1.get_default_feedback (opcode 2, since v4).
                 self.dmabuf_feedback_id = self.allocId();
                 try self.sendNewId(self.linux_dmabuf_id, 2, self.dmabuf_feedback_id);
@@ -8845,8 +8844,8 @@ const Client = struct {
         const name = readU32(payload[0..4]);
         var p = Parser{ .buf = payload[4..] };
         const interface = try p.readString();
-        const version = try p.readU32();
-        self.caps.record(name, interface, version, self.is_sway);
+        const advertised_version = try p.readU32();
+        self.caps.record(name, interface, advertised_version, self.is_sway);
         // #241/#295 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch
         // 안에서 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output
         // re-home 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
@@ -8860,7 +8859,7 @@ const Client = struct {
                 log.appendLine("wayland", "wl_output name={} ignored — exceeds {} tracked outputs (#295)", .{ name, max_tracked_outputs });
                 return;
             };
-            if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = version };
+            if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = advertised_version };
             if (self.globals_bound and slot.object_id == 0) {
                 slot.object_id = self.allocId();
                 self.bind(slot.global_name, "wl_output", @min(slot.version, 2), slot.object_id) catch |err| {
@@ -11011,11 +11010,11 @@ const Client = struct {
         );
     }
 
-    fn bind(self: *Client, name: u32, interface: []const u8, version: u32, new_id: u32) !void {
+    fn bind(self: *Client, name: u32, interface: []const u8, bind_version: u32, new_id: u32) !void {
         var msg = Msg.init(registry_id, 0);
         try msg.putU32(name);
         try msg.putString(interface);
-        try msg.putU32(version);
+        try msg.putU32(bind_version);
         try msg.putU32(new_id);
         try msg.send(self.wayland_fd);
     }

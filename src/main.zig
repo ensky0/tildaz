@@ -18,7 +18,7 @@ const paths = @import("paths.zig");
 const run_options = @import("run_options.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const shortcut_sync = @import("shortcut_sync.zig");
-const version = @import("version.zig");
+const app_version = @import("version.zig");
 
 /// `std.log` 호출 (ghostty-vt 의 `unimplemented mode` 등) 을 우리 통합 로그로
 /// redirect — stdout/stderr 안 찍힘. macOS 는 `~/Library/Logs/tildaz_N.log`,
@@ -118,10 +118,10 @@ pub fn main(init: std.process.Init) void {
     }
     if (show_version) {
         var buf: [256]u8 = undefined;
-        // 버전 문자열은 `version.string` 하나에서 온다 — About 다이얼로그 · 로그의
+        // 버전 문자열은 `app_version.string` 하나에서 온다 — About 다이얼로그 · 로그의
         // `[boot]` 줄과 같은 값이라야 사용자가 어디서 읽어 오든 같은 것을 말한다.
-        const line = std.fmt.bufPrint(&buf, messages.version_line_format, .{version.string}) catch
-            version.string;
+        const line = std.fmt.bufPrint(&buf, messages.version_line_format, .{app_version.string}) catch
+            app_version.string;
         console.outLine(rt.io, line);
         std.process.exit(0);
     }
