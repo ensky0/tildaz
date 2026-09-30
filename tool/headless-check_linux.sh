@@ -13,7 +13,8 @@
 #   tool/headless-check_linux.sh launcher-fatal gnome|cinnamon   # A2 — nested GNOME / Cinnamon 의 xdg_toplevel fatal 다이얼로그 (#577)
 #   tool/headless-check_linux.sh down                # 앱 · vkbd · sway 정리
 #
-# 환경변수: TILDAZ (기본 zig-out/bin/tildaz) · TZHL_WORK (작업 디렉터리 · 기본 ${TMPDIR:-/tmp}/tildaz-headless).
+# 환경변수: TILDAZ (기본 zig-out/bin/tildaz) · TZHL_WORK (작업 디렉터리 · 기본 ${TMPDIR:-/tmp}/tildaz-headless)
+#           · TZHL_APP (config · state 디렉터리 이름 · 기본 tildaz-dev — 릴리즈 판 (`-Drelease=true`) 을 잴 때만 tildaz).
 # 결과는 stdout + $TZHL_WORK/<회차>/ (캡처 · 파일 · 로그). 판정 줄은 `RESULT <회차>: …` 로 시작한다.
 set -u
 
@@ -24,9 +25,11 @@ WORK=${TZHL_WORK:-${TMPDIR:-/tmp}/tildaz-headless}
 R=/run/user/$(id -u)/tzhl
 FIFO=$R/vkbd.fifo
 XDG=$WORK/xdg
-LOG=$XDG/state/tildaz-dev/tildaz_0.log
-SLOG=$XDG/state/tildaz-dev/tildaz_stress.log
-CFG=$XDG/config/tildaz/config_0.toml
+# #654 — dev 판과 릴리즈 판은 config · state 디렉터리가 갈린다. 기본 빌드는 dev 다.
+APP=${TZHL_APP:-tildaz-dev}
+LOG=$XDG/state/$APP/tildaz_0.log
+SLOG=$XDG/state/$APP/tildaz_stress.log
+CFG=$XDG/config/$APP/config_0.toml
 
 die() { echo "$*" >&2; exit 1; }
 [ -x "$TILDAZ" ] || die "빌드가 없다: $TILDAZ  (zig build -Doptimize=ReleaseFast -Dsimd=true)"
@@ -60,9 +63,11 @@ focus_probe() {   # 가상 키보드가 앱에 닿는지 — 파일이 생겨야
 }
 
 cmd_up() {
-    mkdir -m 700 -p $R; mkdir -p $WORK $XDG/config/tildaz $XDG/state
+    mkdir -m 700 -p $R; mkdir -p $WORK $XDG/config/$APP $XDG/state
     [ -f "$CFG" ] || {
-        src=${XDG_CONFIG_HOME:-$HOME/.config}/tildaz/config_0.toml
+        # 같은 판의 사용자 config 를 먼저, 없으면 릴리즈 config 를 복사한다.
+        src=${XDG_CONFIG_HOME:-$HOME/.config}/$APP/config_0.toml
+        [ -f "$src" ] || src=${XDG_CONFIG_HOME:-$HOME/.config}/tildaz/config_0.toml
         [ -f "$src" ] || die "복사할 config_0.toml 이 없다: $src"
         sed 's|^auto_start  *= .*|auto_start       = false|' "$src" > "$CFG"
         echo "config: $CFG (auto_start=false · 나머지는 사용자 config_0 그대로)"
@@ -189,7 +194,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
     kill_tz
     # 빈 config 홈 — 앱이 이 회차에 config_0.toml 을 만들지만, 그 회차의 **메모리 config** 는 기본값 경로다.
     export XDG_CONFIG_HOME=$OUT/xdg/config XDG_STATE_HOME=$OUT/xdg/state
-    local LOG0=$OUT/xdg/state/tildaz-dev/tildaz_0.log
+    local LOG0=$OUT/xdg/state/$APP/tildaz_0.log
     TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 4
     kill -0 $WPID 2>/dev/null || die "worker 가 뜨지 않았다 — $LOG0"
     focus_probe
@@ -205,7 +210,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
     wait_file $M2 || true
     grim $OUT/screen.png
     local bindings; bindings=$(grep -oE 'key bindings=[0-9]+' $LOG0 | tail -1)
-    echo "   config: $(ls $OUT/xdg/config/tildaz-dev/ | tr '\n' ' ') · $bindings"
+    echo "   config: $(ls $OUT/xdg/config/$APP/ | tr '\n' ' ') · $bindings"
     # 로그의 `shell exited` 수 = 종료 시점의 탭 수 (보조 증거).
     if [ -f $M2 ]; then
         echo "RESULT first-run: OK — 첫 실행에서 Ctrl+Shift+T 가 새 탭을 열었다"
@@ -218,7 +223,7 @@ cmd_first_run() {   # #620 — config 파일이 없는 **첫 실행**에서 창 
 }
 
 cmd_scale() {
-    env_sway; OUT=$WORK/scale; rm -rf $OUT; mkdir -p $OUT $XDG/state/tildaz-dev
+    env_sway; OUT=$WORK/scale; rm -rf $OUT; mkdir -p $OUT $XDG/state/$APP
     kill_tz
     python3 "$ROOT/tool/clusters.py" bands > $WORK/bands.sh && chmod +x $WORK/bands.sh
     # 논리 높이 H 를 골라 H × scale 의 소수부가 .5 이상인 회차 (내림과 반올림이 갈리는 곳) 와 0 인 대조 회차를 나란히 둔다.
@@ -283,13 +288,13 @@ cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devk
         cinnamon) XCD=X-Cinnamon; COMP=(cinnamon --nested --wayland) ;;
         *) die "launcher-fatal gnome|cinnamon" ;;
     esac
-    OUT=$WORK/launcher-fatal-$de; rm -rf $OUT; mkdir -p $OUT $WORK/xdg-$de/config/tildaz $WORK/xdg-$de/state
-    printf 'this is not toml [[[\n' > $WORK/xdg-$de/config/tildaz/config_9.toml      # launcher 단독 실패 (#577)
+    OUT=$WORK/launcher-fatal-$de; rm -rf $OUT; mkdir -p $OUT $WORK/xdg-$de/config/$APP $WORK/xdg-$de/state
+    printf 'this is not toml [[[\n' > $WORK/xdg-$de/config/$APP/config_9.toml      # launcher 단독 실패 (#577)
     # spectacle 은 사용자 세션 버스로 KWin 과 말하므로 dbus-run-session 안에서는 실패 — 바깥에서 타이머로 찍는다.
     # (전체 화면이라 사용자의 다른 창이 담긴다 — 이슈에는 nested 창만 crop. mutter devkit 뷰어는 검게 나올 수 있다 — 2026-09-03 실측.)
     ( sleep 14; spectacle -b -n -f -o $OUT/full.png >/dev/null 2>&1 && echo "spectacle: $OUT/full.png" ) &
     env -u SWAYSOCK -u HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=$XCD \
-        TZ_BIN="$TILDAZ" TZ_CFG=$WORK/xdg-$de/config TZ_STATE=$WORK/xdg-$de/state \
+        TZ_BIN="$TILDAZ" TZ_APP=$APP TZ_CFG=$WORK/xdg-$de/config TZ_STATE=$WORK/xdg-$de/state \
         dbus-run-session -- bash -c '
         set -u
         OUT=$1; WD=$2; DE=$3; shift 3
@@ -305,7 +310,7 @@ cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devk
         echo "compositor pid=$CPID · WAYLAND_DISPLAY=$WD"
         WAYLAND_DISPLAY=$WD XDG_CONFIG_HOME=$TZ_CFG XDG_STATE_HOME=$TZ_STATE TILDAZ_VERBOSE=1 "$TZ_BIN" >$OUT/launcher.out 2>&1 &
         LPID=$!; sleep 6
-        LOG=$TZ_STATE/tildaz/tildaz_0.log
+        LOG=$TZ_STATE/$TZ_APP/tildaz_0.log
         if kill -0 $LPID 2>/dev/null && grep -q "\[dialog\] configured logical=" $LOG; then
             echo "RESULT launcher-fatal $DE: OK — $(grep -E "layer_shell=(true|false)" $LOG | sed -E "s/.*(layer_shell=[a-z]+).*/\1/" | tail -1) · $(grep "\[dialog\] configured" $LOG | tail -1 | sed -E "s/.*(logical=[0-9x]+ physical=[0-9x]+).*/\1/")"
         else

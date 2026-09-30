@@ -131,7 +131,7 @@ cmd_down() {
     [ -n "${SWAYSOCK:-}" ] && swaymsg exit >/dev/null 2>&1
     sleep 1; rm -rf $R
     echo "남은 tildaz: $(pgrep -x tildaz | tr '\n' ' ')"
-    echo "config_9.toml: $([ -f $XDG/config/tildaz/config_9.toml ] && echo '⚠️ 생겼다' || echo '없음 (-e 회차라 정상)')"
+    echo "config_9.toml: $([ -f $XDG/config/tildaz-dev/config_9.toml ] && echo '⚠️ 생겼다' || echo '없음 (-e 회차라 정상)')"
 }
 
 # ── 회차 공통 ────────────────────────────────────────────────────────────────
