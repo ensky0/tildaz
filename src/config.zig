@@ -1579,7 +1579,9 @@ pub const Defaults = struct {
     /// 업그레이드로 그것을 잃지 않게 한다. Linux · Windows 에서는 읽히지 않는다.
     pub const macos_option_as_alt: []const u8 = "none";
     pub const theme: []const u8 = "Tilda";
-    pub const auto_start: bool = true;
+    /// #683 — dev 판은 끈다. 한 번 띄운 dev 판이 다음 로그인부터 릴리즈와 함께 뜨지 않게.
+    /// 이미 있는 config 는 적힌 값을 따른다.
+    pub const auto_start: bool = !app_id.is_dev;
     pub const hidden_start: bool = false;
     /// 100,000 은 다른 터미널의 10~100 배였다 (#425 조사 — 2 위 alacritty · GNOME Terminal
     /// 이 10,000 이고 중앙값은 1,000~2,000, 우리가 자리를 물려받은 Tilda 는 5,000). 그 값이
@@ -2706,6 +2708,14 @@ pub fn commandMenuHints(bindings: []const KeyBinding, toggle_hotkey: []const u8)
     }
     hints.setFullscreenWorkarea(firstBindingDisplay(&buf, bindings, .fullscreen_workarea));
     return hints;
+}
+
+test "#683 — dev 판은 새 config 의 auto_start 기본값이 false 다" {
+    try std.testing.expectEqual(!app_id.is_dev, Defaults.auto_start);
+    const text = try defaultConfigToml(std.testing.allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer std.testing.allocator.free(text);
+    const want = if (app_id.is_dev) "auto_start       = false" else "auto_start       = true";
+    try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
 }
 
 test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은 예전 고정 글자와 같다" {
@@ -4422,7 +4432,9 @@ test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse �
     // `v.boolean` 으로 읽다가 **터진다** — 이 테스트가 그 자리를 지킨다.
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
-    const broken = try replaceFirst(allocator, full, "auto_start       = true", "auto_start       = \"yes\"");
+    // #683 — 기본값이 빌드 종류마다 달라서 (dev `false`) 양식에 실제로 들어간 줄을 찾는다.
+    const default_line = if (Defaults.auto_start) "auto_start       = true" else "auto_start       = false";
+    const broken = try replaceFirst(allocator, full, default_line, "auto_start       = \"yes\"");
     defer allocator.free(broken);
 
     const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
