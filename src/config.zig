@@ -26,6 +26,7 @@ const system_open = @import("system_open.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
+const command_menu = @import("command_menu.zig");
 const input_policy = @import("input_policy.zig");
 const pane_layout = @import("pane_layout.zig");
 /// #496 — host 가 key event 의 물리 위치를 넘길 때 쓴다 (`lookupAction` 의 3 번째
@@ -2612,7 +2613,186 @@ fn isDigitBinding(h: Hotkey) bool {
 pub const KeyBinding = struct {
     hotkey: Hotkey,
     action: KeyAction,
+    /// #682 — 사용자가 적은 형태 그대로 (수식키 + 키 토큰). 명령 메뉴 글자를 만드는 데
+    /// 쓴다 — platform 값 (`keysym` · `vkey` · `keycode`) 에서 되짚으면 `/` · `[` · 방향키처럼
+    /// 이름표에 없는 키가 빠진다. 테스트가 직접 만든 binding 은 null 이다.
+    parsed: ?ParsedHotkey = null,
 };
+
+/// #682 — binding 하나의 메뉴 표기. 규칙:
+/// - 수식키 순서 — macOS 는 Apple HIG 순 (`Control` `Option` `Shift` `Cmd`),
+///   Linux · Windows 는 `Ctrl` `Shift` `Alt` `Super` (KEYBINDINGS.md 표기와 같다).
+/// - 글자는 대문자, `return` 은 `Enter`, 방향키는 기호 (`←`) — 두 방향을 한 줄에 담아야
+///   해서 폭이 빠듯하고, 키캡 모양 그대로라 빨리 읽힌다.
+/// - 키만 적는다. 마우스 경로 (`Drag /`) 는 붙이지 않는다 (2026-09-16 사용자 결정).
+pub fn bindingDisplay(buf: []u8, parsed: ParsedHotkey, macos: bool) []const u8 {
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
+    const Part = struct { on: bool, text: []const u8 };
+    const parts = if (macos)
+        [_]Part{
+            .{ .on = parsed.ctrl, .text = "Control+" }, .{ .on = parsed.alt, .text = "Option+" },
+            .{ .on = parsed.shift, .text = "Shift+" },  .{ .on = parsed.super, .text = "Cmd+" },
+        }
+    else
+        [_]Part{
+            .{ .on = parsed.ctrl, .text = "Ctrl+" }, .{ .on = parsed.shift, .text = "Shift+" },
+            .{ .on = parsed.alt, .text = "Alt+" },   .{ .on = parsed.super, .text = "Super+" },
+        };
+    for (parts) |part| {
+        if (part.on) w.writeAll(part.text) catch return "";
+    }
+    switch (parsed.key) {
+        .char => |c| w.writeByte(std.ascii.toUpper(c)) catch return "",
+        .named => |n| w.writeAll(switch (n) {
+            .f1 => "F1",
+            .f2 => "F2",
+            .f3 => "F3",
+            .f4 => "F4",
+            .f5 => "F5",
+            .f6 => "F6",
+            .f7 => "F7",
+            .f8 => "F8",
+            .f9 => "F9",
+            .f10 => "F10",
+            .f11 => "F11",
+            .f12 => "F12",
+            .space => "Space",
+            .grave => "`",
+            .tab => "Tab",
+            .escape => "Esc",
+            .@"return" => "Enter",
+            .page_up => "PgUp",
+            .page_down => "PgDn",
+            .arrow_left => "←",
+            .arrow_right => "→",
+            .arrow_up => "↑",
+            .arrow_down => "↓",
+            .bracket_left => "[",
+            .bracket_right => "]",
+            .slash => "/",
+        }) catch return "",
+        // 위치 표기는 사용자가 적은 이름 그대로 (`[KeyW]`) — 무엇을 눌러야 하는지가
+        // layout 에 달려 있어 글자 하나로 줄이면 틀린 안내가 될 수 있다.
+        .code => |code| w.print("[{s}]", .{physical_key.name(code)}) catch return "",
+    }
+    return w.buffered();
+}
+
+/// #682 — 명령 메뉴의 단축키 글자를 **실제 바인딩에서** 채운다. 액션에 binding 이 여럿이면
+/// 첫 것 (config 에 먼저 적은 것 — SPEC §7.3 의 "먼저 나온 것이 이긴다" 와 같은 순서).
+/// 없으면 빈칸이다 — 없는 단축키를 안내하지 않는다.
+pub fn commandMenuHints(bindings: []const KeyBinding, toggle_hotkey: []const u8) command_menu.Hints {
+    var hints: command_menu.Hints = .{};
+    var buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    for (std.enums.values(command_menu.Command)) |command| {
+        const text: []const u8 = switch (command) {
+            .toggle_visibility => toggle_hotkey,
+            .new_tab => firstBindingDisplay(&buf, bindings, .new_tab),
+            // 메뉴 문구가 "Split Left / Right" 라 두 액션을 한 칸에 담는다.
+            .split_right => pairBindingDisplay(&buf, bindings, .split_left, .split_right),
+            .split_down => pairBindingDisplay(&buf, bindings, .split_up, .split_down),
+            .close_active_tab => firstBindingDisplay(&buf, bindings, .close_tab),
+            .copy => firstBindingDisplay(&buf, bindings, .copy),
+            .paste => firstBindingDisplay(&buf, bindings, .paste),
+            .find => firstBindingDisplay(&buf, bindings, .find),
+            .fullscreen => firstBindingDisplay(&buf, bindings, .fullscreen),
+            .open_config => firstBindingDisplay(&buf, bindings, .open_config),
+            .open_log => firstBindingDisplay(&buf, bindings, .open_log),
+            .keyboard_shortcuts => firstBindingDisplay(&buf, bindings, .open_shortcuts),
+            .about => firstBindingDisplay(&buf, bindings, .show_about),
+        };
+        hints.setCommand(command, text);
+    }
+    hints.setFullscreenWorkarea(firstBindingDisplay(&buf, bindings, .fullscreen_workarea));
+    return hints;
+}
+
+test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은 예전 고정 글자와 같다" {
+    var c: Config = undefined;
+    Config.fillDefaultKeyBindings(&c);
+    const defaults = c.key_bindings[0..c.key_binding_count];
+    const hints = commandMenuHints(defaults, "F1");
+    const E = struct { command: command_menu.Command, mac: []const u8, pc: []const u8 };
+    // 왼쪽 값은 #682 이전 `messages.shortcut_*` 상수다 — 겉보기가 바뀌지 않았음을 고정한다.
+    const expected = [_]E{
+        .{ .command = .toggle_visibility, .mac = "F1", .pc = "F1" },
+        .{ .command = .new_tab, .mac = "Cmd+T", .pc = "Ctrl+Shift+T" },
+        .{ .command = .split_right, .mac = "Option+Cmd+←/→", .pc = "Ctrl+Shift+←/→" },
+        .{ .command = .split_down, .mac = "Option+Cmd+↑/↓", .pc = "Ctrl+Shift+↑/↓" },
+        .{ .command = .close_active_tab, .mac = "Cmd+W", .pc = "Ctrl+Shift+W" },
+        .{ .command = .copy, .mac = "Cmd+C", .pc = "Ctrl+Shift+C" },
+        .{ .command = .paste, .mac = "Cmd+V", .pc = "Ctrl+Shift+V" },
+        .{ .command = .find, .mac = "Cmd+F", .pc = "Ctrl+Shift+F" },
+        .{ .command = .fullscreen, .mac = "Cmd+Enter", .pc = "Alt+Enter" },
+        .{ .command = .open_config, .mac = "Shift+Cmd+P", .pc = "Ctrl+Shift+P" },
+        .{ .command = .open_log, .mac = "Shift+Cmd+L", .pc = "Ctrl+Shift+L" },
+        // 새로 채운 두 칸.
+        .{ .command = .keyboard_shortcuts, .mac = "Shift+Cmd+/", .pc = "Ctrl+Shift+/" },
+        .{ .command = .about, .mac = "Shift+Cmd+I", .pc = "Ctrl+Shift+I" },
+    };
+    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".fields.len, expected.len);
+    for (expected) |e| {
+        try std.testing.expectEqualStrings(if (is_macos) e.mac else e.pc, hints.get(e.command, false));
+    }
+    try std.testing.expectEqualStrings(if (is_macos) "Shift+Cmd+Enter" else "Shift+Alt+Enter", hints.get(.fullscreen, true));
+
+    // 사용자가 바꾸면 메뉴도 따라간다. 먼저 적은 binding 이 표시된다.
+    var buf: [4]KeyBinding = undefined;
+    const texts = [_][]const u8{ "ctrl+alt+a", "ctrl+alt+b" };
+    for (texts, 0..) |t, i| {
+        const parsed = parseHotkeyString(t, .app_binding).ok;
+        buf[i] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = .show_about, .parsed = parsed };
+    }
+    const custom = commandMenuHints(buf[0..2], "F1");
+    try std.testing.expectEqualStrings(if (is_macos) "Control+Option+A" else "Ctrl+Alt+A", custom.get(.about, false));
+    // binding 이 없는 항목은 비운다 — 없는 단축키를 안내하지 않는다.
+    try std.testing.expectEqualStrings("", custom.get(.new_tab, false));
+}
+
+test "#682 — 위치 표기는 적은 이름 그대로 · 수식키가 다른 짝은 둘 다 적는다" {
+    const p = parseHotkeyString("ctrl+shift+[KeyW]", .app_binding).ok;
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("Ctrl+Shift+[KeyW]", bindingDisplay(&buf, p, false));
+    var bindings: [2]KeyBinding = undefined;
+    const a = parseHotkeyString("alt+left", .app_binding).ok;
+    const b = parseHotkeyString("ctrl+right", .app_binding).ok;
+    bindings[0] = .{ .hotkey = Hotkey.fromParsed(a), .action = .split_left, .parsed = a };
+    bindings[1] = .{ .hotkey = Hotkey.fromParsed(b), .action = .split_right, .parsed = b };
+    const hints = commandMenuHints(&bindings, "");
+    try std.testing.expectEqualStrings(if (is_macos) "Option+← / Control+→" else "Alt+← / Ctrl+→", hints.get(.split_right, false));
+}
+
+fn firstBindingDisplay(buf: []u8, bindings: []const KeyBinding, action: KeyAction) []const u8 {
+    for (bindings) |b| {
+        if (b.action != action) continue;
+        const parsed = b.parsed orelse continue;
+        return bindingDisplay(buf, parsed, is_macos);
+    }
+    return "";
+}
+
+/// 두 액션을 한 칸에 — 수식키가 같으면 `Option+Cmd+←/→`, 다르면 `A / B`. 한쪽만 있으면 그쪽.
+fn pairBindingDisplay(buf: []u8, bindings: []const KeyBinding, a: KeyAction, b: KeyAction) []const u8 {
+    var a_buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    var b_buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    const a_text = firstBindingDisplay(&a_buf, bindings, a);
+    const b_text = firstBindingDisplay(&b_buf, bindings, b);
+    if (a_text.len == 0) return copyInto(buf, b_text);
+    if (b_text.len == 0) return copyInto(buf, a_text);
+    const a_split = if (std.mem.lastIndexOfScalar(u8, a_text, '+')) |i| i + 1 else 0;
+    const b_split = if (std.mem.lastIndexOfScalar(u8, b_text, '+')) |i| i + 1 else 0;
+    if (std.mem.eql(u8, a_text[0..a_split], b_text[0..b_split])) {
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
+    }
+    return std.fmt.bufPrint(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
+}
+
+fn copyInto(buf: []u8, text: []const u8) []const u8 {
+    if (text.len > buf.len) return "";
+    @memcpy(buf[0..text.len], text);
+    return buf[0..text.len];
+}
 
 /// 액션 25 개 × 대개 1~2 개. 넉넉히 잡아 할당을 없앤다 (`font_families` 와 같은 방식).
 pub const MAX_KEY_BINDINGS = 64;
@@ -2862,7 +3042,7 @@ pub const Config = struct {
                     .ok => |v| v,
                     else => continue,
                 };
-                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action, .parsed = parsed };
                 count += 1;
             }
         }
@@ -3161,7 +3341,7 @@ pub const Config = struct {
             noticeKeyDropped(name, text, messages.config_notice_key_reason_too_many);
             return count;
         }
-        config.key_bindings[count] = .{ .hotkey = hotkey, .action = action };
+        config.key_bindings[count] = .{ .hotkey = hotkey, .action = action, .parsed = parsed };
         return count + 1;
     }
 

@@ -114,28 +114,42 @@ pub fn label(command: Command) []const u8 {
     };
 }
 
-/// `fullscreen_workarea` — 현재 workarea 전체화면 상태인지. 그 상태에서
-/// Toggle Full Screen 이 하는 일은 해제이므로 hint 도 workarea 해제 키
-/// (`Shift+Cmd+Enter` / `Alt+Shift+Enter`) 를 보여준다 (#334 사용자 결정).
-pub fn shortcut(command: Command, macos: bool, toggle_hotkey: []const u8, fullscreen_workarea: bool) []const u8 {
-    return switch (command) {
-        .toggle_visibility => toggle_hotkey,
-        .new_tab => if (macos) messages.shortcut_new_tab_macos else messages.shortcut_new_tab,
-        .split_right => if (macos) messages.shortcut_split_right_macos else messages.shortcut_split_right,
-        .split_down => if (macos) messages.shortcut_split_down_macos else messages.shortcut_split_down,
-        .close_active_tab => if (macos) messages.shortcut_close_tab_macos else messages.shortcut_close_tab,
-        .copy => if (macos) messages.shortcut_copy_macos else messages.shortcut_copy,
-        .paste => if (macos) messages.shortcut_paste_macos else messages.shortcut_paste,
-        .find => if (macos) messages.shortcut_find_macos else messages.shortcut_find,
-        .fullscreen => if (fullscreen_workarea)
-            (if (macos) messages.shortcut_full_screen_workarea_macos else messages.shortcut_full_screen_workarea)
-        else
-            (if (macos) messages.shortcut_full_screen_macos else messages.shortcut_full_screen),
-        .open_config => if (macos) messages.shortcut_open_config_macos else messages.shortcut_open_config,
-        .open_log => if (macos) messages.shortcut_open_log_macos else messages.shortcut_open_log,
-        .keyboard_shortcuts, .about => "",
-    };
-}
+/// #682 — 항목 옆 단축키 글자. **실제 바인딩에서** 만든다 — 사용자가 `[keys]` 를 바꾸면
+/// 메뉴도 따라간다. 채우는 것은 `config.commandMenuHints` 이고 이 모듈은 꺼내기만 한다
+/// (순수 모듈로 남기려고).
+pub const Hints = struct {
+    pub const MAX_LEN = 48;
+    const command_count = @typeInfo(Command).@"enum".fields.len;
+    /// 마지막 칸은 workarea 전체화면 상태의 Toggle Full Screen — 그 상태에서 누를 것은
+    /// 해제 키다 (#334 사용자 결정).
+    const workarea_slot = command_count;
+
+    buf: [command_count + 1][MAX_LEN]u8 = undefined,
+    len: [command_count + 1]u8 = [_]u8{0} ** (command_count + 1),
+
+    pub fn setCommand(self: *Hints, command: Command, text: []const u8) void {
+        self.setSlot(@intFromEnum(command), text);
+    }
+
+    pub fn setFullscreenWorkarea(self: *Hints, text: []const u8) void {
+        self.setSlot(workarea_slot, text);
+    }
+
+    /// 넘치는 글자는 버리지 않고 **통째로 비운다** — 잘린 단축키는 틀린 안내다.
+    fn setSlot(self: *Hints, slot: usize, text: []const u8) void {
+        if (text.len > MAX_LEN) {
+            self.len[slot] = 0;
+            return;
+        }
+        @memcpy(self.buf[slot][0..text.len], text);
+        self.len[slot] = @intCast(text.len);
+    }
+
+    pub fn get(self: *const Hints, command: Command, fullscreen_workarea: bool) []const u8 {
+        const slot = if (command == .fullscreen and fullscreen_workarea) workarea_slot else @intFromEnum(command);
+        return self.buf[slot][0..self.len[slot]];
+    }
+};
 
 pub const Rect = struct { x: f32, y: f32, w: f32, h: f32 };
 

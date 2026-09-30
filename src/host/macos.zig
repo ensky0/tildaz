@@ -5214,7 +5214,11 @@ fn renderFrameTick() void {
         g_tab_hover,
     );
     var hotkey_hint_buf: [64]u8 = undefined;
-    const hotkey_hint = config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey);
+    // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
+    const menu_hints = config.commandMenuHints(
+        g_config.key_bindings[0..g_config.key_binding_count],
+        config.hotkeyDisplay(&hotkey_hint_buf, g_config.hotkey),
+    );
     // #483 5단계 — 활성 탭의 pane 마다 `drawPane` (`TabGroup.layout` 순서 — 최대화면 하나). rect 는
     // 탭바를 뺀 영역을 트리로 나눈 것 (pane 하나면 2단계와 같은 값). scrollbar 폭 · thumb 최소 높이는
     // 이전과 같은 `scaledPxF` 값 (f32).
@@ -5285,7 +5289,7 @@ fn renderFrameTick() void {
             .first_visible = g_command_menu_first,
             .fullscreen_workarea = g_fullscreen_mode == .workarea,
         },
-        hotkey_hint,
+        &menu_hints,
         // #646 — 검색바는 활성 pane 의 상태를 비춘다.
         search_bar.uiFrom(
             &group.activeTab().search,

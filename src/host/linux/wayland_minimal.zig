@@ -4921,7 +4921,7 @@ const Client = struct {
             const theme = self.config.theme orelse fallback_theme;
 
             var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-            var hotkey_hint_buf: [64]u8 = undefined;
+            var menu_hints: command_menu.Hints = undefined;
             var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
             var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
             var frame: software_terminal.GlFrame = .{
@@ -4938,7 +4938,7 @@ const Client = struct {
                         buffer.width,
                         buffer.height,
                         &titles_storage,
-                        &hotkey_hint_buf,
+                        &menu_hints,
                         &pane_storage,
                         &sep_storage,
                     ));
@@ -5119,7 +5119,7 @@ const Client = struct {
     /// 경로(`paintIntoBuffer`)가 같은 함수를 쓴다** — 입력이 갈리면 그리기 목록을
     /// 공유해도 소용이 없다.
     ///
-    /// `titles_storage` / `hotkey_buf` 는 호출처 stack 이고 반환값이 그 안을
+    /// `titles_storage` / `menu_hints` 는 호출처 stack 이고 반환값이 그 안을
     /// 가리킨다 — paint 가 끝날 때까지 살아 있어야 한다.
     fn frameInputs(
         self: *Client,
@@ -5127,7 +5127,7 @@ const Client = struct {
         width: i32,
         height: i32,
         titles_storage: *[session_core.MAX_TABS][]const u8,
-        hotkey_buf: *[64]u8,
+        menu_hints: *command_menu.Hints,
         /// #483 — pane 목록과 분할선의 저장 공간. `FrameInputs` 가 이 안을 가리킨다.
         pane_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw,
         sep_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator,
@@ -5264,7 +5264,15 @@ const Client = struct {
                 .first_visible = self.command_menu_first,
                 .fullscreen_workarea = self.fullscreen_mode == .avoid,
             },
-            .toggle_hotkey = config_mod.hotkeyDisplay(hotkey_buf, self.config.hotkey),
+            // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
+            .menu_hints = blk: {
+                var hotkey_buf: [64]u8 = undefined;
+                menu_hints.* = config_mod.commandMenuHints(
+                    self.config.key_bindings[0..self.config.key_binding_count],
+                    config_mod.hotkeyDisplay(&hotkey_buf, self.config.hotkey),
+                );
+                break :blk menu_hints;
+            },
             // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
@@ -5289,10 +5297,10 @@ const Client = struct {
                 // Titles slice / hotkey 힌트는 **호출처 stack** 에 둔다 —
                 // `FrameInputs` 가 그 안을 가리키므로 paint 동안만 valid 하다.
                 var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-                var hotkey_hint_buf: [64]u8 = undefined;
+                var menu_hints: command_menu.Hints = undefined;
                 var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
                 var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
-                const in = self.frameInputs(session, width, height, &titles_storage, &hotkey_hint_buf, &pane_storage, &sep_storage);
+                const in = self.frameInputs(session, width, height, &titles_storage, &menu_hints, &pane_storage, &sep_storage);
                 self.renderer.paint(self.allocator, memory, stride, in);
                 return;
             }

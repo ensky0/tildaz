@@ -1964,13 +1964,13 @@ pub const D3d11Renderer = struct {
         control_layout: TabBarLayout,
         control_hover: tab_layout.Area,
         menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
+        menu_hints: *const command_menu.Hints,
         search_ui: search_bar.Ui,
     ) void {
         if (tab_bar_h == 0) self.drawSingleControlStrip(control_layout, control_hover);
         // #646 — 검색바는 터미널 위 · 메뉴 아래다.
         if (search_ui.open) self.drawSearchBar(search_ui);
-        if (menu_ui.open) self.drawCommandMenu(vp_w, @intCast(self.vp_height), menu_ui, toggle_hotkey);
+        if (menu_ui.open) self.drawCommandMenu(vp_w, @intCast(self.vp_height), menu_ui, menu_hints);
 
         // `perf.render` 는 첫 `drawPane` 의 시작부터 여기까지 — 이전 `renderTerminal` 과 같은 구간을
         // 프레임에 한 번 잰다 (`addTimed` 가 호출 수도 세므로 pane 마다 재면 지표가 갈린다).
@@ -2190,7 +2190,7 @@ pub const D3d11Renderer = struct {
         if (glyph_n > 0) self.drawTextInstancesWithAtlas(glyphs[0..glyph_n], &self.tab_atlas);
     }
 
-    fn drawCommandMenu(self: *D3d11Renderer, viewport_w: c_int, viewport_h: c_int, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    fn drawCommandMenu(self: *D3d11Renderer, viewport_w: c_int, viewport_h: c_int, ui: command_menu.Ui, menu_hints: *const command_menu.Hints) void {
         const scale = self.pixels_per_dip;
         // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
         // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
@@ -2288,7 +2288,7 @@ pub const D3d11Renderer = struct {
             const ih = item.h * scale;
             const baseline = iy + (ih + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2;
             emit(self, command_menu.label(command), ix + 8 * scale, baseline, self.chrome.menu_label, &glyphs, &glyph_n);
-            const hint = command_menu.shortcut(command, false, toggle_hotkey, ui.fullscreen_workarea);
+            const hint = menu_hints.get(command, ui.fullscreen_workarea);
             if (hint.len > 0) {
                 const hint_w = @as(f32, @floatFromInt(display_width.stringWidth(hint))) * cw;
                 const label_w = @as(f32, @floatFromInt(display_width.stringWidth(command_menu.label(command)))) * cw;

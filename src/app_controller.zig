@@ -109,8 +109,8 @@ pub const App = struct {
     /// 없이는 한 notch 도 안 나간다. 나머지는 보존한다.
     report_wheel_accum: i32 = 0,
     sep_drag: ?SepDrag = null,
-    toggle_hotkey_hint: [64]u8 = [_]u8{0} ** 64,
-    toggle_hotkey_hint_len: usize = 0,
+    /// #682 — 명령 메뉴의 단축키 글자 (실제 바인딩에서 만든 표).
+    menu_hints: command_menu.Hints = .{},
     /// `tab_actions.Host` 인스턴스 — App member (session / override flag) 를
     /// cross-platform helper API 로 노출. `setupHost()` 가 self 의 stable
     /// address 잡힌 후 채움 (콜백이 user_data → *App cast).
@@ -149,9 +149,8 @@ pub const App = struct {
         };
     }
 
-    pub fn setToggleHotkeyHint(self: *App, hint: []const u8) void {
-        self.toggle_hotkey_hint_len = @min(hint.len, self.toggle_hotkey_hint.len);
-        @memcpy(self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len], hint[0..self.toggle_hotkey_hint_len]);
+    pub fn setMenuHints(self: *App, hints: command_menu.Hints) void {
+        self.menu_hints = hints;
     }
 
     fn winHostInvalidate(_: *tab_actions.Host) void {
@@ -909,7 +908,7 @@ pub const App = struct {
                             .first_visible = self.command_menu_first,
                             .fullscreen_workarea = self.window.fullscreen_mode == .workarea,
                         },
-                        self.toggle_hotkey_hint[0..self.toggle_hotkey_hint_len],
+                        &self.menu_hints,
                         // #646 — 검색바는 활성 pane 의 상태를 비춘다.
                         search_bar.uiFrom(
                             &group.activeTab().search,

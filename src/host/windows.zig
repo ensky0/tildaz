@@ -160,7 +160,11 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 등 instance 메서드 호출.
     app.setupHost();
     var hotkey_hint_buf: [64]u8 = undefined;
-    app.setToggleHotkeyHint(config_mod.hotkeyDisplay(&hotkey_hint_buf, config.hotkey));
+    // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
+    app.setMenuHints(config_mod.commandMenuHints(
+        config.key_bindings[0..config.key_binding_count],
+        config_mod.hotkeyDisplay(&hotkey_hint_buf, config.hotkey),
+    ));
 
     // Set up window
     app.window.userdata = &app;
