@@ -159,6 +159,10 @@ const HotkeyNamedKey = enum {
     arrow_down,
     bracket_left,
     bracket_right,
+    /// #682 — `/`. `open_shortcuts` 기본값 (`shift+cmd+/` / `ctrl+shift+/`) 이 쓴다.
+    /// `[` 와 같은 대접이다 — Shift 를 적으면 기존 규칙대로 무시프트 값으로도 맞는다
+    /// (`lookupAction` 의 `try_unshifted`). `[keys]` 에서만 받는다.
+    slash,
 };
 
 const HotkeyKeyToken = union(enum) {
@@ -255,6 +259,10 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // key 토큰이 아예 없는 경우 (예: `"ctrl"` 하나만) 도 "모르는 key" 로 묶는다 —
     // 사용자가 받아야 하는 안내가 같다 (받는 key 목록).
     const resolved = key orelse return .unknown_key;
+    // #682 — `/` 는 `[keys]` 전용이다. 전역 hotkey 는 데스크톱마다 등록 이름이 따로
+    // 필요한데 (`linuxKeysymName` 등) 그 표를 확인하지 않았다. 조용히 미등록으로 두지
+    // 않고 모르는 키로 거부한다 (#208).
+    if (scope == .global_hotkey and resolved == .named and resolved.named == .slash) return .unknown_key;
     // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
     // 사용자가 config 를 몇 번이고 다시 읽게 된다 (#208 이 막으려던 것).
     if (is_macos and resolved == .code and !physical_key.availableOnThisPlatform(resolved.code)) {
@@ -311,7 +319,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 .escape => false,
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
-                .grave, .bracket_left, .bracket_right => true,
+                .grave, .bracket_left, .bracket_right, .slash => true,
                 // #483 — 방향키는 글자를 내지 않지만 터미널에 escape sequence 를 보낸다 —
                 // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
                 // `else => true` 와 같은 취급이다.
@@ -398,6 +406,7 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         if (c == '`') return .{ .named = .grave };
         if (c == '[') return .{ .named = .bracket_left };
         if (c == ']') return .{ .named = .bracket_right };
+        if (c == '/') return .{ .named = .slash };
     }
     return null;
 }
@@ -567,6 +576,8 @@ const LinuxHotkey = struct {
                 // `wayland_minimal.xkb_key_bracketleft` / `..right` 와 같은 값.
                 .bracket_left => 0x5b,
                 .bracket_right => 0x5d,
+                // #682 — `XKB_KEY_slash`. `⇧+/` 는 `question` 으로 오고 무시프트 `slash` 로 맞는다.
+                .slash => 0x2f,
             },
         };
     }
@@ -941,7 +952,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         .{ .named = .page_down, .code = .page_down },         .{ .named = .arrow_left, .code = .arrow_left },
         .{ .named = .arrow_right, .code = .arrow_right },     .{ .named = .arrow_up, .code = .arrow_up },
         .{ .named = .arrow_down, .code = .arrow_down },       .{ .named = .bracket_left, .code = .bracket_left },
-        .{ .named = .bracket_right, .code = .bracket_right },
+        .{ .named = .bracket_right, .code = .bracket_right }, .{ .named = .slash, .code = .slash },
     };
     for (pairs) |pair| {
         try std.testing.expectEqual(
@@ -1075,7 +1086,7 @@ test "#493 default [keys] has no conflicting bindings" {
     // 액션 39 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
     // `split_left` · `split_up` + #646 의 `find` 포함) + prev_tab / next_tab 이
     // 2 개씩 = 41.
-    try std.testing.expectEqual(@as(usize, 41), count);
+    try std.testing.expectEqual(@as(usize, 42), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1278,6 +1289,8 @@ const WindowsHotkey = struct {
                 // `VK_OEM_4` / `VK_OEM_6`. `window.zig` 의 prev/next tab 이 쓰는 값.
                 .bracket_left => 0xDB,
                 .bracket_right => 0xDD,
+                // #682 — `VK_OEM_2`. `[` 의 `VK_OEM_4` 처럼 US 자리 값이다.
+                .slash => 0xBF,
             },
         };
     }
@@ -1385,6 +1398,8 @@ const MacHotkey = struct {
                 .grave => 0x60,
                 .bracket_left => 0x5B,
                 .bracket_right => 0x5D,
+                // #682 — `⇧⌘/` 는 라벨 `?` · 무시프트 `/` 로 와서 후자로 맞는다.
+                .slash => 0x2F,
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
@@ -1436,6 +1451,8 @@ const MacHotkey = struct {
                 // prev/next tab 이 쓰는 값.
                 .bracket_left => 0x21,
                 .bracket_right => 0x1E,
+                // #682 — `kVK_ANSI_Slash`.
+                .slash => 0x2C,
             },
             // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
             .char => |c| switch (c) {
@@ -1927,6 +1944,9 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .show_about => &.{"shift+cmd+i"},
         .open_config => &.{"shift+cmd+p"},
         .open_log => &.{"shift+cmd+l"},
+        // #682 — `⇧⌘/` (= `⌘?`) 는 macOS 의 Help 자리이고 GNOME HIG · Ptyxis 가 단축키 목록에 쓴다.
+        // `K` 는 iTerm2 · Windows Terminal · WezTerm · Konsole 이 지우기에 써서 뺐다.
+        .open_shortcuts => &.{"shift+cmd+/"},
         .dump_perf => &.{"shift+cmd+f12"},
         // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
         // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
@@ -1981,6 +2001,7 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .show_about => &.{"ctrl+shift+i"},
         .open_config => &.{"ctrl+shift+p"},
         .open_log => &.{"ctrl+shift+l"},
+        .open_shortcuts => &.{"ctrl+shift+/"},
         .dump_perf => &.{"ctrl+shift+f12"},
         // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
         // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
@@ -2053,7 +2074,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         .{ .title = "Search", .actions = &.{.find} },
         .{ .title = "Clipboard", .actions = &.{ .copy, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
-        .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
+        .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .open_shortcuts, .dump_perf } },
     };
     for (groups) |g| {
         if (g.title) |t| {
@@ -2100,6 +2121,9 @@ pub const KeyAction = enum {
     show_about,
     open_config,
     open_log,
+    /// #682 — 단축키 문서 (`KEYBINDINGS.md`) 를 기본 브라우저로 연다. 명령 메뉴의
+    /// `Keyboard Shortcuts` 와 같은 동작이다.
+    open_shortcuts,
     dump_perf,
     // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
     // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
@@ -2283,6 +2307,7 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .show_about => .{ .input = .{ .shortcut = .show_about } },
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
+        .open_shortcuts => .{ .input = .{ .shortcut = .open_shortcuts } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
         .split_left => .{ .input = .{ .shortcut = .split }, .direction = .left },
         .split_right => .{ .input = .{ .shortcut = .split }, .direction = .right },
@@ -2363,6 +2388,7 @@ fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
         0x60 => .backquote,
         0x5b => .bracket_left,
         0x5d => .bracket_right,
+        0x2f => .slash,
         else => null,
     };
 }
@@ -2492,6 +2518,48 @@ test "#483 6단계 — Shift 를 적은 binding 은 무시프트 값으로도 �
         try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keysym = 0x29, .unshifted = '0', .modifiers = sa }, null).?);
         // 넓어지지 않는다: Alt+Shift+1 (`exclam`, 무시프트 `1`) 은 `alt+1` 에 걸리지 않는다 (#493 결정 유지).
         try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x21, .unshifted = '1', .modifiers = sa }, null) == null);
+    }
+}
+
+test "#682 — `/` 는 `[` 와 같은 규칙이다 · `Ctrl+Shift+/` 는 맞고 `Ctrl+/` 는 걸리지 않는다" {
+    var buf: [4]KeyBinding = undefined;
+    var n: usize = 0;
+    const add = struct {
+        fn f(b: []KeyBinding, count: *usize, text: []const u8, action: KeyAction) !void {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            b[count.*] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            count.* += 1;
+        }
+    }.f;
+    // 전역 hotkey 로는 받지 않는다 — 데스크톱 등록 이름을 확인하지 않았다.
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+/", .global_hotkey));
+    // 글자를 내는 키라 modifier 가 필요하다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("/", .app_binding));
+
+    if (is_macos) {
+        try add(&buf, &n, "shift+cmd+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        // US: ⇧⌘/ 는 라벨 `?` · 무시프트 `/` 로 온다.
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .keycode = 0x2C, .label = '?', .unshifted = '/', .modifiers = Hotkey.MOD_SHIFT | Hotkey.MOD_SUPER }, null).?);
+        // ⌘/ 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 0x2C, .label = '/', .unshifted = '/', .modifiers = Hotkey.MOD_SUPER }, null) == null);
+    } else if (is_windows) {
+        try add(&buf, &n, "ctrl+shift+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        const vk_oem_2: u32 = 0xBF;
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .vkey = vk_oem_2, .modifiers = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT }, null).?);
+        // Ctrl+/ (readline undo) — 같은 VK 지만 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .vkey = vk_oem_2, .modifiers = Hotkey.MOD_CTRL }, null) == null);
+    } else {
+        try add(&buf, &n, "ctrl+shift+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        // US: Ctrl+Shift+/ 는 keysym `question` · 무시프트 `slash`.
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .keysym = 0x3f, .unshifted = 0x2f, .modifiers = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT }, null).?);
+        // Ctrl+/ 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x2f, .modifiers = Hotkey.MOD_CTRL }, null) == null);
     }
 }
 

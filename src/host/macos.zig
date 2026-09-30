@@ -1524,7 +1524,12 @@ fn runKeyAction(action: config.KeyAction) bool {
         // 항목과 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키
         // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
         .quit, .show_about, .open_config, .open_log => return false,
-        .toggle_visibility, .open_command_menu, .open_shortcuts => return false,
+        .toggle_visibility, .open_command_menu => return false,
+        // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
+        .open_shortcuts => {
+            yieldTopmostUntilNextShow();
+            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url);
+        },
         // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c 와 같은 배선).
         .split => handleSplit(mapped.direction orelse return false),
         .focus_pane => handleFocusPane(mapped.direction orelse return false),

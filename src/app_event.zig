@@ -44,6 +44,8 @@ pub const Shortcut = union(enum) {
     show_about: void,
     open_config: void,
     open_log: void,
+    /// #682 — 단축키 문서를 연다.
+    open_shortcuts: void,
     switch_tab: usize,
     next_tab: void,
     prev_tab: void,

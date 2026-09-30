@@ -3118,6 +3118,7 @@ pub const Window = struct {
             .show_about => .show_about,
             .open_config => .open_config,
             .open_log => .open_log,
+            .open_shortcuts => .open_shortcuts,
             .copy => .copy,
             .dump_perf => .dump_perf,
             // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 `GetAsyncKeyState`
@@ -3138,7 +3139,7 @@ pub const Window = struct {
             },
             // 이 host 의 키 경로가 내지 않는 것들 — toggle 은 전역 핫키가, menu 는
             // 마우스가 진입점이다.
-            .toggle_visibility, .open_command_menu, .open_shortcuts => return,
+            .toggle_visibility, .open_command_menu => return,
             // #483 4a — 분할 액션. `app_event.Shortcut` 매핑과 배선은 5단계 (Linux 4b 먼저).
             // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
             .split => .{ .split = mapped.direction orelse return },

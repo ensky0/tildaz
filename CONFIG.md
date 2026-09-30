@@ -389,8 +389,8 @@ the equivalent work.
 **By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
 `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
 `Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
-`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
-Case does not matter. Anything else is dropped at startup and named in the
+`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`),
+`/`. Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
 that one entry goes; the other keys you gave the action still work, and an action
 left with nothing falls back to its default binding.
@@ -490,8 +490,8 @@ invalid value falls back to the default hotkey and is named in the dialog):
   `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
   `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
   (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
-  matter. This is the same label set `[keys]` accepts — the two differ in what
-  they allow *without* a modifier, not in which keys they know.
+  matter. This is the label set `[keys]` accepts, minus `/` — otherwise the
+  two differ in what they allow *without* a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same

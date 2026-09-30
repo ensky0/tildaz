@@ -35,6 +35,9 @@ Internal changes belong in neither.
   twice at login, or keeps starting after you turned `auto_start` off, run this once:
   `launchctl bootout gui/$(id -u)/com.tildaz.app 2>/dev/null; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`
   ([#654](https://github.com/ensky0/tildaz/issues/654))
+- New `[keys]` action `open_shortcuts` (`Shift+Cmd+/` / `Ctrl+Shift+/`). Your existing config does not
+  have it yet, so it uses the default and the startup notice lists it once.
+  ([#682](https://github.com/ensky0/tildaz/issues/682))
 
 ## Body candidates
 

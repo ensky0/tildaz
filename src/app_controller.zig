@@ -1686,6 +1686,7 @@ pub const App = struct {
             .show_about => .show_about,
             .open_config => .open_config,
             .open_log => .open_log,
+            .open_shortcuts => .open_shortcuts,
             .switch_tab => .switch_tab,
             .next_tab => .next_tab,
             .prev_tab => .prev_tab,
@@ -1904,6 +1905,12 @@ pub const App = struct {
                         const path = log.filePath() orelse return true;
                         self.window.yieldTopmostUntilNextShow();
                         system_open.openInDefaultApp(self.rt, self.allocator, path);
+                        return true;
+                    },
+                    // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
+                    .open_shortcuts => {
+                        self.window.yieldTopmostUntilNextShow();
+                        system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
                         return true;
                     },
                     .switch_tab => |index| {

@@ -7502,7 +7502,12 @@ const Client = struct {
             .fullscreen_workarea => self.toggleFullscreen(.avoid),
             // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
             // 진입점 (마우스 · 전역 핫키) 이 처리한다.
-            .toggle_visibility, .open_command_menu, .open_shortcuts => {},
+            .toggle_visibility, .open_command_menu => {},
+            // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
+            .open_shortcuts => {
+                self.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
+            },
             // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
             .split => self.handleSplit(direction orelse return),
             .focus_pane => self.handleFocusPane(direction orelse return),
