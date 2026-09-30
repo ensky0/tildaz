@@ -307,9 +307,9 @@ quit      = []
 
 #### The actions
 
-These are the names the file must contain — all of them, since the table is
-strict in both directions: a missing action fails the load, and so does one that
-is not on this list. The generated file writes them in these groups. The *default*
+These are the action names. A missing action uses its default and a name that is
+not on this list is ignored; both are listed in the startup dialog (see the table
+at the top). The generated file writes them in these groups. The *default*
 key for each is per-OS and lives in [KEYBINDINGS.md](KEYBINDINGS.md); repeating it
 here would give it two homes to drift between.
 
