@@ -26,6 +26,7 @@ const system_open = @import("system_open.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
 const physical_key = @import("physical_key.zig");
+const command_menu = @import("command_menu.zig");
 const input_policy = @import("input_policy.zig");
 const pane_layout = @import("pane_layout.zig");
 /// #496 — host 가 key event 의 물리 위치를 넘길 때 쓴다 (`lookupAction` 의 3 번째
@@ -159,6 +160,10 @@ const HotkeyNamedKey = enum {
     arrow_down,
     bracket_left,
     bracket_right,
+    /// #682 — `/`. `open_shortcuts` 기본값 (`shift+cmd+/` / `ctrl+shift+/`) 이 쓴다.
+    /// `[` 와 같은 대접이다 — Shift 를 적으면 기존 규칙대로 무시프트 값으로도 맞는다
+    /// (`lookupAction` 의 `try_unshifted`). `[keys]` 에서만 받는다.
+    slash,
 };
 
 const HotkeyKeyToken = union(enum) {
@@ -255,6 +260,10 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // key 토큰이 아예 없는 경우 (예: `"ctrl"` 하나만) 도 "모르는 key" 로 묶는다 —
     // 사용자가 받아야 하는 안내가 같다 (받는 key 목록).
     const resolved = key orelse return .unknown_key;
+    // #682 — `/` 는 `[keys]` 전용이다. 전역 hotkey 는 데스크톱마다 등록 이름이 따로
+    // 필요한데 (`linuxKeysymName` 등) 그 표를 확인하지 않았다. 조용히 미등록으로 두지
+    // 않고 모르는 키로 거부한다 (#208).
+    if (scope == .global_hotkey and resolved == .named and resolved.named == .slash) return .unknown_key;
     // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
     // 사용자가 config 를 몇 번이고 다시 읽게 된다 (#208 이 막으려던 것).
     if (is_macos and resolved == .code and !physical_key.availableOnThisPlatform(resolved.code)) {
@@ -311,7 +320,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 .escape => false,
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
-                .grave, .bracket_left, .bracket_right => true,
+                .grave, .bracket_left, .bracket_right, .slash => true,
                 // #483 — 방향키는 글자를 내지 않지만 터미널에 escape sequence 를 보낸다 —
                 // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
                 // `else => true` 와 같은 취급이다.
@@ -398,6 +407,7 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         if (c == '`') return .{ .named = .grave };
         if (c == '[') return .{ .named = .bracket_left };
         if (c == ']') return .{ .named = .bracket_right };
+        if (c == '/') return .{ .named = .slash };
     }
     return null;
 }
@@ -567,6 +577,8 @@ const LinuxHotkey = struct {
                 // `wayland_minimal.xkb_key_bracketleft` / `..right` 와 같은 값.
                 .bracket_left => 0x5b,
                 .bracket_right => 0x5d,
+                // #682 — `XKB_KEY_slash`. `⇧+/` 는 `question` 으로 오고 무시프트 `slash` 로 맞는다.
+                .slash => 0x2f,
             },
         };
     }
@@ -941,7 +953,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         .{ .named = .page_down, .code = .page_down },         .{ .named = .arrow_left, .code = .arrow_left },
         .{ .named = .arrow_right, .code = .arrow_right },     .{ .named = .arrow_up, .code = .arrow_up },
         .{ .named = .arrow_down, .code = .arrow_down },       .{ .named = .bracket_left, .code = .bracket_left },
-        .{ .named = .bracket_right, .code = .bracket_right },
+        .{ .named = .bracket_right, .code = .bracket_right }, .{ .named = .slash, .code = .slash },
     };
     for (pairs) |pair| {
         try std.testing.expectEqual(
@@ -1075,7 +1087,7 @@ test "#493 default [keys] has no conflicting bindings" {
     // 액션 39 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
     // `split_left` · `split_up` + #646 의 `find` 포함) + prev_tab / next_tab 이
     // 2 개씩 = 41.
-    try std.testing.expectEqual(@as(usize, 41), count);
+    try std.testing.expectEqual(@as(usize, 42), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1278,6 +1290,8 @@ const WindowsHotkey = struct {
                 // `VK_OEM_4` / `VK_OEM_6`. `window.zig` 의 prev/next tab 이 쓰는 값.
                 .bracket_left => 0xDB,
                 .bracket_right => 0xDD,
+                // #682 — `VK_OEM_2`. `[` 의 `VK_OEM_4` 처럼 US 자리 값이다.
+                .slash => 0xBF,
             },
         };
     }
@@ -1385,6 +1399,8 @@ const MacHotkey = struct {
                 .grave => 0x60,
                 .bracket_left => 0x5B,
                 .bracket_right => 0x5D,
+                // #682 — `⇧⌘/` 는 라벨 `?` · 무시프트 `/` 로 와서 후자로 맞는다.
+                .slash => 0x2F,
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
@@ -1436,6 +1452,8 @@ const MacHotkey = struct {
                 // prev/next tab 이 쓰는 값.
                 .bracket_left => 0x21,
                 .bracket_right => 0x1E,
+                // #682 — `kVK_ANSI_Slash`.
+                .slash => 0x2C,
             },
             // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
             .char => |c| switch (c) {
@@ -1561,7 +1579,9 @@ pub const Defaults = struct {
     /// 업그레이드로 그것을 잃지 않게 한다. Linux · Windows 에서는 읽히지 않는다.
     pub const macos_option_as_alt: []const u8 = "none";
     pub const theme: []const u8 = "Tilda";
-    pub const auto_start: bool = true;
+    /// #683 — dev 판은 끈다. 한 번 띄운 dev 판이 다음 로그인부터 릴리즈와 함께 뜨지 않게.
+    /// 이미 있는 config 는 적힌 값을 따른다.
+    pub const auto_start: bool = !app_id.is_dev;
     pub const hidden_start: bool = false;
     /// 100,000 은 다른 터미널의 10~100 배였다 (#425 조사 — 2 위 alacritty · GNOME Terminal
     /// 이 10,000 이고 중앙값은 1,000~2,000, 우리가 자리를 물려받은 Tilda 는 5,000). 그 값이
@@ -1927,6 +1947,9 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .show_about => &.{"shift+cmd+i"},
         .open_config => &.{"shift+cmd+p"},
         .open_log => &.{"shift+cmd+l"},
+        // #682 — `⇧⌘/` (= `⌘?`) 는 macOS 의 Help 자리이고 GNOME HIG · Ptyxis 가 단축키 목록에 쓴다.
+        // `K` 는 iTerm2 · Windows Terminal · WezTerm · Konsole 이 지우기에 써서 뺐다.
+        .open_shortcuts => &.{"shift+cmd+/"},
         .dump_perf => &.{"shift+cmd+f12"},
         // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
         // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
@@ -1954,7 +1977,7 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
     };
 }
 
-/// Linux · Windows 기본 bindings — `KEYBINDINGS.md` 의 두 열과 1:1 (그 둘은 같다).
+/// Linux · Windows 기본 bindings — `KEYBINDINGS.md` 의 `Linux · Windows` 열과 1:1.
 fn pcDefaultBindings(action: KeyAction) []const []const u8 {
     return switch (action) {
         .new_tab => &.{"ctrl+shift+t"},
@@ -1981,6 +2004,7 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .show_about => &.{"ctrl+shift+i"},
         .open_config => &.{"ctrl+shift+p"},
         .open_log => &.{"ctrl+shift+l"},
+        .open_shortcuts => &.{"ctrl+shift+/"},
         .dump_perf => &.{"ctrl+shift+f12"},
         // #483 — 분할 (확정 설계 §②): 수식키가 동사, 방향키가 방향. `ctrl+alt+방향키` 와
         // `ctrl+shift+alt+방향키` 는 GNOME 이 workspace 전환 · 이동에 쓰고 있어 앱에 닿지
@@ -2053,7 +2077,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         .{ .title = "Search", .actions = &.{.find} },
         .{ .title = "Clipboard", .actions = &.{ .copy, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
-        .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .dump_perf } },
+        .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .open_shortcuts, .dump_perf } },
     };
     for (groups) |g| {
         if (g.title) |t| {
@@ -2100,6 +2124,9 @@ pub const KeyAction = enum {
     show_about,
     open_config,
     open_log,
+    /// #682 — 단축키 문서 (`KEYBINDINGS.md`) 를 기본 브라우저로 연다. 명령 메뉴의
+    /// `Keyboard Shortcuts` 와 같은 동작이다.
+    open_shortcuts,
     dump_perf,
     // #483 — 화면 분할. 방향이 액션 이름에 들어 있고 `inputForAction` 이 `direction`
     // payload 로 바꾼다 — `switch_tab3` 의 인덱스와 같은 방식이다.
@@ -2283,6 +2310,7 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .show_about => .{ .input = .{ .shortcut = .show_about } },
         .open_config => .{ .input = .{ .shortcut = .open_config } },
         .open_log => .{ .input = .{ .shortcut = .open_log } },
+        .open_shortcuts => .{ .input = .{ .shortcut = .open_shortcuts } },
         .dump_perf => .{ .input = .{ .shortcut = .dump_perf } },
         .split_left => .{ .input = .{ .shortcut = .split }, .direction = .left },
         .split_right => .{ .input = .{ .shortcut = .split }, .direction = .right },
@@ -2363,6 +2391,7 @@ fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
         0x60 => .backquote,
         0x5b => .bracket_left,
         0x5d => .bracket_right,
+        0x2f => .slash,
         else => null,
     };
 }
@@ -2495,6 +2524,48 @@ test "#483 6단계 — Shift 를 적은 binding 은 무시프트 값으로도 �
     }
 }
 
+test "#682 — `/` 는 `[` 와 같은 규칙이다 · `Ctrl+Shift+/` 는 맞고 `Ctrl+/` 는 걸리지 않는다" {
+    var buf: [4]KeyBinding = undefined;
+    var n: usize = 0;
+    const add = struct {
+        fn f(b: []KeyBinding, count: *usize, text: []const u8, action: KeyAction) !void {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            b[count.*] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            count.* += 1;
+        }
+    }.f;
+    // 전역 hotkey 로는 받지 않는다 — 데스크톱 등록 이름을 확인하지 않았다.
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+/", .global_hotkey));
+    // 글자를 내는 키라 modifier 가 필요하다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("/", .app_binding));
+
+    if (is_macos) {
+        try add(&buf, &n, "shift+cmd+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        // US: ⇧⌘/ 는 라벨 `?` · 무시프트 `/` 로 온다.
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .keycode = 0x2C, .label = '?', .unshifted = '/', .modifiers = Hotkey.MOD_SHIFT | Hotkey.MOD_SUPER }, null).?);
+        // ⌘/ 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 0x2C, .label = '/', .unshifted = '/', .modifiers = Hotkey.MOD_SUPER }, null) == null);
+    } else if (is_windows) {
+        try add(&buf, &n, "ctrl+shift+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        const vk_oem_2: u32 = 0xBF;
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .vkey = vk_oem_2, .modifiers = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT }, null).?);
+        // Ctrl+/ (readline undo) — 같은 VK 지만 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .vkey = vk_oem_2, .modifiers = Hotkey.MOD_CTRL }, null) == null);
+    } else {
+        try add(&buf, &n, "ctrl+shift+/", .open_shortcuts);
+        const bindings = buf[0..n];
+        // US: Ctrl+Shift+/ 는 keysym `question` · 무시프트 `slash`.
+        try std.testing.expectEqual(KeyAction.open_shortcuts, lookupAction(bindings, .{ .keysym = 0x3f, .unshifted = 0x2f, .modifiers = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT }, null).?);
+        // Ctrl+/ 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x2f, .modifiers = Hotkey.MOD_CTRL }, null) == null);
+    }
+}
+
 /// modifier 를 뺀 라벨 쪽 키 값. `std.meta.eql` 로 통째로 비교하면 Shift 예외를
 /// 표현할 수 없어 (아래) 키 값만 따로 꺼낸다.
 fn modifiersAside(h: Hotkey) u32 {
@@ -2544,7 +2615,194 @@ fn isDigitBinding(h: Hotkey) bool {
 pub const KeyBinding = struct {
     hotkey: Hotkey,
     action: KeyAction,
+    /// #682 — 사용자가 적은 형태 그대로 (수식키 + 키 토큰). 명령 메뉴 글자를 만드는 데
+    /// 쓴다 — platform 값 (`keysym` · `vkey` · `keycode`) 에서 되짚으면 `/` · `[` · 방향키처럼
+    /// 이름표에 없는 키가 빠진다. 테스트가 직접 만든 binding 은 null 이다.
+    parsed: ?ParsedHotkey = null,
 };
+
+/// #682 — binding 하나의 메뉴 표기. 규칙:
+/// - 수식키 순서 — macOS 는 Apple HIG 순 (`Control` `Option` `Shift` `Cmd`),
+///   Linux · Windows 는 `Ctrl` `Shift` `Alt` `Super` (KEYBINDINGS.md 표기와 같다).
+/// - 글자는 대문자, `return` 은 `Enter`, 방향키는 기호 (`←`) — 두 방향을 한 줄에 담아야
+///   해서 폭이 빠듯하고, 키캡 모양 그대로라 빨리 읽힌다.
+/// - 키만 적는다. 마우스 경로 (`Drag /`) 는 붙이지 않는다 (2026-09-16 사용자 결정).
+pub fn bindingDisplay(buf: []u8, parsed: ParsedHotkey, macos: bool) []const u8 {
+    var fbs: std.Io.Writer = .fixed(buf);
+    const w = &fbs;
+    const Part = struct { on: bool, text: []const u8 };
+    const parts = if (macos)
+        [_]Part{
+            .{ .on = parsed.ctrl, .text = "Control+" }, .{ .on = parsed.alt, .text = "Option+" },
+            .{ .on = parsed.shift, .text = "Shift+" },  .{ .on = parsed.super, .text = "Cmd+" },
+        }
+    else
+        [_]Part{
+            .{ .on = parsed.ctrl, .text = "Ctrl+" }, .{ .on = parsed.shift, .text = "Shift+" },
+            .{ .on = parsed.alt, .text = "Alt+" },   .{ .on = parsed.super, .text = "Super+" },
+        };
+    for (parts) |part| {
+        if (part.on) w.writeAll(part.text) catch return "";
+    }
+    switch (parsed.key) {
+        .char => |c| w.writeByte(std.ascii.toUpper(c)) catch return "",
+        .named => |n| w.writeAll(switch (n) {
+            .f1 => "F1",
+            .f2 => "F2",
+            .f3 => "F3",
+            .f4 => "F4",
+            .f5 => "F5",
+            .f6 => "F6",
+            .f7 => "F7",
+            .f8 => "F8",
+            .f9 => "F9",
+            .f10 => "F10",
+            .f11 => "F11",
+            .f12 => "F12",
+            .space => "Space",
+            .grave => "`",
+            .tab => "Tab",
+            .escape => "Esc",
+            .@"return" => "Enter",
+            .page_up => "PgUp",
+            .page_down => "PgDn",
+            .arrow_left => "←",
+            .arrow_right => "→",
+            .arrow_up => "↑",
+            .arrow_down => "↓",
+            .bracket_left => "[",
+            .bracket_right => "]",
+            .slash => "/",
+        }) catch return "",
+        // 위치 표기는 사용자가 적은 이름 그대로 (`[KeyW]`) — 무엇을 눌러야 하는지가
+        // layout 에 달려 있어 글자 하나로 줄이면 틀린 안내가 될 수 있다.
+        .code => |code| w.print("[{s}]", .{physical_key.name(code)}) catch return "",
+    }
+    return w.buffered();
+}
+
+/// #682 — 명령 메뉴의 단축키 글자를 **실제 바인딩에서** 채운다. 액션에 binding 이 여럿이면
+/// 첫 것 (config 에 먼저 적은 것 — SPEC §7.3 의 "먼저 나온 것이 이긴다" 와 같은 순서).
+/// 없으면 빈칸이다 — 없는 단축키를 안내하지 않는다.
+pub fn commandMenuHints(bindings: []const KeyBinding, toggle_hotkey: []const u8) command_menu.Hints {
+    var hints: command_menu.Hints = .{};
+    var buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    for (std.enums.values(command_menu.Command)) |command| {
+        const text: []const u8 = switch (command) {
+            .toggle_visibility => toggle_hotkey,
+            .new_tab => firstBindingDisplay(&buf, bindings, .new_tab),
+            // 메뉴 문구가 "Split Left / Right" 라 두 액션을 한 칸에 담는다.
+            .split_right => pairBindingDisplay(&buf, bindings, .split_left, .split_right),
+            .split_down => pairBindingDisplay(&buf, bindings, .split_up, .split_down),
+            .close_active_tab => firstBindingDisplay(&buf, bindings, .close_tab),
+            .copy => firstBindingDisplay(&buf, bindings, .copy),
+            .paste => firstBindingDisplay(&buf, bindings, .paste),
+            .find => firstBindingDisplay(&buf, bindings, .find),
+            .fullscreen => firstBindingDisplay(&buf, bindings, .fullscreen),
+            .open_config => firstBindingDisplay(&buf, bindings, .open_config),
+            .open_log => firstBindingDisplay(&buf, bindings, .open_log),
+            .keyboard_shortcuts => firstBindingDisplay(&buf, bindings, .open_shortcuts),
+            .about => firstBindingDisplay(&buf, bindings, .show_about),
+        };
+        hints.setCommand(command, text);
+    }
+    hints.setFullscreenWorkarea(firstBindingDisplay(&buf, bindings, .fullscreen_workarea));
+    return hints;
+}
+
+test "#683 — dev 판은 새 config 의 auto_start 기본값이 false 다" {
+    try std.testing.expectEqual(!app_id.is_dev, Defaults.auto_start);
+    const text = try defaultConfigToml(std.testing.allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer std.testing.allocator.free(text);
+    const want = if (app_id.is_dev) "auto_start       = false" else "auto_start       = true";
+    try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
+}
+
+test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은 예전 고정 글자와 같다" {
+    var c: Config = undefined;
+    Config.fillDefaultKeyBindings(&c);
+    const defaults = c.key_bindings[0..c.key_binding_count];
+    const hints = commandMenuHints(defaults, "F1");
+    const E = struct { command: command_menu.Command, mac: []const u8, pc: []const u8 };
+    // 왼쪽 값은 #682 이전 `messages.shortcut_*` 상수다 — 겉보기가 바뀌지 않았음을 고정한다.
+    const expected = [_]E{
+        .{ .command = .toggle_visibility, .mac = "F1", .pc = "F1" },
+        .{ .command = .new_tab, .mac = "Cmd+T", .pc = "Ctrl+Shift+T" },
+        .{ .command = .split_right, .mac = "Option+Cmd+←/→", .pc = "Ctrl+Shift+←/→" },
+        .{ .command = .split_down, .mac = "Option+Cmd+↑/↓", .pc = "Ctrl+Shift+↑/↓" },
+        .{ .command = .close_active_tab, .mac = "Cmd+W", .pc = "Ctrl+Shift+W" },
+        .{ .command = .copy, .mac = "Cmd+C", .pc = "Ctrl+Shift+C" },
+        .{ .command = .paste, .mac = "Cmd+V", .pc = "Ctrl+Shift+V" },
+        .{ .command = .find, .mac = "Cmd+F", .pc = "Ctrl+Shift+F" },
+        .{ .command = .fullscreen, .mac = "Cmd+Enter", .pc = "Alt+Enter" },
+        .{ .command = .open_config, .mac = "Shift+Cmd+P", .pc = "Ctrl+Shift+P" },
+        .{ .command = .open_log, .mac = "Shift+Cmd+L", .pc = "Ctrl+Shift+L" },
+        // 새로 채운 두 칸.
+        .{ .command = .keyboard_shortcuts, .mac = "Shift+Cmd+/", .pc = "Ctrl+Shift+/" },
+        .{ .command = .about, .mac = "Shift+Cmd+I", .pc = "Ctrl+Shift+I" },
+    };
+    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".fields.len, expected.len);
+    for (expected) |e| {
+        try std.testing.expectEqualStrings(if (is_macos) e.mac else e.pc, hints.get(e.command, false));
+    }
+    try std.testing.expectEqualStrings(if (is_macos) "Shift+Cmd+Enter" else "Shift+Alt+Enter", hints.get(.fullscreen, true));
+
+    // 사용자가 바꾸면 메뉴도 따라간다. 먼저 적은 binding 이 표시된다.
+    var buf: [4]KeyBinding = undefined;
+    const texts = [_][]const u8{ "ctrl+alt+a", "ctrl+alt+b" };
+    for (texts, 0..) |t, i| {
+        const parsed = parseHotkeyString(t, .app_binding).ok;
+        buf[i] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = .show_about, .parsed = parsed };
+    }
+    const custom = commandMenuHints(buf[0..2], "F1");
+    try std.testing.expectEqualStrings(if (is_macos) "Control+Option+A" else "Ctrl+Alt+A", custom.get(.about, false));
+    // binding 이 없는 항목은 비운다 — 없는 단축키를 안내하지 않는다.
+    try std.testing.expectEqualStrings("", custom.get(.new_tab, false));
+}
+
+test "#682 — 위치 표기는 적은 이름 그대로 · 수식키가 다른 짝은 둘 다 적는다" {
+    const p = parseHotkeyString("ctrl+shift+[KeyW]", .app_binding).ok;
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("Ctrl+Shift+[KeyW]", bindingDisplay(&buf, p, false));
+    var bindings: [2]KeyBinding = undefined;
+    const a = parseHotkeyString("alt+left", .app_binding).ok;
+    const b = parseHotkeyString("ctrl+right", .app_binding).ok;
+    bindings[0] = .{ .hotkey = Hotkey.fromParsed(a), .action = .split_left, .parsed = a };
+    bindings[1] = .{ .hotkey = Hotkey.fromParsed(b), .action = .split_right, .parsed = b };
+    const hints = commandMenuHints(&bindings, "");
+    try std.testing.expectEqualStrings(if (is_macos) "Option+← / Control+→" else "Alt+← / Ctrl+→", hints.get(.split_right, false));
+}
+
+fn firstBindingDisplay(buf: []u8, bindings: []const KeyBinding, action: KeyAction) []const u8 {
+    for (bindings) |b| {
+        if (b.action != action) continue;
+        const parsed = b.parsed orelse continue;
+        return bindingDisplay(buf, parsed, is_macos);
+    }
+    return "";
+}
+
+/// 두 액션을 한 칸에 — 수식키가 같으면 `Option+Cmd+←/→`, 다르면 `A / B`. 한쪽만 있으면 그쪽.
+fn pairBindingDisplay(buf: []u8, bindings: []const KeyBinding, a: KeyAction, b: KeyAction) []const u8 {
+    var a_buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    var b_buf: [command_menu.Hints.MAX_LEN]u8 = undefined;
+    const a_text = firstBindingDisplay(&a_buf, bindings, a);
+    const b_text = firstBindingDisplay(&b_buf, bindings, b);
+    if (a_text.len == 0) return copyInto(buf, b_text);
+    if (b_text.len == 0) return copyInto(buf, a_text);
+    const a_split = if (std.mem.lastIndexOfScalar(u8, a_text, '+')) |i| i + 1 else 0;
+    const b_split = if (std.mem.lastIndexOfScalar(u8, b_text, '+')) |i| i + 1 else 0;
+    if (std.mem.eql(u8, a_text[0..a_split], b_text[0..b_split])) {
+        return std.fmt.bufPrint(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
+    }
+    return std.fmt.bufPrint(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
+}
+
+fn copyInto(buf: []u8, text: []const u8) []const u8 {
+    if (text.len > buf.len) return "";
+    @memcpy(buf[0..text.len], text);
+    return buf[0..text.len];
+}
 
 /// 액션 25 개 × 대개 1~2 개. 넉넉히 잡아 할당을 없앤다 (`font_families` 와 같은 방식).
 pub const MAX_KEY_BINDINGS = 64;
@@ -2794,7 +3052,7 @@ pub const Config = struct {
                     .ok => |v| v,
                     else => continue,
                 };
-                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action, .parsed = parsed };
                 count += 1;
             }
         }
@@ -3093,7 +3351,7 @@ pub const Config = struct {
             noticeKeyDropped(name, text, messages.config_notice_key_reason_too_many);
             return count;
         }
-        config.key_bindings[count] = .{ .hotkey = hotkey, .action = action };
+        config.key_bindings[count] = .{ .hotkey = hotkey, .action = action, .parsed = parsed };
         return count + 1;
     }
 
@@ -4174,7 +4432,9 @@ test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse �
     // `v.boolean` 으로 읽다가 **터진다** — 이 테스트가 그 자리를 지킨다.
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
-    const broken = try replaceFirst(allocator, full, "auto_start       = true", "auto_start       = \"yes\"");
+    // #683 — 기본값이 빌드 종류마다 달라서 (dev `false`) 양식에 실제로 들어간 줄을 찾는다.
+    const default_line = if (Defaults.auto_start) "auto_start       = true" else "auto_start       = false";
+    const broken = try replaceFirst(allocator, full, default_line, "auto_start       = \"yes\"");
     defer allocator.free(broken);
 
     const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };

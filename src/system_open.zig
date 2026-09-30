@@ -36,7 +36,17 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
     // 조회하고, 없을 때만 메모장으로 연다. 사용자가 지정해 둔 편집기가 있으면 지금처럼
     // 그쪽이 뜬다 — `.json` 에 아무것도 연결돼 있지 않아 Ctrl+Shift+P 가 조용히 아무 일도
     // 안 하던 것만 사라진다.
-    if (!hasOpenAssociation(allocator, path)) {
+    //
+    // **그 조회는 파일 경로에만 쓴다** ([#682](https://github.com/ensky0/tildaz/issues/682)).
+    // URL 은 확장자가 여는 앱을 정하지 않는다 — `https` 를 등록한 브라우저가 정한다. 그런데
+    // `extensionOf` 는 `…/KEYBINDINGS.md` 의 끝 조각을 `.md` 로 읽어서, `.md` 에 연결된 앱이
+    // 없는 기기에서는 **URL 이 파일 이름인 양 메모장으로** 갔다 (2026-09-30 Windows 실기 —
+    // `Ctrl+Shift+/` 와 `⋯` 메뉴의 Keyboard Shortcuts, 그리고 `.md` · `.zig` 처럼 연결 없는
+    // 확장자로 끝나는 링크 클릭 [#647](https://github.com/ensky0/tildaz/issues/647) 이 전부 그랬다).
+    // scheme 이 있으면 `ShellExecuteW` 에 그대로 넘긴다 — 그때는 OS 가 scheme handler 를 찾으므로
+    // 위의 "연결이 없으면 조용히 실패" 문제 자체가 없다. macOS `open` · Linux `xdg-open` 은
+    // 원래 URL 을 그대로 처리해서 이 갈래가 Windows 에만 있다.
+    if (!hasUriScheme(path) and !hasOpenAssociation(allocator, path)) {
         log.appendLine("open", "no file association for '{s}'; opening with notepad instead", .{extensionOf(path)});
         // 경로에 공백이 있어도 한 인자로 가도록 따옴표로 감싼다.
         const params = std.fmt.allocPrint(allocator, "\"{s}\"", .{path}) catch return;
@@ -180,6 +190,28 @@ fn extensionOf(path: []const u8) []const u8 {
     return name[dot..];
 }
 
+/// 파일 경로가 아니라 URI 인가 — `scheme:` 으로 시작하면 참이다
+/// ([#682](https://github.com/ensky0/tildaz/issues/682)).
+///
+/// RFC 3986 의 scheme 은 ALPHA 로 시작하고 ALPHA / DIGIT / `+` `-` `.` 가 잇는다.
+/// [`link.isOpenableUri`](link.zig) 와 같은 규칙인데 **한 글자 scheme 만 뺀다** — Windows 의
+/// 드라이브 문자가 정확히 그 꼴이라 (`C:\Users\…\config_0.toml`), 빼지 않으면 우리가 여는
+/// config · log 경로가 전부 URI 로 읽혀 메모장 fallback 이 사라진다. 실제 scheme 은 두 글자
+/// 이상이다 (`https` · `mailto` · `ftp`).
+///
+/// 두 곳에 같은 규칙이 있는 것은 쓰는 데가 달라서다 — 저쪽은 *열어도 되는 값인지* 를 거르고
+/// (터미널에 출력된 임의 바이트가 입력이다), 여기는 *파일 연결을 조회할 대상인지* 를 가른다.
+/// scheme 화이트리스트를 두지 않는 것도 같다: 실제로 열리는지는 OS 의 handler 등록이 정한다.
+fn hasUriScheme(path: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, path, ':') orelse return false;
+    if (colon < 2) return false; // 빈 scheme 과 드라이브 문자 (`C:`)
+    if (!std.ascii.isAlphabetic(path[0])) return false;
+    for (path[1..colon]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '-' and c != '.') return false;
+    }
+    return true;
+}
+
 /// `root\subkey` 의 `value` (null 이면 기본값) 를 REG_SZ 로 읽는다. 값이 없거나
 /// 비어 있으면 null. 반환 slice 는 `out` 을 가리킨다.
 fn regReadString(
@@ -268,4 +300,36 @@ test "systemFilePath — 버퍼가 모자라면 null (잘린 경로를 실행하
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     var tiny: [8]u16 = undefined;
     try std.testing.expect(systemFilePath(&tiny, "notepad.exe") == null);
+}
+
+// #682 — URL 이 파일 연결 조회를 타면 안 된다. 실기에서 `Ctrl+Shift+/` 가 브라우저 대신
+// 메모장을 열었고, 순수 계산이라 이 자리에서 고정할 수 있다. Windows 전용 갈래지만 판정
+// 함수 자체는 platform 무관이라 세 OS 에서 다 돈다.
+
+test "#682 — URL 은 scheme 으로 가려낸다 (확장자 조회를 안 탄다)" {
+    try std.testing.expect(hasUriScheme("https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md"));
+    try std.testing.expect(hasUriScheme("http://example.com"));
+    try std.testing.expect(hasUriScheme("mailto:a@b.c"));
+    // 우리가 모르는 scheme 도 URL 이다 — OSC 8 이 자기 목적으로 쓴다 (`link.isOpenableUri` 와 같다).
+    try std.testing.expect(hasUriScheme("vscode://file/x.zig"));
+    try std.testing.expect(hasUriScheme("ms-settings:developers"));
+}
+
+test "#682 — 파일 경로는 URL 이 아니다 (메모장 fallback 이 그대로 산다)" {
+    // ⚠️ 드라이브 문자가 한 글자 scheme 꼴이라 이 둘이 이 판정의 핵심이다.
+    try std.testing.expect(!hasUriScheme("C:\\Users\\me\\AppData\\Roaming\\tildaz\\config_0.toml"));
+    try std.testing.expect(!hasUriScheme("C:/Users/me/AppData/Roaming/tildaz/tildaz_0.log"));
+    try std.testing.expect(!hasUriScheme("/home/me/.config/tildaz/config_0.toml"));
+    try std.testing.expect(!hasUriScheme("config_0.toml"));
+    try std.testing.expect(!hasUriScheme(""));
+    try std.testing.expect(!hasUriScheme("://no-scheme"));
+    try std.testing.expect(!hasUriScheme("1http://digit-first"));
+}
+
+test "#682 — 그 갈래를 타는 실제 값: 단축키 문서 URL 과 config 경로" {
+    // 두 값이 같은 함수에 들어가면서 서로 다른 갈래를 타야 한다는 것이 이 수정의 전부다.
+    const app_version = @import("version.zig");
+    try std.testing.expect(hasUriScheme(app_version.keyboard_shortcuts_url));
+    // 그 URL 의 끝 조각은 `.md` 라, scheme 판정이 없으면 확장자 조회로 갔다.
+    try std.testing.expectEqualStrings(".md", extensionOf(app_version.keyboard_shortcuts_url));
 }

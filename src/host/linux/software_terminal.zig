@@ -305,7 +305,8 @@ pub const FrameInputs = struct {
     menu_ui: command_menu.Ui,
     /// #646 — 검색바 상태. `open` 이 false 면 그리지 않는다.
     search_ui: search_bar.Ui = .{},
-    toggle_hotkey: []const u8,
+    /// #682 — 명령 메뉴의 단축키 글자 (실제 바인딩에서 만든 표).
+    menu_hints: *const command_menu.Hints,
     /// #376 — blink 위상. **프레임 단위** 값이라 (셀마다 다르지 않다) 호출부가 프레임
     /// 하나에 한 번 구해서 내려보낸다. 렌더러가 따로 시계를 읽으면 500 ms 경계에서
     /// 호출부의 게이트 판정과 화면이 서로 다른 위상을 볼 수 있다.
@@ -1892,7 +1893,7 @@ pub const Renderer = struct {
             const baseline = iy + @divFloor(ih - ch, 2) + @as(i32, @intCast(self.tab_font_ctx.ascent_px));
             const label = command_menu.label(command);
             self.collectChromeText(allocator, list, ix + scaledPt(8, scale), baseline, ch, label, fg, in.width);
-            const hint = command_menu.shortcut(command, false, in.toggle_hotkey, ui.fullscreen_workarea);
+            const hint = in.menu_hints.get(command, ui.fullscreen_workarea);
             if (hint.len == 0) continue;
             const hint_w = @as(i32, @intCast(display_width.stringWidth(hint))) * cw;
             const label_w = @as(i32, @intCast(display_width.stringWidth(label))) * cw;

@@ -22,7 +22,7 @@ const windows_pty = @import("../terminal/windows/pty.zig");
 const themes = @import("../themes.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
-const version = @import("../version.zig");
+const app_version = @import("../version.zig");
 
 const WCHAR = u16;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const WCHAR, ?[*]WCHAR, u32) callconv(.c) u32;
@@ -70,8 +70,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 
     // %APPDATA%\tildaz\tildaz_N.log 에 부팅 / 종료 라인을 남긴다.
     // stale exe 가 자동 실행되는 케이스를 사후 추적하기 위한 감사 로그.
-    log.logStart(rt.io, version.string);
-    defer log.logStop(version.string);
+    log.logStart(rt.io, app_version.string);
+    defer log.logStop(app_version.string);
     // #396 — 측정 인스턴스면 종료 직전에 perf 스냅숏을 남긴다. `defer` 는 LIFO 라
     // 위의 `logStop` **보다 먼저** 돈다 — 로그 파일이 닫히기 전이어야 한다.
     // worker 는 no-op (게이트는 `instance_context.isStress`).
@@ -160,7 +160,11 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 등 instance 메서드 호출.
     app.setupHost();
     var hotkey_hint_buf: [64]u8 = undefined;
-    app.setToggleHotkeyHint(config_mod.hotkeyDisplay(&hotkey_hint_buf, config.hotkey));
+    // #682 — 메뉴 글자는 실제 바인딩에서 만든다.
+    app.setMenuHints(config_mod.commandMenuHints(
+        config.key_bindings[0..config.key_binding_count],
+        config_mod.hotkeyDisplay(&hotkey_hint_buf, config.hotkey),
+    ));
 
     // Set up window
     app.window.userdata = &app;

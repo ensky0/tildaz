@@ -188,7 +188,7 @@ dialog names the field.
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"` — so the first space ends the executable path; a path that itself contains spaces has to be quoted inside the value, as in `shell = "\"C:\\Program Files\\Git\\bin\\bash.exe\""`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
 | `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
-| `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux) |
+| `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux). Development builds default to `false` |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
 | `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 38 of them. An action you leave out runs on its default binding; an empty list `[]` unbinds it, and the two are different |
@@ -335,6 +335,7 @@ here would give it two homes to drift between.
 | | `show_about` | Open the About dialog |
 | | `open_config` | Open this config file in your editor |
 | | `open_log` | Open `tildaz_N.log` in your editor |
+| | `open_shortcuts` | Open the keyboard shortcuts page in your browser |
 | | `dump_perf` | Write a performance snapshot to the log |
 
 A tab holds up to 16 panes. Splitting is also available without a key — Alt+click
@@ -377,8 +378,7 @@ produce each binding's label at all; if nothing can, it falls back to the
 physical spot that character has on a US keyboard. So the defaults work on a
 Cyrillic layout — or a Korean, Japanese, or Chinese input source — untouched.
 The check follows the live layout, so a `us,ru` setup matches by label while you
-are on `us` and falls back the moment you switch to `ru`. KEYBINDINGS.md has the
-details.
+are on `us` and falls back the moment you switch to `ru`.
 
 **Windows does not need it either**, for a different reason: a non-Latin layout
 DLL assigns Latin virtual-keys to the physical spots, so the OS has already done
@@ -389,8 +389,8 @@ the equivalent work.
 **By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
 `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
 `Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
-`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`).
-Case does not matter. Anything else is dropped at startup and named in the
+`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`),
+`/`. Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
 that one entry goes; the other keys you gave the action still work, and an action
 left with nothing falls back to its default binding.
@@ -490,8 +490,8 @@ invalid value falls back to the default hotkey and is named in the dialog):
   `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
   `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
   (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
-  matter. This is the same label set `[keys]` accepts — the two differ in what
-  they allow *without* a modifier, not in which keys they know.
+  matter. This is the label set `[keys]` accepts, minus `/` — otherwise the
+  two differ in what they allow *without* a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same
@@ -537,8 +537,35 @@ and Spanish cannot type `` ` `` at all — the key in that position is a dead ac
 extensions cannot make a dead key usable either. Choose a function key or a key
 that the active layout can type.
 
-KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
-sway / Hyprland limitation it matters most for.
+How each desktop registers a hotkey written by position (`ctrl+[Backquote]`):
+
+| Desktop | Registered by |
+|---|---|
+| sway, Hyprland, GNOME, Cinnamon, macOS | key position |
+| COSMIC, KDE | the character that position types on your current layout |
+| Windows | the virtual key that position holds on your current layout |
+
+The layout-following rows re-register when you switch layouts while TildaZ runs. On
+German, `[Backquote]` is a dead accent that COSMIC and KDE cannot express, so TildaZ logs
+it instead of registering the wrong key. On macOS the global hotkey always matches by
+position, while `[keys]` matches the printed letter
+([#496](https://github.com/ensky0/tildaz/issues/496) item 1-c).
+
+**On Hyprland** the hotkey is matched against the character the active layout types, so
+it stops working while a layout that cannot type it is active. Measured with
+`xkbcli how-to-type` — ✅ means the layout can type it:
+
+| Layout | `A`–`Z` | `0`–`9` | `` ` `` | `[` `]` |
+|---|:--:|:--:|:--:|:--:|
+| US, UK, French, Italian, Japanese | ✅ | ✅ | ✅ | ✅ |
+| German, Spanish | ✅ | ✅ | ❌ | ✅ |
+| Greek, Arabic | ❌ | ✅ | ✅ | ✅ |
+| Ukrainian, Bulgarian, Hebrew | ❌ | ✅ | ❌ | ✅ |
+| Russian | ❌ | ✅ | ❌ | ❌ |
+| Thai | ❌ | ❌ | ❌ | ❌ |
+
+This is only the global hotkey. Shortcuts inside TildaZ (`[keys]`) keep working on every
+layout above.
 
 ## New tab working directory
 

@@ -32,8 +32,6 @@ pub const command_split_down = "Split Up / Down";
 pub const command_close_active_tab = "Close Tab";
 /// #646 — 버퍼 검색.
 pub const command_find = "Find";
-pub const shortcut_find = "Ctrl+Shift+F";
-pub const shortcut_find_macos = "Cmd+F";
 pub const command_copy = "Copy";
 pub const command_paste = "Paste";
 /// toggle 의미 + 320pt 메뉴 폭에서 hint 와 공존하는 짧은 문구 (#334 피드백 —
@@ -47,36 +45,13 @@ pub const command_about = "About TildaZ";
 /// #646 — 검색바 입력칸이 비어 있을 때의 안내문. **앱 UI 라 영어다** (AGENTS.md 의
 /// "프로그램 안에서 사용자에게 직접 표시되는 메시지는 영어").
 pub const search_placeholder = "Find";
-pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md";
-pub const shortcut_new_tab = "Ctrl+Shift+T";
-pub const shortcut_new_tab_macos = "Cmd+T";
-/// #483 — 분할 항목 hint. 기존 hint 처럼 키 이름을 글자로 적는다 (`Enter` 와 같은 표기).
-// 화살표는 글자 대신 기호로 적는다 — 두 방향을 한 줄에 담아야 해서 폭이 빠듯하고,
-// `←/→` 는 키캡 모양 그대로라 더 빨리 읽힌다.
-pub const shortcut_split_right = "Ctrl+Shift+←/→";
-pub const shortcut_split_right_macos = "Option+Cmd+←/→";
-pub const shortcut_split_down = "Ctrl+Shift+↑/↓";
-pub const shortcut_split_down_macos = "Option+Cmd+↑/↓";
-pub const shortcut_close_tab = "Ctrl+Shift+W";
-pub const shortcut_close_tab_macos = "Cmd+W";
-// 힌트는 **키만** 적는다 (2026-09-16 사용자 결정). 예전에는 `Drag /` · `Right-click /` 을
-// 앞에 붙여 마우스 경로도 함께 알렸는데, 다른 항목은 전부 키 하나만 적고 있어 이 둘만
-// 형식이 달랐다. 폭도 그만큼 먹어 좁은 창에서 힌트가 먼저 숨는 항목이 이 둘이었다.
-pub const shortcut_copy = "Ctrl+Shift+C";
-pub const shortcut_copy_macos = "Cmd+C";
-pub const shortcut_paste = "Ctrl+Shift+V";
-pub const shortcut_paste_macos = "Cmd+V";
-pub const shortcut_full_screen = "Alt+Enter";
-pub const shortcut_full_screen_macos = "Cmd+Enter";
-/// workarea 전체화면 상태에서 메뉴의 Toggle Full Screen 이 하는 일(해제)과
-/// 같은 키 — 상태 의존 hint (#334 사용자 결정). 표기는 KEYBINDINGS.md /
-/// SPEC §2 의 기존 확립 표기(`Shift+Alt+Enter`)를 따른다.
-pub const shortcut_full_screen_workarea = "Shift+Alt+Enter";
-pub const shortcut_full_screen_workarea_macos = "Shift+Cmd+Enter";
-pub const shortcut_open_log = "Ctrl+Shift+L";
-pub const shortcut_open_log_macos = "Shift+Cmd+L";
-pub const shortcut_open_config = "Ctrl+Shift+P";
-pub const shortcut_open_config_macos = "Shift+Cmd+P";
+/// #685 — 단축키 문서 주소의 앞뒤 조각. 가운데 (`main` 또는 `v<버전>`) 는 빌드 값이라
+/// `version.keyboard_shortcuts_url` 이 끼운다 — 이 모듈을 빌드 값에 기대지 않는 순수 모듈로 두려고.
+/// ⚠️ 경로를 바꾸지 않는다. 이미 배포된 판에 이 주소가 박혀 있어서 옛 판의 링크가 깨진다.
+pub const keyboard_shortcuts_url_prefix = "https://github.com/ensky0/tildaz/blob/";
+pub const keyboard_shortcuts_url_suffix = "/KEYBINDINGS.md";
+// #682 — 명령 메뉴의 단축키 글자는 여기 상수가 아니라 **실제 바인딩에서** 만든다
+// (`config.commandMenuHints`). 표기 관례도 그쪽 주석에 있다.
 
 /// 종료 확인 (#116). 한 번에 사라지는 탭 수를 본문에 박아 사용자가 잃을
 /// 작업량을 즉시 인지하게. {s} 는 영어 복수형 처리 — count==1 이면 "" else "s".
@@ -122,8 +97,8 @@ pub const hotkey_takeover_declined_format = "Kept the existing binding. To use \
 pub const hotkey_takeover_declined_fallback_msg = "Hotkey unchanged.";
 
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
-/// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L
-/// vs macOS Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접
+/// config / log 다음 Tip 블록 (`about_tip_*_format` — 실제 바인딩의 단축키) 이
+/// 들어감. 사용자가 dialog 안에서 path 를 직접
 /// selection + copy (mac NSTextView) 하거나 native Ctrl+C / Cmd+C 로 본문
 /// 전체 copy 후 path 만 골라낼 수 있고, Tip 의 단축키로 editor 를 바로 열 수도 있음.
 pub const about_format =
@@ -133,11 +108,27 @@ pub const about_format =
     \\pid   : {d}
     \\config: {s}
     \\log   : {s}
+    \\{s}
+    \\https://github.com/ensky0/tildaz
+;
+/// #682 — About 의 Tip 블록. 키는 실제 `[keys]` 바인딩에서 온다 (메뉴 hint 와 같은 글자).
+/// 바인딩이 없는 줄은 뺀다 — 없는 단축키를 안내하지 않는다. 둘 다 없으면 블록이 빈다.
+/// 앞뒤 개행은 `about_format` 의 빈 줄을 만든다.
+pub const about_tip_both_format =
     \\
     \\Tip: {s} opens config in default editor.
     \\     {s} opens log.
     \\
-    \\https://github.com/ensky0/tildaz
+;
+pub const about_tip_config_format =
+    \\
+    \\Tip: {s} opens config in default editor.
+    \\
+;
+pub const about_tip_log_format =
+    \\
+    \\Tip: {s} opens log.
+    \\
 ;
 pub const about_prepare_failed_msg =
     "TildaZ could not prepare the full About information. Check the TildaZ log for details.";

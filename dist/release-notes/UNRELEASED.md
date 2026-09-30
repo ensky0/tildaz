@@ -35,6 +35,9 @@ Internal changes belong in neither.
   twice at login, or keeps starting after you turned `auto_start` off, run this once:
   `launchctl bootout gui/$(id -u)/com.tildaz.app 2>/dev/null; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`
   ([#654](https://github.com/ensky0/tildaz/issues/654))
+- New `[keys]` action `open_shortcuts` (`Shift+Cmd+/` / `Ctrl+Shift+/`). Your existing config does not
+  have it yet, so it uses the default and the startup notice lists it once.
+  ([#682](https://github.com/ensky0/tildaz/issues/682))
 
 ## Body candidates
 
@@ -42,6 +45,9 @@ Internal changes belong in neither.
   Shell extension is disabled. Existing terminal sessions stay open and hidden
   windows are restored.
   ([#676](https://github.com/ensky0/tildaz/issues/676))
+- Windows: links and the Keyboard Shortcuts menu item now open in the browser. A URL ending
+  in an unassociated extension (`.md`, `.zig`) opened Notepad instead.
+  ([#682](https://github.com/ensky0/tildaz/issues/682))
 - Linux tarball: `install.sh` now actually enables the GNOME Shell extension. It used to
   call `gnome-extensions enable`, which fails silently before the next login, so the
   extension never turned on. Cinnamon was not affected.

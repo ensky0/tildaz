@@ -751,7 +751,7 @@ pub const MetalRenderer = struct {
     pub fn endFrame(
         self: *MetalRenderer,
         menu_ui: command_menu.Ui,
-        toggle_hotkey: []const u8,
+        menu_hints: *const command_menu.Hints,
         search_ui: search_bar.Ui,
     ) void {
         if (self.current_cmd_buf == null) return;
@@ -768,7 +768,7 @@ pub const MetalRenderer = struct {
         // #646 — 검색바는 터미널 위 · 메뉴 아래다. 메뉴가 열려 있으면 그것이 최상위이고,
         // 검색바는 창 아래에 붙어 있어 서로 겹치지 않는다.
         if (search_ui.open) self.emitSearchBar(search_ui);
-        if (menu_ui.open) self.emitCommandMenu(menu_ui, toggle_hotkey);
+        if (menu_ui.open) self.emitCommandMenu(menu_ui, menu_hints);
 
         // #591 — 두 atlas 를 올리고 encoder 를 열어 담은 것을 전부 순서대로 그린다. 여기가 이
         // 프레임의 (마지막) pass 다 — 안전망이 중간에 제출했으면 Load 로 이어받는다.
@@ -2016,7 +2016,7 @@ pub const MetalRenderer = struct {
         self.closeRange(.tab_text);
     }
 
-    fn emitCommandMenu(self: *MetalRenderer, ui: command_menu.Ui, toggle_hotkey: []const u8) void {
+    fn emitCommandMenu(self: *MetalRenderer, ui: command_menu.Ui, menu_hints: *const command_menu.Hints) void {
         const scale = self.scale;
         // #329 — viewport 높이에 맞춰 entry 단위로 자른 View. 안 보이는 entry
         // 는 그리지 않는다 (부분 행 없음 — scroll 은 first_visible 로).
@@ -2102,7 +2102,7 @@ pub const MetalRenderer = struct {
             const ih = item.h * scale;
             const text_top = iy + (ih - ch) * 0.5;
             emit(self, command_menu.label(command), ix + 8 * scale, text_top, self.chrome.menu_label);
-            const hint = command_menu.shortcut(command, true, toggle_hotkey, ui.fullscreen_workarea);
+            const hint = menu_hints.get(command, ui.fullscreen_workarea);
             if (hint.len > 0) {
                 const hint_w = @as(f32, @floatFromInt(display_width.stringWidth(hint))) * cw;
                 const label_w = @as(f32, @floatFromInt(display_width.stringWidth(command_menu.label(command)))) * cw;

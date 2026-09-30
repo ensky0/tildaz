@@ -28,6 +28,7 @@ const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
+const app_version = @import("../../version.zig");
 const search_bar = @import("../../search_bar.zig");
 const search_input = @import("../../search_input.zig");
 const config_mod = @import("../../config.zig");
@@ -451,34 +452,34 @@ const Capabilities = struct {
     /// 버그가 아니다 — 다만 KWin · Hyprland · COSMIC 셋은 자동으로 준다). 그래서 sway
     /// 에서는 layer-shell 을 **아예 못 본 것으로 두고**, GNOME · Cinnamon 이 이미 쓰는
     /// xdg_toplevel fallback 경로로 보낸 뒤 배치 · 토글을 i3 IPC 로 한다.
-    fn record(self: *Capabilities, name: u32, interface: []const u8, version: u32, skip_layer_shell: bool) void {
+    fn record(self: *Capabilities, name: u32, interface: []const u8, advertised_version: u32, skip_layer_shell: bool) void {
         if (skip_layer_shell and std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) return;
         if (std.mem.eql(u8, interface, "wl_compositor")) {
-            self.compositor = .{ .name = name, .version = version };
+            self.compositor = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_shm")) {
-            self.shm = .{ .name = name, .version = version };
+            self.shm = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "xdg_wm_base")) {
-            self.xdg_wm_base = .{ .name = name, .version = version };
+            self.xdg_wm_base = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_seat")) {
-            self.seat = .{ .name = name, .version = version };
+            self.seat = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwlr_layer_shell_v1")) {
-            self.layer_shell = .{ .name = name, .version = version };
+            self.layer_shell = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_text_input_manager_v3")) {
-            self.text_input_v3 = .{ .name = name, .version = version };
+            self.text_input_v3 = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
-            self.data_device_manager = .{ .name = name, .version = version };
+            self.data_device_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_viewporter")) {
-            self.viewporter = .{ .name = name, .version = version };
+            self.viewporter = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
-            self.fractional_scale_manager = .{ .name = name, .version = version };
+            self.fractional_scale_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_cursor_shape_manager_v1")) {
-            self.cursor_shape_manager = .{ .name = name, .version = version };
+            self.cursor_shape_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "xdg_activation_v1")) {
-            self.xdg_activation = .{ .name = name, .version = version };
+            self.xdg_activation = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_keyboard_shortcuts_inhibit_manager_v1")) {
-            self.keyboard_shortcuts_inhibit = .{ .name = name, .version = version };
+            self.keyboard_shortcuts_inhibit = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "zwp_linux_dmabuf_v1")) {
-            self.linux_dmabuf = .{ .name = name, .version = version };
+            self.linux_dmabuf = .{ .name = name, .version = advertised_version };
         }
     }
 };
@@ -1562,6 +1563,9 @@ const Client = struct {
     // L13-α — 사용자 설정. `runBaselineWindow` 가 host 의 g_config 포인터를
     // 전달. SessionCore.init 시 shell / theme / max_scroll_lines 가 여기서.
     config: *const config_mod.Config,
+    /// #682 — 명령 메뉴 · About Tip 의 단축키 글자. 재료 (`[keys]` · hotkey) 가 config 를
+    /// 읽을 때만 정해지므로 `init` 에서 한 번 만든다 — 프레임마다 다시 만들 이유가 없다.
+    menu_hints: command_menu.Hints,
     /// #205 — boot / show phase elapsed log 용 monotonic timer. boot path
     /// 는 `runBaselineWindow` 진입에 start, show path 는 매 `handleActivatedToggle`
     /// show 분기 시작에 reset. 사용자 *체감* 1-2 sec startup latency 가 어느
@@ -1702,6 +1706,13 @@ const Client = struct {
             },
             .renderer = renderer,
             .config = cfg,
+            .menu_hints = blk: {
+                var hotkey_buf: [64]u8 = undefined;
+                break :blk config_mod.commandMenuHints(
+                    cfg.key_bindings[0..cfg.key_binding_count],
+                    config_mod.hotkeyDisplay(&hotkey_buf, cfg.hotkey),
+                );
+            },
             // #501 — 로드 실패 안내를 loop 로 넘긴다. `Config` 가 문자열을 소유하고
             // 우리보다 오래 산다.
             .pending_config_notice = cfg.load_notice,
@@ -2243,15 +2254,15 @@ const Client = struct {
         // 그 대신 tranche 가 **선호 내림차순**으로 오고 scanout 힌트가 붙는다 —
         // v3 의 평면 목록에는 순서 정의가 없어서 우리가 임의로 골라야 했다.
         if (self.caps.linux_dmabuf.name != 0) {
-            const version = @min(self.caps.linux_dmabuf.version, 4);
+            const bind_version = @min(self.caps.linux_dmabuf.version, 4);
             self.linux_dmabuf_id = self.allocId();
             try self.bind(
                 self.caps.linux_dmabuf.name,
                 "zwp_linux_dmabuf_v1",
-                version,
+                bind_version,
                 self.linux_dmabuf_id,
             );
-            if (version >= 4) {
+            if (bind_version >= 4) {
                 // zwp_linux_dmabuf_v1.get_default_feedback (opcode 2, since v4).
                 self.dmabuf_feedback_id = self.allocId();
                 try self.sendNewId(self.linux_dmabuf_id, 2, self.dmabuf_feedback_id);
@@ -4921,7 +4932,6 @@ const Client = struct {
             const theme = self.config.theme orelse fallback_theme;
 
             var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-            var hotkey_hint_buf: [64]u8 = undefined;
             var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
             var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
             var frame: software_terminal.GlFrame = .{
@@ -4938,7 +4948,6 @@ const Client = struct {
                         buffer.width,
                         buffer.height,
                         &titles_storage,
-                        &hotkey_hint_buf,
                         &pane_storage,
                         &sep_storage,
                     ));
@@ -5119,7 +5128,7 @@ const Client = struct {
     /// 경로(`paintIntoBuffer`)가 같은 함수를 쓴다** — 입력이 갈리면 그리기 목록을
     /// 공유해도 소용이 없다.
     ///
-    /// `titles_storage` / `hotkey_buf` 는 호출처 stack 이고 반환값이 그 안을
+    /// `titles_storage` 는 호출처 stack 이고 반환값이 그 안을
     /// 가리킨다 — paint 가 끝날 때까지 살아 있어야 한다.
     fn frameInputs(
         self: *Client,
@@ -5127,7 +5136,6 @@ const Client = struct {
         width: i32,
         height: i32,
         titles_storage: *[session_core.MAX_TABS][]const u8,
-        hotkey_buf: *[64]u8,
         /// #483 — pane 목록과 분할선의 저장 공간. `FrameInputs` 가 이 안을 가리킨다.
         pane_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw,
         sep_storage: *[pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator,
@@ -5264,7 +5272,8 @@ const Client = struct {
                 .first_visible = self.command_menu_first,
                 .fullscreen_workarea = self.fullscreen_mode == .avoid,
             },
-            .toggle_hotkey = config_mod.hotkeyDisplay(hotkey_buf, self.config.hotkey),
+            // #682 — `init` 에서 한 번 만든 표.
+            .menu_hints = &self.menu_hints,
             // #376 — main loop 의 blink 게이트가 방금 갱신한 값을 그대로 내린다. 렌더러가
             // 시계를 다시 읽으면 500 ms 경계에서 게이트와 화면이 갈릴 수 있다.
             .blink_faint = self.last_blink_phase,
@@ -5289,10 +5298,9 @@ const Client = struct {
                 // Titles slice / hotkey 힌트는 **호출처 stack** 에 둔다 —
                 // `FrameInputs` 가 그 안을 가리키므로 paint 동안만 valid 하다.
                 var titles_storage: [session_core.MAX_TABS][]const u8 = undefined;
-                var hotkey_hint_buf: [64]u8 = undefined;
                 var pane_storage: [pane_layout.MAX_PANES_PER_TAB]pane_draw.PaneDraw = undefined;
                 var sep_storage: [pane_layout.MAX_PANES_PER_TAB]pane_layout.Separator = undefined;
-                const in = self.frameInputs(session, width, height, &titles_storage, &hotkey_hint_buf, &pane_storage, &sep_storage);
+                const in = self.frameInputs(session, width, height, &titles_storage, &pane_storage, &sep_storage);
                 self.renderer.paint(self.allocator, memory, stride, in);
                 return;
             }
@@ -7502,7 +7510,12 @@ const Client = struct {
             .fullscreen_workarea => self.toggleFullscreen(.avoid),
             // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
             // 진입점 (마우스 · 전역 핫키) 이 처리한다.
-            .toggle_visibility, .open_command_menu, .open_shortcuts => {},
+            .toggle_visibility, .open_command_menu => {},
+            // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
+            .open_shortcuts => {
+                self.yieldTopmostUntilNextShow();
+                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
+            },
             // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
             .split => self.handleSplit(direction orelse return),
             .focus_pane => self.handleFocusPane(direction orelse return),
@@ -7548,7 +7561,7 @@ const Client = struct {
             },
             .keyboard_shortcuts => {
                 self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
             },
             .about => self.pending_about_request = true,
         }
@@ -8831,8 +8844,8 @@ const Client = struct {
         const name = readU32(payload[0..4]);
         var p = Parser{ .buf = payload[4..] };
         const interface = try p.readString();
-        const version = try p.readU32();
-        self.caps.record(name, interface, version, self.is_sway);
+        const advertised_version = try p.readU32();
+        self.caps.record(name, interface, advertised_version, self.is_sway);
         // #241/#295 — wl_output 의 global 추가(모니터 연결/재구성). 이번 batch
         // 안에서 들어오는 layer-surface closed 는 사용자 Alt+F4 가 아니라 output
         // re-home 이다 → drain 단계에서 quit 대신 recreate 로 전환(batch-local 판정).
@@ -8846,7 +8859,7 @@ const Client = struct {
                 log.appendLine("wayland", "wl_output name={} ignored — exceeds {} tracked outputs (#295)", .{ name, max_tracked_outputs });
                 return;
             };
-            if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = version };
+            if (slot.global_name == 0) slot.* = .{ .global_name = name, .version = advertised_version };
             if (self.globals_bound and slot.object_id == 0) {
                 slot.object_id = self.allocId();
                 self.bind(slot.global_name, "wl_output", @min(slot.version, 2), slot.object_id) catch |err| {
@@ -9778,7 +9791,8 @@ const Client = struct {
     fn drainAboutRequest(self: *Client) void {
         if (!self.pending_about_request) return;
         self.pending_about_request = false;
-        about.showAboutDialog(self.rt);
+        // #682 — Tip 도 메뉴와 같은 표에서 읽는다.
+        about.showAboutDialog(self.rt, &self.menu_hints);
     }
 
     /// #216 — KWin Alt+F4 `closed` 후 메인 surface 를 **깜박임 없이** 교체.
@@ -10996,11 +11010,11 @@ const Client = struct {
         );
     }
 
-    fn bind(self: *Client, name: u32, interface: []const u8, version: u32, new_id: u32) !void {
+    fn bind(self: *Client, name: u32, interface: []const u8, bind_version: u32, new_id: u32) !void {
         var msg = Msg.init(registry_id, 0);
         try msg.putU32(name);
         try msg.putString(interface);
-        try msg.putU32(version);
+        try msg.putU32(bind_version);
         try msg.putU32(new_id);
         try msg.send(self.wayland_fd);
     }
