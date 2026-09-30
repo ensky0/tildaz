@@ -45,7 +45,11 @@ pub const command_about = "About TildaZ";
 /// #646 — 검색바 입력칸이 비어 있을 때의 안내문. **앱 UI 라 영어다** (AGENTS.md 의
 /// "프로그램 안에서 사용자에게 직접 표시되는 메시지는 영어").
 pub const search_placeholder = "Find";
-pub const keyboard_shortcuts_url = "https://github.com/ensky0/tildaz/blob/main/KEYBINDINGS.md";
+/// #685 — 단축키 문서 주소의 앞뒤 조각. 가운데 (`main` 또는 `v<버전>`) 는 빌드 값이라
+/// `version.keyboard_shortcuts_url` 이 끼운다 — 이 모듈을 빌드 값에 기대지 않는 순수 모듈로 두려고.
+/// ⚠️ 경로를 바꾸지 않는다. 이미 배포된 판에 이 주소가 박혀 있어서 옛 판의 링크가 깨진다.
+pub const keyboard_shortcuts_url_prefix = "https://github.com/ensky0/tildaz/blob/";
+pub const keyboard_shortcuts_url_suffix = "/KEYBINDINGS.md";
 // #682 — 명령 메뉴의 단축키 글자는 여기 상수가 아니라 **실제 바인딩에서** 만든다
 // (`config.commandMenuHints`). 표기 관례도 그쪽 주석에 있다.
 

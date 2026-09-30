@@ -28,6 +28,8 @@ const perf = @import("../../perf.zig");
 const log = @import("../../log.zig");
 const messages = @import("../../messages.zig");
 const command_menu = @import("../../command_menu.zig");
+// `version` 은 Wayland protocol 버전 지역 변수가 여럿이라 이름을 가른다.
+const app_version = @import("../../version.zig");
 const search_bar = @import("../../search_bar.zig");
 const search_input = @import("../../search_input.zig");
 const config_mod = @import("../../config.zig");
@@ -7513,7 +7515,7 @@ const Client = struct {
             // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
             .open_shortcuts => {
                 self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
             },
             // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
             .split => self.handleSplit(direction orelse return),
@@ -7560,7 +7562,7 @@ const Client = struct {
             },
             .keyboard_shortcuts => {
                 self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
+                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
             },
             .about => self.pending_about_request = true,
         }

@@ -3470,7 +3470,7 @@ fn executeCommandMenu(command: command_menu.Command) void {
         },
         .keyboard_shortcuts => {
             yieldTopmostUntilNextShow();
-            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url);
+            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), version.keyboard_shortcuts_url);
         },
         .about => showAbout(),
     }

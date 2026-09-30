@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const messages = @import("messages.zig");
 
 /// 이 빌드의 버전 문자열. 위 문서 주석의 형식을 따른다.
 pub const string: []const u8 = compose(
@@ -33,6 +34,25 @@ pub const string: []const u8 = compose(
     build_options.commit,
     build_options.commit_dirty,
 );
+
+/// #685 — 명령 메뉴의 Keyboard Shortcuts 와 `open_shortcuts` 가 여는 문서. **릴리즈 판은 자기
+/// 버전 태그의 문서**를 연다 — main 이 앞서 있으면 사용자 버전에 없는 단축키가 보이기 때문이다.
+/// CI 는 태그에서 빌드하므로 prerelease (`v0.10.2-dev.1`) 도 태그가 있다. dev 판은 main 이다.
+pub const keyboard_shortcuts_url: []const u8 = messages.keyboard_shortcuts_url_prefix ++
+    docsRef(build_options.dev, build_options.version) ++ messages.keyboard_shortcuts_url_suffix;
+
+/// 문서를 읽을 git ref. 릴리즈 태그 이름은 `v` + `build.zig.zon` 의 버전이다 (AGENTS.md `# 릴리즈`).
+pub fn docsRef(comptime dev: bool, comptime ver: []const u8) []const u8 {
+    return if (dev) "main" else "v" ++ ver;
+}
+
+test "#685 — 릴리즈는 버전 태그, dev 는 main 의 문서를 연다" {
+    try std.testing.expectEqualStrings("v0.10.2", docsRef(false, "0.10.2"));
+    try std.testing.expectEqualStrings("v0.10.2-dev.1", docsRef(false, "0.10.2-dev.1"));
+    try std.testing.expectEqualStrings("main", docsRef(true, "0.10.2"));
+    const want = if (build_options.dev) "/blob/main/KEYBINDINGS.md" else "/blob/v" ++ build_options.version ++ "/KEYBINDINGS.md";
+    try std.testing.expect(std.mem.endsWith(u8, keyboard_shortcuts_url, want));
+}
 
 /// 조립 규칙 그 자체. `string` 이 comptime 에 한 번 부르고, 테스트가 같은 함수로 규칙을
 /// 검증한다 — 규칙과 검증이 같은 코드를 보게 하려고 상수 안에 인라인하지 않았다.
