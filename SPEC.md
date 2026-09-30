@@ -1778,9 +1778,9 @@ onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/
 [Windows unbiased interrupt time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttimeprecise)).
 
 **메커니즘:**
-- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.toml` / `.log` 의 file association). **연결이 없으면 `notepad.exe` 로 연다** ([#456](https://github.com/ensky0/tildaz/issues/456)). 확장자에 기본 앱이 없으면 Windows 는 아무 것도 열지 않으면서 `ShellExecuteW` 는 성공을 반환해서 (실측: 연결 있는 `.log` 과 연결 없는 `.json` 이 **둘 다 42**, 창은 한쪽만 뜸 — config 가 JSON 이던 시절의 측정이고, `.toml` 도 연결 없는 확장자라 상황은 같다) 호출 결과로는 성패를 알 수 없다. 그래서 열기 **전에** 연결을 조회한다 — `UserChoice` → `HKCR\<ext>` 기본값 → 그 ProgId 의 `shell\open\command` 순. `AssocQueryString` 계열은 `OpenWithProgids` 후보까지 답해서 이 판정에 쓸 수 없다. 확실히 없을 때만 fallback 하고, 조회가 불확실하면 OS 에 맡긴다.
-- macOS: `/usr/bin/open <path>` 를 자식 process 로 — Finder 가 file extension 따라 default app.
-- Linux: `xdg-open <path>` 를 자식 process 로 — XDG MIME database.
+- Windows: `ShellExecuteW(NULL, "open", path, ...)` — 사용자 default editor (`.toml` / `.log` 의 file association). **연결이 없으면 `notepad.exe` 로 연다** ([#456](https://github.com/ensky0/tildaz/issues/456)). 확장자에 기본 앱이 없으면 Windows 는 아무 것도 열지 않으면서 `ShellExecuteW` 는 성공을 반환해서 (실측: 연결 있는 `.log` 과 연결 없는 `.json` 이 **둘 다 42**, 창은 한쪽만 뜸 — config 가 JSON 이던 시절의 측정이고, `.toml` 도 연결 없는 확장자라 상황은 같다) 호출 결과로는 성패를 알 수 없다. 그래서 열기 **전에** 연결을 조회한다 — `UserChoice` → `HKCR\<ext>` 기본값 → 그 ProgId 의 `shell\open\command` 순. `AssocQueryString` 계열은 `OpenWithProgids` 후보까지 답해서 이 판정에 쓸 수 없다. 확실히 없을 때만 fallback 하고, 조회가 불확실하면 OS 에 맡긴다. **그 조회는 파일 경로에만 한다** ([#682](https://github.com/ensky0/tildaz/issues/682)) — `scheme:` 으로 시작하는 값은 `ShellExecuteW` 에 그대로 넘긴다. URL 은 확장자가 아니라 scheme handler 가 여는 앱을 정하는데, `…/KEYBINDINGS.md` 의 끝 조각을 `.md` 로 읽는 바람에 `.md` 연결이 없는 기기에서 **URL 이 파일 이름인 양 메모장으로** 갔다 (2026-09-30 실기 — `Ctrl+Shift+/` · `⋯` 메뉴의 Keyboard Shortcuts · 연결 없는 확장자로 끝나는 링크 클릭). 드라이브 문자 (`C:`) 가 한 글자 scheme 꼴이라 scheme 은 **두 글자 이상**만 인정한다.
+- macOS: `/usr/bin/open <path>` 를 자식 process 로 — Finder 가 file extension 따라 default app. URL 도 그대로 처리해서 Windows 의 위 갈래가 필요 없다.
+- Linux: `xdg-open <path>` 를 자식 process 로 — XDG MIME database. URL 도 그대로 처리한다 (macOS 와 같다).
 
 **자식 process 회수 (macOS · Linux)** — spawn 한 자식은 **그 pid 를 지목한 thread 가 `waitpid` 로
 거둔다** ([#457](https://github.com/ensky0/tildaz/issues/457)). 안 거두면 `[xdg-open] <defunct>` 가
