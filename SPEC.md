@@ -1794,7 +1794,7 @@ Windows 는 `ShellExecuteW` 라 우리가 자식을 만들지 않아 이 문제�
 
 기존 About 텍스트 (TildaZ vX.Y.Z / exe / pid) 에 config / log 경로 + 그 경로를 빨리 여는 단축키 Tip 추가. **`~` 같은 단축 안 쓰고 절대 경로** — 사용자가 그대로 복사해서 vim / ls 명령에 paste 가능 + `~` 가 환경에 따라 다른 위치라 ambiguity 제거.
 
-**body 구조는 세 platform 동일** (`messages.about_format`). Tip 라인의 단축키 *토큰* 만 platform native다. Linux는 `Ctrl+Shift+P/L`, macOS는 `Shift+Cmd+P/L`, Windows는 `Ctrl+Shift+P/L` — SPEC §0 #2 의 platform 표준 우선 원칙.
+**body 구조는 세 platform 동일** (`messages.about_format`). Tip 라인의 단축키는 **실제 `[keys]` 바인딩**이다 (#682) — 명령 메뉴의 Open Config · Open Log 와 같은 글자다. 기본값은 Linux · Windows `Ctrl+Shift+P/L`, macOS `Shift+Cmd+P/L` (SPEC §0 #2 의 platform 표준 우선 원칙). 바인딩이 없는 줄은 빼고, 둘 다 없으면 Tip 블록이 없다.
 
 **About 본문 복사는 세 platform 이 공통으로 제공해야 하는 동작이 아니다** (2026-07-12 결정, #282 C3). **Linux overlay dialog 는 복사를 제공하지 않는다 (의도).** macOS는 accessoryView selection auto-copy (#128), Windows는 read-only EDIT의 selection/Ctrl+C로 복사한다. About 이 보여주는 config/log 경로는 Open Config (`Ctrl+Shift+P`) / Open Log (`Ctrl+Shift+L`) 단축키로 직접 열 수 있어 복사의 실용 가치가 대체되기 때문이다.
 

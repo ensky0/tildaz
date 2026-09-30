@@ -1275,7 +1275,7 @@ pub const App = struct {
                 self.window.yieldTopmostUntilNextShow();
                 system_open.openInDefaultApp(self.rt, self.allocator, messages.keyboard_shortcuts_url);
             },
-            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt),
+            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt, &self.menu_hints),
         }
     }
 
@@ -1886,7 +1886,7 @@ pub const App = struct {
                         return true;
                     },
                     .show_about => {
-                        about.showAboutDialog(self.rt);
+                        about.showAboutDialog(self.rt, &self.menu_hints);
                         return true;
                     },
                     .open_config => {

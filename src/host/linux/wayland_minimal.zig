@@ -9791,7 +9791,9 @@ const Client = struct {
     fn drainAboutRequest(self: *Client) void {
         if (!self.pending_about_request) return;
         self.pending_about_request = false;
-        about.showAboutDialog(self.rt);
+        // #682 — Tip 도 메뉴와 같은 바인딩 표에서 읽는다. Show / Hide 칸은 안 쓰므로 빈다.
+        const hints = config_mod.commandMenuHints(self.config.key_bindings[0..self.config.key_binding_count], "");
+        about.showAboutDialog(self.rt, &hints);
     }
 
     /// #216 — KWin Alt+F4 `closed` 후 메인 surface 를 **깜박임 없이** 교체.

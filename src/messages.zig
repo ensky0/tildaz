@@ -93,8 +93,8 @@ pub const hotkey_takeover_declined_format = "Kept the existing binding. To use \
 pub const hotkey_takeover_declined_fallback_msg = "Hotkey unchanged.";
 
 /// About 다이얼로그 본문 — 모든 platform 동일 구조. version / exe / pid /
-/// config / log 다음 Tip 라인에 OS 별 단축키 (Windows / Linux Ctrl+Shift+P/L
-/// vs macOS Shift+Cmd+P/L) 가 들어감. 사용자가 dialog 안에서 path 를 직접
+/// config / log 다음 Tip 블록 (`about_tip_*_format` — 실제 바인딩의 단축키) 이
+/// 들어감. 사용자가 dialog 안에서 path 를 직접
 /// selection + copy (mac NSTextView) 하거나 native Ctrl+C / Cmd+C 로 본문
 /// 전체 copy 후 path 만 골라낼 수 있고, Tip 의 단축키로 editor 를 바로 열 수도 있음.
 pub const about_format =
@@ -104,11 +104,27 @@ pub const about_format =
     \\pid   : {d}
     \\config: {s}
     \\log   : {s}
+    \\{s}
+    \\https://github.com/ensky0/tildaz
+;
+/// #682 — About 의 Tip 블록. 키는 실제 `[keys]` 바인딩에서 온다 (메뉴 hint 와 같은 글자).
+/// 바인딩이 없는 줄은 뺀다 — 없는 단축키를 안내하지 않는다. 둘 다 없으면 블록이 빈다.
+/// 앞뒤 개행은 `about_format` 의 빈 줄을 만든다.
+pub const about_tip_both_format =
     \\
     \\Tip: {s} opens config in default editor.
     \\     {s} opens log.
     \\
-    \\https://github.com/ensky0/tildaz
+;
+pub const about_tip_config_format =
+    \\
+    \\Tip: {s} opens config in default editor.
+    \\
+;
+pub const about_tip_log_format =
+    \\
+    \\Tip: {s} opens log.
+    \\
 ;
 pub const about_prepare_failed_msg =
     "TildaZ could not prepare the full About information. Check the TildaZ log for details.";

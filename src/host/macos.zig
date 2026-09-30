@@ -3469,7 +3469,7 @@ fn executeCommandMenu(command: command_menu.Command) void {
             yieldTopmostUntilNextShow();
             @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url);
         },
-        .about => about.showAboutDialog(g_rt),
+        .about => showAbout(),
     }
     requestRender();
 }
@@ -5788,6 +5788,12 @@ var g_last_tap_disable_ms: i64 = 0;
 var g_perm_msg_buf: [2048]u8 = undefined;
 var g_perm_msg_len: usize = 0;
 
+/// #682 — About 의 Tip 도 메뉴와 같은 바인딩 표에서 읽는다. Show / Hide 칸은 안 쓰므로 빈다.
+fn showAbout() void {
+    const hints = config.commandMenuHints(g_config.key_bindings[0..g_config.key_binding_count], "");
+    about.showAboutDialog(g_rt, &hints);
+}
+
 /// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어
 /// responder chain 의 마지막 단계 (NSApp) 에서 항상 dispatch 된다 — 윈도우가
 /// hide 상태여도 동작.
@@ -5796,7 +5802,7 @@ fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callcon
     _ = _sel;
     _ = sender;
     applyShortcutInputPolicy(.show_about);
-    about.showAboutDialog(g_rt);
+    showAbout();
 }
 
 /// Shift+Cmd+P — 현재 worker의 config_N.json 을 default editor 로 열기 (#128). About 와 같은

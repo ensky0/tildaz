@@ -406,6 +406,9 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     var tab_limit_buf: [128]u8 = undefined;
     const tab_limit_msg = try std.fmt.bufPrint(&tab_limit_buf, messages.tab_limit_format, .{32});
 
+    // #682 — Tip 블록은 따로 조립된다. 가장 긴 쪽 (두 줄) 으로 잰다.
+    var about_tip_buf: [256]u8 = undefined;
+    const about_tip = try std.fmt.bufPrint(&about_tip_buf, messages.about_tip_both_format, .{ "Ctrl+Shift+P", "Ctrl+Shift+L" });
     var about_buf: [2048]u8 = undefined;
     const about_msg = try std.fmt.bufPrint(&about_buf, messages.about_format, .{
         "0.6.1",
@@ -413,8 +416,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         123456,
         "/home/example/.config/tildaz/config_0.toml",
         "/home/example/.local/state/tildaz/tildaz0.log",
-        "Ctrl+Shift+P",
-        "Ctrl+Shift+L",
+        about_tip,
     });
 
     // #495 — 경로는 이 본문에 없다. `showConfigFatalMsg` 가 모든 config 오류 앞에
