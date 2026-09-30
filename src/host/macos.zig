@@ -904,7 +904,12 @@ fn tildazAcceptsFirstMouse(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) boo
 /// 첫 event는 mainMenu가 매칭하지 않는 것이 실기로 확인됐으므로, 기존 macOS
 /// main-queue deferral로 custom Quit selector를 다음 turn에 실행한다. 다른 key는
 /// false로 기존 NSMenu routing을 유지한다.
-fn tildazPerformKeyEquivalent(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) bool {
+///
+/// #682 — **Cmd 조합의 `[keys]` 조회도 여기서 한다.** `⇧⌘/` 는 이 메서드까지는 오지만
+/// `keyDown:` 에는 오지 않는다 (실측 — AppKit 이 `⌘?` 를 Help 단축키로 따로 다루는 것으로
+/// 보인다). 이 자리는 앱 메뉴보다 먼저 불리므로 config 가 메뉴의 고정 단축키를 이기기도
+/// 한다 — About · Config · Log 가 사용자 binding 을 따르는 이유다.
+fn tildazPerformKeyEquivalent(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) bool {
     if (event == null) return false;
 
     const get_flags = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
@@ -917,14 +922,20 @@ fn tildazPerformKeyEquivalent(_: objc.id, _: objc.SEL, event: objc.id) callconv(
         NSEventModifierFlagControl |
         NSEventModifierFlagOption |
         NSEventModifierFlagCommand;
-    if (flags & relevant != NSEventModifierFlagCommand) return false;
-
     const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
-    if (get_kc(event, objc.sel("keyCode")) != 0x0C) return false; // Q
+    const kc = get_kc(event, objc.sel("keyCode"));
 
-    applyShortcutInputPolicy(.quit);
-    dispatch_async_f(&_dispatch_main_q, null, tildazQuitTrampoline);
-    return true;
+    if (flags & relevant == NSEventModifierFlagCommand and kc == 0x0C) { // Q
+        applyShortcutInputPolicy(.quit);
+        dispatch_async_f(&_dispatch_main_q, null, tildazQuitTrampoline);
+        return true;
+    }
+
+    if (flags & NSEventModifierFlagCommand == 0) return false;
+    // 명령 메뉴가 열려 있으면 Cmd 는 메뉴를 닫는다 — 예전에 `keyDown:` 이 하던 일이다.
+    if (g_command_menu_open) closeCommandMenu();
+    const action = macLookupAction(self_view, event, kc, flags) orelse return false;
+    return runKeyAction(action);
 }
 
 const NSEventTypeKeyDown: c_long = 10;
@@ -1523,13 +1534,16 @@ fn runKeyAction(action: config.KeyAction) bool {
         // macOS 는 이 넷을 mainMenu 가 소유한다 (Cmd+Q / About / Config / Log). 메뉴
         // 항목과 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키
         // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
-        .quit, .show_about, .open_config, .open_log => return false,
+        // `quit` 은 `tildazPerformKeyEquivalent` 의 `⌘Q` 와 mainMenu 가 맡는다.
+        .quit => return false,
+        // #682 — 명령 메뉴와 같은 함수다. 예전에는 mainMenu 의 고정 단축키 (`⇧⌘I` 등) 에
+        // 맡겨서 사용자가 binding 을 바꿔도 따라가지 않았다.
+        .show_about => executeCommandMenu(.about),
+        .open_config => executeCommandMenu(.open_config),
+        .open_log => executeCommandMenu(.open_log),
         .toggle_visibility, .open_command_menu => return false,
         // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
-        .open_shortcuts => {
-            yieldTopmostUntilNextShow();
-            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), messages.keyboard_shortcuts_url);
-        },
+        .open_shortcuts => executeCommandMenu(.keyboard_shortcuts),
         // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c 와 같은 배선).
         .split => handleSplit(mapped.direction orelse return false),
         .focus_pane => handleFocusPane(mapped.direction orelse return false),
@@ -1644,9 +1658,6 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const cmd = (flags & NSEventModifierFlagCommand) != 0;
     if (cmd) {
-        const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
-        const kc = get_kc(event, objc.sel("keyCode"));
-
         // #296 — 단축키의 preedit commit 여부는 입력 정책 (`input_policy.resolve`)
         // 한 곳에서 결정한다. copy / perf 는 read-only 라 터미널 preedit 을 자모
         // 보존 위해 flush 하고, 그 외 단축키는 commit 후 실행한다 (SPEC §4.1).
@@ -1656,11 +1667,8 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         // 따로 읽지 않는다 — 예전엔 `fullscreen` 하나를 놓고 Shift 로 workarea 를
         // 갈랐지만 이제 두 액션이 별 항목이다.
         //
-        // 인식 못한 Cmd+key 는 mainMenu (Cmd+Q 등) 로 가야 하므로 소비하지 않고
-        // `return` 한다 — 기존 동작이다.
-        if (macLookupAction(self_view, event, kc, flags)) |action| {
-            if (runKeyAction(action)) return;
-        }
+        // #682 — 조회는 `tildazPerformKeyEquivalent` 가 이미 했다. 여기 온 Cmd 조합은
+        // binding 이 없는 것이라 PTY 로 보내지 않고 끝낸다 — 기존 동작이다.
         return;
     }
 
@@ -5960,46 +5968,45 @@ fn buildMainMenu(app: objc.id) !void {
     const initItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
 
     const about_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    // Shift+Cmd+I — macOS 표준 modifier (Cmd) + 다른 탭 단축키 (Cmd+T/W/숫자/[/])
-    // 와 일관. Accessory mode 라 메뉴바 UI 는 안 보이지만 NSApp 의
-    // `performKeyEquivalent:` 가 mainMenu 를 훑어 dispatch 하므로 키만으로
-    // 동작 (Cmd+Q 와 같은 메커니즘).
-    // shift modifier 가 있으면 keyEquivalent 는 lowercase 로 둠 (Apple HIG).
+    // #682 — About · Config · Log 항목은 selector 만 남는다. 단축키는 `[keys]` 가 정하고
+    // `tildazPerformKeyEquivalent` 가 처리한다.
     const about_item = initItem(
         about_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
         objc.nsString(messages.about_title),
         objc.sel("tildazShowAbout:"),
-        objc.nsString("i"),
+        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
+        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
+        objc.nsString(""),
     ) orelse return error.AboutItemInitFailed;
-    const NSEventModifierFlagShift: c_ulong = 1 << 17;
     const NSEventModifierFlagCommand: c_ulong = 1 << 20;
     const setMask = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
-    setMask(about_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), about_item);
 
-    // Shift+Cmd+P — Open Config (#128). About 와 같은 NSApp-level dispatch.
+    // Open Config (#128). About 와 같은 NSApp-level dispatch.
     const config_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
     const config_item = initItem(
         config_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
         objc.nsString(messages.macos_menu_open_config_label),
         objc.sel("tildazOpenConfig:"),
-        objc.nsString("p"),
+        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
+        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
+        objc.nsString(""),
     ) orelse return error.OpenConfigItemInitFailed;
-    setMask(config_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), config_item);
 
-    // Shift+Cmd+L — Open Log (#128).
+    // Open Log (#128).
     const log_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
     const log_item = initItem(
         log_alloc,
         objc.sel("initWithTitle:action:keyEquivalent:"),
         objc.nsString(messages.macos_menu_open_log_label),
         objc.sel("tildazOpenLog:"),
-        objc.nsString("l"),
+        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
+        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
+        objc.nsString(""),
     ) orelse return error.OpenLogItemInitFailed;
-    setMask(log_item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCommand | NSEventModifierFlagShift);
     addItem(app_menu, objc.sel("addItem:"), log_item);
 
     // separator
