@@ -335,6 +335,7 @@ here would give it two homes to drift between.
 | | `show_about` | Open the About dialog |
 | | `open_config` | Open this config file in your editor |
 | | `open_log` | Open `tildaz_N.log` in your editor |
+| | `open_shortcuts` | Open the keyboard shortcuts page in your browser |
 | | `dump_perf` | Write a performance snapshot to the log |
 
 A tab holds up to 16 panes. Splitting is also available without a key — Alt+click
@@ -377,8 +378,7 @@ produce each binding's label at all; if nothing can, it falls back to the
 physical spot that character has on a US keyboard. So the defaults work on a
 Cyrillic layout — or a Korean, Japanese, or Chinese input source — untouched.
 The check follows the live layout, so a `us,ru` setup matches by label while you
-are on `us` and falls back the moment you switch to `ru`. KEYBINDINGS.md has the
-details.
+are on `us` and falls back the moment you switch to `ru`.
 
 **Windows does not need it either**, for a different reason: a non-Latin layout
 DLL assigns Latin virtual-keys to the physical spots, so the OS has already done
@@ -537,8 +537,35 @@ and Spanish cannot type `` ` `` at all — the key in that position is a dead ac
 extensions cannot make a dead key usable either. Choose a function key or a key
 that the active layout can type.
 
-KEYBINDINGS.md has a measured table of which layouts can type which keys, and the
-sway / Hyprland limitation it matters most for.
+How each desktop registers a hotkey written by position (`ctrl+[Backquote]`):
+
+| Desktop | Registered by |
+|---|---|
+| sway, Hyprland, GNOME, Cinnamon, macOS | key position |
+| COSMIC, KDE | the character that position types on your current layout |
+| Windows | the virtual key that position holds on your current layout |
+
+The layout-following rows re-register when you switch layouts while TildaZ runs. On
+German, `[Backquote]` is a dead accent that COSMIC and KDE cannot express, so TildaZ logs
+it instead of registering the wrong key. On macOS the global hotkey always matches by
+position, while `[keys]` matches the printed letter
+([#496](https://github.com/ensky0/tildaz/issues/496) item 1-c).
+
+**On Hyprland** the hotkey is matched against the character the active layout types, so
+it stops working while a layout that cannot type it is active. Measured with
+`xkbcli how-to-type` — ✅ means the layout can type it:
+
+| Layout | `A`–`Z` | `0`–`9` | `` ` `` | `[` `]` |
+|---|:--:|:--:|:--:|:--:|
+| US, UK, French, Italian, Japanese | ✅ | ✅ | ✅ | ✅ |
+| German, Spanish | ✅ | ✅ | ❌ | ✅ |
+| Greek, Arabic | ❌ | ✅ | ✅ | ✅ |
+| Ukrainian, Bulgarian, Hebrew | ❌ | ✅ | ❌ | ✅ |
+| Russian | ❌ | ✅ | ❌ | ❌ |
+| Thai | ❌ | ❌ | ❌ | ❌ |
+
+This is only the global hotkey. Shortcuts inside TildaZ (`[keys]`) keep working on every
+layout above.
 
 ## New tab working directory
 

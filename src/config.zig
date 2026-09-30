@@ -1975,7 +1975,7 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
     };
 }
 
-/// Linux · Windows 기본 bindings — `KEYBINDINGS.md` 의 두 열과 1:1 (그 둘은 같다).
+/// Linux · Windows 기본 bindings — `KEYBINDINGS.md` 의 `Linux · Windows` 열과 1:1.
 fn pcDefaultBindings(action: KeyAction) []const []const u8 {
     return switch (action) {
         .new_tab => &.{"ctrl+shift+t"},
