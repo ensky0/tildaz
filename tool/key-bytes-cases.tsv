@@ -38,3 +38,6 @@ mok2	Ctrl+Space	00	ctrl+space
 mok2	Ctrl+6	1e	ctrl+6
 mok2	Ctrl+Shift+-	1f	ctrl+shift+minus
 mok2	Ctrl+;	1b 5b 32 37 3b 35 3b 35 39 7e	ctrl+semicolon
+mok2	Ctrl+[	1b 5b 32 37 3b 35 3b 39 31 7e	ctrl+bracketleft
+mok2	Ctrl+I	1b 5b 32 37 3b 35 3b 31 30 35 7e	ctrl+i
+mok2	Ctrl+Shift+G	1b 5b 32 37 3b 36 3b 37 31 7e	ctrl+shift+g

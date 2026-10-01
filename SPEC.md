@@ -694,9 +694,26 @@ Windows 실측).
 
 **Windows 는 Backspace · Tab · Enter 를 인코더로 보낸다** (#653). 그 전에는 `WM_CHAR` 로 받았는데 그 메시지에는 물리 키도 Shift 도 없어서 Backspace 와 `Ctrl+H` 가 코드포인트 8 하나로 합쳐지고 (둘 다 `7f`) `Shift+Tab` 의 back-tab 이 사라졌다 (`09`). IME 조합 중과 dead key 대기 중에는 손대지 않는다 — 음절 확정이 IME 의 몫이다.
 
+**Windows 는 `Ctrl`+글자도 인코더로 보낸다 — legacy · kitty · mok2 세 모드 전부** ([#684](https://github.com/ensky0/tildaz/issues/684), 2026-10-01). 그 전에는 kitty 일 때만 인코더를 타서 legacy · mok2 의 `Ctrl`+글자가 ghostty `ctrlSeq` 표에 닿지 못했다 — Linux · macOS 는 늘 그 표를 지나므로 **Windows 만 갈렸다** (세 OS 실측: Linux 20/20 · macOS 20/20 · Windows 5/20). 고칠 자리는 인코딩 표가 아니라 host 였다 — 표에는 `/` → `1f` 가 처음부터 있었다.
+
+| 입력 (legacy) | 나가는 것 | 전 (Windows) |
+|---|---|---|
+| `Ctrl+/` · `Ctrl+Shift+-` | `1f` | (없음) |
+| `Ctrl+Space` | `00` | `20` — 스페이스가 그대로 나갔다 |
+| `Ctrl+2` · `3` · `6` · `8` | `00` · `1b` · `1e` · `7f` | (없음) |
+| `Ctrl+0` · `1` · `9` | `30` · `31` · `39` | (없음) |
+
+**`Alt` 는 제외한다.** Windows 의 AltGr 은 `Ctrl+Alt` 로 도착하고 그 조합이 만든 글자는 `WM_CHAR` 가 따로 준다. 인코더로 보내면 ESC-prefix 경로로 가 프랑스 자판의 `AltGr+e` 가 `€` 대신 `ESC <글자>` 가 된다 (실기로 확인 — 아래). 인코더가 낼 것이 없으면 예전 `WM_CHAR` 경로로 떨어진다 — 우리가 모르는 키의 Ctrl 조합이 조용히 사라지지 않게 하는 안전망이다. IME 조합 중에도 손대지 않는다.
+
+**`Ctrl+0` · `Ctrl+1` · `Ctrl+9` 는 Windows Terminal 과 다르다 (known).** ghostty 표가 kitty 를 이어 숫자 자신을 돌려줘 `30` · `31` · `39` 가 나가는데 Windows Terminal 은 `Ctrl+0` 에서 아무것도 보내지 않는다. **세 platform 동등 (§0 #1) 을 택해** Linux · macOS 와 맞췄다.
+
+**mok2 의 `Ctrl+[` · `Ctrl+I` 는 `CSI 27;<mods>;<cp> ~` 다.** ghostty 가 `i` · `m` · `[` 를 fixterms 명세대로 `ctrlSeq` 에서 **일부러 빼** `CSI u` 로 보내고, mok2 는 그것을 앱이 요청한 인코딩으로 보아 C0 로 내리지 않는다 (legacy 는 위 규칙 ② 가 `09` · `1b` 로 내린다). 이것도 Linux · macOS 와 같아진 자리다 — 예전 Windows 가 `1b` · `09` 를 내던 것은 인코더를 안 탔기 때문이다.
+
+**비US 배열 실기** (2026-10-01 · 노트북 Ryzen AI 7 350 · 창 스레드만 프랑스어 레거시 AZERTY 로 전환). 기대값은 `VkKeyScanExW` 로 재기 전에 뽑았다. 자리가 US 와 뒤바뀐 두 키에서 **라벨 기준**이 지켜진다 — `Ctrl+a` (US 의 `Q` 자리 · sc `0x10`) → `01`, `Ctrl+q` (US 의 `A` 자리 · sc `0x1E`) → `11`. AltGr 은 `AltGr+e` → `€` (`e2 82 ac`) 로 보존된다.
+
 **macOS 는 세 칸이 아직 다르다** ([#658](https://github.com/ensky0/tildaz/issues/658)) — `Ctrl+Tab` · `Ctrl+Escape` 가 AppKit 의 key-view loop 에 막혀 `keyDown:` 에 도달하지 않고, `Shift+Tab` · `Shift+Enter` · `Shift+Escape` 가 `imeDoCommand` 의 하드코딩 표를 지나 프로토콜을 무시하며, 한글 입력 소스에서 kitty 코드포인트가 자모다. 셋 다 이 규칙 이전부터 있던 것이다.
 
-실기 — Linux (KDE Plasma Wayland · headless sway + `vkbd`) 19 키 × 3 모드, macOS 26 키 × 3 모드, Windows 26 키 + 경계 14 키. 도구는 [`tool/key-bytes.py`](tool/key-bytes.py) (세 OS 공통) 와 [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) (자동 판정).
+실기 — Linux (KDE Plasma Wayland · headless sway + `vkbd`) 19 키 × 3 모드, macOS 26 키 × 3 모드, Windows 는 #684 뒤 네 회차 60 칸 (legacy · kitty · mok2 · 비US 배열). 도구는 [`tool/key-bytes.py`](tool/key-bytes.py) (세 OS 공통) 와 [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) (자동 판정).
 
 ### 2.7 Key repeat (길게 누름 반복)
 

@@ -2337,15 +2337,27 @@ pub const Window = struct {
                     if (is_modifier_vk and self.sendEncodedKeyWin(@intCast(wParam), lParam, "", keyActionFromLParam(lParam))) return 0;
                 }
 
-                // #533 — kitty protocol 이 켜져 있을 때만 `Ctrl`+글자도 인코더로 보낸다.
-                // 평소에는 `WM_CHAR` 가 배열이 반영된 제어문자를 주므로 손대지 않는다 (그
-                // 경로가 AZERTY 의 `Ctrl+A` 를 `^A` 로 정확히 낸다 — 실기 확인). kitty 에서는
-                // 제어문자가 아니라 `CSI u` 여야 해서 여기서 가로챈다.
+                // #533 · #684 — `Ctrl`+글자를 인코더로 보낸다. **세 모드 전부**다.
+                //
+                // 예전에는 `kitty_active` 일 때만 탔고, 그래서 legacy · mok2 의 `Ctrl`+글자가
+                // 인코더를 아예 지나지 않아 ghostty `ctrlSeq` 표에 닿지 못했다 — `Ctrl+/` ·
+                // `Ctrl+Space` · `Ctrl+숫자` · `Ctrl+Shift+-` 가 Windows 에서만 아무것도 안
+                // 보내거나 (`20` 처럼) 다른 바이트를 냈다. Linux · macOS 는 늘 인코더를 타서
+                // 20/20 이었다 (#684 세 OS 실측). **고치는 자리는 인코딩 표가 아니라 여기다** —
+                // 표에는 `/`→`1f` 가 이미 있었다.
+                //
+                // 낼 것이 없으면 `sendEncodedKeyWin` 이 `false` 를 주고 예전 `WM_CHAR` 경로로
+                // 떨어진다. 우리가 모르는 키의 Ctrl 조합이 조용히 사라지지 않게 하는 안전망이다.
+                //
+                // **`Alt` 는 제외한다** — Windows 의 AltGr 은 `Ctrl+Alt` 로 도착하고 그 조합이
+                // 만든 글자는 `WM_CHAR` 가 따로 준다. 인코더로 보내면 `mayRewriteExtended` 가
+                // alt 를 보고 비켜서 ESC-prefix 경로로 가므로 프랑스 자판의 `AltGr+2` 가 `~` 대신
+                // `ESC é` 가 되고, 짝꿈 `WM_CHAR` 까지 삼켜진다. kitty 는 예전 동작을 그대로 둔다.
                 //
                 // **단축키 다음이다** — `Ctrl+Shift+T` 같은 binding 은 위 `lookupKeyAction` 이
                 // 이미 가져갔다. IME 가 조합 중이면 건드리지 않는다 (한글 조합이 깨진다).
-                if (kitty_active and
-                    GetKeyState(VK_CONTROL) < 0 and
+                if (GetKeyState(VK_CONTROL) < 0 and
+                    (kitty_active or GetKeyState(VK_MENU) >= 0) and
                     self.imePreeditSlice().len == 0)
                 {
                     var ctrl_chars: [8]u8 = undefined;
@@ -2357,7 +2369,8 @@ pub const Window = struct {
                     );
                     if (ctrl_text.len > 0 and self.sendEncodedKeyWin(@intCast(wParam), lParam, ctrl_text, keyActionFromLParam(lParam))) {
                         // TranslateMessage 가 큐에 넣을 짝꿍 `WM_CHAR`(제어문자) 를 삼킨다 —
-                        // 그러지 않으면 `CSI u` 와 `\x03` 이 둘 다 나간다.
+                        // 그러지 않으면 인코더가 낸 것과 `WM_CHAR` 의 제어문자가 둘 다 나간다
+                        // (kitty 는 `CSI u` + `\x03`, legacy 는 `01` 이 두 번).
                         self.swallow_next_wm_char = true;
                         return 0;
                     }
