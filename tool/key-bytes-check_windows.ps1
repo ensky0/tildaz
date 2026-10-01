@@ -10,7 +10,9 @@
 # 무엇을 하나 —
 # 1. `--instance 9 -e <자식.cmd>` 로 tildaz 를 띄운다. 자식은 `key-bytes.py` 를 돌리고 **stdout 을 파일로**
 #    돌린다. `-e` 는 stress run 이라 hotkey 도 config 도 만들지 않는다 (로그는 `tildaz_stress.log`).
-# 2. `SendInput` 으로 chord 를 하나씩 보내고 (간격 700 ms) 자식이 받은 hex 를 파일에서 읽어 기대와 견준다.
+# 2. `SendInput` 으로 chord 를 하나씩 보내고 (간격 700 ms) **키마다** 그 뒤에 새로 생긴 hex 줄만 파일에서
+#    읽어 기대와 견준다 (#684 — 순서로 맞추면 한 키가 0 바이트일 때 뒤가 전부 밀린다).
+#    칠 키는 이 파일의 회차 표에 세 OS 공용 표 [`key-bytes-cases.tsv`](key-bytes-cases.tsv) 의 행을 더한 것이다.
 # 3. 창도 한 장 찍어 둔다 (`PrintWindow`) — 파일이 비었을 때 화면에 무엇이 있었는지 보려고.
 #
 # ⚠️ **kitty · mok2 의 enable 시퀀스는 이 스크립트가 보낸다.** `key-bytes.py <mode>` 는 그 시퀀스를 *자기
@@ -194,6 +196,39 @@ $rounds = @(
     ) }
 )
 
+# #684 — 세 OS 공용 표 (`key-bytes-cases.tsv`) 의 행을 각 모드 회차에 더한다. 키 이름은
+# `vkbd_linux.py` · `input_macos.m` 표기라 여기서 VK 로 바꾼다. 이 파일에 같은 이름의 행이 이미
+# 있으면 이 파일 것을 쓴다 (`Ctrl+A` · `Ctrl+;` 등).
+$KeyVK = @{ ctrl = 0x11; shift = 0x10; slash = 0xBF; space = 0x20; minus = 0xBD; semicolon = 0xBA }
+foreach ($ch in [char[]]'abcdefghijklmnopqrstuvwxyz') { $KeyVK["$ch"] = [int][char]::ToUpper($ch) }
+foreach ($d in 0..9) { $KeyVK["$d"] = 0x30 + $d }
+$Cases = Join-Path $PSScriptRoot "key-bytes-cases.tsv"
+if (-not (Test-Path $Cases)) { throw "key-bytes-cases.tsv 없음: $Cases" }
+foreach ($line in (Get-Content -Encoding UTF8 $Cases)) {
+    if ($line -match '^\s*(#|$)') { continue }
+    $f = $line -split "`t"
+    if ($f.Count -ne 4) { throw "열이 넷이 아니다: $line" }
+    $round = $rounds | Where-Object { $_.mode -eq $f[0] }
+    if (-not $round) { throw "모르는 모드: $($f[0])" }
+    if ($round.keys | Where-Object { $_.n -eq $f[1] }) { continue }
+    [int[]]$vks = @(foreach ($part in ($f[3] -split '\+')) {
+        if (-not $KeyVK.ContainsKey($part)) { throw "모르는 키: $part ($($f[3]))" }
+        $KeyVK[$part]
+    })
+    # `,$vks` — 원소 하나짜리 배열로 감싼다 (위 행들의 `,@(…)` 와 같은 모양 · 머리 주석의 함정).
+    $round.keys += @{ n = $f[1]; k = ,$vks; e = $(if ($f[2] -eq "-") { "" } else { $f[2] }) }
+}
+
+# 받은 파일의 hex 줄 전부. python 이 쓰는 중에 읽으므로 공유 모드로 연다.
+function Read-HexLines([string]$Path) {
+    if (-not (Test-Path $Path)) { return ,@() }
+    $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+    try { $text = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+    # `key-bytes.py` 는 `<hex …>  <repr>` 로 한 줄씩 찍는다 — hex 부분만 뽑는다.
+    $hex = @($text -split "`r?`n" | ForEach-Object { if ($_ -match '^((?:[0-9a-f]{2} )*[0-9a-f]{2})\s') { $matches[1] } })
+    return ,$hex
+}
+
 $Out = Join-Path $env:TEMP "tildaz-key-bytes"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
@@ -230,42 +265,32 @@ foreach ($r in $rounds) {
     if ($p.HasExited -or $h -eq [IntPtr]::Zero) { "❌ 앱 또는 창 없음 (exited=$($p.HasExited))"; $allOk = $false; Stop-Tz; continue }
     Start-Sleep -Seconds 3        # python 이 raw 모드에 들어갈 시간
 
+    # #684 — **키마다** 그 뒤에 새로 생긴 줄만 읽어 판정한다. 예전에는 다 친 뒤 받은 줄을 기대값에
+    # 순서대로 맞췄는데, 그러면 한 키가 예상과 달리 0 바이트일 때 뒤가 전부 한 칸씩 밀려서 수정 전
+    # 판의 결과를 읽을 수 없었다 (`Ctrl+/` 가 정확히 그렇다).
     try {
         if (-not [TzKeyBytes]::Focus($h)) { throw "포커스 못 잡음 — 키를 보내지 않는다" }
         foreach ($c in $r.keys) {
             if ([TzKeyBytes]::GetForegroundWindow() -ne $h) { throw "포커스 잃음 ($($c.n))" }
             $chord = $c.k[0]      # `,@(…)` 의 한 겹을 벗긴다
+            $before = (Read-HexLines $result).Count
             $sent = [TzKeyBytes]::Chord([uint16[]]$chord)
             if ($sent -ne $chord.Count * 2) { throw "SendInput 거부: $sent (기대 $($chord.Count * 2))" }
             Start-Sleep -Milliseconds 700
+            # 변수에 먼저 받는다 — 함수가 `,` 로 감싸 돌려주므로 바로 파이프하면 배열이 **한 덩어리**로
+            # 넘어가 `-Skip` 이 통째로 건너뛴다.
+            $now = Read-HexLines $result
+            $g = ($now | Select-Object -Skip $before) -join ' '
+            $ok = $g -eq $c.e
+            "{0} {1,-16} 기대 [{2}]  받음 [{3}]" -f $(if ($ok) { "OK  " } else { "FAIL" }), $c.n,
+                $(if ($c.e) { $c.e } else { "(없음)" }), $(if ($g) { $g } else { "(없음)" })
+            if (-not $ok) { $allOk = $false }
         }
         Start-Sleep -Milliseconds 500
         [TzKeyBytes]::Shot($h, $shot)
     } catch { "❌ $_"; $allOk = $false } finally { Stop-Tz }
 
     if (-not (Test-Path $result)) { "❌ 결과 파일 없음: $result"; $allOk = $false; continue }
-    # `key-bytes.py` 는 `<hex …>  <repr>` 로 한 줄씩 찍는다 — hex 부분만 뽑는다.
-    $got = @(Get-Content $result | ForEach-Object {
-        if ($_ -match '^((?:[0-9a-f]{2} )*[0-9a-f]{2})\s') { $matches[1] }
-    })
-    $i = 0
-    foreach ($c in $r.keys) {
-        if ($c.e -eq "") {
-            # 0 바이트 기대 — 줄이 생기지 않아야 한다. 다음 기대값이 제자리에 오는지로 판정된다.
-            "OK?  {0,-16} 기대 [(없음)]" -f $c.n
-            continue
-        }
-        $g = if ($i -lt $got.Count) { $got[$i] } else { "(없음)" }
-        $ok = $g -eq $c.e
-        "{0} {1,-16} 기대 [{2}]  받음 [{3}]" -f $(if ($ok) { "OK  " } else { "FAIL" }), $c.n, $c.e, $g
-        if (-not $ok) { $allOk = $false }
-        $i++
-    }
-    $expected = @($r.keys | Where-Object { $_.e -ne "" }).Count
-    if ($got.Count -ne $expected) {
-        "FAIL 줄 수 $($got.Count) (기대 $expected) — 0 바이트여야 할 키가 바이트를 냈거나 그 반대다"
-        $allOk = $false
-    }
-    "  캡처: $shot"
+    "  수신 원본: $result · 캡처: $shot"
 }
 if ($allOk) { "결과: 전부 OK" } else { "결과: 실패 있음" }

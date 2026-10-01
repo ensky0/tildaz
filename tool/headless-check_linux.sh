@@ -11,6 +11,7 @@
 #   tool/headless-check_linux.sh seat-replug         # #347 — 가상 키보드를 뽑았다 꽂은 뒤에도 키가 닿는지 (wl_keyboard 재생성)
 #   tool/headless-check_linux.sh compositor-exit     # #613 — compositor 가 먼저 끝나면 정상 종료 (exit 0 · failed to start 없음). sway 를 내리니 마지막에
 #   tool/headless-check_linux.sh launcher-fatal gnome|cinnamon   # A2 — nested GNOME / Cinnamon 의 xdg_toplevel fatal 다이얼로그 (#577)
+#   tool/headless-check_linux.sh key-bytes [legacy|mok2]   # #684 — Ctrl + 기호 · 숫자 · Space 의 PTY 바이트 (표: tool/key-bytes-cases.tsv)
 #   tool/headless-check_linux.sh down                # 앱 · vkbd · sway 정리
 #
 # 환경변수: TILDAZ (기본 zig-out/bin/tildaz) · TZHL_WORK (작업 디렉터리 · 기본 ${TMPDIR:-/tmp}/tildaz-headless)
@@ -324,8 +325,44 @@ cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devk
     wait
 }
 
+cmd_key_bytes() {   # #684 — Ctrl + 기호 · 숫자 · Space 의 PTY 바이트. 칠 키 · 기대값은 세 OS 공용 표 tool/key-bytes-cases.tsv
+    env_sway; OUT=$WORK/key-bytes; rm -rf $OUT; mkdir -p $OUT
+    local modes=${1:-legacy mok2} mode enable recv wrap pid m name expect key before got want mark fail=0
+    # 키마다 그 뒤에 새로 생긴 줄만 읽는다 — 순서로 맞추면 한 키가 0 바이트일 때 뒤가 전부 밀린다.
+    hex_since() { tail -n +$(($2 + 1)) "$1" 2>/dev/null | tr -d '\r' | grep -oE '^[0-9a-f]{2}( [0-9a-f]{2})*' | tr '\n' ' ' | sed 's/ *$//'; }
+    for mode in $modes; do
+        case $mode in legacy) enable='' ;; mok2) enable='\033[>4;2m' ;; *) die "모르는 모드: $mode" ;; esac
+        echo "===== $mode"
+        recv=$OUT/received_$mode.txt; wrap=$OUT/child_$mode.sh
+        # `-e` 는 인자를 못 넘긴다 — 수신자를 스크립트로. enable 은 터미널에 먼저 쓰고 python 은 legacy 로 돌려 stdout 을 파일로.
+        printf '#!/bin/sh\nprintf '\''%s'\''\nexec python3 "%s" legacy > "%s" 2>&1\n' "$enable" "$ROOT/tool/key-bytes.py" "$recv" > $wrap
+        chmod +x $wrap
+        kill_tz
+        # sway 에서는 `-size` 를 못 쓴다 (AGENTS.md — scratchpad 경로라 부팅을 멈춘다). 창은 타일링으로 출력 전체다.
+        nohup "$TILDAZ" --instance 9 -e $wrap >/dev/null 2>&1 </dev/null & pid=$!
+        for _ in $(seq 40); do sleep 0.25; grep -q '^\[legacy\]' $recv 2>/dev/null && break; done
+        if ! kill -0 $pid 2>/dev/null || ! grep -q '^\[legacy\]' $recv 2>/dev/null; then
+            echo "❌ 앱이 뜨지 않았거나 수신자가 준비되지 않았다 — $SLOG"; fail=1; kill_tz; continue
+        fi
+        while IFS=$'\t' read -r m name expect key; do
+            case $m in ''|\#*) continue ;; esac
+            [ "$m" = "$mode" ] || continue
+            before=$(wc -l < $recv)
+            snd "key $key"; sleep 0.7
+            got=$(hex_since $recv $before)
+            want=$expect; [ "$want" = "-" ] && want=""
+            if [ "$got" = "$want" ]; then mark="OK  "; else mark="FAIL"; fail=1; fi
+            printf '%s %-14s 기대 [%s]  받음 [%s]\n' "$mark" "$name" "${want:-(없음)}" "${got:-(없음)}"
+        done < "$ROOT/tool/key-bytes-cases.tsv"
+        kill -0 $pid 2>/dev/null || echo "⚠️ 앱이 회차 중에 끝났다 — 뒤 칸은 무효"
+        kill_tz
+    done
+    echo "RESULT key-bytes: $([ $fail = 0 ] && echo '전부 OK' || echo '기대와 다른 칸 있음') (수신 원본: $OUT/received_*.txt)"
+}
+
 case ${1:-} in
     up) cmd_up ;;
+    key-bytes) cmd_key_bytes "${2:-}" ;;
     down) cmd_down ;;
     tabs) cmd_tabs ;;
     confirm) cmd_confirm ;;

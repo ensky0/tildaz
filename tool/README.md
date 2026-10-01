@@ -48,10 +48,12 @@
 | [`clusters.py`](clusters.py) | 무관 | atlas · cluster 검증 화면 생성기 (`many` · `stack2` · `overflow` · `mini` · `bands`) | `# macOS — 렌더 결과와 …` |
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
-| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행을 자동 검증 | `# Linux — headless sway …` |
-| [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`send return` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
+| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) 를 자동 검증 | `# Linux — headless sway …` |
+| [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`send return` · `keycode` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
 | [`key-bytes.py`](key-bytes.py) | 무관 | 키 하나가 PTY 로 보낸 **바이트를 그대로** 찍음. `legacy` · `kitty` · `mok2` 세 모드 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)) | — (도구 머리 주석) |
-| [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
+| [`key-bytes-cases.tsv`](key-bytes-cases.tsv) | 무관 | `Ctrl` + 기호 · 숫자 · Space 의 기대 바이트 표 — 아래 세 판정 도구가 함께 읽는다 ([#684](https://github.com/ensky0/tildaz/issues/684)) | — (표 머리 주석) |
+| [`key-bytes-check_macos.sh`](key-bytes-check_macos.sh) | macOS | `key-bytes.py` 를 띄우고 `input_macos` 로 키를 쳐 위 표의 바이트를 자동 판정 (legacy · mok2). 켜진 시스템 단축키는 건너뜀 | `# macOS — 합성 입력으로 …` |
+| [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등과 위 표의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
 | [`kitty-text-check_windows.ps1`](kitty-text-check_windows.ps1) | Windows | kitty keyboard protocol 의 글자 키 바이트 판정 | `# Windows — 합성 입력으로 …` |
 | [`launcher-fatal-check_windows.ps1`](launcher-fatal-check_windows.ps1) | Windows | launcher 기동 실패가 화면에 뜨는지 | `# Windows — 합성 입력으로 …` |
 | [`link-click-check_linux.sh`](link-click-check_linux.sh) | Linux | headless sway 안에서 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Linux — headless sway …` |
