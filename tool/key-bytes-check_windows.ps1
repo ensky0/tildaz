@@ -38,6 +38,13 @@
 #  - **키마다 포커스 가드** — foreground 가 tildaz 창이 아니면 그 자리에서 멈춘다. 합성 키는 포커스된
 #    창으로 가니 회차 중 다른 창을 만지면 거기에 타이핑된다.
 #  - Python 3 이 `python` 으로 PATH 에 있어야 한다 (`kitty-text-check_windows.ps1` 과 같은 전제).
+#  - **앱 단축키인 키는 맨 뒤에 친다.** `Ctrl+Shift+F` 는 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646))
+#    를 여는데, 바가 열려 있으면 그 뒤 키가 전부 바로 들어가 PTY 에 아무것도 안 나간다. 2026-10-01
+#    첫 회차에서 그 뒤 16 키가 통째로 무효였고 (`Escape` 가 바를 닫으며 소비돼 그다음부터 복귀),
+#    앱이 바이트를 안 내는 것으로 읽힐 뻔했다. 아래 `$LastKeys` 가 그런 키를 회차 끝으로 보낸다.
+#  - ⚠️ **`[CmdletBinding()]` 이 붙은 스크립트는 param 기본값에서 `$PSScriptRoot` 가 비어 있다**
+#    (Windows PowerShell 5.1 실측 — 본문에서는 정상이다). 기본값에 `Join-Path $PSScriptRoot …` 를
+#    쓰면 `-Bin` 을 명시하지 않는 한 도구가 **시작도 못 한다.** 기본 경로는 본문에서 채운다.
 #
 # 실기라서 **시작 전에 알리고 동의를 받는다** (AGENTS.md `# 실행 환경`) — 창이 모드마다 한 번씩 뜨고
 # 합성 키가 나간다.
@@ -46,10 +53,12 @@
 [CmdletBinding()]
 param(
     [ValidateSet("all", "legacy", "kitty", "mok2")][string]$Mode = "all",
-    [string]$Bin = (Join-Path $PSScriptRoot '..\zig-out\bin\tildaz.exe')
+    # 기본값은 본문에서 채운다 — 머리 주석의 `$PSScriptRoot` 함정.
+    [string]$Bin = ""
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $Bin) { $Bin = Join-Path $PSScriptRoot '..\zig-out\bin\tildaz.exe' }
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $Py = Join-Path $PSScriptRoot "key-bytes.py"
 if (-not (Test-Path $Py)) { throw "key-bytes.py 없음: $Py" }
@@ -217,6 +226,14 @@ foreach ($line in (Get-Content -Encoding UTF8 $Cases)) {
     })
     # `,$vks` — 원소 하나짜리 배열로 감싼다 (위 행들의 `,@(…)` 와 같은 모양 · 머리 주석의 함정).
     $round.keys += @{ n = $f[1]; k = ,$vks; e = $(if ($f[2] -eq "-") { "" } else { $f[2] }) }
+}
+
+# 앱 단축키인 키는 회차 **끝**으로 보낸다 — 그 키가 UI 를 열면 뒤따르는 키가 전부 그쪽으로 가고
+# PTY 에는 아무것도 안 나간다 (머리 주석의 함정). tsv 를 더한 **뒤에** 옮겨야 그 행들도 앞에 선다.
+$LastKeys = @("Ctrl+Shift+F")        # #646 의 검색바 (`.find` 기본 바인딩 `ctrl+shift+f`)
+foreach ($r in $rounds) {
+    $tail = @($r.keys | Where-Object { $LastKeys -contains $_.n })
+    if ($tail.Count) { $r.keys = @($r.keys | Where-Object { $LastKeys -notcontains $_.n }) + $tail }
 }
 
 # 받은 파일의 hex 줄 전부. python 이 쓰는 중에 읽으므로 공유 모드로 연다.
