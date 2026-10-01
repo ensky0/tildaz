@@ -38,10 +38,13 @@
 #  - **키마다 포커스 가드** — foreground 가 tildaz 창이 아니면 그 자리에서 멈춘다. 합성 키는 포커스된
 #    창으로 가니 회차 중 다른 창을 만지면 거기에 타이핑된다.
 #  - Python 3 이 `python` 으로 PATH 에 있어야 한다 (`kitty-text-check_windows.ps1` 과 같은 전제).
-#  - **앱 단축키인 키는 맨 뒤에 친다.** `Ctrl+Shift+F` 는 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646))
-#    를 여는데, 바가 열려 있으면 그 뒤 키가 전부 바로 들어가 PTY 에 아무것도 안 나간다. 2026-10-01
-#    첫 회차에서 그 뒤 16 키가 통째로 무효였고 (`Escape` 가 바를 닫으며 소비돼 그다음부터 복귀),
-#    앱이 바이트를 안 내는 것으로 읽힐 뻔했다. 아래 `$LastKeys` 가 그런 키를 회차 끝으로 보낸다.
+#  - **앱 단축키는 회차에 넣지 않는다 — 바인딩이 *없는* 글자를 고른다.** `Ctrl+Shift+<글자>` 는
+#    앱 chrome 대역이고 (AGENTS.md `# 새 단축키 기본값 고르기`) 단축키 조회가 인코더보다 먼저라,
+#    그 키는 인코더에 아예 닿지 않는다. 재려는 것이 인코딩이면 그 대역에서 비어 있는 글자를 쓴다
+#    (지금은 `Ctrl+Shift+G`). 2026-10-01 첫 회차는 `Ctrl+Shift+F` 를 쳤는데 그것이 검색바
+#    ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 열어 **그 뒤 16 키가 통째로 무효**였다
+#    (`Escape` 가 바를 닫으며 소비돼 그다음부터 복귀). 앱이 바이트를 안 내는 것으로 읽힐 뻔했다.
+#    글자를 바꿀 때는 `config.zig` 의 두 기본값 목록을 grep 해 비어 있는지 먼저 본다.
 #  - ⚠️ **`[CmdletBinding()]` 이 붙은 스크립트는 param 기본값에서 `$PSScriptRoot` 가 비어 있다**
 #    (Windows PowerShell 5.1 실측 — 본문에서는 정상이다). 기본값에 `Join-Path $PSScriptRoot …` 를
 #    쓰면 `-Bin` 을 명시하지 않는 한 도구가 **시작도 못 한다.** 기본 경로는 본문에서 채운다.
@@ -141,7 +144,8 @@ public static class TzKeyBytes {
 $VK = @{
     Ctrl = 0x11; Shift = 0x10; Enter = 0x0D; Tab = 0x09; Left = 0x25; Back = 0x08   # #653 — VK_BACK
     Esc = 0x1B                                                    # #650 — VK_ESCAPE
-    A = 0x41; C = 0x43; F = 0x46; H = 0x48; I = 0x49; M = 0x4D
+    # `G` 는 `Ctrl+Shift+` 대역에서 바인딩이 없는 글자다 (머리 주석) — `F` 는 검색바라 쓰지 않는다.
+    A = 0x41; C = 0x43; G = 0x47; H = 0x48; I = 0x49; M = 0x4D
     LBracket = 0xDB                                               # VK_OEM_4
     # C0 대응이 없는 문장부호 일곱 (#650 본문 "같이 결정할 것" 1 번 — 2026-09-15 에 함께 닫았다).
     Semi = 0xBA; Quote = 0xDE; Comma = 0xBC; Period = 0xBE        # VK_OEM_1 · 7 · COMMA · PERIOD
@@ -154,7 +158,7 @@ $rounds = @(
         @{ n = "Ctrl+[";           k = ,@($VK.Ctrl, $VK.LBracket);            e = "1b" }          # #650 — 전에는 CSI 91;5u
         @{ n = "Ctrl+I";           k = ,@($VK.Ctrl, $VK.I);                   e = "09" }          # #650
         @{ n = "Ctrl+M";           k = ,@($VK.Ctrl, $VK.M);                   e = "0d" }          # #650
-        @{ n = "Ctrl+Shift+F";     k = ,@($VK.Ctrl, $VK.Shift, $VK.F);        e = "" }            # #648 — 억제
+        @{ n = "Ctrl+Shift+G";     k = ,@($VK.Ctrl, $VK.Shift, $VK.G);        e = "" }            # #648 — 억제
         @{ n = "Ctrl+Shift+Enter"; k = ,@($VK.Ctrl, $VK.Shift, $VK.Enter);    e = "" }            # #648 — 억제
         @{ n = "Ctrl+A";           k = ,@($VK.Ctrl, $VK.A);                   e = "01" }          # 회귀 감시
         @{ n = "Ctrl+C";           k = ,@($VK.Ctrl, $VK.C);                   e = "03" }          # 회귀 감시 (raw 라 SIGINT 아님)
@@ -188,7 +192,7 @@ $rounds = @(
         @{ n = "Ctrl+[";       k = ,@($VK.Ctrl, $VK.LBracket);        e = "1b 5b 39 31 3b 35 75" }        # CSI 91;5u
         @{ n = "Ctrl+I";       k = ,@($VK.Ctrl, $VK.I);               e = "1b 5b 31 30 35 3b 35 75" }     # CSI 105;5u
         @{ n = "Ctrl+M";       k = ,@($VK.Ctrl, $VK.M);               e = "1b 5b 31 30 39 3b 35 75" }     # CSI 109;5u
-        @{ n = "Ctrl+Shift+F"; k = ,@($VK.Ctrl, $VK.Shift, $VK.F);    e = "1b 5b 31 30 32 3b 36 75" }     # CSI 102;6u
+        @{ n = "Ctrl+Shift+G"; k = ,@($VK.Ctrl, $VK.Shift, $VK.G);    e = "1b 5b 31 30 33 3b 36 75" }     # CSI 103;6u
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "1b 5b 39 37 3b 35 75" }        # CSI 97;5u — 01 이 아니다
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 39 3b 32 75" }           # #653 — kitty 는 CSI 9;2u (legacy 의 ESC[Z 와 다르다)
         @{ n = "Backspace";    k = ,@($VK.Back);                      e = "7f" }
@@ -198,7 +202,7 @@ $rounds = @(
     @{ mode = "mok2"; enable = "[char]27+'[>4;2m'"; keys = @(
         @{ n = "Ctrl+[";       k = ,@($VK.Ctrl, $VK.LBracket);        e = "1b" }
         @{ n = "Ctrl+I";       k = ,@($VK.Ctrl, $VK.I);               e = "09" }
-        @{ n = "Ctrl+Shift+F"; k = ,@($VK.Ctrl, $VK.Shift, $VK.F);    e = "" }
+        @{ n = "Ctrl+Shift+G"; k = ,@($VK.Ctrl, $VK.Shift, $VK.G);    e = "" }
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "01" }
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 32 37 3b 32 3b 39 7e" }  # #653 — mok2 는 CSI 27;2;9~
         @{ n = "Ctrl+Enter";   k = ,@($VK.Ctrl, $VK.Enter);          e = "1b 5b 32 37 3b 35 3b 31 33 7e" }  # #653 — 켠 앱에는 그대로
@@ -226,14 +230,6 @@ foreach ($line in (Get-Content -Encoding UTF8 $Cases)) {
     })
     # `,$vks` — 원소 하나짜리 배열로 감싼다 (위 행들의 `,@(…)` 와 같은 모양 · 머리 주석의 함정).
     $round.keys += @{ n = $f[1]; k = ,$vks; e = $(if ($f[2] -eq "-") { "" } else { $f[2] }) }
-}
-
-# 앱 단축키인 키는 회차 **끝**으로 보낸다 — 그 키가 UI 를 열면 뒤따르는 키가 전부 그쪽으로 가고
-# PTY 에는 아무것도 안 나간다 (머리 주석의 함정). tsv 를 더한 **뒤에** 옮겨야 그 행들도 앞에 선다.
-$LastKeys = @("Ctrl+Shift+F")        # #646 의 검색바 (`.find` 기본 바인딩 `ctrl+shift+f`)
-foreach ($r in $rounds) {
-    $tail = @($r.keys | Where-Object { $LastKeys -contains $_.n })
-    if ($tail.Count) { $r.keys = @($r.keys | Where-Object { $LastKeys -notcontains $_.n }) + $tail }
 }
 
 # 받은 파일의 hex 줄 전부. python 이 쓰는 중에 읽으므로 공유 모드로 연다.
