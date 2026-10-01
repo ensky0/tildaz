@@ -2,10 +2,14 @@
 # 견준다 (#648 · #650 의 Windows 몫). 손으로 치는 회차를 대신한다 — 판정이 자동이라 회귀 검사로 쓸 수 있다.
 #
 # ```powershell
-# tool\key-bytes-check_windows.ps1                       # 세 모드 (legacy · kitty · mok2) 전부
-# tool\key-bytes-check_windows.ps1 -Mode legacy          # 한 모드만
+# tool\key-bytes-check_windows.ps1                       # 네 회차 (legacy · kitty · mok2 · layout) 전부
+# tool\key-bytes-check_windows.ps1 -Mode legacy          # 한 회차만
+# tool\key-bytes-check_windows.ps1 -Mode layout          # 비US 배열 (프랑스어 AZERTY · #684)
 # tool\key-bytes-check_windows.ps1 -Bin C:\path\tildaz.exe
 # ```
+#
+# ⚠️ **상대 경로로 부르지 않는다** — `powershell -NoProfile -File` 에 상대 경로를 주면 아래
+# `$PSScriptRoot` 함정과 겹쳐 더 헷갈린다. 절대 경로로 부른다.
 #
 # 무엇을 하나 —
 # 1. `--instance 9 -e <자식.cmd>` 로 tildaz 를 띄운다. 자식은 `key-bytes.py` 를 돌리고 **stdout 을 파일로**
@@ -27,8 +31,11 @@
 #     고쳤다. Backspace · Tab · Enter 를 `WM_CHAR` 가 아니라 **인코더**로 보내면서 세 platform 이 이
 #     대역에서 전부 같아졌다. legacy 는 맨 키의 C0 다 — `Ctrl+H`=`08` · `Shift+Tab`=`ESC[Z` ·
 #     `Ctrl+Tab`=`09` · `Ctrl+Enter`=`0d` · `Ctrl+Backspace`=`08`.
-#   - `mok2` 에서도 `Ctrl+[` 가 `1b` — Windows 는 legacy 에서 글자 키를 인코더로 안 보내고 `WM_CHAR` 로
-#     받으므로 앱이 modifyOtherKeys 를 켜도 그 경로가 안 바뀐다.
+#   - ~~`mok2` 에서도 `Ctrl+[` 가 `1b`~~ — [#684](https://github.com/ensky0/tildaz/issues/684) 에서 사라졌다.
+#     그 차이의 원인은 "Windows 가 legacy · mok2 에서 `Ctrl`+글자를 인코더로 안 보낸다" 였고, 이제 세 모드
+#     모두 인코더를 탄다. `mok2` 의 `Ctrl+[` · `Ctrl+I` 는 Linux · macOS 와 같이 `CSI 27;<mods>;<cp>~` 다 —
+#     ghostty 가 `i` · `m` · `[` 를 fixterms 명세대로 `ctrlSeq` 에서 **일부러 빼** `CSI u` 로 보내고, mok2 는
+#     그것을 "앱이 요청한 인코딩" 으로 보아 C0 로 내리지 않기 때문이다. 그 세 칸은 공용 표에 있다.
 #
 # 함정 —
 #  - **chord 는 `,@(…)` (단항 콤마) 로 감싼다.** PowerShell 이 원소 하나짜리 배열을 평탄화해 modifier 와
@@ -55,7 +62,7 @@
 # ⚠️ 이 파일은 UTF-8 **BOM** 으로 저장한다 — Windows PowerShell 5.1 은 BOM 없는 `.ps1` 을 cp949 로 읽는다.
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "legacy", "kitty", "mok2")][string]$Mode = "all",
+    [ValidateSet("all", "legacy", "kitty", "mok2", "layout")][string]$Mode = "all",
     # 기본값은 본문에서 채운다 — 머리 주석의 `$PSScriptRoot` 함정.
     [string]$Bin = ""
 )
@@ -81,33 +88,50 @@ public static class TzKeyBytes {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
-  [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint c, uint t);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKeyExW(uint c, uint t, IntPtr hkl);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr LoadKeyboardLayoutW(string klid, uint flags);
+  [DllImport("user32.dll")] public static extern bool UnloadKeyboardLayout(IntPtr hkl);
+  [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint thread);
+  [DllImport("user32.dll")] public static extern int GetKeyboardLayoutList(int n, IntPtr[] list);
+  [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
   [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort vk, scan; public uint flags; public uint time; public IntPtr extra; }
   [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public KEYBDINPUT ki; public int pad1, pad2; }
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] a, int cb);
 
-  // control pad 는 확장 (0xE0) 이다 — 안 붙이면 numpad 로 간다.
+  // control pad 는 확장 (0xE0) 이다 — 안 붙이면 numpad 로 간다. VK_RMENU (AltGr 의 오른쪽
+  // Alt) 도 확장이라 함께 넣는다 — 안 붙이면 왼쪽 Alt 로 가 AltGr 조합이 성립하지 않는다.
   static bool IsExtended(ushort vk) {
     return vk == 0x25 || vk == 0x26 || vk == 0x27 || vk == 0x28
         || vk == 0x2D || vk == 0x2E || vk == 0x24 || vk == 0x23
-        || vk == 0x21 || vk == 0x22;
+        || vk == 0x21 || vk == 0x22 || vk == 0xA5;
   }
-  static INPUT Key(ushort vk, bool up) {
+  // scan 은 **그 layout 기준**으로 뽑는다 (#684). AZERTY 의 a 는 sc 0x10 인데 US 기준으로
+  // 채우면 0x1E 가 실려, 프랑스어 창에는 vk=VK_A + sc=0x1E 라는 없는 조합이 도착한다.
+  // hkl 이 0 이면 우리 스레드의 활성 layout 을 명시한다 — NULL 은 MapVirtualKeyExW 에서
+  // *마지막에 로드한* layout 을 뜻해서 layout 회차 뒤에 값이 흔들린다 (#496 함정).
+  static INPUT Key(ushort vk, bool up, IntPtr hkl) {
     var i = new INPUT(); i.type = 1;
     i.ki.vk = vk;
-    i.ki.scan = (ushort)MapVirtualKeyW(vk, 0);
+    i.ki.scan = (ushort)MapVirtualKeyExW(vk, 0, hkl == IntPtr.Zero ? GetKeyboardLayout(0) : hkl);
     i.ki.flags = (uint)((up ? 2 : 0) | (IsExtended(vk) ? 1 : 0));
     return i;
   }
   // 순서대로 누르고 역순으로 뗀다.
-  public static uint Chord(ushort[] keys) {
+  public static uint Chord(ushort[] keys, IntPtr hkl) {
     var a = new INPUT[keys.Length * 2];
-    for (int i = 0; i < keys.Length; i++) a[i] = Key(keys[i], false);
-    for (int i = 0; i < keys.Length; i++) a[keys.Length + i] = Key(keys[keys.Length - 1 - i], true);
+    for (int i = 0; i < keys.Length; i++) a[i] = Key(keys[i], false, hkl);
+    for (int i = 0; i < keys.Length; i++) a[keys.Length + i] = Key(keys[keys.Length - 1 - i], true, hkl);
     return SendInput((uint)a.Length, a, Marshal.SizeOf(typeof(INPUT)));
   }
+  // layout 은 **활성화하지 않고** (flags=0) 올린 뒤, 그 창의 스레드만 전환한다 —
+  // DefWindowProc 이 WM_INPUTLANGCHANGEREQUEST 를 받아 ActivateKeyboardLayout 한다.
+  // 우리 셸도 사용자의 다른 창도 그대로다 (deadkey-check 와 같은 수).
+  public static IntPtr LayoutOfWindow(IntPtr h) { uint pid; uint tid = GetWindowThreadProcessId(h, out pid); return GetKeyboardLayout(tid); }
+  // 세션 목록 길이 — 올린 layout 이 원래 있던 것인지 (= 내리면 안 되는지) 가린다.
+  public static int LayoutCount() { var a = new IntPtr[64]; return GetKeyboardLayoutList(64, a); }
+  public static void RequestLayout(IntPtr h, IntPtr hkl) { PostMessageW(h, 0x0050, IntPtr.Zero, hkl); }
   // `Process.MainWindowHandle` 은 owner 가 달린 진짜 창을 건너뛰어 0 이다 (#584) — pid + 보임 + 크기로 찾는다.
   public static IntPtr FindWindowOfPid(uint pid) {
     IntPtr hit = IntPtr.Zero;
@@ -200,19 +224,37 @@ $rounds = @(
     ) },
     # 경계 ② — modifyOtherKeys=2. Windows 는 mac · Linux 와 갈린다 (머리 주석).
     @{ mode = "mok2"; enable = "[char]27+'[>4;2m'"; keys = @(
-        @{ n = "Ctrl+[";       k = ,@($VK.Ctrl, $VK.LBracket);        e = "1b" }
-        @{ n = "Ctrl+I";       k = ,@($VK.Ctrl, $VK.I);               e = "09" }
-        @{ n = "Ctrl+Shift+G"; k = ,@($VK.Ctrl, $VK.Shift, $VK.G);    e = "" }
+        # `Ctrl+[` · `Ctrl+I` · `Ctrl+Shift+G` 의 mok2 기대값은 **공용 표**에 있다 (#684) —
+        # 세 OS 가 같아야 하는 칸이라 값을 한 곳에만 둔다. 아래 `Ctrl+A` 처럼 C0 가 나오는
+        # 칸만 여기 남긴다.
         @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "01" }
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 32 37 3b 32 3b 39 7e" }  # #653 — mok2 는 CSI 27;2;9~
         @{ n = "Ctrl+Enter";   k = ,@($VK.Ctrl, $VK.Enter);          e = "1b 5b 32 37 3b 35 3b 31 33 7e" }  # #653 — 켠 앱에는 그대로
+    ) },
+    # 경계 ③ — **비US 배열** (#684). 창 스레드만 프랑스어 (레거시 AZERTY) 로 바꿔 두 가지를 본다.
+    # 기대값은 `VkKeyScanExW(<글자>, hklFR)` 로 **재기 전에** 뽑았다 (2026-10-01):
+    #   `a` vk 0x41 sc 0x10 수식키 없음 · `q` vk 0x51 sc 0x1E 없음 · `EUR` vk 0x45 sc 0x12 Ctrl+Alt
+    @{ mode = "layout"; enable = ""; klid = "0000040C"; keys = @(
+        # ① 라벨 기준이 유지되는가 — `Ctrl`+글자가 인코더로 가게 바뀐 뒤에도 그 layout 의 라벨
+        #    글자로 C0 가 나와야 한다. 자리가 US 와 **뒤바뀐** 두 키를 함께 본다.
+        @{ n = "Ctrl+a (AZERTY)"; k = ,@($VK.Ctrl, 0x41); e = "01" }   # US 의 Q 자리
+        @{ n = "Ctrl+q (AZERTY)"; k = ,@($VK.Ctrl, 0x51); e = "11" }   # US 의 A 자리
+        # ② AltGr 이 보존되는가 — Windows 의 AltGr 은 `Ctrl+Alt` 로 도착한다. 인코더로 보내면
+        #    ESC-prefix 경로로 가 `ESC <글자>` 가 되므로 `window.zig` 가 Alt 를 제외한다. 그 제외가
+        #    실제로 듣는지 재는 칸이다 — 깨지면 `1b` 로 시작하는 바이트가 온다.
+        #
+        #    **글자 키를 쓴다 — 숫자는 안 된다.** `AltGr+2` 로 쟀더니 0 바이트였는데, 그것은
+        #    `Alt+2` 가 `switch_tab2` 기본 바인딩이라 앱이 먼저 가져간 것이었다 (`Ctrl+Shift+F` 와
+        #    같은 부류의 도구 실수 — 2026-10-01). `Alt+<글자>` 에는 기본 바인딩이 없다.
+        @{ n = "AltGr+e (EUR)";   k = ,@(0xA2, 0xA5, 0x45); e = "e2 82 ac" } # VK_LCONTROL · VK_RMENU · VK_E
     ) }
 )
 
 # #684 — 세 OS 공용 표 (`key-bytes-cases.tsv`) 의 행을 각 모드 회차에 더한다. 키 이름은
 # `vkbd_linux.py` · `input_macos.m` 표기라 여기서 VK 로 바꾼다. 이 파일에 같은 이름의 행이 이미
 # 있으면 이 파일 것을 쓴다 (`Ctrl+A` · `Ctrl+;` 등).
-$KeyVK = @{ ctrl = 0x11; shift = 0x10; slash = 0xBF; space = 0x20; minus = 0xBD; semicolon = 0xBA }
+$KeyVK = @{ ctrl = 0x11; shift = 0x10; slash = 0xBF; space = 0x20; minus = 0xBD; semicolon = 0xBA
+            bracketleft = 0xDB }   # evdev · macOS 표기와 같은 이름을 쓴다 (`VK_OEM_4`)
 foreach ($ch in [char[]]'abcdefghijklmnopqrstuvwxyz') { $KeyVK["$ch"] = [int][char]::ToUpper($ch) }
 foreach ($d in 0..9) { $KeyVK["$d"] = 0x30 + $d }
 $Cases = Join-Path $PSScriptRoot "key-bytes-cases.tsv"
@@ -278,6 +320,28 @@ foreach ($r in $rounds) {
     if ($p.HasExited -or $h -eq [IntPtr]::Zero) { "❌ 앱 또는 창 없음 (exited=$($p.HasExited))"; $allOk = $false; Stop-Tz; continue }
     Start-Sleep -Seconds 3        # python 이 raw 모드에 들어갈 시간
 
+    # 비US 배열 회차 — 창 스레드만 전환한다. 전환이 확인되지 않으면 키를 **한 개도** 보내지 않는다
+    # (US 기준으로 쳐서 거짓 통과하는 것을 막는다). 올린 layout 은 끝에 내린다.
+    $hkl = [IntPtr]::Zero
+    $loaded = $false
+    if ($r.klid) {
+        $before_list = [TzKeyBytes]::LayoutCount()
+        $hkl = [TzKeyBytes]::LoadKeyboardLayoutW($r.klid, 0)
+        if ($hkl -eq [IntPtr]::Zero) { "❌ LoadKeyboardLayoutW($($r.klid)) 실패"; $allOk = $false; Stop-Tz; continue }
+        $loaded = [TzKeyBytes]::LayoutCount() -gt $before_list
+        [TzKeyBytes]::RequestLayout($h, $hkl)
+        $sw2 = [Diagnostics.Stopwatch]::StartNew()
+        while ([TzKeyBytes]::LayoutOfWindow($h) -ne $hkl -and $sw2.ElapsedMilliseconds -lt 3000) { Start-Sleep -Milliseconds 100 }
+        $got = [TzKeyBytes]::LayoutOfWindow($h)
+        "  layout $($r.klid) → hkl 0x$('{0:X}' -f [int64]$hkl) · 창 0x$('{0:X}' -f [int64]$got) (이번에 올림: $loaded)"
+        if ($got -ne $hkl) {
+            "❌ 창 layout 이 안 바뀌었다 — 키를 보내지 않는다"
+            $allOk = $false
+            if ($loaded) { [void][TzKeyBytes]::UnloadKeyboardLayout($hkl) }
+            Stop-Tz; continue
+        }
+    }
+
     # #684 — **키마다** 그 뒤에 새로 생긴 줄만 읽어 판정한다. 예전에는 다 친 뒤 받은 줄을 기대값에
     # 순서대로 맞췄는데, 그러면 한 키가 예상과 달리 0 바이트일 때 뒤가 전부 한 칸씩 밀려서 수정 전
     # 판의 결과를 읽을 수 없었다 (`Ctrl+/` 가 정확히 그렇다).
@@ -287,7 +351,7 @@ foreach ($r in $rounds) {
             if ([TzKeyBytes]::GetForegroundWindow() -ne $h) { throw "포커스 잃음 ($($c.n))" }
             $chord = $c.k[0]      # `,@(…)` 의 한 겹을 벗긴다
             $before = (Read-HexLines $result).Count
-            $sent = [TzKeyBytes]::Chord([uint16[]]$chord)
+            $sent = [TzKeyBytes]::Chord([uint16[]]$chord, $hkl)
             if ($sent -ne $chord.Count * 2) { throw "SendInput 거부: $sent (기대 $($chord.Count * 2))" }
             Start-Sleep -Milliseconds 700
             # 변수에 먼저 받는다 — 함수가 `,` 로 감싸 돌려주므로 바로 파이프하면 배열이 **한 덩어리**로
@@ -301,7 +365,15 @@ foreach ($r in $rounds) {
         }
         Start-Sleep -Milliseconds 500
         [TzKeyBytes]::Shot($h, $shot)
-    } catch { "❌ $_"; $allOk = $false } finally { Stop-Tz }
+    } catch { "❌ $_"; $allOk = $false } finally {
+        Stop-Tz
+        # 올린 layout 을 내린다 — 남기면 `Win+Space` 전환 목록에 나타나 사용자의 입력 전환을
+        # 바꾼다 (#496 함정 ②). 원래 세션에 있던 것이면 두고, 전후 개수를 찍어 보인다.
+        if ($loaded) {
+            $u = [TzKeyBytes]::UnloadKeyboardLayout($hkl)
+            "  layout 내림: $u · 세션 목록 $([TzKeyBytes]::LayoutCount()) 개"
+        }
+    }
 
     if (-not (Test-Path $result)) { "❌ 결과 파일 없음: $result"; $allOk = $false; continue }
     "  수신 원본: $result · 캡처: $shot"
