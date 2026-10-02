@@ -15,9 +15,8 @@
 //!
 //! 기준점은 **baseline = 셀 top + `ascent_px`** 다. 세 renderer 가 글리프를 그 식으로
 //! 놓는다 (macOS `emitTextInstance` · Windows `emitClusterInstance` · Linux
-//! `appendGlyph`). 같은 기준을 쓰므로 선과 글리프는 항상 일관되고, macOS 만 행 원점을
-//! `top_pad_px` 만큼 올리는 기존 차이도 자동으로 따라간다 — 호출부가 글리프에 쓰는
-//! 것과 같은 셀 top 을 넘기기만 하면 된다.
+//! `appendGlyph`). 같은 기준을 쓰므로 선과 글리프는 항상 일관된다 — 호출부가 글리프에
+//! 쓰는 것과 같은 셀 top 을 넘기기만 하면 된다.
 //!
 //! ## 그리는 순서 — 글리프 **아래**
 //!

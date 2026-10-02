@@ -209,11 +209,6 @@ pub const CoreTextFontContext = struct {
     retina_scale: f32,
     ascent_px: f32,
     descent_px: f32,
-    /// 폰트의 위쪽 internal leading (= ascent − cap_height). 대문자 위쪽
-    /// 여백. cell box top 부터 ascent 만큼 내려간 위치가 baseline 인데
-    /// 대문자 visible top 은 그보다 `top_pad_px` 만큼 더 아래 — 시각적
-    /// padding 보정에 사용 (좌/우/하 padding 과 위 padding 을 같게 보이게).
-    top_pad_px: f32,
     /// Monospace cell 크기 — 폰트의 'M' advance + ascent/descent/leading 으로
     /// 측정. host 가 hardcoded 상수 대신 이 값을 사용하면 폰트 교체 시에도
     /// 글자 사이 공백 / 줄 높이 가 자동 맞춰진다.
@@ -396,7 +391,6 @@ pub const CoreTextFontContext = struct {
         const ascent: f32 = @floatCast(ct.CTFontGetAscent(font));
         const descent: f32 = @floatCast(ct.CTFontGetDescent(font));
         const leading: f32 = @floatCast(ct.CTFontGetLeading(font));
-        const cap_height: f32 = @floatCast(ct.CTFontGetCapHeight(font));
 
         // Monospace 셀 폭 측정 — 'M' / 'i' / '.' advance 가 모두 같은지 확인
         // 후 'M' 의 advance 를 cell width 로. 한 글자라도 advance 가 다르면
@@ -416,20 +410,6 @@ pub const CoreTextFontContext = struct {
         );
         const advance_pt: f32 = @floatCast(probe_adv[0].width);
 
-        // 'M' 글리프의 실제 visible top — 폰트 designer 의 cap_height metric
-        // 보다 실제 raster 결과에 정확. ascent − bbox.top 이 위쪽 internal
-        // leading. (cap_height 만 쓰면 폰트마다 metric 과 raster 결과가 살짝
-        // 달라 보정이 부정확해질 수 있다.)
-        var m_bbox: ct.CGRect = undefined;
-        _ = ct.CTFontGetBoundingRectsForGlyphs(
-            font,
-            ct.kCTFontOrientationHorizontal,
-            probe_glyphs[0..1].ptr,
-            @ptrCast(&m_bbox),
-            1,
-        );
-        const m_top_pt: f32 = @floatCast(m_bbox.origin.y + m_bbox.size.height);
-
         for (probe_adv[1..], probes[1..]) |a, ch| {
             const w: f32 = @floatCast(a.width);
             if (@abs(w - advance_pt) > 0.01) {
@@ -447,12 +427,6 @@ pub const CoreTextFontContext = struct {
         // 방지. 1.1 / 0.95 같은 미적 보정값을 그대로 적용 가능.
         const cell_w_px = font_spec.scaledRatioCeilPx(advance_pt, spec.cell_width_ratio, retina_scale);
         const cell_h_px = font_spec.scaledRatioCeilPx(ascent + descent + leading, spec.line_height_ratio, retina_scale);
-
-        // top_pad_px = ascent − 'M' bbox top. 폰트 metric (cap_height) 대신
-        // 실제 'M' raster bbox 사용 — 폰트마다 metric 과 글리프 실제 모양이
-        // 약간 다를 수 있어 더 정확.
-        _ = cap_height;
-        const top_pad_pt: f32 = ascent - m_top_pt;
 
         // #197 — primary 1줄 lifecycle (cross-platform 동일 형식). path 는 mac
         // (system font) 에 없어 제외. ascent/descent 는 retina 적용 후 px 정수.
@@ -489,7 +463,6 @@ pub const CoreTextFontContext = struct {
             .retina_scale = retina_scale,
             .ascent_px = ascent * retina_scale,
             .descent_px = descent * retina_scale,
-            .top_pad_px = top_pad_pt * retina_scale,
             .cell_width_px = cell_w_px,
             .cell_height_px = cell_h_px,
             .font_family = font_family,

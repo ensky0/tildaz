@@ -57,3 +57,6 @@ Internal changes belong in neither.
   ([#675](https://github.com/ensky0/tildaz/issues/675))
 - Search highlights no longer disappear after you resize or maximize a pane.
   ([#675](https://github.com/ensky0/tildaz/issues/675))
+- macOS: clicking near the top of a line no longer selects the line above it. Text now
+  sits where it does on Linux and Windows.
+  ([#689](https://github.com/ensky0/tildaz/issues/689))
