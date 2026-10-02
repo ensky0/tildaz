@@ -1118,6 +1118,12 @@ fn macInputState() input_policy.State {
 ///
 /// 바는 **활성 pane** 의 오른쪽 아래에 뜬다 (#675). 스크롤바도 pane 마다 그 pane 의 오른쪽
 /// 끝에 있으니, 활성 pane 의 스크롤바를 보면 바와 짝이 맞는다.
+///
+/// 격자 바닥에서 `font.top_pad_px` 를 뺀다 (#675). macOS renderer 는 첫 줄 대문자 윗끝을
+/// padding 에 맞추려고 **격자 전체를 그만큼 위로 올려** 그린다 (`renderer/macos.zig` 의
+/// `y_off`). 빼지 않으면 바가 실제 맨 아랫줄을 그만큼 덮는다 — 실기에서 커서 줄을 6 px
+/// (3 pt) 덮었다. Linux · Windows renderer 는 이 보정이 없어 해당 없다. renderer 쪽 보정을
+/// 없애기로 했으니 ([#689](https://github.com/ensky0/tildaz/issues/689)) 그때 이 뺄셈도 함께 걷어낸다.
 fn searchGeometry(tab: anytype, scale: f32, pane_px: pane_layout.Rect, grid_bottom_px: ?i32) search_bar.Geometry {
     const r = &g_renderer.?;
     const sb = tab.terminal.screens.active.pages.scrollbar();
@@ -1129,7 +1135,10 @@ fn searchGeometry(tab: anytype, scale: f32, pane_px: pane_layout.Rect, grid_bott
             @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
         else
             0,
-        .grid_bottom_pt = if (grid_bottom_px) |px| @as(f32, @floatFromInt(px)) / scale else 0,
+        .grid_bottom_pt = if (grid_bottom_px) |px|
+            (@as(f32, @floatFromInt(px)) - r.font.top_pad_px) / scale
+        else
+            0,
     };
 }
 
