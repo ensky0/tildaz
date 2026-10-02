@@ -246,7 +246,7 @@ const PendingTabs = struct {
 };
 
 pub const MetalRenderer = struct {
-    /// #451 — `applyScale` 이 나중에 폰트를 다시 만들 때도 폰트 미설치 fatal 경로를
+    /// #451 — `rebuildFonts` 가 나중에 폰트를 다시 만들 때도 폰트 미설치 fatal 경로를
     /// 타므로, `alloc` · `font_families` 와 같은 자리에 함께 보관한다.
     rt: Runtime,
     alloc: std.mem.Allocator,
@@ -383,11 +383,11 @@ pub const MetalRenderer = struct {
     panes_drawn: u32 = 0,
     render_t0: @TypeOf(perf.now()) = undefined,
 
-    // #253 — 다른 scale 모니터로 이동 시 cell 재측정(applyScale)에 필요한 init
+    // #253 — 다른 scale 모니터로 이동 시 cell 재측정(rebuildFonts)에 필요한 init
     // 파라미터 보관. font_families 슬라이스/문자열은 host 가 process lifetime 으로
     // 보유(g_config 또는 run() 의 env_chain) — 재init 시 그대로 재사용.
+    // 글자 크기는 보관하지 않는다 — host 의 `TerminalFontSize` 가 정해 넘긴다 (#693).
     font_families: []const []const u8,
-    terminal_font: font_spec.Spec,
 
     pub fn colorF(v: u8) f32 {
         return @as(f32, @floatFromInt(v)) / 255.0;
@@ -416,7 +416,7 @@ pub const MetalRenderer = struct {
         );
         errdefer font_ctx.deinit();
 
-        var glyph_atlas = try GlyphAtlas.init(alloc, terminal_font.size_logical, scale);
+        var glyph_atlas = try GlyphAtlas.init(alloc, scale);
         errdefer glyph_atlas.deinit();
         // #421 — 위 결합 기호를 여기에 맞춰 높이를 고른다. `ascent_px` 는 물리 픽셀이라
         // atlas 가 쓰는 pt 단위로 되돌린다 (atlas 안에서 다시 `scale` 을 곱한다).
@@ -432,7 +432,7 @@ pub const MetalRenderer = struct {
         );
         errdefer tab_font_ctx.deinit();
 
-        var tab_glyph_atlas = try GlyphAtlas.init(alloc, tab_spec.size_logical, scale);
+        var tab_glyph_atlas = try GlyphAtlas.init(alloc, scale);
         errdefer tab_glyph_atlas.deinit();
 
         // Metal 셰이더 컴파일.
@@ -530,24 +530,22 @@ pub const MetalRenderer = struct {
             .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
             .scale = scale,
             .font_families = font_families,
-            .terminal_font = terminal_font,
         };
     }
 
     /// #253 — backingScaleFactor 가 바뀐 모니터로 이동했을 때 호출. 새 scale 의
-    /// pixel 크기로 폰트 cell 을 재측정하고 glyph atlas 를 재구성한다(Windows
-    /// `rebuildFontForDpi` / Linux `applyScale` 동등). 안 하면 init scale 의 cell·
-    /// glyph·UI metric 을 그대로 써서 다른 scale 모니터에서 글자/탭바가 배율만큼
-    /// 틀어진다. scale 이 실제로 바뀐 경우에만 호출(같은 scale 이동은 viewport 만).
-    pub fn applyScale(self: *MetalRenderer, new_scale: f32) !void {
-        if (new_scale == self.scale) return;
-
+    /// pixel 크기로 폰트 cell 을 재측정하고 glyph atlas 를 재구성한다. 안 하면 init
+    /// scale 의 cell · glyph · UI metric 을 그대로 써서 다른 scale 모니터에서 글자 /
+    /// 탭바가 배율만큼 틀어진다. 같은 scale 이동은 host 가 부르지 않는다 (viewport 만).
+    /// #693 — 세 platform 공통 이름이다 (Linux · Windows renderer 의 `rebuildFonts` 와 같은
+    /// 역할). 크기는 host 의 `TerminalFontSize.spec()` 이 정하고, 배율 타입만 platform 마다 다르다.
+    pub fn rebuildFonts(self: *MetalRenderer, terminal_font: font_spec.Spec, new_scale: f32) !void {
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
         var new_font = try CoreTextFontContext.init(
             self.rt,
             self.alloc,
             self.font_families,
-            self.terminal_font,
+            terminal_font,
             new_scale,
         );
         errdefer new_font.deinit();

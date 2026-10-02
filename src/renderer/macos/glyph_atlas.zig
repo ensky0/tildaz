@@ -48,8 +48,8 @@ pub const GlyphAtlas = struct {
     /// #604 — 패킹 상태 + 지금 크기 (`size`). 세 platform 공통 (`atlas_common.Packer`).
     pack: atlas_common.Packer = .{},
 
-    // 라스터 시 사용할 폰트 메트릭.
-    font_size: f32,
+    // 라스터 시 사용할 폰트 메트릭. 글자 크기는 들고 있지 않는다 — 라스터는 renderer 의
+    // 폰트 컨텍스트가 하고, 크기가 바뀌면 renderer 가 `reset` 한다 (#693).
     scale: f32, // Retina backing scale (1.0 / 2.0).
     /// #421 — primary 폰트의 ascent (pt). 위 결합 기호를 여기에 맞춰 높이를 고른다.
     /// renderer 가 폰트 컨텍스트를 만든 뒤 채운다. 0 이면 그 보정을 건너뛴다.
@@ -85,7 +85,6 @@ pub const GlyphAtlas = struct {
 
     pub fn init(
         alloc: std.mem.Allocator,
-        font_size: f32,
         scale: f32,
     ) !GlyphAtlas {
         // BGRA8 = 4 bytes per pixel.
@@ -98,7 +97,6 @@ pub const GlyphAtlas = struct {
             .alloc = alloc,
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
             .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
-            .font_size = font_size,
             .scale = scale,
             .pixels = pixels,
             .temp_buf = temp_buf,
@@ -180,7 +178,7 @@ pub const GlyphAtlas = struct {
     /// 캐시 (#268). 폰트 글리프가 아니라 우리가 만든 알파 커버리지라 codepoint
     /// 대신 아이콘 enum 을 key 로 씀 (font=0 은 유효한 CTFontRef 아님). 커버리지
     /// `a` 를 흰색 premultiplied (a,a,a,a) 로 써서 일반 글리프와 같은 셰이더
-    /// tint 경로 사용. scale 변경 시 `applyScale` 이 `reset` 하므로 다음 render
+    /// tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
         const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };

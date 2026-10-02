@@ -35,6 +35,7 @@ const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
 const key_encode = @import("../../key_encode.zig");
 const software_terminal = @import("software_terminal.zig");
+const terminal_size = @import("../../font/terminal_size.zig");
 const pane_draw = @import("../../renderer/pane_draw.zig");
 const pane_layout = @import("../../pane_layout.zig");
 const run_options = @import("../../run_options.zig");
@@ -1137,6 +1138,8 @@ const Client = struct {
     window_height: i32 = default_height,
     mapped: bool = false,
     renderer: software_terminal.Renderer,
+    /// #693 — 터미널 글자 크기. renderer 는 이 값의 `spec()` 으로 폰트를 만든다.
+    font_size: terminal_size.TerminalFontSize,
     session: ?session_core.SessionCore = null,
     shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_redraw: bool = false,
@@ -1668,10 +1671,12 @@ const Client = struct {
         const path = try waylandSocketPath(rt, allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
-        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 applyScale.
+        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 rebuildFonts.
+        const font_size = terminal_size.TerminalFontSize.init(cfg.terminalFontSpec());
         var renderer = try software_terminal.Renderer.init(
             allocator,
             cfg,
+            font_size.spec(),
             fractional_scale_denominator,
             fractional_scale_denominator,
         );
@@ -1706,6 +1711,7 @@ const Client = struct {
                 };
             },
             .renderer = renderer,
+            .font_size = font_size,
             .config = cfg,
             .menu_hints = blk: {
                 var hotkey_buf: [64]u8 = undefined;
@@ -3267,13 +3273,13 @@ const Client = struct {
         // renderer scale apply — paint 가 1x layout 그리면 큰 buffer 안 작은
         // content (#210). 실패해도 default scale 로 진행.
         const renderer_scale_applied = blk: {
-            self.renderer.applyScale(
+            self.renderer.rebuildFonts(
                 self.allocator,
-                self.config,
+                self.font_size.spec(),
                 new_scale,
                 fractional_scale_denominator,
             ) catch |err| {
-                log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
+                log.appendLine("wayland", "renderer rebuildFonts failed: {s} — keeping default scale", .{@errorName(err)});
                 break :blk false;
             };
             break :blk true;
@@ -3288,7 +3294,7 @@ const Client = struct {
         // dialog surface가 map된 뒤 preferred_scale이 도착할 수 있다. font만
         // 바꾸고 1x 요청 폭을 유지하면 본문이 불필요하게 더 wrap되므로 dialog
         // role의 size/margin도 같은 scale에서 다시 요청한다 (#306).
-        // #368 — dialog 가 떠 있는 동안 scale 이 바뀌면 `applyScale` 이 dialog 폰트를
+        // #368 — dialog 가 떠 있는 동안 scale 이 바뀌면 `rebuildFonts` 가 dialog 폰트를
         // 버린다 (지연 생성 정책). 그 상태로 다시 그리면 탭 폰트로 떨어지므로, 열려
         // 있을 때만 즉시 새 scale 로 다시 만든다.
         if (renderer_scale_applied and self.dialog.surface_id != 0) {
@@ -3574,7 +3580,7 @@ const Client = struct {
         // 뒤이은 waitForConfigure 가 그 configure 를 받아 work-area 를 latch 한 뒤
         // continuation 이 보낸다. 실측(KWin Plasma 6): 그 configure 는 초기 안전
         // commit 과 거의 동시에 socket 에 도착해 있으므로 boot 지연이 없다 — 기존에
-        // 관측된 63ms 간격은 compositor 지연이 아니라 그 사이의 renderer.applyScale
+        // 관측된 63ms 간격은 compositor 지연이 아니라 그 사이의 renderer.rebuildFonts
         // (font chain 재빌드) 이 socket 을 안 읽은 시간이었다.
         try self.sendLayerSurfaceLayout(false);
     }
