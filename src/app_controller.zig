@@ -825,12 +825,17 @@ pub const App = struct {
                     // 아래 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는
                     // 격자가 pane 높이에 딱 안 떨어져 자투리가 남기 때문이다.
                     var active_grid_bottom_px: ?i32 = null;
+                    // #675 — 검색바는 활성 pane 의 오른쪽 아래에 뜬다. 그 pane 의 사각형.
+                    var active_pane_px: ?pane_layout.Rect = null;
                     const search_focused_now = self.searchFocused();
                     for (lay) |pr| {
                         const t = group.panes[pr.pane].?;
                         const is_active = pr.pane == group.active_pane;
-                        if (is_active) active_grid_bottom_px = pr.rect.y + @as(i32, self.TERMINAL_PADDING) +
-                            @as(i32, @intCast(t.terminal.rows)) * @as(i32, window.cell_height_px);
+                        if (is_active) {
+                            active_pane_px = pr.rect;
+                            active_grid_bottom_px = pr.rect.y + @as(i32, self.TERMINAL_PADDING) +
+                                @as(i32, @intCast(t.terminal.rows)) * @as(i32, window.cell_height_px);
+                        }
                         // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
                         if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
                         r.drawPane(.{
@@ -880,9 +885,9 @@ pub const App = struct {
                     {
                         const t = group.activeTab();
                         const sb = t.terminal.screens.active.pages.scrollbar();
+                        const sp = active_pane_px orelse area;
                         self.search_geom = .{
-                            .viewport_w_pt = @as(f32, @floatFromInt(size.w)) / r.pixels_per_dip,
-                            .viewport_h_pt = @as(f32, @floatFromInt(size.h)) / r.pixels_per_dip,
+                            .pane = search_bar.paneRectPt(sp.x, sp.y, sp.w, sp.h, r.pixels_per_dip),
                             .cell_w_pt = @as(f32, @floatFromInt(window.cell_width_px)) / r.pixels_per_dip,
                             .cell_h_pt = @as(f32, @floatFromInt(window.cell_height_px)) / r.pixels_per_dip,
                             .scrollbar_w_pt = if (sb.total > sb.len)
@@ -1174,7 +1179,7 @@ pub const App = struct {
     fn searchBarViewNow(self: *App) ?search_bar.View {
         const tab = self.session.activeTab() orelse return null;
         if (!tab.search.is_open) return null;
-        if (self.search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+        if (self.search_geom.pane.w <= 0) return null; // 아직 한 프레임도 안 그렸다
         return search_bar.view(self.search_geom);
     }
 

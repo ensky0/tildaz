@@ -5194,6 +5194,8 @@ const Client = struct {
         // 가장자리를 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이** 인 이유는 격자가 pane
         // 높이에 딱 안 떨어져 자투리가 남기 때문이다.
         var active_grid_bottom_px: ?i32 = null;
+        // #675 — 검색바는 활성 pane 의 오른쪽 아래에 뜬다. 그 pane 의 사각형.
+        var active_pane_px: ?pane_layout.Rect = null;
         const search_focused_now = self.searchFocused();
         // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다** (`search_geom`). 마우스 히트
         // 테스트가 그린 것과 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를 돌아야 나오는
@@ -5202,8 +5204,11 @@ const Client = struct {
         for (lay, 0..) |pr, i| {
             const t = group.panes[pr.pane].?;
             const is_active = pr.pane == group.active_pane;
-            if (is_active) active_grid_bottom_px = pr.rect.y + @as(i32, @intCast(m.pad)) +
-                @as(i32, @intCast(t.terminal.rows)) * @as(i32, @intCast(m.cell_h));
+            if (is_active) {
+                active_pane_px = pr.rect;
+                active_grid_bottom_px = pr.rect.y + @as(i32, @intCast(m.pad)) +
+                    @as(i32, @intCast(t.terminal.rows)) * @as(i32, @intCast(m.cell_h));
+            }
             // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
             if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
             pane_storage[i] = .{
@@ -5233,9 +5238,9 @@ const Client = struct {
         {
             const t = group.activeTab();
             const sb = t.terminal.screens.active.pages.scrollbar();
+            const sp = active_pane_px orelse area;
             self.search_geom = .{
-                .viewport_w_pt = @as(f32, @floatFromInt(width)) / self.renderer.scale,
-                .viewport_h_pt = @as(f32, @floatFromInt(height)) / self.renderer.scale,
+                .pane = search_bar.paneRectPt(sp.x, sp.y, sp.w, sp.h, self.renderer.scale),
                 .cell_w_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_width_px)) / self.renderer.scale,
                 .cell_h_pt = @as(f32, @floatFromInt(self.renderer.font_ctx.cell_height_px)) / self.renderer.scale,
                 .scrollbar_w_pt = if (sb.total > sb.len)
@@ -6217,14 +6222,14 @@ const Client = struct {
         const session = if (self.session) |*s| s else return null;
         if (session.active_tab >= session.tabs.items.len) return null;
         if (!session.tabs.items[session.active_tab].activeTab().search.is_open) return null;
-        if (self.search_geom.viewport_w_pt <= 0) return null;
+        if (self.search_geom.pane.w <= 0) return null;
         return search_bar.view(self.search_geom);
     }
 
     /// #646 — 지금 화면에 있는 검색바의 배치. 안 떠 있으면 `null`.
     fn searchBarViewNow(self: *Client) ?search_bar.View {
         if (!self.searchFocused()) return null;
-        if (self.search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+        if (self.search_geom.pane.w <= 0) return null; // 아직 한 프레임도 안 그렸다
         return search_bar.view(self.search_geom);
     }
 

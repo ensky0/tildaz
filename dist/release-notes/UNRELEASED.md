@@ -52,3 +52,6 @@ Internal changes belong in neither.
   call `gnome-extensions enable`, which fails silently before the next login, so the
   extension never turned on. Cinnamon was not affected.
   ([#654](https://github.com/ensky0/tildaz/issues/654))
+- The search panel now opens inside the pane you are searching. With side-by-side panes it
+  used to sit at the right edge of the window, over the wrong pane.
+  ([#675](https://github.com/ensky0/tildaz/issues/675))
