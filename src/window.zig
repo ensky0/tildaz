@@ -2351,13 +2351,20 @@ pub const Window = struct {
                 //
                 // **`Alt` 는 제외한다** — Windows 의 AltGr 은 `Ctrl+Alt` 로 도착하고 그 조합이
                 // 만든 글자는 `WM_CHAR` 가 따로 준다. 인코더로 보내면 `mayRewriteExtended` 가
-                // alt 를 보고 비켜서 ESC-prefix 경로로 가므로 프랑스 자판의 `AltGr+2` 가 `~` 대신
-                // `ESC é` 가 되고, 짝꿈 `WM_CHAR` 까지 삼켜진다. kitty 는 예전 동작을 그대로 둔다.
+                // alt 를 보고 비켜서 ESC-prefix 경로로 가므로 프랑스 자판의 `AltGr+e` 가 `€` 대신
+                // `ESC <글자>` 가 되고, 짝꿈 `WM_CHAR` 까지 삼켜진다.
+                //
+                // **dead key 대기 중도 제외한다** — 여기서 `swallow_next_wm_char` 를 세웠는데 짝꿍
+                // `WM_CHAR` 가 기대대로 오지 않으면 **그다음 글자가 사라진다**. 아래 `report_all`
+                // 블록이 같은 자리에서 겪은 사고다 (#602 2 회차의 `é`). 그 상태의 키는 예전처럼
+                // `WM_CHAR` · `WM_DEADCHAR` 가 맡는다.
+                //
+                // **둘 다 kitty 에는 걸지 않는다** — 그 경로는 #533 · #602 가 검증한 그대로 둔다.
                 //
                 // **단축키 다음이다** — `Ctrl+Shift+T` 같은 binding 은 위 `lookupKeyAction` 이
                 // 이미 가져갔다. IME 가 조합 중이면 건드리지 않는다 (한글 조합이 깨진다).
                 if (GetKeyState(VK_CONTROL) < 0 and
-                    (kitty_active or GetKeyState(VK_MENU) >= 0) and
+                    (kitty_active or (GetKeyState(VK_MENU) >= 0 and self.compose_preview_len == 0)) and
                     self.imePreeditSlice().len == 0)
                 {
                     var ctrl_chars: [8]u8 = undefined;

@@ -62,7 +62,7 @@
 # ⚠️ 이 파일은 UTF-8 **BOM** 으로 저장한다 — Windows PowerShell 5.1 은 BOM 없는 `.ps1` 을 cp949 로 읽는다.
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "legacy", "kitty", "mok2", "layout")][string]$Mode = "all",
+    [ValidateSet("all", "legacy", "kitty", "mok2", "layout", "deadkey")][string]$Mode = "all",
     # 기본값은 본문에서 채운다 — 머리 주석의 `$PSScriptRoot` 함정.
     [string]$Bin = ""
 )
@@ -247,6 +247,20 @@ $rounds = @(
         #    `Alt+2` 가 `switch_tab2` 기본 바인딩이라 앱이 먼저 가져간 것이었다 (`Ctrl+Shift+F` 와
         #    같은 부류의 도구 실수 — 2026-10-01). `Alt+<글자>` 에는 기본 바인딩이 없다.
         @{ n = "AltGr+e (EUR)";   k = ,@(0xA2, 0xA5, 0x45); e = "e2 82 ac" } # VK_LCONTROL · VK_RMENU · VK_E
+    ) },
+    # 경계 ④ — **dead key 대기 중의 `Ctrl` 조합** (#684). US-International (`'` 가 dead key) 로
+    # 창을 바꾸고 세 키를 이어서 친다. 재는 것은 `Ctrl+A` 의 바이트만이 아니라 **그다음 글자가
+    # 살아 있는가** 다 — 그 상태에서 `swallow_next_wm_char` 를 세웠는데 짝꿍 `WM_CHAR` 가 기대대로
+    # 오지 않으면 다음 글자가 통째로 사라진다 (#602 2 회차에서 `é` 가 그렇게 없어졌다).
+    # 그래서 `window.zig` 가 dead key 대기 중에는 인코더로 보내지 않는다. 마지막 `x` 칸이 그 증거다.
+    @{ mode = "deadkey"; enable = ""; klid = "00020409"; keys = @(
+        @{ n = "' (dead key)";   k = ,@(0xDE);            e = "" }    # VK_OEM_7 — 아직 글자가 없다
+        @{ n = "Ctrl+A (대기중)"; k = ,@($VK.Ctrl, 0x41); e = "01" }
+        # dead key 는 `Ctrl` 조합에 **취소되지 않고 보류된 채 살아남는다** — 그래서 다음 글자는
+        # `'` 와 합쳐진 `27 78` 이다 (`x` 는 accent 를 못 받는 글자라 두 글자로 풀린다).
+        # `deadkey-check_windows.ps1` 의 `' x` 케이스가 같은 값을 검증된 기대값으로 갖고 있다.
+        # **삼킴 사고가 나면 `78` 이 통째로 빠진다** — 그것이 이 칸의 판정 대상이다.
+        @{ n = "x (다음 글자)";   k = ,@(0x58);            e = "27 78" }
     ) }
 )
 
