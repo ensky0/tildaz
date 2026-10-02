@@ -1081,15 +1081,15 @@ pub const MetalRenderer = struct {
 
         const cw: f32 = @floatFromInt(cell_w);
         const ch: f32 = @floatFromInt(cell_h);
-        // 위쪽 padding 보정: 폰트의 ascent 가 cap_height 보다 위쪽 internal
-        // leading 만큼 더 큰데 cell box top 부터 ascent 만큼 내려간 위치가
-        // baseline 이라, 대문자 visible top 은 cell top + (ascent − cap_height)
-        // 위치. 좌/우 padding 은 글자에 딱 붙는데 위쪽만 (ascent − cap_height)
-        // 만큼 추가 여백이 생겨 비대칭. 모든 row 의 fy 를 위로 그만큼 shift
-        // 해서 첫 행 글자 visible top 이 정확히 padding 위치에 오게.
         // #483 2단계 ② — 격자 원점은 pane 기준. `rect` 가 탭바를 뺀 영역이라 pane 하나면 이전의
         // `padding` / `tab_bar_h + padding` 과 같은 값이다 (1단계 `leafRect` 의 `grid_x` / `grid_y`).
-        const y_off: f32 = @as(f32, @floatFromInt(pane.rect.y + padding)) - self.font.top_pad_px;
+        //
+        // #689 — Windows · Linux 와 같은 원점이다. 예전에는 첫 줄 대문자 윗끝을 padding 에 맞추려고
+        // 격자 전체를 폰트 윗여백 (ascent − 'M' 윗끝) 만큼 위로 올려 그렸다. 그런데 격자 좌표를
+        // *쓰는* 쪽 (`pane_layout` 의 `grid_y` — 마우스 → 칸 · 검색바) 은 올리지 않은 원점을 봐서,
+        // 각 줄 그림의 윗부분 3 pt 를 클릭하면 한 줄 위 칸이 잡혔다 (실기). 그리는 원점과 쓰는
+        // 원점은 하나여야 한다.
+        const y_off: f32 = @floatFromInt(pane.rect.y + padding);
         const x_pad: f32 = @floatFromInt(pane.rect.x + padding);
 
         const all_cells = row_slice.items(.cells);
@@ -1493,8 +1493,7 @@ pub const MetalRenderer = struct {
         // #343 단계 2 — scrollbar thumb 의 rect 와 색은 공통 `scrollbar.thumbRect`
         // 한 곳이 만든다 (track 자체는 별도 색 없이 배경 그대로 — 세 platform 동일).
         // #259 — drag hit-test (`host/macos.scrollbarHit`) 와 같은 입력. track_top 은
-        // 셀 영역 윗변(`y_offset + padding`) — 텍스트 baseline 용 `y_off`(top_pad_px
-        // 보정 포함) 와 달라 scrollbar 는 별도로 둔다.
+        // 셀 영역 윗변(`y_offset + padding`).
         // #483 2단계 ② — track 은 pane 기준이다. `thumbRect` 의 viewport 인자에 pane 의 오른쪽 · 아래
         // **가장자리**를, track_top 에 `rect.y + scrollbar_top_inset` 을 넘기면 같은 식이 pane
         // 좌표계에서 성립한다 (pane 하나면 이전 인자와 값이 같다). 폭 · thumb 최소 높이는 host 가

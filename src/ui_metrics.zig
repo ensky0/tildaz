@@ -286,8 +286,7 @@ pub fn linePx(pt: anytype, scale: f32) f32 {
 // 기준을 `ascent` 로 잡은 것은 세 renderer 가 **baseline = 셀 top + `ascent_px`**
 // 로 글리프를 놓기 때문이다 (macOS `emitTextInstance` · Windows
 // `emitClusterInstance` · Linux `appendGlyph` 모두 같은 식). 선을 같은 기준으로
-// 계산하면 글리프와 항상 일관되고, macOS 만 행 원점을 `top_pad_px` 만큼 올리는
-// 기존 차이도 자동으로 따라간다.
+// 계산하면 글리프와 항상 일관된다.
 //
 // ## 왜 폰트 metric 을 쓰지 않는가
 //
