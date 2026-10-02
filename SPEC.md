@@ -825,6 +825,24 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 쓴다** — 셋이 각자 재면 같은 창에서 platform 마다 다른 자리에 뜬다. 마우스 히트 테스트도 그
 값을 본다 (그린 것과 같은 사각형이어야 한다).
 
+### 2.10 글자 크기 ([#679](https://github.com/ensky0/tildaz/issues/679) · [#693](https://github.com/ensky0/tildaz/issues/693))
+
+터미널 글자 크기를 실행 중에 1pt 씩 바꾼다. **창 전체에 한 번 적용**된다 — 모든 탭 · pane 이 같은 크기다. 탭바 · 다이얼로그 글자는 그대로다 (탭바 글자는 원래 터미널 글자와 따로다, [#272](https://github.com/ensky0/tildaz/issues/272)). 창 크기도 그대로고 칸 수가 바뀐다. 아래 표의 platform 열은 실기 확인 뒤 ✅ 로 바꾼다 (2026-10-02 현재 컴파일 · 단위 테스트까지). **재시작하면 `font.size_point` 로 돌아간다** — config 에 쓰지 않는다.
+
+| 동작 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|
+| 크게 | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | `⌘=` · `⇧⌘=` · `⌘plus` | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | 확인 필요 | 확인 필요 | 확인 필요 |
+| 작게 | `Ctrl+Shift+-` | `⌘-` | `Ctrl+Shift+-` | 확인 필요 | 확인 필요 | 확인 필요 |
+| 설정 크기로 | `Ctrl+Shift+Backspace` | `⌘0` · `⇧⌘⌫` | `Ctrl+Shift+Backspace` | 확인 필요 | 확인 필요 | 확인 필요 |
+
+- **범위는 `font.size_point` 와 같은 8–72pt** 다. 한 상수 (`terminal_size.MIN_SIZE_POINT` · `MAX_SIZE_POINT`) 를 config 검사와 함께 쓴다. 끝에서 더 누르거나 이미 설정 크기인데 되돌리면 아무 일도 없다 (폰트를 다시 만들지 않는다).
+- **글자 크기 상태는 [`src/font/terminal_size.zig`](src/font/terminal_size.zig) 한 곳**이고, 세 platform 의 renderer 는 그 값의 `spec()` 을 `rebuildFonts(spec, scale)` 로 받는다. 배율 변경 (Windows DPI · macOS `backingScaleFactor` · Linux `preferred_scale`) 과 **같은 함수**다 — 다른 것은 배율 타입뿐이다 (Linux `n/120` · Windows DPI · macOS float).
+- **Linux · Windows 의 되돌리기가 `0` 이 아닌 이유** — Windows 의 IME 직접 전환 단축키 (`HKCU\Control Panel\Input Method\Hot Keys\00000104`) 가 `Ctrl+Shift+0` 을 가져가 앱에 닿지 않는다 ([실측](https://github.com/ensky0/tildaz/issues/693#issuecomment-5946546454)). kitty 와 같은 `Ctrl+Shift+Backspace` 로 했다. macOS 는 OS 전역의 "실제 크기" 자리 `⌘0` 을 쓰고, `⇧⌘⌫` 를 함께 둔다 — 숫자에 Shift 가 필요한 AZERTY 에서는 `⌘0` 이 `⇧⌘à` 가 되어 `⇧⌘0` (pane 균등) 에 먹힌다. `⌘⌫` 는 macOS 의 "줄 앞까지 지우기" 라 쓰지 않는다.
+- **`⇧⌘=` 를 따로 둔 이유** — US 에서 `⌘+` 는 실제로 `⇧⌘=` 다. Linux · Windows 는 원래 Shift 를 쓰므로 `ctrl+shift+=` 하나로 된다 (Shift 를 적은 binding 은 무시프트 값으로도 맞는다 — §7.1). `plus` 는 독일어처럼 `+` 키가 따로 있는 배열용이다.
+- **Windows 의 `Ctrl+Shift+-` 는 `WM_CHAR 0x1f` 도 만든다.** `Ctrl` · `Shift` 가 함께 눌린 `WM_CHAR` 는 이미 버리므로 셸로 새지 않는다 (`window.zig` 의 `WM_CHAR`).
+- **`-size` 회차는 무시하고 로그만 남긴다** — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를 지킬 수 없다. Linux 는 격자가 화면에 안 들어가면 실행을 끝내기까지 한다 (`guardRequestedGridFits`).
+- 로그는 세 platform 이 같은 줄이다 — `[font] terminal font size increase — 16 pt, cell 9x20 px` (`log.logFontSize`).
+
 ## 3. 마우스 동작
 
 | 동작 | 위치 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -1440,18 +1458,28 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 | `alt` / `option` / `opt` | Alt | `option` / `opt` 은 mac 친숙 표기 |
 | `cmd` / `command` / `super` / `win` / `meta` / `logo` | Super | 모두 같은 키 — Win key / Super / Cmd / KDE Meta / Qt Logo. 어떤 표기든 받음 |
 
-**Key 토큰** (대소문자 무관). 세 OS 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거치므로 수용 범위가 아래 표로 동일하고, OS 별 차이는 key code 매핑(keysym / vkey / kVK)뿐:
+**Key 토큰** (대소문자 무관). 전역 `hotkey` 와 `[keys]` 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거친다. 받는 범위는 아래 표 하나가 정하고, 키마다 **무엇으로 맞추는지**가 platform 마다 다르다 — 이 표가 그 차이의 단일 출처다 ([#693](https://github.com/ensky0/tildaz/issues/693)). 위치 표기 (`[KeyW]`) 는 이 표 밖이다 (아래 `physical_key.zig`).
 
-| 분류 | 토큰 / 글자 | Linux native backend 변환 |
-|---|---|---|
-| Function key | `f1` ~ `f12` | ✅ |
-| Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
-| Digit | `0` ~ `9` | ✅ |
-| Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
-| Page key | `pageup` / `pgup`, `pagedown` / `pgdn` | ✅ — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
-| Bracket | `bracketleft` / `[`, `bracketright` / `]` | ✅ — `[keys]` 의 `prev_tab` / `next_tab` 기본값이 쓴다 ([#493](https://github.com/ensky0/tildaz/issues/493)) |
-| Backtick | `grave` / `backquote` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString`이 명시 reject(#208). caller가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)`로 즉시 알린다. 수용 범위 확대는 모든 native backend의 실제 key-code mapping 검증 후 별도 진행한다. |
+| 분류 | 적는 법 | 전역 `hotkey` | `[keys]` | Linux 가 맞추는 것 | macOS 가 맞추는 것 | Windows 가 맞추는 것 |
+|---|---|---|---|---|---|---|
+| Function key | `f1` ~ `f12` | ✅ (수식키 없이도) | ✅ | keysym | keycode | VK |
+| Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ | ✅ | 키가 낸 글자 (keysym) | 키가 낸 글자 (#496 항목 2) | VK — 라틴 배열은 그 글자 키, 비라틴은 US 자리 (layout DLL) |
+| Digit | `0` ~ `9` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | VK |
+| Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ | ✅ | keysym | keycode | VK |
+| Page key | `pageup` / `pgup`, `pagedown` / `pgdn` | ✅ | ✅ | keysym | keycode | VK — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
+| Arrow | `left` `right` `up` `down` | ⚠️ 확인 필요 — 파서는 받지만 Linux 등록 이름표 (`linuxKeysymName`) 에 없다 | ✅ | keysym | keycode | VK ([#483](https://github.com/ensky0/tildaz/issues/483)) |
+| Backspace | `backspace` | ❌ | ✅ | keysym | keycode | VK ([#693](https://github.com/ensky0/tildaz/issues/693)) |
+| Backtick | `` ` `` 또는 `grave` / `backquote` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_3` ⚠️ |
+| Bracket | `[` `]` 또는 `bracketleft` / `bracketright` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_4` / `VK_OEM_6` ⚠️ ([#493](https://github.com/ensky0/tildaz/issues/493)) |
+| Slash | `/` 또는 `slash` | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_2` ⚠️ ([#682](https://github.com/ensky0/tildaz/issues/682)) |
+| Equal · Minus | `=` `-` 또는 `equal` / `minus` | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_PLUS` / `VK_OEM_MINUS` ⚠️ ([#693](https://github.com/ensky0/tildaz/issues/693)) |
+| Plus | `plus` (이름만 — `+` 는 구분자) | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_PLUS` ⚠️ — US 의 `=+` 키이자 독일어의 `+` 키 |
+| 그 밖의 ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `_` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `?` `\` `|` | ❌ | ❌ | — | — | — |
+
+- **기호는 글자와 이름 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다. 이름은 kitty 와 같다 ([`kitty/options/definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py)). 앱의 hotkey 캡처는 `` ` `` 를 `grave` 로, Linux 의 `[` 를 `bracketleft` 로 config 에 쓴다 — 그래서 이름을 빼는 쪽으로는 통일할 수 없었다.
+- **⚠️ Windows 의 기호 키는 라벨도 위치도 아니다.** `VK_OEM_*` 는 layout DLL 이 배정하는 슬롯이라 배열마다 다른 물리 키로 옮겨 다닌다 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27` — AGENTS.md `# Windows — 키보드 layout 조회 실측 방법`). 대부분의 배열에서는 그 기호가 인쇄된 키지만 보장은 없다. 그런 배열에서는 위치 표기를 쓴다 (CONFIG.md 의 *Symbol keys on Windows*). 프랑스어 AZERTY 의 `VK_OEM_MINUS` · `VK_OEM_PLUS` 자리는 **확인 필요**.
+- **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다** (`lookupAction` 의 `try_unshifted`). 그래서 US 의 `ctrl+shift+=` (키가 낸 글자 `+`) 가 `=` binding 에 맞는다. Windows 는 VK 가 Shift 와 무관해 이 규칙이 필요 없다.
+- **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 알린다.
 
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 

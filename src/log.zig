@@ -342,6 +342,16 @@ pub fn logPaneZoom(enabled: bool, active_pane: anytype) void {
     appendLine("pane", "zoom {s} — active pane {}", .{ if (enabled) "on" else "off", active_pane });
 }
 
+/// #693 — 글자 크기 단축키. 세 host 가 같은 줄을 남긴다 (셀 크기는 host 가 잰 물리 px).
+pub fn logFontSize(change: []const u8, size_point: f32, cell_w: anytype, cell_h: anytype) void {
+    appendLine("font", "terminal font size {s} — {d} pt, cell {}x{} px", .{ change, size_point, cell_w, cell_h });
+}
+
+/// #693 — `-size` 회차는 격자를 고정하므로 글자 크기 단축키를 무시한다. 세 host 공통.
+pub fn logFontSizeIgnoredForFixedGrid(change: []const u8) void {
+    appendLine("font", "terminal font size {s} ignored — -size fixes the grid", .{change});
+}
+
 pub fn logPaneSeparatorMoved(node: anytype, axis: []const u8, placed: anytype) void {
     appendLine("pane", "separator drag — node {} to {s} {}", .{ node, axis, placed });
 }

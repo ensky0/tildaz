@@ -3174,6 +3174,7 @@ pub const Window = struct {
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
             .find => .find,
+            .font_size => .{ .font_size = mapped.font_size orelse return },
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).

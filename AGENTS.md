@@ -463,6 +463,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 | 탭 전환 | `⌘1`–`⌘9` | `Alt+1`–`Alt+9` |
 | pane 균등 | `⇧⌘0` | `Shift+Alt+0` |
 | 분할 | `⌥⌘→` `⌥⌘↓` | `Ctrl+Shift+→` `Ctrl+Shift+↓` |
+| 글자 크기 크게 / 작게 / 되돌리기 | `⌘=` · `⌘-` · `⌘0` (+ `⇧⌘⌫`) | `Ctrl+Shift+=` · `-` · `Backspace` |
 
 - 분할이 `⌃⌘방향` 이 아닌 이유는 macOS 의 Mission Control (`⌃↑` `⌃↓`) 과 부딪혀서고, Linux 에서 `Ctrl+Alt+방향` 을 피한 이유는 GNOME 이 workspace 전환 · 이동에 쓰기 때문이에요 (둘 다 `config.zig` 주석에 근거가 있어요).
 - 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에는 **`PgUp` / `PgDn` 을 함께** 둬요 — AZERTY 에서 bracket 이 `AltGr+5` 라 못 눌러요 ([#482](https://github.com/ensky0/tildaz/issues/482)).
@@ -479,6 +480,19 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 awk '/new_tab => &\.\{"cmd\+t"\}/,/^    \}/' src/config.zig            # macOS 기본값
 awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux · Windows 기본값
 ```
+
+- 글자 크기 ([#693](https://github.com/ensky0/tildaz/issues/693)) 는 macOS 만 OS 전역 표준 자리 (`⌘=` `⌘-` `⌘0`) 를 써요. Linux · Windows 의 되돌리기가 `0` 이 아닌 이유는 Windows 의 IME 직접 전환 단축키가 `Ctrl+Shift+0` 을 가져가서예요 (Windows 실기). macOS 의 `⇧⌘⌫` 는 그 짝이고, 숫자에 Shift 가 필요한 AZERTY 에서 `⌘0` 이 `⇧⌘0` (균등) 에 먹히는 것을 메워요.
+
+## 라벨 키를 더할 때
+
+새 키 이름 (`=` 같은 기호나 `backspace` 같은 특수 키) 을 `[keys]` 가 받게 하려면 **`config.zig` 의 열 곳을 함께** 고쳐요. #682 (`/`) 와 #693 (`=` `-` `plus` `backspace`) 이 같은 열 곳을 거쳤어요. `HotkeyNamedKey` 에 값을 더하면 빠짐없는 `switch` 는 컴파일러가 알려 주지만, 세 곳은 못 잡아요 — 이름 표 (②) 와 `else` 가 있는 두 곳 (③ ⑨).
+
+① `HotkeyNamedKey` 열거형 ② `hotkeyKeyFromName` 의 이름 · 글자 ③ `parseHotkeyString` 의 전역 hotkey 거부 ④ 같은 함수의 `types_text` ⑤ Linux keysym (`keysymFromKey`) ⑥ Windows VK (`vkeyFromKey`) ⑦ macOS 라벨 (`labelFromKey`) ⑧ macOS keycode (`keycodeFromKey`) ⑨ 라틴 fallback (`usPositionForKeysym`) ⑩ 표시 이름 (`bindingDisplay`)
+
+- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 앱의 hotkey 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 쓰므로, 이름을 빼는 쪽으로는 통일할 수 없어요.
+- **키 코드 값은 [`physical_key.zig`](src/physical_key.zig) 표와 맞춰요.** named ↔ code 테스트가 macOS keycode 를 그 표와 대조하고, named 키가 하나라도 빠지면 개수 단언이 걸려요.
+- **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
+- **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.
 
 **액션을 더하면 config 스키마가 바뀌어요.** 기존 `config_N.toml` 에는 그 키가 없으니 **기본 바인딩으로 돌고 시작 안내에 한 줄이 뜹니다** ([#655](https://github.com/ensky0/tildaz/issues/655) 이전에는 `missing required key "<액션>"` 으로 **부팅이 막혔어요** — 원칙 5 가 그것을 뒤집었어요). 부팅을 막지는 않지만 **사용자가 안내를 보는 것은 그대로**라, 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
 

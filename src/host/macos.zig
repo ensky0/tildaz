@@ -1557,6 +1557,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
         .close_pane => handleClosePane(),
         .find => handleFind(),
+        .font_size => handleFontSize(mapped.font_size orelse return false),
     }
     return true;
 }
@@ -4218,6 +4219,31 @@ fn handleZoomPane() void {
     if (!g_session.toggleZoomActive()) return;
     syncTerminalGeometry();
     log.logPaneZoom(g_session.activeGroup().?.zoomed != null, g_session.activeGroup().?.active_pane);
+    afterPaneLayoutChange();
+}
+
+/// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 (`rebuildFonts` — 배율 변경과 같은
+/// 함수) 모든 탭의 격자를 맞춘다. 사본에 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도
+/// renderer 도 그대로다.
+///
+/// `-size` 회차는 무시한다 — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를
+/// 지킬 수 없다 (세 platform 공통 · Linux `handleFontSize`).
+fn handleFontSize(change: terminal_size.Change) void {
+    if (g_renderer == null) return;
+    if (g_run_opts.grid != null) {
+        log.logFontSizeIgnoredForFixedGrid(@tagName(change));
+        return;
+    }
+    var next = g_font_size;
+    if (!next.apply(change)) return;
+    const r = &g_renderer.?;
+    r.rebuildFonts(next.spec(), r.scale) catch |err| {
+        log.appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), g_font_size.size_logical });
+        return;
+    };
+    g_font_size = next;
+    syncTerminalGeometry();
+    log.logFontSize(@tagName(change), g_font_size.size_logical, r.font.cell_width_px, r.font.cell_height_px);
     afterPaneLayoutChange();
 }
 
