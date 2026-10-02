@@ -794,14 +794,20 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   (`pkill -x tildaz` 는 사용자의 instance 0 도 죽여요 — #583 A12). 실기라서 `# 실행 환경` 대로
   **시작 전에 창이 몇 번 뜨는지 알리고** 그동안 키 · 마우스를 건드리지 말라고 해요.
 
-# macOS — 합성 입력으로 마우스 보고 · dead key 를 자동 검증하는 법
+# macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
-사람 손 없이 `cliclick` 으로 클릭 · 키를 보내 판정하는 도구 둘이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A3 · A4).
+사람 손 없이 클릭 · 키를 보내 판정하는 도구 셋이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A3 · A4 · [#684](https://github.com/ensky0/tildaz/issues/684)).
 
 | 도구 | 무엇 |
 |---|---|
 | [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
 | [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
+| [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos` 로 keyCode + flags 를 보낸다 |
+
+- **`key-bytes-check_macos.sh` 는 켜진 시스템 단축키를 보내지 않고 SKIP 해요.** `⌃Space` 를 보내면 사용자의 입력 소스가
+  바뀌어요. `com.apple.symbolichotkeys` 를 읽는데, **항목이 없으면 macOS 기본값이 적용돼요** — 60 번 (`⌃Space`) 은
+  기본으로 켜져 있어서 항목이 없는 기기에서는 SKIP 이 맞아요. MacBook Pro (M5 Pro) 는 60 번이 다른 키로 바뀌어 있어 `⌃Space` 가 SKIP 되지 않아요 (2026-10-01 설정 확인).
+- 판정은 **키마다 그 뒤에 새로 생긴 줄만** 읽어요. 순서로 맞추면 한 키가 0 바이트일 때 뒤가 전부 밀려요.
 
 - **창 위치는 `tool/color-capture_macos --list` 의 위치 열**에서 읽어요 — Accessory 앱은 AX 의
   `position of window` 가 창을 못 찾고 (`유효하지 않은 인덱스`), JXA 의 `CGWindowListCopyWindowInfo`
@@ -913,7 +919,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 |---|---|
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
 | [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
-| [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 |
+| [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 + `-Mode layout` (비US 배열 — 창 스레드만 프랑스어 AZERTY 로 바꿔 `Ctrl+a` · `Ctrl+q` · `AltGr+e` 를 본다). 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 의 행도 더해 키마다 판정한다 ([#684](https://github.com/ensky0/tildaz/issues/684)) |
 | [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
@@ -922,7 +928,8 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
 tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
-tool\key-bytes-check_windows.ps1                                    # 창 3 회 (legacy · kitty · mok2) · 합성 키
+tool\key-bytes-check_windows.ps1                                    # 창 4 회 (legacy · kitty · mok2 · layout) · 합성 키
+tool\key-bytes-check_windows.ps1 -Mode layout                       # 비US 배열만 — layout 이 그 창에만 잠깐 올라간다
 tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
 tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 21 항목 (캡처 30 장 남짓)
 tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
@@ -1040,10 +1047,10 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
 
 ```powershell
 zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
-.\layout-probe.exe                       # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
-.\layout-probe.exe --watch 60            # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
-.\layout-probe.exe --only 0000040c       # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
-.\layout-probe.exe --unload-session      # 앞선 실행이 세션에 남긴 layout 을 치워요
+.\layout-probe_windows.exe               # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
+.\layout-probe_windows.exe --watch 60    # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
+.\layout-probe_windows.exe --only 0000040c   # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
+.\layout-probe_windows.exe --unload-session  # 앞선 실행이 세션에 남긴 layout 을 치워요
 ```
 
 **macOS 보다 유리한 점 — 전환 없이 여러 layout 을 한 번에 재요.** `LoadKeyboardLayoutW("0000040C", 0)` 로 얻은 `hkl` 을 위 API 에 넘기면 돼요. 그 값이 *실제 활성 layout* 과 같은지는 `--watch` 로 한 번 대조해요 (실측에서 일치했어요).
@@ -1385,7 +1392,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` · `scroll <칸수>` (음수 = 위로) 를 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요. 휠은 `axis_source` (wheel) → `axis_discrete` → `frame` 순서로 한 칸씩 내요 (`axis` 를 따로 보내면 client 가 두 배로 세요) |
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
-| [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` |
+| [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh

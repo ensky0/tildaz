@@ -1,0 +1,43 @@
+# #684 — Ctrl + 기호 · 숫자 · Space 가 PTY 로 내는 바이트. **세 OS 공용 표**다.
+#
+# 읽는 곳 — 세 도구가 이 파일 하나를 읽는다. 키를 더할 때 여기 한 줄만 고친다.
+#   Linux    tool/headless-check_linux.sh key-bytes
+#   macOS    tool/key-bytes-check_macos.sh
+#   Windows  tool/key-bytes-check_windows.ps1   (자기 회차 표에 이 행을 더한다)
+#
+# 열 (탭으로 나눈다) —
+#   mode    legacy · mok2 (modifyOtherKeys=2 를 켠 앱)
+#   name    결과 표에 찍을 이름
+#   expect  기대 hex. `-` 는 "아무 바이트도 안 나가야 한다"
+#   key     보낼 키. `tool/vkbd_linux.py` 와 `tool/input_macos.m` 의 표기 (`ctrl+slash` · `ctrl+shift+minus`)
+#           Windows 도구는 같은 이름을 VK 로 바꿔 보낸다.
+#
+# 기대값은 **목표**다 — ghostty `ctrlSeq` 표 (`zig-pkg/ghostty-*/src/input/key_encode.zig` 의 `ctrlSeq`) 에서
+# 뽑았다. 그 인코더는 `ctrlSeq` 를 mok2 보다 먼저 보므로 (`legacy()`) 두 모드의 C0 가 같다. mok2 에서
+# `Ctrl+;` 처럼 C0 가 없는 키만 `CSI 27;5;<cp>~` 가 된다 (function_keys.zig 의 modifier 번호에서 ctrl = 5).
+# 수정 전 판에서 돌리면 **어긋나는 칸이 곧 현재 동작**이다 — 도구가 받은 바이트를 늘 같이 찍는다.
+#
+# mode	name	expect	key
+legacy	/	2f	slash
+legacy	Ctrl+A	01	ctrl+a
+legacy	Ctrl+/	1f	ctrl+slash
+legacy	Ctrl+Space	00	ctrl+space
+legacy	Ctrl+2	00	ctrl+2
+legacy	Ctrl+3	1b	ctrl+3
+legacy	Ctrl+6	1e	ctrl+6
+legacy	Ctrl+8	7f	ctrl+8
+legacy	Ctrl+0	30	ctrl+0
+legacy	Ctrl+1	31	ctrl+1
+legacy	Ctrl+9	39	ctrl+9
+legacy	Ctrl+Shift+-	1f	ctrl+shift+minus
+legacy	Ctrl+;	-	ctrl+semicolon
+mok2	/	2f	slash
+mok2	Ctrl+A	01	ctrl+a
+mok2	Ctrl+/	1f	ctrl+slash
+mok2	Ctrl+Space	00	ctrl+space
+mok2	Ctrl+6	1e	ctrl+6
+mok2	Ctrl+Shift+-	1f	ctrl+shift+minus
+mok2	Ctrl+;	1b 5b 32 37 3b 35 3b 35 39 7e	ctrl+semicolon
+mok2	Ctrl+[	1b 5b 32 37 3b 35 3b 39 31 7e	ctrl+bracketleft
+mok2	Ctrl+I	1b 5b 32 37 3b 35 3b 31 30 35 7e	ctrl+i
+mok2	Ctrl+Shift+G	1b 5b 32 37 3b 36 3b 37 31 7e	ctrl+shift+g

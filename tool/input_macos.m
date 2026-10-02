@@ -7,6 +7,7 @@
 //   /tmp/mac-input focus <pid>              # 그 pid 의 창을 클릭해 key window 로
 //   /tmp/mac-input send a --repeat 30 --gap 200
 //   /tmp/mac-input send shift+cmd+f12
+//   /tmp/mac-input keycode ctrl+slash       # keyCode 와 flags 만 찍는다 (#684)
 //   /tmp/mac-input ime-get                  # 지금 입력 소스 ID
 //   /tmp/mac-input ime-ascii                # 영문(ASCII 가능) 소스로
 //   /tmp/mac-input ime-set com.apple.inputmethod.Korean.2SetKorean
@@ -316,6 +317,7 @@ static void usage(void) {
             "  check                       손쉬운 사용 권한이 있나 (없으면 exit 2)\n"
             "  focus <pid>                 그 pid 의 창을 클릭해 key window 로\n"
             "  send <키>... [옵션]         키를 보낸다\n"
+            "  keycode <키>                그 키의 keyCode 와 flags (보내지 않는다)\n"
             "  refresh                     주 화면 주사율 (측정 기록용)\n"
             "  ime-get                     지금 입력 소스 ID\n"
             "  ime-ascii                   영문 (ASCII 가능) 소스로\n"
@@ -340,6 +342,21 @@ int main(int argc, const char **argv) {
         if (argc != 3) { usage(); return EXIT_USAGE; }
         if (!requireTrusted()) return EXIT_NO_PERMISSION;
         return focusWindowOfPid((pid_t)atoi(argv[2]));
+    }
+
+    // #684 — 키 표기를 keyCode 와 flags 로 풀어 찍는다. flags 의 비트 값은 시스템 단축키 설정
+    // (`com.apple.symbolichotkeys` 의 parameters 셋째 값) 과 같다 (Control 262144 · Shift 131072).
+    // 그래서 `key-bytes-check_macos.sh` 가 "이 조합이 시스템 단축키로 켜져 있나" 를 이 표 하나로 본다.
+    if (strcmp(cmd, "keycode") == 0) {
+        if (argc != 3) { usage(); return EXIT_USAGE; }
+        CGKeyCode code;
+        CGEventFlags flags;
+        if (!parseSpec(argv[2], &code, &flags)) {
+            fprintf(stderr, "모르는 키: %s\n", argv[2]);
+            return EXIT_USAGE;
+        }
+        printf("%u %llu\n", (unsigned)code, (unsigned long long)flags);
+        return 0;
     }
 
     if (strcmp(cmd, "refresh") == 0) return printRefresh();
