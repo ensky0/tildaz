@@ -398,6 +398,9 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // layout 종속 문제가 없다 (#482).
         .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
         .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
+        // #693 — XKB 이름. Linux 의 hotkey 캡처가 이 이름으로 config 를 쓴다 (`linuxKeysymName`) —
+        // 받지 않으면 캡처한 값이 다음 실행에서 읽히지 않는다.
+        .{ .name = "page_up", .key = .page_up },          .{ .name = "page_down", .key = .page_down },
         // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
         // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
         .{ .name = "left", .key = .arrow_left },          .{ .name = "right", .key = .arrow_right },
@@ -438,6 +441,57 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         if (c == '-') return .{ .named = .minus };
     }
     return null;
+}
+
+test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS · 캡처 표에 모두 있다" {
+    // 파서가 받는데 표 하나에 없으면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon ·
+    // sway) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다 — 방향키가 그랬다.
+    const keys = [_][]const u8{
+        "f1",     "f12",      "a",    "z",     "0",  "9",    "space", "tab", "escape", "return",
+        "pageup", "pagedown", "left", "right", "up", "down", "grave", "[",   "]",
+    };
+    const gnome_js = @embedFile("gnome_extension_js");
+    const cinnamon_js = @embedFile("cinnamon_extension_js");
+    for (keys) |key| {
+        var text_buf: [32]u8 = undefined;
+        const text = try std.fmt.bufPrint(&text_buf, "ctrl+{s}", .{key});
+        // ① Linux 등록 이름 (sway · Hyprland · COSMIC · GNOME/Cinnamon 의 앱 쪽).
+        const linux = LinuxHotkey.fromString(text) orelse return error.TestUnexpectedResult;
+        const name = linuxKeysymName(linux.keysym) orelse {
+            std.debug.print("linuxKeysymName 에 없음: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        // ② GNOME · Cinnamon 확장은 config 문자열을 직접 GTK 이름으로 바꾼다 — 같은 이름을 내야 한다.
+        //    한 글자 키와 F 키는 규칙으로 만들므로 이름 문자열이 없다.
+        if (name.len > 1 and !(name[0] == 'F' and name.len <= 3)) {
+            var quoted_buf: [32]u8 = undefined;
+            const quoted = try std.fmt.bufPrint(&quoted_buf, "key = \"{s}\"", .{name});
+            for ([_][]const u8{ gnome_js, cinnamon_js }) |js| {
+                if (std.mem.indexOf(u8, js, quoted) == null) {
+                    std.debug.print("확장 JS 에 없음: {s}\n", .{quoted});
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+        // ③ 이 OS 의 캡처 — 캡처한 글자가 다시 같은 hotkey 로 읽혀야 한다.
+        const native = Hotkey.fromString(text) orelse return error.TestUnexpectedResult;
+        const code: u32 = switch (builtin.os.tag) {
+            .linux => native.keysym,
+            .windows => native.vkey,
+            .macos => native.keycode,
+            else => return,
+        };
+        var cap_buf: [64]u8 = undefined;
+        const captured = capturedHotkeyText(&cap_buf, code, CAPTURE_MOD_CTRL) orelse {
+            std.debug.print("캡처 표에 없음: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        const reread = Hotkey.fromString(captured) orelse {
+            std.debug.print("캡처 값이 다시 안 읽힘: {s} → {s}\n", .{ key, captured });
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.meta.eql(native, reread));
+    }
 }
 
 /// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
@@ -636,6 +690,12 @@ pub fn linuxKeysymName(keysym: u32) ?[]const u8 {
         0xffc9 => "F12",
         0xff55 => "Page_Up",
         0xff56 => "Page_Down",
+        // #693 — 방향키. 파서가 전역 hotkey 로 받는데 이 표에 없어서 GNOME · Cinnamon · sway 는
+        // 조용히 `F1` 로, Hyprland · COSMIC 은 오류로 끝났다. XKB 이름이다.
+        0xff51 => "Left",
+        0xff52 => "Up",
+        0xff53 => "Right",
+        0xff54 => "Down",
         0x5b => "bracketleft",
         0x5d => "bracketright",
         0xff09 => "Tab",
@@ -1359,6 +1419,15 @@ fn windowsVkeyName(vkey: u32) ?[]const u8 {
         0x7B => "F12",
         0x20 => "space",
         0xC0 => "grave",
+        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`VK_PRIOR` · `VK_NEXT` · 방향 · `VK_OEM_4/6`).
+        0x21 => "pageup",
+        0x22 => "pagedown",
+        0x25 => "left",
+        0x26 => "up",
+        0x27 => "right",
+        0x28 => "down",
+        0xDB => "[",
+        0xDD => "]",
         0x09 => "Tab",
         0x0D => "Return",
         0x1B => "Escape",
@@ -1564,6 +1633,11 @@ fn macKeycodeName(keycode: u32) ?[]const u8 {
         .{ .code = 0x65, .name = "F9" },     .{ .code = 0x6D, .name = "F10" },
         .{ .code = 0x67, .name = "F11" },    .{ .code = 0x6F, .name = "F12" },
         .{ .code = 0x31, .name = "space" },  .{ .code = 0x32, .name = "grave" },
+        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`kVK_PageUp` · `..Down` · 방향 · 괄호).
+        .{ .code = 0x74, .name = "pageup" }, .{ .code = 0x79, .name = "pagedown" },
+        .{ .code = 0x7B, .name = "left" },   .{ .code = 0x7C, .name = "right" },
+        .{ .code = 0x7E, .name = "up" },     .{ .code = 0x7D, .name = "down" },
+        .{ .code = 0x21, .name = "[" },      .{ .code = 0x1E, .name = "]" },
         .{ .code = 0x30, .name = "Tab" },    .{ .code = 0x24, .name = "Return" },
         .{ .code = 0x35, .name = "Escape" }, .{ .code = 0x00, .name = "A" },
         .{ .code = 0x0B, .name = "B" },      .{ .code = 0x08, .name = "C" },
