@@ -7,7 +7,7 @@
 # tool\search-bar-check_windows.ps1 -Mode C              # IME (C18-20)
 # tool\search-bar-check_windows.ps1 -Mode D              # 마우스 (D23-29)
 # tool\search-bar-check_windows.ps1 -Mode E              # 메뉴 (E30-33)
-# tool\search-bar-check_windows.ps1 -Mode F              # pane 분할 · 최대화 (F1-7, #675)
+# tool\search-bar-check_windows.ps1 -Mode F              # pane 분할 · 최대화 (F1-8, #675)
 # ```
 #
 # 항목 번호는 [#646 의 Windows · Linux 실기 절차](https://github.com/ensky0/tildaz/issues/646) 를 그대로 따른다.
@@ -1310,6 +1310,25 @@ if ($Mode -eq 'F') {
         MoveClient $NeutralPt 2
     } else {
         Record "F7" "옮겨 간 바의 × 클릭으로 닫힌다" "바를 찾아야 한다" "F6 에서 바를 못 찾음" $false
+    }
+
+    # F8 — 좁은 pane 에서 입력칸보다 긴 검색어 (#675 `084e675`). 가로 스크롤이 생겨도 커서가 마지막
+    # 글자 **바로 뒤**에 서야 한다 — 전에는 커서만 밀리고 글자는 제자리라 마지막 글자 위에 겹쳤다.
+    # 최대화를 풀고 오른쪽 위 pane 을 다시 좌우로 나눠 바가 접히는 폭을 만든다. 자동 판정은
+    # "바가 접혔는가" 까지이고, 커서 자리는 확대 캡처 (`F8_zoom.png`) 를 눈으로 본다.
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Z) 400
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Right) 400
+    Start-Sleep -Seconds $Wait
+    $b = OpenBar "F8"
+    if ($b) {
+        TzType "findmefindmefindmefindme"
+        Start-Sleep -Milliseconds 800
+        $typed = Shot "F8_typed"
+        $zoom = Join-Path $Out "F8_zoom.png"
+        [TzSearch]::Crop($typed, $zoom, ($b.cap.x - 8), ($b.cap.y - 8), ($b.cap.w + 16), ($b.cap.h + 16), 4)
+        Record "F8" "좁은 pane 에서 바가 접힌다 (커서 자리는 캡처로)" "폭 < $wantW" "$(BarText $b) · 확대 $zoom" ($b.w -lt $wantW)
+    } else {
+        Record "F8" "좁은 pane 에서 바가 접힌다 (커서 자리는 캡처로)" "바를 찾아야 한다" "바 못 찾음" $false
     }
 }
 
