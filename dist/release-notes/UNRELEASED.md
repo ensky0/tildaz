@@ -55,3 +55,5 @@ Internal changes belong in neither.
 - The search panel now opens inside the pane you are searching. With side-by-side panes it
   used to sit at the right edge of the window, over the wrong pane.
   ([#675](https://github.com/ensky0/tildaz/issues/675))
+- Search highlights no longer disappear after you resize or maximize a pane.
+  ([#675](https://github.com/ensky0/tildaz/issues/675))

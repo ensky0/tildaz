@@ -213,6 +213,14 @@ pub const PaneSearch = struct {
 
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return false;
 
+        // **resize 뒤에는 엔진을 새로 만든다** (#675). reflow 가 PageList 노드를 갈아
+        // 끼워 매치 목록의 노드 포인터가 전부 무효가 된다 (upstream `screen.zig` 의
+        // `resetIfDimensionsChanged` 주석). 엔진은 `feed` · `reloadActive` · `select` 에서만
+        // 스스로 다시 만드는데, 검색이 끝난 (`complete`) 뒤에는 새 출력이 없으면 아무도
+        // 그것을 부르지 않는다 — pane 을 최대화하면 강조가 사라진 채 남았다 (실기).
+        //
+        if (try self.rebuildIfResized(engine)) return true;
+
         // **검색이 끝난 뒤에도 터미널은 계속 자란다.** 새 출력이 들어왔으면 active 영역을
         // 다시 훑는다 — 이것이 없으면 `complete` 이후에 찍힌 내용은 영영 검색되지 않는다.
         //
@@ -252,6 +260,21 @@ pub const PaneSearch = struct {
         return true;
     }
 
+    /// #675 — 화면 크기가 엔진이 기억하는 것과 다르면 엔진을 새로 만든다. 만들었으면 `true`.
+    ///
+    /// `reloadActive` 는 크기가 바뀌었으면 엔진을 새로 만들고 곧바로 돌아온다
+    /// (upstream `resetIfDimensionsChanged`). 새 엔진은 history 를 처음부터 다시 훑어야
+    /// 하므로 `complete` 를 내리고, 새 active 결과로 다시 칠하게 한다. 이전 선택은
+    /// 엔진과 함께 없어진다 — upstream 이 크기가 바뀌면 검색 전체를 다시 하는 것과 같다.
+    fn rebuildIfResized(self: *PaneSearch, engine: *ghostty.search.Screen) std.mem.Allocator.Error!bool {
+        if (!engineStale(engine)) return false;
+        try engine.reloadActive();
+        self.terminal_dirty = false;
+        self.complete = false;
+        self.highlights_dirty = true;
+        return true;
+    }
+
     /// #646 — 이 pane 에 새 출력이 들어왔다. 검색이 끝난 상태여도 다시 훑게 한다.
     pub fn markTerminalDirty(self: *PaneSearch) void {
         if (self.engine != null) self.terminal_dirty = true;
@@ -272,6 +295,9 @@ pub const PaneSearch = struct {
     /// **옮긴 자리가 화면 밖이면 화면도 따라간다** (`revealSelected`).
     pub fn select(self: *PaneSearch, dir: Direction) std.mem.Allocator.Error!bool {
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return false;
+        // 아래 `seedFromViewport` 는 엔진을 거치지 않고 매치 목록을 직접 읽는다. resize
+        // 뒤 아직 `step` 이 돌지 않았으면 그 목록은 해제된 노드를 가리킨다 (#675).
+        _ = try self.rebuildIfResized(engine);
 
         if (engine.selected == null) {
             if (try self.seedFromViewport(dir)) {
@@ -493,6 +519,10 @@ pub const PaneSearch = struct {
         _ = cell_highlight.clear(state, &.{ .search_current, .search_match });
 
         const engine: *ghostty.search.Screen = if (self.engine) |*e| e else return;
+        // resize 직후 `step` 이 엔진을 새로 만들기 전에 렌더가 먼저 돌 수 있다. 그 사이의
+        // 매치 목록은 해제된 노드를 가리키므로 넘기지 않는다 — 다음 `step` 이 엔진을 새로
+        // 만들고 `highlights_dirty` 를 세워 다시 칠하게 한다 (#675).
+        if (engineStale(engine)) return;
 
         // 우선순위는 **tag 값**이 정한다 (`cell_highlight.Tag` — 작을수록 위). 넣는 순서에
         // 기대지 않는 이유는 두 기능이 서로 다른 프레임에 자기 강조를 다시 칠해서 목록 안
@@ -517,6 +547,12 @@ pub const PaneSearch = struct {
         }
     }
 };
+
+/// 엔진이 기억하는 화면 크기가 지금과 다른가 (#675). 다르면 매치 목록의 노드 포인터가
+/// reflow 로 무효가 됐을 수 있다 — upstream `ScreenSearch` 가 같은 비교로 재시작을 가른다.
+fn engineStale(engine: *const ghostty.search.Screen) bool {
+    return engine.rows != engine.screen.pages.rows or engine.cols != engine.screen.pages.cols;
+}
 
 test "#646 needle 이 비면 검색을 시작하지 않는다" {
     const alloc = std.testing.allocator;
@@ -1008,6 +1044,75 @@ test "#646 검색이 끝난 뒤 들어온 출력도 찾는다" {
     // 3. 다시 돌리면 새 내용을 찾아야 한다.
     while (try s.step(alloc, term.screens.active, 0)) {}
     try std.testing.expect(s.matchCount() > 0);
+}
+
+test "#675 resize 뒤에도 강조가 돌아오고 스크롤백 매치를 다시 센다" {
+    // 실기 결함의 회귀 검사다 (2026-10-02). pane 을 최대화하면 (= resize) reflow 가
+    // 노드를 갈아 끼워 매치 목록이 무효가 되는데, 검색이 끝난 뒤라 아무도 엔진을
+    // 다시 만들지 않아 강조가 사라진 채 남았다.
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 200,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+    // 스크롤백까지 채운다 — history 매치도 다시 세야 하는지 보려면 필요하다.
+    for (0..30) |_| try term.printString("line FINDME here\r\n");
+
+    var state: ghostty.RenderState = .empty;
+    defer state.deinit(alloc);
+    try state.update(alloc, &term);
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expect(s.complete);
+    const before = s.matchCount();
+    try std.testing.expectEqual(@as(usize, 30), before);
+    s.applyHighlights(alloc, &state);
+    try std.testing.expect(countHighlights(&state) > 0);
+
+    // 최대화와 같은 일 — 폭과 높이가 함께 바뀐다. 새 출력은 없다.
+    try term.resize(alloc, .{ .cols = 60, .rows = 20 });
+    try state.update(alloc, &term);
+
+    // `step` 보다 렌더가 먼저 도는 프레임 — 무효 목록을 넘기지 않고 지우기만 한다.
+    s.applyHighlights(alloc, &state);
+    try std.testing.expectEqual(@as(usize, 0), countHighlights(&state));
+
+    // 다음 프레임의 `step` 이 엔진을 새로 만들고 끝까지 다시 훑는다.
+    while (try s.step(alloc, term.screens.active, 0)) {}
+    try std.testing.expect(s.complete);
+    try std.testing.expectEqual(before, s.matchCount());
+    s.applyHighlights(alloc, &state);
+    try std.testing.expect(countHighlights(&state) > 0);
+}
+
+test "#675 resize 직후 첫 선택도 새 매치 목록에서 고른다" {
+    const alloc = std.testing.allocator;
+    var term = try ghostty.Terminal.init(std.testing.io, alloc, .{
+        .cols = 40,
+        .rows = 10,
+        .max_scrollback_lines = 200,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(alloc);
+    for (0..30) |_| try term.printString("line FINDME here\r\n");
+
+    var s: PaneSearch = .{};
+    defer s.deinitAfterScreen(alloc);
+    s.open();
+    try s.setNeedle(alloc, "FINDME", 0);
+    while (try s.step(alloc, term.screens.active, 0)) {}
+
+    try term.resize(alloc, .{ .cols = 60, .rows = 20 });
+    // `step` 없이 바로 Enter — 예전에는 해제된 노드의 pin 을 읽었다.
+    try std.testing.expect(try s.select(.down));
+    try std.testing.expect(s.currentIndex() > 0);
 }
 
 test "#646 markTerminalDirty 는 검색이 없을 때 아무 일도 하지 않는다" {
