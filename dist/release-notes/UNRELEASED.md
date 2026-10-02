@@ -38,6 +38,9 @@ Internal changes belong in neither.
 - New `[keys]` action `open_shortcuts` (`Shift+Cmd+/` / `Ctrl+Shift+/`). Your existing config does not
   have it yet, so it uses the default and the startup notice lists it once.
   ([#682](https://github.com/ensky0/tildaz/issues/682))
+- New `[keys]` actions `increase_font_size`, `decrease_font_size` and `reset_font_size`.
+  Your existing config does not have them yet, so they use the defaults and the startup
+  notice lists them once. ([#679](https://github.com/ensky0/tildaz/issues/679))
 
 ## Body candidates
 
@@ -52,3 +55,6 @@ Internal changes belong in neither.
   call `gnome-extensions enable`, which fails silently before the next login, so the
   extension never turned on. Cinnamon was not affected.
   ([#654](https://github.com/ensky0/tildaz/issues/654))
+- Change the terminal text size while TildaZ runs: `Ctrl+Shift+=` / `Ctrl+Shift+-`, and
+  `Ctrl+Shift+Backspace` to go back (`Cmd+=` / `Cmd+-` / `Cmd+0` on macOS).
+  ([#679](https://github.com/ensky0/tildaz/issues/679))

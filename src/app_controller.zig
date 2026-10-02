@@ -4,6 +4,7 @@ const ghostty = @import("ghostty-vt");
 const key_encode = @import("key_encode.zig");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
+const terminal_size = @import("font/terminal_size.zig");
 const windows_input_adapter = @import("windows_input_adapter.zig");
 const session_core = @import("session_core.zig");
 const pane_layout = @import("pane_layout.zig");
@@ -472,6 +473,25 @@ pub const App = struct {
         if (!self.session.toggleZoomActive()) return;
         self.syncPaneGrids();
         log.logPaneZoom(self.session.activeGroup().?.zoomed != null, self.session.activeGroup().?.active_pane);
+    }
+
+    /// #693 — 글자 크기 단축키. 셀을 다시 재고 (`Window.rebuildFonts`) renderer 를 다시 만든 뒤
+    /// (`onFontChange` — DPI 변경과 같은 경로) 격자를 맞춘다. 창 크기는 그대로라 `WM_SIZE` 가
+    /// 오지 않으므로 격자는 여기서 직접 맞춘다.
+    ///
+    /// `-size` 회차는 무시한다 — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를
+    /// 지킬 수 없다 (세 platform 공통 · Linux `handleFontSize`).
+    fn handleFontSize(self: *App, change: terminal_size.Change) void {
+        if (self.grid != null) {
+            log.logFontSizeIgnoredForFixedGrid(@tagName(change));
+            return;
+        }
+        if (!self.window.font_size.apply(change)) return;
+        self.window.rebuildFonts(self.window.font_size.spec(), self.window.current_dpi);
+        onFontChange(&self.window, self);
+        self.syncPaneGrids();
+        log.logFontSize(@tagName(change), self.window.font_size.size_logical, self.window.cell_width_px, self.window.cell_height_px);
+        self.window.requestRender();
     }
 
     /// `+` 클릭 — Alt 를 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례). 방향은
@@ -1700,6 +1720,7 @@ pub const App = struct {
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
             .find => .find,
+            .font_size => .font_size,
         };
     }
 
@@ -1968,6 +1989,10 @@ pub const App = struct {
                     // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).
                     .close_pane => {
                         self.handleClosePane();
+                        return true;
+                    },
+                    .font_size => |change| {
+                        self.handleFontSize(change);
                         return true;
                     },
                 }
