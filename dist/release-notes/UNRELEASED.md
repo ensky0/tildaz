@@ -36,11 +36,11 @@ Internal changes belong in neither.
   `launchctl bootout gui/$(id -u)/com.tildaz.app 2>/dev/null; rm -f ~/Library/LaunchAgents/com.tildaz.app.plist`
   ([#654](https://github.com/ensky0/tildaz/issues/654))
 - New `[keys]` action `open_shortcuts` (`Shift+Cmd+/` / `Ctrl+Shift+/`). Your existing config does not
-  have it yet, so it uses the default and the startup notice lists it once.
+  have it yet, so it uses the default and the startup notice lists it each time until you add it.
   ([#682](https://github.com/ensky0/tildaz/issues/682))
 - New `[keys]` actions `increase_font_size`, `decrease_font_size` and `reset_font_size`.
   Your existing config does not have them yet, so they use the defaults and the startup
-  notice lists them once. ([#679](https://github.com/ensky0/tildaz/issues/679))
+  notice lists them each time until you add them. ([#679](https://github.com/ensky0/tildaz/issues/679))
 
 ## Body candidates
 
