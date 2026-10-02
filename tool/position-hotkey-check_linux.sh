@@ -7,19 +7,26 @@
 #   ./tool/position-hotkey-check_linux.sh                     # 기본 ctrl+[Backquote]
 #   ./tool/position-hotkey-check_linux.sh --hotkey 'ctrl+[KeyT]'
 #   ./tool/position-hotkey-check_linux.sh --keep              # 끝나고 안 지움 (직접 눌러 볼 때)
+#   ./tool/position-hotkey-check_linux.sh --release           # 릴리즈 판을 잴 때 (기본은 dev 판)
 #
 # 끝나면 만든 것을 전부 지운다 — 테스트 config · 로그 · KDE 등록.
+#
+# 기본은 dev 판이다 (#654 — `install.sh` 가 `zig-out/install-dev/` 에 까는 것). dev 판은
+# config · 로그 · 등록 이름이 전부 `tildaz-dev` 쪽이라, 릴리즈 이름으로 찾으면 config 를 못
+# 찾고 정리도 엉뚱한 이름을 지운다 (#693 Linux 실기에서 걸렸다).
 set -eu
 
 INSTANCE=9
 HOTKEY='ctrl+[Backquote]'
 KEEP=0
+RELEASE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --instance) INSTANCE="$2"; shift 2 ;;
         --hotkey)   HOTKEY="$2";   shift 2 ;;
         --keep)     KEEP=1;        shift ;;
-        -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
+        --release)  RELEASE=1;     shift ;;
+        -h|--help)  sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "모르는 인자: $1" >&2; exit 2 ;;
     esac
 done
@@ -28,16 +35,22 @@ done
 [ "$INSTANCE" = "0" ] && { echo "instance 0 으로는 테스트하지 않는다 (사용자의 일상 인스턴스)" >&2; exit 2; }
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-TILDAZ=${TILDAZ:-$ROOT/zig-out/bin/tildaz}
-[ -x "$TILDAZ" ] || { echo "빌드가 없다: $TILDAZ  (zig build -Doptimize=ReleaseSafe)" >&2; exit 1; }
+# 이름은 `src/app_id.zig` 의 `name` · `window_base` 와 같다.
+if [ "$RELEASE" = "1" ]; then
+    APP=tildaz;     WINDOW_BASE=TildaZ;     KIND=release; INSTALL_FLAG=' --release'
+else
+    APP=tildaz-dev; WINDOW_BASE=TildaZ-dev; KIND=dev;     INSTALL_FLAG=''
+fi
+TILDAZ=${TILDAZ:-$ROOT/zig-out/install-$KIND/bin/tildaz}
+[ -x "$TILDAZ" ] || { echo "빌드가 없다: $TILDAZ  (bash dist/linux/install.sh$INSTALL_FLAG)" >&2; exit 1; }
 
 XDG_CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
-CONFIG_DIR=$XDG_CONFIG/tildaz
-STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tildaz
+CONFIG_DIR=$XDG_CONFIG/$APP
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/$APP
 # 등록 자리는 **인스턴스별**이다 — `tildaz-9`. 예전엔 조회만 `tildaz/` 로 고정돼 있어
 # 늘 빈 값이 나왔다 (#496 1-c 검증에서 걸렸다).
-GNOME_PATH=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-$INSTANCE/
-CINNAMON_PATH=/org/cinnamon/desktop/keybindings/custom-keybindings/tildaz-$INSTANCE/
+GNOME_PATH=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$APP-$INSTANCE/
+CINNAMON_PATH=/org/cinnamon/desktop/keybindings/custom-keybindings/$APP-$INSTANCE/
 COSMIC_RON=$XDG_CONFIG/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
 CONFIG=$CONFIG_DIR/config_$INSTANCE.toml
 LOG=$STATE_DIR/tildaz_$INSTANCE.log
@@ -98,28 +111,31 @@ cleanup() {
     kill_instance
     sleep 1
     rm -f "$CONFIG" "$LOG"
+    # lock · endpoint · 소켓도 남는다. 재부팅 전까지 "떠 있는 인스턴스" 로 오독된다.
+    [ -n "${XDG_RUNTIME_DIR:-}" ] && rm -f "$XDG_RUNTIME_DIR/$APP/run/instance$INSTANCE".*
     # KDE 는 등록이 사용자 설정 파일에 남으므로 명시적으로 거둔다.
     command -v gdbus >/dev/null 2>&1 && gdbus call --session \
         --dest org.kde.kglobalaccel --object-path /kglobalaccel \
         --method org.kde.KGlobalAccel.unregister \
-        "tildaz.instance$INSTANCE" "toggle-$INSTANCE" >/dev/null 2>&1 || true
+        "$APP.instance$INSTANCE" "toggle-$INSTANCE" >/dev/null 2>&1 || true
     # GNOME · Cinnamon — dconf 에 **항목과 목록** 두 군데가 남는다.
     if command -v dconf >/dev/null 2>&1; then
         dconf reset -f "$GNOME_PATH" 2>/dev/null || true
         dconf reset -f "$CINNAMON_PATH" 2>/dev/null || true
     fi
     gsettings_list_drop org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$GNOME_PATH"
-    gsettings_list_drop org.cinnamon.desktop.keybindings custom-list "tildaz-$INSTANCE"
+    gsettings_list_drop org.cinnamon.desktop.keybindings custom-list "$APP-$INSTANCE"
     # COSMIC — RON 파일의 우리 줄. `mv` 는 mktemp 의 0600 을 옮기므로 내용만 덮어쓴다.
-    if [ -f "$COSMIC_RON" ] && grep -q "TildaZ_$INSTANCE" "$COSMIC_RON"; then
+    if [ -f "$COSMIC_RON" ] && grep -q "${WINDOW_BASE}_$INSTANCE" "$COSMIC_RON"; then
         tmp=$(mktemp)
-        grep -v "\"TildaZ_$INSTANCE\"" "$COSMIC_RON" > "$tmp" && cat "$tmp" > "$COSMIC_RON"
+        grep -v "\"${WINDOW_BASE}_$INSTANCE\"" "$COSMIC_RON" > "$tmp" && cat "$tmp" > "$COSMIC_RON"
         rm -f "$tmp"
     fi
-    echo; echo "정리 완료 — config · 로그 · KDE · GNOME/Cinnamon · COSMIC 등록"
+    echo; echo "정리 완료 — config · 로그 · runtime lock · KDE · GNOME/Cinnamon · COSMIC 등록"
 }
 trap cleanup EXIT INT TERM
 
+echo "판       : $APP ($TILDAZ)"
 echo "데스크톱 : $DE"
 echo "hotkey   : $HOTKEY"
 echo "인스턴스 : $INSTANCE"
@@ -151,7 +167,7 @@ grep -iE '\[(kglobalaccel|sway|hyprland|cosmic|gsettings-hotkey|gnome|cinnamon)\
 case "$DE" in
     *KDE*|*kde*|*plasma*|*Plasma*)
         echo "   --- kglobalshortcutsrc ---"
-        grep -A 2 "tildaz.instance$INSTANCE" "${XDG_CONFIG_HOME:-$HOME/.config}/kglobalshortcutsrc" 2>/dev/null | sed 's/^/   /' \
+        grep -A 2 "^\[$APP.instance$INSTANCE\]" "${XDG_CONFIG_HOME:-$HOME/.config}/kglobalshortcutsrc" 2>/dev/null | sed 's/^/   /' \
             || echo "   (항목 없음)"
         ;;
     *GNOME*|*gnome*|*ubuntu*)
@@ -178,7 +194,7 @@ for b in d:
         ;;
     *COSMIC*|*cosmic*)
         echo "   --- COSMIC RON ---"
-        grep -n "TildaZ_$INSTANCE" "$COSMIC_RON" 2>/dev/null | sed 's/^/   /' \
+        grep -n "\"${WINDOW_BASE}_$INSTANCE\"" "$COSMIC_RON" 2>/dev/null | sed 's/^/   /' \
             || echo "   (항목 없음 — 워커가 keymap 을 받은 뒤에 쓴다)"
         ;;
 esac

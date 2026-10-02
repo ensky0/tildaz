@@ -1104,6 +1104,7 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 ./tool/position-hotkey-check_linux.sh                  # 기본 ctrl+[Backquote]
 ./tool/position-hotkey-check_linux.sh --hotkey 'ctrl+[KeyT]'
 ./tool/position-hotkey-check_linux.sh --keep           # 남겨 두고 직접 눌러 볼 때
+./tool/position-hotkey-check_linux.sh --release        # 릴리즈 판을 잴 때 (기본은 dev 판 — install-dev/)
 ```
 
 `--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).
