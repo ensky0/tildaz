@@ -7,6 +7,7 @@
 # tool\search-bar-check_windows.ps1 -Mode C              # IME (C18-20)
 # tool\search-bar-check_windows.ps1 -Mode D              # 마우스 (D23-29)
 # tool\search-bar-check_windows.ps1 -Mode E              # 메뉴 (E30-33)
+# tool\search-bar-check_windows.ps1 -Mode F              # pane 분할 · 최대화 (F1-8, #675)
 # ```
 #
 # 항목 번호는 [#646 의 Windows · Linux 실기 절차](https://github.com/ensky0/tildaz/issues/646) 를 그대로 따른다.
@@ -33,7 +34,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('probe', 'A', 'B', 'C', 'D', 'E')][string]$Mode = 'probe',
+    [ValidateSet('probe', 'A', 'B', 'C', 'D', 'E', 'F')][string]$Mode = 'probe',
     [string]$Bin = 'zig-out\bin\tildaz.exe',
     [string]$Size = '88x33',
     [int]$Wait = 7,
@@ -1207,6 +1208,129 @@ if ($Mode -eq 'E') {
     Record "E33" "좁은 창의 메뉴 (별도 회차)" "-Size 를 좁게 준 회차에서 본다" "이 회차의 client 폭 $CW — 좁은 회차는 -Mode E -Size 30x20" $true
 }
 
+
+# ================================================================= F. 분할 · 최대화 (#675)
+if ($Mode -eq 'F') {
+    # 바는 **활성 pane** 의 오른쪽 아래에 뜬다 (#675). 그 전에는 가로가 창 기준이라 좌우로 나눈
+    # 창의 왼쪽 pane 을 검색해도 바가 창 오른쪽 끝 (= 오른쪽 pane 위) 에 떴다 (#642).
+    #
+    # 장면마다 바를 열고 **열기 전 · 후 차이 상자**로 찾는다 (공통 머리말과 같은 방법). 검색어가
+    # 비어 있으면 강조가 없어 차이는 바뿐이다. pane 경계는 분할선을 찾지 않고 **창의 절반**으로
+    # 가른다 — 분할은 반으로 나누므로, "바가 활성 pane 쪽 절반 안에 있고 그 pane 의 오른쪽 ·
+    # 아래 끝에 붙어 있는가" 로 판정한다.
+    #
+    # 새 pane 은 `-e` 명령 (자식) 을 다시 실행해 300 줄을 찍는다. 그동안 화면이 움직이면 차이
+    # 상자가 바보다 커지므로 분할 뒤에는 `-Wait` 만큼 기다리고, 상자 크기가 바 크기와 같은지도 본다.
+    $wantW = [int](320 * $S); $wantH = [int](36 * $S)
+    $SB = [int](10 * $S)          # SCROLLBAR_W_PT — 자식이 300 줄을 찍어 스크롤바가 늘 떠 있다
+    $SLACK = [int](12 * $S) + 4    # 분할선 · 반올림 여유
+    $HalfW = [int]($CW / 2); $HalfH = [int]($CH / 2)
+    "창 절반: x $HalfW · y $HalfH  (cell ${CELLW}x${CELLH} · scrollbar $SB px)"
+
+    function OpenBar([string]$tag) {
+        $pre = Shot "${tag}_pre"
+        TzSend @($VK.Ctrl, $VK.Shift, $VK.F) 900
+        $post = Shot "${tag}_open"
+        $d = DiffOf $pre $post
+        $b = ParseBBox $d.bbox
+        if (-not $b) { return $null }
+        # 캡처 좌표 → 클라이언트 좌표.
+        return @{ x = $b.x - $OX; y = $b.y - $OY; w = $b.w; h = $b.h; cap = $b; pre = $pre; post = $post }
+    }
+    function BarText($b) { if (-not $b) { return "바 못 찾음" }; return "$($b.x),$($b.y) $($b.w)x$($b.h)" }
+    function SizeOk($b) { return ($b -and $b.w -eq $wantW -and $b.h -eq $wantH) }
+
+    # 머리말이 연 바를 닫는다 (검색어가 비어 있어 Esc 한 번).
+    TzSend @($VK.Esc) 500
+
+    # F1 — 좌우 분할 뒤 **왼쪽** pane 을 검색한다 (#642 신고 그대로).
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Right) 400
+    Start-Sleep -Seconds $Wait
+    TzSend @($VK.Alt, $VK.Left) 500
+    $b = OpenBar "F1"
+    $gap = if ($b) { $HalfW - ($b.x + $b.w) } else { -1 }
+    $ok = (SizeOk $b) -and $b.x -ge 0 -and $gap -ge $CELLW -and $gap -le ($CELLW + $SB + $SLACK) -and ($b.y + $b.h) -gt ($CH * 0.7)
+    Record "F1" "좌우 분할 · 왼쪽 pane 의 바가 그 pane 오른쪽 아래" "바 오른끝 ~ 창 절반 = 셀 + 스크롤바 (+분할선)" "$(BarText $b) · 절반까지 $gap px" $ok
+    TzSend @($VK.Esc) 500
+
+    # F2 — 오른쪽 pane.
+    TzSend @($VK.Alt, $VK.Right) 500
+    $b = OpenBar "F2"
+    $gap = if ($b) { $CW - ($b.x + $b.w) } else { -1 }
+    $ok = (SizeOk $b) -and $b.x -ge $HalfW -and $gap -ge $CELLW -and $gap -le ($CELLW + $SB + 4)
+    Record "F2" "좌우 분할 · 오른쪽 pane 의 바가 그 pane 오른쪽 아래" "x ≥ 절반 · 오른끝 여백 = 셀 + 스크롤바" "$(BarText $b) · 오른끝 여백 $gap px" $ok
+    TzSend @($VK.Esc) 500
+
+    # F3 — 오른쪽 pane 을 다시 위아래로 나눈다 (중첩). 새 pane (오른쪽 아래) 이 활성이 된다.
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Down) 400
+    Start-Sleep -Seconds $Wait
+    $b = OpenBar "F3"
+    $ok = (SizeOk $b) -and $b.x -ge $HalfW -and $b.y -ge $HalfH
+    Record "F3" "중첩 분할 · 오른쪽 아래 pane" "x ≥ 절반 · y ≥ 절반" (BarText $b) $ok
+    TzSend @($VK.Esc) 500
+
+    # F4 — 오른쪽 위 pane. 바닥이 **창 바닥이 아니라 그 pane 의 맨 아랫줄 위**여야 한다.
+    TzSend @($VK.Alt, $VK.Up) 500
+    $b = OpenBar "F4"
+    $gap = if ($b) { $HalfH - ($b.y + $b.h) } else { -1 }
+    $ok = (SizeOk $b) -and $b.x -ge $HalfW -and $gap -ge $CELLH -and $gap -le ($CELLH * 2 + [int](6 * $S) + $SLACK)
+    Record "F4" "중첩 분할 · 오른쪽 위 pane 의 바가 그 pane 맨 아랫줄 위" "창 절반까지 = 한 줄 ~ 두 줄 + 패딩" "$(BarText $b) · 절반까지 $gap px" $ok
+
+    # F5 — 검색어를 넣고 그 pane 을 최대화한다. **강조가 남아 있어야 한다** (#675 — 전에는
+    # resize 뒤 엔진이 다시 안 만들어져 강조가 사라진 채 남았다). 선택 전이라 매치는 전부
+    # SEARCH_MATCH_BG (`DARK`) 다. amber 는 최대화 테두리와 같은 색이라 세지 않는다.
+    TzType "findme"
+    Start-Sleep -Milliseconds 1500
+    $beforeZoom = Shot "F5_before_zoom"
+    $darkBefore = (ColorCount $beforeZoom $DARK[0] $DARK[1] $DARK[2] 4).n
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Z) 400
+    Start-Sleep -Milliseconds 1500
+    $zoomed = Shot "F5_zoomed"
+    $darkAfter = (ColorCount $zoomed $DARK[0] $DARK[1] $DARK[2] 4).n
+    Record "F5" "최대화 뒤에도 매치 강조가 남는다" "최대화 전 > 0 · 뒤 > 0" "전 $darkBefore px · 뒤 $darkAfter px" ($darkBefore -gt 0 -and $darkAfter -gt 0)
+
+    # F6 — 최대화한 pane (= 터미널 영역 전체) 의 오른쪽 아래로 옮겨 간다. 검색어를 비우려고 닫고
+    # 다시 연다 — 강조가 차이 상자에 섞이지 않게.
+    TzSend @($VK.Esc) 500
+    $b = OpenBar "F6"
+    $gap = if ($b) { $CW - ($b.x + $b.w) } else { -1 }
+    $ok = (SizeOk $b) -and $gap -ge $CELLW -and $gap -le ($CELLW + $SB + 4) -and ($b.y + $b.h) -gt ($CH * 0.7)
+    Record "F6" "최대화 pane 의 바가 창 오른쪽 아래" "오른끝 여백 = 셀 + 스크롤바 · 아래쪽" "$(BarText $b) · 오른끝 여백 $gap px" $ok
+
+    # F7 — 옮겨 간 자리의 `×` 를 누르면 닫힌다 (히트 테스트가 그린 자리를 본다).
+    # `×` 는 바 오른쪽 끝에서 PADDING 안쪽의 마지막 컨트롤이다 (`search_bar.view`).
+    if ($b) {
+        $pt = @(($b.x + $b.w - $PAD - [int]($CTRLW / 2)), ($b.y + [int]($b.h / 2)))
+        MoveClient $pt 3
+        Guard; [TzSearch]::ClickHere(); Start-Sleep -Milliseconds 700
+        $after = Shot "F7_after_close"
+        $stillDiff = (DiffIn $b.post $after $b.cap).n
+        $closedDiff = (DiffIn $b.pre $after $b.cap).n
+        Record "F7" "옮겨 간 바의 × 클릭으로 닫힌다" "바 자리가 열기 전과 같다 (0 px)" "열기 전과 차이 $closedDiff px · 열린 상태와 차이 $stillDiff px" ($closedDiff -eq 0 -and $stillDiff -gt 0)
+        MoveClient $NeutralPt 2
+    } else {
+        Record "F7" "옮겨 간 바의 × 클릭으로 닫힌다" "바를 찾아야 한다" "F6 에서 바를 못 찾음" $false
+    }
+
+    # F8 — 좁은 pane 에서 입력칸보다 긴 검색어 (#675 `084e675`). 가로 스크롤이 생겨도 커서가 마지막
+    # 글자 **바로 뒤**에 서야 한다 — 전에는 커서만 밀리고 글자는 제자리라 마지막 글자 위에 겹쳤다.
+    # 최대화를 풀고 오른쪽 위 pane 을 다시 좌우로 나눠 바가 접히는 폭을 만든다. 자동 판정은
+    # "바가 접혔는가" 까지이고, 커서 자리는 확대 캡처 (`F8_zoom.png`) 를 눈으로 본다.
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Z) 400
+    TzSend @($VK.Ctrl, $VK.Shift, $VK.Right) 400
+    Start-Sleep -Seconds $Wait
+    $b = OpenBar "F8"
+    if ($b) {
+        TzType "findmefindmefindmefindme"
+        Start-Sleep -Milliseconds 800
+        $typed = Shot "F8_typed"
+        $zoom = Join-Path $Out "F8_zoom.png"
+        [TzSearch]::Crop($typed, $zoom, ($b.cap.x - 8), ($b.cap.y - 8), ($b.cap.w + 16), ($b.cap.h + 16), 4)
+        Record "F8" "좁은 pane 에서 바가 접힌다 (커서 자리는 캡처로)" "폭 < $wantW" "$(BarText $b) · 확대 $zoom" ($b.w -lt $wantW)
+    } else {
+        Record "F8" "좁은 pane 에서 바가 접힌다 (커서 자리는 캡처로)" "바를 찾아야 한다" "바 못 찾음" $false
+    }
+}
 
 [TzSearch]::Topmost($h, $false)
 if (-not $Keep) { Stop-Tz; Start-Sleep -Milliseconds 400 }

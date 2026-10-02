@@ -1116,22 +1116,29 @@ fn macInputState() input_policy.State {
 /// 넘겨야 한다. 스크롤바는 떠 있을 때만 폭을 빼는데, 판정은 그것을 그리는 쪽과 같은
 /// 기준이다 — 스크롤백이 보이는 영역보다 길면 뜬다 (`scrollbar.geom` 의 `total <= len`).
 ///
-/// pane 이 여럿이면 창 오른쪽 가장자리의 스크롤바는 *가장 오른쪽 pane* 의 것인데, 여기서는
-/// **활성 pane** 의 것을 본다. 검색바가 비추는 것이 활성 pane 이라 그쪽과 짝이 맞고, 좌우로
-/// 나뉜 창에서 활성 pane 이 왼쪽이면 여백이 한 칸 어긋날 수 있다 — 붙어 보이지는 않는다.
-fn searchGeometry(tab: anytype, scale: f32, grid_bottom_px: ?i32) search_bar.Geometry {
+/// 바는 **활성 pane** 의 오른쪽 아래에 뜬다 (#675). 스크롤바도 pane 마다 그 pane 의 오른쪽
+/// 끝에 있으니, 활성 pane 의 스크롤바를 보면 바와 짝이 맞는다.
+///
+/// 격자 바닥에서 `font.top_pad_px` 를 뺀다 (#675). macOS renderer 는 첫 줄 대문자 윗끝을
+/// padding 에 맞추려고 **격자 전체를 그만큼 위로 올려** 그린다 (`renderer/macos.zig` 의
+/// `y_off`). 빼지 않으면 바가 실제 맨 아랫줄을 그만큼 덮는다 — 실기에서 커서 줄을 6 px
+/// (3 pt) 덮었다. Linux · Windows renderer 는 이 보정이 없어 해당 없다. renderer 쪽 보정을
+/// 없애기로 했으니 ([#689](https://github.com/ensky0/tildaz/issues/689)) 그때 이 뺄셈도 함께 걷어낸다.
+fn searchGeometry(tab: anytype, scale: f32, pane_px: pane_layout.Rect, grid_bottom_px: ?i32) search_bar.Geometry {
     const r = &g_renderer.?;
     const sb = tab.terminal.screens.active.pages.scrollbar();
     return .{
-        .viewport_w_pt = @as(f32, @floatFromInt(r.vp_width)) / scale,
-        .viewport_h_pt = @as(f32, @floatFromInt(r.vp_height)) / scale,
+        .pane = search_bar.paneRectPt(pane_px.x, pane_px.y, pane_px.w, pane_px.h, scale),
         .cell_w_pt = @as(f32, @floatFromInt(r.font.cell_width_px)) / scale,
         .cell_h_pt = @as(f32, @floatFromInt(r.font.cell_height_px)) / scale,
         .scrollbar_w_pt = if (sb.total > sb.len)
             @as(f32, @floatFromInt(ui_metrics.SCROLLBAR_W_PT))
         else
             0,
-        .grid_bottom_pt = if (grid_bottom_px) |px| @as(f32, @floatFromInt(px)) / scale else 0,
+        .grid_bottom_pt = if (grid_bottom_px) |px|
+            (@as(f32, @floatFromInt(px)) - r.font.top_pad_px) / scale
+        else
+            0,
     };
 }
 
@@ -1147,7 +1154,7 @@ var g_search_hover: ?search_bar.Control = null;
 fn searchBarViewNow() ?search_bar.View {
     const tab = g_session.activeTab() orelse return null;
     if (!tab.search.is_open) return null;
-    if (g_search_geom.viewport_w_pt <= 0) return null; // 아직 한 프레임도 안 그렸다
+    if (g_search_geom.pane.w <= 0) return null; // 아직 한 프레임도 안 그렸다
     return search_bar.view(g_search_geom);
 }
 
@@ -5245,10 +5252,15 @@ fn renderFrameTick() void {
     // 잰다. `rect.h` 가 아니라 **줄 수 × 셀 높이**인 이유는, 격자가 pane 높이에 딱 안 떨어져
     // 아래에 한 줄이 안 되는 자투리가 남기 때문이다.
     var active_grid_bottom_px: ?i32 = null;
+    // #675 — 검색바는 활성 pane 의 오른쪽 아래에 뜬다. 그 pane 의 사각형.
+    var active_pane_px: ?pane_layout.Rect = null;
     for (lay) |pr| {
         const t = group.panes[pr.pane].?;
         const is_active = pr.pane == group.active_pane;
-        if (is_active) active_grid_bottom_px = pr.rect.y + pad_px + @as(i32, @intCast(t.terminal.rows)) * cell_h_px;
+        if (is_active) {
+            active_pane_px = pr.rect;
+            active_grid_bottom_px = pr.rect.y + pad_px + @as(i32, @intCast(t.terminal.rows)) * cell_h_px;
+        }
         // 최대화 중이면 pane 하나여도 넘긴다 — 네 변 amber 가 최대화 표시다 (2026-08-27 결정 A).
         if (is_active and (lay.len > 1 or group.zoomed != null)) active_rect = pr.rect;
         g_renderer.?.drawPane(.{
@@ -5290,7 +5302,7 @@ fn renderFrameTick() void {
     // #646 — 이번 프레임의 검색바 배치를 재서 **남겨 둔다.** 마우스 히트 테스트가 그린 것과
     // 같은 사각형을 봐야 하는데, 격자 바닥은 pane 배치를 돌아야 나오는 값이라 마우스 경로에서
     // 다시 구하면 어긋날 여지가 생긴다.
-    g_search_geom = searchGeometry(group.activeTab(), r_scale, active_grid_bottom_px);
+    g_search_geom = searchGeometry(group.activeTab(), r_scale, active_pane_px orelse area, active_grid_bottom_px);
 
     g_renderer.?.drawPaneChrome(seps, area, active_rect, ghost, group.zoomed != null);
     g_renderer.?.endFrame(

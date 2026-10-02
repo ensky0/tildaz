@@ -1795,10 +1795,58 @@ pub const Renderer = struct {
         if (ui.needle.len == 0 and ui.preedit.len == 0) {
             self.collectChromeText(allocator, list, field_x, baseline, ch, messages.search_placeholder, hint_fg, field_right);
         } else {
-            self.collectChromeText(allocator, list, field_x, baseline, ch, ui.needle, fg, field_right);
+            // 글자 자리는 공용 `iterFieldText` 가 정한다 — caret 과 같은 가로 스크롤을 빼야 둘이
+            // 맞는다. 예전에는 글자를 `field_x` 에 그대로 그려서, 입력칸이 좁아 스크롤이 생기면
+            // caret 만 왼쪽으로 밀려 마지막 글자 위에 겹쳤다 (#675 실기).
+            const FieldCtx = struct {
+                r: *Renderer,
+                allocator: std.mem.Allocator,
+                list: *std.ArrayList(ChromeItem),
+                x0: f32,
+                baseline: i32,
+                line_h: i32,
+                fg: ghostty.color.RGB,
+                clip_x1: i32,
+                fn put(c: @This(), g: search_bar.Glyph) void {
+                    appendChromeGlyph(c.list, c.allocator, .{
+                        .ref = .{ .codepoint = g.cp },
+                        .glyph = c.r.tab_font_ctx.glyph(g.cp, .regular),
+                        .pen_x = @intFromFloat(@round(c.x0 + g.x)),
+                        .baseline = c.baseline,
+                        .box_y = c.baseline - c.line_h,
+                        .box_w = @intFromFloat(@round(g.advance)),
+                        .box_h = c.line_h,
+                        .fg = c.fg,
+                        .clip_x0 = 0,
+                        .clip_x1 = c.clip_x1,
+                    });
+                }
+            };
+            const cw_f: f32 = @floatFromInt(cw);
+            const field_w_px = v.field.w * scale;
+            const scroll = ui.scroll_px * scale;
+            search_bar.iterFieldText(ui.needle, cw_f, field_w_px, scroll, FieldCtx{
+                .r = self,
+                .allocator = allocator,
+                .list = list,
+                .x0 = @floatFromInt(field_x),
+                .baseline = baseline,
+                .line_h = ch,
+                .fg = fg,
+                .clip_x1 = field_right,
+            }, FieldCtx.put);
             if (ui.preedit.len > 0) {
-                const before_w = @as(i32, @intCast(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-                self.collectChromeText(allocator, list, field_x + before_w, baseline, ch, ui.preedit, active_fg, field_right);
+                const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw_f);
+                search_bar.iterFieldText(ui.preedit, cw_f, @max(0, field_w_px - (before_w - scroll)), 0, FieldCtx{
+                    .r = self,
+                    .allocator = allocator,
+                    .list = list,
+                    .x0 = @as(f32, @floatFromInt(field_x)) + before_w - scroll,
+                    .baseline = baseline,
+                    .line_h = ch,
+                    .fg = active_fg,
+                    .clip_x1 = field_right,
+                }, FieldCtx.put);
             }
         }
 

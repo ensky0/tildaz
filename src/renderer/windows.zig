@@ -2171,10 +2171,56 @@ pub const D3d11Renderer = struct {
         if (ui.needle.len == 0 and ui.preedit.len == 0) {
             emit(self, messages.search_placeholder, field_x, baseline, self.chrome.menu_hint, field_right, &glyphs, &glyph_n);
         } else {
-            emit(self, ui.needle, field_x, baseline, self.chrome.menu_label, field_right, &glyphs, &glyph_n);
+            // macOS 와 같은 **공통 helper** 로 글자 자리를 정한다 — caret 과 같은 가로 스크롤을
+            // 빼야 둘이 맞는다. 예전에는 글자를 `field_x` 에 그대로 그려서, 입력칸이 좁아
+            // 스크롤이 생기면 caret 만 왼쪽으로 밀려 마지막 글자 위에 겹쳤다 (#675 실기).
+            const FieldCtx = struct {
+                r: *D3d11Renderer,
+                x0: f32,
+                base: f32,
+                color: [4]f32,
+                out: []TextInstance,
+                n: *u32,
+                fn put(c: @This(), g: search_bar.Glyph) void {
+                    if (c.n.* >= c.out.len) return;
+                    const result = c.r.tab_font.resolveGlyph(g.cp, .regular) orelse return;
+                    const entry = c.r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                        if (result.owned) _ = result.face.vtable.Release(result.face);
+                        return;
+                    };
+                    if (result.owned) _ = result.face.vtable.Release(result.face);
+                    if (entry.w == 0 or entry.h == 0) return;
+                    c.out[c.n.*] = .{
+                        .pos = .{ c.x0 + g.x + @as(f32, @floatFromInt(entry.bearing_x)), c.base + @as(f32, @floatFromInt(entry.bearing_y)) },
+                        .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
+                        .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
+                        .fg_color = c.color,
+                        .color_flag = if (entry.is_color) 1 else 0,
+                    };
+                    c.n.* += 1;
+                }
+            };
+            const field_w_px = v.field.w * scale;
+            const scroll = ui.scroll_px * scale;
+            search_bar.iterFieldText(ui.needle, cw, field_w_px, scroll, FieldCtx{
+                .r = self,
+                .x0 = field_x,
+                .base = baseline,
+                .color = self.chrome.menu_label,
+                .out = &glyphs,
+                .n = &glyph_n,
+            }, FieldCtx.put);
             if (ui.preedit.len > 0) {
-                const before_w = @as(f32, @floatFromInt(display_width.stringWidth(ui.needle[0..@min(ui.caret, ui.needle.len)]))) * cw;
-                emit(self, ui.preedit, field_x + before_w, baseline, self.chrome.ctrl_active, field_right, &glyphs, &glyph_n);
+                const before_w = search_bar.textWidthPx(ui.needle[0..@min(ui.caret, ui.needle.len)], cw);
+                search_bar.iterFieldText(ui.preedit, cw, @max(0, field_w_px - (before_w - scroll)), 0, FieldCtx{
+                    .r = self,
+                    .x0 = field_x + before_w - scroll,
+                    .base = baseline,
+                    .color = self.chrome.ctrl_active,
+                    .out = &glyphs,
+                    .n = &glyph_n,
+                }, FieldCtx.put);
             }
         }
 

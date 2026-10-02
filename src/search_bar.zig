@@ -5,10 +5,13 @@
 //! 탭바와 같은 `TAB_BAR_HEIGHT_PT`, 컨트롤 폭도 탭바의 `24pt` 다. command menu 가 이미 같은
 //! 규칙을 쓴다 (`ui_metrics.zig` 의 "탭바와 한 문법, 2026-07-22 사용자 확정").
 //!
-//! **창 하단 전역 바 하나다** (2026-09-11 결정). pane 안에 두지 않는 이유는 pane 이
-//! `MIN_PANE_COLS = 20` 밑으로도 내려갈 수 있어서 입력칸 + 카운터가 안 들어가기 때문이다.
-//! 대상 pane 은 기존 amber focus line 으로 이미 구별된다. 검색 *상태* 는 pane 별로 보존되고
-//! 이 바는 **활성 pane 의 상태를 비추는 창** 이다.
+//! **바는 하나이고 활성 pane 의 오른쪽 아래에 뜬다** ([#675](https://github.com/ensky0/tildaz/issues/675),
+//! 2026-09-20 결정). 검색 *상태* 는 pane 별로 보존되고 이 바는 **활성 pane 의 상태를 비추는
+//! 창** 이라, 자리도 그 pane 을 따른다. 처음 (#646, 2026-09-11) 에는 pane 이 아주 좁아질 수
+//! 있다는 이유로 창 하단 한 자리에 두려 했지만, 구현은 가로만 창 · 세로는 pane 을 따라 섞여
+//! 있었다 — 좌우로 나뉜 창에서 왼쪽 pane 을 검색하면 바가 오른쪽 pane 위에 떴다 (#642).
+//! 좁은 pane 은 바가 폭을 따라 줄고 `stageFor` 가 접어서 받는다. ghostty · Windows Terminal ·
+//! Konsole 도 모두 pane 단위로 띄운다 (#675 본문의 소스 대조).
 
 const std = @import("std");
 const ui_metrics = @import("ui_metrics.zig");
@@ -69,8 +72,12 @@ pub const Rect = struct { x: f32, y: f32, w: f32, h: f32 };
 /// 그대로 쓴다** — 셋이 각자 재면 같은 창에서 platform 마다 다른 자리에 뜬다 (#159 와 같은
 /// 이유). 단위는 전부 logical pt.
 pub const Geometry = struct {
-    viewport_w_pt: f32 = 0,
-    viewport_h_pt: f32 = 0,
+    /// 바를 띄울 **활성 pane** 의 사각형 (창 좌상단 기준, padding · 스크롤바 자리 포함 —
+    /// `pane_layout.PaneRect.rect`). 바는 이 안의 오른쪽 아래에 뜬다 (#675). 폭이 `0` 이면
+    /// 아직 한 프레임도 안 그렸다는 뜻이다.
+    ///
+    /// pane 이 하나면 탭바를 뺀 터미널 영역 전체와 같고, 최대화 중이면 최대화한 pane 이다.
+    pane: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 
     /// 터미널 셀 한 칸의 폭 · 높이. 여백을 pt 상수가 아니라 **셀 단위**로 잡는 이유는
     /// 패널이 터미널 격자 위에 떠 있기 때문이다 (2026-09-16 사용자 결정) — 폰트를 키우면
@@ -78,19 +85,31 @@ pub const Geometry = struct {
     cell_w_pt: f32 = 0,
     cell_h_pt: f32 = 0,
 
-    /// 창 오른쪽에 스크롤바가 떠 있으면 그 폭, 없으면 `0`. 패널의 오른쪽 기준선이 이만큼
-    /// 안쪽으로 들어온다 — 스크롤바가 있는데 그것을 빼지 않으면 패널이 스크롤바에 붙는다.
+    /// 활성 pane 오른쪽에 스크롤바가 떠 있으면 그 폭, 없으면 `0`. 패널의 오른쪽 기준선이
+    /// 이만큼 안쪽으로 들어온다 — 스크롤바가 있는데 그것을 빼지 않으면 패널이 스크롤바에
+    /// 붙는다. 스크롤바는 pane 마다 그 pane 의 오른쪽 끝에 있어서 `pane` 과 짝이 맞는다.
     scrollbar_w_pt: f32 = 0,
 
-    /// 터미널 격자 **맨 아랫줄의 아래 가장자리** (창 위에서부터). `0` 이면 모른다는 뜻이고
-    /// 그때는 창 바닥을 기준으로 삼는다.
+    /// 활성 pane 격자 **맨 아랫줄의 아래 가장자리** (창 위에서부터). `0` 이면 모른다는
+    /// 뜻이고 그때는 pane 바닥을 기준으로 삼는다.
     ///
-    /// 창 바닥이 아니라 이 값이 필요한 이유는 **패딩과 자투리** 때문이다. 격자 높이가 창에
-    /// 딱 안 떨어져 아래에 한 줄이 안 되는 빈 자리가 남고, 그 위에 터미널 padding 이 또
-    /// 있다. 창 바닥에서 한 줄을 세면 그 둘을 한 줄로 착각해 **맨 아랫줄을 파고든다** —
+    /// pane 바닥이 아니라 이 값이 필요한 이유는 **패딩과 자투리** 때문이다. 격자 높이가
+    /// pane 에 딱 안 떨어져 아래에 한 줄이 안 되는 빈 자리가 남고, 그 위에 터미널 padding 이
+    /// 또 있다. 바닥에서 한 줄을 세면 그 둘을 한 줄로 착각해 **맨 아랫줄을 파고든다** —
     /// 거기 프롬프트가 있다 (2026-09-16 실기).
     grid_bottom_pt: f32 = 0,
 };
+
+/// pane 사각형 (device px) 을 `Geometry.pane` 용 logical pt 로 바꾼다. 세 host 가 같은
+/// 나눗셈을 각자 적지 않게 여기 둔다.
+pub fn paneRectPt(x: i32, y: i32, w: i32, h: i32, scale: f32) Rect {
+    return .{
+        .x = @as(f32, @floatFromInt(x)) / scale,
+        .y = @as(f32, @floatFromInt(y)) / scale,
+        .w = @as(f32, @floatFromInt(w)) / scale,
+        .h = @as(f32, @floatFromInt(h)) / scale,
+    };
+}
 
 /// 바 안의 누를 수 있는 것.
 pub const Control = enum { prev, next, close };
@@ -212,16 +231,18 @@ pub fn stageFor(bar_w_pt: f32) Stage {
     return .bare;
 }
 
-/// 창 **우상단** 에 떠 있는 패널을 계산한다. `top_pt` 는 컨트롤 스트립 아래 y 다.
+/// 활성 pane 의 **우하단** 에 떠 있는 패널을 계산한다 (#675). 좌표는 창 좌상단 기준이고,
+/// 패널은 pane 밖으로 나가지 않는다.
 pub fn view(g: Geometry) View {
+    const p = g.pane;
     // 오른쪽 기준선 — 스크롤바가 있으면 그 **왼쪽**이다.
-    const right = @max(0, g.viewport_w_pt - g.scrollbar_w_pt);
+    const right = @max(p.x, p.x + p.w - g.scrollbar_w_pt);
     const gap_x = @max(MIN_GAP_PT, g.cell_w_pt);
     const gap_y = @max(MIN_GAP_PT, g.cell_h_pt);
 
-    const bar_w = @min(WIDTH_PT, @max(0, right - gap_x * 2));
-    const x0 = @max(0, right - gap_x - bar_w);
-    // 창 **아래쪽** 모서리에 띄운다 (2026-09-16 실기로 옮김). 처음에는 컨트롤 스트립
+    const bar_w = @min(WIDTH_PT, @max(0, (right - p.x) - gap_x * 2));
+    const x0 = @max(p.x, right - gap_x - bar_w);
+    // pane **아래쪽** 모서리에 띄운다 (2026-09-16 실기로 옮김). 처음에는 컨트롤 스트립
     // 바로 아래였는데, 터미널을 쓰는 동안 시선은 늘 맨 아래 프롬프트에 있어서 검색어를
     // 칠 때마다 눈이 창 꼭대기까지 올라가야 했다. `vim` · `less` · `tmux` 가 모두 검색
     // 프롬프트를 맨 아랫줄에 두는 것과 같은 이유다 — 터미널의 입력은 아래에 있다.
@@ -230,8 +251,8 @@ pub fn view(g: Geometry) View {
     // 스크롤백을 읽을 때 우측 상단에는 글자가 차 있다.
     // 패널 바닥을 **맨 아랫줄의 윗변**에 맞춘다 — 그 줄의 프롬프트를 가리지 않는 것이
     // 아래로 내린 목적이다.
-    const bottom_ref = if (g.grid_bottom_pt > 0) g.grid_bottom_pt else g.viewport_h_pt;
-    const y = @max(0, bottom_ref - gap_y - HEIGHT_PT);
+    const bottom_ref = if (g.grid_bottom_pt > 0) g.grid_bottom_pt else p.y + p.h;
+    const y = @max(p.y, bottom_ref - gap_y - HEIGHT_PT);
 
     const rect: Rect = .{ .x = x0, .y = y, .w = bar_w, .h = HEIGHT_PT };
     // 테두리는 패널 전체를 두른다 — `rects` 가 이 사각형을 먼저 칠하고 그 안에 배경을 얹는다.
@@ -517,8 +538,7 @@ pub fn countText(ui: Ui, buf: []u8) []const u8 {
 /// 와 자투리 4 pt 를 뺀 자리에 둔다 (실제 창이 늘 그렇다).
 fn testGeom(w: f32, h: f32) Geometry {
     return .{
-        .viewport_w_pt = w,
-        .viewport_h_pt = h,
+        .pane = .{ .x = 0, .y = 0, .w = w, .h = h },
         .cell_w_pt = 14,
         .cell_h_pt = 20,
         .grid_bottom_pt = h - 10,
@@ -528,8 +548,7 @@ fn testGeom(w: f32, h: f32) Geometry {
 test "#646 view — 패널 바닥이 맨 아랫줄의 윗변에 맞는다 (프롬프트를 안 가린다)" {
     // 격자 바닥이 창 바닥에서 10 pt 위 (패딩 + 자투리). 맨 아랫줄은 그 위 20 pt 다.
     const g: Geometry = .{
-        .viewport_w_pt = 800,
-        .viewport_h_pt = 600,
+        .pane = .{ .x = 0, .y = 0, .w = 800, .h = 600 },
         .cell_w_pt = 14,
         .cell_h_pt = 20,
         .grid_bottom_pt = 590,
@@ -539,14 +558,14 @@ test "#646 view — 패널 바닥이 맨 아랫줄의 윗변에 맞는다 (프�
     try std.testing.expectEqual(last_row_top, v.rect.y + v.rect.h);
 
     // 창 바닥만 보고 세면 맨 아랫줄을 10 pt 파고든다 — 그것이 실기에서 난 결함이다.
-    const naive_bottom = g.viewport_h_pt - g.cell_h_pt;
+    const naive_bottom = g.pane.h - g.cell_h_pt;
     try std.testing.expect(naive_bottom > last_row_top);
 }
 
 test "#646 view — 스크롤바가 있으면 그 왼쪽을 기준으로 잡는다" {
     const w: f32 = 800;
-    const without = view(.{ .viewport_w_pt = w, .viewport_h_pt = 600, .cell_w_pt = 14, .cell_h_pt = 20 });
-    const with_sb = view(.{ .viewport_w_pt = w, .viewport_h_pt = 600, .cell_w_pt = 14, .cell_h_pt = 20, .scrollbar_w_pt = 10 });
+    const without = view(.{ .pane = .{ .x = 0, .y = 0, .w = w, .h = 600 }, .cell_w_pt = 14, .cell_h_pt = 20 });
+    const with_sb = view(.{ .pane = .{ .x = 0, .y = 0, .w = w, .h = 600 }, .cell_w_pt = 14, .cell_h_pt = 20, .scrollbar_w_pt = 10 });
 
     // 스크롤바 폭만큼 통째로 왼쪽으로 온다 — 붙지 않는다.
     try std.testing.expectEqual(without.rect.x - 10, with_sb.rect.x);
@@ -557,8 +576,8 @@ test "#646 view — 스크롤바가 있으면 그 왼쪽을 기준으로 잡는�
 test "#646 view — 셀이 아주 작아도 가장자리에 붙지 않는다" {
     // 셀 정보가 없는 프레임 (기본값 0) 과 아주 작은 폰트 모두 하한이 받는다.
     for ([_]Geometry{
-        .{ .viewport_w_pt = 800, .viewport_h_pt = 600 },
-        .{ .viewport_w_pt = 800, .viewport_h_pt = 600, .cell_w_pt = 2, .cell_h_pt = 3 },
+        .{ .pane = .{ .x = 0, .y = 0, .w = 800, .h = 600 } },
+        .{ .pane = .{ .x = 0, .y = 0, .w = 800, .h = 600 }, .cell_w_pt = 2, .cell_h_pt = 3 },
     }) |g| {
         const v = view(g);
         try std.testing.expect(800 - (v.rect.x + v.rect.w) >= MIN_GAP_PT);
@@ -566,7 +585,7 @@ test "#646 view — 셀이 아주 작아도 가장자리에 붙지 않는다" {
     }
 }
 
-test "#646 view — 패널은 창 우하단 모서리에 뜬다" {
+test "#646 view — 패널은 pane 우하단 모서리에 뜬다" {
     const h: f32 = 600;
     const v = view(testGeom(800, h));
     try std.testing.expectEqual(WIDTH_PT, v.rect.w);
@@ -584,6 +603,87 @@ test "#646 view — 창이 패널보다 좁으면 화면 밖으로 안 나간다
     const v = view(testGeom(100, 600));
     try std.testing.expect(v.rect.x >= 0);
     try std.testing.expect(v.rect.x + v.rect.w <= 100 + 0.001);
+}
+
+/// 테스트용 — `testGeom` 과 같은 셀 · 자투리로, 창 안 아무 자리의 pane 하나.
+fn testPaneGeom(x: f32, y: f32, w: f32, h: f32) Geometry {
+    return .{
+        .pane = .{ .x = x, .y = y, .w = w, .h = h },
+        .cell_w_pt = 14,
+        .cell_h_pt = 20,
+        .grid_bottom_pt = y + h - 10,
+    };
+}
+
+fn expectInsidePane(v: View, p: Rect) !void {
+    try std.testing.expect(v.rect.x >= p.x);
+    try std.testing.expect(v.rect.x + v.rect.w <= p.x + p.w + 0.001);
+    try std.testing.expect(v.rect.y >= p.y);
+    try std.testing.expect(v.rect.y + v.rect.h <= p.y + p.h + 0.001);
+}
+
+test "#675 view — 좌우 분할에서 왼쪽 pane 을 검색하면 바가 그 pane 오른쪽 아래에 뜬다" {
+    // 창 1200 pt 를 좌우로 나눈 모양. 탭바 28 pt 아래, 분할선 12 pt.
+    const left: Rect = .{ .x = 0, .y = 28, .w = 594, .h = 572 };
+    const right: Rect = .{ .x = 606, .y = 28, .w = 594, .h = 572 };
+
+    const vl = view(testPaneGeom(left.x, left.y, left.w, left.h));
+    try expectInsidePane(vl, left);
+    // 오른쪽은 **그 pane** 의 끝에서 셀 한 칸이다 — 창 끝이 아니다 (#642 의 증상).
+    try std.testing.expectEqual(left.x + left.w - 14 - WIDTH_PT, vl.rect.x);
+
+    const vr = view(testPaneGeom(right.x, right.y, right.w, right.h));
+    try expectInsidePane(vr, right);
+    try std.testing.expectEqual(right.x + right.w - 14 - WIDTH_PT, vr.rect.x);
+    // 두 pane 은 높이가 같으니 바 높이도 같다.
+    try std.testing.expectEqual(vl.rect.y, vr.rect.y);
+}
+
+test "#675 view — 위아래 분할에서는 검색 중인 pane 의 맨 아랫줄 위에 뜬다" {
+    const top: Rect = .{ .x = 0, .y = 28, .w = 1200, .h = 280 };
+    const bottom: Rect = .{ .x = 0, .y = 320, .w = 1200, .h = 280 };
+
+    const vt = view(testPaneGeom(top.x, top.y, top.w, top.h));
+    try expectInsidePane(vt, top);
+    try std.testing.expectEqual((top.y + top.h - 10) - 20 - HEIGHT_PT, vt.rect.y);
+
+    const vb = view(testPaneGeom(bottom.x, bottom.y, bottom.w, bottom.h));
+    try expectInsidePane(vb, bottom);
+    try std.testing.expectEqual(vt.rect.x, vb.rect.x);
+}
+
+test "#675 view — 스크롤바는 활성 pane 오른쪽 끝의 것을 뺀다" {
+    const p: Rect = .{ .x = 0, .y = 28, .w = 594, .h = 572 };
+    var g = testPaneGeom(p.x, p.y, p.w, p.h);
+    g.scrollbar_w_pt = 10;
+    const v = view(g);
+    try std.testing.expectEqual(@as(f32, 14), (p.x + p.w - 10) - (v.rect.x + v.rect.w));
+}
+
+test "#675 view — 좁은 pane 에서는 바가 접히되 pane 밖으로 안 나간다" {
+    // 20 열 남짓 (≈ 160 pt) pane — 컨트롤은 빠지고 입력칸 + 카운터가 남는다.
+    const narrow: Rect = .{ .x = 500, .y = 28, .w = 160, .h = 572 };
+    const v = view(testPaneGeom(narrow.x, narrow.y, narrow.w, narrow.h));
+    try expectInsidePane(v, narrow);
+    try std.testing.expectEqual(Stage.minimal, stageFor(v.rect.w));
+    try std.testing.expect(v.field.w > 0 and v.count.w > 0);
+
+    // 여백조차 안 들어가는 pane — 바 폭이 0 이 되고 왼쪽 이웃 pane 으로 넘어가지 않는다.
+    const tiny: Rect = .{ .x = 500, .y = 28, .w = 20, .h = 572 };
+    const vt = view(testPaneGeom(tiny.x, tiny.y, tiny.w, tiny.h));
+    try std.testing.expectEqual(@as(f32, 0), vt.rect.w);
+    try std.testing.expect(vt.rect.x >= tiny.x);
+}
+
+test "#675 view — 바보다 낮은 pane 에서도 pane 위로 안 올라간다" {
+    const low: Rect = .{ .x = 0, .y = 320, .w = 600, .h = 30 };
+    const v = view(testPaneGeom(low.x, low.y, low.w, low.h));
+    try std.testing.expect(v.rect.y >= low.y);
+}
+
+test "#675 paneRectPt — device px 를 배율로 나눈다" {
+    const r = paneRectPt(300, 42, 891, 858, 1.5);
+    try std.testing.expectEqual(Rect{ .x = 200, .y = 28, .w = 594, .h = 572 }, r);
 }
 
 test "#646 view — 요소가 겹치지 않고 왼쪽에서 오른쪽 순서다" {
