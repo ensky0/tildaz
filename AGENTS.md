@@ -426,7 +426,7 @@ scale source 는 platform 마다 다르지만 **단일 `scale` 값으로 수렴*
   KDE 에서 전면 점유 (100 %) 창을 화면 edge 에서 15 px 떼어 놨어요 — 실기 캡처에서 오른쪽 끝 20 px 의 평균 밝기가
   16.2 (벽지) 였고, 예외를 넣은 뒤 0.0 (창) 이 됐어요. **창이 edge 에 붙는지는 캡처의 끝 열 밝기로 재요.**
 - Linux 변환: `software_terminal.zig` 의 `self.scale` (단일 값). 새 scale source 가 생기면 이
-  값 하나로 수렴시키고 `renderer.applyScale()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
+  값 하나로 수렴시키고 `renderer.rebuildFonts()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
 - 새 platform / compositor 포팅 시 **scale source 부터** 확인 — 배율 켜고 다른 환경 (mac / KDE)
   과 나란히 띄워 같은 크기로 보이는지 시연으로 검증해요.
 

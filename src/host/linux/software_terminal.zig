@@ -37,7 +37,7 @@ const log = @import("../../log.zig");
 
 /// #203 Phase C step 3.1 — dialog 박스 모서리 radius (physical px). macOS
 /// NSAlert / Win 11 dialog 의 ~12-16 범위. fractional scaling 환경 에선 그대로
-/// physical px — `applyScale` 후 cell_h 변하지만 radius 는 시각 일정 (≈ 시스템
+/// physical px — `rebuildFonts` 후 cell_h 변하지만 radius 는 시각 일정 (≈ 시스템
 /// 표준 dialog radius). **PT (논리 점) 단위** — `scaledPt(pt, scale)` 로 physical
 /// 변환. fractional scaling (KDE Plasma 6 125% / 170% 등) 환경에서도 일관 시각.
 const dialog_corner_radius_pt: u32 = 16;
@@ -167,7 +167,7 @@ pub const GlyphItem = struct {
     font: FontId = .terminal,
     /// raster 결과. font cache 가 소유하며 **주소가 고정**이라 포인터로 든다 —
     /// 캐시가 글리프를 개별 할당하므로 재해싱이 주소를 옮기지 않는다 (#362).
-    /// 유효 범위는 폰트를 다시 로드하기 전까지 (`applyScale`) 이고, 프레임 목록은
+    /// 유효 범위는 폰트를 다시 로드하기 전까지 (`rebuildFonts`) 이고, 프레임 목록은
     /// 매 프레임 새로 만들어지므로 항상 그 안이다.
     glyph: *const font.Glyph,
     /// 알파 마스크 글리프면 **bitmap 좌상단** (bearing · 중앙정렬 반영 완료).
@@ -417,7 +417,7 @@ pub const Renderer = struct {
     opacity_alpha: u8 = 255,
     /// `ui_metrics.*_PT` 를 physical pixel 로 변환할 때 곱하는 factor.
     /// mac `backingScaleFactor` / Win `dpi/96.0` 동등. preferred_scale event
-    /// 로 갱신 (`applyScale`). default 1.0 — fractional scaling 미advertise
+    /// 로 갱신 (`rebuildFonts`). default 1.0 — fractional scaling 미advertise
     /// 환경 또는 첫 init 시점.
     scale: f32 = 1.0,
 
@@ -432,16 +432,17 @@ pub const Renderer = struct {
 
     /// `scale_num / scale_den` — fractional scaling factor (e.g. 204/120 = 1.7x).
     /// 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가 아직
-    /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `applyScale` 로
+    /// 안 왔을 수 있어 default 120/120 = 1.0x. event 받은 후 `rebuildFonts` 로
     /// 정확한 scale 의 font 재초기화 + scale field 갱신.
     pub fn init(
         allocator: std.mem.Allocator,
         cfg: *const config_mod.Config,
+        terminal_font: font_spec.Spec,
         scale_num: u32,
         scale_den: u32,
     ) !Renderer {
         const chain = cfg.font_families[0..cfg.font_family_count];
-        const spec = cfg.terminalFontSpec();
+        const spec = terminal_font;
         const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
         var terminal_ctx = try font.Context.init(
             allocator,
@@ -489,19 +490,19 @@ pub const Renderer = struct {
         self.font_ctx.deinit();
     }
 
-    /// fractional scale 변경 시 font 재초기화 + UI chrome scale 갱신. preferred_
-    /// scale event handler 가 호출 — pixel_height = base × scale / 120 으로 raster
-    /// + `Renderer.scale` field 갱신해 tab bar / padding / scrollbar 도 같은
-    /// scale 로 정렬.
-    pub fn applyScale(
+    /// 폰트 재초기화 + UI chrome scale 갱신. pixel_height = 크기 × scale / 120 으로 raster
+    /// + `Renderer.scale` field 갱신해 tab bar / padding / scrollbar 도 같은 scale 로 정렬.
+    /// #693 — 세 platform 공통 이름이다 (macOS · Windows renderer 의 `rebuildFonts` 와 같은
+    /// 역할). 크기는 host 의 `TerminalFontSize.spec()` 이 정하고, 배율 타입만 platform 마다 다르다.
+    pub fn rebuildFonts(
         self: *Renderer,
         allocator: std.mem.Allocator,
-        cfg: *const config_mod.Config,
+        terminal_font: font_spec.Spec,
         scale_num: u32,
         scale_den: u32,
     ) !void {
-        const chain = cfg.font_families[0..cfg.font_family_count];
-        const spec = cfg.terminalFontSpec();
+        const chain = self.font_chain;
+        const spec = terminal_font;
         const pixel_height = scaledFontPixelHeight(spec, scale_num, scale_den);
         var new_ctx = try font.Context.init(
             allocator,
@@ -3195,7 +3196,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     // 초기화. 이전 버전은 chain={"monospace"} + line_height 1.0 hand-build 라
     // 사용자 config (line_height 1.1) 의 layout 을 재현 못 했음 (#213 진단 cycle).
     const cfg = config_mod.Config{};
-    var r = Renderer.init(allocator, &cfg, 204, 120) catch {
+    var r = Renderer.init(allocator, &cfg, cfg.terminalFontSpec(), 204, 120) catch {
         // fontconfig 없는 환경(CI 등)에선 이 테스트를 건너뛴다.
         return error.SkipZigTest;
     };
@@ -3257,7 +3258,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
 test "#314 overflow About renderer draws 2pt brand separator and movable gray scrollbar at 1.7x" {
     const allocator = std.testing.allocator;
     const cfg = config_mod.Config{};
-    var r = Renderer.init(allocator, &cfg, 204, 120) catch return error.SkipZigTest;
+    var r = Renderer.init(allocator, &cfg, cfg.terminalFontSpec(), 204, 120) catch return error.SkipZigTest;
     // #368 — dialog 폰트는 지연 생성이다. host 는 dialog 를 열 때 이걸 부른다
     // (`openDialogSurface`) — 테스트도 같은 순서를 밟아야 실제 경로와 같다.
     r.ensureDialogFonts(allocator);

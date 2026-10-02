@@ -70,7 +70,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | Opacity (config) | 0..100 percent → alpha | 100%: normal flip-model; below 100%: `WS_EX_NOREDIRECTIONBITMAP` + DirectComposition visual opacity ([#89](https://github.com/ensky0/tildaz/issues/89)) | `NSWindow.setAlphaValue:` | ARGB8888 alpha sweep ([fa4e036](https://github.com/ensky0/tildaz/commit/fa4e036), L13-γ) | ✅ | ✅ | ✅ |
 | Theme (config) | 16-color palette + bg/fg | `themes.findTheme` → ghostty Terminal.Colors | 동일 | 동일 (cross-platform `themes` 모듈) | ✅ | ✅ | ✅ |
 | 단일 탭 시 상단 chrome ([#329](https://github.com/ensky0/tildaz/issues/329)) | full 탭바 자리 없음. 우측 상단에 `[+][×][…]` 72×28 logical pt strip만 terminal 위에 overlay. terminal grid y-offset은 0, scrollbar draw/hit track만 28pt 아래에서 시작 | `effectiveTabBarHeight()==0`, 별도 `scrollbarTopInset()` + renderer final overlay | `tabBarHeightPx()==0`, 별도 `scrollbarTopInsetPx()` + Metal final overlay | `Renderer.tabBarHeightPx(1)==0`, 별도 `chromeHeightPx()` + software final overlay | ✅ | ✅ | ✅ |
-| Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `applyScale` (L8-δ) | ✅ | ✅ | ✅ |
+| Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `rebuildFonts` (L8-δ) | ✅ | ✅ | ✅ |
 | Drag-resize 사용자 차단 | 사용자가 크기 못 바꿈 | `WS_POPUP` styleMask | borderless + non-resizable | layer-shell 본질 (위 동등) | ✅ | ✅ | ✅ |
 
 ### 1.1 UI metric scaling (cross-platform)
@@ -83,7 +83,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 |---|---|---|---|---|
 | Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120`, 미advertise 시 `wl_output` 정수 scale fallback (#210/#238). KWin · mutter · wlroots · cosmic-comp 은 fractional 을 내주고 **Cinnamon (muffin) 은 내주지 않아** 정수 fallback 으로 간다 (2026-09-03 실측) |
 | Scale 재계산 시점 | — | `WM_DPICHANGED` + startup | `NSScreenDidChange` notification + 매 resize | `preferred_scale` event |
-| Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `applyScale(scale_num, scale_den)` |
+| Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `rebuildFonts(spec, scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
 | `TERMINAL_PADDING_PT` | 6 | `App.TERMINAL_PADDING` | `pad_px` | `Renderer.paddingPx()` |
 | `SCROLLBAR_W_PT` | 10 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
@@ -2290,7 +2290,7 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 | 같은 회차 | 4096² → 8192² 시점 | `clusters 15,441` |
 | 같은 회차 | **8192² 가 찬 시점** | `glyphs 195` + `clusters 56,835` = **57,030** (`filled_y 8,165`) |
 
-**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`applyScale`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
+**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`rebuildFonts`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 

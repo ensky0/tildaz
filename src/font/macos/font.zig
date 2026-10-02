@@ -513,7 +513,7 @@ pub const CoreTextFontContext = struct {
         //
         // **따로 `clear()` 를 부를 자리는 없다.** 폰트 · scale 이 바뀌면 renderer 가
         // `CoreTextFontContext.init` 으로 Context 를 새로 만들고 옛 것을 `deinit` 한다
-        // (`renderer/macos.zig` 의 `applyScale`) — 폰트만 갈아 끼우는 경로가 없어서,
+        // (`renderer/macos.zig` 의 `rebuildFonts`) — 폰트만 갈아 끼우는 경로가 없어서,
         // Linux 의 `freeFaces` 에 해당하는 무효화 지점이 이 자리 하나다. Windows 와 같다.
         self.cluster_cache.deinit();
         for (self.fallback_fonts[0..self.fallback_count]) |f| {

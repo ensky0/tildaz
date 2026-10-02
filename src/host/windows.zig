@@ -272,7 +272,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 여기까지 error 가 올라왔다는 것은 두 경로가 모두 실패했다는 뜻이므로 안내 후
     // 종료 — `dialog.showFatal` 이 noreturn 이라 이 줄 아래로는 renderer 가 반드시
     // 있다.
-    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, terminal_font, @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| {
+    app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, app.window.font_size.spec(), @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| {
         log.appendLine("startup", "renderer init failed: {s}", .{@errorName(err)});
         var msg_buf: [1024]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, messages.renderer_init_failed_format, .{

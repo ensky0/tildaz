@@ -669,7 +669,7 @@ pub const App = struct {
     }
 
     /// WM_DPICHANGED path (called from `window.wndProc` after
-    /// `rebuildFontForDpi` has updated `cell_width` / `cell_height`).
+    /// `Window.rebuildFonts` has updated `cell_width` / `cell_height`).
     ///
     /// Rebuilds the D3D renderer's font context + glyph atlas at the new
     /// DPI so glyphs are rasterized at the new monitor's pixel density,
@@ -680,10 +680,10 @@ pub const App = struct {
     pub fn onFontChange(window: *Window, userdata: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(userdata.?));
         if (self.renderer) |*r| {
-            r.rebuildFont(
+            r.rebuildFonts(
                 window.hwnd,
                 window.font_chain[0..window.font_chain_count],
-                window.terminal_font,
+                window.font_size.spec(),
                 @intCast(window.cell_width_px),
                 @intCast(window.cell_height_px),
             ) catch {
