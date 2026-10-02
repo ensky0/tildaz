@@ -1138,10 +1138,18 @@ test "#620 config 파일이 없는 실행도 창 안 단축키를 갖는다" {
     var c = Config.defaultOwned(std.testing.allocator, shell);
     defer c.deinit(std.testing.allocator);
 
-    // 위 테스트가 고정한 기본값 개수와 같아야 한다 — 두 길이 갈리면 여기서 걸린다.
-    var expected: usize = 0;
-    for (std.enums.values(KeyAction)) |action| expected += defaultBindings(action).len;
-    try std.testing.expectEqual(expected, @as(usize, c.key_binding_count));
+    // 기본 config 를 `parse` 로 읽은 결과와 같아야 한다 — 두 길이 갈리면 여기서 걸린다. 표의 글자 수와
+    // 견주지 않는 이유: Windows 는 같은 액션의 두 표기 (`=` · `plus`) 가 한 조합으로 합쳐진다 (#693).
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    defer clearConfigNotice(); // arena 보다 늦게 선언 — 안내를 먼저 비운다 (`#655 [keys] 충돌은 …` 와 같은 이유).
+    const full = try defaultConfigToml(arena.allocator(), Defaults.shell, Defaults.hotkeyFor(0));
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const parsed_cfg = try Config.parse(rt, arena.allocator(), full, "/home/user/.config/tildaz/config_0.toml");
+    try std.testing.expectEqual(parsed_cfg.key_binding_count, c.key_binding_count);
     try std.testing.expect(c.key_binding_count > 0);
 
     // 대표 하나 — 새 탭이 실제로 들어 있고 액션이 맞는지 (개수만 보면 엉뚱한 값이 채워져도 통과한다).
@@ -1165,6 +1173,8 @@ test "#493 default [keys] has no conflicting bindings" {
     // 액션 → 키 방향을 택한 대가로 충돌 감지가 우리 몫이다 (키 → 액션이면 TOML 이
     // 중복 키로 잡아 준다). 기본값끼리 충돌하면 첫 실행부터 fatal 이므로 고정한다.
     var seen: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var seen_n: usize = 0;
+    // 기본값 표에 적힌 글자 수 — config 에 적히는 수라 platform 이 풀어 낸 값과 무관하다.
     var count: usize = 0;
     for (std.enums.values(KeyAction)) |action| {
         for (defaultBindings(action)) |text| {
@@ -1173,15 +1183,16 @@ test "#493 default [keys] has no conflicting bindings" {
                 else => return error.TestUnexpectedResult,
             };
             const hk = Hotkey.fromParsed(parsed);
-            for (seen[0..count]) |prev| {
-                if (std.meta.eql(prev.hotkey, hk)) {
-                    std.debug.print("기본 binding 충돌: \"{s}\" — {s} vs {s}\n", .{ text, prev.action.configName(), action.configName() });
-                    return error.TestUnexpectedResult;
-                }
-            }
-            try std.testing.expect(count < MAX_KEY_BINDINGS);
-            seen[count] = .{ .hotkey = hk, .action = action };
             count += 1;
+            if (bindingWithHotkey(seen[0..seen_n], hk)) |prev| {
+                // #693 — 같은 액션의 다른 표기 (Windows 의 `=` · `plus`) 는 충돌이 아니다.
+                if (prev.action == action) continue;
+                std.debug.print("기본 binding 충돌: \"{s}\" — {s} vs {s}\n", .{ text, prev.action.configName(), action.configName() });
+                return error.TestUnexpectedResult;
+            }
+            try std.testing.expect(seen_n < MAX_KEY_BINDINGS);
+            seen[seen_n] = .{ .hotkey = hk, .action = action };
+            seen_n += 1;
         }
     }
     // #693 이전 42 개 — 두 platform 표가 같은 수였다. #693 의 글자 크기 셋이 macOS 에 6 개
@@ -2586,6 +2597,19 @@ pub fn lookupActionWithFallback(
     return null;
 }
 
+/// #693 — 이 platform 에서 **같은 조합**으로 풀린 binding 이 이미 있으면 그것. config 를 읽는
+/// `addBinding` 과 기본값을 채우는 `fillDefaultKeyBindings` 가 함께 쓴다 — 두 길의 결과가 갈리지 않게.
+///
+/// 같은 글자가 platform 마다 다르게 풀리므로 이 판정은 config 글자가 아니라 풀린 값으로 한다.
+/// Windows 는 `=` 와 `plus` 가 둘 다 `VK_OEM_PLUS` 라 `ctrl+shift+=` · `ctrl+shift+plus` 가 같은
+/// 조합이고, Linux 는 keysym 이, macOS 는 라벨이 둘을 가른다. config 에 적는 글자는 세 platform 이 같다.
+fn bindingWithHotkey(bindings: []const KeyBinding, hotkey: Hotkey) ?KeyBinding {
+    for (bindings) |b| {
+        if (std.meta.eql(b.hotkey, hotkey)) return b;
+    }
+    return null;
+}
+
 /// #483 6단계 — **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다.** `shift+alt+0` 은 "Shift 를 누른 채
 /// `0` 키" 라는 뜻인데, 라벨은 Shift 가 반영된 글자라 US 에서는 `)` (Linux keysym `parenright` · macOS
 /// `charactersByApplyingModifiers:`) 가 도착해 `0` 과 영영 만나지 못했다 — `⇧⌘0` 균등 · `⇧⌘[` 이전 탭이 macOS 에서,
@@ -3301,7 +3325,11 @@ pub const Config = struct {
                     .ok => |v| v,
                     else => continue,
                 };
-                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action, .parsed = parsed };
+                const hotkey = Hotkey.fromParsed(parsed);
+                // #693 — `parse` 의 `addBinding` 과 같은 규칙. 기본값끼리는 다른 액션이 겹치지 않으므로
+                // (위 테스트) 여기 걸리는 것은 같은 액션의 다른 표기뿐이다.
+                if (bindingWithHotkey(config.key_bindings[0..count], hotkey) != null) continue;
+                config.key_bindings[count] = .{ .hotkey = hotkey, .action = action, .parsed = parsed };
                 count += 1;
             }
         }
@@ -3585,15 +3613,15 @@ pub const Config = struct {
 
         // **먼저 나온 것이 이긴다** (SPEC §7.3). 파일을 위에서 아래로 읽는 순서와 같아
         // 사용자에게 설명하기 쉽고, 뒤에 적은 쪽이 앞을 조용히 덮어쓰는 일이 없다.
-        for (config.key_bindings[0..count]) |existing| {
-            if (std.meta.eql(existing.hotkey, hotkey)) {
-                appendNotice(
-                    &repaired_list,
-                    messages.config_notice_key_conflict_format,
-                    .{ name, text, existing.action.configName() },
-                );
-                return count;
-            }
+        if (bindingWithHotkey(config.key_bindings[0..count], hotkey)) |existing| {
+            // #693 — 같은 액션이면 사용자가 원한 동작은 이미 걸려 있다. 조용히 하나로 합친다.
+            if (existing.action == action) return count;
+            appendNotice(
+                &repaired_list,
+                messages.config_notice_key_conflict_format,
+                .{ name, text, existing.action.configName() },
+            );
+            return count;
         }
 
         if (count >= MAX_KEY_BINDINGS) {
@@ -4947,6 +4975,46 @@ test "#655 [keys] 충돌은 먼저 나온 것이 이긴다" {
     try std.testing.expectEqual(KeyAction.new_tab, found.?);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, n.repaired, "close_tab") != null);
+}
+
+test "#693 같은 액션 안의 중복은 조용히 하나로 합친다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    defer clearConfigNotice(); // arena 보다 늦게 선언 — 위 테스트와 같은 이유.
+    const a = arena.allocator();
+    // config 글자는 세 platform 이 같다. Windows 에서만 두 표기가 같은 조합 (`VK_OEM_PLUS`) 으로 풀린다.
+    const doc =
+        \\shell = "/bin/sh"
+        \\[keys]
+        \\increase_font_size = ["ctrl+shift+=", "ctrl+shift+plus"]
+        \\
+    ;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = try Config.parse(rt, a, doc, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    // "이미 쓰였다" 안내가 없어야 한다. 다른 액션은 이 문서에 없어 "넣었다" 안내가 함께 생길 수 있다.
+    if (pendingConfigNotice()) |n| {
+        try std.testing.expect(std.mem.indexOf(u8, n.repaired, "increase_font_size") == null);
+    }
+
+    var n_up: usize = 0;
+    for (config.key_bindings[0..config.key_binding_count]) |b| {
+        if (b.action == .increase_font_size) n_up += 1;
+    }
+    try std.testing.expectEqual(@as(usize, if (is_windows) 1 else 2), n_up);
+
+    // 합쳐진 뒤에도 그 조합은 그 액션으로 풀린다. 기호 키는 창 안 단축키 (`app_binding`) 에서만 받으므로
+    // 전역 hotkey 용 `Hotkey.fromString` 이 아니라 이 경로로 만든다.
+    const combo = Hotkey.fromParsed(switch (parseHotkeyString("ctrl+shift+=", .app_binding)) {
+        .ok => |v| v,
+        else => return error.TestUnexpectedResult,
+    });
+    try std.testing.expectEqual(KeyAction.increase_font_size, (bindingWithHotkey(config.key_bindings[0..config.key_binding_count], combo) orelse return error.TestUnexpectedResult).action);
 }
 
 test "#655 [font] 섹션이 통째로 없어도 뜬다 — 기본 폰트 chain 이 남는다" {
