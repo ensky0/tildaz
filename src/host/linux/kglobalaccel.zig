@@ -1056,7 +1056,8 @@ test "XKB to Qt key conversion keeps function offsets and modifiers" {
     try std.testing.expectEqual(@as(?i32, 0x01000012), qtKey(0xff51, 0, null));
     try std.testing.expectEqual(@as(?i32, 0x01000013), qtKey(0xff52, 0, null));
     try std.testing.expectEqual(@as(?i32, 0x01000014), qtKey(0xff53, 0, null));
-    try std.testing.expectEqual(@as(?i32, 0x05000015), qtKey(0xff54, 0x2 | 0x4, null));
+    // Ctrl (0x2 → 0x04000000) + Shift (0x4 → 0x02000000) + `Key_Down`.
+    try std.testing.expectEqual(@as(?i32, 0x07000015), qtKey(0xff54, 0x2 | 0x4, null));
 
     // #496 1-c — 위치 표기가 들어오면서 임의의 keysym 이 온다. 아래 세 값은 이 머신
     // (CachyOS · KWin 6.7.4) 에서 `gdbus` 로 실제 등록해 확인한 것이다.
