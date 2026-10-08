@@ -1186,8 +1186,10 @@ pub const SessionCore = struct {
     }
 
     pub fn createTab(self: *SessionCore, cols: u16, rows: u16) !void {
-        const tab = try self.spawnTab(cols, rows);
+        const tab = try self.spawnTab(cols, rows, self.next_tab_id);
         errdefer tab.deinit(self.allocator);
+        // #696 — 번호는 새 **탭**만 올린다. 분할은 갈라지는 pane 의 번호를 물려받는다.
+        self.next_tab_id += 1;
         // #483 3단계 — 새 탭은 pane 하나짜리 그룹이다.
         const group = try TabGroup.initSingle(self.allocator, tab);
         errdefer self.allocator.destroy(group);
@@ -1198,7 +1200,11 @@ pub const SessionCore = struct {
 
     /// 터미널 하나 (pane) 를 만들어 셸을 띄운다 — 탭 (`createTab`) 과 분할 (`splitActive`) 의
     /// 공통 부분. 어느 그룹에도 넣지 않는다 — 호출처가 넣고, 넣지 못하면 `deinit` 한다.
-    fn spawnTab(self: *SessionCore, cols: u16, rows: u16) !*Tab {
+    ///
+    /// `title_id` 는 기본 제목 `Tab N` 의 N 이다. 호출처가 정한다 — 탭은 새 번호, 분할한
+    /// pane 은 자기 탭의 번호다 (#696). 예전에는 여기서 카운터를 올려 분할할 때마다 번호가
+    /// 하나씩 소비됐고, 탭바가 활성 pane 의 제목을 보여서 `Tab 2` 가 `Tab 3` 으로 바뀌었다.
+    fn spawnTab(self: *SessionCore, cols: u16, rows: u16, title_id: usize) !*Tab {
         var cwd_buf: [pwd_uri.max_path_len]u8 = undefined;
         const cwd = self.inheritedCwd(&cwd_buf);
 
@@ -1217,8 +1223,7 @@ pub const SessionCore = struct {
         );
         errdefer tab.deinit(self.allocator);
 
-        tab.beginInitialTitle(self.next_tab_id);
-        self.next_tab_id += 1;
+        tab.beginInitialTitle(title_id);
         // #439 — read thread 가 돌기 **전에** 배선한다. 이 뒤에 대입하면 첫 바이트가
         // 통보 없이 지나갈 수 있다.
         tab.output_wake_fn = self.output_wake_fn;
@@ -1282,7 +1287,8 @@ pub const SessionCore = struct {
         var buf: [pane_layout.MAX_PANES_PER_TAB]pane_layout.PaneRect = undefined;
         const lay = group.layout(rect, m, &buf);
         const pr = pane_layout.find(lay, new_id) orelse unreachable;
-        const tab = try self.spawnTab(pr.cols, pr.rows);
+        // #696 — 새 pane 은 갈라지는 pane 의 번호를 물려받는다 (아직 `active_pane` 이 그 pane).
+        const tab = try self.spawnTab(pr.cols, pr.rows, group.activeTab().default_title_id);
         group.panes[new_id] = tab;
         group.active_pane = new_id;
         group.resetVisibleDrainRound();
@@ -2197,6 +2203,40 @@ fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {
     try std.testing.expect(drained[2] >= marker.len);
 }
 
+/// #696 — 분할한 pane 은 자기 탭의 번호를 물려받고, 다음 새 탭은 번호를 건너뛰지 않는다.
+/// `session` 에는 탭 하나 (`Tab 1`) 가 있어야 한다. 제목 문자열은 drain 전에만 본다 —
+/// 셸이 OSC 제목을 보내는 구성에서도 흔들리지 않게 그 뒤는 `default_title_id` 로 본다.
+fn expectSplitPaneKeepsTabNumber(session: *SessionCore) !void {
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+
+    try session.splitActive(.right, rect, m);
+    {
+        const group = session.activeGroup().?;
+        try std.testing.expectEqual(@as(usize, 2), group.paneCount());
+        // 탭바는 활성 pane (= 새 pane) 의 제목을 보여 준다 — 여전히 `Tab 1`.
+        const active = group.activeTab();
+        try std.testing.expectEqualStrings("Tab 1", active.title[0..active.title_len]);
+        try std.testing.expectEqual(@as(usize, 1), group.panes[0].?.default_title_id);
+        try std.testing.expectEqual(@as(usize, 1), group.panes[1].?.default_title_id);
+    }
+
+    try session.createTab(80, 24);
+    {
+        const tab = session.activeTab().?;
+        try std.testing.expectEqualStrings("Tab 2", tab.title[0..tab.title_len]);
+    }
+    try session.splitActive(.down, rect, m);
+    {
+        const group = session.activeGroup().?;
+        try std.testing.expectEqual(@as(usize, 2), group.paneCount());
+        try std.testing.expectEqual(@as(usize, 2), group.activeTab().default_title_id);
+    }
+
+    try session.createTab(80, 24);
+    try std.testing.expectEqual(@as(usize, 3), session.activeTab().?.default_title_id);
+}
+
 test "POSIX: new tab shows Tab N from creation, before any shell output" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -2238,6 +2278,28 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
         try std.testing.expect(session.tabAt(1).?.title_len > 0);
         testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
+}
+
+test "POSIX: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        "/bin/sh",
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+
+    try session.createTab(80, 24);
+    try expectSplitPaneKeepsTabNumber(&session);
 }
 
 test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 같다" {
@@ -2618,6 +2680,34 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
         try std.testing.expect(session.activeTab().?.title_len > 0);
         testRuntime().sleepNs(10 * std.time.ns_per_ms);
     }
+}
+
+test "Windows: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    const shell = std.unicode.utf8ToUtf16LeStringLiteral(
+        "cmd.exe /d /q /c \"ping -n 2 127.0.0.1 >nul\"",
+    );
+    var session = SessionCore.init(
+        testRuntime(),
+        std.testing.allocator,
+        shell,
+        100,
+        null,
+        null,
+        &Exit.notify,
+        null,
+    );
+    defer session.deinit();
+    session.createTab(80, 24) catch |err| switch (err) {
+        error.ConptyRuntimeUnavailable => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try expectSplitPaneKeepsTabNumber(&session);
 }
 
 test "Windows: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 한다" {
