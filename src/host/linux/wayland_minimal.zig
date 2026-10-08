@@ -1037,7 +1037,8 @@ fn createMemfd(name: [*:0]const u8) !posix.fd_t {
 /// surface 생성).
 ///   - sway: `$SWAYSOCK` (sway_ipc 가 런타임 `bindsym` 등록)
 ///   - Hyprland: `$HYPRLAND_INSTANCE_SIGNATURE` (launcher 의 `shortcut_sync` 가
-///     `hyprctl keyword bind`/`unbind` 로 런타임 증분 등록 — #267. install.sh 는
+///     `hyprctl keyword bind`/`unbind` (Lua 설정은 `hyprctl eval` 의 `hl.bind`/`hl.unbind`
+///     — #695) 로 런타임 증분 등록 — #267. install.sh 는
 ///     legacy 정적 bind 제거만)
 ///   - COSMIC: `$XDG_CURRENT_DESKTOP` 에 "cosmic" (#230) — launcher 의
 ///     `shortcut_sync.syncCosmic` 이 RON custom shortcut(`Spawn("tildaz --toggle N")`)

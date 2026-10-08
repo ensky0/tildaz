@@ -163,14 +163,17 @@ case "$DE" in
         gsettings get "org.cinnamon.desktop.keybindings.custom-keybinding:$CINNAMON_PATH" binding 2>&1 | sed 's/^/   /'
         ;;
     *Hyprland*|*hyprland*)
-        echo "   --- hyprctl binds ---"
+        # Hyprland 등록은 worker 가 아니라 **launcher** 의 몫이다 (`shortcut_sync`). 위 ② 처럼
+        # worker 만 띄우면 여기는 비어 있다 — `tildaz --autostart` 로 sync 를 한 번 돌린 뒤 본다.
+        # #695 — Lua 설정에서 건 binding 은 `arg` 가 registry 번호라 표식 (`description`) 으로 찾는다.
+        echo "   --- hyprctl binds (설정: $(hyprctl -j status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("configProvider","?"))' 2>/dev/null)) ---"
         hyprctl -j binds 2>/dev/null | python3 -c '
 import json,sys
 try: d=json.load(sys.stdin)
 except Exception: print("   (파싱 실패)"); raise SystemExit
 for b in d:
-    if "tildaz" in (b.get("arg") or ""):
-        print("   key=%r keycode=%s modmask=%s -> %s" % (b.get("key"), b.get("keycode"), b.get("modmask"), b.get("arg")))
+    if "tildaz" in (b.get("arg") or "") or "tildaz" in (b.get("description") or ""):
+        print("   key=%r keycode=%s modmask=%s -> %s %s" % (b.get("key"), b.get("keycode"), b.get("modmask"), b.get("arg"), b.get("description") or ""))
 ' || echo "   (hyprctl 실패)"
         ;;
     *sway*)

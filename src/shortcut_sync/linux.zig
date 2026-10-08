@@ -40,6 +40,11 @@ fn syncHyprland(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32)
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
     const exe = exe_buf[0..exe_len];
 
+    // #695 — 설정이 Lua (`hyprland.lua` — 0.56 이 처음 실행 때 만든다) 면 `hyprctl keyword`
+    // 가 `keyword can't work with non-legacy parsers. Use eval.` 로 거부된다. 종료 코드는
+    // 0 이라 예전 구현은 성공으로 세고 아무것도 등록하지 못했다. 그래서 먼저 종류를 묻는다.
+    const parser = readHyprlandParser(rt, allocator);
+
     var desired: std.ArrayList(HyprlandDesired) = .empty;
     defer {
         for (desired.items) |item| item.deinit(allocator);
@@ -50,7 +55,7 @@ fn syncHyprland(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32)
         defer allocator.free(text);
         const hotkey = config.Hotkey.fromString(text) orelse return error.InvalidConfig;
         var accel_buf: [96]u8 = undefined;
-        const accel = try hyprlandAccel(&accel_buf, hotkey);
+        const accel = try hyprlandBindKeys(&accel_buf, hotkey, parser);
         const owned_accel = try allocator.dupe(u8, accel);
         errdefer allocator.free(owned_accel);
         const command = try std.fmt.allocPrint(allocator, "{s} --toggle {d}", .{ exe, index });
@@ -76,34 +81,39 @@ fn syncHyprland(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32)
     var removed: usize = 0;
     for (actual.value) |binding| {
         var accel_buf: [96]u8 = undefined;
-        const accel = managedHyprlandAccel(&accel_buf, binding, exe) orelse continue;
-        if (findHyprlandDesired(desired.items, accel, binding.arg)) |desired_index| {
+        const managed = managedHyprlandBinding(&accel_buf, binding, exe, parser) orelse continue;
+        // 이미 unbind 한 조합이면 이 binding 도 함께 지워졌다. 아래 keep 판정보다 먼저 봐야
+        // 한다 — 예전에는 같은 조합의 낡은 binding 을 먼저 만나 지운 뒤, 뒤따른 맞는
+        // binding 을 "있음" 으로 세서 다시 걸지 않았다.
+        if (containsString(removed_accels.items, managed.keys)) continue;
+        if (findHyprlandDesired(desired.items, managed.keys, managed.command)) |desired_index| {
             if (!present[desired_index]) {
                 present[desired_index] = true;
                 kept += 1;
                 continue;
             }
         }
-        if (containsString(removed_accels.items, accel)) continue;
-        _ = try runHyprlandKeyword(rt, "unbind", accel);
-        try removed_accels.append(allocator, try allocator.dupe(u8, accel));
+        if (!try unbindHyprland(rt, allocator, parser, managed.keys)) return error.HyprctlFailed;
+        try removed_accels.append(allocator, try allocator.dupe(u8, managed.keys));
         removed += 1;
         // Hyprland unbind는 accelerator 단위라 같은 키의 desired binding도 함께
-        // 제거될 수 있다. 해당 desired는 아래 add 단계에서 복원한다.
+        // 제거될 수 있다. 해당 desired는 아래 add 단계에서 복원한다. Lua 의
+        // `hl.unbind` 도 같은 표시 문자열을 전부 지운다.
         for (desired.items, 0..) |item, i| {
-            if (std.mem.eql(u8, item.accel, accel)) present[i] = false;
+            if (std.mem.eql(u8, item.accel, managed.keys)) {
+                if (present[i]) kept -= 1;
+                present[i] = false;
+            }
         }
     }
 
     var added: usize = 0;
     for (desired.items, 0..) |item, i| {
         if (present[i]) continue;
-        const binding = try std.fmt.allocPrint(allocator, "{s},exec,{s}", .{ item.accel, item.command });
-        defer allocator.free(binding);
-        if (!try runHyprlandKeyword(rt, "bind", binding)) return error.HyprctlFailed;
+        if (!try bindHyprland(rt, allocator, parser, item.accel, item.command)) return error.HyprctlFailed;
         added += 1;
     }
-    log.appendLine("hyprland", "numbered hotkeys synchronized desired={} kept={} removed={} added={}", .{ desired.items.len, kept, removed, added });
+    log.appendLine("hyprland", "numbered hotkeys synchronized parser={s} desired={} kept={} removed={} added={}", .{ @tagName(parser), desired.items.len, kept, removed, added });
 }
 
 const HyprlandDesired = struct {
@@ -126,7 +136,15 @@ const HyprlandBind = struct {
     /// (`hyprlandForeignBinding`) 이 이 값을 보고 걸러낸다. 우리 것은 항상 전역이라
     /// 기존 sync 경로는 이 필드를 보지 않는다.
     submap: []const u8 = "",
+    /// #695 — Lua 로 건 binding 은 `dispatcher` 가 `"__lua"`, `arg` 가 Lua registry 번호라
+    /// 명령이 안 보인다. 위치 binding 은 `key` · `keycode` 도 빈다. 우리 것을 알아볼 표식은
+    /// `hl.bind` 의 `description` 뿐이라 거기에 명령과 키를 넣는다 (`luaDescription`).
+    description: []const u8 = "",
 };
+
+/// #695 — Hyprland 가 읽은 설정의 종류. `hyprctl -j status` 의 `configProvider` 가
+/// `"lua"` 면 `.lua`, 그 밖에는 (`"hyprlang"` · 필드가 없는 옛 Hyprland) `.legacy` 다.
+const HyprlandParser = enum { legacy, lua };
 
 const hypr_mod_shift: u32 = 1;
 const hypr_mod_ctrl: u32 = 4;
@@ -170,21 +188,42 @@ fn containsString(items: []const []u8, needle: []const u8) bool {
     return false;
 }
 
+/// sync 가 다루는 우리 binding — 지울 때 쓸 키 문자열과 그 binding 이 부르는 명령.
+const ManagedHyprlandBind = struct {
+    keys: []const u8,
+    command: []const u8,
+};
+
+fn managedHyprlandBinding(buf: []u8, binding: HyprlandBind, exe: []const u8, parser: HyprlandParser) ?ManagedHyprlandBind {
+    return switch (parser) {
+        .lua => parseLuaDescription(binding.description, exe),
+        .legacy => .{
+            .keys = managedHyprlandAccel(buf, binding, exe) orelse return null,
+            .command = binding.arg,
+        },
+    };
+}
+
 fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]const u8 {
     if (!std.mem.eql(u8, binding.dispatcher, "exec")) return null;
-    if (binding.keycode != 0 or binding.key.len == 0) return null;
-    if ((binding.modmask & ~hypr_supported_mods) != 0) return null;
     if (!managedToggleCommand(binding.arg, exe)) return null;
+    // #695 — 위치 binding (`keycode != 0`) 도 우리 것이다. 예전에는 여기서 걸러져 "있음"
+    // 판정을 못 받고, launcher 를 띄울 때마다 같은 binding 을 하나씩 더 걸었다.
+    return foreignHyprlandAccel(buf, binding);
+}
 
-    var fbs: std.Io.Writer = .fixed(buf);
-    const writer = &fbs;
-    if ((binding.modmask & hypr_mod_ctrl) != 0) writer.writeAll("CTRL ") catch return null;
-    if ((binding.modmask & hypr_mod_shift) != 0) writer.writeAll("SHIFT ") catch return null;
-    if ((binding.modmask & hypr_mod_alt) != 0) writer.writeAll("ALT ") catch return null;
-    if ((binding.modmask & hypr_mod_super) != 0) writer.writeAll("SUPER ") catch return null;
-    writer.writeByte(',') catch return null;
-    writer.writeAll(binding.key) catch return null;
-    return fbs.buffered();
+/// `<명령> · <키>` — Lua binding 의 `description`. 명령으로 legacy 와 같은 기준 (지금 실행
+/// 파일의 `--toggle N` 만 우리 것) 을 지키고, 키는 지울 때 `hl.unbind` 에 그대로 준다.
+/// 위치 binding 은 JSON 에 키가 안 나오므로 여기서 읽는 수밖에 없다.
+const lua_description_separator = " · ";
+
+fn parseLuaDescription(description: []const u8, exe: []const u8) ?ManagedHyprlandBind {
+    const at = std.mem.lastIndexOf(u8, description, lua_description_separator) orelse return null;
+    const command = description[0..at];
+    const keys = description[at + lua_description_separator.len ..];
+    if (keys.len == 0) return null;
+    if (!managedToggleCommand(command, exe)) return null;
+    return .{ .keys = keys, .command = command };
 }
 
 fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
@@ -198,19 +237,133 @@ fn managedToggleCommand(arg: []const u8, exe: []const u8) bool {
     return true;
 }
 
-fn runHyprlandKeyword(rt: Runtime, keyword: []const u8, value: []const u8) !bool {
-    // #451 — `process.Child.init` + `spawn` ➡️ `process.spawn(io, options)` (릴리즈 노트
-    // *Process*). stdio 값이 소문자로 바뀌었다 (`.Ignore` ➡️ `.ignore`). allocator 를 안
-    // 받으므로 예전 인자가 사라진다.
-    var child = try std.process.spawn(rt.io, .{
-        .argv = &.{ "hyprctl", "keyword", keyword, value },
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
+/// #695 — `hyprctl -j status` 의 `configProvider` 로 설정 종류를 묻는다. 물어보지 못하면
+/// (옛 Hyprland 라 필드가 없거나 `hyprctl` 이 실패) legacy 로 본다 — 예전 동작 그대로다.
+fn readHyprlandParser(rt: Runtime, allocator: std.mem.Allocator) HyprlandParser {
+    const result = std.process.run(allocator, rt.io, .{
+        .argv = &.{ "hyprctl", "-j", "status" },
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    }) catch return .legacy;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return .legacy,
+        else => return .legacy,
+    }
+    return parserFromStatusJson(allocator, result.stdout);
+}
+
+fn parserFromStatusJson(allocator: std.mem.Allocator, json: []const u8) HyprlandParser {
+    const Status = struct { configProvider: []const u8 = "" };
+    const parsed = std.json.parseFromSlice(Status, allocator, json, .{
+        .ignore_unknown_fields = true,
+    }) catch return .legacy;
+    defer parsed.deinit();
+    return if (std.mem.eql(u8, parsed.value.configProvider, "lua")) .lua else .legacy;
+}
+
+fn bindHyprland(rt: Runtime, allocator: std.mem.Allocator, parser: HyprlandParser, keys: []const u8, command: []const u8) !bool {
+    switch (parser) {
+        .legacy => {
+            const value = try std.fmt.allocPrint(allocator, "{s},exec,{s}", .{ keys, command });
+            defer allocator.free(value);
+            return runHyprctl(rt, allocator, &.{ "hyprctl", "keyword", "bind", value });
+        },
+        .lua => {
+            const code = try luaBindCode(allocator, keys, command);
+            defer allocator.free(code);
+            return runHyprctl(rt, allocator, &.{ "hyprctl", "eval", code });
+        },
+    }
+}
+
+fn unbindHyprland(rt: Runtime, allocator: std.mem.Allocator, parser: HyprlandParser, keys: []const u8) !bool {
+    switch (parser) {
+        .legacy => return runHyprctl(rt, allocator, &.{ "hyprctl", "keyword", "unbind", keys }),
+        .lua => {
+            const code = try luaUnbindCode(allocator, keys);
+            defer allocator.free(code);
+            return runHyprctl(rt, allocator, &.{ "hyprctl", "eval", code });
+        },
+    }
+}
+
+/// #695 — **성공은 응답이 `ok` 인 것뿐이다.** `hyprctl` 은 응답이 `error:` 로 시작할 때만
+/// 0 이 아닌 종료 코드를 낸다 (`hyprctl/src/main.cpp`). 그래서 Lua 설정의 `keyword` 거부
+/// 문구도, legacy 설정의 `eval is only supported with the lua config manager` 도 종료
+/// 코드는 0 이다. 예전 구현은 종료 코드만 봐서 그 실패를 성공으로 셌다.
+fn runHyprctl(rt: Runtime, allocator: std.mem.Allocator, argv: []const []const u8) !bool {
+    const result = try std.process.run(allocator, rt.io, .{
+        .argv = argv,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
     });
-    return switch (try child.wait(rt.io)) {
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    const reply = std.mem.trim(u8, result.stdout, " \t\r\n");
+    const exited_ok = switch (result.term) {
         .exited => |code| code == 0,
         else => false,
+    };
+    if (exited_ok and isHyprctlOk(reply)) return true;
+    log.appendLine("hyprland", "hyprctl {s} rejected: {s}", .{ argv[1], reply[0..@min(reply.len, 200)] });
+    return false;
+}
+
+fn isHyprctlOk(reply: []const u8) bool {
+    return std.mem.eql(u8, std.mem.trim(u8, reply, " \t\r\n"), "ok");
+}
+
+/// Lua 설정의 등록 코드 — `hl.bind(keys, hl.dsp.exec_cmd(command), { description = … })`.
+/// 객체를 돌려받아 나중에 `remove()` 하는 길은 쓰지 않는다. 같은 객체를 두 번 지우면
+/// Hyprland 0.56.2 가 죽는다 (#695 조사 중 실측 — compositor 가 SIGABRT 로 내려갔다).
+fn luaBindCode(allocator: std.mem.Allocator, keys: []const u8, command: []const u8) ![]u8 {
+    const description = try std.fmt.allocPrint(allocator, "{s}" ++ lua_description_separator ++ "{s}", .{ command, keys });
+    defer allocator.free(description);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "hl.bind(");
+    try appendLuaString(&out, allocator, keys);
+    try out.appendSlice(allocator, ", hl.dsp.exec_cmd(");
+    try appendLuaString(&out, allocator, command);
+    try out.appendSlice(allocator, "), { description = ");
+    try appendLuaString(&out, allocator, description);
+    try out.appendSlice(allocator, " })");
+    return out.toOwnedSlice(allocator);
+}
+
+/// `hl.unbind` 는 공백 · 대소문자를 무시하고 **같은 표시 문자열의 binding 을 전부** 지운다
+/// (Hyprland `KeybindManager.cpp`). 같은 조합에 사용자가 건 binding 도 함께 지워질 수 있는데,
+/// 그 조합은 #510 충돌 안내가 이미 알리는 경우라 감수한다 (#695 사용자 결정).
+fn luaUnbindCode(allocator: std.mem.Allocator, keys: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "hl.unbind(");
+    try appendLuaString(&out, allocator, keys);
+    try out.append(allocator, ')');
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendLuaString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    try out.append(allocator, '"');
+    for (value) |c| switch (c) {
+        '\\', '"' => {
+            try out.append(allocator, '\\');
+            try out.append(allocator, c);
+        },
+        '\n' => try out.appendSlice(allocator, "\\n"),
+        '\r' => try out.appendSlice(allocator, "\\r"),
+        else => try out.append(allocator, c),
+    };
+    try out.append(allocator, '"');
+}
+
+/// sync 가 쓰는 키 문자열 — legacy 는 `CTRL SHIFT ,F12`, Lua 는 `CTRL + SHIFT + F12`.
+fn hyprlandBindKeys(buf: []u8, hotkey: config.Hotkey, parser: HyprlandParser) ![]const u8 {
+    return switch (parser) {
+        .legacy => hyprlandAccel(buf, hotkey),
+        .lua => hyprlandLuaKeys(buf, hotkey),
     };
 }
 
@@ -222,17 +375,36 @@ pub fn hyprlandAccel(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
     if ((hotkey.modifiers & config.Hotkey.MOD_ALT) != 0) try writer.writeAll("ALT ");
     if ((hotkey.modifiers & config.Hotkey.MOD_SUPER) != 0) try writer.writeAll("SUPER ");
     try writer.writeByte(',');
+    try writeHyprlandKey(writer, hotkey);
+    return fbs.buffered();
+}
+
+/// #695 — Lua `hl.bind` 의 키 문자열. `+` 로 나누고 토큰의 공백은 무시하며, 수식키가 키보다
+/// 먼저 와야 한다 (Hyprland `LuaBindingsToplevel.cpp`). 수식키 순서는 legacy 와 같게 고정한다
+/// — `hl.unbind` 는 순서가 다른 문자열로는 못 지우면서도 `ok` 를 돌려준다 (#695 조사 실측).
+fn hyprlandLuaKeys(buf: []u8, hotkey: config.Hotkey) ![]const u8 {
+    var fbs: std.Io.Writer = .fixed(buf);
+    const writer = &fbs;
+    if ((hotkey.modifiers & config.Hotkey.MOD_CTRL) != 0) try writer.writeAll("CTRL + ");
+    if ((hotkey.modifiers & config.Hotkey.MOD_SHIFT) != 0) try writer.writeAll("SHIFT + ");
+    if ((hotkey.modifiers & config.Hotkey.MOD_ALT) != 0) try writer.writeAll("ALT + ");
+    if ((hotkey.modifiers & config.Hotkey.MOD_SUPER) != 0) try writer.writeAll("SUPER + ");
+    try writeHyprlandKey(writer, hotkey);
+    return fbs.buffered();
+}
+
+fn writeHyprlandKey(writer: *std.Io.Writer, hotkey: config.Hotkey) !void {
     // #496 1-c — 위치 표기는 `code:NN` 으로 그대로 넘긴다. **keymap 을 물어볼 필요가
     // 없어서** 이 launcher 단계에서도 된다 (COSMIC 은 keysym 만 받아 그렇지 못하다).
+    // Lua `hl.bind` 도 같은 `code:NN` 을 받는다 (#695 조사 실측).
     //
     // **숫자는 xkb keycode (= evdev + 8) 다.** Hyprland 위키가 `code:28` 을 `t` 키의
     // 예로 드는데 `t` 는 evdev 20 이다. sway `bindcode` 와 같은 번호 체계다.
     if (hotkey.code) |code| {
         try writer.print("code:{d}", .{physical_key.evdev(code) + 8});
-        return fbs.buffered();
+        return;
     }
     try writer.writeAll(config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
-    return fbs.buffered();
 }
 
 test "#496 1-c Hyprland takes a position as code:NN in xkb numbering" {
@@ -301,6 +473,94 @@ test "Hyprland binds JSON keeps the fields needed for cleanup" {
     try std.testing.expectEqual(@as(usize, 1), parsed.value.len);
     var buf: [96]u8 = undefined;
     try std.testing.expectEqualStrings(",F3", managedHyprlandAccel(&buf, parsed.value[0], "/home/test/tildaz").?);
+}
+
+test "#695 configProvider decides Lua or legacy" {
+    const a = std.testing.allocator;
+    // 미니PC · Hyprland 0.56.2 · `hyprland.lua` 세션의 실제 응답.
+    try std.testing.expectEqual(HyprlandParser.lua, parserFromStatusJson(a,
+        \\{
+        \\    "configProvider": "lua",
+        \\    "backend": "drm"
+        \\}
+    ));
+    try std.testing.expectEqual(HyprlandParser.legacy, parserFromStatusJson(a, "{\"configProvider\": \"hyprlang\"}"));
+    // 옛 Hyprland 는 필드가 없다 — 예전 동작 (legacy) 을 지킨다.
+    try std.testing.expectEqual(HyprlandParser.legacy, parserFromStatusJson(a, "{\"backend\": \"drm\"}"));
+    try std.testing.expectEqual(HyprlandParser.legacy, parserFromStatusJson(a, "unknown request"));
+}
+
+test "#695 Lua keys keep the legacy modifier order and the code:NN position form" {
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("CTRL + SHIFT + F12", try hyprlandLuaKeys(&buf, config.Hotkey.fromString("ctrl+shift+f12").?));
+    try std.testing.expectEqualStrings("F1", try hyprlandLuaKeys(&buf, config.Hotkey.fromString("F1").?));
+    try std.testing.expectEqualStrings("CTRL + code:28", try hyprlandLuaKeys(&buf, config.Hotkey.fromString("ctrl+[KeyT]").?));
+    // legacy 판은 그대로다.
+    try std.testing.expectEqualStrings("CTRL SHIFT ,F12", try hyprlandBindKeys(&buf, config.Hotkey.fromString("ctrl+shift+f12").?, .legacy));
+}
+
+test "#695 Lua bind and unbind code quote their strings" {
+    const a = std.testing.allocator;
+    const bind = try luaBindCode(a, "CTRL + F3", "/home/test/tildaz --toggle 2");
+    defer a.free(bind);
+    try std.testing.expectEqualStrings(
+        "hl.bind(\"CTRL + F3\", hl.dsp.exec_cmd(\"/home/test/tildaz --toggle 2\"), { description = \"/home/test/tildaz --toggle 2 · CTRL + F3\" })",
+        bind,
+    );
+    // 경로의 따옴표 · 역슬래시가 Lua 문자열을 깨지 않는다.
+    const odd = try luaBindCode(a, "F3", "/opt/a\"b\\c/tildaz --toggle 0");
+    defer a.free(odd);
+    try std.testing.expect(std.mem.indexOf(u8, odd, "exec_cmd(\"/opt/a\\\"b\\\\c/tildaz --toggle 0\")") != null);
+
+    const unbind = try luaUnbindCode(a, "CTRL + code:113");
+    defer a.free(unbind);
+    try std.testing.expectEqualStrings("hl.unbind(\"CTRL + code:113\")", unbind);
+}
+
+test "#695 Lua bindings are ours only by the description marker of this executable" {
+    const exe = "/home/test/tildaz";
+    const ours = parseLuaDescription("/home/test/tildaz --toggle 9 · CTRL + code:113", exe).?;
+    try std.testing.expectEqualStrings("CTRL + code:113", ours.keys);
+    try std.testing.expectEqualStrings("/home/test/tildaz --toggle 9", ours.command);
+    // 다른 실행 파일 (dev ↔ 릴리즈) 의 binding 은 우리 것이 아니다 — legacy 와 같은 기준.
+    try std.testing.expect(parseLuaDescription("/usr/bin/tildaz --toggle 0 · F1", exe) == null);
+    // 사용자 binding 의 설명 · 표식 없는 설명.
+    try std.testing.expect(parseLuaDescription("Open terminal", exe) == null);
+    try std.testing.expect(parseLuaDescription("/home/test/tildaz --toggle 9 · ", exe) == null);
+    try std.testing.expect(parseLuaDescription("", exe) == null);
+}
+
+test "#695 sync recognises our Lua and legacy position bindings from binds JSON" {
+    const a = std.testing.allocator;
+    // Lua 로 건 binding 의 실제 모양 — `__lua` · registry 번호 · 위치 binding 은 키가 빈다.
+    const json =
+        \\[{"modmask":4,"key":"","keycode":0,"dispatcher":"__lua","arg":"23","submap":"","description":"/home/test/tildaz --toggle 9 · CTRL + code:113"},
+        \\ {"modmask":64,"key":"Q","keycode":0,"dispatcher":"__lua","arg":"5","submap":"","description":""},
+        \\ {"modmask":4,"key":"","keycode":49,"dispatcher":"exec","arg":"/home/test/tildaz --toggle 1","submap":"","description":""}]
+    ;
+    const parsed = try std.json.parseFromSlice([]HyprlandBind, a, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const exe = "/home/test/tildaz";
+    var buf: [96]u8 = undefined;
+
+    const lua = managedHyprlandBinding(&buf, parsed.value[0], exe, .lua).?;
+    try std.testing.expectEqualStrings("CTRL + code:113", lua.keys);
+    try std.testing.expect(managedHyprlandBinding(&buf, parsed.value[1], exe, .lua) == null);
+
+    // legacy 의 위치 binding — 예전에는 여기서 null 이라 매 실행 중복이 쌓였다.
+    const legacy = managedHyprlandBinding(&buf, parsed.value[2], exe, .legacy).?;
+    try std.testing.expectEqualStrings("CTRL ,code:49", legacy.keys);
+    try std.testing.expectEqualStrings("/home/test/tildaz --toggle 1", legacy.command);
+}
+
+test "#695 only an ok reply counts as success" {
+    try std.testing.expect(isHyprctlOk("ok"));
+    try std.testing.expect(isHyprctlOk("ok\n"));
+    // 둘 다 종료 코드 0 으로 온다 (실측 · `hyprctl/src/main.cpp`).
+    try std.testing.expect(!isHyprctlOk("keyword can't work with non-legacy parsers. Use eval."));
+    try std.testing.expect(!isHyprctlOk("eval is only supported with the lua config manager"));
+    try std.testing.expect(!isHyprctlOk("error: [string \"hl.bind(...)\"]:1: bad key"));
+    try std.testing.expect(!isHyprctlOk(""));
 }
 
 test "COSMIC entries are identified by our own description marker, not the command" {
@@ -964,11 +1224,20 @@ pub fn hyprlandForeignBinding(
         // (`main.zig` 의 `shortcut_sync.sync` → `spawnWorker` 순서) 이 목록에는 방금
         // 넣은 우리 binding 이 반드시 들어 있다.
         if (std.mem.eql(u8, binding.dispatcher, "exec") and managedToggleCommand(binding.arg, exe)) continue;
+        // #695 — Lua 로 건 우리 binding 은 `exec` 가 아니라 `__lua` 로 보여서, 표식
+        // (`description`) 으로 거른다. 안 거르면 방금 건 우리 토글을 남의 것으로 안내한다.
+        if (parseLuaDescription(binding.description, exe) != null) continue;
 
         var got_buf: [96]u8 = undefined;
         const got = foreignHyprlandAccel(&got_buf, binding) orelse continue;
         if (!std.ascii.eqlIgnoreCase(got, want)) continue;
 
+        // Lua binding 의 `arg` 는 registry 번호라 읽는 사람에게 뜻이 없다. 설명이 있으면 그것을 보인다.
+        if (std.mem.eql(u8, binding.dispatcher, "__lua")) {
+            const what = if (binding.description.len != 0) binding.description else "Lua binding";
+            return std.fmt.bufPrint(out_buf, "{s} → {s}", .{ want, what }) catch
+                std.fmt.bufPrint(out_buf, "{s} → Lua binding", .{want}) catch null;
+        }
         return std.fmt.bufPrint(out_buf, "{s} → {s} {s}", .{ want, binding.dispatcher, binding.arg }) catch
             std.fmt.bufPrint(out_buf, "{s} → {s}", .{ want, binding.dispatcher }) catch null;
     }
