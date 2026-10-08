@@ -1,4 +1,5 @@
 const pane_layout = @import("pane_layout.zig");
+const terminal_size = @import("font/terminal_size.zig");
 
 pub const Event = union(enum) {
     text_input: u21,
@@ -63,6 +64,8 @@ pub const Shortcut = union(enum) {
     close_pane: void,
     /// #646 — 활성 pane 의 검색바를 연다.
     find: void,
+    /// #693 — 터미널 글자 크기를 창 전체에서 바꾼다.
+    font_size: terminal_size.Change,
 };
 
 pub const KeyInput = enum {

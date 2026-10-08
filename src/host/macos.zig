@@ -27,6 +27,7 @@ const mouse_report = @import("../mouse_report.zig");
 const key_encode = @import("../key_encode.zig");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
+const terminal_size = @import("../font/terminal_size.zig");
 // macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
 const mac_renderer = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
@@ -462,6 +463,8 @@ var g_app: objc.id = null;
 var g_window: objc.id = null;
 var g_visible: bool = false;
 var g_config: config.Config = .{};
+/// #693 — 터미널 글자 크기. renderer 를 만들기 직전에 `g_config` 로 채운다.
+var g_font_size: terminal_size.TerminalFontSize = undefined;
 
 // --- #496 항목 2 — 라벨 매칭이 쓰는 layout 상태 ---
 //
@@ -1554,6 +1557,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
         .close_pane => handleClosePane(),
         .find => handleFind(),
+        .font_size => handleFontSize(mapped.font_size orelse return false),
     }
     return true;
 }
@@ -2900,13 +2904,13 @@ fn syncGeometryAfterScreenChange() void {
     // 3. Renderer viewport 갱신 + (#253) scale 이 실제로 바뀌었으면 폰트 cell
     //    재측정 + glyph atlas 재구성 + renderer scale 갱신. 다른 scale(DPI) 모니터로
     //    이동하면 cell/glyph/UI metric 이 init scale 에 고정돼 글자·탭바가 배율만큼
-    //    틀어지므로(Windows rebuildFontForDpi / Linux applyScale 동등) 여기서 보정.
+    //    틀어지므로 여기서 보정 (세 platform 공통 `rebuildFonts`).
     //    같은 scale 이동은 viewport 만 바꾸면 됨(atlas 재생성 낭비 회피).
     const vp_w_px: u32 = @trunc(cv_bounds.size.width * scale_pt);
     const vp_h_px: u32 = @trunc(cv_bounds.size.height * scale_pt);
     if (@as(f32, @floatCast(scale_pt)) != g_renderer.?.scale) {
-        g_renderer.?.applyScale(@floatCast(scale_pt)) catch |err| {
-            log.appendLine("geom", "applyScale failed: {s} — skipping cell re-measure", .{@errorName(err)});
+        g_renderer.?.rebuildFonts(g_font_size.spec(), @floatCast(scale_pt)) catch |err| {
+            log.appendLine("geom", "rebuildFonts failed: {s} — skipping cell re-measure", .{@errorName(err)});
         };
     }
     g_renderer.?.resize(vp_w_px, vp_h_px);
@@ -4218,6 +4222,31 @@ fn handleZoomPane() void {
     afterPaneLayoutChange();
 }
 
+/// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 (`rebuildFonts` — 배율 변경과 같은
+/// 함수) 모든 탭의 격자를 맞춘다. 사본에 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도
+/// renderer 도 그대로다.
+///
+/// `-size` 회차는 무시한다 — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를
+/// 지킬 수 없다 (세 platform 공통 · Linux `handleFontSize`).
+fn handleFontSize(change: terminal_size.Change) void {
+    if (g_renderer == null) return;
+    if (g_run_opts.grid != null) {
+        log.logFontSizeIgnoredForFixedGrid(@tagName(change));
+        return;
+    }
+    var next = g_font_size;
+    if (!next.apply(change)) return;
+    const r = &g_renderer.?;
+    r.rebuildFonts(next.spec(), r.scale) catch |err| {
+        log.appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), g_font_size.size_logical });
+        return;
+    };
+    g_font_size = next;
+    syncTerminalGeometry();
+    log.logFontSize(@tagName(change), g_font_size.size_logical, r.font.cell_width_px, r.font.cell_height_px);
+    afterPaneLayoutChange();
+}
+
 /// `+` 클릭 — Option(Alt) 을 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례).
 /// 방향은 pane 모양대로 — 넓으면 오른쪽, 높으면 아래.
 fn handlePlusClick(event: objc.id) void {
@@ -4804,13 +4833,14 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // active terminal 에 background가 없는 예외에 쓸 renderer fallback.
     // 정상 frame은 terminal의 현재 값(OSC 11 포함)을 renderTabBar에 전달한다.
     const theme_bg: ?[3]u8 = if (g_config.theme) |t| .{ t.background.r, t.background.g, t.background.b } else null;
+    g_font_size = terminal_size.TerminalFontSize.init(g_config.terminalFontSpec());
     g_renderer = renderer_module.RendererBackend.init(
         g_rt,
         allocator,
         device,
         layer,
         font_family_slice,
-        g_config.terminalFontSpec(),
+        g_font_size.spec(),
         theme_bg,
         @floatCast(scale_pt),
     ) catch |err| switch (err) {

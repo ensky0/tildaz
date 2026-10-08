@@ -104,6 +104,13 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 멈춰요. 그리고 세션이 하나뿐이어도 **커밋 직전에 `git diff --cached` 로 검증한 내용과 담는 내용이
 같은지** 봐요 — 검증과 커밋 사이에 파일이 바뀌면 검증은 무효예요.
 
+**지금 이 기기의 OS 에서는 실기로 먼저 확인하고 나서 커밋 · push · 댓글을 해요** (2026-10-02 사용자 지시:
+*"이 머신이 mac인데 적어도 mac에서는 테스트 하고 올려. 댓글이든 커밋 푸시든"*). 빌드 · 단위 테스트
+통과만으로 커밋해 push 하고 실기 확인을 뒤로 미루지 않아요 — 그날 #693 2단계를 macOS 기기에서
+`zig build test` 만 보고 push 했다가 지적받았어요. 이 기기에 없는 OS 는 아래 규칙대로 이슈에 남겨요.
+돌려 보지 못한 부분이 있으면 커밋 메시지와 댓글에 **무엇을 실기로 봤고 무엇은 단위 테스트로만 봤는지**
+갈라 적어요.
+
 **PR 은 Linux · macOS · Windows 세 OS 검증을 마친 뒤에 올려요** (2026-09-11 사용자 지시). 한 기기에서
 통과한 것으로 PR 을 올리면, 나머지 두 OS 의 결과가 리뷰 뒤에 (또는 머지 뒤에) 따라와요 —
 고칠 것이 나오면 이미 올린 PR 위에 커밋이 쌓이고, 그건 위의 *"PR 은 마지막에 한 번만"* 규칙과도
@@ -127,6 +134,7 @@ git rebase origin/main
 ```
 
 - **rebase 뒤에 검증을 다시 돌려요.** rebase 전에 통과한 `zig build check` / `zig build test` 는 base 가 바뀐 순간 무효예요. 충돌 없이 조용히 rebase 되면 "이미 통과했다" 고 착각하기 쉬운데, 그러면 rebase 가 만든 어긋남을 CI 가 처음 발견해요.
+- **커밋 본문 줄을 `#` 로 시작하지 않아요.** rebase 충돌을 풀고 `--continue` 하거나 amend 로 편집기를 거치면, git 이 `#` 로 시작하는 줄을 주석으로 보고 지워요 (편집기를 거칠 때 기본 cleanup 이 `strip` 이에요). 2026-10-08 [#693](https://github.com/ensky0/tildaz/issues/693) 에서 본문 첫 줄 `#679 요청이에요 …` 가 그렇게 사라졌고, Windows 기기에서 되살려 force push 했어요. 줄을 이슈 번호로 시작해야 하면 앞에 글자를 둬요 (`이슈 #679 …`). rebase 뒤에 `git range-diff <base>..<옛 tip> <base>..<새 tip>` 으로 견주면 메시지가 바뀐 커밋이 `!` 로 보여요.
 - **merge 가 아니라 rebase 예요.** PR 브랜치에 main 을 merge 하면 무관한 merge commit 이 섞여 리뷰가 흐려져요. merge commit 은 GitHub 이 PR 을 머지할 때 하나만 생기는 게 맞아요.
 - rebase 뒤 force push 는 자유롭게 해요 — 아래 `# 커밋 메시지` 의 규칙과 같아요 (검증이 끝난 뒤에).
 - 충돌이 문서 (`SPEC.md` · `AGENTS.md` · `CONFIG.md`) 에서 나면 *양쪽 서술을 다시 읽고* 합쳐요. 한쪽을 통째로 고르면 다른 PR 이 쓴 사실이 조용히 사라져요.
@@ -426,7 +434,7 @@ scale source 는 platform 마다 다르지만 **단일 `scale` 값으로 수렴*
   KDE 에서 전면 점유 (100 %) 창을 화면 edge 에서 15 px 떼어 놨어요 — 실기 캡처에서 오른쪽 끝 20 px 의 평균 밝기가
   16.2 (벽지) 였고, 예외를 넣은 뒤 0.0 (창) 이 됐어요. **창이 edge 에 붙는지는 캡처의 끝 열 밝기로 재요.**
 - Linux 변환: `software_terminal.zig` 의 `self.scale` (단일 값). 새 scale source 가 생기면 이
-  값 하나로 수렴시키고 `renderer.applyScale()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
+  값 하나로 수렴시키고 `renderer.rebuildFonts()` 로 폰트·탭바·전체 chrome 을 동기 반영해요.
 - 새 platform / compositor 포팅 시 **scale source 부터** 확인 — 배율 켜고 다른 환경 (mac / KDE)
   과 나란히 띄워 같은 크기로 보이는지 시연으로 검증해요.
 
@@ -463,6 +471,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 | 탭 전환 | `⌘1`–`⌘9` | `Alt+1`–`Alt+9` |
 | pane 균등 | `⇧⌘0` | `Shift+Alt+0` |
 | 분할 | `⌥⌘→` `⌥⌘↓` | `Ctrl+Shift+→` `Ctrl+Shift+↓` |
+| 글자 크기 크게 / 작게 / 되돌리기 | `⌘=` · `⌘-` · `⌘0` (+ `⇧⌘⌫`) | `Ctrl+Shift+=` · `-` · `Backspace` |
 
 - 분할이 `⌃⌘방향` 이 아닌 이유는 macOS 의 Mission Control (`⌃↑` `⌃↓`) 과 부딪혀서고, Linux 에서 `Ctrl+Alt+방향` 을 피한 이유는 GNOME 이 workspace 전환 · 이동에 쓰기 때문이에요 (둘 다 `config.zig` 주석에 근거가 있어요).
 - 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에는 **`PgUp` / `PgDn` 을 함께** 둬요 — AZERTY 에서 bracket 이 `AltGr+5` 라 못 눌러요 ([#482](https://github.com/ensky0/tildaz/issues/482)).
@@ -479,6 +488,19 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 awk '/new_tab => &\.\{"cmd\+t"\}/,/^    \}/' src/config.zig            # macOS 기본값
 awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux · Windows 기본값
 ```
+
+- 글자 크기 ([#693](https://github.com/ensky0/tildaz/issues/693)) 는 macOS 만 OS 전역 표준 자리 (`⌘=` `⌘-` `⌘0`) 를 써요. Linux · Windows 의 되돌리기가 `0` 이 아닌 이유는 Windows 의 IME 직접 전환 단축키가 `Ctrl+Shift+0` 을 가져가서예요 (Windows 실기). macOS 의 `⇧⌘⌫` 는 그 짝이고, 숫자에 Shift 가 필요한 AZERTY 에서 `⌘0` 이 `⇧⌘0` (균등) 에 먹히는 것을 메워요.
+
+## 라벨 키를 더할 때
+
+새 키 이름 (`=` 같은 기호나 `backspace` 같은 특수 키) 을 `[keys]` 가 받게 하려면 **`config.zig` 의 열 곳을 함께** 고쳐요. #682 (`/`) 와 #693 (`=` `-` `plus` `backspace`) 이 같은 열 곳을 거쳤어요. `HotkeyNamedKey` 에 값을 더하면 빠짐없는 `switch` 는 컴파일러가 알려 주지만, 세 곳은 못 잡아요 — 이름 표 (②) 와 `else` 가 있는 두 곳 (③ ⑨).
+
+① `HotkeyNamedKey` 열거형 ② `hotkeyKeyFromName` 의 이름 · 글자 ③ `parseHotkeyString` 의 전역 hotkey 거부 ④ 같은 함수의 `types_text` ⑤ Linux keysym (`keysymFromKey`) ⑥ Windows VK (`vkeyFromKey`) ⑦ macOS 라벨 (`labelFromKey`) ⑧ macOS keycode (`keycodeFromKey`) ⑨ 라틴 fallback (`usPositionForKeysym`) ⑩ 표시 이름 (`bindingDisplay`)
+
+- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 앱의 hotkey 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 쓰므로, 이름을 빼는 쪽으로는 통일할 수 없어요.
+- **키 코드 값은 [`physical_key.zig`](src/physical_key.zig) 표와 맞춰요.** named ↔ code 테스트가 macOS keycode 를 그 표와 대조하고, named 키가 하나라도 빠지면 개수 단언이 걸려요.
+- **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
+- **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.
 
 **액션을 더하면 config 스키마가 바뀌어요.** 기존 `config_N.toml` 에는 그 키가 없으니 **기본 바인딩으로 돌고 시작 안내에 한 줄이 뜹니다** ([#655](https://github.com/ensky0/tildaz/issues/655) 이전에는 `missing required key "<액션>"` 으로 **부팅이 막혔어요** — 원칙 5 가 그것을 뒤집었어요). 부팅을 막지는 않지만 **사용자가 안내를 보는 것은 그대로**라, 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
 
@@ -1083,6 +1105,7 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 ./tool/position-hotkey-check_linux.sh                  # 기본 ctrl+[Backquote]
 ./tool/position-hotkey-check_linux.sh --hotkey 'ctrl+[KeyT]'
 ./tool/position-hotkey-check_linux.sh --keep           # 남겨 두고 직접 눌러 볼 때
+./tool/position-hotkey-check_linux.sh --release        # 릴리즈 판을 잴 때 (기본은 dev 판 — install-dev/)
 ```
 
 `--instance 9` 로만 돌고 (사용자의 일상 인스턴스를 안 건드려요) 끝나면 만든 것을 스스로 지워요 — config · 로그 · KDE (D-Bus) · GNOME/Cinnamon (dconf 항목 **과 목록**) · COSMIC (RON 줄).

@@ -293,6 +293,14 @@ fn specialQtKey(keysym: u32) ?i32 {
         0xff09 => 0x01000001,
         0xff0d => 0x01000004,
         0xff1b => 0x01000000,
+        // #693 — 전역 hotkey 가 받는 나머지 글자 아닌 키. 값은 Qt `qnamespace.h` 의 `Key_PageUp` ·
+        // `Key_PageDown` · `Key_Left` · `Key_Up` · `Key_Right` · `Key_Down` 이다.
+        0xff55 => 0x01000016,
+        0xff56 => 0x01000017,
+        0xff51 => 0x01000012,
+        0xff52 => 0x01000013,
+        0xff53 => 0x01000014,
+        0xff54 => 0x01000015,
         else => null,
     };
 }
@@ -1042,6 +1050,14 @@ test "XKB to Qt key conversion keeps function offsets and modifiers" {
     try std.testing.expectEqual(@as(?i32, 0x16000054), qtKey('t', 0x2 | 0x4 | 0x8, null));
     try std.testing.expectEqual(@as(?i32, 0x20), qtKey(' ', 0, null));
     try std.testing.expectEqual(@as(?i32, 0x60), qtKey('`', 0, null));
+    // #693 — 전역 hotkey 가 받는 PageUp · PageDown · 방향키 (Qt `qnamespace.h`).
+    try std.testing.expectEqual(@as(?i32, 0x01000016), qtKey(0xff55, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000017), qtKey(0xff56, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000012), qtKey(0xff51, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000013), qtKey(0xff52, 0, null));
+    try std.testing.expectEqual(@as(?i32, 0x01000014), qtKey(0xff53, 0, null));
+    // Ctrl (0x2 → 0x04000000) + Shift (0x4 → 0x02000000) + `Key_Down`.
+    try std.testing.expectEqual(@as(?i32, 0x07000015), qtKey(0xff54, 0x2 | 0x4, null));
 
     // #496 1-c — 위치 표기가 들어오면서 임의의 keysym 이 온다. 아래 세 값은 이 머신
     // (CachyOS · KWin 6.7.4) 에서 `gdbus` 로 실제 등록해 확인한 것이다.

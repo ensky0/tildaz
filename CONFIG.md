@@ -326,6 +326,8 @@ here would give it two homes to drift between.
 | | `zoom_pane` | Toggle the active pane to fill the whole tab |
 | | `close_pane` | Close the active pane — the tab, when it is the last pane in it |
 | Search | `find` | Open the search panel for the active pane |
+| Font size | `increase_font_size` `decrease_font_size` | Make the terminal text one point larger or smaller, in every tab and pane of the window |
+| | `reset_font_size` | Go back to `font.size_point`. A restart also goes back |
 | Clipboard | `copy` | Copy the selection |
 | | `paste` | Paste the clipboard |
 | Window | `fullscreen` | Fullscreen, covering the taskbar / dock / panels |
@@ -368,7 +370,8 @@ Use a position when a label cannot reach the key you want:
 |---|---|---|
 | Cyrillic, Greek, Arabic, Hebrew… | no key produces a Latin letter — but see below, TildaZ already handles this on Linux and macOS | `ctrl+shift+[KeyW]` |
 | French AZERTY brackets | `[` is AltGr+5, so the label needs four fingers | `ctrl+shift+[BracketLeft]` |
-| Keys outside the label set | `-` `=` `\` `;` `'` `,` `.` `/`, numpad, arrows | `ctrl+[Minus]` |
+| Keys outside the label set | `\` `;` `'` `,` `.`, numpad | `ctrl+[Semicolon]` |
+| A symbol key on Windows with a non-US layout | see *Symbol keys on Windows* below | `ctrl+shift+[Minus]` |
 
 Positions and labels can be mixed freely, including within one action's list.
 
@@ -388,19 +391,30 @@ the equivalent work.
 
 **By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
 `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
-`Up` / `Down` (the arrow keys — the split-pane defaults use them), `` ` `` (also
-`Grave` / `Backquote`), `[` (also `BracketLeft`), `]` (also `BracketRight`),
-`/`. Case does not matter. Anything else is dropped at startup and named in the
+`Up` / `Down` (the arrow keys — the split-pane defaults use them), `Backspace`,
+and these symbols:
+
+| Symbol | Write it as |
+|---|---|
+| `` ` `` | `` ` `` or `Grave` / `Backquote` |
+| `[` `]` | `[` `]` or `BracketLeft` / `BracketRight` |
+| `/` | `/` or `Slash` |
+| `=` | `=` or `Equal` |
+| `-` | `-` or `Minus` |
+| `+` | `Plus` only — `+` already separates the keys |
+
+Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
 that one entry goes; the other keys you gave the action still work, and an action
-left with nothing falls back to its default binding.
+left with nothing falls back to its default binding. The symbols and `Backspace`
+work in `[keys]` only, not in `hotkey`.
 
-The label set is deliberately narrow. Widening it would mean giving `-` a value,
-and the only fixed values available (`VK_OEM_MINUS`, `kVK_ANSI_Minus`) are not
-labels at all — they are "the spot where US QWERTY has `-`". Calling that a
-label would make the same config mean different keys on different platforms.
-Positions are honest about being positions, so that is where the extra keys
-live.
+**Symbol keys on Windows.** On Linux and macOS a symbol label matches the key
+that types that character on your layout. Windows does not report the character
+for a shortcut, only a key code the layout assigns (`VK_OEM_MINUS` and so on). On
+most layouts that is the key showing the symbol, but some layouts put the code
+on a different key. If a symbol shortcut fires from the wrong key on Windows, use
+the position form instead.
 
 **By position**: every key a keyboard can send, in square brackets.
 
@@ -490,8 +504,9 @@ invalid value falls back to the default hotkey and is named in the dialog):
   `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
   `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
   (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
-  matter. This is the label set `[keys]` accepts, minus `/` — otherwise the
-  two differ in what they allow *without* a modifier, not in which keys they know.
+  matter. This is the label set `[keys]` accepts, minus `Backspace` and the
+  symbols `/` `=` `-` `+` — otherwise the two differ in what they allow *without*
+  a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:
   it is the set every platform's native hotkey backend is known to map the same

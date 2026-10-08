@@ -998,12 +998,12 @@ pub const D3d11Renderer = struct {
     }
 
     /// Rebuild the DirectWrite font context + glyph atlas at the window's
-    /// current DPI. Called after `window.rebuildFontForDpi` has updated
+    /// current DPI. #693 — 세 platform 공통 이름이다. Called after `Window.rebuildFonts` has updated
     /// `cell_w` / `cell_h`, so the atlas rasterizes glyphs at the new
     /// monitor's physical pixel density instead of the init-time DPI.
     ///
     /// On failure the previous renderer resources remain active.
-    pub fn rebuildFont(
+    pub fn rebuildFonts(
         self: *D3d11Renderer,
         hwnd: ?*anyopaque,
         font_chain: []const [*:0]const u16,

@@ -25,6 +25,7 @@ const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
 const font_constants = @import("font/constants.zig");
 const font_spec = @import("font/spec.zig");
+const terminal_size = @import("font/terminal_size.zig");
 const physical_key = @import("physical_key.zig");
 const command_menu = @import("command_menu.zig");
 const input_policy = @import("input_policy.zig");
@@ -164,6 +165,16 @@ const HotkeyNamedKey = enum {
     /// `[` 와 같은 대접이다 — Shift 를 적으면 기존 규칙대로 무시프트 값으로도 맞는다
     /// (`lookupAction` 의 `try_unshifted`). `[keys]` 에서만 받는다.
     slash,
+    /// #693 — 글자 크기 단축키 (`increase_font_size` 등) 가 쓴다. `/` 와 같은 대접이다 —
+    /// 글자 (`=` · `-`) 와 이름 (`equal` · `minus`) 둘 다 받고, `[keys]` 에서만 받고, Shift 를
+    /// 적으면 무시프트 값으로도 맞는다. 그래서 US 의 `ctrl+shift+=` (라벨 `+`) 가 `=` 로 맞는다.
+    equal,
+    minus,
+    /// `+` 는 구분자라 글자로 적을 수 없어 이름 (`plus`) 으로만 받는다 (kitty 와 같은 이름).
+    /// 독일어처럼 `+` 키가 따로 있는 배열용이다 — US 에서는 `=` 자리의 Shift 값이다.
+    plus,
+    /// 글자를 내지 않지만 PTY 로 DEL 을 보낸다 — 방향키처럼 modifier 가 필요하다.
+    backspace,
 };
 
 const HotkeyKeyToken = union(enum) {
@@ -263,7 +274,11 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // #682 — `/` 는 `[keys]` 전용이다. 전역 hotkey 는 데스크톱마다 등록 이름이 따로
     // 필요한데 (`linuxKeysymName` 등) 그 표를 확인하지 않았다. 조용히 미등록으로 두지
     // 않고 모르는 키로 거부한다 (#208).
-    if (scope == .global_hotkey and resolved == .named and resolved.named == .slash) return .unknown_key;
+    // #693 — 글자 크기 키 넷도 같은 이유로 `[keys]` 전용이다.
+    if (scope == .global_hotkey and resolved == .named) switch (resolved.named) {
+        .slash, .equal, .minus, .plus, .backspace => return .unknown_key,
+        else => {},
+    };
     // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
     // 사용자가 config 를 몇 번이고 다시 읽게 된다 (#208 이 막으려던 것).
     if (is_macos and resolved == .code and !physical_key.availableOnThisPlatform(resolved.code)) {
@@ -321,6 +336,9 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 // 글자를 내는 키 — modifier 없이 바인딩하면 터미널에 그 글자를 칠 수
                 // 없게 된다.
                 .grave, .bracket_left, .bracket_right, .slash => true,
+                // #693 — `=` · `-` · `+` 는 글자를 내고, Backspace 는 PTY 로 DEL 을 보낸다.
+                // 넷 다 modifier 없이 바인딩하면 그 키를 터미널에 칠 수 없다.
+                .equal, .minus, .plus, .backspace => true,
                 // #483 — 방향키는 글자를 내지 않지만 터미널에 escape sequence 를 보낸다 —
                 // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
                 // `else => true` 와 같은 취급이다.
@@ -351,15 +369,18 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
 
 /// 키 이름 토큰 → 정규화된 key. 두 표기 모두 받음 (사용자 친화):
 ///   - 이름: `f1`, `grave` / `backquote`, `space`, `tab`, `escape` / `esc`,
-///     `return` / `enter`
-///   - literal: `` ` ``, ASCII letter (a-z / A-Z), digit (0-9)
+///     `return` / `enter`, `bracketleft` · `bracketright` · `slash` · `equal` · `minus` ·
+///     `plus` · `backspace`
+///   - literal: `` ` `` `[` `]` `/` `=` `-`, ASCII letter (a-z / A-Z), digit (0-9)
 ///
-/// **수용 범위는 Linux native backend가 공통으로 변환하는 key set과 1:1** (#208).
-/// 이전엔 Linux가 ASCII symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나
-/// backend key-name 매핑 부재로 `"F1"` silent fallback이 발생했다. 명시 reject로
-/// caller(config load)의 `dialog.showFatal` 경로를 활성화해 잘못된 binding을
-/// 조용히 만드는 일을 막는다. literal symbol 확대는 모든 native backend의
-/// 실제 key-code 매핑을 검증하는 별도 작업이다.
+/// **기호 키는 글자와 이름을 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다.
+///
+/// **받는 키는 세 platform 의 키 코드 표가 다 아는 것만이다** (#208). 이전엔 Linux가 ASCII
+/// symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나 backend key-name 매핑 부재로 `"F1"` silent
+/// fallback이 발생했다. 표에 없는 키를 명시 reject해 잘못된 binding을 조용히 만드는 일을
+/// 막는다. 키를 더하려면 세 표와 표시 이름을 함께 채운다 (AGENTS.md `# 새 단축키 기본값
+/// 고르기` 의 라벨 키 절). `/` · `=` · `-` · `+` · `backspace` 는 `[keys]` 전용이다 — 전역
+/// hotkey 로는 데스크톱 등록 이름을 확인하지 않았다 (`parseHotkeyString`).
 fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
         .{ .name = "f1", .key = .f1 },                    .{ .name = "f2", .key = .f2 },
@@ -377,6 +398,9 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // layout 종속 문제가 없다 (#482).
         .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
         .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
+        // #693 — XKB 이름. Linux 의 hotkey 캡처가 이 이름으로 config 를 쓴다 (`linuxKeysymName`) —
+        // 받지 않으면 캡처한 값이 다음 실행에서 읽히지 않는다.
+        .{ .name = "page_up", .key = .page_up },          .{ .name = "page_down", .key = .page_down },
         // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
         // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
         .{ .name = "left", .key = .arrow_left },          .{ .name = "right", .key = .arrow_right },
@@ -384,6 +408,11 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // #493 — 기본 bindings 의 `prev_tab` / `next_tab` 이 쓴다. 세 platform 의 키
         // 값이 이미 기존 매처에 있어 추측이 아니다 (아래 각 map 의 주석 참고).
         .{ .name = "bracketleft", .key = .bracket_left }, .{ .name = "bracketright", .key = .bracket_right },
+        // #693 — **기호 키는 글자와 이름을 둘 다 받는다** (`` ` `` · `[` · `]` 이 이미 그랬다). 이름은
+        // kitty 와 같다 (`kitty/options/definition.py`). `+` 만 구분자라 이름으로만 적는다.
+        .{ .name = "slash", .key = .slash },              .{ .name = "equal", .key = .equal },
+        .{ .name = "minus", .key = .minus },              .{ .name = "plus", .key = .plus },
+        .{ .name = "backspace", .key = .backspace },
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
@@ -408,8 +437,61 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         if (c == '[') return .{ .named = .bracket_left };
         if (c == ']') return .{ .named = .bracket_right };
         if (c == '/') return .{ .named = .slash };
+        if (c == '=') return .{ .named = .equal };
+        if (c == '-') return .{ .named = .minus };
     }
     return null;
+}
+
+test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS · 캡처 표에 모두 있다" {
+    // 파서가 받는데 표 하나에 없으면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon ·
+    // sway) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다 — 방향키가 그랬다.
+    const keys = [_][]const u8{
+        "f1",     "f12",      "a",    "z",     "0",  "9",    "space", "tab", "escape", "return",
+        "pageup", "pagedown", "left", "right", "up", "down", "grave", "[",   "]",
+    };
+    const gnome_js = @embedFile("gnome_extension_js");
+    const cinnamon_js = @embedFile("cinnamon_extension_js");
+    for (keys) |key| {
+        var text_buf: [32]u8 = undefined;
+        const text = try std.fmt.bufPrint(&text_buf, "ctrl+{s}", .{key});
+        // ① Linux 등록 이름 (sway · Hyprland · COSMIC · GNOME/Cinnamon 의 앱 쪽).
+        const linux = LinuxHotkey.fromString(text) orelse return error.TestUnexpectedResult;
+        const name = linuxKeysymName(linux.keysym) orelse {
+            std.debug.print("linuxKeysymName 에 없음: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        // ② GNOME · Cinnamon 확장은 config 문자열을 직접 GTK 이름으로 바꾼다 — 같은 이름을 내야 한다.
+        //    한 글자 키와 F 키는 규칙으로 만들므로 이름 문자열이 없다.
+        if (name.len > 1 and !(name[0] == 'F' and name.len <= 3)) {
+            var quoted_buf: [32]u8 = undefined;
+            const quoted = try std.fmt.bufPrint(&quoted_buf, "key = \"{s}\"", .{name});
+            for ([_][]const u8{ gnome_js, cinnamon_js }) |js| {
+                if (std.mem.indexOf(u8, js, quoted) == null) {
+                    std.debug.print("확장 JS 에 없음: {s}\n", .{quoted});
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+        // ③ 이 OS 의 캡처 — 캡처한 글자가 다시 같은 hotkey 로 읽혀야 한다.
+        const native = Hotkey.fromString(text) orelse return error.TestUnexpectedResult;
+        const code: u32 = switch (builtin.os.tag) {
+            .linux => native.keysym,
+            .windows => native.vkey,
+            .macos => native.keycode,
+            else => return,
+        };
+        var cap_buf: [64]u8 = undefined;
+        const captured = capturedHotkeyText(&cap_buf, code, CAPTURE_MOD_CTRL) orelse {
+            std.debug.print("캡처 표에 없음: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        };
+        const reread = Hotkey.fromString(captured) orelse {
+            std.debug.print("캡처 값이 다시 안 읽힘: {s} → {s}\n", .{ key, captured });
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.meta.eql(native, reread));
+    }
 }
 
 /// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
@@ -579,6 +661,12 @@ const LinuxHotkey = struct {
                 .bracket_right => 0x5d,
                 // #682 — `XKB_KEY_slash`. `⇧+/` 는 `question` 으로 오고 무시프트 `slash` 로 맞는다.
                 .slash => 0x2f,
+                // #693 — `XKB_KEY_equal` · `minus` · `plus` · `BackSpace`. US 의 `⇧+=` 는 `plus` 로
+                // 오고 무시프트 `equal` 로도 맞는다.
+                .equal => 0x3d,
+                .minus => 0x2d,
+                .plus => 0x2b,
+                .backspace => 0xff08,
             },
         };
     }
@@ -602,6 +690,12 @@ pub fn linuxKeysymName(keysym: u32) ?[]const u8 {
         0xffc9 => "F12",
         0xff55 => "Page_Up",
         0xff56 => "Page_Down",
+        // #693 — 방향키. 파서가 전역 hotkey 로 받는데 이 표에 없어서 GNOME · Cinnamon · sway 는
+        // 조용히 `F1` 로, Hyprland · COSMIC 은 오류로 끝났다. XKB 이름이다.
+        0xff51 => "Left",
+        0xff52 => "Up",
+        0xff53 => "Right",
+        0xff54 => "Down",
         0x5b => "bracketleft",
         0x5d => "bracketright",
         0xff09 => "Tab",
@@ -954,6 +1048,10 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         .{ .named = .arrow_right, .code = .arrow_right },     .{ .named = .arrow_up, .code = .arrow_up },
         .{ .named = .arrow_down, .code = .arrow_down },       .{ .named = .bracket_left, .code = .bracket_left },
         .{ .named = .bracket_right, .code = .bracket_right }, .{ .named = .slash, .code = .slash },
+        .{ .named = .equal, .code = .equal },                 .{ .named = .minus, .code = .minus },
+        // `+` 는 자기 자리가 없다 — US 에서 `=` 자리의 Shift 값이라 그 자리로 둔다 (`grave` 가
+        // `backquote` 인 것과 같은 방식). macOS 매칭은 라벨 `+` 로 하므로 독일어 배열도 맞는다.
+        .{ .named = .plus, .code = .equal },                  .{ .named = .backspace, .code = .backspace },
     };
     for (pairs) |pair| {
         try std.testing.expectEqual(
@@ -995,13 +1093,15 @@ test "#496 위치 표기 파싱" {
     try std.testing.expectEqual(PhysicalCode.bracket_left, position.key.code);
 
     // 라벨이 거부하는 기호 자리도 **위치로는 받는다** — 자판에 있는 키를 다 쓸 수
-    // 있게 한 결정이다 (`physical_key.zig` 의 정책 문단). 라벨 쪽은 그대로 좁다:
-    // 고정표로 라벨을 넓히면 그건 라벨이 아니라 US 위치가 되기 때문이다.
+    // 있게 한 결정이다 (`physical_key.zig` 의 정책 문단). 라벨이 받는 기호는 글자와 이름
+    // 둘 다 받는다 (#693) — `/` 는 `slash`, `-` 는 `minus` 로도 적는다.
     try std.testing.expect(parseHotkeyString("ctrl+[Minus]", .app_binding) == .ok);
     try std.testing.expect(parseHotkeyString("ctrl+[Slash]", .app_binding) == .ok);
     try std.testing.expect(parseHotkeyString("ctrl+[IntlBackslash]", .app_binding) == .ok);
-    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+minus", .app_binding));
-    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+slash", .app_binding));
+    try std.testing.expect(parseHotkeyString("ctrl+minus", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+slash", .app_binding) == .ok);
+    // 라벨이 받지 않는 기호는 이름으로도 거부한다 — 그 자리는 위치로 적는다.
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+semicolon", .app_binding));
     // 표에 없는 이름은 여전히 거부한다.
     try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[NotAKey]", .app_binding));
     try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+[]", .app_binding));
@@ -1038,10 +1138,18 @@ test "#620 config 파일이 없는 실행도 창 안 단축키를 갖는다" {
     var c = Config.defaultOwned(std.testing.allocator, shell);
     defer c.deinit(std.testing.allocator);
 
-    // 위 테스트가 고정한 기본값 개수와 같아야 한다 — 두 길이 갈리면 여기서 걸린다.
-    var expected: usize = 0;
-    for (std.enums.values(KeyAction)) |action| expected += defaultBindings(action).len;
-    try std.testing.expectEqual(expected, @as(usize, c.key_binding_count));
+    // 기본 config 를 `parse` 로 읽은 결과와 같아야 한다 — 두 길이 갈리면 여기서 걸린다. 표의 글자 수와
+    // 견주지 않는 이유: Windows 는 같은 액션의 두 표기 (`=` · `plus`) 가 한 조합으로 합쳐진다 (#693).
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    defer clearConfigNotice(); // arena 보다 늦게 선언 — 안내를 먼저 비운다 (`#655 [keys] 충돌은 …` 와 같은 이유).
+    const full = try defaultConfigToml(arena.allocator(), Defaults.shell, Defaults.hotkeyFor(0));
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const parsed_cfg = try Config.parse(rt, arena.allocator(), full, "/home/user/.config/tildaz/config_0.toml");
+    try std.testing.expectEqual(parsed_cfg.key_binding_count, c.key_binding_count);
     try std.testing.expect(c.key_binding_count > 0);
 
     // 대표 하나 — 새 탭이 실제로 들어 있고 액션이 맞는지 (개수만 보면 엉뚱한 값이 채워져도 통과한다).
@@ -1065,6 +1173,8 @@ test "#493 default [keys] has no conflicting bindings" {
     // 액션 → 키 방향을 택한 대가로 충돌 감지가 우리 몫이다 (키 → 액션이면 TOML 이
     // 중복 키로 잡아 준다). 기본값끼리 충돌하면 첫 실행부터 fatal 이므로 고정한다.
     var seen: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var seen_n: usize = 0;
+    // 기본값 표에 적힌 글자 수 — config 에 적히는 수라 platform 이 풀어 낸 값과 무관하다.
     var count: usize = 0;
     for (std.enums.values(KeyAction)) |action| {
         for (defaultBindings(action)) |text| {
@@ -1073,21 +1183,23 @@ test "#493 default [keys] has no conflicting bindings" {
                 else => return error.TestUnexpectedResult,
             };
             const hk = Hotkey.fromParsed(parsed);
-            for (seen[0..count]) |prev| {
-                if (std.meta.eql(prev.hotkey, hk)) {
-                    std.debug.print("기본 binding 충돌: \"{s}\" — {s} vs {s}\n", .{ text, prev.action.configName(), action.configName() });
-                    return error.TestUnexpectedResult;
-                }
-            }
-            try std.testing.expect(count < MAX_KEY_BINDINGS);
-            seen[count] = .{ .hotkey = hk, .action = action };
             count += 1;
+            if (bindingWithHotkey(seen[0..seen_n], hk)) |prev| {
+                // #693 — 같은 액션의 다른 표기 (Windows 의 `=` · `plus`) 는 충돌이 아니다.
+                if (prev.action == action) continue;
+                std.debug.print("기본 binding 충돌: \"{s}\" — {s} vs {s}\n", .{ text, prev.action.configName(), action.configName() });
+                return error.TestUnexpectedResult;
+            }
+            try std.testing.expect(seen_n < MAX_KEY_BINDINGS);
+            seen[seen_n] = .{ .hotkey = hk, .action = action };
+            seen_n += 1;
         }
     }
-    // 액션 39 개 (#483 의 pane 12 개 + #544 의 `close_pane` + 2026-08-29 에 더한
-    // `split_left` · `split_up` + #646 의 `find` 포함) + prev_tab / next_tab 이
-    // 2 개씩 = 41.
-    try std.testing.expectEqual(@as(usize, 42), count);
+    // #693 이전 42 개 — 두 platform 표가 같은 수였다. #693 의 글자 크기 셋이 macOS 에 6 개
+    // (`cmd+=` · `shift+cmd+=` · `cmd+plus` · `cmd+-` · `cmd+0` · `shift+cmd+backspace`), Linux ·
+    // Windows 에 4 개 (`ctrl+shift+=` · `ctrl+shift+plus` · `ctrl+shift+-` · `ctrl+shift+backspace`)
+    // 를 더한다. macOS 만 둘이 더 많은 이유는 그 표의 주석에 있다.
+    try std.testing.expectEqual(@as(usize, if (is_macos) 48 else 46), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1292,6 +1404,11 @@ const WindowsHotkey = struct {
                 .bracket_right => 0xDD,
                 // #682 — `VK_OEM_2`. `[` 의 `VK_OEM_4` 처럼 US 자리 값이다.
                 .slash => 0xBF,
+                // #693 — `VK_OEM_PLUS` 는 US 의 `=+` 키이고 독일어의 `+` 키다 (VK 는 layout DLL 이
+                // 배정한다). 그래서 `=` · `plus` 가 같은 값이다. `VK_OEM_MINUS` · `VK_BACK`.
+                .equal, .plus => 0xBB,
+                .minus => 0xBD,
+                .backspace => 0x08,
             },
         };
     }
@@ -1313,6 +1430,15 @@ fn windowsVkeyName(vkey: u32) ?[]const u8 {
         0x7B => "F12",
         0x20 => "space",
         0xC0 => "grave",
+        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`VK_PRIOR` · `VK_NEXT` · 방향 · `VK_OEM_4/6`).
+        0x21 => "pageup",
+        0x22 => "pagedown",
+        0x25 => "left",
+        0x26 => "up",
+        0x27 => "right",
+        0x28 => "down",
+        0xDB => "[",
+        0xDD => "]",
         0x09 => "Tab",
         0x0D => "Return",
         0x1B => "Escape",
@@ -1401,6 +1527,11 @@ const MacHotkey = struct {
                 .bracket_right => 0x5D,
                 // #682 — `⇧⌘/` 는 라벨 `?` · 무시프트 `/` 로 와서 후자로 맞는다.
                 .slash => 0x2F,
+                // #693 — `⇧⌘=` 는 라벨 `+` · 무시프트 `=` 로 와서 `shift+cmd+=` 에 맞는다.
+                .equal => 0x3D,
+                .minus => 0x2D,
+                .plus => 0x2B,
+                .backspace => 0,
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
@@ -1454,6 +1585,11 @@ const MacHotkey = struct {
                 .bracket_right => 0x1E,
                 // #682 — `kVK_ANSI_Slash`.
                 .slash => 0x2C,
+                // #693 — `kVK_ANSI_Equal` · `..Minus` · `kVK_Delete`. `plus` 는 라벨로 맞으므로 이
+                // 값은 named↔code 테스트용이다.
+                .equal, .plus => 0x18,
+                .minus => 0x1B,
+                .backspace => 0x33,
             },
             // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
             .char => |c| switch (c) {
@@ -1508,6 +1644,11 @@ fn macKeycodeName(keycode: u32) ?[]const u8 {
         .{ .code = 0x65, .name = "F9" },     .{ .code = 0x6D, .name = "F10" },
         .{ .code = 0x67, .name = "F11" },    .{ .code = 0x6F, .name = "F12" },
         .{ .code = 0x31, .name = "space" },  .{ .code = 0x32, .name = "grave" },
+        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`kVK_PageUp` · `..Down` · 방향 · 괄호).
+        .{ .code = 0x74, .name = "pageup" }, .{ .code = 0x79, .name = "pagedown" },
+        .{ .code = 0x7B, .name = "left" },   .{ .code = 0x7C, .name = "right" },
+        .{ .code = 0x7E, .name = "up" },     .{ .code = 0x7D, .name = "down" },
+        .{ .code = 0x21, .name = "[" },      .{ .code = 0x1E, .name = "]" },
         .{ .code = 0x30, .name = "Tab" },    .{ .code = 0x24, .name = "Return" },
         .{ .code = 0x35, .name = "Escape" }, .{ .code = 0x00, .name = "A" },
         .{ .code = 0x0B, .name = "B" },      .{ .code = 0x08, .name = "C" },
@@ -1974,6 +2115,15 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         // *분할* 에 쓰는 글자라 반대 동작이 연상돼 쓰지 않는다.
         .close_pane => &.{"shift+cmd+x"},
         .find => &.{"cmd+f"},
+        // #693 — 글자 크기. `⌘=` · `⌘-` · `⌘0` 은 macOS 전체의 확대 · 축소 · 실제 크기 자리다.
+        // US 에서 `⌘+` 는 실제로 `⇧⌘=` 라 `shift+cmd+=` 를 따로 둔다 (kitty 도 같다). `plus` 는
+        // 독일어처럼 `+` 키가 따로 있는 배열용이다.
+        .increase_font_size => &.{ "cmd+=", "shift+cmd+=", "cmd+plus" },
+        .decrease_font_size => &.{"cmd+-"},
+        // `shift+cmd+backspace` 는 Linux · Windows 의 `ctrl+shift+backspace` 와 짝이다. `⌘0` 만 두면
+        // 숫자에 Shift 가 필요한 AZERTY 에서 `⇧⌘à` 가 되어 `equalize_panes` (`shift+cmd+0`) 가
+        // 먼저 가져간다. `⌘⌫` 는 macOS 의 "줄 앞까지 지우기" 라 쓰지 않는다 (ghostty 도 그 동작에 쓴다).
+        .reset_font_size => &.{ "cmd+0", "shift+cmd+backspace" },
     };
 }
 
@@ -2027,6 +2177,12 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         // 한 대역이고, macOS 의 `Shift+Cmd+X` 와 같은 글자다.
         .close_pane => &.{"ctrl+shift+x"},
         .find => &.{"ctrl+shift+f"},
+        // #693 — 글자 크기. kitty 기본값과 같은 묶음이다 (`kitty_mod` = `ctrl+shift`). 되돌리기가
+        // `0` 이 아닌 이유: Windows 의 IME 직접 전환 단축키가 `Ctrl+Shift+0` 을 가져가 앱에 닿지
+        // 않는다 (#693 Windows 실기).
+        .increase_font_size => &.{ "ctrl+shift+=", "ctrl+shift+plus" },
+        .decrease_font_size => &.{"ctrl+shift+-"},
+        .reset_font_size => &.{"ctrl+shift+backspace"},
     };
 }
 
@@ -2054,7 +2210,9 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         \\# KeyboardEvent.code values: https://www.w3.org/TR/uievents-code/
         \\#
         \\# Accepted labels: F1-F12, A-Z, 0-9, space, tab, escape, return,
-        \\#                  grave(`), pageup, pagedown, left, right, up, down, [, ]
+        \\#                  grave(`), pageup, pagedown, left, right, up, down, [, ],
+        \\#                  / (slash), = (equal), - (minus), plus (for +),
+        \\#                  backspace
         \\# Accepted positions: every key a keyboard can send -- letters, digits,
         \\#                  symbols, numpad, arrows, F13-F24. See CONFIG.md.
         \\#
@@ -2077,6 +2235,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         .{ .title = "Search", .actions = &.{.find} },
         .{ .title = "Clipboard", .actions = &.{ .copy, .paste } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
+        .{ .title = "Font size", .actions = &.{ .increase_font_size, .decrease_font_size, .reset_font_size } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .open_shortcuts, .dump_perf } },
     };
     for (groups) |g| {
@@ -2177,6 +2336,11 @@ pub const KeyAction = enum {
     /// `Shift+Enter` 가 그 일을 하므로 (바가 닫혀 있으면 그 키는 평소대로 PTY 로 간다) 액션을
     /// 늘리면 `[keys]` strict 스키마의 부팅 차단 비용만 커진다.
     find,
+    /// #693 — 터미널 글자 크기를 창 전체 (모든 탭 · pane) 에서 1pt 키우고 · 줄이고 · 설정값으로
+    /// 되돌린다. 탭바 · 다이얼로그 글자는 그대로다. 재시작하면 설정값으로 돌아간다.
+    increase_font_size,
+    decrease_font_size,
+    reset_font_size,
 
     /// config 파일에 쓰는 이름. enum tag 그대로다 — 파일과 코드가 갈라지지 않게
     /// 별 문자열 표를 두지 않는다 (#484 의 writer/matcher 교훈).
@@ -2284,6 +2448,8 @@ pub const ActionInput = struct {
     tab_index: ?usize = null,
     /// #483 — `split` · `focus_pane` · `resize_pane` 일 때 방향. 그 외에는 null.
     direction: ?pane_layout.Direction = null,
+    /// #693 — `font_size` 일 때 무엇을 할지. 그 외에는 null.
+    font_size: ?terminal_size.Change = null,
 };
 
 pub fn inputForAction(action: KeyAction) ActionInput {
@@ -2328,6 +2494,9 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .zoom_pane => .{ .input = .{ .shortcut = .zoom_pane } },
         .close_pane => .{ .input = .{ .shortcut = .close_pane } },
         .find => .{ .input = .{ .shortcut = .find } },
+        .increase_font_size => .{ .input = .{ .shortcut = .font_size }, .font_size = .increase },
+        .decrease_font_size => .{ .input = .{ .shortcut = .font_size }, .font_size = .decrease },
+        .reset_font_size => .{ .input = .{ .shortcut = .font_size }, .font_size = .reset },
     };
 }
 
@@ -2392,6 +2561,9 @@ fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
         0x5b => .bracket_left,
         0x5d => .bracket_right,
         0x2f => .slash,
+        // #693 — `plus` 는 넣지 않는다. US 에서 Shift 가 필요한 값이라 자리만으로는 같은 키가 아니다.
+        0x3d => .equal,
+        0x2d => .minus,
         else => null,
     };
 }
@@ -2421,6 +2593,19 @@ pub fn lookupActionWithFallback(
         const mods_match = b.hotkey.modifiers == hotkey.modifiers or
             (isDigitBinding(b.hotkey) and b.hotkey.modifiers == (hotkey.modifiers & ~shift_bit));
         if (mods_match) return b.action;
+    }
+    return null;
+}
+
+/// #693 — 이 platform 에서 **같은 조합**으로 풀린 binding 이 이미 있으면 그것. config 를 읽는
+/// `addBinding` 과 기본값을 채우는 `fillDefaultKeyBindings` 가 함께 쓴다 — 두 길의 결과가 갈리지 않게.
+///
+/// 같은 글자가 platform 마다 다르게 풀리므로 이 판정은 config 글자가 아니라 풀린 값으로 한다.
+/// Windows 는 `=` 와 `plus` 가 둘 다 `VK_OEM_PLUS` 라 `ctrl+shift+=` · `ctrl+shift+plus` 가 같은
+/// 조합이고, Linux 는 keysym 이, macOS 는 라벨이 둘을 가른다. config 에 적는 글자는 세 platform 이 같다.
+fn bindingWithHotkey(bindings: []const KeyBinding, hotkey: Hotkey) ?KeyBinding {
+    for (bindings) |b| {
+        if (std.meta.eql(b.hotkey, hotkey)) return b;
     }
     return null;
 }
@@ -2566,6 +2751,90 @@ test "#682 — `/` 는 `[` 와 같은 규칙이다 · `Ctrl+Shift+/` 는 맞고 
     }
 }
 
+test "#693 — 기호 키는 글자와 이름 둘 다 받고 (`+` 는 이름만) 글자 크기 기본값이 세 OS 에서 맞는다" {
+    // 적는 법 — 글자와 이름이 같은 키다. `+` 는 구분자라 이름 `plus` 로만.
+    const same = [_][2][]const u8{
+        .{ "ctrl+=", "ctrl+equal" },       .{ "ctrl+-", "ctrl+minus" }, .{ "ctrl+/", "ctrl+slash" },
+        .{ "ctrl+[", "ctrl+bracketleft" }, .{ "ctrl+`", "ctrl+grave" },
+    };
+    for (same) |pair| {
+        const a = switch (parseHotkeyString(pair[0], .app_binding)) {
+            .ok => |v| v,
+            else => return error.TestUnexpectedResult,
+        };
+        const b = switch (parseHotkeyString(pair[1], .app_binding)) {
+            .ok => |v| v,
+            else => return error.TestUnexpectedResult,
+        };
+        try std.testing.expect(std.meta.eql(a, b));
+    }
+    try std.testing.expect(parseHotkeyString("ctrl+plus", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+backspace", .app_binding) == .ok);
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+shift++", .app_binding));
+    // 글자를 내거나 PTY 로 바이트를 보내는 키라 modifier 가 필요하다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("=", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("backspace", .app_binding));
+    // 전역 hotkey 로는 받지 않는다 — 데스크톱 등록 이름을 확인하지 않았다 (`/` 와 같다).
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+=", .global_hotkey));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+plus", .global_hotkey));
+
+    // 기본 바인딩 전체를 올린다 — 다른 액션이 같은 이벤트를 먼저 잡지 않는지도 함께 본다.
+    var buf: [MAX_KEY_BINDINGS]KeyBinding = undefined;
+    var n: usize = 0;
+    for (std.enums.values(KeyAction)) |action| {
+        for (defaultBindings(action)) |text| {
+            const parsed = switch (parseHotkeyString(text, .app_binding)) {
+                .ok => |v| v,
+                else => return error.TestUnexpectedResult,
+            };
+            buf[n] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action };
+            n += 1;
+        }
+    }
+    const bindings = buf[0..n];
+    const up = KeyAction.increase_font_size;
+    const down = KeyAction.decrease_font_size;
+    const reset = KeyAction.reset_font_size;
+
+    if (is_macos) {
+        const cmd = Hotkey.MOD_SUPER;
+        const shift_cmd = Hotkey.MOD_SHIFT | Hotkey.MOD_SUPER;
+        // US: ⌘= · ⌘+ (= ⇧⌘=, 라벨 `+` · 무시프트 `=`) · ⌘- · ⌘0.
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .keycode = 0x18, .label = '=', .unshifted = '=', .modifiers = cmd }, null).?);
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .keycode = 0x18, .label = '+', .unshifted = '=', .modifiers = shift_cmd }, null).?);
+        try std.testing.expectEqual(down, lookupAction(bindings, .{ .keycode = 0x1B, .label = '-', .unshifted = '-', .modifiers = cmd }, null).?);
+        try std.testing.expectEqual(reset, lookupAction(bindings, .{ .keycode = 0x1D, .label = '0', .unshifted = '0', .modifiers = cmd }, null).?);
+        // 독일어: `+` 키가 따로 있다 (US `]` 자리) — `cmd+plus` 가 라벨로 맞는다.
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .keycode = 0x1E, .label = '+', .unshifted = '+', .modifiers = cmd }, null).?);
+        // ⇧⌘0 은 균등이 그대로 갖는다.
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 0x1D, .label = ')', .unshifted = '0', .modifiers = shift_cmd }, null).?);
+        // AZERTY: ⌘0 은 ⇧⌘à 라 균등이 가져간다 — 그래서 ⇧⌘⌫ 가 되돌리기를 맡는다 (keycode 로 맞는다).
+        try std.testing.expectEqual(KeyAction.equalize_panes, lookupAction(bindings, .{ .keycode = 0x1D, .label = '0', .unshifted = 0, .modifiers = shift_cmd }, null).?);
+        try std.testing.expectEqual(reset, lookupAction(bindings, .{ .keycode = 0x33, .modifiers = shift_cmd }, null).?);
+        // ⌘⌫ (줄 앞까지 지우기) 는 비워 둔다.
+        try std.testing.expect(lookupAction(bindings, .{ .keycode = 0x33, .modifiers = cmd }, null) == null);
+    } else if (is_windows) {
+        const cs = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT;
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .vkey = 0xBB, .modifiers = cs }, null).?); // VK_OEM_PLUS
+        try std.testing.expectEqual(down, lookupAction(bindings, .{ .vkey = 0xBD, .modifiers = cs }, null).?); // VK_OEM_MINUS
+        try std.testing.expectEqual(reset, lookupAction(bindings, .{ .vkey = 0x08, .modifiers = cs }, null).?); // VK_BACK
+        // Ctrl+Shift+0 은 묶지 않는다 — IME 직접 전환이 가져가는 자리다 (#693 Windows 실기).
+        try std.testing.expect(lookupAction(bindings, .{ .vkey = 0x30, .modifiers = cs }, null) == null);
+        // Ctrl+- (^_, readline undo) 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .vkey = 0xBD, .modifiers = Hotkey.MOD_CTRL }, null) == null);
+    } else {
+        const cs = Hotkey.MOD_CTRL | Hotkey.MOD_SHIFT;
+        // US: Ctrl+Shift+= 는 keysym `plus` · 무시프트 `equal`, Ctrl+Shift+- 는 `underscore` · `minus`.
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .keysym = 0x2b, .unshifted = 0x3d, .modifiers = cs }, null).?);
+        try std.testing.expectEqual(down, lookupAction(bindings, .{ .keysym = 0x5f, .unshifted = 0x2d, .modifiers = cs }, null).?);
+        try std.testing.expectEqual(reset, lookupAction(bindings, .{ .keysym = 0xff08, .unshifted = 0xff08, .modifiers = cs }, null).?);
+        // 독일어: `+` 키의 Shift 값은 `asterisk` · 무시프트 `plus` — `ctrl+shift+plus` 가 맞는다.
+        try std.testing.expectEqual(up, lookupAction(bindings, .{ .keysym = 0x2a, .unshifted = 0x2b, .modifiers = cs }, null).?);
+        // Ctrl+- (^_) 는 수식키가 달라 걸리지 않는다.
+        try std.testing.expect(lookupAction(bindings, .{ .keysym = 0x2d, .modifiers = Hotkey.MOD_CTRL }, null) == null);
+    }
+}
+
 /// modifier 를 뺀 라벨 쪽 키 값. `std.meta.eql` 로 통째로 비교하면 Shift 예외를
 /// 표현할 수 없어 (아래) 키 값만 따로 꺼낸다.
 fn modifiersAside(h: Hotkey) u32 {
@@ -2673,6 +2942,10 @@ pub fn bindingDisplay(buf: []u8, parsed: ParsedHotkey, macos: bool) []const u8 {
             .bracket_left => "[",
             .bracket_right => "]",
             .slash => "/",
+            .equal => "=",
+            .minus => "-",
+            .plus => "+",
+            .backspace => "Backspace",
         }) catch return "",
         // 위치 표기는 사용자가 적은 이름 그대로 (`[KeyW]`) — 무엇을 눌러야 하는지가
         // layout 에 달려 있어 글자 하나로 줄이면 틀린 안내가 될 수 있다.
@@ -3052,7 +3325,11 @@ pub const Config = struct {
                     .ok => |v| v,
                     else => continue,
                 };
-                config.key_bindings[count] = .{ .hotkey = Hotkey.fromParsed(parsed), .action = action, .parsed = parsed };
+                const hotkey = Hotkey.fromParsed(parsed);
+                // #693 — `parse` 의 `addBinding` 과 같은 규칙. 기본값끼리는 다른 액션이 겹치지 않으므로
+                // (위 테스트) 여기 걸리는 것은 같은 액션의 다른 표기뿐이다.
+                if (bindingWithHotkey(config.key_bindings[0..count], hotkey) != null) continue;
+                config.key_bindings[count] = .{ .hotkey = hotkey, .action = action, .parsed = parsed };
                 count += 1;
             }
         }
@@ -3193,7 +3470,7 @@ pub const Config = struct {
         var chain_count: usize = 0;
         if (root.table.get("font")) |fv| {
             if (fv.table.get("size_point")) |v|
-                config.font_size_point = @intCast(intInRange(v, "font.size_point", 8, 72, Defaults.font_size_point));
+                config.font_size_point = @intCast(intInRange(v, "font.size_point", terminal_size.MIN_SIZE_POINT, terminal_size.MAX_SIZE_POINT, Defaults.font_size_point));
             if (fv.table.get("cell_width_ratio")) |v|
                 config.cell_width_ratio = floatInRange(v, "font.cell_width_ratio", 0.5, 2.0, Defaults.cell_width_ratio);
             if (fv.table.get("line_height_ratio")) |v|
@@ -3336,15 +3613,15 @@ pub const Config = struct {
 
         // **먼저 나온 것이 이긴다** (SPEC §7.3). 파일을 위에서 아래로 읽는 순서와 같아
         // 사용자에게 설명하기 쉽고, 뒤에 적은 쪽이 앞을 조용히 덮어쓰는 일이 없다.
-        for (config.key_bindings[0..count]) |existing| {
-            if (std.meta.eql(existing.hotkey, hotkey)) {
-                appendNotice(
-                    &repaired_list,
-                    messages.config_notice_key_conflict_format,
-                    .{ name, text, existing.action.configName() },
-                );
-                return count;
-            }
+        if (bindingWithHotkey(config.key_bindings[0..count], hotkey)) |existing| {
+            // #693 — 같은 액션이면 사용자가 원한 동작은 이미 걸려 있다. 조용히 하나로 합친다.
+            if (existing.action == action) return count;
+            appendNotice(
+                &repaired_list,
+                messages.config_notice_key_conflict_format,
+                .{ name, text, existing.action.configName() },
+            );
+            return count;
         }
 
         if (count >= MAX_KEY_BINDINGS) {
@@ -4698,6 +4975,46 @@ test "#655 [keys] 충돌은 먼저 나온 것이 이긴다" {
     try std.testing.expectEqual(KeyAction.new_tab, found.?);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, n.repaired, "close_tab") != null);
+}
+
+test "#693 같은 액션 안의 중복은 조용히 하나로 합친다" {
+    clearConfigNotice();
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    defer clearConfigNotice(); // arena 보다 늦게 선언 — 위 테스트와 같은 이유.
+    const a = arena.allocator();
+    // config 글자는 세 platform 이 같다. Windows 에서만 두 표기가 같은 조합 (`VK_OEM_PLUS`) 으로 풀린다.
+    const doc =
+        \\shell = "/bin/sh"
+        \\[keys]
+        \\increase_font_size = ["ctrl+shift+=", "ctrl+shift+plus"]
+        \\
+    ;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const config = try Config.parse(rt, a, doc, "/home/user/.config/tildaz/config_0.toml");
+
+    try std.testing.expect(pendingFatalNotice() == null);
+    // "이미 쓰였다" 안내가 없어야 한다. 다른 액션은 이 문서에 없어 "넣었다" 안내가 함께 생길 수 있다.
+    if (pendingConfigNotice()) |n| {
+        try std.testing.expect(std.mem.indexOf(u8, n.repaired, "increase_font_size") == null);
+    }
+
+    var n_up: usize = 0;
+    for (config.key_bindings[0..config.key_binding_count]) |b| {
+        if (b.action == .increase_font_size) n_up += 1;
+    }
+    try std.testing.expectEqual(@as(usize, if (is_windows) 1 else 2), n_up);
+
+    // 합쳐진 뒤에도 그 조합은 그 액션으로 풀린다. 기호 키는 창 안 단축키 (`app_binding`) 에서만 받으므로
+    // 전역 hotkey 용 `Hotkey.fromString` 이 아니라 이 경로로 만든다.
+    const combo = Hotkey.fromParsed(switch (parseHotkeyString("ctrl+shift+=", .app_binding)) {
+        .ok => |v| v,
+        else => return error.TestUnexpectedResult,
+    });
+    try std.testing.expectEqual(KeyAction.increase_font_size, (bindingWithHotkey(config.key_bindings[0..config.key_binding_count], combo) orelse return error.TestUnexpectedResult).action);
 }
 
 test "#655 [font] 섹션이 통째로 없어도 뜬다 — 기본 폰트 chain 이 남는다" {

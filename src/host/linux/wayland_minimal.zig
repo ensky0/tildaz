@@ -35,6 +35,8 @@ const config_mod = @import("../../config.zig");
 const physical_key = @import("../../physical_key.zig");
 const key_encode = @import("../../key_encode.zig");
 const software_terminal = @import("software_terminal.zig");
+const terminal_size = @import("../../font/terminal_size.zig");
+const font_spec = @import("../../font/spec.zig");
 const pane_draw = @import("../../renderer/pane_draw.zig");
 const pane_layout = @import("../../pane_layout.zig");
 const run_options = @import("../../run_options.zig");
@@ -1137,6 +1139,8 @@ const Client = struct {
     window_height: i32 = default_height,
     mapped: bool = false,
     renderer: software_terminal.Renderer,
+    /// #693 — 터미널 글자 크기. renderer 는 이 값의 `spec()` 으로 폰트를 만든다.
+    font_size: terminal_size.TerminalFontSize,
     session: ?session_core.SessionCore = null,
     shell_exited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     needs_redraw: bool = false,
@@ -1668,10 +1672,12 @@ const Client = struct {
         const path = try waylandSocketPath(rt, allocator);
         defer allocator.free(path);
         // 첫 init 시점엔 wp_fractional_scale_v1 의 preferred_scale event 가
-        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 applyScale.
+        // 아직 안 왔으니 default 120/120 (= 1.0x). event 받은 후 rebuildFonts.
+        const font_size = terminal_size.TerminalFontSize.init(cfg.terminalFontSpec());
         var renderer = try software_terminal.Renderer.init(
             allocator,
             cfg,
+            font_size.spec(),
             fractional_scale_denominator,
             fractional_scale_denominator,
         );
@@ -1706,6 +1712,7 @@ const Client = struct {
                 };
             },
             .renderer = renderer,
+            .font_size = font_size,
             .config = cfg,
             .menu_hints = blk: {
                 var hotkey_buf: [64]u8 = undefined;
@@ -3267,33 +3274,15 @@ const Client = struct {
         // renderer scale apply — paint 가 1x layout 그리면 큰 buffer 안 작은
         // content (#210). 실패해도 default scale 로 진행.
         const renderer_scale_applied = blk: {
-            self.renderer.applyScale(
-                self.allocator,
-                self.config,
-                new_scale,
-                fractional_scale_denominator,
-            ) catch |err| {
-                log.appendLine("wayland", "renderer applyScale failed: {s} — keeping default scale", .{@errorName(err)});
+            self.rebuildRendererFonts(self.font_size.spec(), new_scale) catch |err| {
+                log.appendLine("wayland", "renderer rebuildFonts failed: {s} — keeping default scale", .{@errorName(err)});
                 break :blk false;
             };
             break :blk true;
         };
-        // #277 S2-4 — 폰트를 새 크기로 다시 raster 했으므로 GL atlas 의 캐시는
-        // 이제 이전 크기의 그림을 가리킨다. 비우지 않으면 scale 이 바뀐 뒤에도
-        // 작은 글리프가 계속 나온다 (캐시 키는 codepoint / glyph_index 라 크기를
-        // 구분하지 않는다).
-        if (renderer_scale_applied) {
-            if (self.gl_atlas_store) |*atlas| atlas.invalidate();
-        }
         // dialog surface가 map된 뒤 preferred_scale이 도착할 수 있다. font만
         // 바꾸고 1x 요청 폭을 유지하면 본문이 불필요하게 더 wrap되므로 dialog
         // role의 size/margin도 같은 scale에서 다시 요청한다 (#306).
-        // #368 — dialog 가 떠 있는 동안 scale 이 바뀌면 `applyScale` 이 dialog 폰트를
-        // 버린다 (지연 생성 정책). 그 상태로 다시 그리면 탭 폰트로 떨어지므로, 열려
-        // 있을 때만 즉시 새 scale 로 다시 만든다.
-        if (renderer_scale_applied and self.dialog.surface_id != 0) {
-            self.renderer.ensureDialogFonts(self.allocator);
-        }
         if (renderer_scale_applied and self.dialog.surface_id != 0) {
             try self.sendDialogSurfaceLayout(source);
         }
@@ -3306,6 +3295,46 @@ const Client = struct {
             try self.sendLayerSurfaceLayout(false);
         }
         if (self.session != null) try self.ensureSessionGrid();
+        self.requestRedraw();
+    }
+
+    /// renderer 폰트를 다시 만들고 (`rebuildFonts`) 그 폰트에 묶인 것을 정리한다. 배율 변경
+    /// (`applyScaleChange`) 과 글자 크기 단축키 (#693 `handleFontSize`) 가 같이 쓴다. 실패하면
+    /// renderer 는 그대로고 아무것도 비우지 않는다.
+    fn rebuildRendererFonts(self: *Client, terminal_font: font_spec.Spec, scale_num: u32) !void {
+        try self.renderer.rebuildFonts(self.allocator, terminal_font, scale_num, fractional_scale_denominator);
+        // #277 S2-4 — 폰트를 새 크기로 다시 raster 했으므로 GL atlas 의 캐시는
+        // 이제 이전 크기의 그림을 가리킨다. 비우지 않으면 크기가 바뀐 뒤에도
+        // 옛 크기 글리프가 계속 나온다 (캐시 키는 codepoint / glyph_index 라 크기를
+        // 구분하지 않는다).
+        if (self.gl_atlas_store) |*atlas| atlas.invalidate();
+        // #368 — dialog 가 떠 있는 동안 폰트를 다시 만들면 `rebuildFonts` 가 dialog 폰트를
+        // 버린다 (지연 생성 정책). 그 상태로 다시 그리면 탭 폰트로 떨어지므로, 열려
+        // 있을 때만 즉시 다시 만든다.
+        if (self.dialog.surface_id != 0) self.renderer.ensureDialogFonts(self.allocator);
+    }
+
+    /// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 모든 탭의 격자를 맞춘다. 사본에
+    /// 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도 renderer 도 그대로다.
+    ///
+    /// `-size` 회차는 무시한다 — 그 회차는 격자를 요청값에 고정하고, 글자가 커져 화면에 안 들어가면
+    /// `guardRequestedGridFits` 가 실행을 끝낸다.
+    fn handleFontSize(self: *Client, change: terminal_size.Change) void {
+        if (self.run_opts.grid != null) {
+            log.logFontSizeIgnoredForFixedGrid(@tagName(change));
+            return;
+        }
+        var next = self.font_size;
+        if (!next.apply(change)) return;
+        self.rebuildRendererFonts(next.spec(), self.preferred_scale) catch |err| {
+            log.appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), self.font_size.size_logical });
+            return;
+        };
+        self.font_size = next;
+        self.ensureSessionGrid() catch |err| {
+            log.appendLine("font", "ensureSessionGrid after font size change failed: {s}", .{@errorName(err)});
+        };
+        log.logFontSize(@tagName(change), self.font_size.size_logical, self.renderer.cellWidth(), self.renderer.cellHeight());
         self.requestRedraw();
     }
 
@@ -3574,7 +3603,7 @@ const Client = struct {
         // 뒤이은 waitForConfigure 가 그 configure 를 받아 work-area 를 latch 한 뒤
         // continuation 이 보낸다. 실측(KWin Plasma 6): 그 configure 는 초기 안전
         // commit 과 거의 동시에 socket 에 도착해 있으므로 boot 지연이 없다 — 기존에
-        // 관측된 63ms 간격은 compositor 지연이 아니라 그 사이의 renderer.applyScale
+        // 관측된 63ms 간격은 compositor 지연이 아니라 그 사이의 renderer.rebuildFonts
         // (font chain 재빌드) 이 socket 을 안 읽은 시간이었다.
         try self.sendLayerSurfaceLayout(false);
     }
@@ -7263,7 +7292,7 @@ const Client = struct {
                     .run_action => {
                         // `.paste` 는 위에서 돌아갔고 `.interrupt` 의 target 은 `.pty`
                         // 이므로 여기 오는 것은 `.shortcut` 뿐이다.
-                        self.runShortcut(classified.input.shortcut, classified.tab_index, classified.direction);
+                        self.runShortcut(classified.input.shortcut, classified.tab_index, classified.direction, classified.font_size);
                         return;
                     },
                     // interrupt \x03 는 아래 escape / utf8 로. paste 는 위에서 처리.
@@ -7476,7 +7505,7 @@ const Client = struct {
     /// 즉 어느 키가 어느 동작인지를 **분류와 실행 두 곳**에 적고 있었고, 그 둘이
     /// 갈라지는 것이 #484 의 원인이기도 했다. 이제 분류가 이미 `Shortcut` 을 줬으므로
     /// 여기서는 그것만 보고 실행한다.
-    fn runShortcut(self: *Client, shortcut: input_policy.Shortcut, tab_index: ?usize, direction: ?pane_layout.Direction) void {
+    fn runShortcut(self: *Client, shortcut: input_policy.Shortcut, tab_index: ?usize, direction: ?pane_layout.Direction, font_size: ?terminal_size.Change) void {
         switch (shortcut) {
             .copy => self.copyActiveSelection(),
             .new_tab => self.handleNewTab(),
@@ -7531,6 +7560,7 @@ const Client = struct {
             // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
             .close_pane => self.handleClosePane(),
             .find => self.handleFind(),
+            .font_size => self.handleFontSize(font_size orelse return),
         }
     }
 

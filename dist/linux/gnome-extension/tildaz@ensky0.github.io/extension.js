@@ -532,7 +532,7 @@ export default class TildazExtension extends Extension {
       const t = raw.trim().toLowerCase();
       if (t === "ctrl" || t === "control") mods += "<Control>";
       else if (t === "shift") mods += "<Shift>";
-      else if (t === "alt" || t === "option") mods += "<Alt>";
+      else if (t === "alt" || t === "option" || t === "opt") mods += "<Alt>";
       else if (["super", "cmd", "command", "win", "meta", "logo"].includes(t))
         mods += "<Super>";
       else if (t.length > 0) key = t;
@@ -555,11 +555,21 @@ export default class TildazExtension extends Extension {
       return mods + "0x" + code.toString(16).padStart(2, "0");
     }
     if (/^f([1-9]|1[0-2])$/.test(key)) key = key.toUpperCase();
-    else if (key === "`" || key === "grave") key = "grave";
+    else if (key === "`" || key === "grave" || key === "backquote") key = "grave";
     else if (key === "space") key = "space";
     else if (key === "esc" || key === "escape") key = "Escape";
     else if (key === "enter" || key === "return") key = "Return";
     else if (key === "tab") key = "Tab";
+    // #693 — 앱 파서 (`config.zig` `hotkeyKeyFromName`) 가 받는 나머지 이름을 GTK 이름으로.
+    // `linuxKeysymName` 과 같은 표다 — 빠지면 `<Control>pageup` 처럼 GTK 가 모르는 이름이 나간다.
+    else if (key === "pageup" || key === "pgup" || key === "page_up") key = "Page_Up";
+    else if (key === "pagedown" || key === "pgdn" || key === "page_down") key = "Page_Down";
+    else if (key === "left") key = "Left";
+    else if (key === "right") key = "Right";
+    else if (key === "up") key = "Up";
+    else if (key === "down") key = "Down";
+    else if (key === "[" || key === "bracketleft") key = "bracketleft";
+    else if (key === "]" || key === "bracketright") key = "bracketright";
     // a-z / 0-9 는 그대로 (GTK accelerator 는 소문자 letter 수용).
     return mods + key;
   }

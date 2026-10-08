@@ -102,6 +102,9 @@ pub const Shortcut = enum {
     /// 다른 상태 변경 단축키와 같이 preedit 을 먼저 commit 한다 — 조합 중이던 자모가 검색어로
     /// 흘러 들어가면 안 된다.
     find,
+    /// #693 — 글자 크기 (크게 · 작게 · 되돌리기). 무엇을 할지는 `config.ActionInput.font_size` 에
+    /// 있다. 격자가 바뀌므로 다른 상태 변경 단축키와 같이 preedit 을 먼저 commit 한다.
+    font_size,
 };
 
 /// 진행 중 입력(terminal preedit)을 어떻게 처리할지.
@@ -203,7 +206,7 @@ fn expectDisp(input: Input, state: State, pending: Pending, target: Target) !voi
 test "SPEC §4.1 — preedit 중 action 단축키는 commit 후 실행" {
     // 상태를 바꾸는 단축키(탭/reset/about/config/log/fullscreen/quit)는 focus-loss 로
     // preedit 을 확정한 뒤 실행.
-    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .fullscreen_workarea, .quit, .open_command_menu, .open_shortcuts, .split, .focus_pane, .resize_pane, .equalize_panes, .zoom_pane, .close_pane }) |sc| {
+    for ([_]Shortcut{ .new_tab, .close_tab, .next_tab, .prev_tab, .switch_tab, .reset_terminal, .show_about, .open_config, .open_log, .toggle_visibility, .fullscreen, .fullscreen_workarea, .quit, .open_command_menu, .open_shortcuts, .split, .focus_pane, .resize_pane, .equalize_panes, .zoom_pane, .close_pane, .font_size }) |sc| {
         try expectDisp(.{ .shortcut = sc }, preedit, .commit, .run_action);
     }
 }
@@ -263,7 +266,7 @@ test "#646 — 검색 중에도 단축키는 그대로 실행된다 (pane 이동
     // 사용자 결정 (2026-09-11): 검색바에 포커스가 있어도 pane 을 옮길 수 있어야 한다.
     // 검색바는 단축키로 닫히지 않으므로 여기서 `commit` 은 *조합 자모를 입력칸에
     // 확정* 하라는 뜻이다 — 탭 이름을 확정시키던 rename 의 `commit` 과 다르다.
-    for ([_]Shortcut{ .focus_pane, .split, .next_tab, .new_tab, .zoom_pane, .find }) |sc| {
+    for ([_]Shortcut{ .focus_pane, .split, .next_tab, .new_tab, .zoom_pane, .find, .font_size }) |sc| {
         try expectDisp(.{ .shortcut = sc }, searching, .commit, .run_action);
     }
 }

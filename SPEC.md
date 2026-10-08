@@ -70,7 +70,7 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
 | Opacity (config) | 0..100 percent → alpha | 100%: normal flip-model; below 100%: `WS_EX_NOREDIRECTIONBITMAP` + DirectComposition visual opacity ([#89](https://github.com/ensky0/tildaz/issues/89)) | `NSWindow.setAlphaValue:` | ARGB8888 alpha sweep ([fa4e036](https://github.com/ensky0/tildaz/commit/fa4e036), L13-γ) | ✅ | ✅ | ✅ |
 | Theme (config) | 16-color palette + bg/fg | `themes.findTheme` → ghostty Terminal.Colors | 동일 | 동일 (cross-platform `themes` 모듈) | ✅ | ✅ | ✅ |
 | 단일 탭 시 상단 chrome ([#329](https://github.com/ensky0/tildaz/issues/329)) | full 탭바 자리 없음. 우측 상단에 `[+][×][…]` 72×28 logical pt strip만 terminal 위에 overlay. terminal grid y-offset은 0, scrollbar draw/hit track만 28pt 아래에서 시작 | `effectiveTabBarHeight()==0`, 별도 `scrollbarTopInset()` + renderer final overlay | `tabBarHeightPx()==0`, 별도 `scrollbarTopInsetPx()` + Metal final overlay | `Renderer.tabBarHeightPx(1)==0`, 별도 `chromeHeightPx()` + software final overlay | ✅ | ✅ | ✅ |
-| Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `applyScale` (L8-δ) | ✅ | ✅ | ✅ |
+| Live tracking | 모니터 / DPI 변화 시 재적용 | WM_DPICHANGED + `font_change_fn` | NSScreenDidChange notification | `wp_fractional_scale_v1.preferred_scale` event → `rebuildFonts` (L8-δ) | ✅ | ✅ | ✅ |
 | Drag-resize 사용자 차단 | 사용자가 크기 못 바꿈 | `WS_POPUP` styleMask | borderless + non-resizable | layer-shell 본질 (위 동등) | ✅ | ✅ | ✅ |
 
 ### 1.1 UI metric scaling (cross-platform)
@@ -83,7 +83,7 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 |---|---|---|---|---|
 | Scale source | — | `GetDpiForWindow(hwnd) / 96.0` | `[window backingScaleFactor]` | `wp_fractional_scale_v1.preferred_scale / 120`, 미advertise 시 `wl_output` 정수 scale fallback (#210/#238). KWin · mutter · wlroots · cosmic-comp 은 fractional 을 내주고 **Cinnamon (muffin) 은 내주지 않아** 정수 fallback 으로 간다 (2026-09-03 실측) |
 | Scale 재계산 시점 | — | `WM_DPICHANGED` + startup | `NSScreenDidChange` notification + 매 resize | `preferred_scale` event |
-| Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `applyScale(scale_num, scale_den)` |
+| Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `rebuildFonts(spec, scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
 | `TERMINAL_PADDING_PT` | 6 | `App.TERMINAL_PADDING` | `pad_px` | `Renderer.paddingPx()` |
 | `SCROLLBAR_W_PT` | 10 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
@@ -825,6 +825,24 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 쓴다** — 셋이 각자 재면 같은 창에서 platform 마다 다른 자리에 뜬다. 마우스 히트 테스트도 그
 값을 본다 (그린 것과 같은 사각형이어야 한다).
 
+### 2.10 글자 크기 ([#679](https://github.com/ensky0/tildaz/issues/679) · [#693](https://github.com/ensky0/tildaz/issues/693))
+
+터미널 글자 크기를 실행 중에 1pt 씩 바꾼다. **창 전체에 한 번 적용**된다 — 모든 탭 · pane 이 같은 크기다. 탭바 · 다이얼로그 글자는 그대로다 (탭바 글자는 원래 터미널 글자와 따로다, [#272](https://github.com/ensky0/tildaz/issues/272)). 창 크기도 그대로고 칸 수가 바뀐다. 아래 표의 platform 열은 실기 확인 뒤 ✅ 로 바꾼다 — macOS 는 2026-10-02 MacBook Pro (M5 Pro) · 외장 60 Hz 에서 확인했다 (단축키 여섯 · 탭 둘 · pane 둘 · `-size` 무시). **재시작하면 `font.size_point` 로 돌아간다** — config 에 쓰지 않는다.
+
+| 동작 | Windows | macOS | Linux | Win | Mac | Linux |
+|---|---|---|---|---|---|---|
+| 크게 | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | `⌘=` · `⇧⌘=` · `⌘plus` | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | 확인 필요 | ✅ | 확인 필요 |
+| 작게 | `Ctrl+Shift+-` | `⌘-` | `Ctrl+Shift+-` | 확인 필요 | ✅ | 확인 필요 |
+| 설정 크기로 | `Ctrl+Shift+Backspace` | `⌘0` · `⇧⌘⌫` | `Ctrl+Shift+Backspace` | 확인 필요 | ✅ | 확인 필요 |
+
+- **범위는 `font.size_point` 와 같은 8–72pt** 다. 한 상수 (`terminal_size.MIN_SIZE_POINT` · `MAX_SIZE_POINT`) 를 config 검사와 함께 쓴다. 끝에서 더 누르거나 이미 설정 크기인데 되돌리면 아무 일도 없다 (폰트를 다시 만들지 않는다).
+- **글자 크기 상태는 [`src/font/terminal_size.zig`](src/font/terminal_size.zig) 한 곳**이고, 세 platform 의 renderer 는 그 값의 `spec()` 을 `rebuildFonts(spec, scale)` 로 받는다. 배율 변경 (Windows DPI · macOS `backingScaleFactor` · Linux `preferred_scale`) 과 **같은 함수**다 — 다른 것은 배율 타입뿐이다 (Linux `n/120` · Windows DPI · macOS float).
+- **Linux · Windows 의 되돌리기가 `0` 이 아닌 이유** — Windows 의 IME 직접 전환 단축키 (`HKCU\Control Panel\Input Method\Hot Keys\00000104`) 가 `Ctrl+Shift+0` 을 가져가 앱에 닿지 않는다 ([실측](https://github.com/ensky0/tildaz/issues/693#issuecomment-5946546454)). kitty 와 같은 `Ctrl+Shift+Backspace` 로 했다. macOS 는 OS 전역의 "실제 크기" 자리 `⌘0` 을 쓰고, `⇧⌘⌫` 를 함께 둔다 — 숫자에 Shift 가 필요한 AZERTY 에서는 `⌘0` 이 `⇧⌘à` 가 되어 `⇧⌘0` (pane 균등) 에 먹힌다. `⌘⌫` 는 macOS 의 "줄 앞까지 지우기" 라 쓰지 않는다.
+- **`⇧⌘=` 를 따로 둔 이유** — US 에서 `⌘+` 는 실제로 `⇧⌘=` 다. Linux · Windows 는 원래 Shift 를 쓰므로 `ctrl+shift+=` 하나로 된다 (Shift 를 적은 binding 은 무시프트 값으로도 맞는다 — §7.1). `plus` 는 독일어처럼 `+` 키가 따로 있는 배열용이다.
+- **Windows 의 `Ctrl+Shift+-` 는 `WM_CHAR 0x1f` 도 만든다.** `Ctrl` · `Shift` 가 함께 눌린 `WM_CHAR` 는 이미 버리므로 셸로 새지 않는다 (`window.zig` 의 `WM_CHAR`).
+- **`-size` 회차는 무시하고 로그만 남긴다** — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를 지킬 수 없다. Linux 는 격자가 화면에 안 들어가면 실행을 끝내기까지 한다 (`guardRequestedGridFits`).
+- 로그는 세 platform 이 같은 줄이다 — `[font] terminal font size increase — 16 pt, cell 9x20 px` (`log.logFontSize`).
+
 ## 3. 마우스 동작
 
 | 동작 | 위치 | Windows | macOS | Linux | Win | Mac | Linux |
@@ -1440,18 +1458,29 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 | `alt` / `option` / `opt` | Alt | `option` / `opt` 은 mac 친숙 표기 |
 | `cmd` / `command` / `super` / `win` / `meta` / `logo` | Super | 모두 같은 키 — Win key / Super / Cmd / KDE Meta / Qt Logo. 어떤 표기든 받음 |
 
-**Key 토큰** (대소문자 무관). 세 OS 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거치므로 수용 범위가 아래 표로 동일하고, OS 별 차이는 key code 매핑(keysym / vkey / kVK)뿐:
+**Key 토큰** (대소문자 무관). 전역 `hotkey` 와 `[keys]` 가 공통 토크나이저(`config.zig` `parseHotkeyString`, [#294](https://github.com/ensky0/tildaz/issues/294) G1)를 거친다. 받는 범위는 아래 표 하나가 정하고, 키마다 **무엇으로 맞추는지**가 platform 마다 다르다 — 이 표가 그 차이의 단일 출처다 ([#693](https://github.com/ensky0/tildaz/issues/693)). 위치 표기 (`[KeyW]`) 는 이 표 밖이다 (아래 `physical_key.zig`).
 
-| 분류 | 토큰 / 글자 | Linux native backend 변환 |
-|---|---|---|
-| Function key | `f1` ~ `f12` | ✅ |
-| Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ |
-| Digit | `0` ~ `9` | ✅ |
-| Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ |
-| Page key | `pageup` / `pgup`, `pagedown` / `pgdn` | ✅ — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
-| Bracket | `bracketleft` / `[`, `bracketright` / `]` | ✅ — `[keys]` 의 `prev_tab` / `next_tab` 기본값이 쓴다 ([#493](https://github.com/ensky0/tildaz/issues/493)) |
-| Backtick | `grave` / `backquote` (이름) 또는 `` ` `` (글자) | ✅ |
-| 기타 literal ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `-` `_` `=` `+` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `/` `?` `\` `|` | ❌ — `LinuxHotkey.fromString`이 명시 reject(#208). caller가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)`로 즉시 알린다. 수용 범위 확대는 모든 native backend의 실제 key-code mapping 검증 후 별도 진행한다. |
+| 분류 | 적는 법 | 전역 `hotkey` | `[keys]` | Linux 가 맞추는 것 | macOS 가 맞추는 것 | Windows 가 맞추는 것 |
+|---|---|---|---|---|---|---|
+| Function key | `f1` ~ `f12` | ✅ (수식키 없이도) | ✅ | keysym | keycode | VK |
+| Latin letter | `a` ~ `z` (또는 `A` ~ `Z`) | ✅ | ✅ | 키가 낸 글자 (keysym) | 키가 낸 글자 (#496 항목 2) | VK — 라틴 배열은 그 글자 키, 비라틴은 US 자리 (layout DLL) |
+| Digit | `0` ~ `9` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | VK |
+| Named special | `space`, `tab`, `escape` / `esc`, `return` / `enter` | ✅ | ✅ | keysym | keycode | VK |
+| Page key | `pageup` / `pgup` / `page_up`, `pagedown` / `pgdn` / `page_down` | ✅ | ✅ | keysym | keycode | VK — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
+| Arrow | `left` `right` `up` `down` | ✅ | ✅ | keysym | keycode | VK ([#483](https://github.com/ensky0/tildaz/issues/483)) |
+| Backspace | `backspace` | ❌ | ✅ | keysym | keycode | VK ([#693](https://github.com/ensky0/tildaz/issues/693)) |
+| Backtick | `` ` `` 또는 `grave` / `backquote` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_3` ⚠️ |
+| Bracket | `[` `]` 또는 `bracketleft` / `bracketright` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_4` / `VK_OEM_6` ⚠️ ([#493](https://github.com/ensky0/tildaz/issues/493)) |
+| Slash | `/` 또는 `slash` | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_2` ⚠️ ([#682](https://github.com/ensky0/tildaz/issues/682)) |
+| Equal · Minus | `=` `-` 또는 `equal` / `minus` | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_PLUS` / `VK_OEM_MINUS` ⚠️ ([#693](https://github.com/ensky0/tildaz/issues/693)) |
+| Plus | `plus` (이름만 — `+` 는 구분자) | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_PLUS` ⚠️ — US 의 `=+` 키이자 독일어의 `+` 키 |
+| 그 밖의 ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `_` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `?` `\` `|` | ❌ | ❌ | — | — | — |
+
+- **기호는 글자와 이름 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다. 이름은 kitty 와 같다 ([`kitty/options/definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py)). 앱의 hotkey 캡처는 `` ` `` 를 `grave` 로, Linux 의 `[` 를 `bracketleft` 로 config 에 쓴다 — 그래서 이름을 빼는 쪽으로는 통일할 수 없었다.
+- **⚠️ Windows 의 기호 키는 라벨도 위치도 아니다.** `VK_OEM_*` 는 layout DLL 이 배정하는 슬롯이라 배열마다 다른 물리 키로 옮겨 다닌다 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27` — AGENTS.md `# Windows — 키보드 layout 조회 실측 방법`). 대부분의 배열에서는 그 기호가 인쇄된 키지만 보장은 없다. 그런 배열에서는 위치 표기를 쓴다 (CONFIG.md 의 *Symbol keys on Windows*). 프랑스어 AZERTY 의 `VK_OEM_MINUS` · `VK_OEM_PLUS` 자리는 **확인 필요**.
+- **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다** (`lookupAction` 의 `try_unshifted`). 그래서 US 의 `ctrl+shift+=` (키가 낸 글자 `+`) 가 `=` binding 에 맞는다. Windows 는 VK 가 Shift 와 무관해 이 규칙이 필요 없다.
+- **전역 `hotkey` 가 받는 키는 모든 표에 이름이 있어야 한다** — Linux 등록 이름 (`linuxKeysymName`) · KDE (`kglobalaccel.qtKey`) · GNOME · Cinnamon 확장 (`_toAccel`) · 세 OS 의 캡처 표. 하나라도 빠지면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon · sway — `hotkey_format.gtkName`) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다. #693 이전에는 방향키가 Linux 의 모든 표에, `PageUp` · `PageDown` 이 KDE 와 확장 표에, 괄호가 확장 표에 없었다 (확장은 `<Control>pageup` 처럼 GTK 가 모르는 이름을 냈다). `config.zig` 의 #693 테스트가 이 표들을 맞춘다. 채운 뒤의 Linux 데스크톱 실기는 **확인 필요**.
+- **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 알린다.
 
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
@@ -1591,6 +1620,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 | 범위 밖 숫자 | **clamp** | "100 으로 제한했습니다" — 기본값으로 되돌리지 않는다. 사용자 의도 ("아주 크게") 에 더 가깝다 |
 | `[keys]` 리스트의 한 항목 | **나쁜 항목만** 버린다 | 나머지는 그대로 쓴다. 다 빠지면 그 액션은 기본 바인딩 |
 | `[keys]` 충돌 (두 액션이 같은 조합) | **먼저 나온 것을 살린다** | 파일을 위에서 아래로 읽는 순서와 같아 설명하기 쉽다 |
+| `[keys]` 같은 액션 안의 중복 | **조용히 하나로 합친다** | 안내하지 않는다. 원한 동작은 이미 걸려 있다. 같은 글자가 platform 마다 다르게 풀리므로 판정은 풀린 값으로 한다 — Windows 는 `=` · `plus` 가 같은 키 (`VK_OEM_PLUS`) 라 기본값의 `ctrl+shift+=` · `ctrl+shift+plus` 가 한 조합이 된다 ([#693](https://github.com/ensky0/tildaz/issues/693)) |
 | `[keys]` 개수 초과 | 상한까지만 | 나머지는 버렸다고 안내 |
 | 이름이 바뀐 키 | 위 둘로 저절로 처리된다 | 옛 이름은 "지우세요", 새 이름은 "기본값을 씁니다" 가 함께 뜬다 |
 
@@ -2305,7 +2335,7 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 | 같은 회차 | 4096² → 8192² 시점 | `clusters 15,441` |
 | 같은 회차 | **8192² 가 찬 시점** | `glyphs 195` + `clusters 56,835` = **57,030** (`filled_y 8,165`) |
 
-**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`applyScale`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
+**상한에 닿는 조건은 "한 화면" 이 아니라 "한 세션의 누적" 이다.** atlas 는 캐시라 과거에 그린 글리프도 남고, 비워지는 것은 배율 · 폰트 변경 때 (`rebuildFonts`) 와 ① 안전망뿐이다. 5120×2880 화면에 들어가는 최대 셀이 269 × 73 = 19,637 이라 **한 화면으로는 8192² (약 57,000 종) 에 못 닿지만**, 한 세션에서 서로 다른 cluster 를 그만큼 넘게 보면 닿는다 — 다국어 텍스트를 오래 보는 사용자에게는 도달 가능한 조건이다. 위 macOS 행이 그 실측이다: 서로 다른 cluster 96,768 종을 17 화면으로 누적해 56,835 종에서 찼고, ① 이 한 번 돌아 (`atlas full` 1 회 = `pack fail` 1 회, 거짓 full 없음) 비운 뒤 정상 복귀했다.
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 

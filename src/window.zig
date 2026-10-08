@@ -9,6 +9,7 @@ const paths = @import("paths.zig");
 const perf = @import("perf.zig");
 const dwrite_font = @import("font/windows/font.zig");
 const font_spec = @import("font/spec.zig");
+const terminal_size = @import("font/terminal_size.zig");
 const config_mod = @import("config.zig");
 const physical_key = @import("physical_key.zig");
 const key_encode = @import("key_encode.zig");
@@ -525,7 +526,7 @@ pub const Window = struct {
     /// #242). 스크롤백 올린 상태에서 조합 시작 시 preedit 이 안 보이는 것 방지.
     /// macOS/Linux 는 preedit 경로에서 이미 호출 — Windows 만 빠져 있었음.
     scroll_to_bottom_fn: ?*const fn (?*anyopaque) void = null,
-    /// Invoked after `rebuildFontForDpi` finishes so the app (renderer / UI
+    /// Invoked after `rebuildFonts` finishes so the app (renderer / UI
     /// layout) can re-raster glyphs and rescale DPI-dependent constants
     /// before `SetWindowPos` cascades into `WM_SIZE`.
     font_change_fn: ?*const fn (*Window, ?*anyopaque) void = null,
@@ -543,7 +544,7 @@ pub const Window = struct {
     shell_exited: bool = false,
     dc: HDC = null, // DC for GDI font measurement
 
-    // Font-creation parameters — remembered so `rebuildFontForDpi` can
+    // Font-creation parameters — remembered so `rebuildFonts` can
     // recreate the GDI font and re-measure cell metrics at the new DPI
     // when `WM_DPICHANGED` fires.
     /// font.family chain — `[0]` 이 primary (GDI CreateFontW 의 face name + 셀
@@ -552,11 +553,12 @@ pub const Window = struct {
     /// 동일 크기 — 동기화 유지.
     font_chain: [8][*:0]const WCHAR = undefined,
     font_chain_count: u8 = 0,
-    terminal_font: font_spec.Spec = .{
+    /// #693 — 터미널 글자 크기. 셀 측정과 renderer 가 이 값의 `spec()` 을 쓴다.
+    font_size: terminal_size.TerminalFontSize = terminal_size.TerminalFontSize.init(.{
         .size_logical = 15.0,
         .cell_width_ratio = 1.0,
         .line_height_ratio = 1.1,
-    },
+    }),
     current_dpi: UINT = 96,
 
     // Last position parameters — re-applied on WM_DISPLAYCHANGE / WM_DPICHANGED /
@@ -781,19 +783,19 @@ pub const Window = struct {
         const disable: BOOL = .TRUE;
         _ = DwmSetWindowAttribute(self.hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, @sizeOf(BOOL));
 
-        // Remember font chain + font-creation parameters so `rebuildFontForDpi`
+        // Remember font chain + font-creation parameters so `rebuildFonts`
         // can recreate the font + re-measure cell metrics on DPI changes.
         const limit = @min(font_chain.len, self.font_chain.len);
         for (font_chain[0..limit], 0..) |fam, i| self.font_chain[i] = fam;
         self.font_chain_count = @intCast(limit);
-        self.terminal_font = terminal_font;
+        self.font_size = terminal_size.TerminalFontSize.init(terminal_font);
 
-        // DC must exist before `rebuildFontForDpi` measures cell metrics.
+        // DC must exist before `rebuildFonts` measures cell metrics.
         self.dc = GetDC(self.hwnd);
 
         const dpi = GetDpiForWindow(self.hwnd);
         const init_dpi: UINT = if (dpi > 0) dpi else 96;
-        self.rebuildFontForDpi(init_dpi);
+        self.rebuildFonts(self.font_size.spec(), init_dpi);
 
         // #386 — 프레임 clock 시작 (이전엔 여기서 `SetTimer(…, 16, …)` 이었다).
         self.startFrameClock();
@@ -814,7 +816,7 @@ pub const Window = struct {
     /// TildaZ 와 같은 키에 두 프로세스가 반응하므로). 그 정책을 `init` 의 인자로
     /// 넘기면서 `vkey 0` 을 "등록하지 않는다" 는 뜻으로 쓰고 `init` 한복판에서
     /// `return` 했던 것이 사고였다: 그 `return` 이 뒤따르는 font chain 저장 · `GetDC` ·
-    /// `rebuildFontForDpi` · 렌더 타이머까지 함께 삼켜서, 측정 인스턴스가 **셀 메트릭을
+    /// `rebuildFonts` · 렌더 타이머까지 함께 삼켜서, 측정 인스턴스가 **셀 메트릭을
     /// 재지 않은 기본값** (`cell_width_px` / `cell_height_px` = 8x16) 으로 떴다
     /// (Windows 실기: 같은 config 인데 정상 인스턴스 `cell=9x20` vs 측정 인스턴스
     /// `cell=8x16`). 그 상태로 `-size` 가 창을 만들면 격자 *수*는 맞아도 셀당 픽셀이
@@ -993,6 +995,9 @@ pub const Window = struct {
 
     /// (Re)create the GDI font at `new_dpi` and re-measure cell metrics.
     ///
+    /// #693 — 세 platform 공통 이름 `rebuildFonts` 를 쓴다. Windows 는 셀 측정이 창
+    /// (GDI · DWrite) 에 있어 이 함수와 renderer 의 `rebuildFonts` 둘로 나뉜다.
+    ///
     /// Called from `init` for the first build, and from the `WM_DPICHANGED`
     /// handler when the window moves between monitors with different DPI
     /// scales so glyphs are rasterized at the new monitor's pixel density
@@ -1001,12 +1006,12 @@ pub const Window = struct {
     /// After this returns, `cell_width` / `cell_height` reflect the new DPI;
     /// call `font_change_fn` so the renderer can rebuild its DirectWrite
     /// font context + glyph atlas at the matching `pixels_per_dip`.
-    pub fn rebuildFontForDpi(self: *Window, new_dpi: UINT) void {
+    pub fn rebuildFonts(self: *Window, terminal_font: font_spec.Spec, new_dpi: UINT) void {
         // Release previous font (if any) before creating a replacement.
         if (self.font) |prev| _ = DeleteObject(prev);
 
         const effective_dpi: u32 = if (new_dpi > 0) new_dpi else 96;
-        const scaled_font_size: c_int = @intCast(self.terminal_font.physicalSizeRatioCeilPx(effective_dpi, 96));
+        const scaled_font_size: c_int = @intCast(terminal_font.physicalSizeRatioCeilPx(effective_dpi, 96));
 
         // GDI CreateFontW 는 single face — chain 의 primary (chain[0]) 만 셀
         // 메트릭 (advance width / line height) 측정에 사용. 글리프 폴백은
@@ -1040,11 +1045,11 @@ pub const Window = struct {
         // GDI tm.tmHeight 는 ascent+descent rounding 에 더해 tmExternalLeading
         // 까지 포함해서 cell_h 가 4px 정도 부풀려짐 (Cascadia em=24 기준 32 vs
         // 자연 28). DWrite asc+desc+lineGap 으로 가면 28 — WT 와 정합.
-        const font_size_px = self.terminal_font.physicalSizeRatioPx(effective_dpi, 96);
+        const font_size_px = terminal_font.physicalSizeRatioPx(effective_dpi, 96);
         const measured = dwrite_font.measureCell(primary_family, font_size_px) catch null;
         if (measured) |m| {
-            self.cell_width_px = @intCast(font_spec.ceilPositivePx(m.cell_w * self.terminal_font.cell_width_ratio));
-            self.cell_height_px = @intCast(font_spec.ceilPositivePx(m.cell_h * self.terminal_font.line_height_ratio));
+            self.cell_width_px = @intCast(font_spec.ceilPositivePx(m.cell_w * terminal_font.cell_width_ratio));
+            self.cell_height_px = @intCast(font_spec.ceilPositivePx(m.cell_h * terminal_font.line_height_ratio));
         } else if (self.dc != null and self.font != null) {
             // DWrite 측정 실패 fallback — GDI tm. 사용자 환경에서 이 path 거의
             // 안 탐 (font 사전 검증 통과 후라).
@@ -1053,8 +1058,8 @@ pub const Window = struct {
             _ = GetTextMetricsW(self.dc, &tm);
             const base_w: f32 = @floatFromInt(tm.tmAveCharWidth);
             const base_h: f32 = @floatFromInt(tm.tmHeight);
-            self.cell_width_px = @intCast(font_spec.ceilPositivePx(base_w * self.terminal_font.cell_width_ratio));
-            self.cell_height_px = @intCast(font_spec.ceilPositivePx(base_h * self.terminal_font.line_height_ratio));
+            self.cell_width_px = @intCast(font_spec.ceilPositivePx(base_w * terminal_font.cell_width_ratio));
+            self.cell_height_px = @intCast(font_spec.ceilPositivePx(base_h * terminal_font.line_height_ratio));
             _ = SelectObject(self.dc, old_f);
         }
 
@@ -2531,7 +2536,7 @@ pub const Window = struct {
                 // returning 0 prevents the default proc from auto-resizing
                 // to it, so our own layout wins.
                 const new_dpi: UINT = @intCast(wParam & 0xFFFF);
-                self.rebuildFontForDpi(new_dpi);
+                self.rebuildFonts(self.font_size.spec(), new_dpi);
                 if (self.font_change_fn) |f| f(self, self.userdata);
                 // 숨겨진 창이면 applyLayout 건너뜀 — `show()` 에서 재적용.
                 if (self.visible) self.applyLayout();
@@ -3169,6 +3174,7 @@ pub const Window = struct {
             .zoom_pane => .zoom_pane,
             .close_pane => .close_pane,
             .find => .find,
+            .font_size => .{ .font_size = mapped.font_size orelse return },
         };
         if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).
