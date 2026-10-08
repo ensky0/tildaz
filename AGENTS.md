@@ -1932,7 +1932,7 @@ ANSI (한국어 환경은 cp949) 로 읽어 **그 뒤 줄들의 앞 글자가 �
 |---|---|---|
 | 노트북 · AMD Ryzen AI 7 350 (8C/16T) | **Windows · Linux 듀얼부트** | 2880x1800 · **120 Hz** (Linux scale 1.6 / Windows **150 %**) |
 | 노트북 · Intel Core i5-1240P (12C/16T) | **Windows · Linux 듀얼부트** | 1920x1080 · **59.997 Hz** (100 %) |
-| 데스크탑 · AMD Ryzen 5 5700G | **Windows · Linux 듀얼부트** | (미기록) |
+| 데스크탑 · AMD Ryzen 7 5700G | **Windows · Linux 듀얼부트** | Windows **150 %** · 논리 2560x1440 (물리 3840x2160 — 계산값) · **60 Hz** |
 | 미니PC · Firebat ZY-A8 · AMD Ryzen 7 8845HS (8C/16T) | **Windows · Linux 듀얼부트** (Linux 는 CachyOS) | 3840x2160 · **60 Hz** (Linux scale 1.7 → 논리 2259x1271) |
 | MacBook Pro (M5 Pro) | macOS | 내장 3024x1964 · **120 Hz** (ProMotion); 보통 clamshell + 외장 **60 Hz** |
 
@@ -2310,6 +2310,15 @@ Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
 - 켜는 법 (Windows 11): **설정 → 시스템 → 개발자용 (고급) → 개발자 모드 ON**. 재부팅 없이 바로 적용.
 - 이유: ghostty tarball 이 upstream [c09ade22](https://github.com/ghostty-org/ghostty/commit/c09ade22) (2026-05-29) 부터 `CLAUDE.md → AGENTS.md` **심볼릭 링크**를 담고 있어요. 우리 pin 은 [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d) (#266, 2026-07-08) 부터 해당. 심볼릭 링크 생성 권한이 없으면 fetch 가 `error: unable to unpack tarball ... unable to create symlink from 'CLAUDE.md' to 'AGENTS.md': AccessDenied` 로 실패해요 (Windows 실기에서 실측, 개발자 모드 ON 으로 해결 확인).
 - 그 이전 pin (3a1482d, 2026-04-21) 은 symlink 가 없어서 개발자 모드 없이도 빌드됐어요 — 과거 문서의 "Developer Mode 없어도 됩니다" 는 그 시점 기준.
+- **스마트 앱 컨트롤 (Smart App Control) 이 켜져 있으면 빌드가 시작도 못 해요.** zig 가 매번 새로 만드는 빌드 러너
+  (`<cache>\o\…\build.exe`) 가 서명이 없어서 막혀요 — `failed to spawn build runner … Unexpected` 로 끝나고, 직접 실행하면
+  `An Application Control policy has blocked this file` 이 나와요. 테스트 exe 와 `tildaz.exe` 도 같이 막혀요. 해시가 빌드마다
+  바뀌어서 파일 단위 예외로는 못 풀어요. 2026-10-08 데스크탑 Ryzen 7 5700G 에서 겪었어요 ([#693](https://github.com/ensky0/tildaz/issues/693#issuecomment-6062710767)).
+  - 확인: `(Get-MpComputerStatus).SmartAppControlState` 가 `On` 이거나 `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` 의
+    `VerifiedAndReputablePolicyState` 가 `1` 이면 켜진 거예요. 막힌 기록은 이벤트 로그 `Microsoft-Windows-CodeIntegrity/Operational`
+    에 `Smart App Control Block` 으로 남아요.
+  - 끄는 법: 설정 → 개인 정보 및 보안 → Windows 보안 → 앱 및 브라우저 컨트롤 → 스마트 앱 컨트롤 → 끔.
+    **⚠️ 한 번 끄면 Windows 를 다시 설치 (초기화) 하기 전에는 다시 켤 수 없어요.** 끌지는 사용자가 정해요 — 에이전트가 우회하지 않아요.
 - CI (**당시** `windows-2022` 러너 — 지금은 `windows-2025-vs2026`) 는 **별도 조치 없이 ghostty 본체 tarball unpack 성공 확인** — [`windows-fetch-check.yml`](.github/workflows/windows-fetch-check.yml) 수동 실행으로 검증 ([run 28923076087](https://github.com/ensky0/tildaz/actions/runs/28923076087), 2026-07-08 success). 현재 workflow 는 release.yml 의 top-level fetch와 같은 `-Dsimd=true`를 쓰지만, Zig 0.15의 empty-cache `--fetch`는 Ghostty 내부 highway/simdutf lazy dependency의 compile/link 검증이 아니에요. 그 검증은 실제 package job이 담당해요. ghostty pin을 올리면 태그 전에 fetch-check와 package를 모두 다시 실행해요.
 
 libxml2 는 여전히 `font-backend = .freetype` 으로 회피돼요 (아래 문단) — 개발자 모드는 ghostty 자체 tarball 때문에 필요한 것. 글로벌 캐시도 Windows 로컬(예 `C:/ziglang/tildaz-cache`)로 두면 빨라요 (`ZIG_GLOBAL_CACHE_DIR` 설정).
