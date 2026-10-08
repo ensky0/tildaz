@@ -42,6 +42,8 @@ KEYS = {
     "Escape": 1, "Return": 28, "Space": 57, "Tab": 15,
     "LeftCtrl": 29, "LeftShift": 42, "LeftAlt": 56, "LeftMeta": 125,
     "a": 30, "t": 20, "w": 17, "q": 16,
+    # #693 — 전역 hotkey 가 받는 글자 아닌 키.
+    "PageUp": 104, "PageDown": 109, "Left": 105, "Right": 106, "Up": 103, "Down": 108,
 }
 
 SETTLE = 5.0
