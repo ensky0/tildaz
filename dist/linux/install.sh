@@ -241,8 +241,8 @@ else
 fi
 
 # ~/.config/hypr/ — Hyprland 자동실행(`exec-once`/`hl.on`). Hyprland 은
-# XDG autostart 미지원이므로 실행된 TildaZ가 `hyprctl keyword bind`로
-# config_N별 native 단축키를 건다.
+# XDG autostart 미지원이므로 실행된 TildaZ가 config_N별 native 단축키를 건다
+# (.conf 는 `hyprctl keyword bind`, .lua 는 `hyprctl eval` 의 `hl.bind` — #695).
 # Hyprland 0.55+ 는 기본 config 가 Lua(hyprland.lua), 구버전/사용자는 hyprlang(.conf):
 #   - .conf → `exec-once = <bin>` (주석 #)
 #   - .lua  → `hl.on(...exec_cmd)` (주석 --)

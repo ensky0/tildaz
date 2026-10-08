@@ -207,7 +207,7 @@ tildaz 는 **Wayland 전용** (X11 backend 없음 — §0 / ARCHITECTURE 의 Des
 | compositor 카테고리 | layer-shell drop-down | hotkey 자동 적용 메커니즘 | 대표 DE | 상태 |
 |---|---|---|---|---|
 | **KWin** | ✅ layer-shell | direct KGlobalAccel D-Bus 등록·Pressed signal | KDE Plasma | ✅완료 (실기 확인) |
-| **wlroots** | Hyprland = ✅ layer-shell · sway = xdg_toplevel + i3 IPC 배치/scratchpad 토글 ([#454](https://github.com/ensky0/tildaz/issues/454) — sway 는 layer-shell `on_demand` 에서 map 시 keyboard focus 를 안 줌) | Hyprland = `hyprctl keyword bind`→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
+| **wlroots** | Hyprland = ✅ layer-shell · sway = xdg_toplevel + i3 IPC 배치/scratchpad 토글 ([#454](https://github.com/ensky0/tildaz/issues/454) — sway 는 layer-shell `on_demand` 에서 map 시 keyboard focus 를 안 줌) | Hyprland = `hyprctl keyword bind` (`.conf` 설정) · `hyprctl eval` 의 `hl.bind` (Lua 설정 — [#695](https://github.com/ensky0/tildaz/issues/695))→`tildaz --toggle N`, sway = `bindsym` i3-ipc→`--toggle N` | Hyprland / sway (Wayfire / river / niri 동계열) | ✅완료 (Hyprland / sway 실기 확인) |
 | **mutter** | tildaz 전용 Shell extension (xdg-shell 창 배치, 필수) | Shell extension `grab_accelerator` | GNOME (Ubuntu / Budgie / Pantheon 동계열) | ✅완료 (실기 확인) |
 | **muffin** | tildaz 전용 Shell extension (필수) | Shell extension `addHotKey` | Cinnamon | ✅완료 (실기 확인) |
 | **smithay** | ✅ layer-shell | RON custom shortcut→`tildaz --toggle N` | COSMIC | ✅완료 (실기 확인) |
