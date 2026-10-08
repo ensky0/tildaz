@@ -134,6 +134,7 @@ git rebase origin/main
 ```
 
 - **rebase 뒤에 검증을 다시 돌려요.** rebase 전에 통과한 `zig build check` / `zig build test` 는 base 가 바뀐 순간 무효예요. 충돌 없이 조용히 rebase 되면 "이미 통과했다" 고 착각하기 쉬운데, 그러면 rebase 가 만든 어긋남을 CI 가 처음 발견해요.
+- **커밋 본문 줄을 `#` 로 시작하지 않아요.** rebase 충돌을 풀고 `--continue` 하거나 amend 로 편집기를 거치면, git 이 `#` 로 시작하는 줄을 주석으로 보고 지워요 (편집기를 거칠 때 기본 cleanup 이 `strip` 이에요). 2026-10-08 [#693](https://github.com/ensky0/tildaz/issues/693) 에서 본문 첫 줄 `#679 요청이에요 …` 가 그렇게 사라졌고, Windows 기기에서 되살려 force push 했어요. 줄을 이슈 번호로 시작해야 하면 앞에 글자를 둬요 (`이슈 #679 …`). rebase 뒤에 `git range-diff <base>..<옛 tip> <base>..<새 tip>` 으로 견주면 메시지가 바뀐 커밋이 `!` 로 보여요.
 - **merge 가 아니라 rebase 예요.** PR 브랜치에 main 을 merge 하면 무관한 merge commit 이 섞여 리뷰가 흐려져요. merge commit 은 GitHub 이 PR 을 머지할 때 하나만 생기는 게 맞아요.
 - rebase 뒤 force push 는 자유롭게 해요 — 아래 `# 커밋 메시지` 의 규칙과 같아요 (검증이 끝난 뒤에).
 - 충돌이 문서 (`SPEC.md` · `AGENTS.md` · `CONFIG.md`) 에서 나면 *양쪽 서술을 다시 읽고* 합쳐요. 한쪽을 통째로 고르면 다른 PR 이 쓴 사실이 조용히 사라져요.
