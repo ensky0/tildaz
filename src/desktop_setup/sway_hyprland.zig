@@ -26,6 +26,7 @@ const std = @import("std");
 const Runtime = @import("../runtime.zig").Runtime;
 const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
+const exe_path = @import("../exe_path.zig");
 const log = @import("../log.zig");
 const console = @import("../console.zig");
 const messages = @import("../messages.zig");
@@ -112,7 +113,8 @@ const Ctx = struct {
 
 pub fn run(rt: Runtime, allocator: std.mem.Allocator, mode: Mode) !void {
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
+    // #706 — AppImage 면 임시 마운트 경로가 아니라 그 파일의 경로다.
+    const exe = try exe_path.persistent(rt, &exe_buf);
     const config_home = try paths.configHome(rt, allocator);
     defer allocator.free(config_home);
     const home = try rt.envAlloc(allocator, "HOME");
@@ -121,7 +123,7 @@ pub fn run(rt: Runtime, allocator: std.mem.Allocator, mode: Mode) !void {
         .rt = rt,
         .allocator = allocator,
         .mode = mode,
-        .exe = exe_buf[0..exe_len],
+        .exe = exe,
         .config_home = config_home,
         .home = home,
     };

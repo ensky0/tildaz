@@ -4,6 +4,7 @@ const config = @import("../config.zig");
 const instances = @import("../instances.zig");
 const log = @import("../log.zig");
 const paths = @import("../paths.zig");
+const exe_path = @import("../exe_path.zig");
 const instance_identity = @import("../host/linux/instance_identity.zig");
 const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const physical_key = @import("../physical_key.zig");
@@ -849,9 +850,8 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
     defer allocator.free(content);
 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
+    // #706 — 파일에 남는 명령이라 AppImage 면 임시 마운트 경로가 아니라 그 파일의 경로다.
+    const exe = try exe_path.persistent(rt, &exe_buf);
 
     // #700 — 줄이 아니라 항목 단위로 본다. 읽을 수 없는 파일은 **쓰지 않는다** — 그대로 두고 알린다.
     const map = cosmic_ron.scan(allocator, content) catch |err| {
@@ -1214,8 +1214,8 @@ fn rewriteCosmicPositionEntry(
     defer allocator.free(content);
 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
+    // #706 — 파일에 남는 명령이라 AppImage 면 임시 마운트 경로가 아니라 그 파일의 경로다.
+    const exe = try exe_path.persistent(rt, &exe_buf);
 
     const output = renderCosmicPositionRon(allocator, content, exe, index, key_name, modifiers) catch |err| {
         log.appendLine("cosmic", "shortcut file could not be edited safely — left unchanged: {s} ({s})", .{ @errorName(err), path });

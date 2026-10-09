@@ -2,6 +2,7 @@ const std = @import("std");
 const Runtime = @import("../../runtime.zig").Runtime;
 const app_id = @import("../../app_id.zig");
 const paths = @import("../../paths.zig");
+const exe_path = @import("../../exe_path.zig");
 
 /// #282 G14 — config index 상한 단일 소스 (`instances.max_config_index`). 이
 /// 값은 desktop entry 삭제 스윕이 순회할 최대 번호로도 쓰인다.
@@ -101,9 +102,8 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     defer allocator.free(path);
 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
-    const exe_len = try std.process.executablePath(rt.io, &exe_buf);
-    const exe = exe_buf[0..exe_len];
+    // #706 — AppImage 면 임시 마운트 경로가 아니라 그 파일의 경로다.
+    const exe = try exe_path.persistent(rt, &exe_buf);
     if (std.mem.findAny(u8, exe, "\n\r\"") != null) return error.UnsupportedExecutablePath;
 
     // **본문도 `app_id` 를 탄다** — 파일 *이름*만 가르면 그 항목이 릴리즈 창을 가리킨다.
