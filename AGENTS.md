@@ -871,9 +871,10 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 - **⚠️ `mac-input` 이 보낸 키는 2벌식에서 조합되지 않아요.** `g k s` 가 `한` 이 아니라 `ㅎㅏㄴ` 으로 따로
   확정돼요. 이벤트 소스를 `kCGEventSourceStateHIDSystemState` 로 만들어 보내면 `한` 으로 조합됐어요 (같은 회차
   실측). 한글 조합 칸은 그렇게 만든 소스로 보내요 — `mac-input` 의 `Private` 소스는 위 수식키 문제를 막으려고
-  고른 것이라 그대로 두었어요. 그리고 **조합 결과를 입력 소스 전환으로 확정하지 말아요.** 조합 중에 바꾸면
-  글자가 사라지는 회차가 있어요 ([#715](https://github.com/ensky0/tildaz/issues/715)) — 단축키나 Return 으로
-  확정한 뒤에 바꿔요.
+  고른 것이라 그대로 두었어요. 그리고 **조합 결과를 입력 소스 전환으로 확정하지 말아요.** 조합 중에 테스트
+  도구가 TIS 로 직접 바꾸면 (`mac-input ime-set` · `ime-ascii`) 글자가 사라졌다가 다음 확정 때 두 번 들어가는
+  회차가 있어요 — 단축키 · 메뉴 막대로 바꿀 때는 40 회 동안 안 났어요 ([#715](https://github.com/ensky0/tildaz/issues/715#issuecomment-6085605195)).
+  단축키나 Return 으로 확정한 뒤에 바꿔요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
