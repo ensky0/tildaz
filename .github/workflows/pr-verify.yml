@@ -15,7 +15,7 @@
 # `verify (macos)` · `verify (windows)` 를 돌려 각 러너에서 `zig build` 와 `zig build test` 까지
 # 한다 — 이름은 `release.yml` 의 `release-linux` · `release-macos` · `release-windows` 와 짝이다.
 # cross-compile `check` 와 `zig fmt --check` 는 platform 과 무관하므로 linux 에서만 돈다.
-# 러너별 걸림돌 (Windows cross-drive zig cache · fetch 의 일시적 HTTP 실패) 은
+# 러너별 걸림돌 (fetch 의 일시적 HTTP 실패 · zig 캐시 위치) 은
 # `.github/actions/setup-zig` 가 담고 `release.yml` 과 한 벌로 쓴다 — step 을 복제하면 두 벌이
 # 갈린다 (#499 가 남긴 이유). `main` 의 required check 는 `verify (linux)` — macOS · Windows 는
 # 안정된 뒤 더한다 (#607 ③).
@@ -111,13 +111,21 @@ jobs:
 
       # 로컬 검증이 이 플래그로 돌므로 CI 도 같은 조합을 본다 — 기본값과 codegen 이
       # 다르다. 서명은 release 전용이라 여기서는 서명 없이 빌드만 한다.
+      # `--summary all` — 단계마다 캐시에서 왔는지 (`cached`), 다시 빌드했으면 몇 초 걸렸는지를 찍는다.
+      # 빌드가 느려졌을 때 어느 단계인지 로그만 보고 가를 수 있다 (#704 의 원인을 이것으로 찾았다).
+      #
+      # `-Dcpu=baseline` — **러너의 CPU 가 회차마다 다르다** (#704 실측: 같은 커밋인데 Windows 는 EPYC 7763
+      # (`znver3`) · EPYC 9V74 (`znver4`), Linux 는 EPYC 7763 · Xeon 8370C). 대상이 `native` 면 CPU 기능이
+      # 캐시 키에 들어가서, 다른 CPU 가 오면 앱 본체를 처음부터 다시 컴파일한다 (Windows 1~2분 · Linux
+      # 20~53초). 기본 CPU 로 고정하면 어느 러너가 와도 캐시가 맞는다. 릴리즈도 `-Dtarget` 을 명시해
+      # 기본 CPU 로 빌드하므로 검증 대상이 릴리즈와 같아진다.
       - name: Build (simd)
         shell: bash
-        run: zig build -Dsimd=true
+        run: zig build -Dsimd=true -Dcpu=baseline --summary all
 
       - name: Test
         shell: bash
-        run: zig build test
+        run: zig build test -Dcpu=baseline --summary all
 
       # 캐시 전략은 크기가 정한다. #652 본문의 "1.0 GB" 는 로컬 추정이었는데 실제로는
       # 훨씬 작았다 (macOS 로컬 137 MB). OS 마다 다르므로 각 잡에서 찍어 둔다.

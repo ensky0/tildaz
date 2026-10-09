@@ -59,11 +59,10 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      # zig 설치는 `.github/actions/setup-zig` 한 벌 (#607) — 버전은 build.zig.zon 에서 읽고,
-      # Windows 는 ZIG_GLOBAL_CACHE_DIR 을 RUNNER_TEMP (checkout 과 같은 D:) 로 두어 cross-drive
-      # convertPathArg assert 를 피한다 (그래서 setup-zig 의 use-cache 도 action 이 끈다). mlugg/setup-zig
-      # 자체의 mirror fallback · v2.2.0+ 파일명 fix 이력은 action 파일 머리에 있다.
-      - uses: ./.github/actions/setup-zig   # 버전은 build.zig.zon · Windows cache 드라이브 포함 (#607)
+      # zig 설치는 `.github/actions/setup-zig` 한 벌 (#607) — 버전은 build.zig.zon 에서 읽는다. zig 캐시는
+      # 세 OS 모두 checkout 안의 `.zig-cache` 라 Windows 도 같은 D: 드라이브다 ([#704](https://github.com/ensky0/tildaz/issues/704) — #80 의 cross-drive
+      # convertPathArg assert 가 생기지 않는다). 자세한 이력은 action 파일 머리에 있다.
+      - uses: ./.github/actions/setup-zig   # 버전은 build.zig.zon (#607)
 
       - name: Verify Zig
         shell: bash
@@ -250,8 +249,7 @@ jobs:
           ref: ${{ steps.vars.outputs.tag }}
           fetch-depth: 1
 
-      # mlugg/setup-zig — community mirror list fallback 내장. Windows job 의
-      # cross-drive 이슈는 macOS 에 없어 use-cache 도 default (true) 로 둠.
+      # mlugg/setup-zig — community mirror list fallback 내장. 캐시 설정은 action 이 세 OS 를 같게 둔다.
       - uses: ./.github/actions/setup-zig   # 버전은 build.zig.zon (#607)
 
       - name: Verify Zig
