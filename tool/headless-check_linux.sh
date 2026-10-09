@@ -453,9 +453,8 @@ cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액
     # 포인터를 처음 꽂은 뒤에는 같은 자리로 움직여도 진입 (enter) 이 안 와서 구석까지 크게 움직인다.
     local PLUS="1540 14" MORE="1588 14"
     ptr "move 0 0" "move 1599 999" "move 1200 500"; sleep 0.5
-    # `⋯` → End → ↑ 네 번 = *Fullscreen*. 메뉴의 ↑ · ↓ 는 `Command` enum 차례로 움직이는데 화면 차례
-    # (`command_menu.entries`) 와 앞쪽이 갈려 있어서 (Close Tab 자리), 두 차례가 같은 끝쪽을 쓴다.
-    # 메뉴의 전체화면은 상태 기준 토글이라 두 번 눌러 켜고 끈다 (`fullscreenKind` 훅).
+    # `⋯` → End → ↑ 네 번 = *Fullscreen*. 메뉴의 전체화면은 상태 기준 토글이라 두 번 눌러 켜고 끈다
+    # (`fullscreenKind` 훅).
     base=$(wc -l < $L)
     menu_fullscreen() {
         ptr "move $MORE"; sleep 0.3; ptr "click left"; sleep 0.8
@@ -464,6 +463,12 @@ cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액
     menu_fullscreen; step "menu → Fullscreen"     Return 'fullscreen → cover'
     sleep 0.5; ptr "move 1200 500"; sleep 0.3
     menu_fullscreen; step "menu → Fullscreen off" Return 'fullscreen → none'
+    # #712 — `⋯` → Home → ↓ 세 번 = *Split Right*. 화면 차례는 Show/Hide · New Tab · Close Tab ·
+    # Split Right 다. 키 이동이 enum 차례였을 때는 여기서 *Split Down* 이 실행됐다.
+    sleep 0.5; ptr "move 1200 500"; sleep 0.3
+    ptr "move $MORE"; sleep 0.3; ptr "click left"; sleep 0.8
+    snd "key home" "key down" "key down" "key down"; sleep 0.3
+    step "menu → Split Right (#712)" Return 'split right — tab [0-9]+ has 2 panes'
     # `+` = 새 탭. 분할이 아니어야 한다.
     ptr "move $PLUS"; sleep 0.3; ptr "click left"
     local i; for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -q 'new tab cwd=' && break; done
