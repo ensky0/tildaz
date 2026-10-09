@@ -9,6 +9,7 @@ const host = switch (builtin.os.tag) {
 const autostart = @import("autostart.zig");
 const config = @import("config.zig");
 const console = @import("console.zig");
+const desktop_setup = @import("desktop_setup.zig");
 const instance_context = @import("instance_context.zig");
 const instance_request = @import("instance_request.zig");
 const instances = @import("instances.zig");
@@ -95,6 +96,7 @@ pub fn main(init: std.process.Init) void {
     var worker_index: ?u32 = null;
     var autostart_launch = false;
     var toggle_index: ?u32 = null;
+    var desktop_action: ?desktop_setup.Action = null;
     // #382 — 측정용 내부 옵션. 문서화하지 않는다 (`run_options.zig` 참고).
     var run_opts: run_options.RunOptions = .{};
 
@@ -155,6 +157,10 @@ pub fn main(init: std.process.Init) void {
             run_opts.scrollback = std.fmt.parseInt(usize, args[i], 10) catch exitInvalidValue(rt.io, arg, args[i]);
         } else if (std.mem.eql(u8, arg, "--autostart")) {
             autostart_launch = true;
+        } else if (std.mem.eql(u8, arg, "--desktop")) {
+            if (i + 1 >= args.len) exitOptionNeedsValue(rt.io, arg);
+            i += 1;
+            desktop_action = desktop_setup.parseAction(args[i]) orelse exitInvalidValue(rt.io, arg, args[i]);
         } else if (std.mem.eql(u8, arg, "--toggle")) {
             toggle_index = 0;
             if (i + 1 < args.len) {
@@ -174,6 +180,23 @@ pub fn main(init: std.process.Init) void {
             // 잘못 쳤는지 알 방법이 없었다.
             exitUnknownOption(rt.io, arg);
         }
+    }
+
+    // #700 — 데스크톱 설정을 고치는 일은 이 명령 한 곳에서 한다 (`desktop_setup.zig`). 창 ·
+    // worker lock · launcher 를 건드리지 않고 끝난다 — `install.sh` · `uninstall.sh` 가 부른다.
+    if (desktop_action) |action| {
+        if (!desktop_setup.supported) {
+            console.errLine(rt.io, messages.desktop_unsupported_msg);
+            std.process.exit(2);
+        }
+        initLogging(rt, arena);
+        desktop_setup.run(rt, init.gpa, action) catch |err| {
+            log.appendLine("desktop", "--desktop {s} failed: {s}", .{ @tagName(action), @errorName(err) });
+            var buf: [256]u8 = undefined;
+            console.errLine(rt.io, std.fmt.bufPrint(&buf, messages.desktop_failed_format, .{ @tagName(action), @errorName(err) }) catch @errorName(err));
+            std.process.exit(1);
+        };
+        std.process.exit(0);
     }
 
     // #198 — Linux native hotkey IPC. `tildaz --toggle N` 명령은

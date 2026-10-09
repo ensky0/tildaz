@@ -165,6 +165,12 @@ pub const request_endpoint_ready_timeout_msg =
     "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const toggle_unsupported_msg =
     "The --toggle option is only supported on Linux.";
+/// #700 — `tildaz --desktop add | remove | cleanup`. `install.sh` · `uninstall.sh` 가 부르고
+/// 사용자도 손으로 부를 수 있어 콘솔로 나간다.
+pub const desktop_unsupported_msg =
+    "The --desktop option is only supported on Linux.";
+pub const desktop_failed_format =
+    "tildaz: --desktop {s} failed: {s}\nThe details are in the TildaZ log.";
 
 /// #383 — CLI 출력. 창을 띄우기 전에 콘솔로 나가는 유일한 텍스트 묶음이라 dialog 를
 /// 거치지 않고 `console.zig` 가 직접 쓴다.
@@ -189,6 +195,9 @@ pub const help_text =
     \\                   config defaults to F1 for instance 0, F2 for 1, and so on.
     \\  --toggle [N]     Show or hide the running instance N (default: 0), then
     \\                   exit. Linux only.
+    \\  --desktop <add|remove|cleanup>
+    \\                   Add, remove, or tidy up what TildaZ puts in your desktop's
+    \\                   shortcut and startup settings, then exit. Linux only.
     \\  --autostart      Start the way the desktop session starts TildaZ.
     \\  -v, --version    Print the version, then exit.
     \\  -h, --help       Print this help, then exit.
