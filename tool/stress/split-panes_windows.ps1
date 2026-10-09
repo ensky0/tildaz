@@ -1,4 +1,4 @@
-﻿# 떠 있는 측정 인스턴스 (`TildaZ-stress` 창) 의 활성 탭을 **합성 키로 N 개 pane 으로 가른다** (Windows ·
+﻿# 떠 있는 측정 인스턴스 (`TildaZ-dev-stress` · 릴리즈 판은 `TildaZ-stress` 창) 의 활성 탭을 **합성 키로 N 개 pane 으로 가른다** (Windows ·
 # `measure-repeat.sh --panes N` 이 부른다). 앱은 pane 을 만들 때 producer 의 barrier 환경변수를 넣지 않으므로
 # 실제 앱 회차는 이렇게 분할한 뒤 `pane-runner_windows.ps1` 의 barrier 파일을 만들어 N 개 producer 를 함께 시작한다.
 #
@@ -11,7 +11,8 @@
 # 120 열은 3 열 상태에서 더 못 가른다 (`MIN_PANE_COLS` 20 — #551 macOS 회차) 라 반씩 가르는 순서를 지킨다.
 #
 # 단축키는 기본 바인딩 (`config.zig` Linux · Windows 기본값 — `ctrl+shift+방향` 분할 · `alt+방향` 포커스 ·
-# `shift+alt+0` 균등) 이고 **`config_9.toml` 이 있어야 산다** — `measure-repeat.sh` 가 만들고 지운다.
+# `shift+alt+0` 균등) 이다. `config_9.toml` 이 없어도 기본 바인딩이 든다 (#620 — 2026-10-10 #692 Windows
+# 회차에서 config 없이 8 pane 분할을 확인했다). `measure-repeat.sh` 는 사용자 `config_0.toml` 을 복사해 그 파일을 만들고 지운다.
 #
 # 규칙 — 키마다 foreground 가 그 창인지 확인하고 어긋나면 멈춘다 (`send-keys_windows.ps1` 과 같다). 덮인 창은 잠깐 TOPMOST
 # 로 올려 활성화한다. chord 는 `,@(…)` 로 감싼다 (PowerShell 이 원소 하나인 배열을 평탄화한다 — AGENTS.md).
@@ -21,8 +22,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][int]$Panes,
-    [string]$WindowTitle = 'TildaZ-stress',
-    [string]$WindowClass = 'TildaZWindow',
+    # 비워 두면 dev 판과 릴리즈 판 이름을 둘 다 찾는다 (#654 — 아래 `Find-StressWindow`).
+    [string]$WindowTitle = '',
+    [string]$WindowClass = '',
     # 창이 뜨기를 기다릴 시간.
     [int]$WaitMs = 15000,
     # 키 사이 간격 (ms). 분할은 새 셸 spawn 을 동반하니 넉넉히.
@@ -106,12 +108,26 @@ switch ($Panes) {
 }
 
 # 창 대기 — owner 창 (0x0) 도 같은 class 라 제목까지 준다.
+# 창 이름은 판마다 다르다 (#654, `src/instances.zig`) — dev 빌드 (기본) `TildaZ-devWindow` ·
+# `TildaZ-dev-stress`, 릴리즈 `TildaZWindow` · `TildaZ-stress`. 인자를 비워 두면 둘 다 찾고, 둘 다
+# 떠 있으면 어느 쪽을 가를지 모르니 멈춘다 (예전 고정값은 릴리즈 이름이라 기본 빌드를 못 찾았다).
+function Find-StressWindow {
+    if ($WindowTitle -ne '' -or $WindowClass -ne '') { return [TzSplit]::FindWindowW($WindowClass, $WindowTitle) }
+    $dev = [TzSplit]::FindWindowW('TildaZ-devWindow', 'TildaZ-dev-stress')
+    $rel = [TzSplit]::FindWindowW('TildaZWindow', 'TildaZ-stress')
+    if ($dev -ne [IntPtr]::Zero -and $rel -ne [IntPtr]::Zero) {
+        Write-Output "  ❌ dev 판과 릴리즈 판의 측정 창이 둘 다 떠 있어요 — -WindowTitle · -WindowClass 로 골라 주세요"
+        exit 3
+    }
+    if ($dev -ne [IntPtr]::Zero) { return $dev }
+    return $rel
+}
 $h = [IntPtr]::Zero; $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($h -eq [IntPtr]::Zero -and $sw.ElapsedMilliseconds -lt $WaitMs) {
-    $h = [TzSplit]::FindWindowW($WindowClass, $WindowTitle)
+    $h = Find-StressWindow
     if ($h -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
 }
-if ($h -eq [IntPtr]::Zero) { Write-Output "  ❌ 측정 창을 못 찾았어요 (class=$WindowClass title=$WindowTitle)"; exit 3 }
+if ($h -eq [IntPtr]::Zero) { Write-Output "  ❌ 측정 창을 못 찾았어요 (class=$WindowClass title=$WindowTitle — 비었으면 dev · 릴리즈 이름 둘 다 찾았어요)"; exit 3 }
 Start-Sleep -Milliseconds 800   # 첫 셸 (러너) 이 뜨고 레이아웃이 자리 잡을 시간
 if ($seq.Count -eq 0) { Write-Output "  pane 1 — 분할 없음"; exit 0 }
 if (-not [TzSplit]::Focus($h)) { Write-Output "  ❌ 측정 창이 활성이 아니에요 — 키를 보내지 않았어요"; exit 4 }

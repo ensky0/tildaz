@@ -44,6 +44,7 @@
 
 | 도구 | OS | 무엇 | 자세한 곳 (AGENTS.md) |
 |---|---|---|---|
+| [`actions-check_windows.ps1`](actions-check_windows.ps1) | Windows | 공통 처리부로 모은 액션 ([#692](https://github.com/ensky0/tildaz/issues/692)) 을 합성 키 · 마우스로 눌러 판정 — 단축키 · `⋯` 메뉴 · `+` · 배치 직후 커서 · IME 조합 중 액션 · 전역 hotkey · `Alt+F4` (Linux `headless-check_linux.sh actions` 의 짝) | `# Windows — 합성 입력으로 …` |
 | [`bands-check.py`](bands-check.py) | 무관 | 띠 화면 캡처의 세로 단면에서 리샘플 서명을 읽음 | `# Linux — headless sway …` |
 | [`clusters.py`](clusters.py) | 무관 | atlas · cluster 검증 화면 생성기 (`many` · `stack2` · `overflow` · `mini` · `bands`) | `# macOS — 렌더 결과와 …` |
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |

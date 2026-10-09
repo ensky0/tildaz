@@ -36,8 +36,9 @@ param(
     # 측정 인스턴스의 창. `instances.zig` 의 `stress_window_title` 과 `window.zig` 의
     # class 이름이다. **둘 다 준다** — class 를 쓰는 창이 둘이라 (숨겨진 owner 창 =
     # `TildaZOwner`, 실제 창 = 아래 title) class 만 주면 owner 를 집는다.
-    [string]$WindowTitle = 'TildaZ-stress',
-    [string]$WindowClass = 'TildaZWindow',
+    # **비워 두면 dev 판과 릴리즈 판 이름을 둘 다 찾는다** (#654 — 아래 `Find-StressWindow`).
+    [string]$WindowTitle = '',
+    [string]$WindowClass = '',
     # 한글 입력 상태에서 문자 키가 어떻게 되는지 보려는 회차. 기본은 영문으로 맞춘다.
     [switch]$KeepImeMode,
     # 마지막 종료 키 (Ctrl+Shift+W) 를 보내지 않는다 — 창을 남겨 두고 확인할 때.
@@ -221,9 +222,25 @@ $VK = @{
 }
 
 # --- 창 찾기 ---------------------------------------------------------------
-$hwnd = [TzInput]::FindWindowW($WindowClass, $WindowTitle)
+#
+# 창 이름은 판마다 달라요 (#654, `src/instances.zig`) — dev 빌드 (기본) 는 `TildaZ-devWindow` ·
+# `TildaZ-dev-stress`, 릴리즈 (`-Drelease=true`) 는 `TildaZWindow` · `TildaZ-stress` 예요. 예전에는
+# 릴리즈 이름으로 고정돼 있어서 기본 빌드의 측정 창을 못 찾았어요 (2026-10-10 #692 Windows 회차).
+# 인자를 비워 두면 둘 다 찾고, 둘 다 떠 있으면 어느 쪽을 잴지 모르니 멈춰요.
+function Find-StressWindow {
+    if ($WindowTitle -ne '' -or $WindowClass -ne '') { return [TzInput]::FindWindowW($WindowClass, $WindowTitle) }
+    $dev = [TzInput]::FindWindowW('TildaZ-devWindow', 'TildaZ-dev-stress')
+    $rel = [TzInput]::FindWindowW('TildaZWindow', 'TildaZ-stress')
+    if ($dev -ne [IntPtr]::Zero -and $rel -ne [IntPtr]::Zero) {
+        Write-Output "  ❌ dev 판과 릴리즈 판의 측정 창이 둘 다 떠 있어요 — -WindowTitle · -WindowClass 로 골라 주세요"
+        exit 3
+    }
+    if ($dev -ne [IntPtr]::Zero) { return $dev }
+    return $rel
+}
+$hwnd = Find-StressWindow
 if ($hwnd -eq [IntPtr]::Zero) {
-    Write-Output "  ❌ 측정 창을 못 찾았어요 (class=$WindowClass title=$WindowTitle)"
+    Write-Output "  ❌ 측정 창을 못 찾았어요 (class=$WindowClass title=$WindowTitle — 비었으면 dev · 릴리즈 이름 둘 다 찾았어요)"
     exit 3
 }
 

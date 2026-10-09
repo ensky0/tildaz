@@ -629,10 +629,15 @@ fi
 # conhost 창을 찾을 제목. `mode con:` 과 함께 `conhost.cmd` 안에서 `title` 로 박는다.
 CONHOST_TITLE="TildaZ-stress-conhost"
 # TildaZ 측정 창의 클래스와 제목. **소스의 단일 원본은 `src/instances.zig`** 다
-# (`window_class_name` = `TildaZWindow`, `stress_window_title` = `TildaZ-stress`). worker 는
-# `TildaZ-<번호>` 라서 제목이 겹치지 않는다 — 그 계약을 `instances.zig` 의 테스트가 지킨다.
-TILDAZ_CLASS="TildaZWindow"
-TILDAZ_TITLE="TildaZ-stress"
+# (`window_class_name` · `stress_window_title`). worker 는 `TildaZ-<번호>` 라서 제목이 겹치지
+# 않는다 — 그 계약을 `instances.zig` 의 테스트가 지킨다.
+#
+# **판마다 이름이 다르다** (#654) — dev 빌드 (기본) `TildaZ-devWindow` · `TildaZ-dev-stress`, 릴리즈
+# (`-Drelease=true`) `TildaZWindow` · `TildaZ-stress`. 예전에는 릴리즈 이름만 있어서 기본 빌드의 창을
+# 못 찾았다 (2026-10-10 #692 Windows 회차에서 발견). 그래서 `;` 로 이은 **후보 목록**이고, 같은 자리끼리
+# 짝이다 — 아래 PowerShell 의 `Find-Target` 이 차례로 찾는다.
+TILDAZ_CLASS="TildaZ-devWindow;TildaZWindow"
+TILDAZ_TITLE="TildaZ-dev-stress;TildaZ-stress"
 
 # Windows 에서 그 대상의 창을 소유한 프로세스 이름. `wezterm` 은 실행 파일과 GUI 프로세스
 # 이름이 다르다. 모르는 이름이면 빈 값 — 그때는 창을 올리지 않고 화면만 찍는다.
@@ -677,6 +682,7 @@ mac_bundle_id() {
         alacritty) printf 'org.alacritty' ;;
         wezterm) printf 'com.github.wez.wezterm' ;;
         ghostty) printf 'com.mitchellh.ghostty' ;;
+        # dev 빌드 (기본) 는 `me.ensky0.tildaz.dev` 다 (#654) — 창을 고르는 awk 가 `.dev` 도 받는다.
         tildaz) printf 'me.ensky0.tildaz' ;;
         *) printf '' ;;
     esac
@@ -784,8 +790,12 @@ public class TzWin {
 #     따로 열어 둔 같은 앱 창을 건드리지 않기 위해서다.
 function Find-Target {
     if ($WindowTitle -ne "" -and $WindowClass -ne "") {
-        $c = [TzWin]::FindWindow($WindowClass, $WindowTitle)
-        if ($c -ne [IntPtr]::Zero) { return $c }
+        # `;` 로 이은 후보 목록이다 (tildaz 의 dev · 릴리즈 이름 — sh 쪽 `TILDAZ_CLASS` 주석). 같은 자리끼리 짝.
+        $cls = $WindowClass.Split(';'); $tit = $WindowTitle.Split(';')
+        for ($k = 0; $k -lt [Math]::Min($cls.Count, $tit.Count); $k++) {
+            $c = [TzWin]::FindWindow($cls[$k], $tit[$k])
+            if ($c -ne [IntPtr]::Zero) { return $c }
+        }
     }
     if ($ProcName -ne "") {
         $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$SinceEpoch).LocalDateTime
@@ -991,7 +1001,7 @@ capture_screen() {
             if [ -n "$MAC_CAPTURE" ]; then
                 _wid=$("$MAC_CAPTURE" --list 2>/dev/null |
                     awk -v b="$(mac_bundle_id "$_ctarget")" -v t="$_ctarget" \
-                        '(b != "" && $2 == b) || index(tolower($3), t) == 1 { print $1 }' |
+                        '(b != "" && ($2 == b || $2 == b ".dev")) || index(tolower($3), t) == 1 { print $1 }' |
                     sort -n | tail -1)
             fi
             # 창을 못 찾았거나 창 단위 캡처가 실패하면 전체 화면으로 물러선다 — 가려져 있으면

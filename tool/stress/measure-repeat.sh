@@ -51,8 +51,8 @@ OUT=""
 IGNORE_HYGIENE=0
 # #551 A11 — 실제 앱을 N 개 pane 으로 갈라 pane 마다 producer 하나. **Windows 만** (합성 키 분할이
 # `split-panes_windows.ps1`). 앱은 pane 에 barrier 환경변수를 넣지 않으므로 `pane-runner_windows.ps1` 이 barrier
-# 파일을 기다린 뒤 producer 를 띄운다 — N 개가 함께 시작한다. 단축키가 살아야 해서 `config_9.toml`
-# 을 만들고 (`--instance 9`) 끝나면 지운다.
+# 파일을 기다린 뒤 producer 를 띄운다 — N 개가 함께 시작한다. `--instance 9` 로 띄우고, dev `config_0.toml`
+# 이 있으면 그것을 복사해 `config_9.toml` 을 만들었다가 끝나면 지운다 (없어도 기본 단축키로 분할된다 — #620).
 PANES=1
 # `--stagger <ms>` — 분할이 끝난 뒤 producer 를 **하나씩 그 간격으로** 시작한다 (순차 시작 대조군). 동시 시작
 # (기본) 과 견줘 8 pane `render/call` 차이의 원인을 가른다 (#551). 러너가 뜨는 즉시 시작하게 두는 방식은 안 된다 —
@@ -176,10 +176,15 @@ RUNNER_CMD=""
 BARRIER=""
 if [ "$PANES" != 1 ]; then
     # config_9 — config_0 복사 · auto_start 끔 · hotkey 는 등록되지 않지만 (stress run) 충돌 여지를 없앤다.
-    _cfgdir="$(cygpath -u "$APPDATA")/tildaz"
+    # 디렉터리는 위 LOG 와 같은 dev 판 (`tildaz-dev`) 이다 (#654 — 예전에는 릴리즈 `tildaz` 라 dev 빌드가
+    # 그 파일을 안 읽고 사용자 릴리즈 설정 폴더에 파일만 생겼다). dev `config_0.toml` 이 없으면 복사하지
+    # 않는다 — config 가 없어도 기본 단축키가 들어서 (#620) 분할은 된다.
+    _cfgdir="$(cygpath -u "$APPDATA")/tildaz-dev"
     if [ -f "$_cfgdir/config_9.toml" ]; then echo "config_9.toml 이 이미 있어요 — 사용자 설정일 수 있어 덮지 않아요" >&2; exit 1; fi
-    sed -e 's/^hotkey *=.*/hotkey = "shift+f11"/' -e 's/^auto_start *=.*/auto_start = false/' "$_cfgdir/config_0.toml" > "$_cfgdir/config_9.toml"
-    PANE_CLEANUP="$_cfgdir/config_9.toml $_cfgdir/tildaz_9.log"
+    if [ -f "$_cfgdir/config_0.toml" ]; then
+        sed -e 's/^hotkey *=.*/hotkey = "shift+f11"/' -e 's/^auto_start *=.*/auto_start = false/' "$_cfgdir/config_0.toml" > "$_cfgdir/config_9.toml"
+        PANE_CLEANUP="$_cfgdir/config_9.toml $_cfgdir/tildaz_9.log"
+    fi
     INSTANCE_ARGS="--instance 9"
     mkdir -p "$OUT"
     BARRIER="$OUT/pane-barrier"

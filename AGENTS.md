@@ -971,6 +971,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
+| [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -980,6 +981,8 @@ tool\key-bytes-check_windows.ps1 -Mode layout                       # 비US 배�
 tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
 tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 21 항목 (캡처 30 장 남짓)
 tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
+tool\actions-check_windows.ps1                                      # 다섯 모드 전부 (창 5 회 · 8 분 남짓)
+tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   # 대조군 — _internal 도 그 옆에 있어야 한다
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -1087,6 +1090,31 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
   정확히 그 차이로 한쪽에만 났어요. **같은 회차 안에 "그 UI 를 연 채" 와 "닫고" 두 번을 넣어 대조**하면 앱 결함인지
   환경 탓인지 바로 갈려요.
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
+- **마우스가 연결되지 않은 기기에서는 `GetCursorInfo` 가 늘 `hCursor = 0` 이에요.** Windows 가 커서를 숨겨서예요
+  (`GetSystemMetrics(SM_MOUSEPRESENT)` 가 0). 2026-10-09 데스크탑 Ryzen 7 5700G 에서 `search-bar-check -Mode D` 의
+  D28 이 네 자리 모두 `hidden` 으로 떨어졌어요. 그때는 **포인터 아래 창의 스레드에 `AttachThreadInput` 으로 잠깐
+  붙어 `GetCursor()`** 를 읽으면 그 스레드가 정한 모양이 나와요 (셀 `ibeam` · 분할선 `sizewe` 실측).
+  `search-bar-check` · `link-click-check` 의 `CursorName()` 이 숨김일 때 그렇게 물러서고, `actions-check` 는 처음부터
+  그 방식이에요. 합성 마우스 이동 (`SendInput`) 은 마우스가 없어도 `WM_SETCURSOR` 를 일으켜요.
+- **커서가 "배치 직후 바로 바뀌는지" 는 `Ctrl` 이 든 단축키로 못 가려요.** #647 이 `Ctrl` 을 누르고 **뗄 때**
+  `refreshCursor` 를 불러서 (`window.zig` 의 `WM_KEYUP`), 수정 전 판도 `Ctrl+Shift+→` 뒤에 커서가 맞게 바뀌어요.
+  `actions-check -Mode cursor` 를 커서 수정 (`754722a`) 전 판과 견주니 X2 (분할) 는 둘 다 통과, X3 (검색바) 는 수정 전 판이
+  세 회 중 한 회만 실패했어요. `Ctrl` 이 없는 X2b (`Shift+Alt+0`) 도 수정 전 판이 통과했는데 그 이유는 **확인 필요**예요.
+  **수정 전후를 안정적으로 가른 것은 X4 (포인터가 남의 창 위일 때 `Ctrl`) 하나**예요 — 수정 전 판 `arrow` 2/2.
+  커서 판정을 새로 만들면 수정 전 판을 대조군으로 함께 돌려요.
+- **초기화 (`Ctrl+Shift+R`) 는 셸에 `Ctrl+L` (`0x0c`) 을 보내요** (`SessionCore.resetActive` — 프롬프트를 다시 그리게).
+  자식이 `Read-Host` 면 그 글자가 다음 줄 앞에 담겨 `line \x0c fz` 가 돼요. 줄을 `^line <글자>` 로 맞추면 놓쳐요.
+- **PowerShell 이 .NET 문자열 인자로 넘기는 `$null` 은 빈 문자열이에요.** `FindWindowW($null, '제목')` 은
+  `FindWindowW("", '제목')` 이 되어 아무것도 못 찾아요. `[NullString]::Value` 로 넘겨요.
+- **콘솔 창의 `GetWindowThreadProcessId` 는 그 콘솔에 붙은 프로세스 pid 를 돌려줘요.** 보조 창 (폼 등) 을 띄운
+  PowerShell 의 창을 pid 로 찾으면 **콘솔 창**이 잡혀요. 제목으로 찾고, 콘솔 창은 `ShowWindow(GetConsoleWindow(), 0)` 로 숨겨요.
+- **보조 프로세스도 DPI 인식으로 만들어요.** 비인식이면 준 좌표가 150 % 에서 1.5 배가 되어 엉뚱한 자리 (2026-10-10 에는
+  tildaz 창 위) 에 떠요.
+- **새 프로세스를 띄운 직후 몇 초는 "앱 시작 중" 커서 (`IDC_APPSTARTING`) 가 섞여요.** 커서를 재기 전에 기다려요.
+- **창 이름은 판마다 달라요** (#654) — dev 빌드 (기본) `TildaZ-devWindow` · `TildaZ-dev-stress`, 릴리즈 `TildaZWindow` ·
+  `TildaZ-stress`. `send-keys_windows.ps1` · `split-panes_windows.ps1` · `compare-terminals.sh` 가 릴리즈 이름으로 고정돼
+  기본 빌드의 창을 못 찾았어요 (2026-10-10 발견). 지금은 둘 다 찾고, 둘 다 떠 있으면 멈춰요. config 폴더도 dev 는
+  `%APPDATA%\tildaz-dev` 예요.
 
 # Windows — 키보드 layout 조회 실측 방법
 
