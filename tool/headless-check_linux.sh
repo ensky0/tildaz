@@ -100,6 +100,8 @@ cmd_down() {
     kill_tz
     [ -p $FIFO ] && echo quit > $FIFO
     pkill -f "vkbd_linux.py --fifo $FIFO" 2>/dev/null
+    [ -p $R/vptr.fifo ] && echo quit > $R/vptr.fifo
+    pkill -f "vptr_linux.py --fifo $R/vptr.fifo" 2>/dev/null
     [ -n "${SWAYSOCK:-}" ] && swaymsg exit >/dev/null 2>&1
     sleep 1; rm -rf $R
     echo "남은 tildaz: $(pgrep -a tildaz | tr '\n' ';')"
@@ -371,6 +373,14 @@ cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액
     # 빈 config 홈 — 기본 바인딩 (Linux 표) 으로 돈다. 사용자 config 의 `[keys]` 가 회차를 바꾸지 않게.
     export XDG_CONFIG_HOME=$OUT/xdg/config XDG_STATE_HOME=$OUT/xdg/state
     local L=$OUT/xdg/state/$APP/tildaz_0.log fail=0 base
+    # 메뉴 · `+` 칸을 위한 가상 포인터 — 앱보다 먼저 꽂는다 (seat 에 pointer 가 처음부터 있게).
+    local PF=$R/vptr.fifo
+    if ! pgrep -f "vptr_linux.py --fifo $PF" >/dev/null; then
+        rm -f $PF
+        setsid nohup python3 "$ROOT/tool/vptr_linux.py" --fifo $PF >$WORK/vptr.log 2>&1 </dev/null &
+        sleep 1.5
+    fi
+    ptr() { printf '%s\n' "$@" > $PF; }
     TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 4
     kill -0 $WPID 2>/dev/null || die "worker 가 뜨지 않았다 — $L"
     focus_probe
@@ -438,6 +448,34 @@ cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액
     local ended; ended=$(tail -n +$((base+1)) $L | grep -c 'shell exited')
     if [ "$ended" = 3 ]; then echo "OK   close tab — pane 3 개의 셸이 끝났다"; else echo "FAIL close tab — shell exited $ended 줄 (3 기대)"; fail=1; fi
     rm -f $M $C
+
+    # 마우스 경로 — 컨트롤 스트립은 창 오른쪽 위 `+ × ⋯` (sway 에서 창은 출력의 오른쪽 절반 · 배율 1).
+    # 포인터를 처음 꽂은 뒤에는 같은 자리로 움직여도 진입 (enter) 이 안 와서 구석까지 크게 움직인다.
+    local PLUS="1540 14" MORE="1588 14"
+    ptr "move 0 0" "move 1599 999" "move 1200 500"; sleep 0.5
+    # `⋯` → End → ↑ 네 번 = *Fullscreen*. 메뉴의 ↑ · ↓ 는 `Command` enum 차례로 움직이는데 화면 차례
+    # (`command_menu.entries`) 와 앞쪽이 갈려 있어서 (Close Tab 자리), 두 차례가 같은 끝쪽을 쓴다.
+    # 메뉴의 전체화면은 상태 기준 토글이라 두 번 눌러 켜고 끈다 (`fullscreenKind` 훅).
+    base=$(wc -l < $L)
+    menu_fullscreen() {
+        ptr "move $MORE"; sleep 0.3; ptr "click left"; sleep 0.8
+        snd "key end" "key up" "key up" "key up" "key up"; sleep 0.3
+    }
+    menu_fullscreen; step "menu → Fullscreen"     Return 'fullscreen → cover'
+    sleep 0.5; ptr "move 1200 500"; sleep 0.3
+    menu_fullscreen; step "menu → Fullscreen off" Return 'fullscreen → none'
+    # `+` = 새 탭. 분할이 아니어야 한다.
+    ptr "move $PLUS"; sleep 0.3; ptr "click left"
+    local i; for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -q 'new tab cwd=' && break; done
+    if tail -n +$((base+1)) $L | grep -q 'new tab cwd=' && ! tail -n +$((base+1)) $L | grep -q '\] split '; then
+        echo "OK   + click → new tab"; else echo "FAIL + click — 새 탭 줄이 없거나 분할이 됐다"; fail=1; fi
+    base=$(wc -l < $L)
+    # Alt 를 누른 채 `+` = 활성 pane 분할 (새 탭의 pane 하나 → 2 개).
+    sleep 1; ptr "move 1200 500" "move $PLUS"; sleep 0.3
+    snd "hold alt"; sleep 0.2; ptr "click left"; sleep 0.2; snd "release alt"
+    for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -qE 'split (right|down) — tab [0-9]+ has 2 panes' && break; done
+    if tail -n +$((base+1)) $L | grep -qE 'split (right|down) — tab [0-9]+ has 2 panes'; then
+        echo "OK   alt + click → split"; else echo "FAIL alt + click — 분할 줄 없음"; fail=1; fi
     grim $OUT/screen.png
     kill -0 $WPID 2>/dev/null || { echo "FAIL 앱이 회차 중에 끝났다"; fail=1; }
     grep -E '\[(fatal|panic)\]' $L && fail=1
