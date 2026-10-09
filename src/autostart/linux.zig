@@ -15,10 +15,23 @@
 // 동등.
 //
 // 같은 내용이면 file 안 건드림 (timestamp 보존) — macOS 패턴 동등.
+//
+// #700 — **데스크톱 설정 화면에서 끈 것을 되살리지 않는다.** 예전에는 실행할 때마다 이 파일을
+// 통째로 다시 써서, 사용자가 끈 표시가 사라졌다. 끄는 모양은 데스크톱마다 다르다.
+//   - KDE Plasma 6.7 — `Hidden=true` 를 쓴다. 켜면 그 줄을 지운다
+//     (plasma-workspace `kcms/autostart/autostartmodel.cpp`).
+//   - Cinnamon 6.6 — `X-GNOME-Autostart-enabled=false` 를 쓴다 (`cs_startup.py`).
+//   - COSMIC 1.9 — 파일을 지운다 (cosmic-settings `pages/applications/startup_apps.rs`).
+// 앞의 둘은 그 표시가 있으면 파일을 건드리지 않는다. 지운 경우는 "만든 적이 있는데 없다" 로
+// 알아본다 — 만들 때 상태 폴더에 표시 파일 (`autostart-created`) 을 남긴다. config 의
+// `auto_start` 를 모두 끄면 (`disable`) 파일과 표시를 함께 지우므로, 다시 켜면 새로 만든다.
+// Windows · macOS 는 해당이 없다 — 끈 사실이 우리가 쓰는 자리와 다른 곳에 저장된다
+// (Windows `StartupApproved` 키 · macOS 백그라운드 항목 관리).
 
 const std = @import("std");
 const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
+const log = @import("../log.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
 /// `$XDG_CONFIG_HOME/autostart/` 는 공용 디렉터리라 이름으로 가른다 (#654).
@@ -63,8 +76,52 @@ fn currentExePath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, slice);
 }
 
+const created_marker = "autostart-created";
+
+fn createdMarkerPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const dir = try paths.stateDir(rt, allocator);
+    defer allocator.free(dir);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, created_marker });
+}
+
+fn fileExists(rt: Runtime, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(rt.io, path, .{}) catch return false;
+    return true;
+}
+
+fn readEntry(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close(rt.io);
+    var reader = file.reader(rt.io, &.{});
+    return try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+}
+
+/// 데스크톱 설정 화면이 이 항목을 껐는가 — `[Desktop Entry]` 그룹의 `Hidden=true` (KDE) 나
+/// `X-GNOME-Autostart-enabled=false` (Cinnamon). 다른 그룹 (`[Desktop Action …]`) 은 보지 않는다.
+fn userDisabled(text: []const u8) bool {
+    var in_entry = false;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len > 0 and line[0] == '[') {
+            in_entry = std.mem.eql(u8, line, "[Desktop Entry]");
+            continue;
+        }
+        if (!in_entry) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "Hidden") and std.ascii.eqlIgnoreCase(value, "true")) return true;
+        if (std.mem.eql(u8, key, "X-GNOME-Autostart-enabled") and std.ascii.eqlIgnoreCase(value, "false")) return true;
+    }
+    return false;
+}
+
 /// auto-start 활성화 — XDG autostart desktop entry 작성. 이미 같은 내용이면
-/// 건드리지 않음 (timestamp 보존).
+/// 건드리지 않음 (timestamp 보존). 사용자가 데스크톱 설정에서 껐으면 그대로 둔다 (#700).
 pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
     const exe = try currentExePath(rt, allocator);
     defer allocator.free(exe);
@@ -76,6 +133,21 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
 
     const path = try entryPath(rt, allocator);
     defer allocator.free(path);
+    const marker = try createdMarkerPath(rt, allocator);
+    defer allocator.free(marker);
+
+    if (try readEntry(rt, allocator, path)) |existing| {
+        defer allocator.free(existing);
+        if (userDisabled(existing)) {
+            log.appendLine("autostart", "left off — it is turned off in the desktop's startup settings ({s})", .{path});
+            removeLegacyEntryIfDifferent(rt, allocator, path);
+            return;
+        }
+    } else if (fileExists(rt, marker)) {
+        log.appendLine("autostart", "not recreated — the startup entry was removed in the desktop's settings ({s})", .{path});
+        removeLegacyEntryIfDifferent(rt, allocator, path);
+        return;
+    }
 
     // `StartupWMClass=<name>` 은 launcher identity다. Worker 창은 번호별
     // `<name>.instanceN`을 사용하므로 launcher와 실행 중 앱으로 묶이지 않는다.
@@ -117,6 +189,8 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
 
     _ = try paths.writeFileIfChanged(rt, allocator, path, entry);
     removeLegacyEntryIfDifferent(rt, allocator, path);
+    if (std.Io.Dir.path.dirname(marker)) |dir| try paths.ensureDir(rt, dir);
+    _ = try paths.writeFileIfChanged(rt, allocator, marker, "");
 }
 
 /// auto-start 비활성화 — desktop entry 파일 삭제. 다음 로그인부터 효과.
@@ -125,4 +199,28 @@ pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
     defer allocator.free(path);
     std.Io.Dir.deleteFileAbsolute(rt.io, path) catch {};
     removeLegacyEntryIfDifferent(rt, allocator, path);
+    // config 로 끈 것이므로 "사용자가 데스크톱에서 지웠다" 는 기억도 지운다 — 다시 켜면 만든다.
+    const marker = createdMarkerPath(rt, allocator) catch return;
+    defer allocator.free(marker);
+    std.Io.Dir.deleteFileAbsolute(rt.io, marker) catch {};
+}
+
+test "#700 the startup entry counts as turned off the way each desktop writes it" {
+    const ours =
+        \\[Desktop Entry]
+        \\Type=Application
+        \\Exec="/usr/bin/tildaz" --autostart
+        \\Hidden=false
+        \\X-GNOME-Autostart-enabled=true
+        \\
+    ;
+    try std.testing.expect(!userDisabled(ours));
+    // KDE Plasma — `Hidden=true` 로 바꿔 쓴다.
+    try std.testing.expect(userDisabled("[Desktop Entry]\nType=Application\nHidden=true\n"));
+    // Cinnamon — GLib 키 파일이라 `=` 앞뒤에 공백이 없다. 있어도 받는다.
+    try std.testing.expect(userDisabled("[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n"));
+    try std.testing.expect(userDisabled("[Desktop Entry]\r\nX-GNOME-Autostart-enabled = false\r\n"));
+    // 다른 그룹의 같은 키는 항목의 상태가 아니다.
+    try std.testing.expect(!userDisabled("[Desktop Entry]\nName=TildaZ\n[Desktop Action new]\nHidden=true\n"));
+    try std.testing.expect(!userDisabled(""));
 }

@@ -249,14 +249,40 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   runtime-only 라 매 실행 등록 = config 가 source of truth. 단 sway IPC 는 현재
   binding 열거 요청을 제공하지 않아 세션 중 stale binding 증분 제거는 지원하지
   않는다. config 삭제/변경 전에 등록된 binding 은 sway 세션 재시작 때 사라진다.
+  설정을 다시 읽으면 (`swaymsg reload`) IPC 로 건 것이 모두 사라지므로, worker 가
+  workspace 이벤트 `"change": "reload"` 를 구독해 hotkey 와 `for_window` 를 다시 건다
+  ([#700](https://github.com/ensky0/tildaz/issues/700)). sway 는 XDG autostart 를 읽지 않아 자동 실행은 sway 설정의 `exec` 로 하되,
+  명령은 우리 파일 `<설정>/sway/<앱이름>.conf` 에 두고 사용자 설정에는 `include` 한 줄만
+  넣는다 (아래 "sway · Hyprland 사용자 설정").
 - **Hyprland (wlroots).** layer-shell drop-down (KWin·COSMIC 과 같은 경로 —
   sway 는 #454 로 xdg_toplevel + IPC 로 분리됨).
   hotkey는 실행 시 `hyprctl -j binds` actual과 config desired를
-  비교해 TildaZ `--toggle N` binding 의 차이만 `unbind/bind`한다. `install.sh`는
-  `~/.config/hypr/` config의
-  autostart만 관리한다. drop-down 은 `on_demand`
-  keyboard interactivity 로 클릭-어웨이 허용. XDG autostart 미지원이라 autostart 도
-  config 의 `exec-once` 로.
+  비교해 TildaZ `--toggle N` binding 의 차이만 `unbind/bind`한다. 설정을 다시 읽으면
+  (`hyprctl reload` · 설정 파일 변경) 런타임 binding 이 모두 지워지므로, worker 가 이벤트
+  소켓 (`socket2`) 의 `configreloaded` 를 듣고 다시 맞춘다. worker 가 여럿이면 잠금 안에서
+  한 번씩 돌고, 뒤에 도는 쪽은 이미 걸린 것을 보고 아무것도 안 한다 ([#700](https://github.com/ensky0/tildaz/issues/700)).
+  drop-down 은 `on_demand` keyboard interactivity 로 클릭-어웨이 허용. XDG autostart
+  미지원이라 자동 실행은 우리 파일 `<설정>/hypr/<앱이름>.lua` (`hl.on("hyprland.start")`,
+  legacy `.conf` 설정이면 `<앱이름>.conf` 의 `exec-once`) 에 둔다. 그 파일이 "자동 생성 설정"
+  경고 배너도 끈다 — Hyprland 은 설정을 다 읽은 뒤의 최종값으로 배너를 정하고, 그 배너가
+  화면 위쪽, drop-down 이 열리는 자리를 가린다.
+- **sway · Hyprland 사용자 설정** ([#700](https://github.com/ensky0/tildaz/issues/700)). 우리가 소유하지 않은 파일은 줄 단위로
+  고치지 않는다. `tildaz --desktop add` 가 사용자 설정에 **불러오는 줄 하나와 그 표식**만,
+  없을 때 넣는다 — sway `include <경로>`, Hyprland Lua `pcall(require, "<앱이름>")`, legacy
+  `source = <경로>`. 다른 줄은 읽기만 한다. `tildaz --desktop remove` 는 글자 그대로 같은
+  줄만 지운다 (사용자가 고친 줄은 우리 줄이 아니다). 예전 `install.sh` 가 넣은 표식 블록은
+  다음 줄이 그 스크립트가 쓴 모양일 때만 옮긴다.
+  - 불러오는 방법은 upstream 소스로 정했다. sway `include` 는 없는 파일을 조용히 넘기고
+    같은 파일을 한 번만 읽는다. Hyprland 는 `hyprland.lua` 가 있으면 `.conf` 보다 먼저
+    읽고, `pcall(require, …)` 는 모듈이 없어도 설정 실행을 멈추지 않는다. legacy
+    `source =` 는 파일이 없으면 오류 배너가 뜨므로 add 는 우리 파일을 먼저 쓰고 remove 는
+    불러오는 줄을 먼저 지운다.
+  - 사용자 설정이 없으면 그 데스크톱이 깔려 있을 때만 만든다 — sway 는
+    `include /etc/sway/config` 를 담아서 (사용자 설정이 생기면 sway 는 시스템 설정을 읽지
+    않는다), Hyprland 는 `Hyprland --verify-config` 가 만드는 기본 설정으로. i3 와 같이 쓰는
+    설정 · 시스템 설정 (`/etc/xdg`) 은 고치지 않고 안내만 한다.
+  - launcher 의 평소 실행은 이 파일들을 건드리지 않는다. 사용자가 불러오는 줄을 지웠으면
+    그것은 사용자의 선택이다.
 - **`tildaz --toggle N` 의 계약** ([#489](https://github.com/ensky0/tildaz/issues/489)).
   아래 DE 들이 등록하는 단축키 명령이 전부 이것이라, 세 상태의 동작을 여기서 고정한다.
   판정은 **socket 과 lock 두 신호**를 함께 본다 — `connect` 실패는 "워커 없음" 과
@@ -277,15 +303,28 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   세 번째 상태를 표현할 수 없다).
 - **COSMIC (smithay).** layer-shell drop-down. hotkey 는 RON custom shortcut
   (`~/.config/cosmic/.../custom`) 의 TildaZ 전용 항목을 config_N 전체에 맞춰
-  `Spawn("tildaz --toggle N")`로 원자적 갱신하되, 기존 bytes 와 같으면 write/rename 을
-  생략한다. XDG autostart는 지원. **`install.sh` 는 COSMIC 항목을 쓰지 않는다** — writer 는
-  이 경로 하나다 ([#514](https://github.com/ensky0/tildaz/issues/514), Hyprland 와 같은 규칙).
+  `Spawn("tildaz --toggle N")`로 갱신한다. XDG autostart는 지원. **`install.sh` 는 이 파일을
+  직접 쓰지 않는다** — `tildaz --desktop add` 가 같은 코드를 부르므로 writer 는 하나다
+  ([#514](https://github.com/ensky0/tildaz/issues/514), [#700](https://github.com/ensky0/tildaz/issues/700)).
+  - **파일을 줄이 아니라 RON 구조로 고친다** ([#700](https://github.com/ensky0/tildaz/issues/700) · [#681](https://github.com/ensky0/tildaz/issues/681)).
+    COSMIC 설정 앱은 이 파일을 여러 줄로 통째로 다시 써서, "한 항목은 한 줄" 로 보고 줄을
+    지우던 예전 방식이 파일을 깨뜨렸다. 괄호 · 문자열 · raw 문자열 · 주석을 따라 항목 경계를
+    찾아 우리 항목의 바이트 범위만 바꾸고, 결과를 다시 읽어 항목 수가 맞을 때만 안전한
+    쓰기로 바꿔 끼운다. 바뀔 게 없으면 쓰지 않는다. **읽을 수 없는 파일은 쓰지 않는다** —
+    COSMIC 설정 앱은 읽기에 실패하면 빈 맵에서 시작해 저장해서, 깨진 파일을 두면 사용자
+    단축키가 영영 사라질 수 있다.
+  - 고치기 전에 원본을 `$XDG_STATE_HOME/<앱이름>/backup/` 에 남긴다. 처음 원본은
+    `cosmic-shortcuts-custom.orig` 로 한 번만 남기고 지우지 않는다. 그 뒤로는 고칠 때마다
+    직전 내용을 `.YYYYMMDD-N` (지역 날짜 · 그날의 순번) 으로 남기고 최근 20 개만 둔다.
+    COSMIC 설정 폴더 안에 두지 않는 이유는 COSMIC 이 그 폴더의 파일을 하나하나 키로 읽기
+    때문이다.
   - **"TildaZ 전용 항목" 의 판정 근거는 우리가 쓰는 description 표식
     (`description: Some("TildaZ_<index>")`) 하나다** — 명령 문자열이 아니다
     ([#484](https://github.com/ensky0/tildaz/issues/484)). 이 파일에는 사용자가 만든
     단축키가 함께 들어 있어서, 판정을 틀리면 양방향으로 깨진다: 자기 항목을 못
-    알아보면 중복 맵 키가 쌓여 COSMIC 이 **파일 전체를 버리고**(사용자 단축키까지
-    사라진다), 남의 항목을 자기 것으로 착각하면 **조용히 지운다**. 명령에는 바이너리
+    알아보면 같은 `modifiers + key` 가 둘 쌓여 뒤의 것만 쓰이고 (중복 키로 파일을 버리지는
+    않는다 — cosmic-settings-daemon `config/src/shortcuts/mod.rs`, [#700](https://github.com/ensky0/tildaz/issues/700) 조사), 남의 항목을
+    자기 것으로 착각하면 **조용히 지운다**. 명령에는 바이너리
     경로와 이름이 들어가 사용자가 바꿀 수 있으므로 판정 근거가 될 수 없다. 표식 뒤의
     번호가 정수인지도 확인한다.
   - **예외는 하나뿐이다 — 예전 `install.sh` 가 표식 없이 쓴 줄을 흡수한다**
@@ -1368,7 +1407,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | `font.line_height_ratio` | float 0.5..2.0 (측정된 ascent+descent+leading 배율) | 1.1 | 1.1 | 1.1 | ✅ | ✅ | ✅ |
 | `font.cell_width_ratio` | float 0.5..2.0 | 1.0 (#150 — DWrite native) | 1.0 (Menlo metric 자연) | 1.0 | ✅ | ✅ | ✅ |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
-| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α | ✅ | ✅ | ✅ |
+| `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α. 데스크톱 설정 화면에서 끈 것은 되살리지 않는다 — KDE Plasma `Hidden=true` · Cinnamon `X-GNOME-Autostart-enabled=false` 면 파일을 건드리지 않고, COSMIC 처럼 파일을 지웠으면 다시 만들지 않는다 (만든 사실을 상태 폴더의 `autostart-created` 로 기억한다. `auto_start` 를 모두 끄면 둘 다 지운다, #700) | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
@@ -1748,6 +1787,11 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 `--release`를 명시한다. 종류별 설치 스크립트를 따로 두지 않는다. 저장소에서는 선택한
 종류로 빌드한 뒤 설치한다. Linux tarball의 같은 `install.sh`도 `--release`로 실행하며,
 옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`ReleaseFast` 등)은 앱 신원과 별개다.
+Linux 의 `install.sh` · `uninstall.sh` 는 사용자 데스크톱 설정 파일을 직접 고치지 않고
+`tildaz --desktop add` · `tildaz --desktop remove` 를 부른다 ([#700](https://github.com/ensky0/tildaz/issues/700)). `uninstall.sh` 는
+실행 파일을 지우기 **전에** 부르고, 실행 파일이 없으면 손으로 지울 곳을 알린다. KDE 단축키는
+kglobalaccel 이 떠 있으면 D-Bus 로만 지우고 (그 파일을 kglobalaccel 이 메모리에서 다시
+쓴다), 안 떠 있을 때만 `kglobalshortcutsrc` 에서 우리 그룹을 지운다.
 
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
@@ -1773,6 +1817,10 @@ Linux · macOS config는 유효한 절대 `XDG_CONFIG_HOME`을 우선하고, Lin
 `autostart/<앱이름>.desktop`을 사용한다. custom XDG를 처음 적용할 때는 사용자
 config/log를 복사·이동하지 않으며, 구버전이 기본 위치에 만든 TildaZ autostart
 entry만 중복 실행 방지를 위해 정리한다 ([XDG Base Directory](https://specifications.freedesktop.org/basedir/), [Desktop Application Autostart](https://specifications.freedesktop.org/autostart/0.5/)).
+desktop 항목과 GNOME · Cinnamon 확장은 유효한 절대 `XDG_DATA_HOME` (fallback
+`~/.local/share`) 아래 둔다 — 두 셸 모두 `g_get_user_data_dir()` 로 사용자 확장을 찾는다.
+앱이 기억해 둘 사실 (COSMIC 단축키 백업 `backup/` · 자동 시작 항목을 만든 표시
+`autostart-created`) 은 로그와 같은 `$XDG_STATE_HOME/<앱이름>/` 에 둔다 ([#700](https://github.com/ensky0/tildaz/issues/700)).
 
 로그 경로는 worker index가 정해진 뒤 처음 사용할 때 실제 길이만큼 동적으로
 준비해 process lifetime 동안 하나의 값으로 보관한다. 로그 기록, About의 `log`

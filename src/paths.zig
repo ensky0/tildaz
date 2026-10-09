@@ -116,6 +116,31 @@ pub fn configHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_CONFIG_HOME", "/.config");
 }
 
+/// #700 — Linux 사용자 data base. desktop 항목 (`applications/`) · GNOME · Cinnamon 확장
+/// (`gnome-shell/extensions/` · `cinnamon/extensions/`) 이 여기 산다. 두 셸 모두
+/// `g_get_user_data_dir()` (= 이 규칙) 으로 사용자 확장을 찾는다 — 이 기기의 libshell-51 ·
+/// libcinnamon 이 그 심볼을 쓰고, Cinnamon `js/ui/extension.js:58` 이 `global.userdatadir` 를 쓴다.
+pub fn dataHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    return xdgHome(rt, allocator, "XDG_DATA_HOME", "/.local/share");
+}
+
+/// #700 — 우리가 고친 사용자 파일 (COSMIC 단축키 파일) 의 원본을 두는 곳.
+/// `$XDG_STATE_HOME/<id>/backup` — 로그와 같은 상태 폴더다. 고친 파일 옆에 두지 않는 이유는
+/// COSMIC 이 그 설정 폴더 안의 파일을 하나하나 키로 읽어서, 거기 두면 엉뚱한 키가 생기기 때문이다.
+pub fn backupDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const base = try stateDir(rt, allocator);
+    defer allocator.free(base);
+    return std.fmt.allocPrint(allocator, "{s}/backup", .{base});
+}
+
+/// #700 — Linux 상태 폴더 `$XDG_STATE_HOME/<id>` (로그와 같은 곳). 사용자 설정이 아니라 앱이
+/// 기억해 둘 사실 (예: 자동 시작 항목을 만든 적이 있다) 을 둔다.
+pub fn stateDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const base = try stateHome(rt, allocator);
+    defer allocator.free(base);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
+}
+
 /// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.
 fn stateHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_STATE_HOME", "/.local/state");
@@ -265,15 +290,44 @@ fn currentPid() u32 {
 /// #282 G6 — atomic write-if-changed. `path` 의 기존 내용이 `content` 와 같으면
 /// 아무것도 쓰지 않고 `false`, 다르거나 파일이 없으면 같은 디렉토리의 temp 에
 /// 쓰고 fsync 후 rename 으로 원자 교체하고 `true`. temp 를 대상과 같은 fs 에 두어
-/// rename 원자성을 보장(부분 기록 파일이 남지 않음). mode 0o644 — desktop entry
-/// / plist / 셸 확장 / cosmic 단축키 파일의 표준. autostart·instance_identity·
+/// rename 원자성을 보장(부분 기록 파일이 남지 않음). 새 파일은 mode 0o644 — desktop
+/// entry / plist / 셸 확장 / cosmic 단축키 파일의 표준. autostart·instance_identity·
 /// shell_extension·cosmic sync 의 5벌 복제를 대체.
+///
+/// #700 — 사용자가 만든 파일도 이 함수로 쓴다 (`config_N.toml` · COSMIC 단축키 파일).
+/// 그래서 두 가지를 지킨다 (Qt `QSaveFile` 과 같은 규칙).
+///   - **링크는 따라가 대상 파일을 바꾼다.** `path` 자리에서 rename 하면 링크가 일반
+///     파일로 바뀌어, dotfiles 를 링크로 관리하는 사용자의 원본과 끊긴다.
+///   - **기존 파일의 권한을 유지한다.** 사용자가 0600 으로 둔 파일을 0644 로 넓히지 않는다.
 pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, content: []const u8) !bool {
+    // 대상이 없으면 `realPathFileAbsoluteAlloc` 이 실패하고 `path` 그대로 새로 만든다.
+    // std 문서가 이 함수의 플랫폼 지원이 제한적이라고 적어서 Windows 는 쓰지 않는다 —
+    // 거기서 이 함수가 쓰는 것은 우리 config 뿐이고 링크로 관리하는 관례도 드물다.
+    const resolved: ?[:0]u8 = if (builtin.os.tag == .windows)
+        null
+    else
+        std.Io.Dir.realPathFileAbsoluteAlloc(rt.io, path, allocator) catch null;
+    defer if (resolved) |r| allocator.free(r);
+    const target: []const u8 = if (resolved) |r| r else path;
+
+    // 0o644 는 desktop entry / plist / 셸 확장 / cosmic 단축키 파일의 표준이다 —
+    // `Permissions.default_file` (POSIX 0o666 + umask) 로 바꾸면 umask 에 따라
+    // 결과가 갈리므로 명시값을 유지한다. Windows 는 mode 개념이 없어 기본값.
+    var permissions: std.Io.File.Permissions =
+        if (builtin.os.tag == .windows) .default_file else .fromMode(0o644);
+    var keep_permissions = false;
+
     // #451 — 파일 IO 가 전부 `Io` 를 받는다. `readToEndAlloc` 은 `File.Reader` 의
     // `allocRemaining` 으로 갔고 (릴리즈 노트 *fs.File.readToEndAlloc*), `mode` 는
     // `permissions` 로 이름과 타입이 바뀌었다 (`fs.File.Mode` ➡️ `Io.File.Permissions`).
-    if (std.Io.Dir.openFileAbsolute(rt.io, path, .{})) |existing| {
+    if (std.Io.Dir.openFileAbsolute(rt.io, target, .{})) |existing| {
         defer existing.close(rt.io);
+        if (builtin.os.tag != .windows) {
+            if (existing.stat(rt.io)) |stat| {
+                permissions = stat.permissions;
+                keep_permissions = true;
+            } else |_| {}
+        }
         var existing_reader = existing.reader(rt.io, &.{});
         if (existing_reader.interface.allocRemaining(allocator, .limited(4 * 1024 * 1024))) |old| {
             defer allocator.free(old);
@@ -281,25 +335,23 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
         } else |_| {}
     } else |_| {}
 
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ path, currentPid() });
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ target, currentPid() });
     defer allocator.free(temp_path);
     errdefer std.Io.Dir.deleteFileAbsolute(rt.io, temp_path) catch {};
     {
-        // 0o644 는 desktop entry / plist / 셸 확장 / cosmic 단축키 파일의 표준이다 —
-        // `Permissions.default_file` (POSIX 0o666 + umask) 로 바꾸면 umask 에 따라
-        // 결과가 갈리므로 명시값을 유지한다. Windows 는 mode 개념이 없어 기본값.
-        const permissions: std.Io.File.Permissions =
-            if (builtin.os.tag == .windows) .default_file else .fromMode(0o644);
         const temp = try std.Io.Dir.createFileAbsolute(rt.io, temp_path, .{
             .truncate = true,
             .permissions = permissions,
         });
         defer temp.close(rt.io);
+        // 만들 때 준 권한은 umask 로 줄어든다. 기존 파일의 권한을 그대로 옮기려고 한 번 더 명시한다.
+        // 새 파일은 예전처럼 umask 를 따른다.
+        if (keep_permissions) try temp.setPermissions(rt.io, permissions);
         try temp.writeStreamingAll(rt.io, content);
         try temp.sync(rt.io);
     }
     // `renameAbsolute` 는 `io` 를 **마지막** 인자로 받는다 (다른 `Io.Dir` 함수와 순서가 다르다).
-    try std.Io.Dir.renameAbsolute(temp_path, path, rt.io);
+    try std.Io.Dir.renameAbsolute(temp_path, target, rt.io);
     return true;
 }
 
@@ -315,6 +367,45 @@ fn testRuntime() Runtime {
         else
             .{ .block = .{ .slice = &[_:null]?[*:0]const u8{"HOME=/home/test"} } },
     };
+}
+
+test "#700 writeFileIfChanged keeps links and permissions of a user's file" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
+    defer allocator.free(root);
+
+    // 새 파일 · 같은 내용.
+    const plain = try std.Io.Dir.path.join(allocator, &.{ root, "plain.txt" });
+    defer allocator.free(plain);
+    try std.testing.expect(try writeFileIfChanged(rt, allocator, plain, "a"));
+    try std.testing.expect(!try writeFileIfChanged(rt, allocator, plain, "a"));
+
+    // 링크로 관리하는 파일 (dotfiles) — 링크는 링크로 남고 대상 파일이 바뀐다.
+    try tmp.dir.writeFile(rt.io, .{ .sub_path = "real.txt", .data = "old" });
+    try tmp.dir.symLink(rt.io, "real.txt", "link.txt", .{});
+    {
+        const f = try tmp.dir.openFile(rt.io, "real.txt", .{});
+        defer f.close(rt.io);
+        try f.setPermissions(rt.io, .fromMode(0o600));
+    }
+    const link = try std.Io.Dir.path.join(allocator, &.{ root, "link.txt" });
+    defer allocator.free(link);
+    try std.testing.expect(try writeFileIfChanged(rt, allocator, link, "new"));
+
+    var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.readLink(rt.io, "link.txt", &link_buf);
+    try std.testing.expectEqualStrings("real.txt", link_buf[0..n]);
+    const got = try tmp.dir.readFileAlloc(rt.io, "real.txt", allocator, .limited(64));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("new", got);
+
+    // 사용자가 좁혀 둔 권한을 넓히지 않는다.
+    const stat = try tmp.dir.statFile(rt.io, "real.txt", .{});
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), stat.permissions.toMode() & 0o777);
 }
 
 test "로그 경로가 OS 표준 위치와 worker index 를 따른다" {

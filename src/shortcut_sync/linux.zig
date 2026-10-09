@@ -9,6 +9,7 @@ const gsettings_hotkey = @import("../host/linux/gsettings_hotkey.zig");
 const physical_key = @import("../physical_key.zig");
 const kglobalaccel = @import("../host/linux/kglobalaccel.zig");
 const app_id = @import("../app_id.zig");
+const cosmic_ron = @import("../cosmic_ron.zig");
 
 pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
     try instance_identity.syncDesktopEntries(rt, allocator, indices);
@@ -22,6 +23,43 @@ pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !vo
     if (desktopContains(rt, "cosmic")) syncCosmic(rt, allocator, indices) catch |err| {
         log.appendLine("cosmic", "numbered hotkey synchronization skipped: {s}", .{@errorName(err)});
     };
+}
+
+/// #700 — 제거. KDE · COSMIC 단축키는 세션과 무관하게 치운다 (`sync` 는 COSMIC 세션에서만
+/// 그 파일을 본다 — 다른 세션에서 고칠 이유가 없어서다). Hyprland 런타임 바인딩은 그 세션이
+/// 떠 있을 때만 지울 수 있고, 아니면 다음 로그인에 저절로 없다.
+pub fn removeAll(rt: Runtime, allocator: std.mem.Allocator) !void {
+    try sync(rt, allocator, &.{});
+    // KDE 단축키는 세션과 무관하게 — kglobalaccel 이 떠 있으면 D-Bus, 아니면 그 파일 (#700 D4).
+    // KDE 세션이면 바로 위 `sync` 가 이미 D-Bus 로 지웠다.
+    if (!kglobalaccel.isCurrentDesktop(rt)) kglobalaccel.removeAll(rt, allocator);
+    if (!desktopContains(rt, "cosmic")) syncCosmic(rt, allocator, &.{}) catch |err| {
+        log.appendLine("cosmic", "shortcut cleanup skipped: {s}", .{@errorName(err)});
+    };
+}
+
+/// #700 — Hyprland 이 설정을 다시 읽은 뒤 우리 바인딩을 다시 건다 (worker 의
+/// `handleHyprlandReloadEvent`). worker 마다 같은 이벤트를 받으므로 **배타 잠금 안에서** 돈다 —
+/// 먼저 잡은 쪽이 걸고, 뒤에 잡은 쪽은 이미 걸린 것을 보고 아무것도 안 한다 (`syncHyprland`
+/// 가 지금 바인딩을 읽고 빠진 것만 건다). 실패는 로그만 남긴다 — 실행 중인 앱을 멈출 일이
+/// 아니다.
+pub fn resyncHyprland(rt: Runtime, allocator: std.mem.Allocator) void {
+    resyncHyprlandLocked(rt, allocator) catch |err| {
+        log.appendLine("hyprland", "re-registration after reload failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn resyncHyprlandLocked(rt: Runtime, allocator: std.mem.Allocator) !void {
+    const dir = try paths.lockDir(rt, allocator);
+    defer allocator.free(dir);
+    try paths.ensureDir(rt, dir);
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ dir, "hyprland-sync.lock" });
+    defer allocator.free(lock_path);
+    const lock = try std.Io.Dir.createFileAbsolute(rt.io, lock_path, .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(rt.io);
+    const indices = try instances.listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try syncHyprland(rt, allocator, indices);
 }
 
 /// #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 는 블록을 그대로 훑어 할당이 없다.
@@ -345,7 +383,7 @@ fn luaUnbindCode(allocator: std.mem.Allocator, keys: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-fn appendLuaString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+pub fn appendLuaString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
     try out.append(allocator, '"');
     for (value) |c| switch (c) {
         '\\', '"' => {
@@ -563,89 +601,93 @@ test "#695 only an ok reply counts as success" {
     try std.testing.expect(!isHyprctlOk(""));
 }
 
+/// 테스트용 — 한 항목짜리 맵을 스캔해 그 항목에 판정을 돌린다 (#700 — 판정이 줄이 아니라 항목을 본다).
+fn testScanOne(comptime entry: []const u8, comptime judge: fn (cosmic_ron.Entry) ?u32) !?u32 {
+    const map = try cosmic_ron.scan(std.testing.allocator, "{\n" ++ entry ++ "\n}\n");
+    defer map.deinit(std.testing.allocator);
+    if (map.entries.len != 1) return error.TestUnexpectedResult;
+    return judge(map.entries[0]);
+}
+
 test "COSMIC entries are identified by our own description marker, not the command" {
+    const ours = tildazCosmicEntryIndex;
     // writer(`appendCosmicEntries`)가 만드는 형태.
-    try std.testing.expect(isTildazCosmicEntry(
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
         "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        ours,
+    ));
+    // #700 · #681 — COSMIC 설정 화면이 다시 쓴 **여러 줄** 항목도 같은 항목이다.
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
+        "    (\n        modifiers: [],\n        key: \"F1\",\n        description: Some(\"" ++ app_id.window_base ++ "_0\"),\n    ): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        ours,
     ));
 
     // #484 회귀 — 바이너리 **이름**이 `tildaz` 가 아니면 이전 구현은 자기 항목을 못
     // 알아봤다. `tildaz-dev --toggle 0` 에는 `tildaz --toggle` 이라는 연속 문자열이
-    // 없다 (하이픈이 끼어서). 못 지우고 하나 더 써서 같은 맵 키가 중복되고, 중복 키가
-    // 있는 RON 은 COSMIC 이 파일 전체를 버린다 — 사용자 단축키까지 사라졌다.
-    try std.testing.expect(isTildazCosmicEntry(
+    // 없다 (하이픈이 끼어서). 못 지우고 하나 더 써서 같은 단축키가 둘 남았다.
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
         "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/opt/bin/tildaz-dev --toggle 0\"),",
+        ours,
     ));
     // 경로만 바뀐 경우도 같이 고정한다.
-    try std.testing.expect(isTildazCosmicEntry(
+    try std.testing.expectEqual(@as(?u32, 3), try testScanOne(
         "    (modifiers: [Ctrl, Shift], key: \"F2\", description: Some(\"" ++ app_id.window_base ++ "_3\")): Spawn(\"/home/u/bin/tz --toggle 3\"),",
+        ours,
     ));
     // 여러 자리 index.
-    try std.testing.expect(isTildazCosmicEntry(
+    try std.testing.expectEqual(@as(?u32, 12), try testScanOne(
         "    (modifiers: [Super], key: \"grave\", description: Some(\"" ++ app_id.window_base ++ "_12\")): Spawn(\"/usr/bin/tildaz --toggle 12\"),",
+        ours,
     ));
 
     // #484 거울상 — 사용자 항목의 **명령**에 `tildaz --toggle` 이 들어 있으면 이전
     // 구현은 우리 것으로 착각해 조용히 지웠다. 이제 남의 항목은 건드리지 않는다.
-    try std.testing.expect(!isTildazCosmicEntry(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [Super], key: \"t\", description: Some(\"My wrapper\")): Spawn(\"sh -c 'tildaz --toggle 0; notify-send hi'\"),",
+        ours,
     ));
-
     // 표식을 흉내낸 남의 이름 — 번호 자리가 정수가 아니면 우리 것이 아니다.
-    try std.testing.expect(!isTildazCosmicEntry(
-        "    (modifiers: [Super], key: \"b\", description: Some(\"TildaZ_backup\")): Spawn(\"/usr/bin/backup\"),",
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
+        "    (modifiers: [Super], key: \"b\", description: Some(\"" ++ app_id.window_base ++ "_backup\")): Spawn(\"/usr/bin/backup\"),",
+        ours,
     ));
     // 번호 자리가 비어 있는 경우.
-    try std.testing.expect(!isTildazCosmicEntry(
-        "    (modifiers: [Super], key: \"n\", description: Some(\"TildaZ_\")): Spawn(\"/usr/bin/x\"),",
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
+        "    (modifiers: [Super], key: \"n\", description: Some(\"" ++ app_id.window_base ++ "_\")): Spawn(\"/usr/bin/x\"),",
+        ours,
     ));
     // 음수는 index 가 아니다 (`u32`).
-    try std.testing.expect(!isTildazCosmicEntry(
-        "    (modifiers: [Super], key: \"m\", description: Some(\"TildaZ_-1\")): Spawn(\"/usr/bin/x\"),",
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
+        "    (modifiers: [Super], key: \"m\", description: Some(\"" ++ app_id.window_base ++ "_-1\")): Spawn(\"/usr/bin/x\"),",
+        ours,
     ));
-
-    // 전혀 무관한 사용자 항목.
-    try std.testing.expect(!isTildazCosmicEntry(
+    // 전혀 무관한 사용자 항목 · 표식이 없는 항목.
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [Super], key: \"e\", description: Some(\"My file manager\")): Spawn(\"nautilus\"),",
+        ours,
+    ));
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
+        "    (modifiers: [Super], key: \"q\"): Close,",
+        ours,
     ));
     // #654 — **개발 빌드는 릴리즈의 표식 (`TildaZ_N`) 을 자기 것으로 보지 않는다.** 이 판정에
-    // 걸린 줄은 `syncCosmic` 이 지우고 다시 쓰므로, 여기가 틀리면 dev 가 사용자의 릴리즈
+    // 걸린 항목은 `syncCosmic` 이 지우고 다시 쓰므로, 여기가 틀리면 dev 가 사용자의 릴리즈
     // 단축키를 자기 exe 로 바꿔 쓴다. 릴리즈 쪽 리터럴은 동작이 안 바뀌었다는 회귀 가드다.
     if (app_id.is_dev) {
-        try std.testing.expect(!isTildazCosmicEntry(
+        try std.testing.expectEqual(@as(?u32, null), try testScanOne(
             "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ_0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+            ours,
         ));
         try std.testing.expectEqualStrings("description: Some(\"TildaZ-dev_", cosmic_entry_marker);
     } else {
         try std.testing.expectEqualStrings("description: Some(\"TildaZ_", cosmic_entry_marker);
     }
-    // 맵 경계 줄.
-    try std.testing.expect(!isTildazCosmicEntry("{"));
-    try std.testing.expect(!isTildazCosmicEntry("}"));
-
     // 죽어 있던 옛 표식(`TildaZ instance `)은 writer 가 쓴 적이 없으므로 인식 대상이
     // 아니다 — 살릴 것은 그 절의 *의도* 였고 문자열이 아니다.
-    try std.testing.expect(!isTildazCosmicEntry(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\", description: Some(\"TildaZ instance 0\")): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        ours,
     ));
-}
-
-test "COSMIC closing map line is the last one" {
-    // `syncCosmic` 은 이 offset 직전에 자기 항목을 끼워 넣는다.
-    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n}\n"));
-    try std.testing.expect(findClosingMapLine("{\n") == null);
-
-    // 중첩된 `}` 가 있으면 **마지막** 것이 맵의 끝이다.
-    const nested =
-        "{\n" ++
-        "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"x\"),\n" ++
-        "}\n";
-    const offset = findClosingMapLine(nested).?;
-    try std.testing.expectEqualStrings("}", nested[offset .. offset + 1]);
-
-    // 들여쓰기 / CR 이 붙어도 닫는 줄로 인정한다 (`trim` 대상).
-    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n  }  \n"));
-    try std.testing.expectEqual(@as(?usize, 2), findClosingMapLine("{\n}\r\n"));
 }
 
 test "Hyprland desired lookup distinguishes keep and changed command" {
@@ -658,26 +700,152 @@ test "Hyprland desired lookup distinguishes keep and changed command" {
     try std.testing.expectEqual(@as(?usize, null), findHyprlandDesired(&desired, ",F1", "/home/test/tildaz --toggle 9"));
 }
 
+/// COSMIC 단축키 폴더. COSMIC (cosmic-config) 은 `XDG_CONFIG_HOME` 을 따른다 (#700 — 예전에는
+/// `$HOME/.config` 로 고정돼 있었다).
+fn cosmicShortcutsDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const base = try paths.configHome(rt, allocator);
+    defer allocator.free(base);
+    return std.Io.Dir.path.join(allocator, &.{ base, "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+}
+
+/// `custom` 을 읽는다. 없으면 빈 맵으로 보고 `existed` 를 거짓으로 둔다 (백업할 원본이 없다).
+fn readCosmicCustom(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, existed: *bool) ![]u8 {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            existed.* = false;
+            return allocator.dupe(u8, "{\n}\n");
+        },
+        else => return err,
+    };
+    defer file.close(rt.io);
+    existed.* = true;
+    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader` 의 `allocRemaining`
+    // (릴리즈 노트 *fs.File.readToEndAlloc*).
+    var file_reader = file.reader(rt.io, &.{});
+    return file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+}
+
+/// #700 — 고친 내용을 쓴다. 바뀐 게 없으면 열지도 않는다 (cosmic-comp 가 파일이 바뀔 때마다
+/// 다시 읽는다). 쓰기 전에 원본을 백업한다 (`writeCosmicBackups`) — 망가지면 되돌리기 어려운
+/// 파일이라서다 (#700 D3).
+fn writeCosmicCustom(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, old: []const u8, existed: bool, new: []const u8) !bool {
+    if (std.mem.eql(u8, old, new)) return false;
+    if (existed) try writeCosmicBackups(rt, allocator, old);
+    return paths.writeFileIfChanged(rt, allocator, path, new);
+}
+
+/// 백업 이름의 앞부분과 남길 개수. `.orig` 는 우리가 처음 고치기 전의 원본이고 지우지 않는다
+/// (GNU `patch` · `git mergetool` 이 쓰는 이름). 나머지는 고칠 때마다 직전 내용을
+/// `<base>.<YYYYMMDD>-<그날의 순번>` 으로 남기고 최근 `cosmic_backup_keep` 개만 둔다.
+const cosmic_backup_base = "cosmic-shortcuts-custom";
+const cosmic_backup_keep = 20;
+
+const CosmicBackup = struct {
+    date: u32,
+    seq: u32,
+
+    fn less(_: void, a: CosmicBackup, b: CosmicBackup) bool {
+        return if (a.date != b.date) a.date < b.date else a.seq < b.seq;
+    }
+};
+
+/// `cosmic-shortcuts-custom.20261009-3` → 날짜 20261009 · 순번 3. 다른 이름이면 `null`.
+fn parseCosmicBackupName(name: []const u8) ?CosmicBackup {
+    const prefix = cosmic_backup_base ++ ".";
+    if (!std.mem.startsWith(u8, name, prefix)) return null;
+    const rest = name[prefix.len..];
+    if (rest.len < 10 or rest[8] != '-') return null;
+    for (rest[0..8]) |c| if (!std.ascii.isDigit(c)) return null;
+    for (rest[9..]) |c| if (!std.ascii.isDigit(c)) return null;
+    const date = std.fmt.parseInt(u32, rest[0..8], 10) catch return null;
+    const seq = std.fmt.parseInt(u32, rest[9..], 10) catch return null;
+    if (seq == 0) return null;
+    return .{ .date = date, .seq = seq };
+}
+
+/// 날짜순으로 정렬된 목록에서 지울 앞부분 — 최근 `keep` 개만 남긴다.
+fn cosmicBackupsToDrop(sorted: []const CosmicBackup, keep: usize) []const CosmicBackup {
+    return if (sorted.len > keep) sorted[0 .. sorted.len - keep] else sorted[0..0];
+}
+
+fn writeCosmicBackups(rt: Runtime, allocator: std.mem.Allocator, old: []const u8) !void {
+    const dir_path = try paths.backupDir(rt, allocator);
+    defer allocator.free(dir_path);
+    try paths.ensureDir(rt, dir_path);
+
+    const orig = try std.Io.Dir.path.join(allocator, &.{ dir_path, cosmic_backup_base ++ ".orig" });
+    defer allocator.free(orig);
+    if (std.Io.Dir.openFileAbsolute(rt.io, orig, .{})) |f| {
+        f.close(rt.io);
+    } else |_| {
+        _ = try paths.writeFileIfChanged(rt, allocator, orig, old);
+        log.appendLine("cosmic", "original shortcut file backed up to {s}", .{orig});
+    }
+
+    var dir = try std.Io.Dir.openDirAbsolute(rt.io, dir_path, .{ .iterate = true });
+    defer dir.close(rt.io);
+    var backups: std.ArrayList(CosmicBackup) = .empty;
+    defer backups.deinit(allocator);
+    var it = dir.iterate();
+    while (try it.next(rt.io)) |entry| {
+        if (parseCosmicBackupName(entry.name)) |b| try backups.append(allocator, b);
+    }
+
+    const t = log.currentLocalTime();
+    const today: u32 = @as(u32, t.year) * 10000 + @as(u32, t.month) * 100 + t.day;
+    var seq: u32 = 1;
+    for (backups.items) |b| {
+        if (b.date == today and b.seq >= seq) seq = b.seq + 1;
+    }
+    var name_buf: [96]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ today, seq });
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, name });
+    defer allocator.free(path);
+    _ = try paths.writeFileIfChanged(rt, allocator, path, old);
+    try backups.append(allocator, .{ .date = today, .seq = seq });
+
+    std.mem.sort(CosmicBackup, backups.items, {}, CosmicBackup.less);
+    for (cosmicBackupsToDrop(backups.items, cosmic_backup_keep)) |b| {
+        const drop = try std.fmt.bufPrint(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ b.date, b.seq });
+        dir.deleteFile(rt.io, drop) catch |err| log.appendLine("cosmic", "old backup {s} not removed: {s}", .{ drop, @errorName(err) });
+    }
+}
+
+test "#700 COSMIC backups are named by date and sequence and only the latest are kept" {
+    try std.testing.expectEqual(CosmicBackup{ .date = 20261009, .seq = 3 }, parseCosmicBackupName("cosmic-shortcuts-custom.20261009-3").?);
+    try std.testing.expectEqual(CosmicBackup{ .date = 20261009, .seq = 12 }, parseCosmicBackupName("cosmic-shortcuts-custom.20261009-12").?);
+    // 원본 · 남의 파일 · 모양이 다른 이름은 목록에 넣지 않는다 (지우지도 않는다).
+    for ([_][]const u8{
+        "cosmic-shortcuts-custom.orig",
+        "cosmic-shortcuts-custom.20261009",
+        "cosmic-shortcuts-custom.20261009-",
+        "cosmic-shortcuts-custom.20261009-0",
+        "cosmic-shortcuts-custom.2026100x-1",
+        "cosmic-shortcuts-custom.20261009-1.tmp",
+        "notes.txt",
+    }) |name| try std.testing.expect(parseCosmicBackupName(name) == null);
+
+    // 날짜가 먼저, 같은 날이면 순번 — 순번 10 이 2 보다 뒤다 (글자 순서가 아니다).
+    var list = [_]CosmicBackup{ .{ .date = 20261010, .seq = 1 }, .{ .date = 20261009, .seq = 10 }, .{ .date = 20261009, .seq = 2 } };
+    std.mem.sort(CosmicBackup, &list, {}, CosmicBackup.less);
+    try std.testing.expectEqual(CosmicBackup{ .date = 20261009, .seq = 2 }, list[0]);
+    try std.testing.expectEqual(CosmicBackup{ .date = 20261010, .seq = 1 }, list[2]);
+    // 가장 오래된 것부터 지운다.
+    try std.testing.expectEqual(@as(usize, 1), cosmicBackupsToDrop(&list, 2).len);
+    try std.testing.expectEqual(CosmicBackup{ .date = 20261009, .seq = 2 }, cosmicBackupsToDrop(&list, 2)[0]);
+    try std.testing.expectEqual(@as(usize, 0), cosmicBackupsToDrop(&list, 20).len);
+}
+
 fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
-    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
-    const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+    const dir_path = try cosmicShortcutsDir(rt, allocator);
     defer allocator.free(dir_path);
     // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
     try paths.ensureDir(rt, dir_path);
     const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
-    const content = blk: {
-        const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => break :blk try allocator.dupe(u8, "{\n}\n"),
-            else => return err,
-        };
-        defer file.close(rt.io);
-        // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader` 의 `allocRemaining`
-        // (릴리즈 노트 *fs.File.readToEndAlloc*).
-        var file_reader = file.reader(rt.io, &.{});
-        break :blk try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
-    };
+    var existed = false;
+    const content = try readCosmicCustom(rt, allocator, path, &existed);
     defer allocator.free(content);
 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -685,56 +853,52 @@ fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
     const exe = exe_buf[0..exe_len];
 
-    const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
-    var offset: usize = 0;
-    while (offset < content.len) {
-        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
-        const line = content[offset..end];
-        if (offset == close_offset) try appendCosmicEntries(rt, &output, allocator, indices, exe);
-        // #496 1-c — 우리 줄은 지우고 다시 쓰는 구조다. 그런데 **위치 표기 인스턴스의
-        // 줄은 워커가 쓴 것**이라 여기서 지우면 launcher 가 돌 때마다 사라진다. 그래서
-        // 그 인스턴스의 줄만 남긴다.
+    // #700 — 줄이 아니라 항목 단위로 본다. 읽을 수 없는 파일은 **쓰지 않는다** — 그대로 두고 알린다.
+    const map = cosmic_ron.scan(allocator, content) catch |err| {
+        log.appendLine("cosmic", "shortcut file could not be read safely — left unchanged: {s} ({s})", .{ @errorName(err), path });
+        return err;
+    };
+    defer map.deinit(allocator);
+
+    const remove = try allocator.alloc(bool, map.entries.len);
+    defer allocator.free(remove);
+    for (map.entries, remove) |entry, *gone| {
+        // #496 1-c — 우리 항목은 지우고 다시 쓰는 구조다. 그런데 **위치 표기 인스턴스의
+        // 항목은 워커가 쓴 것**이라 여기서 지우면 launcher 가 돌 때마다 사라진다. 그래서
+        // 그 인스턴스의 항목만 남긴다.
         //
-        // #514 — 표식 없는 옛 `install.sh` 줄은 **우리가 그 index 를 실제로 관리할 때만**
-        // 흡수한다. config 를 지운 인스턴스의 줄까지 지우면 판정 근거가 다시 넓어진다.
+        // #514 — 표식 없는 옛 `install.sh` 항목은 **우리가 그 index 를 실제로 관리할 때만**
+        // 흡수한다. config 를 지운 인스턴스의 항목까지 지우면 판정 근거가 다시 넓어진다.
         //
-        // #654 — **개발 빌드는 흡수하지 않는다.** 옛 줄의 basename 은 dev 도 `tildaz` 라 (zig-out
+        // #654 — **개발 빌드는 흡수하지 않는다.** 옛 항목의 basename 은 dev 도 `tildaz` 라 (zig-out
         // 의 바이너리 이름) 릴리즈가 남긴 것과 구별할 수 없다. 남의 것을 지우는 쪽이 더
         // 위험하다 (dconf 잔재 `tildaz-N` 을 두는 것과 같은 판단).
-        const keep = if (tildazCosmicEntryIndex(line)) |idx|
-            cosmicDeferredToWorker(rt, allocator, idx)
+        gone.* = if (tildazCosmicEntryIndex(entry)) |idx|
+            !cosmicDeferredToWorker(rt, allocator, idx)
         else if (!app_id.is_dev) legacy: {
-            const idx = legacyInstallScriptEntryIndex(line) orelse break :legacy true;
-            break :legacy std.mem.findScalar(u32, indices, idx) == null;
-        } else true;
-        if (keep) {
-            try output.appendSlice(allocator, line);
-            try output.append(allocator, '\n');
-        }
-        offset = if (end < content.len) end + 1 else content.len;
+            const idx = legacyInstallScriptEntryIndex(entry) orelse break :legacy false;
+            break :legacy std.mem.findScalar(u32, indices, idx) != null;
+        } else false;
     }
 
-    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
+    var insert: std.ArrayList(u8) = .empty;
+    defer insert.deinit(allocator);
+    const count = try appendCosmicEntries(rt, &insert, allocator, indices, exe);
+
+    const output = cosmic_ron.rewrite(allocator, content, map, remove, insert.items, count) catch |err| {
+        log.appendLine("cosmic", "shortcut file edit did not verify — left unchanged: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer allocator.free(output);
+
+    if (try writeCosmicCustom(rt, allocator, path, content, existed, output)) {
         log.appendLine("cosmic", "numbered hotkeys synchronized ({d})", .{indices.len});
     } else {
         log.appendLine("cosmic", "numbered hotkeys already synchronized ({d})", .{indices.len});
     }
 }
 
-pub fn findClosingMapLine(content: []const u8) ?usize {
-    var found: ?usize = null;
-    var offset: usize = 0;
-    while (offset < content.len) {
-        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
-        if (std.mem.eql(u8, std.mem.trim(u8, content[offset..end], " \t\r"), "}")) found = offset;
-        offset = if (end < content.len) end + 1 else content.len;
-    }
-    return found;
-}
-
-/// COSMIC custom shortcut 한 줄이 **우리가 쓴 것**인지 판정한다.
+/// COSMIC custom shortcut 항목이 **우리가 쓴 것**이면 그 instance index.
 ///
 /// 근거는 `appendCosmicEntries` 가 직접 쓰는 description 표식
 /// (`description: Some("TildaZ_<index>")`) 하나다. 명령 문자열을 보지 않는 이유가
@@ -743,9 +907,7 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
 /// 들어가서 **사용자가 바꿀 수 있는 값**을 판정 근거로 삼고 있었다. 양방향으로 틀렸다.
 ///
 /// - 이름을 바꾸면 (`tildaz-dev --toggle 0`) `tildaz --toggle` 이라는 연속 문자열이
-///   사라져 자기 항목을 못 알아봤다. 지우지 못한 채 하나 더 쓰니 **같은 맵 키가
-///   중복**되고, 중복 키가 있는 RON 은 깨진 데이터라 COSMIC 이 파일 전체를 버린다 —
-///   사용자 단축키까지 함께 사라진다. 신고된 "cosmic resets all" 의 기전이다.
+///   사라져 자기 항목을 못 알아봤다. 지우지 못한 채 하나 더 썼다.
 /// - 반대로 사용자 항목의 명령에 `tildaz --toggle` 이 들어 있으면 (래퍼 스크립트 등)
 ///   우리 것으로 착각해 **조용히 지웠다.**
 ///
@@ -755,18 +917,18 @@ pub fn findClosingMapLine(content: []const u8) ?usize {
 /// 재작성" 구조라서다 — config 를 지운 인스턴스의 유령 항목도 정리돼야 한다. 단 번호
 /// 자리가 정말 정수인지 확인해 `TildaZ_backup` 같은 남의 이름을 집지 않는다 (Hyprland
 /// 쪽 `managedToggleCommand` 와 같은 엄격함).
-fn isTildazCosmicEntry(line: []const u8) bool {
-    return tildazCosmicEntryIndex(line) != null;
-}
-
-/// 우리 항목이면 그 instance index. #496 1-c 가 필요로 한다 — **어느 인스턴스의 줄인지**
-/// 알아야 위치 표기 인스턴스의 줄을 지우지 않고 남길 수 있다.
-fn tildazCosmicEntryIndex(line: []const u8) ?u32 {
-    const start = std.mem.find(u8, line, cosmic_entry_marker) orelse return null;
-    const rest = line[start + cosmic_entry_marker.len ..];
-    // 표식 뒤는 `<index>")` 형태다. 닫는 큰따옴표까지가 index 자리.
-    const end = std.mem.findScalar(u8, rest, '"') orelse return null;
-    return std.fmt.parseInt(u32, rest[0..end], 10) catch null;
+///
+/// #700 — 줄이 아니라 **항목**을 본다. COSMIC 설정 화면은 `description` 을 다른 줄에 쓴다 (#681).
+/// #496 1-c 가 index 를 쓴다 — **어느 인스턴스의 항목인지** 알아야 위치 표기 인스턴스의 항목을
+/// 지우지 않고 남길 수 있다.
+fn tildazCosmicEntryIndex(entry: cosmic_ron.Entry) ?u32 {
+    const raw = cosmic_ron.field(entry.key, "description") orelse return null;
+    var buf: [256]u8 = undefined;
+    const description = cosmic_ron.someString(raw, &buf) orelse return null;
+    if (!std.mem.startsWith(u8, description, cosmic_description_prefix)) return null;
+    const digits = description[cosmic_description_prefix.len..];
+    if (digits.len == 0) return null;
+    return std.fmt.parseInt(u32, digits, 10) catch null;
 }
 
 /// #514 — 예전 [`dist/linux/install.sh`](../../dist/linux/install.sh) 가 쓴 **표식 없는**
@@ -799,12 +961,12 @@ fn tildazCosmicEntryIndex(line: []const u8) ?u32 {
 /// 그래도 위험이 하나 남는다: 사용자가 **같은 모양의 단축키**를 손수 만들어 뒀다면 (표식 없이
 /// `<경로>/tildaz --toggle 0`) 그것도 우리 것으로 본다. 호출부 (`syncCosmic`) 가 "우리가 그 index 를
 /// 실제로 관리할 때만" 으로 한 번 더 좁힌다.
-fn legacyInstallScriptEntryIndex(line: []const u8) ?u32 {
-    if (std.mem.find(u8, line, "description:") != null) return null;
-    const open = "): Spawn(\"";
-    const start = std.mem.find(u8, line, open) orelse return null;
+///
+/// #700 — 줄이 아니라 **항목**을 본다 (키에 `description` 필드가 없고, 값이 `Spawn("…")` 인 항목).
+fn legacyInstallScriptEntryIndex(entry: cosmic_ron.Entry) ?u32 {
+    if (cosmic_ron.field(entry.key, "description") != null) return null;
     var buf: [std.Io.Dir.max_path_bytes + 64]u8 = undefined;
-    const command = ronStringUnescape(line[start + open.len ..], &buf) orelse return null;
+    const command = cosmic_ron.spawnCommand(entry.value, &buf) orelse return null;
     const space = std.mem.findScalar(u8, command, ' ') orelse return null;
     const path = command[0..space];
     const args = command[space + 1 ..];
@@ -818,67 +980,83 @@ fn legacyInstallScriptEntryIndex(line: []const u8) ?u32 {
 
 test "#514 · #583 B18 표식 없는 옛 install.sh 줄은 명령의 *모양* 으로만 흡수한다 (경로는 보지 않는다)" {
     // 옛 install.sh 가 쓴 형태 — 표식이 없고 명령이 실행 파일 경로 + `--toggle N` 뿐이다.
-    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
-    try std.testing.expectEqual(@as(?u32, 3), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 3), try testScanOne(
         "    (modifiers: [Ctrl, Shift], key: \"grave\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 3\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // #230 의 첫 형태 — 번호가 없던 때. 0 번이다.
-    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // #583 B18 — **경로가 달라도 흡수한다.** 이것이 예전에 `null` 이었고, 그래서 새 버전을 다른
     // 곳에 두면 옛 줄이 영원히 남았다 (키 이름이 모르는 것이면 custom 파일 전체가 무시된다).
-    try std.testing.expectEqual(@as(?u32, 0), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 0), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
-    try std.testing.expectEqual(@as(?u32, 2), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 2), try testScanOne(
         "    (modifiers: [], key: \"F3\"): Spawn(\"/tmp/tildaz-0.8.0/tildaz --toggle 2\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // PATH 에 의존한 맨 이름도 우리 것이다.
-    try std.testing.expectEqual(@as(?u32, 1), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 1), try testScanOne(
         "    (modifiers: [], key: \"F2\"): Spawn(\"tildaz --toggle 1\"),",
+        legacyInstallScriptEntryIndex,
     ));
 
     // 표식이 있으면 여기 소관이 아니다 — 우리 줄이든 사용자가 이름 붙인 줄이든.
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\", description: Some(\"" ++ app_id.window_base ++ "_0\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\", description: Some(\"My toggle\")): Spawn(\"/home/u/.local/bin/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
 
     // #484 의 교훈 — 부분 일치로 판정하지 않는다. 아래 줄들은 명령에 우리 경로가 들어 있어도
     // **첫 토큰이 우리 실행 파일이 아니거나** 인자가 더 붙어 있어 우리 것이 아니다.
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/opt/wrap /home/u/.local/bin/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"sh -c '/home/u/.local/bin/tildaz --toggle 0; notify-send hi'\"),",
+        legacyInstallScriptEntryIndex,
     ));
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle 0 --extra\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // 이름이 다른 빌드 — `tildaz-dev` 는 우리 것이 아니다 (basename 정확 일치).
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz-dev --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // 다른 하위 명령.
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --autostart\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // 번호 자리가 정수가 아니다.
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz --toggle x\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // 공백이 든 경로는 흡수하지 않는다 — 첫 토큰으로 자르는 규칙의 대가다 (문서에 적었다).
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/my apps/tildaz --toggle 0\"),",
+        legacyInstallScriptEntryIndex,
     ));
     // 인자가 아예 없다.
-    try std.testing.expectEqual(@as(?u32, null), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, null), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/.local/bin/tildaz\"),",
+        legacyInstallScriptEntryIndex,
     ));
 }
 
@@ -890,8 +1068,9 @@ test "#514 escaped paths in a legacy entry are matched after unescaping" {
     // 회귀 테스트의 경로에서 공백을 뺐다 — 검증하려는 것은 escape 해제이고, 공백 경로는
     // 위 테스트가 `null` 로 고정한다. 공백을 허용하면 앞에 래퍼가 붙은 줄
     // (`/opt/wrap /…/tildaz --toggle 0`) 을 우리 것으로 오판한다 (#484 가 그 오판이었다).
-    try std.testing.expectEqual(@as(?u32, 2), legacyInstallScriptEntryIndex(
+    try std.testing.expectEqual(@as(?u32, 2), try testScanOne(
         "    (modifiers: [], key: \"F1\"): Spawn(\"/home/u/my\\\"odd\\\"dir/tildaz --toggle 2\"),",
+        legacyInstallScriptEntryIndex,
     ));
 }
 
@@ -908,7 +1087,7 @@ fn cosmicDeferredToWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     return hotkey.code != null;
 }
 
-/// `appendCosmicEntries` 의 writer 와 `isTildazCosmicEntry` 의 matcher 가 **같은**
+/// `appendCosmicEntries` 의 writer 와 `tildazCosmicEntryIndex` 의 matcher 가 **같은**
 /// 표식을 쓰게 묶어 둔다. 이 둘이 갈라진 게 #484 의 원인이었다 — matcher 는
 /// `TildaZ instance ` 를 찾는데 writer 는 `TildaZ_<index>` 를 써서 그 절이 죽어 있었고,
 /// 그래서 명령 문자열 매칭으로 떨어졌다.
@@ -917,7 +1096,8 @@ fn cosmicDeferredToWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32)
 /// 표식을 쓰면 `syncCosmic` 의 "자기 항목 전부 삭제 후 재작성" 이 **릴리즈의 항목을 지우고 dev 의
 /// exe 로 다시 쓴다.** kglobalaccel · dconf 와 같은 부류의 함정이고 (Linux 회차 결함 5 · 6),
 /// 그 회차가 KDE 기기여서 COSMIC 만 남아 있었다.
-const cosmic_entry_marker = "description: Some(\"" ++ app_id.window_base ++ "_";
+const cosmic_description_prefix = app_id.window_base ++ "_";
+const cosmic_entry_marker = "description: Some(\"" ++ cosmic_description_prefix;
 
 fn appendCosmicEntries(
     rt: Runtime,
@@ -925,7 +1105,9 @@ fn appendCosmicEntries(
     allocator: std.mem.Allocator,
     indices: []const u32,
     exe: []const u8,
-) !void {
+) !usize {
+    // #700 — 넣은 항목 수. 고친 결과를 다시 스캔해 항목 수가 맞는지 볼 때 쓴다.
+    var count: usize = 0;
     for (indices) |index| {
         const text = try instances.configHotkeyText(rt, allocator, index);
         defer allocator.free(text);
@@ -954,11 +1136,14 @@ fn appendCosmicEntries(
         try output.appendSlice(allocator, "], key: \"");
         try output.appendSlice(allocator, config.linuxKeysymName(hotkey.keysym) orelse return error.InvalidConfig);
         try appendCosmicEntryTail(output, allocator, exe, index);
+        count += 1;
     }
+    return count;
 }
 
 /// 엔트리의 `key:` 뒤쪽. **writer 를 한 곳으로 묶어 둔다** — 표식이 matcher 와 갈라지면
-/// 자기 항목을 못 알아보고 중복 키를 써서 COSMIC 이 파일을 통째로 버린다 (#484 의 기전).
+/// 자기 항목을 못 알아보고 하나 더 써서 같은 단축키가 둘 남는다 (#484 의 기전). COSMIC 은 그때
+/// 뒤의 항목만 쓰고 앞의 것은 조용히 무시한다 (#700 조사).
 /// #496 1-c 가 워커 쪽 writer 를 하나 더 만들면서 그 위험이 두 배가 되므로 뽑아 둔다.
 fn appendCosmicEntryTail(
     output: *std.ArrayList(u8),
@@ -1009,8 +1194,8 @@ pub fn removeCosmicPositionEntry(rt: Runtime, allocator: std.mem.Allocator, inde
 }
 
 /// `key_name` 이 `null` 이면 우리 줄을 지우기만 한다 (거두기), 값이 있으면 그 값으로 다시
-/// 쓴다. 두 경로가 **같은 한 줄 규칙**을 쓰게 묶어 둔다 — 지우는 쪽과 쓰는 쪽이 갈리면
-/// 같은 map 키가 둘 생기고, 중복 키가 있는 RON 은 COSMIC 이 파일 전체를 버린다 (#484).
+/// 쓴다. 두 경로가 **같은 항목 규칙**을 쓰게 묶어 둔다 — 지우는 쪽과 쓰는 쪽이 갈리면
+/// 같은 단축키가 둘 생기고, 옛 키가 계속 토글한다 (#484).
 fn rewriteCosmicPositionEntry(
     rt: Runtime,
     allocator: std.mem.Allocator,
@@ -1018,36 +1203,30 @@ fn rewriteCosmicPositionEntry(
     key_name: ?[]const u8,
     modifiers: u32,
 ) !void {
-    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
-    const dir_path = try std.Io.Dir.path.join(allocator, &.{ home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1" });
+    const dir_path = try cosmicShortcutsDir(rt, allocator);
     defer allocator.free(dir_path);
     try paths.ensureDir(rt, dir_path);
     const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
-    const content = blk: {
-        const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
-            error.FileNotFound => break :blk try allocator.dupe(u8, "{\n}\n"),
-            else => return err,
-        };
-        defer file.close(rt.io);
-        var file_reader = file.reader(rt.io, &.{});
-        break :blk try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
-    };
+    var existed = false;
+    const content = try readCosmicCustom(rt, allocator, path, &existed);
     defer allocator.free(content);
 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
     const exe = exe_buf[0..exe_len];
 
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
-    try renderCosmicPositionRon(&output, allocator, content, exe, index, key_name, modifiers);
+    const output = renderCosmicPositionRon(allocator, content, exe, index, key_name, modifiers) catch |err| {
+        log.appendLine("cosmic", "shortcut file could not be edited safely — left unchanged: {s} ({s})", .{ @errorName(err), path });
+        return err;
+    };
+    defer allocator.free(output);
 
     // #513 — **안 쓴 경우에도 남긴다.** 예전엔 `writeFileIfChanged` 가 false 면 아무
     // 로그도 없어서, 로그만 보면 "이미 맞아서 안 씀" 과 "이 경로를 아예 안 탐" 이
     // 구분되지 않았다. keymap 재전송을 쫓을 때 특히 걸린다.
-    if (try paths.writeFileIfChanged(rt, allocator, path, output.items)) {
+    if (try writeCosmicCustom(rt, allocator, path, content, existed, output)) {
         if (key_name) |name| {
             log.appendLine("cosmic", "position hotkey entry written key={s}", .{name});
         } else {
@@ -1072,111 +1251,105 @@ test "#496 1-c dead key layout withdraws the previous position entry" {
         "    (modifiers: [Ctrl], key: \"twosuperior\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
         "    (modifiers: [Super], key: \"b\", description: Some(\"" ++ M ++ "_3\")): Spawn(\"/usr/bin/tildaz --toggle 3\"),\n" ++
         "}\n";
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(std.testing.allocator);
-    try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, null, 0);
+    const output = try renderCosmicPositionRon(std.testing.allocator, before, "/usr/bin/tildaz", 9, null, 0);
+    defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings(
         "{\n" ++
             "    (modifiers: [], key: \"F1\"): Spawn(\"/usr/bin/tildaz --toggle 0\"),\n" ++
             "    (modifiers: [Super], key: \"b\", description: Some(\"" ++ M ++ "_3\")): Spawn(\"/usr/bin/tildaz --toggle 3\"),\n" ++
             "}\n",
-        output.items,
+        output,
     );
 }
 
 test "#496 1-c rewriting a position entry replaces our line instead of adding one" {
-    // 같은 map 키가 둘 생기면 COSMIC 이 파일 전체를 버린다 (#484). 재등록이 layout 마다
-    // 도는 경로라 이 성질이 특히 중요하다 — 실기에서 us · fr · ru · de 를 오갔다.
+    // 같은 단축키가 둘 남으면 옛 키가 계속 토글한다. 재등록이 layout 마다 도는 경로라 이 성질이
+    // 특히 중요하다 — 실기에서 us · fr · ru · de 를 오갔다.
     const M = app_id.window_base;
     const before =
         "{\n" ++
         "    (modifiers: [Ctrl], key: \"grave\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
         "}\n";
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(std.testing.allocator);
-    try renderCosmicPositionRon(&output, std.testing.allocator, before, "/usr/bin/tildaz", 9, "twosuperior", config.Hotkey.MOD_CTRL);
+    const output = try renderCosmicPositionRon(std.testing.allocator, before, "/usr/bin/tildaz", 9, "twosuperior", config.Hotkey.MOD_CTRL);
+    defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings(
         "{\n" ++
             "    (modifiers: [Ctrl], key: \"twosuperior\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
             "}\n",
-        output.items,
+        output,
+    );
+}
+
+test "#700 the position entry is found and replaced even when COSMIC Settings rewrote it on several lines" {
+    // #681 의 모양 — COSMIC 설정 화면이 우리 항목을 여러 줄로 다시 썼다. 예전 코드는 description 줄만
+    // 지워 같은 단축키가 둘 남거나 파일이 깨졌다. 이제 항목째 바뀌고 사용자 항목은 글자 그대로 남는다.
+    const M = app_id.window_base;
+    const before =
+        "{\n" ++
+        "    (\n        modifiers: [\n            Ctrl,\n        ],\n        key: \"grave\",\n        description: Some(\"" ++ M ++ "_9\"),\n    ): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
+        "    (\n        modifiers: [\n            Super,\n        ],\n        key: \"v\",\n    ): Spawn(\"vicinae\"),\n" ++
+        "}";
+    const output = try renderCosmicPositionRon(std.testing.allocator, before, "/usr/bin/tildaz", 9, "twosuperior", config.Hotkey.MOD_CTRL);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "    (\n        modifiers: [\n            Super,\n        ],\n        key: \"v\",\n    ): Spawn(\"vicinae\"),\n" ++
+            "    (modifiers: [Ctrl], key: \"twosuperior\", description: Some(\"" ++ M ++ "_9\")): Spawn(\"/usr/bin/tildaz --toggle 9\"),\n" ++
+            "}",
+        output,
     );
 }
 
 /// 파일 내용 → 파일 내용. I/O 를 걷어 낸 순수부라 test 가 두 경로를 다 밟을 수 있다.
+/// **내 인스턴스의 항목만** 바꾼다. 남의 인스턴스는 launcher 소관이다. 읽을 수 없는 파일이면
+/// 오류다 (호출부가 그대로 둔다).
 fn renderCosmicPositionRon(
-    output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     content: []const u8,
     exe: []const u8,
     index: u32,
     key_name: ?[]const u8,
     modifiers: u32,
-) !void {
-    const close_offset = findClosingMapLine(content) orelse return error.UnsupportedCosmicShortcutFormat;
-    var offset: usize = 0;
-    while (offset < content.len) {
-        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
-        const line = content[offset..end];
-        if (offset == close_offset) {
-            if (key_name) |name| {
-                try output.appendSlice(allocator, "    (modifiers: [");
-                var first = true;
-                const mods = [_]struct { bit: u32, name: []const u8 }{
-                    .{ .bit = config.Hotkey.MOD_SUPER, .name = "Super" },
-                    .{ .bit = config.Hotkey.MOD_CTRL, .name = "Ctrl" },
-                    .{ .bit = config.Hotkey.MOD_ALT, .name = "Alt" },
-                    .{ .bit = config.Hotkey.MOD_SHIFT, .name = "Shift" },
-                };
-                for (mods) |mod| {
-                    if ((modifiers & mod.bit) == 0) continue;
-                    if (!first) try output.appendSlice(allocator, ", ");
-                    try output.appendSlice(allocator, mod.name);
-                    first = false;
-                }
-                try output.appendSlice(allocator, "], key: \"");
-                try output.appendSlice(allocator, name);
-                try appendCosmicEntryTail(output, allocator, exe, index);
-            }
-        }
-        // **내 인스턴스의 줄만** 지운다. 남의 인스턴스는 launcher 소관이다.
-        const mine = if (tildazCosmicEntryIndex(line)) |idx| idx == index else false;
-        if (!mine) {
-            try output.appendSlice(allocator, line);
-            try output.append(allocator, '\n');
-        }
-        offset = if (end < content.len) end + 1 else content.len;
+) ![]u8 {
+    const map = try cosmic_ron.scan(allocator, content);
+    defer map.deinit(allocator);
+    const remove = try allocator.alloc(bool, map.entries.len);
+    defer allocator.free(remove);
+    for (map.entries, remove) |entry, *gone| {
+        gone.* = if (tildazCosmicEntryIndex(entry)) |idx| idx == index else false;
     }
+
+    var insert: std.ArrayList(u8) = .empty;
+    defer insert.deinit(allocator);
+    if (key_name) |name| {
+        try insert.appendSlice(allocator, "    (modifiers: [");
+        var first = true;
+        const mods = [_]struct { bit: u32, name: []const u8 }{
+            .{ .bit = config.Hotkey.MOD_SUPER, .name = "Super" },
+            .{ .bit = config.Hotkey.MOD_CTRL, .name = "Ctrl" },
+            .{ .bit = config.Hotkey.MOD_ALT, .name = "Alt" },
+            .{ .bit = config.Hotkey.MOD_SHIFT, .name = "Shift" },
+        };
+        for (mods) |mod| {
+            if ((modifiers & mod.bit) == 0) continue;
+            if (!first) try insert.appendSlice(allocator, ", ");
+            try insert.appendSlice(allocator, mod.name);
+            first = false;
+        }
+        try insert.appendSlice(allocator, "], key: \"");
+        try insert.appendSlice(allocator, name);
+        try appendCosmicEntryTail(&insert, allocator, exe, index);
+    }
+    return cosmic_ron.rewrite(allocator, content, map, remove, insert.items, if (key_name != null) 1 else 0);
 }
 
+/// RON 문자열 escape. 읽는 쪽은 `cosmic_ron.string` 이다 — 두 규칙이 갈리면 따옴표 · 역슬래시가 든
+/// 경로에서 자기 항목을 못 알아본다 (#484 의 기전).
 fn appendRonString(output: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
     for (value) |byte| {
         if (byte == '\\' or byte == '"') try output.append(allocator, '\\');
         try output.append(allocator, byte);
     }
-}
-
-/// `appendRonString` 의 역이다. `escaped` 는 여는 `"` **다음**부터이고, 닫는 `"` 까지를
-/// escape 를 풀어 `buf` 에 담아 돌려준다. 버퍼가 모자라거나 문자열이 닫히지 않으면 `null`.
-///
-/// 읽는 쪽과 쓰는 쪽을 붙여 둔다 — 규칙이 갈리면 따옴표 · 역슬래시가 든 경로에서 자기
-/// 항목을 못 알아본다. 그 갈라짐이 #484 의 기전이었다.
-fn ronStringUnescape(escaped: []const u8, buf: []u8) ?[]const u8 {
-    var out: usize = 0;
-    var i: usize = 0;
-    while (i < escaped.len) : (i += 1) {
-        var byte = escaped[i];
-        if (byte == '"') return buf[0..out];
-        if (byte == '\\') {
-            i += 1;
-            if (i >= escaped.len) return null;
-            byte = escaped[i];
-        }
-        if (out >= buf.len) return null;
-        buf[out] = byte;
-        out += 1;
-    }
-    return null;
 }
 
 // =============================================================================
@@ -1268,7 +1441,8 @@ fn foreignHyprlandAccel(buf: []u8, binding: HyprlandBind) ?[]const u8 {
     return fbs.buffered();
 }
 
-test "#616 시스템 기본과 겹치는 줄을 찾는다 (조합만 보고 description 은 무시)" {
+test "#616 시스템 기본과 겹치는 항목을 찾는다 (조합만 보고 description 은 무시)" {
+    const a = std.testing.allocator;
     // 실제 `/usr/share/cosmic/…/v1/defaults` 의 형태 그대로.
     const defaults =
         \\{
@@ -1279,18 +1453,42 @@ test "#616 시스템 기본과 겹치는 줄을 찾는다 (조합만 보고 desc
         \\}
     ;
     const want = cosmicAccelOf(config.Hotkey.fromString("super+q").?).?;
-    const hit = findCosmicAccelLine(defaults, want) orelse return error.TestUnexpectedResult;
+    const hit = findCosmicAccelEntry(a, defaults, want) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("(modifiers: [Super], key: \"q\"): Close", hit);
 
     // modifier 는 **집합**이라 순서가 달라도 같다.
     const want2 = cosmicAccelOf(config.Hotkey.fromString("alt+super+escape").?).?;
-    try std.testing.expect(findCosmicAccelLine(defaults, want2) != null);
+    try std.testing.expect(findCosmicAccelEntry(a, defaults, want2) != null);
 
     // 겹치지 않는 조합은 null — 같은 키라도 modifier 가 다르면 다른 항목이다.
     const want3 = cosmicAccelOf(config.Hotkey.fromString("ctrl+q").?).?;
-    try std.testing.expect(findCosmicAccelLine(defaults, want3) == null);
+    try std.testing.expect(findCosmicAccelEntry(a, defaults, want3) == null);
     const want4 = cosmicAccelOf(config.Hotkey.fromString("F1").?).?;
-    try std.testing.expect(findCosmicAccelLine(defaults, want4) == null);
+    try std.testing.expect(findCosmicAccelEntry(a, defaults, want4) == null);
+
+    // #700 — 여러 줄 형식 (COSMIC 설정 화면이 쓰는 모양) 도 같은 항목으로 읽는다.
+    const pretty =
+        \\{
+        \\    (
+        \\        modifiers: [
+        \\            Super,
+        \\            Alt,
+        \\        ],
+        \\        key: "Escape",
+        \\    ): Terminate,
+        \\}
+    ;
+    try std.testing.expect(findCosmicAccelEntry(a, pretty, want2) != null);
+    // 읽을 수 없는 파일은 판정하지 못한다 — 겹쳤다는 뜻이 아니다.
+    try std.testing.expect(findCosmicAccelEntry(a, "{ (modifiers: [Super], key: \"q\"): Close", want) == null);
+}
+
+test "#700 a conflict description is shown on one line" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "( modifiers: [ Super, ], key: \"v\", ): Spawn(\"vicinae\")",
+        compactInto(&buf, "(\n        modifiers: [\n            Super,\n        ],\n        key: \"v\",\n    ): Spawn(\"vicinae\")").?,
+    );
 }
 
 pub fn cosmicSystemDefaultOverride(
@@ -1317,58 +1515,41 @@ pub fn cosmicSystemDefaultOverride(
         const content = file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch continue;
         defer allocator.free(content);
 
-        if (findCosmicAccelLine(content, want)) |line| {
-            return std.fmt.bufPrint(out_buf, "{s}", .{line}) catch
-                std.fmt.bufPrint(out_buf, "{s}", .{want.key()}) catch null;
+        if (findCosmicAccelEntry(allocator, content, want)) |text| {
+            return compactInto(out_buf, text) orelse std.fmt.bufPrint(out_buf, "{s}", .{want.key()}) catch null;
         }
     }
     return null;
 }
 
-/// RON 본문에서 `want` 와 같은 조합의 줄을 찾는다 (앞뒤 공백 · 쉼표는 떼고 돌려준다).
-/// 파일 입출력과 갈라 두어 테스트가 문자열만으로 돈다.
-fn findCosmicAccelLine(content: []const u8, want: CosmicAccel) ?[]const u8 {
-    var offset: usize = 0;
-    while (offset < content.len) {
-        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
-        const line = content[offset..end];
-        offset = if (end < content.len) end + 1 else content.len;
-
-        const got = parseCosmicAccel(line) orelse continue;
+/// RON 본문에서 `want` 와 같은 조합의 항목 글자를 찾는다. 파일 입출력과 갈라 두어 테스트가
+/// 문자열만으로 돈다. 읽을 수 없는 파일이면 `null` — 못 봤다는 것과 겹쳤다는 것은 다르다.
+fn findCosmicAccelEntry(allocator: std.mem.Allocator, content: []const u8, want: CosmicAccel) ?[]const u8 {
+    const map = cosmic_ron.scan(allocator, content) catch return null;
+    defer map.deinit(allocator);
+    for (map.entries) |entry| {
+        const got = cosmicEntryAccel(entry) orelse continue;
         if (got.modifiers != want.modifiers) continue;
         if (!std.mem.eql(u8, got.key(), want.key())) continue;
-        return std.mem.trim(u8, line, " \t\r,");
+        return content[entry.start..entry.end];
     }
     return null;
 }
 
 /// #510 — 이 accel 을 **우리 것이 아닌** COSMIC 단축키가 이미 쓰고 있는가.
 ///
-/// COSMIC 의 단축키 파일은 RON **map** 이고, 같은 키가 두 번 나오면 COSMIC 이 파일을
-/// 통째로 버린다 — 사용자 단축키까지 함께 사라지는 [#484](https://github.com/ensky0/tildaz/issues/484)
-/// 의 기전이다. 그래서 여기서의 충돌은 "우리 핫키가 안 먹는다" 보다 나쁘다.
+/// COSMIC 의 단축키 파일은 RON **map** 이고, 키 (`Binding`) 는 `modifiers + key` 로만 같은지 본다.
+/// 같은 조합이 두 번 나오면 **뒤의 항목이 이기고** 앞의 것은 조용히 안 먹는다 (#700 조사 —
+/// cosmic-settings-daemon `config/src/shortcuts/mod.rs:115-139` 가 `HashMap::insert` 로 읽는다).
+/// 그래서 여기서의 충돌은 "둘 중 하나가 안 먹는다" 이고, 어느 쪽인지 사용자가 알 수 없다.
 ///
 /// **사용자 `custom` 파일만 본다.** 시스템 기본값 (`/usr/share/cosmic/…/v1/defaults`) 과의
 /// 겹침은 **충돌이 아니다 — 우리가 이긴다** (#616 · 2026-09-04 upstream 소스로 확정).
-/// `cosmic-settings-daemon` 의 `shortcuts()` 가 `defaults` 를 읽고 `extend(custom)` 로 덮으며,
-/// map 의 키인 `Binding` 은 `PartialEq` · `Hash` 를 `modifiers` · `key` 로만 구현한다. 그래서
-/// 그쪽은 막지 않고 `cosmicSystemDefaultOverride` 가 **로그로만** 알린다 (위 함수).
+/// `cosmic-settings-daemon` 의 `shortcuts()` 가 `defaults` 를 읽고 `extend(custom)` 로 덮는다.
+/// 그래서 그쪽은 막지 않고 `cosmicSystemDefaultOverride` 가 **로그로만** 알린다.
 ///
-/// 반환: 충돌하는 남의 항목 설명 (`out_buf` 에 담긴다). 없으면 `null`.
-/// #616 — 우리 항목이 **COSMIC 시스템 기본 단축키**와 겹치는지. 겹친 기본 항목 줄을 돌려준다.
-///
-/// **겹침은 충돌이 아니다 — 우리가 이긴다.** upstream `cosmic-settings-daemon` 의 `shortcuts()` 가
-/// `defaults` 를 읽은 뒤 `shortcuts.0.extend(custom_shortcuts.0)` 로 사용자 것을 덮고
-/// (*"Combine while overriding system shortcuts"*), 그 map 의 키인 `Binding` 은 `PartialEq` · `Hash` 를
-/// **`modifiers` 와 `key` 로만** 손으로 구현해 `description` · `keycode` 를 뺀다. 그래서 우리가
-/// `description: Some("TildaZ_N")` 을 달아도 조합이 같으면 기본값 자리를 그대로 차지한다.
-///
-/// 그러므로 이 함수의 결과로 **막지 않는다** (그러면 멀쩡한 설정에서 앱이 안 뜬다 — SPEC §2.1).
-/// 대신 로그로 알린다: 그 조합의 COSMIC 기본 동작이 우리 항목이 있는 동안 **조용히 사라지기** 때문이다.
-/// 예를 들어 `hotkey = "super+q"` 면 COSMIC 의 창 닫기가 안 먹는데, 지금까지는 어디에도 그 사실이 없었다.
-///
-/// 판정하지 못하면 (`defaults` 가 없거나 못 읽음 · 형식이 다름) `null` 이다 — 못 봤다는 것과 겹쳤다는
-/// 것은 다르다.
+/// 반환: 충돌하는 남의 항목 설명 (`out_buf` 에 한 줄로 담긴다). 없으면 `null`. 파일을 읽을 수
+/// 없으면 오류다 — 호출부가 "판정을 건너뜀" 으로 남긴다.
 pub fn cosmicForeignBinding(
     rt: Runtime,
     allocator: std.mem.Allocator,
@@ -1377,44 +1558,51 @@ pub fn cosmicForeignBinding(
 ) !?[]const u8 {
     const want = cosmicAccelOf(hotkey) orelse return null;
 
-    const home = rt.environ.getPosix("HOME") orelse return error.HomeNotSet;
-    const path = try std.Io.Dir.path.join(allocator, &.{
-        home, ".config", "cosmic", "com.system76.CosmicSettings.Shortcuts", "v1", "custom",
-    });
+    const dir_path = try cosmicShortcutsDir(rt, allocator);
+    defer allocator.free(dir_path);
+    const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
-    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
-        // 파일이 없으면 사용자 단축키가 하나도 없다 — 충돌할 것이 없다.
-        error.FileNotFound => return null,
-        else => return err,
-    };
-    defer file.close(rt.io);
-    var file_reader = file.reader(rt.io, &.{});
-    const content = try file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    var existed = false;
+    const content = try readCosmicCustom(rt, allocator, path, &existed);
     defer allocator.free(content);
+    // 파일이 없으면 사용자 단축키가 하나도 없다 — 충돌할 것이 없다.
+    if (!existed) return null;
 
-    var offset: usize = 0;
-    while (offset < content.len) {
-        const end = std.mem.findScalarPos(u8, content, offset, '\n') orelse content.len;
-        const line = content[offset..end];
-        offset = if (end < content.len) end + 1 else content.len;
+    const map = try cosmic_ron.scan(allocator, content);
+    defer map.deinit(allocator);
+    for (map.entries) |entry| {
+        // 우리 항목은 충돌이 아니다 — 표식이 붙은 항목과, 옛 install.sh 가 쓴 표식 없는 항목.
+        if (tildazCosmicEntryIndex(entry) != null) continue;
+        if (legacyInstallScriptEntryIndex(entry) != null) continue;
 
-        // 우리 줄은 충돌이 아니다 — 표식이 붙은 줄과, 옛 install.sh 가 쓴 표식 없는 줄.
-        if (tildazCosmicEntryIndex(line) != null) continue;
-        if (legacyInstallScriptEntryIndex(line) != null) continue;
-
-        const got = parseCosmicAccel(line) orelse continue;
+        const got = cosmicEntryAccel(entry) orelse continue;
         if (got.modifiers != want.modifiers) continue;
         if (!std.mem.eql(u8, got.key(), want.key())) continue;
 
-        return std.fmt.bufPrint(out_buf, "{s}", .{std.mem.trim(u8, line, " \t\r,")}) catch
+        return compactInto(out_buf, content[entry.start..entry.end]) orelse
             std.fmt.bufPrint(out_buf, "{s}", .{got.key()}) catch null;
     }
     return null;
 }
 
-/// COSMIC 단축키 한 줄에서 뽑아낸 비교용 accel. modifier 는 **집합**으로 본다 — 파일에
-/// 적힌 순서에 기대면 사용자가 손으로 쓴 줄에서 어긋난다.
+/// 여러 줄 항목을 다이얼로그 · 로그 한 줄로 보인다 — 공백이 이어지면 하나로 줄인다.
+fn compactInto(out_buf: []u8, text: []const u8) ?[]const u8 {
+    var len: usize = 0;
+    var in_space = false;
+    for (std.mem.trim(u8, text, " \t\r\n")) |c| {
+        const space = c == ' ' or c == '\t' or c == '\r' or c == '\n';
+        if (space and in_space) continue;
+        if (len >= out_buf.len) return null;
+        out_buf[len] = if (space) ' ' else c;
+        len += 1;
+        in_space = space;
+    }
+    return out_buf[0..len];
+}
+
+/// COSMIC 단축키 항목에서 뽑아낸 비교용 accel. modifier 는 **집합**으로 본다 — 파일에
+/// 적힌 순서에 기대면 사용자가 손으로 쓴 항목에서 어긋난다.
 const CosmicAccel = struct {
     modifiers: u32,
     key_buf: [64]u8,
@@ -1437,17 +1625,14 @@ fn cosmicAccelOf(hotkey: config.Hotkey) ?CosmicAccel {
     return out;
 }
 
-/// `    (modifiers: [Super, Shift], key: "Escape"): System(LogOut),` 한 줄을 읽는다.
-///
-/// 파서를 붙이지 않는 이유는 이 파일의 다른 COSMIC 코드와 같다 — 한 항목이 한 줄이고
-/// 형태가 고정이라, 부분 문자열로 충분하고 그 편이 고정 버퍼만 쓰는 성질을 지킨다.
-fn parseCosmicAccel(line: []const u8) ?CosmicAccel {
-    const mods_open = std.mem.find(u8, line, "(modifiers: [") orelse return null;
-    const mods_start = mods_open + "(modifiers: [".len;
-    const mods_end = std.mem.findScalarPos(u8, line, mods_start, ']') orelse return null;
+/// 항목의 키 (`(modifiers: [Super, Shift], key: "Escape")`) 를 읽는다. #700 — 줄 모양과 무관하다
+/// (COSMIC 설정 화면은 modifier 를 한 줄씩, 뒤에 쉼표를 붙여 쓴다).
+fn cosmicEntryAccel(entry: cosmic_ron.Entry) ?CosmicAccel {
+    const mods_raw = cosmic_ron.field(entry.key, "modifiers") orelse return null;
+    if (mods_raw.len < 2 or mods_raw[0] != '[' or mods_raw[mods_raw.len - 1] != ']') return null;
 
     var modifiers: u32 = 0;
-    var it = std.mem.tokenizeAny(u8, line[mods_start..mods_end], ", \t");
+    var it = std.mem.tokenizeAny(u8, mods_raw[1 .. mods_raw.len - 1], ", \t\r\n");
     while (it.next()) |token| {
         if (std.ascii.eqlIgnoreCase(token, "Super")) {
             modifiers |= config.Hotkey.MOD_SUPER;
@@ -1463,14 +1648,10 @@ fn parseCosmicAccel(line: []const u8) ?CosmicAccel {
         }
     }
 
-    const key_open = "key: \"";
-    const key_at = std.mem.findPos(u8, line, mods_end, key_open) orelse return null;
-    const key_start = key_at + key_open.len;
-    const key_end = std.mem.findScalarPos(u8, line, key_start, '"') orelse return null;
-    const name = line[key_start..key_end];
-    if (name.len == 0 or name.len > 64) return null;
-
-    var out: CosmicAccel = .{ .modifiers = modifiers, .key_buf = undefined, .key_len = name.len };
-    @memcpy(out.key_buf[0..name.len], name);
+    var out: CosmicAccel = .{ .modifiers = modifiers, .key_buf = undefined, .key_len = 0 };
+    const key_raw = cosmic_ron.field(entry.key, "key") orelse return null;
+    const name = cosmic_ron.string(key_raw, &out.key_buf) orelse return null;
+    if (name.len == 0) return null;
+    out.key_len = name.len;
     return out;
 }

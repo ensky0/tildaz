@@ -17,6 +17,8 @@ const log = @import("../../log.zig");
 const dialog = @import("../../dialog.zig");
 const messages = @import("../../messages.zig");
 const dbus = @import("dbus.zig");
+const paths_mod = @import("../../paths.zig");
+const console = @import("../../console.zig");
 const hotkey_format = @import("hotkey_format.zig");
 
 const destination: [*:0]const u8 = "org.kde.kglobalaccel";
@@ -114,7 +116,7 @@ pub fn syncNumberedIdentities(rt: Runtime, allocator: std.mem.Allocator, indices
     };
     defer bus.deinit();
 
-    const paths = allComponentPaths(allocator, &bus) catch |err| {
+    const paths = allComponentPaths(allocator, &bus, true) catch |err| {
         log.appendLineVerbose("kglobalaccel", "KDE component enumeration skipped: {s}", .{@errorName(err)});
         return;
     };
@@ -123,10 +125,18 @@ pub fn syncNumberedIdentities(rt: Runtime, allocator: std.mem.Allocator, indices
         allocator.free(paths);
     }
 
+    const counts = unregisterOthers(allocator, &bus, paths, indices);
+    log.appendLine("kglobalaccel", "KDE numbered hotkeys synchronized desired={} kept={} removed={}", .{ indices.len, counts.kept, counts.removed });
+}
+
+const Counts = struct { kept: usize, removed: usize };
+
+/// `indices` 에 없는 번호의 우리 컴포넌트에서 toggle action 을 뗀다.
+fn unregisterOthers(allocator: std.mem.Allocator, bus: *dbus.SessionBus, paths: []const []u8, indices: []const u32) Counts {
     var kept: usize = 0;
     var removed: usize = 0;
     for (paths) |path| {
-        const unique_name = componentUniqueName(allocator, &bus, path) catch continue;
+        const unique_name = componentUniqueName(allocator, bus, path) catch continue;
         defer allocator.free(unique_name);
         const index = numberedComponentIndex(unique_name) orelse continue;
         if (containsInstanceIndex(indices, index)) {
@@ -144,17 +154,126 @@ pub fn syncNumberedIdentities(rt: Runtime, allocator: std.mem.Allocator, indices
         };
         removed += 1;
     }
-    log.appendLine("kglobalaccel", "KDE numbered hotkeys synchronized desired={} kept={} removed={}", .{ indices.len, kept, removed });
+    return .{ .kept = kept, .removed = removed };
 }
 
-fn allComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus) ![][]u8 {
+/// #700 — `tildaz --desktop remove`. 세션과 무관하게 우리 단축키 항목을 모두 지운다.
+///
+/// kglobalaccel 이 떠 있으면 **D-Bus 로만** 지운다. 그 파일 (`kglobalshortcutsrc`) 은
+/// kglobalaccel 이 메모리에 든 내용으로 다시 쓰므로, 떠 있는 동안 직접 고치면 되돌아간다 —
+/// 예전 `uninstall.sh` 가 그렇게 `awk` 로 고쳤다 (#700 D4). 자동 시작을 끈 호출이라 안 떠
+/// 있으면 새로 띄우지 않고 `ServiceUnknown` 으로 실패한다. 그때만 (또는 세션 버스가 아예
+/// 없을 때만) 파일에서 우리 그룹을 지운다 — 다음에 kglobalaccel 이 뜰 때 그 파일을 읽는다.
+/// 그 밖의 오류면 아무것도 고치지 않는다 (떠 있는지 모르는 채 파일을 고치지 않는다).
+pub fn removeAll(rt: Runtime, allocator: std.mem.Allocator) void {
+    var bus = dbus.SessionBus.connect() catch {
+        removeGroupsFromFile(rt, allocator);
+        return;
+    };
+    defer bus.deinit();
+    const paths = allComponentPaths(allocator, &bus, false) catch |err| {
+        if (err == error.KGlobalAccelNotRunning) {
+            removeGroupsFromFile(rt, allocator);
+        } else {
+            log.appendLine("kglobalaccel", "KDE hotkey removal skipped: {s}", .{@errorName(err)});
+        }
+        return;
+    };
+    defer {
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
+    }
+    const counts = unregisterOthers(allocator, &bus, paths, &.{});
+    log.appendLine("kglobalaccel", "KDE hotkeys removed through kglobalaccel removed={}", .{counts.removed});
+}
+
+fn removeGroupsFromFile(rt: Runtime, allocator: std.mem.Allocator) void {
+    removeGroupsFromFileOrError(rt, allocator) catch |err| {
+        log.appendLine("kglobalaccel", "kglobalshortcutsrc cleanup failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn removeGroupsFromFileOrError(rt: Runtime, allocator: std.mem.Allocator) !void {
+    const home = try paths_mod.configHome(rt, allocator);
+    defer allocator.free(home);
+    const path = try std.Io.Dir.path.join(allocator, &.{ home, "kglobalshortcutsrc" });
+    defer allocator.free(path);
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    const text = blk: {
+        defer file.close(rt.io);
+        var reader = file.reader(rt.io, &.{});
+        break :blk try reader.interface.allocRemaining(allocator, .limited(4 * 1024 * 1024));
+    };
+    defer allocator.free(text);
+    const next = (try withoutOurGroups(allocator, text)) orelse return;
+    defer allocator.free(next);
+    if (!try paths_mod.writeFileIfChanged(rt, allocator, path, next)) return;
+    log.appendLine("kglobalaccel", "removed our groups from {s} (kglobalaccel is not running)", .{path});
+    var buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
+    console.outLine(rt.io, std.fmt.bufPrint(&buf, messages.desktop_updated_format, .{path}) catch path);
+}
+
+/// `[<id>.instanceN]` 그룹 (헤더부터 다음 그룹 직전까지) 을 뺀 내용. 없으면 `null`. 판정은
+/// `numberedComponentIndex` 그대로라 개발 빌드가 릴리즈 그룹을 지우지 않는다.
+fn withoutOurGroups(allocator: std.mem.Allocator, text: []const u8) !?[]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var skipping = false;
+    var dropped = false;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var first = true;
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            skipping = numberedComponentIndex(trimmed[1 .. trimmed.len - 1]) != null;
+        }
+        if (skipping) {
+            dropped = true;
+            continue;
+        }
+        if (!first) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, line);
+        first = false;
+    }
+    if (!dropped) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+test "#700 only our numbered groups are removed from kglobalshortcutsrc" {
+    const ours = "[" ++ app_id.name ++ ".instance3]\n_k_friendly_name=" ++ app_id.window_base ++ "_3\ntoggle-3=F10,none,Toggle\n\n";
+    const other_id = if (app_id.is_dev) "tildaz" else "tildaz-dev";
+    const kept = "[kwin]\nWindow Close=Alt+F4,Alt+F4,Close Window\n\n[" ++ other_id ++ ".instance0]\ntoggle-0=F1,none,Toggle\n";
+    const out = (try withoutOurGroups(std.testing.allocator, ours ++ kept)).?;
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(kept, out);
+    try std.testing.expect((try withoutOurGroups(std.testing.allocator, kept)) == null);
+    // 비슷하지만 우리 이름이 아닌 그룹 · 번호가 아닌 그룹은 둔다.
+    const near = "[" ++ app_id.name ++ ".instance]\na=1\n[" ++ app_id.name ++ ".instance01]\nb=2\n";
+    try std.testing.expect((try withoutOurGroups(std.testing.allocator, near)) == null);
+}
+
+/// `auto_start` 가 false 면 kglobalaccel 이 안 떠 있을 때 새로 띄우지 않고
+/// `error.KGlobalAccelNotRunning` 으로 돌아온다 (#700 `removeAll`).
+fn allComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus, auto_start: bool) ![][]u8 {
     const call = bus.api.message_new_method_call(destination, root_path, root_interface, "allComponents") orelse return error.KGlobalAccelMessageAllocFailed;
     defer bus.api.message_unref(call);
+    bus.api.message_set_auto_start(call, @intFromBool(auto_start));
 
     var err: dbus.DBusError = .{};
     bus.api.error_init(&err);
     defer bus.api.error_free(&err);
-    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse return error.KGlobalAccelMethodCallFailed;
+    const reply = bus.api.send_with_reply_and_block(bus.conn, call, method_call_timeout_ms, &err) orelse {
+        if (err.name) |name| {
+            if (std.mem.eql(u8, std.mem.span(name), "org.freedesktop.DBus.Error.ServiceUnknown")) return error.KGlobalAccelNotRunning;
+        }
+        return error.KGlobalAccelMethodCallFailed;
+    };
     defer bus.api.message_unref(reply);
 
     var reply_iter: dbus.DBusMessageIter = .{};

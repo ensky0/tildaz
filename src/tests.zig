@@ -10,12 +10,14 @@ const builtin = @import("builtin");
 const std = @import("std");
 
 test "aggregate root imports every common and native-host test module" {
-    // Cross-platform modules (50 files).
+    // Cross-platform modules (53 files).
     _ = @import("about.zig");
     _ = @import("box_drawing.zig");
     _ = @import("chrome_palette.zig");
     _ = @import("config.zig");
     _ = @import("command_menu.zig");
+    _ = @import("cosmic_ron.zig");
+    _ = @import("desktop_setup.zig");
     _ = @import("dialog.zig");
     _ = @import("font/display_width.zig");
     _ = @import("renderer/glyph_atlas_common.zig");
@@ -65,7 +67,8 @@ test "aggregate root imports every common and native-host test module" {
 
     switch (builtin.os.tag) {
         .linux => {
-            // Linux native modules (11 files).
+            // Linux native modules (23 files).
+            _ = @import("autostart/linux.zig");
             _ = @import("dialog/linux.zig");
             _ = @import("font/linux/font.zig");
             _ = @import("host/linux/dialog_layout.zig");
@@ -76,6 +79,7 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("renderer/linux/gl_rects.zig");
             _ = @import("renderer/linux/gl_text.zig");
             _ = @import("host/linux/hotkey_format.zig");
+            _ = @import("host/linux/hyprland_ipc.zig");
             _ = @import("host/linux/kglobalaccel.zig");
             _ = @import("host/linux/instance_identity.zig");
             _ = @import("host/linux/shell_extension.zig");
@@ -83,6 +87,8 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("host/linux/software_terminal.zig");
             _ = @import("host/linux/wayland_minimal.zig");
             _ = @import("host/linux/xkb.zig");
+            _ = @import("desktop_setup/sway_hyprland_files.zig");
+            _ = @import("desktop_setup/sway_hyprland.zig");
             _ = @import("shortcut_sync/linux.zig");
             _ = @import("terminal/posix/pty.zig");
         },

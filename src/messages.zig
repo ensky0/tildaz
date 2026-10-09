@@ -165,6 +165,26 @@ pub const request_endpoint_ready_timeout_msg =
     "TildaZ did not become ready to create another instance in time. Restart TildaZ and try again. If this continues, check the TildaZ log.";
 pub const toggle_unsupported_msg =
     "The --toggle option is only supported on Linux.";
+/// #700 — `tildaz --desktop add | remove | cleanup`. `install.sh` · `uninstall.sh` 가 부르고
+/// 사용자도 손으로 부를 수 있어 콘솔로 나간다.
+pub const desktop_unsupported_msg =
+    "The --desktop option is only supported on Linux.";
+pub const desktop_failed_format =
+    "tildaz: --desktop {s} failed: {s}\nThe details are in the TildaZ log.";
+/// #700 — `--desktop` 가 고친 파일. 예전 `install.sh` · `uninstall.sh` 의 `Removed: <경로>` 와
+/// 같은 모양이다.
+pub const desktop_created_format = "Created: {s}";
+pub const desktop_updated_format = "Updated: {s}";
+pub const desktop_removed_format = "Removed: {s}";
+/// #700 — sway · Hyprland 자동실행을 걸지 못한 이유. 사용자가 손으로 할 일을 함께 적는다.
+pub const desktop_sway_not_installed_msg =
+    "sway autostart: skipped (sway is not installed). Run \"tildaz --desktop add\" again after installing sway.";
+pub const desktop_sway_i3_config_format =
+    "sway autostart: skipped (sway reads the i3 config {s}). To start TildaZ with sway, add this line to it:\n  include {s}";
+pub const desktop_hyprland_not_installed_msg =
+    "Hyprland autostart: skipped (Hyprland is not installed). Run \"tildaz --desktop add\" again after installing Hyprland.";
+pub const desktop_hyprland_system_config_msg =
+    "Hyprland autostart: skipped (Hyprland reads a system config, not one in your home folder).";
 
 /// #383 — CLI 출력. 창을 띄우기 전에 콘솔로 나가는 유일한 텍스트 묶음이라 dialog 를
 /// 거치지 않고 `console.zig` 가 직접 쓴다.
@@ -189,6 +209,9 @@ pub const help_text =
     \\                   config defaults to F1 for instance 0, F2 for 1, and so on.
     \\  --toggle [N]     Show or hide the running instance N (default: 0), then
     \\                   exit. Linux only.
+    \\  --desktop <add|remove|cleanup>
+    \\                   Add, remove, or tidy up what TildaZ puts in your desktop's
+    \\                   shortcut and startup settings, then exit. Linux only.
     \\  --autostart      Start the way the desktop session starts TildaZ.
     \\  -v, --version    Print the version, then exit.
     \\  -h, --help       Print this help, then exit.

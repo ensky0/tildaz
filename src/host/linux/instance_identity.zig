@@ -78,9 +78,10 @@ fn parseDesktopFileName(name: []const u8) ?u32 {
 }
 
 fn applicationsDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
-    const home = try rt.envAlloc(allocator, "HOME");
-    defer allocator.free(home);
-    return std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "applications" });
+    // #700 — XDG 규칙대로 `$XDG_DATA_HOME/applications` (없으면 `~/.local/share/applications`).
+    const data = try paths.dataHome(rt, allocator);
+    defer allocator.free(data);
+    return std.Io.Dir.path.join(allocator, &.{ data, "applications" });
 }
 
 fn containsIndex(indices: []const u32, index: u32) bool {
