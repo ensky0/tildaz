@@ -116,6 +116,14 @@ pub fn configHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_CONFIG_HOME", "/.config");
 }
 
+/// #700 — Linux 사용자 data base. desktop 항목 (`applications/`) · GNOME · Cinnamon 확장
+/// (`gnome-shell/extensions/` · `cinnamon/extensions/`) 이 여기 산다. 두 셸 모두
+/// `g_get_user_data_dir()` (= 이 규칙) 으로 사용자 확장을 찾는다 — 이 기기의 libshell-51 ·
+/// libcinnamon 이 그 심볼을 쓰고, Cinnamon `js/ui/extension.js:58` 이 `global.userdatadir` 를 쓴다.
+pub fn dataHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    return xdgHome(rt, allocator, "XDG_DATA_HOME", "/.local/share");
+}
+
 /// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.
 fn stateHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_STATE_HOME", "/.local/state");

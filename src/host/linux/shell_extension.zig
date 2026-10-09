@@ -82,11 +82,12 @@ const cinnamon_resources = [_]Resource{
 /// 어긋나면 안 된다. 결과 종류 (`synced` · `kept_installed` · `unavailable`) 도 함께 사라졌다:
 /// 이제 실패는 오류이고 성공은 한 가지다.
 pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
-    const home = try rt.envAlloc(allocator, "HOME");
-    defer allocator.free(home);
+    // #700 — 두 셸 모두 `g_get_user_data_dir()` 아래에서 사용자 확장을 찾는다 (`paths.dataHome`).
+    const data = try paths.dataHome(rt, allocator);
+    defer allocator.free(data);
     const destination_dir = switch (kind) {
-        .gnome => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "gnome-shell", "extensions", uuid }),
-        .cinnamon => try std.Io.Dir.path.join(allocator, &.{ home, ".local", "share", "cinnamon", "extensions", uuid }),
+        .gnome => try std.Io.Dir.path.join(allocator, &.{ data, "gnome-shell", "extensions", uuid }),
+        .cinnamon => try std.Io.Dir.path.join(allocator, &.{ data, "cinnamon", "extensions", uuid }),
     };
     defer allocator.free(destination_dir);
 

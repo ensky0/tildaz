@@ -2,9 +2,9 @@
 # tildaz Linux user-level uninstall — install.sh 의 역동작.
 #
 # 삭제 대상:
-#   ~/.local/share/applications/tildaz.desktop
-#   ~/.local/share/applications/tildaz.instanceN.desktop
-#   ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
+#   $XDG_DATA_HOME (기본 ~/.local/share)/applications/tildaz.desktop
+#   $XDG_DATA_HOME (기본 ~/.local/share)/applications/tildaz.instanceN.desktop
+#   $XDG_DATA_HOME (기본 ~/.local/share)/icons/hicolor/scalable/apps/tildaz.svg
 #   $XDG_CONFIG_HOME/autostart/tildaz.desktop  (fallback: ~/.config)
 #   ~/.local/bin/tildaz  (symlink 일 때만 — 사용자가 둔 실제 파일은 보존)
 #   GNOME / Cinnamon TildaZ extension
@@ -32,6 +32,14 @@ if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
 else
     CONFIG_HOME="$HOME/.config"
 fi
+# #700 — desktop 항목 · 아이콘 · GNOME · Cinnamon 확장은 XDG data 폴더에 둔다. 앱
+# (`paths.dataHome`) 과 같은 규칙이다 — 비었거나 상대 경로면 무시한다. 두 셸 모두
+# `g_get_user_data_dir()` 로 사용자 확장을 찾는다.
+if [[ "${XDG_DATA_HOME:-}" == /* ]]; then
+    DATA_HOME="$XDG_DATA_HOME"
+else
+    DATA_HOME="$HOME/.local/share"
+fi
 if [[ "${XDG_STATE_HOME:-}" == /* ]]; then
     STATE_HOME="$XDG_STATE_HOME"
 else
@@ -50,8 +58,8 @@ TILDAZ_STATE_DIR_DEV="$STATE_HOME/tildaz-dev"
 USER_FILES=()
 for id in "${TILDAZ_IDS[@]}"; do
     USER_FILES+=(
-        "$HOME/.local/share/applications/$id.desktop"
-        "$HOME/.local/share/icons/hicolor/scalable/apps/$id.svg"
+        "$DATA_HOME/applications/$id.desktop"
+        "$DATA_HOME/icons/hicolor/scalable/apps/$id.svg"
         "$CONFIG_HOME/autostart/$id.desktop"
         "$HOME/.config/autostart/$id.desktop"
     )
@@ -82,7 +90,7 @@ done
 # filename만 제거하고 비슷한 이름의 사용자 파일은 보존한다.
 shopt -s nullglob
 for id in "${TILDAZ_IDS[@]}"; do
-    for f in "$HOME/.local/share/applications/$id".instance*.desktop; do
+    for f in "$DATA_HOME/applications/$id".instance*.desktop; do
         name="$(basename "$f")"
         if [[ "$name" =~ ^"$id"\.instance(0|[1-9][0-9]*)\.desktop$ ]]; then
             rm "$f"
@@ -114,7 +122,7 @@ for ext_uuid in "${TILDAZ_EXT_UUIDS[@]}"; do
     if command -v gnome-extensions >/dev/null 2>&1; then
         gnome-extensions disable "$ext_uuid" 2>/dev/null || true
     fi
-    gnome_ext="$HOME/.local/share/gnome-shell/extensions/$ext_uuid"
+    gnome_ext="$DATA_HOME/gnome-shell/extensions/$ext_uuid"
     if [[ -d "$gnome_ext" ]]; then
         rm -rf "$gnome_ext"
         echo "Removed: $gnome_ext"
@@ -148,7 +156,7 @@ PY
         done
     fi
 
-    cinnamon_ext="$HOME/.local/share/cinnamon/extensions/$ext_uuid"
+    cinnamon_ext="$DATA_HOME/cinnamon/extensions/$ext_uuid"
     if [[ -d "$cinnamon_ext" ]]; then
         rm -rf "$cinnamon_ext"
         echo "Removed: $cinnamon_ext"
@@ -314,8 +322,8 @@ if [[ "$removed" -eq 0 ]]; then
     echo "Nothing to remove (already uninstalled)."
 fi
 
-update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+update-desktop-database "$DATA_HOME/applications" 2>/dev/null || true
+gtk-update-icon-cache -t "$DATA_HOME/icons/hicolor" 2>/dev/null || true
 
 echo ""
 echo "Preserved (delete manually if desired):"

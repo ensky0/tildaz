@@ -3,9 +3,9 @@
 # 만 건드림 (no sudo).
 #
 # 산출물:
-#   ~/.local/share/applications/tildaz.desktop
+#   $XDG_DATA_HOME (기본 ~/.local/share)/applications/tildaz.desktop
 #     ← dist/linux/tildaz.desktop 의 __TILDAZ_EXE__ 를 binary 절대 경로로 치환
-#   ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
+#   $XDG_DATA_HOME (기본 ~/.local/share)/icons/hicolor/scalable/apps/tildaz.svg
 #     ← docs/favicon.svg 그대로 복사 (mac AppIcon.icns / Windows tildaz.ico 와
 #       동일 출처)
 #   ~/.local/bin/tildaz  → binary symlink (PATH 노출 — dmenu 등 launcher 에서
@@ -42,6 +42,14 @@ if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
     CONFIG_HOME="$XDG_CONFIG_HOME"
 else
     CONFIG_HOME="$HOME/.config"
+fi
+# #700 — desktop 항목 · 아이콘 · GNOME · Cinnamon 확장은 XDG data 폴더에 둔다. 앱
+# (`paths.dataHome`) 과 같은 규칙이다 — 비었거나 상대 경로면 무시한다. 두 셸 모두
+# `g_get_user_data_dir()` 로 사용자 확장을 찾는다.
+if [[ "${XDG_DATA_HOME:-}" == /* ]]; then
+    DATA_HOME="$XDG_DATA_HOME"
+else
+    DATA_HOME="$HOME/.local/share"
 fi
 TILDAZ_EXE=""
 IS_DEV=1
@@ -134,12 +142,12 @@ remove_stale_dev_entry() {
 STALE_REMOVED=()
 if [[ "$IS_DEV" -eq 1 ]]; then
     remove_stale_dev_entry link    "$HOME/.local/bin/tildaz"
-    remove_stale_dev_entry desktop "$HOME/.local/share/applications/tildaz.desktop"
+    remove_stale_dev_entry desktop "$DATA_HOME/applications/tildaz.desktop"
     remove_stale_dev_entry desktop "$CONFIG_HOME/autostart/tildaz.desktop"
 fi
 
-APP_DIR="$HOME/.local/share/applications"
-ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+APP_DIR="$DATA_HOME/applications"
+ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 mkdir -p "$APP_DIR" "$ICON_DIR"
 
 DESKTOP_OUT="$APP_DIR/$TILDAZ_ID.desktop"
@@ -174,7 +182,7 @@ chmod 644 "$ICON_OUT"
 
 # best-effort cache refresh — 없거나 실패해도 install 자체는 성공.
 update-desktop-database "$APP_DIR" 2>/dev/null || true
-gtk-update-icon-cache -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+gtk-update-icon-cache -t "$DATA_HOME/icons/hicolor" 2>/dev/null || true
 
 # ~/.local/bin/tildaz symlink — dmenu 등 launcher 는 `.desktop` 이 아니라 $PATH
 # 의 실행파일만 나열하므로, PATH 의 이 symlink 가 있어야 `tildaz` 로 실행/재실행
@@ -400,7 +408,7 @@ PY
 EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
-    EXT_DST="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
+    EXT_DST="$DATA_HOME/gnome-shell/extensions/$EXT_UUID"
     render_extension "$EXT_SRC" "$EXT_DST"
     if command -v glib-compile-schemas >/dev/null 2>&1 && [[ -d "$EXT_DST/schemas" ]]; then
         glib-compile-schemas "$EXT_DST/schemas" 2>/dev/null || true
@@ -431,7 +439,7 @@ CIN_UUID="$EXT_UUID"   # GNOME 과 같은 UUID 규칙 (#654) — 셸만 다르�
 CIN_SRC="$SCRIPT_DIR/cinnamon-extension/$EXT_SRC_UUID"
 CIN_MSG=""
 if [[ -d "$CIN_SRC" ]]; then
-    CIN_DST="$HOME/.local/share/cinnamon/extensions/$CIN_UUID"
+    CIN_DST="$DATA_HOME/cinnamon/extensions/$CIN_UUID"
     render_extension "$CIN_SRC" "$CIN_DST"
     # GNOME 과 같은 함수 (`gsettings_strv_edit`) 로 켠다 — 두 셸의 목록 편집 로직을 한 곳에 둔다.
     if gsettings_strv_edit org.cinnamon enabled-extensions add "$CIN_UUID"; then
