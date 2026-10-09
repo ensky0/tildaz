@@ -863,6 +863,17 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 - **입력 소스가 한국어 (2벌식) 면 `cliclick t:` 글자가 IME 에 먹혀 안 닿아요** — `mac-input ime-get` 으로 먼저
   보고, ASCII 가 필요하면 `mac-input ime-ascii` 로 바꾼 뒤 끝나면 되돌려요 (사용자 입력 소스를 바꾸는 일이라
   알리고). `deadkey-check_macos.sh` 는 ABC 가 아니면 스스로 멈춰요.
+- **⚠️ `mac-input` 으로 조합키를 보낸 뒤 `cliclick t:` 로 글자를 치면 `⌘` 이 붙어요.** 새 합성 이벤트는 직전
+  조합키의 수식키를 물려받아요. `mac-input` 은 flags 를 늘 정해서 막지만 (`postKey` 주석) `cliclick t:` 는 안
+  막아요. 2026-10-09 [#692](https://github.com/ensky0/tildaz/issues/692#issuecomment-6083877407) 회차에서
+  `⌘↑` 뒤에 친 `stty` 가 `⌘S ⌘T ⌘T ⌘Y` 로 들어가 탭이 잔뜩 생겼어요. 조합키를 쓰는 회차는 **글자도
+  `mac-input send` 로** 보내요 (`>` 는 `shift+period` 처럼 키 이름으로 바꿔서).
+- **⚠️ `mac-input` 이 보낸 키는 2벌식에서 조합되지 않아요.** `g k s` 가 `한` 이 아니라 `ㅎㅏㄴ` 으로 따로
+  확정돼요. 이벤트 소스를 `kCGEventSourceStateHIDSystemState` 로 만들어 보내면 `한` 으로 조합됐어요 (같은 회차
+  실측). 한글 조합 칸은 그렇게 만든 소스로 보내요 — `mac-input` 의 `Private` 소스는 위 수식키 문제를 막으려고
+  고른 것이라 그대로 두었어요. 그리고 **조합 결과를 입력 소스 전환으로 확정하지 말아요.** 조합 중에 바꾸면
+  글자가 사라지는 회차가 있어요 ([#715](https://github.com/ensky0/tildaz/issues/715)) — 단축키나 Return 으로
+  확정한 뒤에 바꿔요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
