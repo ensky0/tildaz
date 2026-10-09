@@ -15,7 +15,7 @@
 # `verify (macos)` · `verify (windows)` 를 돌려 각 러너에서 `zig build` 와 `zig build test` 까지
 # 한다 — 이름은 `release.yml` 의 `release-linux` · `release-macos` · `release-windows` 와 짝이다.
 # cross-compile `check` 와 `zig fmt --check` 는 platform 과 무관하므로 linux 에서만 돈다.
-# 러너별 걸림돌 (Windows cross-drive zig cache · fetch 의 일시적 HTTP 실패) 은
+# 러너별 걸림돌 (fetch 의 일시적 HTTP 실패 · zig 캐시 위치) 은
 # `.github/actions/setup-zig` 가 담고 `release.yml` 과 한 벌로 쓴다 — step 을 복제하면 두 벌이
 # 갈린다 (#499 가 남긴 이유). `main` 의 required check 는 `verify (linux)` — macOS · Windows 는
 # 안정된 뒤 더한다 (#607 ③).
