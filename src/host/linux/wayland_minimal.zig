@@ -18,6 +18,7 @@ const terminal_interaction = @import("../../terminal_interaction.zig");
 const mouse_report = @import("../../mouse_report.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
+const app_actions = @import("../../app_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
@@ -6438,113 +6439,70 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
-    fn handleClosePane(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        const outcome = tab_actions.closeActivePane(&host);
-        // 남은 pane 이 자리를 이어받으므로 격자를 맞춘다 (2 → 1 탭 전환도 같은 경로).
-        if (outcome == .changed) {
-            self.ensureSessionGrid() catch |err| {
-                log.appendLine("pane", "ensureSessionGrid after close pane failed: {s}", .{@errorName(err)});
+    /// #692 — `app_actions` 에 넘기는 host 어댑터. 세션이 아직 없으면 null — 액션이 할 일이 없다.
+    /// `tabs()` 가 그 안의 `tab_actions.Host` 를 가리키므로 호출자는 `var` 로 받아 포인터를 넘긴다.
+    fn actionHost(self: *Client) ?LinuxActionHost {
+        if (self.session == null) return null;
+        return .{ .client = self, .tab_host = self.buildTabActionsHost() };
+    }
+
+    /// #692 — 공통 액션 처리부 (`app_actions.zig`) 가 부르는 Linux 쪽 훅.
+    const LinuxActionHost = struct {
+        client: *Client,
+        tab_host: tab_actions.Host,
+
+        pub fn session(h: *LinuxActionHost) *session_core.SessionCore {
+            return &h.client.session.?;
+        }
+        pub fn tabs(h: *LinuxActionHost) *tab_actions.Host {
+            return &h.tab_host;
+        }
+        pub fn rt(h: *LinuxActionHost) Runtime {
+            return h.client.rt;
+        }
+        pub fn allocator(h: *LinuxActionHost) std.mem.Allocator {
+            return h.client.allocator;
+        }
+        pub fn shell(h: *LinuxActionHost) []const u8 {
+            return h.client.config.shell;
+        }
+        pub fn paneArea(h: *LinuxActionHost) pane_layout.Rect {
+            return h.client.paneArea();
+        }
+        pub fn paneMetrics(h: *LinuxActionHost) pane_layout.Metrics {
+            return h.client.paneMetrics();
+        }
+        /// #536 — IME preedit 은 확정하고 조합 중인 dead key 는 버린다. dead key 를 앱이 직접
+        /// 조합하는 host 는 Linux 뿐이다.
+        pub fn leaveShell(h: *LinuxActionHost) void {
+            h.client.leaveShell();
+        }
+        pub fn stopAutoScroll(h: *LinuxActionHost) void {
+            h.client.sel_autoscroll_dir = 0;
+        }
+        pub fn syncGrids(h: *LinuxActionHost) void {
+            h.client.ensureSessionGrid() catch |err| {
+                log.appendLine("pane", "ensureSessionGrid failed: {s}", .{@errorName(err)});
             };
         }
-    }
-
-    /// #483 4b — 활성 pane 을 `dir` 쪽으로 가른다. 새 pane 은 새 셸이라 `handleNewTab` 과 같은 셸
-    /// 존재 확인 (#248) 을 거친다. 거부 (`TooSmall` · `TooManyPanes`) 는 단축키에 시각 피드백이 없으므로
-    /// 탭 한도와 같은 dialog 로 안내한다 (확정 설계 §② "거부 + 안내"). 격자는 `splitActive` 가 맞춘다.
-    fn handleSplit(self: *Client, dir: pane_layout.Direction) void {
-        if (self.session == null) return;
-        // #536 — 새 pane 은 다른 셸이므로 조합 중인 dead key 는 버린다.
-        self.leaveShell();
-        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
-        self.session.?.splitActive(dir, self.paneArea(), self.paneMetrics()) catch |err| switch (err) {
-            error.TooSmall => {
-                // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
-                // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
-                var buf: [160]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
-                    messages.pane_too_small_format;
-                dialog_mod.showInfo(self.rt, messages.pane_too_small_title, msg);
-                return;
-            },
-            error.TooManyPanes => {
-                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
-                var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
-                    messages.pane_limit_format;
-                dialog_mod.showInfo(self.rt, messages.pane_limit_title, msg);
-                return;
-            },
-            error.NoActiveTab => return,
-            else => {
-                log.logPaneSplitFailed(err);
-                return;
-            },
-        };
-        const group = self.session.?.activeGroup().?;
-        log.logPaneSplit(@tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane);
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 포커스를 `dir` 쪽 이웃 pane 으로. 탭 전환 (`tab_actions.switchTab`) 과 같이 떠나는
-    /// pane 의 진행 중 pointer mode (선택 · scrollbar 드래그) 를 정리한다.
-    fn handleFocusPane(self: *Client, dir: pane_layout.Direction) void {
-        const session = if (self.session) |*s| s else return;
-        const leaving = session.activeTab() orelse return;
-        // #536 — 지금은 키보드 전용 경로라 `processKeyEvent` 의 defer 와 겹치지만, "활성 pane 을
-        // 바꾸는 handler 는 `leaveShell`" 규칙을 여기서도 지켜 마우스 진입점이 붙어도 안전하게 둔다.
-        self.leaveShell();
-        if (!session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
-        leaving.interaction.cancelPointerModes();
-        self.sel_autoscroll_dir = 0;
-        // 4c — 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("pane", "ensureSessionGrid after focus failed: {s}", .{@errorName(err)});
-        };
-        log.logPaneFocus(@tagName(dir), session.activeGroup().?.active_pane);
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 활성 pane 에 닿은 분할선을 `dir` 쪽으로 한 셀 옮긴다 (격자는 `resizeActivePane` 이 맞춘다).
-    fn handleResizePane(self: *Client, dir: pane_layout.Direction) void {
-        const session = if (self.session) |*s| s else return;
-        if (!session.resizeActivePane(dir, 1, self.paneArea(), self.paneMetrics())) return;
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 활성 탭의 한 줄씩을 고르게 (`Tree.equalize` — 같은 축은 한 줄로 보고 행 · 열 수로 나눔).
-    fn handleEqualizePanes(self: *Client) void {
-        const session = if (self.session) |*s| s else return;
-        const group = session.activeGroup() orelse return;
-        session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.logPaneEqualize(group.tree.count());
-        self.needs_redraw = true;
-    }
+        /// 탭바가 생기거나 사라진 것도 `ensureSessionGrid` 가 맞춘다 (`-size` 회차의 창 다시 요청 포함).
+        pub fn syncAfterTabCountChange(h: *LinuxActionHost) void {
+            h.syncGrids();
+        }
+        pub fn layoutChanged(h: *LinuxActionHost) void {
+            h.client.needs_redraw = true;
+        }
+    };
 
     /// #483 4c — `+` 클릭. Alt 를 누르고 있으면 새 탭이 아니라 활성 pane 분할 (Windows Terminal 의 Alt+클릭
     /// 선례). 방향은 활성 pane 의 모양대로 — 넓으면 오른쪽, 높으면 아래 (WT 의 `auto`).
     fn handlePlusClick(self: *Client) void {
-        // #536 — 조합 버림은 `handleNewTab` · `handleSplit` 안에 있다 (여기서 먼저 부르면 활성 pane
+        // #536 — 조합 버림은 `handleNewTab` · `app_actions.split` 안에 있다 (여기서 먼저 부르면 활성 pane
         // 을 못 찾아 아무 일도 안 하는 경우에도 조합이 사라진다).
         if (!self.keyboard.altActive()) return self.handleNewTab();
         const pr = self.activePaneRect() orelse return;
-        self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
-    }
-
-    /// #483 4c — 활성 pane 최대화 토글 (`Ctrl+Shift+Z`). 켜면 그 pane 이 탭 영역 전체를 쓰고 다른 pane 은
-    /// 그리지 않는다 (셸은 계속 돈다). 격자는 `ensureSessionGrid` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
-    fn handleZoomPane(self: *Client) void {
-        const session = if (self.session) |*s| s else return;
-        self.commitPendingInput();
-        if (!session.toggleZoomActive()) return;
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("pane", "ensureSessionGrid after zoom failed: {s}", .{@errorName(err)});
-        };
-        log.logPaneZoom(session.activeGroup().?.zoomed != null, session.activeGroup().?.active_pane);
-        self.needs_redraw = true;
+        var h = self.actionHost() orelse return;
+        app_actions.split(&h, if (pr.rect.w >= pr.rect.h) .right else .down);
     }
 
     /// #483 4c — 분할선 드래그를 놓았다: 여기서 한 번만 트리에 적용하고 격자를 맞춘다 (PTY resize 한 번).
@@ -7585,13 +7543,31 @@ const Client = struct {
                 system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
             },
             // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
-            .split => self.handleSplit(direction orelse return),
-            .focus_pane => self.handleFocusPane(direction orelse return),
-            .resize_pane => self.handleResizePane(direction orelse return),
-            .equalize_panes => self.handleEqualizePanes(),
-            .zoom_pane => self.handleZoomPane(),
+            .split => {
+                var h = self.actionHost() orelse return;
+                app_actions.split(&h, direction orelse return);
+            },
+            .focus_pane => {
+                var h = self.actionHost() orelse return;
+                app_actions.focusPane(&h, direction orelse return);
+            },
+            .resize_pane => {
+                var h = self.actionHost() orelse return;
+                app_actions.resizePane(&h, direction orelse return);
+            },
+            .equalize_panes => {
+                var h = self.actionHost() orelse return;
+                app_actions.equalizePanes(&h);
+            },
+            .zoom_pane => {
+                var h = self.actionHost() orelse return;
+                app_actions.zoomPane(&h);
+            },
             // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
-            .close_pane => self.handleClosePane(),
+            .close_pane => {
+                var h = self.actionHost() orelse return;
+                app_actions.closePane(&h);
+            },
             .find => self.handleFind(),
             .font_size => self.handleFontSize(font_size orelse return),
         }
@@ -7605,8 +7581,14 @@ const Client = struct {
             },
             .new_tab => self.handleNewTab(),
             // #483 4c — 메뉴의 분할 항목 (마우스 경로).
-            .split_right => self.handleSplit(.right),
-            .split_down => self.handleSplit(.down),
+            .split_right => if (self.actionHost()) |h| {
+                var host = h;
+                app_actions.split(&host, .right);
+            },
+            .split_down => if (self.actionHost()) |h| {
+                var host = h;
+                app_actions.split(&host, .down);
+            },
             .close_active_tab => self.handleCloseTab(),
             .copy => self.copyActiveSelection(),
             .paste => self.requestPaste(),

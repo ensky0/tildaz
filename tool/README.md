@@ -48,7 +48,7 @@
 | [`clusters.py`](clusters.py) | 무관 | atlas · cluster 검증 화면 생성기 (`many` · `stack2` · `overflow` · `mini` · `bands`) | `# macOS — 렌더 결과와 …` |
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
-| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) 를 자동 검증 | `# Linux — headless sway …` |
+| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) · 공통 액션 (`actions` · #692) 을 자동 검증 | `# Linux — headless sway …` |
 | [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`send return` · `keycode` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
 | [`key-bytes.py`](key-bytes.py) | 무관 | 키 하나가 PTY 로 보낸 **바이트를 그대로** 찍음. `legacy` · `kitty` · `mok2` 세 모드 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)) | — (도구 머리 주석) |
 | [`key-bytes-cases.tsv`](key-bytes-cases.tsv) | 무관 | `Ctrl` + 기호 · 숫자 · Space 의 기대 바이트 표 — 아래 세 판정 도구가 함께 읽는다 ([#684](https://github.com/ensky0/tildaz/issues/684)) | — (표 머리 주석) |

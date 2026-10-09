@@ -13,6 +13,7 @@ const SessionTab = session_core.Tab;
 const tab_interaction = @import("tab_interaction.zig");
 const tab_layout = @import("tab_layout.zig");
 const tab_actions = @import("tab_actions.zig");
+const app_actions = @import("app_actions.zig");
 const terminal_interaction = @import("terminal_interaction.zig");
 const link = @import("link.zig");
 const mouse_report = @import("mouse_report.zig");
@@ -415,65 +416,54 @@ pub const App = struct {
         return true;
     }
 
-    /// 활성 pane 을 `dir` 쪽으로 가른다. 거부 (`TooSmall` · `TooManyPanes`) 는 탭 한도와 같은 dialog.
-    fn handleSplit(self: *App, dir: pane_layout.Direction) void {
-        if (self.window.hwnd == null) return;
-        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
-        self.session.splitActive(dir, self.paneArea(), self.paneMetrics()) catch |err| switch (err) {
-            error.TooSmall => {
-                // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
-                // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
-                var buf: [160]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
-                    messages.pane_too_small_format;
-                dialog.showInfo(self.rt, messages.pane_too_small_title, msg);
-                return;
-            },
-            error.TooManyPanes => {
-                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
-                var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
-                    messages.pane_limit_format;
-                dialog.showInfo(self.rt, messages.pane_limit_title, msg);
-                return;
-            },
-            error.NoActiveTab => return,
-            else => {
-                log.logPaneSplitFailed(err);
-                return;
-            },
-        };
-        const group = self.session.activeGroup().?;
-        log.logPaneSplit(@tagName(dir), self.session.active_tab, group.paneCount(), group.active_pane);
+    /// #692 — `app_actions` 에 넘기는 host 어댑터. 창이 아직 없으면 null — 액션이 할 일이 없다.
+    fn actionHost(self: *App) ?ActionHost {
+        if (self.window.hwnd == null) return null;
+        return .{ .app = self };
     }
 
-    fn handleFocusPane(self: *App, dir: pane_layout.Direction) void {
-        const leaving = self.activeTabPtr() orelse return;
-        if (!self.session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
-        leaving.interaction.cancelPointerModes();
-        self.window.setAutoScroll(false);
-        // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
-        self.syncPaneGrids();
-        log.logPaneFocus(@tagName(dir), self.session.activeGroup().?.active_pane);
-    }
+    /// #692 — 공통 액션 처리부 (`app_actions.zig`) 가 부르는 Windows 쪽 훅.
+    const ActionHost = struct {
+        app: *App,
 
-    fn handleResizePane(self: *App, dir: pane_layout.Direction) void {
-        _ = self.session.resizeActivePane(dir, 1, self.paneArea(), self.paneMetrics());
-    }
-
-    fn handleEqualizePanes(self: *App) void {
-        const group = self.session.activeGroup() orelse return;
-        self.session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.logPaneEqualize(group.tree.count());
-    }
-
-    /// `Ctrl+Shift+Z` — 활성 pane 최대화 토글. 격자는 `syncPaneGrids` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
-    fn handleZoomPane(self: *App) void {
-        if (!self.session.toggleZoomActive()) return;
-        self.syncPaneGrids();
-        log.logPaneZoom(self.session.activeGroup().?.zoomed != null, self.session.activeGroup().?.active_pane);
-    }
+        pub fn session(h: ActionHost) *SessionCore {
+            return &h.app.session;
+        }
+        pub fn tabs(h: ActionHost) *tab_actions.Host {
+            return &h.app.host;
+        }
+        pub fn rt(h: ActionHost) Runtime {
+            return h.app.rt;
+        }
+        pub fn allocator(h: ActionHost) std.mem.Allocator {
+            return h.app.allocator;
+        }
+        pub fn shell(h: ActionHost) []const u8 {
+            return h.app.shell;
+        }
+        pub fn paneArea(h: ActionHost) pane_layout.Rect {
+            return h.app.paneArea();
+        }
+        pub fn paneMetrics(h: ActionHost) pane_layout.Metrics {
+            return h.app.paneMetrics();
+        }
+        /// 조합 주체가 OS (IMM · 커널의 dead key 상태) 라 앱이 정리할 것이 없다 (#536).
+        pub fn leaveShell(_: ActionHost) void {}
+        pub fn stopAutoScroll(h: ActionHost) void {
+            h.app.window.setAutoScroll(false);
+        }
+        pub fn syncGrids(h: ActionHost) void {
+            h.app.syncPaneGrids();
+        }
+        pub fn syncAfterTabCountChange(h: ActionHost) void {
+            h.app.syncGeometryAfterTabCountChange();
+        }
+        /// `wndProc` 이 tick 이 아닌 모든 메시지에서 이미 다시 그리기를 연다 (`Window.needs_render`).
+        /// 다른 host 와 같은 자리에서 부르도록 둔다.
+        pub fn layoutChanged(h: ActionHost) void {
+            h.app.window.requestRender();
+        }
+    };
 
     /// #693 — 글자 크기 단축키. 셀을 다시 재고 (`Window.rebuildFonts`) renderer 를 다시 만든 뒤
     /// (`onFontChange` — DPI 변경과 같은 경로) 격자를 맞춘다. 창 크기는 그대로라 `WM_SIZE` 가
@@ -503,7 +493,7 @@ pub const App = struct {
         }
         if (!self.resolveRunAction(.split)) return;
         const pr = self.activePaneRect() orelse return;
-        self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
+        app_actions.split(self.actionHost() orelse return, if (pr.rect.w >= pr.rect.h) .right else .down);
     }
 
     /// 분할선 드래그를 놓았다 — 여기서 한 번만 트리에 적용 + 격자 (PTY resize 한 번, 확정 설계 축 2).
@@ -991,14 +981,6 @@ pub const App = struct {
         };
     }
 
-    /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (마지막이면 탭, 마지막 탭이면
-    /// `window.closeAfterShellExit`). 사후 처리는 `handleCloseActiveTab` 과 같다.
-    pub fn handleClosePane(self: *App) void {
-        if (tab_actions.closeActivePane(&self.host) == .changed) {
-            self.syncGeometryAfterTabCountChange();
-        }
-    }
-
     pub fn handleCloseActiveTab(self: *App) void {
         // closeActive helper 가 마지막 탭 → terminate (`window.closeAfterShellExit`),
         // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
@@ -1276,8 +1258,8 @@ pub const App = struct {
             .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
             .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
             // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-            .split_right => if (self.resolveRunAction(.split)) self.handleSplit(.right),
-            .split_down => if (self.resolveRunAction(.split)) self.handleSplit(.down),
+            .split_right => if (self.resolveRunAction(.split)) app_actions.split(self.actionHost() orelse return, .right),
+            .split_down => if (self.resolveRunAction(.split)) app_actions.split(self.actionHost() orelse return, .down),
             .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
             .copy => if (self.resolveRunAction(.copy)) tab_actions.copyActiveSelection(&self.host, self.allocator),
             .paste => self.window.requestPaste(),
@@ -1968,23 +1950,23 @@ pub const App = struct {
                     },
                     // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c · macOS 와 같은 배선).
                     .split => |dir| {
-                        self.handleSplit(dir);
+                        if (self.actionHost()) |h| app_actions.split(h, dir);
                         return true;
                     },
                     .focus_pane => |dir| {
-                        self.handleFocusPane(dir);
+                        if (self.actionHost()) |h| app_actions.focusPane(h, dir);
                         return true;
                     },
                     .resize_pane => |dir| {
-                        self.handleResizePane(dir);
+                        if (self.actionHost()) |h| app_actions.resizePane(h, dir);
                         return true;
                     },
                     .equalize_panes => {
-                        self.handleEqualizePanes();
+                        if (self.actionHost()) |h| app_actions.equalizePanes(h);
                         return true;
                     },
                     .zoom_pane => {
-                        self.handleZoomPane();
+                        if (self.actionHost()) |h| app_actions.zoomPane(h);
                         return true;
                     },
                     .find => {
@@ -1993,7 +1975,7 @@ pub const App = struct {
                     },
                     // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).
                     .close_pane => {
-                        self.handleClosePane();
+                        if (self.actionHost()) |h| app_actions.closePane(h);
                         return true;
                     },
                     .font_size => |change| {

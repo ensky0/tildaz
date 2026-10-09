@@ -38,6 +38,7 @@ const link = @import("../link.zig");
 const tab_interaction = @import("../tab_interaction.zig");
 const tab_layout = @import("../tab_layout.zig");
 const tab_actions = @import("../tab_actions.zig");
+const app_actions = @import("../app_actions.zig");
 const input_policy = @import("../input_policy.zig");
 const session_core = @import("../session_core.zig");
 const pane_layout = @import("../pane_layout.zig");
@@ -1549,13 +1550,13 @@ fn runKeyAction(action: config.KeyAction) bool {
         // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
         .open_shortcuts => executeCommandMenu(.keyboard_shortcuts),
         // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c 와 같은 배선).
-        .split => handleSplit(mapped.direction orelse return false),
-        .focus_pane => handleFocusPane(mapped.direction orelse return false),
-        .resize_pane => handleResizePane(mapped.direction orelse return false),
-        .equalize_panes => handleEqualizePanes(),
-        .zoom_pane => handleZoomPane(),
+        .split => app_actions.split(actionHost() orelse return true, mapped.direction orelse return false),
+        .focus_pane => app_actions.focusPane(actionHost() orelse return true, mapped.direction orelse return false),
+        .resize_pane => app_actions.resizePane(actionHost() orelse return true, mapped.direction orelse return false),
+        .equalize_panes => app_actions.equalizePanes(actionHost() orelse return true),
+        .zoom_pane => app_actions.zoomPane(actionHost() orelse return true),
         // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
-        .close_pane => handleClosePane(),
+        .close_pane => app_actions.closePane(actionHost() orelse return true),
         .find => handleFind(),
         .font_size => handleFontSize(mapped.font_size orelse return false),
     }
@@ -3444,8 +3445,8 @@ fn executeCommandMenu(command: command_menu.Command) void {
         .toggle_visibility => toggleWindow(),
         .new_tab => handleNewTab(),
         // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-        .split_right => handleSplit(.right),
-        .split_down => handleSplit(.down),
+        .split_right => if (actionHost()) |h| app_actions.split(h, .right),
+        .split_down => if (actionHost()) |h| app_actions.split(h, .down),
         .close_active_tab => handleCloseActiveTab(),
         .copy => handleCopy(),
         .paste => handlePaste(),
@@ -4150,77 +4151,52 @@ fn afterPaneLayoutChange() void {
     requestRender();
 }
 
-/// #483 5단계 — 활성 pane 을 `dir` 쪽으로 가른다 (Linux `handleSplit` 상당). 새 pane 은 새 셸이라 `handleNewTab`
-/// 과 같은 셸 존재 확인 (#248). 거부 (`TooSmall` · `TooManyPanes`) 는 탭 한도와 같은 dialog 로 안내.
-fn handleSplit(dir: pane_layout.Direction) void {
-    if (g_renderer == null) return;
-    if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
-    g_session.splitActive(dir, paneAreaMac(), paneMetricsMac()) catch |err| switch (err) {
-        error.TooSmall => {
-            // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
-            // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-            log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
-            var buf: [160]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
-                messages.pane_too_small_format;
-            dialog.showInfo(g_rt, messages.pane_too_small_title, msg);
-            return;
-        },
-        error.TooManyPanes => {
-            log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
-                messages.pane_limit_format;
-            dialog.showInfo(g_rt, messages.pane_limit_title, msg);
-            return;
-        },
-        error.NoActiveTab => return,
-        else => {
-            log.logPaneSplitFailed(err);
-            return;
-        },
-    };
-    const group = g_session.activeGroup().?;
-    log.logPaneSplit(@tagName(dir), g_session.active_tab, group.paneCount(), group.active_pane);
-    afterPaneLayoutChange();
+/// #692 — `app_actions` 에 넘기는 host 어댑터. renderer 가 아직 없으면 null — 액션이 할 일이 없다.
+fn actionHost() ?MacActionHost {
+    if (g_renderer == null) return null;
+    return .{};
 }
 
-/// 포커스를 `dir` 쪽 이웃 pane 으로. 떠나는 pane 의 진행 중 pointer mode 는 탭 전환과 같이 정리한다.
-fn handleFocusPane(dir: pane_layout.Direction) void {
-    if (g_renderer == null) return;
-    const leaving = g_session.activeTab() orelse return;
-    if (!g_session.focusPane(dir, paneAreaMac(), paneMetricsMac())) return;
-    leaving.interaction.cancelPointerModes();
-    g_sel_autoscroll_dir = 0;
-    // 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
-    syncTerminalGeometry();
-    log.logPaneFocus(@tagName(dir), g_session.activeGroup().?.active_pane);
-    afterPaneLayoutChange();
-}
-
-/// 활성 pane 에 닿은 분할선을 `dir` 쪽으로 한 셀.
-fn handleResizePane(dir: pane_layout.Direction) void {
-    if (g_renderer == null) return;
-    if (!g_session.resizeActivePane(dir, 1, paneAreaMac(), paneMetricsMac())) return;
-    afterPaneLayoutChange();
-}
-
-/// 활성 탭의 분할선을 모두 가운데로 (`Tree.equalize` — 같은 축은 한 줄로 칸 셈).
-fn handleEqualizePanes() void {
-    if (g_renderer == null or g_session.activeGroup() == null) return;
-    g_session.equalizeActive(paneAreaMac(), paneMetricsMac());
-    log.logPaneEqualize(g_session.activeGroup().?.tree.count());
-    afterPaneLayoutChange();
-}
-
-/// `Shift+Cmd+Z` — 활성 pane 최대화 토글. 격자는 `syncTerminalGeometry` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
-fn handleZoomPane() void {
-    if (g_renderer == null) return;
-    if (!g_session.toggleZoomActive()) return;
-    syncTerminalGeometry();
-    log.logPaneZoom(g_session.activeGroup().?.zoomed != null, g_session.activeGroup().?.active_pane);
-    afterPaneLayoutChange();
-}
+/// #692 — 공통 액션 처리부 (`app_actions.zig`) 가 부르는 macOS 쪽 훅. 상태가 module-level
+/// (`g_session` 등) 이라 필드가 없다.
+const MacActionHost = struct {
+    pub fn session(_: MacActionHost) *session_core.SessionCore {
+        return &g_session;
+    }
+    pub fn tabs(_: MacActionHost) *tab_actions.Host {
+        return &g_host;
+    }
+    pub fn rt(_: MacActionHost) Runtime {
+        return g_rt;
+    }
+    pub fn allocator(_: MacActionHost) std.mem.Allocator {
+        return g_gpa.allocator();
+    }
+    pub fn shell(_: MacActionHost) []const u8 {
+        return g_config.shell;
+    }
+    pub fn paneArea(_: MacActionHost) pane_layout.Rect {
+        return paneAreaMac();
+    }
+    pub fn paneMetrics(_: MacActionHost) pane_layout.Metrics {
+        return paneMetricsMac();
+    }
+    /// 조합 주체가 OS (`NSTextInputClient`) 라 앱이 정리할 것이 없다 (#536). marked text 는
+    /// dispatch 전에 입력 정책이 확정한다.
+    pub fn leaveShell(_: MacActionHost) void {}
+    pub fn stopAutoScroll(_: MacActionHost) void {
+        g_sel_autoscroll_dir = 0;
+    }
+    pub fn syncGrids(_: MacActionHost) void {
+        syncTerminalGeometry();
+    }
+    pub fn syncAfterTabCountChange(_: MacActionHost) void {
+        syncGeometryAfterTabCountChange();
+    }
+    pub fn layoutChanged(_: MacActionHost) void {
+        afterPaneLayoutChange();
+    }
+};
 
 /// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 (`rebuildFonts` — 배율 변경과 같은
 /// 함수) 모든 탭의 격자를 맞춘다. 사본에 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도
@@ -4252,7 +4228,7 @@ fn handleFontSize(change: terminal_size.Change) void {
 fn handlePlusClick(event: objc.id) void {
     if (!eventMouseMods(event).alt) return handleNewTab();
     const pr = activePaneRectMac() orelse return;
-    handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
+    app_actions.split(actionHost() orelse return, if (pr.rect.w >= pr.rect.h) .right else .down);
 }
 
 /// 포인터 아래 pane 이 활성 pane 이 아니면 그 pane 으로 포커스를 옮기고 true (Linux `focusPaneUnderPointer`).
@@ -4310,13 +4286,6 @@ fn handleFind() void {
     // 바가 새로 떴으면 그 자리의 커서 모양이 바뀐다 (터미널 I-beam → 컨트롤 화살표).
     if (!was_open) invalidateCursorRects();
     requestRender();
-}
-
-fn handleClosePane() void {
-    if (tab_actions.closeActivePane(&g_host) == .changed) {
-        syncGeometryAfterTabCountChange();
-        afterPaneLayoutChange();
-    }
 }
 
 /// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
