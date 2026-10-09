@@ -19,4 +19,10 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- macOS: `⌘Q` now follows the `quit` entry in `[keys]`. If you changed or emptied it, `⌘Q` no longer quits ([#713](https://github.com/ensky0/tildaz/issues/713)).
+
 ## Body candidates
+
+- macOS: changing the quit shortcut in `[keys]` now works ([#713](https://github.com/ensky0/tildaz/issues/713)).
+- The arrow keys in the `⋯` menu now move in the order you see ([#712](https://github.com/ensky0/tildaz/issues/712)).
+- Windows: a new tab scrolls into view in the tab bar, and the pointer shape updates right after a split ([#692](https://github.com/ensky0/tildaz/issues/692)).
