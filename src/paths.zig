@@ -263,6 +263,37 @@ pub fn instanceHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index:
     return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.hotkey", .{ dir, sep, index });
 }
 
+/// #708 — 업그레이드 넘어가는 동안 옛 확장이 쓰는 자리. v0.10.1 까지의 확장은 runtime
+/// 갈래에 `/run` 없이 `$XDG_RUNTIME_DIR/tildaz/instanceN.hotkey` 에 썼다 (#654 ⓑ 이전).
+/// 확장 코드는 셸이 로그인 때 한 번만 올리므로, 업그레이드 뒤 첫 실행에는 **옛 확장 + 새 앱**
+/// 이 된다. 그때 새 자리만 보면 확장이 도는데도 "확장이 필요하다" 로 멈춘다 (2026-10-09
+/// Cinnamon 6.6.9 실기). 릴리즈 판만이다 — dev 판은 처음부터 새 자리였다. cache 갈래는
+/// 그때도 `/run` 이 있어서 바뀌지 않았다. 새 확장은 켜질 때 이 파일을 지운다.
+/// 몇 릴리즈 뒤 (옛 확장이 남은 사용자가 없을 때) 이 함수와 그 호출을 지운다.
+pub fn legacyHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index: u32) !?[]u8 {
+    if (builtin.os.tag != .linux) return null;
+    return legacyHotkeyStatePathFor(allocator, app_id.is_dev, rt.environ.getPosix("XDG_RUNTIME_DIR"), index);
+}
+
+fn legacyHotkeyStatePathFor(allocator: std.mem.Allocator, is_dev: bool, runtime_dir: ?[]const u8, index: u32) !?[]u8 {
+    if (is_dev) return null;
+    const dir = runtime_dir orelse return null;
+    if (dir.len == 0 or !std.Io.Dir.path.isAbsolute(dir)) return null;
+    return try std.fmt.allocPrint(allocator, "{s}/tildaz/instance{d}.hotkey", .{ dir, index });
+}
+
+test "#708 the old extension's hotkey state path is the release runtime path without /run" {
+    const a = std.testing.allocator;
+    const p = (try legacyHotkeyStatePathFor(a, false, "/run/user/1000", 0)).?;
+    defer a.free(p);
+    try std.testing.expectEqualStrings("/run/user/1000/tildaz/instance0.hotkey", p);
+    // dev 판 · runtime 이 없거나 상대 경로면 옛 자리가 없다.
+    try std.testing.expect((try legacyHotkeyStatePathFor(a, true, "/run/user/1000", 0)) == null);
+    try std.testing.expect((try legacyHotkeyStatePathFor(a, false, null, 0)) == null);
+    try std.testing.expect((try legacyHotkeyStatePathFor(a, false, "", 0)) == null);
+    try std.testing.expect((try legacyHotkeyStatePathFor(a, false, "run/user", 0)) == null);
+}
+
 pub fn launcherLockPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);

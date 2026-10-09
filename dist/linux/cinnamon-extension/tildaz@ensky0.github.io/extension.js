@@ -145,6 +145,37 @@ function writeHotkeyState(index, hotkey, ok) {
   }
 }
 
+/**
+ * #708 — 옛 확장 (v0.10.1 까지) 은 runtime 갈래에 `/run` 없이
+ * `$XDG_RUNTIME_DIR/tildaz/instanceN.hotkey` 에 썼다. 업그레이드 뒤 첫 실행에는 셸에 아직
+ * 옛 확장이 올라가 있어서, 앱은 그 자리도 읽는다 (`paths.legacyHotkeyStatePath`). 새 확장이
+ * 켜지면 그 파일을 지워 옛 기록이 남지 않게 한다 — 남아 있으면 확장이 꺼진 뒤에도 앱이
+ * "확장이 돈다" 로 읽을 수 있다. 릴리즈 이름일 때만이다 (dev 는 그 자리를 쓴 적이 없다).
+ */
+function removeLegacyHotkeyState() {
+  if (APP !== "tildaz") return;
+  const runtime = GLib.getenv("XDG_RUNTIME_DIR");
+  if (!runtime || !GLib.path_is_absolute(runtime)) return;
+  const dir = Gio.File.new_for_path(GLib.build_filenamev([runtime, APP]));
+  let children;
+  try {
+    children = dir.enumerate_children("standard::name", Gio.FileQueryInfoFlags.NONE, null);
+  } catch (e) {
+    return; // 그 디렉터리가 없다 — 지울 것도 없다
+  }
+  let info;
+  while ((info = children.next_file(null)) !== null) {
+    const name = info.get_name();
+    if (!/^instance(0|[1-9][0-9]*)\.hotkey$/.test(name)) continue;
+    try {
+      dir.get_child(name).delete(null);
+    } catch (e) {
+      global.logError(`${LOG_TAG} could not remove the old extension's hotkey state ${name}: ${e}`);
+    }
+  }
+  children.close(null);
+}
+
 /** #510 — 확장이 물러나면 기록도 거둔다. 남겨 두면 worker 가 없는 실패를 읽는다. */
 function clearHotkeyState(index) {
   try {
@@ -164,6 +195,7 @@ let st = null;
 function init(_meta) {}
 
 function enable() {
+  removeLegacyHotkeyState();
   st = {
     mapId: 0,
     windowCreatedId: 0,
@@ -173,6 +205,8 @@ function enable() {
     taskbarPatched: new Set(),
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
     expoProto: null, // isExpoWindow 패치한 ExpoWorkspaceThumbnail.prototype (disable 복원)
+    wm: null, // _shouldAnimate 를 덮어쓴 Main.wm (disable 시 복원)
+    skipEffectActors: new Set(), // 다음 효과 하나를 건너뛸 창 actor (skipNextEffect)
     origIsExpoWindow: null, // 그 원본 메서드
     configs: readConfigs(),
     hotkeys: new Map(),
@@ -226,6 +260,26 @@ function enable() {
     }
   } catch (e) {
     global.logError(LOG_TAG + " isExpoWindow patch failed: " + e);
+  }
+
+  // #709 — 숨기고 꺼낼 때 Cinnamon 의 최소화 · 복원 효과를 건너뛴다. GNOME 확장은
+  // `Main.wm.skipNextEffect(actor)` 로 같은 일을 하는데, Cinnamon 6.6 의 WindowManager
+  // 에는 그 함수가 없다. 효과는 `_minimizeWindow` · `_unminimizeWindow` 가
+  // `this._shouldAnimate(actor)` 에게 물어 정하므로 (js/ui/windowManager.js), 표시해 둔
+  // actor 이면 한 번만 false 를 돌려준다 — GNOME 의 "다음 효과 하나" 와 같은 뜻이라 첫
+  // 등장 같은 다른 효과는 그대로다. 인스턴스 속성으로 덮으니 prototype 원본은 그대로다.
+  try {
+    const wm = Main.wm;
+    const proto = wm && Object.getPrototypeOf(wm);
+    if (proto && typeof proto._shouldAnimate === "function") {
+      st.wm = wm;
+      wm._shouldAnimate = function (actor, types = null) {
+        if (actor && st && st.skipEffectActors.delete(actor)) return false;
+        return proto._shouldAnimate.call(this, actor, types);
+      };
+    }
+  } catch (e) {
+    global.logError(LOG_TAG + " _shouldAnimate patch failed: " + e);
   }
 
   // hotkey 등록 (config = source of truth). addHotKey(name, accel, cb) — accel 은
@@ -389,6 +443,12 @@ function disable() {
       delete st.tracker.is_window_interesting; // prototype 원본 복귀.
     } catch (_e) {}
     st.tracker = null;
+  }
+  if (st && st.wm) {
+    try {
+      delete st.wm._shouldAnimate; // prototype 원본 복귀.
+    } catch (_e) {}
+    st.wm = null;
   }
   if (st && st.expoProto && st.origIsExpoWindow) {
     try {
@@ -816,7 +876,16 @@ function onMap(actor) {
   // hidden_start=true → 배치 후 숨김(첫 hotkey 로 등장). tildaz 는 Cinnamon 에서
   // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
-  if (cfg.hidden) win.minimize();
+  if (cfg.hidden) {
+    skipNextEffect(win);
+    win.minimize();
+  }
+}
+
+/** #709 — 다음 최소화 · 복원 효과 하나를 건너뛴다 (GNOME `Main.wm.skipNextEffect` 대응). */
+function skipNextEffect(win) {
+  const actor = win.get_compositor_private();
+  if (actor && st) st.skipEffectActors.add(actor);
 }
 
 // hotkey toggle — extension 이 직접 minimize/unminimize. tildaz 의 --toggle(null
@@ -826,11 +895,15 @@ function toggle(index) {
     const win = find(index);
     if (!win) return; // toggle 전용 — 미실행 시 무동작(실행은 autostart/메뉴).
     if (!win.minimized) {
+      skipNextEffect(win);
       win.minimize();
       defocusAfterHide(win);
       return;
     }
-    if (win.minimized) win.unminimize();
+    if (win.minimized) {
+      skipNextEffect(win);
+      win.unminimize();
+    }
     // 재배치 — minimize/unminimize 는 geometry 를 보존하지만, drift / 첫 show /
     // 다른 모니터로 커서 이동 대비해 위치를 다시 확정(커서 모니터 기준).
     place(win, st.configs.get(index));
@@ -944,7 +1017,10 @@ function placeDialog(win) {
 }
 
 function restoreDialogParent(term) {
-  if (term.minimized) term.unminimize();
+  if (term.minimized) {
+    skipNextEffect(term);
+    term.unminimize();
+  }
   Main.activateWindow(term);
 }
 
