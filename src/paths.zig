@@ -128,9 +128,17 @@ pub fn dataHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 /// `$XDG_STATE_HOME/<id>/backup` — 로그와 같은 상태 폴더다. 고친 파일 옆에 두지 않는 이유는
 /// COSMIC 이 그 설정 폴더 안의 파일을 하나하나 키로 읽어서, 거기 두면 엉뚱한 키가 생기기 때문이다.
 pub fn backupDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const base = try stateDir(rt, allocator);
+    defer allocator.free(base);
+    return std.fmt.allocPrint(allocator, "{s}/backup", .{base});
+}
+
+/// #700 — Linux 상태 폴더 `$XDG_STATE_HOME/<id>` (로그와 같은 곳). 사용자 설정이 아니라 앱이
+/// 기억해 둘 사실 (예: 자동 시작 항목을 만든 적이 있다) 을 둔다.
+pub fn stateDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const base = try stateHome(rt, allocator);
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/{s}/backup", .{ base, app_id.name });
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
 }
 
 /// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.

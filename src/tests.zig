@@ -67,7 +67,8 @@ test "aggregate root imports every common and native-host test module" {
 
     switch (builtin.os.tag) {
         .linux => {
-            // Linux native modules (22 files).
+            // Linux native modules (23 files).
+            _ = @import("autostart/linux.zig");
             _ = @import("dialog/linux.zig");
             _ = @import("font/linux/font.zig");
             _ = @import("host/linux/dialog_layout.zig");

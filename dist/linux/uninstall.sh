@@ -10,7 +10,6 @@
 #   GNOME / Cinnamon TildaZ extension
 #   GNOME / Cinnamon 이전판의 gsettings custom keybinding tildaz-N
 #     — 리스트 항목 + dconf 서브트리
-#   KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] 그룹
 #   sway · Hyprland 자동실행 · COSMIC 단축키 — `tildaz --desktop remove` 가 지운다 (#700).
 #     이 스크립트는 그 사용자 설정 파일을 직접 고치지 않는다. 실행 파일을 지우기 **전에**
 #     부르고, 실행 파일이 없으면 손으로 지울 것을 안내한다.
@@ -67,9 +66,10 @@ TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
 removed=0
 
 # 사용자 데스크톱 설정은 tildaz 가 지운다 (#700) — sway · Hyprland 자동실행 (우리 파일과 불러오는
-# 줄, 예전 이 스크립트 쌍이 넣은 블록), COSMIC 단축키, KDE 전역 단축키, desktop 항목. 예전에는
-# 여기서 셸이 그 파일들을 줄 단위로 고쳤다 (#681 — COSMIC 파일이 깨졌다). 실행 파일을 지우기
-# **전에** 부른다 — 아래에서 `~/.local/bin/<id>` 를 지우면 부를 것이 없다.
+# 줄, 예전 이 스크립트 쌍이 넣은 블록), COSMIC 단축키, KDE 전역 단축키 (kglobalaccel 이 떠 있으면
+# D-Bus, 아니면 kglobalshortcutsrc), desktop 항목. 예전에는 여기서 셸이 그 파일들을 줄 단위로
+# 고쳤다 (#681 — COSMIC 파일이 깨졌다). 실행 파일을 지우기 **전에** 부른다 — 아래에서
+# `~/.local/bin/<id>` 를 지우면 부를 것이 없다.
 for id in "${TILDAZ_IDS[@]}"; do
     exe=""
     if [[ -L "$HOME/.local/bin/$id" ]]; then
@@ -93,6 +93,11 @@ for id in "${TILDAZ_IDS[@]}"; do
     for f in "$CONFIG_HOME/sway/$id.conf" "$CONFIG_HOME/hypr/$id.lua" "$CONFIG_HOME/hypr/$id.conf"; do
         [[ -e "$f" ]] && left+=("$f")
     done
+    # KDE 단축키 파일은 kglobalaccel 이 떠 있는 동안 직접 고치면 되돌아간다 (#700 D4) — 시스템
+    # 설정 > 단축키에서 지우도록 안내한다.
+    if [[ -f "$CONFIG_HOME/kglobalshortcutsrc" ]] && grep -qE "^\[$id\.instance[0-9]+\]" "$CONFIG_HOME/kglobalshortcutsrc"; then
+        left+=("System Settings > Shortcuts: the TildaZ entries ($id.instanceN)")
+    fi
     for f in "$HOME/.sway/config" "$CONFIG_HOME/sway/config" "$CONFIG_HOME/hypr/hyprland.lua" "$CONFIG_HOME/hypr/hyprland.conf"; do
         [[ -f "$f" ]] && grep -qF -e "$id autostart" -e "$id.conf" -e "require, \"$id\")" "$f" && left+=("$f (the $id autostart lines)")
     done
@@ -249,47 +254,6 @@ PY
 clean_gsettings_keybindings "org.gnome.settings-daemon.plugins.media-keys" "custom-keybindings" "gnome" "GNOME"
 clean_gsettings_keybindings "org.cinnamon.desktop.keybindings" "custom-list" "cinnamon" "Cinnamon"
 
-# KDE ~/.config/kglobalshortcutsrc 의 [<id>.instanceN] component 그룹 제거
-# (#292 E2). runtime이 KGlobalAccel.setShortcutKeys(NoAutoloading)로 저장한다
-# (kglobalaccel.zig). 그룹 헤더부터 다음 그룹([...]) 직전까지 삭제. 현재 세션의
-# in-memory grab 은 로그아웃 시 해제되고, 다음 로그인 땐 정리된 파일을 읽는다.
-#
-# **두 이름을 모두 잡는다** (#654) — 파일 맨 위 `TILDAZ_IDS` 와 같은 이유다. 예전
-# 정규식은 `tildaz\.instance` 라 `tildaz-dev.instance9` 를 놓쳤고, 개발 빌드를 지운 뒤에도
-# 그 항목이 시스템 설정의 단축키 목록에 죽은 채 남았다 (실측).
-# ⚠️ id 목록을 **정규식으로 조립해 `awk -v` 로 넘기지 않는다.** `-v` 는 값의 escape
-# sequence 를 먼저 처리해서 `\[` 가 `[` 로 풀리고, 그러면 `invalid regexp` 로 awk 가
-# *치명적 오류* 를 내며 `set -e` 가 uninstall 을 통째로 멈춘다 (작성 중 실측). 그래서
-# 그룹 헤더를 문자열로 가르고, 숫자 판정만 리터럴 정규식으로 둔다.
-KGLOBAL="$HOME/.config/kglobalshortcutsrc"
-if [[ -f "$KGLOBAL" ]]; then
-    tmp="$KGLOBAL.tildaz-uninstall-tmp"
-    awk -v ids="${TILDAZ_IDS[*]}" '
-        function is_ours(line,    rest, n, a, i, id, num) {
-            if (substr(line, 1, 1) != "[" || substr(line, length(line)) != "]") return 0
-            rest = substr(line, 2, length(line) - 2)
-            n = split(ids, a, " ")
-            for (i = 1; i <= n; i++) {
-                id = a[i] ".instance"
-                if (substr(rest, 1, length(id)) == id) {
-                    num = substr(rest, length(id) + 1)
-                    if (num ~ /^[0-9]+$/) return 1
-                }
-            }
-            return 0
-        }
-        /^\[/ { skip = is_ours($0) }
-        skip { next }
-        { print }
-    ' "$KGLOBAL" > "$tmp"
-    if cmp -s "$tmp" "$KGLOBAL"; then
-        rm -f "$tmp"
-    else
-        mv "$tmp" "$KGLOBAL"
-        echo "Removed: [<id>.instanceN] groups in $KGLOBAL"
-        removed=$((removed + 1))
-    fi
-fi
 
 
 if [[ "$removed" -eq 0 ]]; then

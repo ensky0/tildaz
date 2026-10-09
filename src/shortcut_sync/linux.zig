@@ -25,11 +25,14 @@ pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !vo
     };
 }
 
-/// #700 — 제거. COSMIC 단축키 파일은 세션과 무관하게 치운다 (`sync` 는 COSMIC 세션에서만
+/// #700 — 제거. KDE · COSMIC 단축키는 세션과 무관하게 치운다 (`sync` 는 COSMIC 세션에서만
 /// 그 파일을 본다 — 다른 세션에서 고칠 이유가 없어서다). Hyprland 런타임 바인딩은 그 세션이
 /// 떠 있을 때만 지울 수 있고, 아니면 다음 로그인에 저절로 없다.
 pub fn removeAll(rt: Runtime, allocator: std.mem.Allocator) !void {
     try sync(rt, allocator, &.{});
+    // KDE 단축키는 세션과 무관하게 — kglobalaccel 이 떠 있으면 D-Bus, 아니면 그 파일 (#700 D4).
+    // KDE 세션이면 바로 위 `sync` 가 이미 D-Bus 로 지웠다.
+    if (!kglobalaccel.isCurrentDesktop(rt)) kglobalaccel.removeAll(rt, allocator);
     if (!desktopContains(rt, "cosmic")) syncCosmic(rt, allocator, &.{}) catch |err| {
         log.appendLine("cosmic", "shortcut cleanup skipped: {s}", .{@errorName(err)});
     };
