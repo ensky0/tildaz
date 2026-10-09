@@ -41,6 +41,14 @@ Internal changes belong in neither.
 - New `[keys]` actions `increase_font_size`, `decrease_font_size` and `reset_font_size`.
   Your existing config does not have them yet, so they use the defaults and the startup
   notice lists them each time until you add them. ([#679](https://github.com/ensky0/tildaz/issues/679))
+- **sway and Hyprland: the autostart line moved into a file of its own.** Running
+  `./install.sh --release` again replaces the old two-line block in your sway or Hyprland
+  config with one line that loads `~/.config/sway/tildaz.conf` or `~/.config/hypr/tildaz.lua`.
+  Your other lines are not touched. `tildaz --desktop remove` takes it out again.
+  ([#700](https://github.com/ensky0/tildaz/issues/700))
+- **COSMIC: TildaZ backs up your shortcuts file before it edits it.** The first copy is kept
+  as `~/.local/state/tildaz/backup/cosmic-shortcuts-custom.orig`.
+  ([#700](https://github.com/ensky0/tildaz/issues/700))
 
 ## Body candidates
 
@@ -66,3 +74,10 @@ Internal changes belong in neither.
 - Change the terminal text size while TildaZ runs: `Ctrl+Shift+=` / `Ctrl+Shift+-`, and
   `Ctrl+Shift+Backspace` to go back (`Cmd+=` / `Cmd+-` / `Cmd+0` on macOS).
   ([#679](https://github.com/ensky0/tildaz/issues/679))
+- COSMIC: your own custom shortcuts are no longer broken when TildaZ registers its hotkey.
+  ([#681](https://github.com/ensky0/tildaz/issues/681))
+- sway and Hyprland: the hotkey keeps working after you reload the config. Reinstalling no
+  longer rewrites your Hyprland config when nothing changed.
+  ([#698](https://github.com/ensky0/tildaz/issues/698))
+- Turning TildaZ off in your desktop's startup settings now sticks. It used to come back on
+  the next start. ([#700](https://github.com/ensky0/tildaz/issues/700))

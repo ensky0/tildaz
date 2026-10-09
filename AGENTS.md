@@ -1109,6 +1109,34 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 
 **tildaz 본체를 함께 검증할 때는 `--instance 9` 로 띄워요.** 사용자의 `config_0` 을 건드리지 않고 별 config 로 테스트할 수 있어요. 그 config 에 **`auto_start = false`** 를 넣고, 끝나면 `config_9.toml` · `tildaz_9.log` · `instance9*` 를 지워요 — 안 지우면 사용자 로그온 때 그 인스턴스가 같이 떠요.
 
+# Linux — 사용자 데스크톱 설정 파일은 `tildaz --desktop` 한 곳에서 ([#700](https://github.com/ensky0/tildaz/issues/700))
+
+COSMIC 단축키 파일 · sway · Hyprland 설정 · KDE 단축키 · desktop 항목을 고치는 코드는 **Zig 한
+곳** (`src/desktop_setup/` · `src/shortcut_sync/linux.zig`) 에만 있어요. `install.sh` ·
+`uninstall.sh` 는 `tildaz --desktop add | remove` 를 부르기만 하고 그 파일들을 직접 고치지
+않아요. 셸의 `awk` · `sed -i` · `mv` 가 줄 단위로 고치다 결함이 반복됐어요 (#681 · #698).
+규칙 자체는 SPEC.md 의 "sway · Hyprland 사용자 설정" · COSMIC 절이 단일 출처예요.
+
+**실기에서 밟은 함정**
+
+- **자동 시작 파일을 보려면 launcher 를 인자 없이 띄워요.** `--autostart` 로 띄우면 launcher 가
+  자동 시작 설정을 일부러 건드리지 않아요 (로그인 때 도는 경로라서요). 그런데 worker 가 떠 있는
+  채로 인자 없이 띄우면 "인스턴스를 하나 더" 창이 뜨니, worker 를 먼저 내려요.
+- **실제 세션에서 `uninstall.sh` 를 통째로 돌리지 말아요.** 판을 가리지 않고 두 판의 자동 시작
+  파일 · desktop 항목 · 확장을 지워요 (#654 — 어느 판으로 깔았는지 알 수 없어서예요). dev 를
+  시험하다 평소 쓰는 릴리즈 설정이 지워져요. 핵심은 `tildaz-dev --desktop remove` 로 보고,
+  스크립트의 나머지 흐름은 격리 `HOME` 에서 `gsettings` 가 없는 `PATH` 로 봐요.
+- **COSMIC 설정 앱이 열려 있으면 단축키 파일을 옛 상태로 다시 쓸 수 있어요** (추정 — 2026-10-09
+  COSMIC 1.9.0 실기에서 우리 항목이 13:12 의 설정 앱 내용과 바이트 단위로 같게 되돌려졌어요).
+  우리 항목은 다음 launcher 실행에 다시 들어가지만, 시험 중에는 설정 앱을 닫고 재요. 되돌릴
+  때도 닫고 나서 백업을 복사해요.
+- **COSMIC 설정 앱의 "시작 응용 프로그램" 삭제는 파일 삭제 (`remove_file`) 뿐이에요**
+  (cosmic-settings `pages/applications/startup_apps.rs`). 그 화면을 누를 필요 없이 같은 파일을
+  지우면 같은 시험이에요.
+- **패키지 (deb · rpm · Arch pkg · AppImage) 로 깐 판은 sway · Hyprland 자동실행이 없어요** — 그
+  쪽은 `--desktop add` 를 부르는 설치 스크립트가 없어요 ([#701](https://github.com/ensky0/tildaz/issues/701)).
+  그 세션에서 릴리즈 F1 이 안 듣는 것은 이 변경과 무관해요.
+
 # 전역 hotkey 의 위치 표기 검증 — 데스크톱마다 받는 것이 다르다
 
 `hotkey = "ctrl+[Backquote]"` 같은 **위치 표기** ([#496](https://github.com/ensky0/tildaz/issues/496) 1-c) 는 데스크톱마다 등록 방식이 갈려요. 자리를 그대로 받는 곳, 그 자리가 *지금 내는 글자* 로 바꿔야 하는 곳, VK 로 바꿔야 하는 곳이 있어서 **한 환경에서 통과해도 다른 환경을 보장하지 못해요.** 그래서 어느 머신에서든 같은 절차로 돌리는 도구를 뒀어요.
@@ -2222,7 +2250,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   번호가 없으면 정확히 그렇게 됩니다. 같은 회차에서 세 곳이 그랬어요:
   [`kglobalaccel.numberedComponentIndex`](src/host/linux/kglobalaccel.zig) (KDE 컴포넌트
   sweep) · [`gsettings_hotkey.gsettingsTildazIndex`](src/host/linux/gsettings_hotkey.zig)
-  (GNOME · Cinnamon dconf) · [`uninstall.sh`](dist/linux/uninstall.sh) 의 그룹 제거.
+  (GNOME · Cinnamon dconf) · [`uninstall.sh`](dist/linux/uninstall.sh) 의 그룹 제거 (지금은
+  [#700](https://github.com/ensky0/tildaz/issues/700) 로 `tildaz --desktop remove` 가 같은 `numberedComponentIndex` 로 해요).
   판정 함수에는 **"개발 빌드가 릴리즈 이름을 자기 것으로 보지 않는다"** 를 테스트로 박아
   둬요 (앞의 두 파일에 그 단언이 있어요).
 - **`install.sh`는 개발판 분리 이전 판의 옛 기본 경로 `zig-out/bin/tildaz`를 가리키는 잔재만 치워요.**
@@ -2293,9 +2322,10 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   dconf reset -f /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/tildaz-1/
   ```
 
-- **sway · Hyprland autostart 블록의 marker 에도 id 가 들어가요** (`# tildaz-dev autostart …`).
-  하나로 두면 두 번째로 까는 판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 릴리즈 marker
-  는 예전과 글자 단위로 같아서 기존 설치와 호환되고, `uninstall.sh` 는 두 marker 를 다 지워요.
+- **sway · Hyprland 자동실행도 판마다 따로예요.** 우리 파일 이름 (`<id>.conf` · `<id>.lua`) 과
+  사용자 설정의 표식 (`TildaZ (dev) autostart …`) 에 판이 들어가요. 하나로 두면 두 번째로 까는
+  판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 예전 `install.sh` 의 판별 marker 블록
+  (`# tildaz-dev autostart (added by install.sh …)`) 은 `tildaz --desktop add` 가 옮겨요 ([#700](https://github.com/ensky0/tildaz/issues/700)).
 - **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
   zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
   README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은

@@ -197,7 +197,7 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 #   - 예전 이 스크립트가 넣은 블록은 그 줄이 우리 명령 모양일 때만 옮긴다.
 #   - sway 설정이 없으면 sway 가 깔려 있을 때만 만든다. Hyprland 설정이 없으면 Hyprland 이
 #     깔려 있을 때만 `Hyprland --verify-config` 로 기본 설정을 만든다.
-# 자세한 규칙은 `src/desktop_setup/wm_linux.zig` 머리 주석에 있다.
+# 자세한 규칙은 `src/desktop_setup/sway_hyprland.zig` 머리 주석에 있다.
 DESKTOP_MSG=""
 if ! DESKTOP_MSG="$("$TILDAZ_EXE" --desktop add 2>&1)"; then
     DESKTOP_MSG="$DESKTOP_MSG

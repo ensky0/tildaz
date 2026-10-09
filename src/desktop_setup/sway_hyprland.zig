@@ -6,8 +6,8 @@
 //!
 //!   - 명령은 **우리 파일**에 둔다 — sway `<설정>/sway/<id>.conf`, Hyprland `<설정>/hypr/<id>.lua`
 //!     (Lua) · `<id>.conf` (legacy). 이 파일은 우리 것이라 통째로 다시 쓴다.
-//!   - 사용자 설정에는 **불러오는 줄 하나와 그 표식**만 넣는다 (`wm_files.zig`). 이미 있으면 쓰지
-//!     않는다. 다른 줄은 고치지 않는다.
+//!   - 사용자 설정에는 **불러오는 줄 하나와 그 표식**만 넣는다 (`sway_hyprland_files.zig`).
+//!     이미 있으면 쓰지 않는다. 다른 줄은 고치지 않는다.
 //!   - 예전 `install.sh` 의 블록은 옮긴다 — 표식 다음 줄이 그 스크립트가 쓴 모양일 때만 지운다.
 //!
 //! 불러오는 방법과 순서는 upstream 소스로 정했다 (#700 조사 — sway 1.12 · Hyprland v0.56.2).
@@ -29,7 +29,7 @@ const paths = @import("../paths.zig");
 const log = @import("../log.zig");
 const console = @import("../console.zig");
 const messages = @import("../messages.zig");
-const wm_files = @import("wm_files.zig");
+const sway_hyprland_files = @import("sway_hyprland_files.zig");
 const shortcut_sync_linux = @import("../shortcut_sync/linux.zig");
 
 pub const Mode = enum { add, remove };
@@ -131,7 +131,7 @@ pub fn run(rt: Runtime, allocator: std.mem.Allocator, mode: Mode) !void {
 
 /// 사용자 설정 하나를 고친다 — 옛 블록을 옮기고, 불러오는 줄을 넣거나 뺀다. 그 파일을 고치지
 /// 않을 때 `include_line` 은 `null` 이다 (옛 블록만 옮긴다).
-fn editUserConfig(ctx: Ctx, path: []const u8, base: ?[]const u8, syntax: wm_files.Syntax, include_line: ?[]const u8) !void {
+fn editUserConfig(ctx: Ctx, path: []const u8, base: ?[]const u8, syntax: sway_hyprland_files.Syntax, include_line: ?[]const u8) !void {
     var existed = true;
     const original = (try ctx.read(path)) orelse blk: {
         // 없는 파일은 add 가 새로 만들 때만 쓴다 (`base` 가 그 첫 내용).
@@ -146,15 +146,15 @@ fn editUserConfig(ctx: Ctx, path: []const u8, base: ?[]const u8, syntax: wm_file
     var text: []const u8 = original;
     var owned: ?[]u8 = null;
     defer if (owned) |o| ctx.allocator.free(o);
-    if (try wm_files.withoutLegacyBlocks(ctx.allocator, text, old_marker, syntax)) |migrated| {
+    if (try sway_hyprland_files.withoutLegacyBlocks(ctx.allocator, text, old_marker, syntax)) |migrated| {
         owned = migrated;
         text = migrated;
         log.appendLine("desktop", "migrated the old install.sh autostart block in {s}", .{path});
     }
     if (include_line) |line| {
         const next = switch (ctx.mode) {
-            .add => try wm_files.withInclude(ctx.allocator, text, marker, line),
-            .remove => try wm_files.withoutInclude(ctx.allocator, text, marker, line),
+            .add => try sway_hyprland_files.withInclude(ctx.allocator, text, marker, line),
+            .remove => try sway_hyprland_files.withoutInclude(ctx.allocator, text, marker, line),
         };
         if (next) |n| {
             if (owned) |o| ctx.allocator.free(o);
@@ -294,7 +294,7 @@ fn removeConfOwn(ctx: Ctx, main_conf: []const u8, own_conf: []const u8) !void {
     try ctx.delete(own_conf);
 }
 
-fn writeHyprlandOwn(ctx: Ctx, own: []const u8, syntax: wm_files.Syntax) !void {
+fn writeHyprlandOwn(ctx: Ctx, own: []const u8, syntax: sway_hyprland_files.Syntax) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(ctx.allocator);
     const command = try std.fmt.allocPrint(ctx.allocator, "{s} --autostart", .{ctx.exe});
