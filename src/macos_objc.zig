@@ -4,7 +4,7 @@
 //
 //   1. `objcSend(FnType)` — callsite 가 함수 시그니처를 명시. ABI 실수 시
 //      컴파일러가 잡아 주지만 호출 코드가 길어진다. M3 host 코드 (NSApp /
-//      NSWindow / mainMenu) 가 이 패턴 사용.
+//      NSWindow) 가 이 패턴 사용.
 //
 //   2. `msgSend` / `msgSend1` / `msgSendVoid` / ... — 흔한 시그니처를 미리
 //      만들어 둔 helper. callsite 가 짧지만 ABI 가 helper 시그니처에 맞게

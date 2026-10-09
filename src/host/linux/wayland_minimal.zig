@@ -6456,9 +6456,8 @@ const Client = struct {
             h.client.requestPaste();
         }
         /// main loop 의 `drainQuitRequest` 가 확인 다이얼로그를 띄운다.
-        pub fn quit(h: *LinuxActionHost) bool {
+        pub fn quit(h: *LinuxActionHost) void {
             h.client.pending_quit_request = true;
-            return true;
         }
     };
 

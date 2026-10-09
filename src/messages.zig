@@ -817,12 +817,6 @@ pub const new_instance_hotkey_check_failed_msg =
 pub const new_instance_create_failed_format = "The new TildaZ instance could not be created.\n\n{s}";
 pub const new_instance_create_failed_fallback_msg = "The new TildaZ instance could not be created.";
 
-pub const macos_menu_open_config_label = "Open Config";
-pub const macos_menu_open_log_label = "Open Log";
-pub const macos_menu_quit_label = "Quit TildaZ";
-pub const macos_menu_edit_label = "Edit";
-pub const macos_menu_emoji_symbols_label = "Emoji & Symbols";
-
 pub const macos_permission_required_title = "TildaZ — Permission required";
 pub const macos_permission_required_format =
     \\TildaZ needs two macOS permissions to work.
@@ -871,13 +865,8 @@ pub const macos_permission_required_fallback_msg = "TildaZ needs two permissions
 pub const permission_status_granted = "GRANTED";
 pub const permission_status_missing = "MISSING";
 
-test "macOS menu labels and new-instance fallback preserve user text" {
+test "About title and new-instance fallback preserve user text" {
     try std.testing.expectEqualStrings("About TildaZ", about_title);
-    try std.testing.expectEqualStrings("Open Config", macos_menu_open_config_label);
-    try std.testing.expectEqualStrings("Open Log", macos_menu_open_log_label);
-    try std.testing.expectEqualStrings("Quit TildaZ", macos_menu_quit_label);
-    try std.testing.expectEqualStrings("Edit", macos_menu_edit_label);
-    try std.testing.expectEqualStrings("Emoji & Symbols", macos_menu_emoji_symbols_label);
     try std.testing.expectEqualStrings(
         "The new TildaZ instance could not be created.",
         new_instance_create_failed_fallback_msg,

@@ -45,8 +45,7 @@
 //!     폰트가 그대로 남아 있어야 한다.
 //!   - `yieldTopmost()` — 바깥 앱을 띄우기 전에 우리 창이 비켜 준다 (#655).
 //!   - `fullscreenKind() ?FullscreenKind` · `toggleFullscreen(kind)`
-//!   - `toggleVisibility()` · `showAbout()` · `paste()`
-//!   - `quit() bool` — false 면 소비하지 않았다 (macOS 는 mainMenu 가 받는다).
+//!   - `toggleVisibility()` · `showAbout()` · `paste()` · `quit()`
 
 const std = @import("std");
 const log = @import("log.zig");
@@ -80,9 +79,9 @@ pub const CellSize = struct { w: u32, h: u32 };
 
 /// 단축키 액션을 실행한다. 조합 확정 정책은 host 가 이미 적용했다.
 ///
-/// `false` = 이 host 에서 소비하지 않았다. 호출자가 기존 경로로 흘린다 — macOS 의 `quit` 은
-/// mainMenu 가 받는다. 방향 · 인덱스 같은 payload 가 빠진 입력도 `false` 다
-/// (`config.inputForAction` 이 늘 채우므로 실제로는 오지 않는다).
+/// `false` = 소비하지 않았다. 호출자가 기존 경로로 흘린다 — 단축키가 아닌 입력과 `⋯` 버튼의
+/// 입력 정책 자리 (`open_command_menu`) 가 그렇다. 방향 · 인덱스 같은 payload 가 빠진 입력도
+/// `false` 다 (`config.inputForAction` 이 늘 채우므로 실제로는 오지 않는다).
 pub fn run(host: anytype, action: config.ActionInput) bool {
     const shortcut = switch (action.input) {
         .paste => {
@@ -107,7 +106,7 @@ pub fn run(host: anytype, action: config.ActionInput) bool {
         .open_log => openLog(host),
         .open_shortcuts => openShortcuts(host),
         .dump_perf => perf.dumpAndReset(host.rt(), "snapshot"),
-        .quit => return host.quit(),
+        .quit => host.quit(),
         .toggle_visibility => host.toggleVisibility(),
         // #493 3-c — 두 fullscreen 은 별 액션이다. 예전엔 "Shift 가 눌렸으면 workarea" 라는 암묵
         // 규칙이 있었는데, 사용자가 `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있다.

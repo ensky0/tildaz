@@ -304,7 +304,7 @@ fn atExitLogStop() callconv(.c) void {
 }
 
 // NSApplication delegate — `applicationShouldTerminate:` 한 메서드만 구현.
-// 모든 `terminate:` 호출 (Cmd+Q / 메뉴 / 마지막 탭 종료) 가 진입하기 전에
+// 모든 `terminate:` 호출 (`quit` 단축키 / 마지막 탭 종료) 가 진입하기 전에
 // macOS 가 이 hook 을 거치게 해 사용자에게 confirm 을 물음 (#116).
 const NSTerminateCancel: c_long = 0;
 const NSTerminateNow: c_long = 1;
@@ -313,7 +313,7 @@ const NSTerminateNow: c_long = 1;
 /// 이미 사용자 의도된 종료 path. 단일 탭 (count==1) 도 confirm — 사용자 정책.
 fn applicationShouldTerminate(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) c_long {
     // #317 — programmatic `terminate:`도 confirm 전에 공통 shortcut 정책을
-    // 적용한다. 메뉴 Cmd+Q는 tildazQuit:에서 먼저 적용하므로 여기서는 no-op이고,
+    // 적용한다. `quit` 단축키는 `runKeyAction` 에서 먼저 적용하므로 여기서는 no-op이고,
     // Cancel 뒤 재시도도 첫 호출에서 pending 상태가 이미 비어 no-op이다.
     applyShortcutInputPolicy(.quit);
     const n = g_session.count();
@@ -855,7 +855,8 @@ fn syncTerminalGeometry() void {
 
 // NSWindow subclass — `canBecomeKeyWindow` 를 YES 로 override 해서 borderless
 // styleMask 에서도 key window 가능하게. Default NSWindow 는 borderless 면
-// canBecomeKey=NO 라 mainMenu Cmd+Q 등이 dispatch 안 됨. ghostty Quick Terminal
+// canBecomeKey=NO 라 키 이벤트 (`performKeyEquivalent:` · `keyDown:`) 가 우리 view 로
+// 오지 않음. ghostty Quick Terminal
 // 의 `class QuickTerminalWindow: NSPanel { override var canBecomeKey: Bool { true } }`
 // 와 동일 효과.
 fn tildazCanBecomeKey(_: objc.id, _: objc.SEL) callconv(.c) bool {
@@ -907,16 +908,17 @@ fn tildazAcceptsFirstMouse(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) boo
 }
 
 /// #317 — AppKit은 Command key equivalent를 keyDown:보다 먼저 key window의
-/// view hierarchy에 보낸다. terminal marked input이 Cmd+Q를 소비하기 전에 custom
-/// NSTextInputClient인 이 view가 공통 입력 정책을 적용한다. terminal marked-input
-/// 첫 event는 mainMenu가 매칭하지 않는 것이 실기로 확인됐으므로, 기존 macOS
-/// main-queue deferral로 custom Quit selector를 다음 turn에 실행한다. 다른 key는
-/// false로 기존 NSMenu routing을 유지한다.
+/// view hierarchy에 보낸다. terminal marked input이 Cmd 조합을 소비하기 전에 custom
+/// NSTextInputClient인 이 view가 공통 입력 정책을 적용한다 (`runKeyAction`).
 ///
 /// #682 — **Cmd 조합의 `[keys]` 조회도 여기서 한다.** `⇧⌘/` 는 이 메서드까지는 오지만
 /// `keyDown:` 에는 오지 않는다 (실측 — AppKit 이 `⌘?` 를 Help 단축키로 따로 다루는 것으로
-/// 보인다). 이 자리는 앱 메뉴보다 먼저 불리므로 config 가 메뉴의 고정 단축키를 이기기도
-/// 한다 — About · Config · Log 가 사용자 binding 을 따르는 이유다.
+/// 보인다).
+///
+/// #713 — `quit` (`⌘Q`) 도 여기서 `[keys]` 로 받는다. 예전에는 보이지 않는 mainMenu 의
+/// *Quit* 항목과 이 자리의 `⌘Q` 고정 검사가 받아서, 사용자가 `quit` 을 바꿔도 새 키는
+/// 안 먹고 `⌘Q` 는 계속 먹었다. 메뉴 막대가 없는 Accessory 앱이라 (`LSUIElement`) mainMenu 를
+/// 지웠다. 종료는 다음 차례에 한다 (`MacActionHost.quit`) — #317 의 순서 그대로다.
 fn tildazPerformKeyEquivalent(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) bool {
     if (event == null) return false;
 
@@ -933,9 +935,10 @@ fn tildazPerformKeyEquivalent(self_view: objc.id, _: objc.SEL, event: objc.id) c
     const get_kc = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
     const kc = get_kc(event, objc.sel("keyCode"));
 
-    if (flags & relevant == NSEventModifierFlagCommand and kc == 0x0C) { // Q
-        applyShortcutInputPolicy(.quit);
-        dispatch_async_f(&_dispatch_main_q, null, tildazQuitTrampoline);
+    // #130 · #713 — `⌃⌘Space` = Show Emoji & Symbols. macOS 표준 자리라 `[keys]` 가 아니라 여기서
+    // 받는다. 예전에는 보이지 않는 mainMenu 의 Edit 항목이 keyEquivalent 로 받았다.
+    if (flags & relevant == (NSEventModifierFlagControl | NSEventModifierFlagCommand) and kc == 0x31) { // kVK_Space
+        showEmojiPicker();
         return true;
     }
 
@@ -1276,7 +1279,7 @@ fn macSearchNavKey(kc: c_ushort) bool {
 }
 
 /// #317 — macOS의 모든 shortcut 진입점이 같은 pending 입력 정책을 적용한다.
-/// `keyDown:` Cmd shortcut뿐 아니라 NSMenu selector, Cmd+Q의
+/// `keyDown:` · `performKeyEquivalent:` 의 단축키 (`runKeyAction` — Cmd+Q 포함)뿐 아니라
 /// `applicationShouldTerminate:`, F1 event tap도 이 helper를 action 전에 호출한다.
 /// read-only copy/perf의 `.leave`와 상태변경 action의 `.commit` 구분은 오직
 /// `input_policy.resolve`가 결정한다.
@@ -1520,8 +1523,7 @@ fn runKeyAction(action: config.KeyAction) bool {
         return true;
     }
     applyShortcutInputPolicy(mapped.input.shortcut);
-    // #692 — 실행은 공통 처리부. `quit` 은 false 로 돌아와 키 경로가 흘린다 — `⌘Q` 와 mainMenu 가
-    // 받는다 (`MacActionHost.quit`).
+    // #692 — 실행은 공통 처리부.
     return app_actions.run(actionHost() orelse return true, mapped);
 }
 
@@ -1736,9 +1738,9 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     const cmd_too = (flags & NSEventModifierFlagCommandKD) != 0;
 
     // Cmd 가 같이 눌린 ctrl+cmd 조합은 macOS system shortcut (Ctrl+Cmd+Space =
-    // Show Emoji & Symbols 등) 의 표식 — PTY 로 안 흘리고 mainMenu 의 menu
-    // item keyEquivalent 로 라우팅 (#130). 일반 Ctrl+C (Cmd 없음) 는 그대로
-    // PTY 직송.
+    // Show Emoji & Symbols 등) 의 표식 — PTY 로 안 흘린다. `⌃⌘Space` 는
+    // `tildazPerformKeyEquivalent` 가 먼저 받는다 (#130 · #713). 일반 Ctrl+C (Cmd 없음)
+    // 는 그대로 PTY 직송.
     if (ctrl and !cmd_too) {
         const get_chars = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
         const chars = get_chars(event, objc.sel("characters"));
@@ -1794,7 +1796,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
     // escape sequence write.
     if (g_marked_len == 0) {
         // Esc — emoji picker 가 떠 있으면 dismiss (#130 follow-up). modifier
-        // 없는 단순 Esc 만 — Cmd / ctrl 은 위 분기에서 처리 끝 (cmd 는 mainMenu,
+        // 없는 단순 Esc 만 — Cmd / ctrl 은 위 분기에서 처리 끝 (cmd 는 `tildazPerformKeyEquivalent`,
         // ctrl-only 는 PTY 직송). shift / option 도 없을 때만. picker 의 visibility
         // 는 `isEmojiPickerOpen()` 이 NSApp.orderedWindows 직접 query — boolean
         // 추적의 stale 문제 회피.
@@ -3453,7 +3455,7 @@ fn commitPreeditToSink(self_view: objc.id) void {
 /// (#164 follow-up — mac Cocoa markedText 는 click / 단축키 시 자동 cancel 안 함)
 fn commitPendingInput(self_view: objc.id) void {
     commitPreeditToSink(self_view);
-    // NSMenu selector / applicationShouldTerminate: 는 keyDown:/mouseDown: 을
+    // applicationShouldTerminate: (종료 확인) 는 keyDown:/mouseDown: 을
     // 우회한다. 내부 marked state 만 지우고 render 를 요청하지 않으면
     // 마지막 보라색 preedit frame 이 화면에 남으므로, 상태 변경의 공통 지점에서
     // 반드시 다음 frame 을 요청한다 (#317).
@@ -4167,10 +4169,11 @@ const MacActionHost = struct {
     pub fn paste(_: MacActionHost) void {
         handlePaste();
     }
-    /// macOS 는 종료를 mainMenu 가 맡는다 (`⌘Q` · `tildazPerformKeyEquivalent`). 메뉴 항목과
-    /// 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키 경로는 소비하지 않는다.
-    pub fn quit(_: MacActionHost) bool {
-        return false;
+    /// #713 — `terminate:` 는 다음 차례에 부른다. 입력 정책은 `runKeyAction` 이 이미 적용했고,
+    /// 지금의 key event dispatch 가 끝난 뒤 확인 창을 띄워야 조합 중이던 글자가 두 번 들어가지
+    /// 않는다 (#317).
+    pub fn quit(_: MacActionHost) void {
+        dispatch_async_f(&_dispatch_main_q, null, quitTrampoline);
     }
 };
 
@@ -4490,18 +4493,16 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         }
     }
 
-    try buildMainMenu(g_app);
-
-    // applicationShouldTerminate: hook (#116) — 다중 탭에서 Cmd+Q / 메뉴 Quit
+    // applicationShouldTerminate: hook (#116) — 다중 탭에서 `quit` (기본 Cmd+Q)
     // 시 confirm 다이얼로그. NSApp.terminate 모든 path 를 한 곳에서 가로챔
-    // (mainMenu 의 Quit + 마지막 탭 닫힘 자동 terminate). 마지막 탭 종료 후
+    // (`quit` 단축키 + 마지막 탭 닫힘 자동 terminate). 마지막 탭 종료 후
     // 자동 호출되는 path (drainExitedTabs / app_actions.closeTab /
     // handleTabBarClick) 는 count == 0 이라 자동 통과.
     try installAppDelegate();
 
     // 2. NSWindow (TildazWindow subclass) — borderless styleMask. Default
-    //    NSWindow 가 borderless 일 때 `canBecomeKeyWindow == NO` 라서 mainMenu
-    //    Cmd+Q 가 dispatch 안 되는 문제가 있는데, subclass 에서 그 method 를
+    //    NSWindow 가 borderless 일 때 `canBecomeKeyWindow == NO` 라서 키 이벤트가
+    //    view 로 오지 않는 문제가 있는데, subclass 에서 그 method 를
     //    YES 로 override 해 우회. titlebar 자체가 없어 위쪽 32pt offset 도
     //    사라진다 (이게 위 padding 비대칭의 진짜 원인 — Titled mask 가 위쪽
     //    titlebar 영역의 layer drawing 을 시스템이 막던 것).
@@ -4682,9 +4683,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         .height = cv_bounds.size.height * scale_pt,
     });
 
-    // 5. CGEventTap 으로 이 worker config의 글로벌 hotkey 등록. Cmd+Q 는
-    //    NSMenu 의 "Quit TildaZ" item 이 표준 dispatch (#153 — 글로벌 hook
-    //    이었던 시절엔 다른 앱 frontmost 일 때도 가로챘음).
+    // 5. CGEventTap 으로 이 worker config의 글로벌 hotkey 등록. Cmd+Q 는 여기서
+    //    잡지 않는다 — 우리 창이 key 일 때 `[keys]` 의 `quit` 으로 받는다 (#153 — 글로벌
+    //    hook 이었던 시절엔 다른 앱 frontmost 일 때도 가로챘음. #713).
     //    Carbon RegisterEventHotKey 는 우리 환경 (macOS Tahoe + ad-hoc sign) 에서
     //    silently fail 하므로 Apple DTS 권장 modern API 인 CGEventTap 사용.
     //    Input Monitoring 권한 필요 — 사용자가 시스템 설정에서 활성화.
@@ -5351,7 +5352,7 @@ fn showPermDialogTrampoline(_: ?*anyopaque) callconv(.c) void {
 
 /// CGEventTap 콜백 — keycode + modifier 검사해서 config.hotkey 면
 /// \"이벤트 삼킴\" (null 반환), 아니면 그대로 passthrough (event 반환). Cmd+Q 는
-/// #153 에서 NSMenu 의 \"Quit TildaZ\" 로 위임 (active 상태에서만 dispatch).
+/// #153 에서 뺐다 — 우리 창이 key 일 때 `[keys]` 의 `quit` 으로 받는다 (#713).
 ///
 /// macOS 가 tap 을 timeout / user-input race 로 자동 비활성화하면 special
 /// event type 이 들어옴 (#146). 처리 안 하면 다시 활성화 안 되어 F1 hotkey
@@ -5397,10 +5398,9 @@ fn eventTapCallback(
         return null;
     }
 
-    // Cmd+Q 글로벌 가로채기는 #153 에서 제거. NSMenu 의 "Quit TildaZ"
-    // (`terminate:` + keyEquivalent="q") 가 active 상태에서 표준 dispatch.
-    // TildazWindow 가 `canBecomeKeyWindow` YES override 라 borderless 여도
-    // mainMenu shortcut 정상 작동. 글로벌 hook 이 있던 시절엔 다른 앱이
+    // Cmd+Q 글로벌 가로채기는 #153 에서 제거. `quit` 은 우리 창이 key 일 때
+    // `tildazPerformKeyEquivalent` 가 `[keys]` 로 받는다 (#713). TildazWindow 가
+    // `canBecomeKeyWindow` YES override 라 borderless 여도 key 가 된다. 글로벌 hook 이 있던 시절엔 다른 앱이
     // frontmost 일 때 Cmd+Q 가 그 앱이 아니라 tildaz 종료 dialog 를 띄우는
     // 버그가 있었음.
 
@@ -5707,70 +5707,25 @@ fn showAbout() void {
     about.showAboutDialog(g_rt, &g_menu_hints);
 }
 
-/// `About TildaZ` menu item action. Selector 는 NSApplication 에 등록되어
-/// responder chain 의 마지막 단계 (NSApp) 에서 항상 dispatch 된다 — 윈도우가
-/// hide 상태여도 동작.
-fn tildazShowAboutAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
-    _ = self;
-    _ = _sel;
-    _ = sender;
-    applyShortcutInputPolicy(.show_about);
-    showAbout();
-}
-
-/// Shift+Cmd+P — 현재 worker의 config_N.json 을 default editor 로 열기 (#128). About 와 같은
-/// NSApplication-level selector 패턴.
-fn tildazOpenConfigAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
-    _ = self;
-    _ = _sel;
-    _ = sender;
-    applyShortcutInputPolicy(.open_config);
-    const allocator = g_gpa.allocator();
-    const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
-    defer allocator.free(path);
-    // #655 — 메뉴 갈래와 **같이** 비켜 준다. `2efc343` 이 메뉴 세 자리와 안내 버튼에만
-    // 걸어서 단축키 경로 (Shift+Cmd+P · Shift+Cmd+L) 두 자리가 남아 있었다 — 같은 앱을
-    // 같은 이유로 띄우는데 들어온 문이 다르다고 동작이 갈리면 안 된다.
-    // Windows 는 `app_controller` 의 키보드 갈래에도 예전부터 걸려 있었다.
-    yieldTopmostUntilNextShow();
-    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
-}
-
-/// Shift+Cmd+L — 현재 worker의 tildaz_N.log 를 default editor 로 열기 (#128).
-fn tildazOpenLogAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
-    _ = self;
-    _ = _sel;
-    _ = sender;
-    applyShortcutInputPolicy(.open_log);
-    const allocator = g_gpa.allocator();
-    const path = log.filePath() orelse return;
-    // #655 — 위 `tildazOpenConfigAction` 과 같은 이유.
-    yieldTopmostUntilNextShow();
-    @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
-}
-
-/// Cmd+Q / Quit TildaZ menu action. 표준 `terminate:`를 menu item에 직접
-/// 연결하면 applicationShouldTerminate: 안에서 commit한 뒤 원래 key event의
-/// IME 후속 `insertText:`가 Cancel 복귀 시 terminal로 한 번 더 들어간다 (#317).
-/// 다른 상태변경 menu action처럼 native action 진입 전에 공통 정책을 적용한 뒤
-/// terminate:를 호출한다. delegate의 두 번째 적용은 pending이 비어 no-op이다.
+/// `quit` 의 실제 종료. 표준 `terminate:` 를 key event 안에서 바로 부르면
+/// applicationShouldTerminate: 안에서 commit한 뒤 원래 key event의 IME 후속
+/// `insertText:`가 Cancel 복귀 시 terminal로 한 번 더 들어간다 (#317). 그래서
+/// 공통 정책을 먼저 적용하고 다음 차례에 terminate:를 호출한다. delegate의 두 번째
+/// 적용은 pending이 비어 no-op이다.
 fn requestApplicationQuit(sender: objc.id) void {
     const terminate = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     terminate(g_app, objc.sel("terminate:"), sender);
 }
 
-fn tildazQuitTrampoline(_: ?*anyopaque) callconv(.c) void {
-    tildazQuitAction(g_app, objc.sel("tildazQuit:"), null);
-}
-
-fn tildazQuitAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
-    _ = self;
-    _ = _sel;
+/// #713 — `MacActionHost.quit` 이 다음 차례로 미룬 종료. 정책은 `runKeyAction` 이 이미
+/// 적용했고 여기서 한 번 더 부르는 것은 no-op 이다 (예전 `⌘Q` 경로와 같은 순서).
+fn quitTrampoline(_: ?*anyopaque) callconv(.c) void {
     applyShortcutInputPolicy(.quit);
-    requestApplicationQuit(sender);
+    requestApplicationQuit(null);
 }
 
-/// Ctrl+Cmd+Space — Show Emoji & Symbols picker (#130). 우리 popup-level
+/// Ctrl+Cmd+Space — Show Emoji & Symbols picker (#130). `tildazPerformKeyEquivalent` 가
+/// 부른다 (#713 — 예전에는 보이지 않는 mainMenu 의 Edit 항목이었다). 우리 popup-level
 /// (101) 윈도우가 emoji panel 위에 가리는 문제 회피 위해 잠시 normal level
 /// 로 낮춤. 다음 toggle (F1 / hotkey) 시 `showWindow` 가 popup 으로 복구.
 ///
@@ -5784,10 +5739,7 @@ fn tildazQuitAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c)
 /// 매칭) → picker 떠 있을 때 modifier 없는 Esc 면 다시 `orderFrontCharacterPalette:`
 /// 호출 (toggle 닫힘). picker 가 외부 path 로 닫혀도 stale 안 됨 — boolean
 /// 추적이 아닌 직접 query.
-fn tildazShowEmojiAction(self: objc.id, _sel: objc.SEL, sender: objc.id) callconv(.c) void {
-    _ = self;
-    _ = _sel;
-    _ = sender;
+fn showEmojiPicker() void {
     const NSNormalWindowLevel: c_int = 0;
     const setLevel = objc.objcSend(fn (objc.id, objc.SEL, c_int) callconv(.c) void);
     setLevel(g_window, objc.sel("setLevel:"), NSNormalWindowLevel);
@@ -5854,132 +5806,4 @@ fn isEmojiPickerOpen() bool {
         if (std.mem.startsWith(u8, b_slice, "com.apple.Character")) return true;
     }
     return false;
-}
-
-fn buildMainMenu(app: objc.id) !void {
-    const NSMenu = objc.getClass("NSMenu");
-    const NSMenuItem = objc.getClass("NSMenuItem");
-    const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-
-    // About / Open Config / Open Log / Quit 핸들러를 NSApplication 인스턴스
-    // 메서드로 등록. 윈도우 hide 상태라도 NSApp에서 dispatch.
-    const NSApplication = objc.getClass("NSApplication");
-    if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowAbout:"), @ptrCast(&tildazShowAboutAction), "v@:@"))
-        return error.AddAboutMethodFailed;
-    if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenConfig:"), @ptrCast(&tildazOpenConfigAction), "v@:@"))
-        return error.AddOpenConfigMethodFailed;
-    if (!objc.class_addMethod(NSApplication, objc.sel("tildazOpenLog:"), @ptrCast(&tildazOpenLogAction), "v@:@"))
-        return error.AddOpenLogMethodFailed;
-    if (!objc.class_addMethod(NSApplication, objc.sel("tildazQuit:"), @ptrCast(&tildazQuitAction), "v@:@"))
-        return error.AddQuitMethodFailed;
-    if (!objc.class_addMethod(NSApplication, objc.sel("tildazShowEmoji:"), @ptrCast(&tildazShowEmojiAction), "v@:@"))
-        return error.AddShowEmojiMethodFailed;
-
-    const main_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
-
-    const app_item = init_obj(alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed, objc.sel("init")) orelse return error.MenuItemInitFailed;
-    const addItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    addItem(main_menu, objc.sel("addItem:"), app_item);
-
-    const app_menu = init_obj(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("init")) orelse return error.MenuInitFailed;
-
-    const initItem = objc.objcSend(fn (objc.id, objc.SEL, objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-
-    const about_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    // #682 — About · Config · Log 항목은 selector 만 남는다. 단축키는 `[keys]` 가 정하고
-    // `tildazPerformKeyEquivalent` 가 처리한다.
-    const about_item = initItem(
-        about_alloc,
-        objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString(messages.about_title),
-        objc.sel("tildazShowAbout:"),
-        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
-        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
-        objc.nsString(""),
-    ) orelse return error.AboutItemInitFailed;
-    const NSEventModifierFlagCommand: c_ulong = 1 << 20;
-    const setMask = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
-    addItem(app_menu, objc.sel("addItem:"), about_item);
-
-    // Open Config (#128). About 와 같은 NSApp-level dispatch.
-    const config_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    const config_item = initItem(
-        config_alloc,
-        objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString(messages.macos_menu_open_config_label),
-        objc.sel("tildazOpenConfig:"),
-        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
-        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
-        objc.nsString(""),
-    ) orelse return error.OpenConfigItemInitFailed;
-    addItem(app_menu, objc.sel("addItem:"), config_item);
-
-    // Open Log (#128).
-    const log_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    const log_item = initItem(
-        log_alloc,
-        objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString(messages.macos_menu_open_log_label),
-        objc.sel("tildazOpenLog:"),
-        // #682 — 단축키는 `[keys]` 가 정한다 (`tildazPerformKeyEquivalent`). 여기 고정해 두면
-        // 사용자가 binding 을 바꿔도 옛 키가 계속 먹는다.
-        objc.nsString(""),
-    ) orelse return error.OpenLogItemInitFailed;
-    addItem(app_menu, objc.sel("addItem:"), log_item);
-
-    // separator
-    const NSMenuItem_class = objc.getClass("NSMenuItem");
-    const separatorItem = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
-    const sep = separatorItem(NSMenuItem_class, objc.sel("separatorItem")) orelse return error.SeparatorFailed;
-    addItem(app_menu, objc.sel("addItem:"), sep);
-
-    const item_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-    const quit_item = initItem(
-        item_alloc,
-        objc.sel("initWithTitle:action:keyEquivalent:"),
-        objc.nsString(messages.macos_menu_quit_label),
-        objc.sel("tildazQuit:"),
-        objc.nsString("q"),
-    ) orelse return error.QuitItemInitFailed;
-    addItem(app_menu, objc.sel("addItem:"), quit_item);
-
-    const setSubmenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setSubmenu(app_item, objc.sel("setSubmenu:"), app_menu);
-
-    // Edit menu — "Emoji & Symbols" menu item 으로 macOS 의 Show Emoji & Symbols
-    // system shortcut (Apple default `Ctrl+Cmd+Space`) 라우팅. 이전 시도:
-    // selector `orderFrontCharacterPalette:` (Apple 표준) + 빈 keyEquivalent
-    // 로 *system 자동 매핑* 기대 — 동작 안 함. 그래서 explicit keyEquivalent
-    // 로 hardcode + 우리 selector `tildazShowEmoji:` 로 라우팅 (popup-level
-    // toggle 등 추가 처리). Terminal.app / ghostty 모두 비슷한 explicit menu
-    // item 패턴.
-    const edit_item = init_obj(alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed, objc.sel("init")) orelse return error.MenuItemInitFailed;
-    addItem(main_menu, objc.sel("addItem:"), edit_item);
-
-    const edit_menu_init = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) objc.id);
-    const edit_menu = edit_menu_init(alloc(NSMenu, objc.sel("alloc")) orelse return error.MenuAllocFailed, objc.sel("initWithTitle:"), objc.nsString(messages.macos_menu_edit_label)) orelse return error.MenuInitFailed;
-
-    // Ctrl+Cmd+Space → tildazShowEmoji: — NSApp.sendEvent 단계에서 menu
-    // shortcut 매칭 자동 라우팅 → 우리 view keyDown 까지 안 와서 PTY 안 흘림.
-    // 사용자가 System Settings 에서 단축키를 다른 키로 변경한 경우 매칭 안 됨
-    // (low-priority 한계, 우회: System Settings 에서 default 복구).
-    const NSEventModifierFlagCtrl: c_ulong = 1 << 18;
-    {
-        const emoji_alloc = alloc(NSMenuItem, objc.sel("alloc")) orelse return error.MenuItemAllocFailed;
-        const item = initItem(
-            emoji_alloc,
-            objc.sel("initWithTitle:action:keyEquivalent:"),
-            objc.nsString(messages.macos_menu_emoji_symbols_label),
-            objc.sel("tildazShowEmoji:"),
-            objc.nsString(" "),
-        ) orelse return error.EmojiItemInitFailed;
-        setMask(item, objc.sel("setKeyEquivalentModifierMask:"), NSEventModifierFlagCtrl | NSEventModifierFlagCommand);
-        addItem(edit_menu, objc.sel("addItem:"), item);
-    }
-
-    setSubmenu(edit_item, objc.sel("setSubmenu:"), edit_menu);
-
-    const setMainMenu = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
-    setMainMenu(app, objc.sel("setMainMenu:"), main_menu);
 }

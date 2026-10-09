@@ -524,9 +524,8 @@ pub const App = struct {
         }
         /// 키 경로의 `quit` 은 `Window.runKeyAction` 이 먼저 `WM_CLOSE` 로 보낸다. 여기는 그 밖의
         /// 진입점이 생겨도 같은 확인 다이얼로그를 타게 둔 자리다.
-        pub fn quit(h: ActionHost) bool {
+        pub fn quit(h: ActionHost) void {
             h.app.window.requestClose();
-            return true;
         }
     };
 

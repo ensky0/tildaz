@@ -382,7 +382,7 @@ minimize/restore.
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([fb775a9](https://github.com/ensky0/tildaz/commit/fb775a9), #198) | ✅ | ✅ | ✅ |
-| 앱 종료 | Alt+F4 | Cmd+Q (mainMenu Quit) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
+| 앱 종료 | Alt+F4 | Cmd+Q (`[keys]` 의 `quit` — [#713](https://github.com/ensky0/tildaz/issues/713)) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
 **hotkey 를 못 잡으면 기동을 멈춘다 — 세 platform 공통** ([#510](https://github.com/ensky0/tildaz/issues/510)).
 부를 수 없는 드롭다운은 사용자가 도달할 방법이 없는 창이라, 그 상태로 도는 것보다 안내 후
@@ -1102,26 +1102,24 @@ read-only action보다 result가 먼저 오면 action까지 보류하고 leave �
 순서는 shortcut, Ctrl+Shift+V, 우클릭 paste, F1, Alt+Enter, Alt+F4, Ctrl+C에 공통이다
 ([#313](https://github.com/ensky0/tildaz/issues/313)).
 
-macOS는 Cmd shortcut과 Cmd+Q의 `TildazView.performKeyEquivalent:`
+macOS는 Cmd 조합 단축키를 `TildazView.performKeyEquivalent:`에서 받는다
 (Cmd 조합의 `[keys]` 조회가 여기 있다 — `⇧⌘/` 가 `keyDown:` 에 오지 않아 옮겼다,
-[#682](https://github.com/ensky0/tildaz/issues/682)), F1 event tap, About/Config/Log/Quit NSMenu
-selector,
+[#682](https://github.com/ensky0/tildaz/issues/682)). `quit` (`⌘Q`) 도 같은 자리에서 `[keys]`
+로 받는다 — 앱이 Accessory 라 메뉴 막대가 없어 보이지 않던 mainMenu 를 지웠다
+([#713](https://github.com/ensky0/tildaz/issues/713)). 이 자리와 F1 event tap,
 `applicationShouldTerminate:`가 모두 action 전에 같은
 `applyShortcutInputPolicy`를 호출한다. helper가 `macInputState()`를
-`input_policy.resolve`에 전달하고 pending을 처리하므로 NSMenu가 `keyDown:`을
-우회해도 terminal preedit은 원래 sink에 정확히 한 번 반영된다. 공통
-`commitPendingInput`은 상태를 비운 뒤 render를 요청해 NSMenu/종료 확인 창 뒤에도
-마지막 preedit frame이 남지 않는다. AppKit이 Command key equivalent를
+`input_policy.resolve`에 전달하고 pending을 처리하므로 terminal preedit은 원래 sink에
+정확히 한 번 반영된다. 공통 `commitPendingInput`은 상태를 비운 뒤 render를 요청해 종료
+확인 창 뒤에도 마지막 preedit frame이 남지 않는다. AppKit이 Command key equivalent를
 `keyDown:`보다 먼저 key window의 view hierarchy에 전달하므로, custom
-NSTextInputClient인 TildazView가 Cmd+Q의 pending 입력을 먼저 처리한다. terminal
-marked-input 첫 event를 main menu가 매칭하지 않는 경로에서는 기존 custom Quit
-selector를 기존 macOS main-queue deferral(`dispatch_async_f`)로 다음 turn에 실행해
-현재 event dispatch가 끝난 뒤 같은 action을 실행한다
+NSTextInputClient인 TildazView가 Cmd+Q의 pending 입력을 먼저 처리한다. 종료
+(`terminate:`) 는 macOS main-queue deferral(`dispatch_async_f`)로 다음 turn에 실행해
+현재 event dispatch가 끝난 뒤 실행한다
 ([Apple Cocoa Event Handling Guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingKeyEvents/HandlingKeyEvents.html)).
-menu click/hidden window는 custom selector가 같은 순서로 처리한다. 따라서 terminal
-marked input에서도 첫 Cmd+Q action이 유실되지 않고, Cancel 복귀 시 IME 후속 commit이
-terminal로 중복 전달되지 않는다. `applicationShouldTerminate:`의 재적용과 Quit
-Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모두 no-op이다
+따라서 terminal marked input에서도 첫 Cmd+Q action이 유실되지 않고, Cancel 복귀 시 IME
+후속 commit이 terminal로 중복 전달되지 않는다. `applicationShouldTerminate:`의 재적용과
+Quit Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져 모두 no-op이다
 ([#317](https://github.com/ensky0/tildaz/issues/317)).
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
