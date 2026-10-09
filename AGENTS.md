@@ -1113,8 +1113,8 @@ zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-
 
 COSMIC 단축키 파일 · sway · Hyprland 설정 · KDE 단축키 · desktop 항목을 고치는 코드는 **Zig 한
 곳** (`src/desktop_setup/` · `src/shortcut_sync/linux.zig`) 에만 있어요. `install.sh` ·
-`uninstall.sh` 는 `tildaz --desktop add | remove` 를 부르기만 하고 그 파일들을 직접 고치지
-않아요. 셸의 `awk` · `sed -i` · `mv` 가 줄 단위로 고치다 결함이 반복됐어요 (#681 · #698).
+`uninstall.sh` 는 그 파일들을 직접 고치지 않아요 — `uninstall.sh` 가 `tildaz --desktop remove` 를
+부르고, sway · Hyprland 자동 실행은 launcher 가 지금 세션 몫을 넣어요 ([#701](https://github.com/ensky0/tildaz/issues/701)). 셸의 `awk` · `sed -i` · `mv` 가 줄 단위로 고치다 결함이 반복됐어요 (#681 · #698).
 규칙 자체는 SPEC.md 의 "sway · Hyprland 사용자 설정" · COSMIC 절이 단일 출처예요.
 
 **실기에서 밟은 함정**
@@ -1133,9 +1133,49 @@ COSMIC 단축키 파일 · sway · Hyprland 설정 · KDE 단축키 · desktop �
 - **COSMIC 설정 앱의 "시작 응용 프로그램" 삭제는 파일 삭제 (`remove_file`) 뿐이에요**
   (cosmic-settings `pages/applications/startup_apps.rs`). 그 화면을 누를 필요 없이 같은 파일을
   지우면 같은 시험이에요.
-- **패키지 (deb · rpm · Arch pkg · AppImage) 로 깐 판은 sway · Hyprland 자동실행이 없어요** — 그
-  쪽은 `--desktop add` 를 부르는 설치 스크립트가 없어요 ([#701](https://github.com/ensky0/tildaz/issues/701)).
-  그 세션에서 릴리즈 F1 이 안 듣는 것은 이 변경과 무관해요.
+- **같은 판을 두 형식으로 깔아 두고 재지 말아요.** 자동 시작 · 단축키 · sway · Hyprland 파일에는
+  **마지막으로 경로를 쓴 프로세스의 실행 파일**이 적혀요. 2026-10-09 [#706](https://github.com/ensky0/tildaz/issues/706)
+  COSMIC 회차에서 패키지 판을 남긴 채 AppImage 를 재다가, 로그인 때 자동 시작으로 뜬 패키지 판
+  worker 가 AppImage 의 새-instance 요청을 받아 처리하며 경로를 `/usr/bin/tildaz` 로 되돌렸어요.
+  AppImage 를 잴 때는 패키지를 지우고, 떠 있는 릴리즈 worker 가 없는 것을 확인하고 시작해요.
+- **COSMIC 의 자동 시작 검증은 systemd generator 가 다시 돈 뒤에 해요.** COSMIC 은 자동 시작
+  파일을 직접 읽지 않고, `systemd-xdg-autostart-generator` 가 만든 `app-<이름>@autostart.service`
+  를 띄워요. generator 는 user manager 가 시작될 때와 `daemon-reload` 때만 돌아요
+  (`systemd.generator(7)`). 그래서 **linger 가 켜져 있거나 다른 세션이 남아 user manager 가
+  살아 있으면**, 자동 시작 파일을 바꾼 뒤의 COSMIC 로그인은 옛 `Exec` 로 떠요. KDE 는 로그인 때
+  `startplasma` 가 `Reload` 를 보내서 이 일이 없고 ([plasma-workspace MR 1815](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/1815)),
+  `cosmic-session` 은 target 만 시작해요 ([`systemd.rs`](https://github.com/pop-os/cosmic-session/blob/8093b59/src/systemd.rs#L16-L21)).
+  2026-10-09 이 미니PC (`Linger=yes`) 에서 재현됐어요 — 저널에
+  `app-tildaz@autostart.service: Unable to locate executable '/usr/bin/tildaz'` 가 남았어요.
+
+  ```sh
+  loginctl show-user $USER -p Linger
+  grep ExecStart /run/user/$(id -u)/systemd/generator.late/app-tildaz@autostart.service   # 지금 띄울 경로
+  systemctl --user daemon-reload                                                          # 다시 만들기
+  ```
+
+- **격리 회차는 `HOME` 까지 돌려요.** `XDG_CONFIG_HOME` 만 돌리면 launcher 가 실제
+  `~/.config/autostart/tildaz.desktop` 을 "옛 위치의 중복" 으로 보고 **지워요**
+  (`autostart/linux.zig` 의 `removeLegacyEntryIfDifferent`).
+- **sway · Hyprland 판정에 환경변수를 믿지 말아요.** 로그아웃한 sway 세션의 `SWAYSOCK` 과 끝난
+  Hyprland 의 `HYPRLAND_INSTANCE_SIGNATURE` 가 다음 KDE 세션에 남아요 (이 기기에서 실측).
+  launcher 는 소켓의 주인이 지금의 compositor 인지 봐요 (#454 · #701).
+- **GNOME 은 `shell-version` 목록 밖의 확장을 조용히 건너뛰어요** ([#710](https://github.com/ensky0/tildaz/issues/710)).
+  셸 로그에 아무것도 안 남고, 앱은 *"Shell Extension Required"* 로 멈춰요. GNOME 이 올라간 기기에서
+  확장이 안 돌면 먼저 `gnome-shell --version` 과 `metadata.json` 의 목록을 견줘요 (2026-10-09 CachyOS 에서
+  GNOME 51.0 이 하루 전에 들어와 있었어요).
+- **확장 코드는 로그인 때 한 번 올라가 다음 로그인까지 남아요.** 확장 파일을 바꾸는 회차는 "옛 확장 +
+  새 앱" 이 돼요 ([#708](https://github.com/ensky0/tildaz/issues/708)). 그래서 확장을 고친 실기는
+  **새 판을 한 번 실행 → 다시 로그인 → 확인** 순서예요. Cinnamon 은 `enabled-extensions` 변경은 바로
+  읽지만 파일을 바꾼 것은 다시 올리지 않아요.
+- **확장 회차 전에 `instanceN.hotkey` 를 두 자리 다 지워요** (`$XDG_RUNTIME_DIR/tildaz/` 와
+  `…/tildaz/run/`). linger 가 켜져 있으면 runtime 폴더가 로그아웃 뒤에도 남아서, 앞 데스크톱의 확장이
+  쓴 파일로 **다음 데스크톱 회차가 그냥 통과해요** — 2026-10-09 GNOME 회차가 남긴 파일이 Cinnamon 의
+  #708 회차를 거짓 통과시킬 뻔했어요.
+- **`GDesktopAppInfo.get_executable()` 은 따옴표를 벗기지 않아요** ([#707](https://github.com/ensky0/tildaz/issues/707)).
+  Exec 를 첫 공백에서 자르기만 해서 (GLib 2.90 `binary_from_exec`) `Exec="<경로>" …` 면 따옴표가 붙은
+  이름이 나와요. 확장에서 실행 파일이 필요하면 `get_commandline()` 을 `GLib.shell_parse_argv` 로 나눠
+  첫 단어를 써요 — GLib 이 앱을 띄울 때 하는 방식과 같아요.
 
 # 전역 hotkey 의 위치 표기 검증 — 데스크톱마다 받는 것이 다르다
 
@@ -2325,7 +2365,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
 - **sway · Hyprland 자동실행도 판마다 따로예요.** 우리 파일 이름 (`<id>.conf` · `<id>.lua`) 과
   사용자 설정의 표식 (`TildaZ (dev) autostart …`) 에 판이 들어가요. 하나로 두면 두 번째로 까는
   판이 "이미 있음" 으로 건너뛰어 한쪽만 자동실행돼요. 예전 `install.sh` 의 판별 marker 블록
-  (`# tildaz-dev autostart (added by install.sh …)`) 은 `tildaz --desktop add` 가 옮겨요 ([#700](https://github.com/ensky0/tildaz/issues/700)).
+  (`# tildaz-dev autostart (added by install.sh …)`) 은 launcher 나 `tildaz --desktop add` 가 자동 실행을
+  넣을 때 옮겨요 ([#700](https://github.com/ensky0/tildaz/issues/700) · [#701](https://github.com/ensky0/tildaz/issues/701)).
 - **Windows 릴리즈 zip 에는 `install.bat` 이 들어가지 않아요** (2026-09-18 확인 · 사용자 결정).
   zip 은 `tildaz.exe` · `README.txt` · `LICENSE` · `THIRD-PARTY-NOTICES.md` · `_internal\` 뿐이고
   README 가 *"Run tildaz.exe"* 라고 안내해요. **Linux tarball 과 다른 점이에요** (그쪽은

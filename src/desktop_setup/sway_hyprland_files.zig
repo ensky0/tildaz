@@ -26,7 +26,7 @@ fn trimLine(line: []const u8) []const u8 {
     return std.mem.trimEnd(u8, line, " \t\r");
 }
 
-fn containsLine(content: []const u8, want: []const u8) bool {
+pub fn containsLine(content: []const u8, want: []const u8) bool {
     var it = std.mem.splitScalar(u8, content, '\n');
     while (it.next()) |line| {
         if (std.mem.eql(u8, trimLine(line), want)) return true;

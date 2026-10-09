@@ -267,7 +267,7 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   경고 배너도 끈다 — Hyprland 은 설정을 다 읽은 뒤의 최종값으로 배너를 정하고, 그 배너가
   화면 위쪽, drop-down 이 열리는 자리를 가린다.
 - **sway · Hyprland 사용자 설정** ([#700](https://github.com/ensky0/tildaz/issues/700)). 우리가 소유하지 않은 파일은 줄 단위로
-  고치지 않는다. `tildaz --desktop add` 가 사용자 설정에 **불러오는 줄 하나와 그 표식**만,
+  고치지 않는다. launcher 와 `tildaz --desktop add` 가 사용자 설정에 **불러오는 줄 하나와 그 표식**만,
   없을 때 넣는다 — sway `include <경로>`, Hyprland Lua `pcall(require, "<앱이름>")`, legacy
   `source = <경로>`. 다른 줄은 읽기만 한다. `tildaz --desktop remove` 는 글자 그대로 같은
   줄만 지운다 (사용자가 고친 줄은 우리 줄이 아니다). 예전 `install.sh` 가 넣은 표식 블록은
@@ -281,8 +281,19 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
     `include /etc/sway/config` 를 담아서 (사용자 설정이 생기면 sway 는 시스템 설정을 읽지
     않는다), Hyprland 는 `Hyprland --verify-config` 가 만드는 기본 설정으로. i3 와 같이 쓰는
     설정 · 시스템 설정 (`/etc/xdg`) 은 고치지 않고 안내만 한다.
-  - launcher 의 평소 실행은 이 파일들을 건드리지 않는다. 사용자가 불러오는 줄을 지웠으면
-    그것은 사용자의 선택이다.
+  - **launcher 가 넣는다** ([#701](https://github.com/ensky0/tildaz/issues/701)). 패키지 (deb · rpm ·
+    Arch pkg · AppImage) 에는 `--desktop add` 를 부를 설치 스크립트가 없어서다. XDG 자동 시작과
+    같은 자리 (`--autostart` 가 아닌 실행) 에서, **지금 세션의 compositor 하나만** 다룬다 —
+    `SWAYSOCK` · Hyprland 이벤트 소켓의 주인이 Wayland 연결의 상대와 같은 프로세스일 때만이다
+    (#454 의 판정. 로그아웃한 세션의 환경변수가 다음 세션에 남는다). 그래서 다른 데스크톱에서
+    띄우면 sway · Hyprland 설정을 만들지도 고치지도 않는다.
+  - 넣은 뒤 상태 폴더에 표시 (`autostart-<sway|hyprland>-included`) 를 남긴다. 표시가 있으면
+    불러오는 줄이 아직 있을 때만 우리 파일을 갱신하고 (실행 파일 경로가 바뀌었을 수 있다), 줄이
+    없으면 사용자가 지운 것이라 되살리지 않는다. `--desktop add` 는 표시와 상관없이 넣고 표시를
+    남긴다. `--desktop remove` 는 표시도 지운다.
+  - 줄을 처음 넣을 때 한 번 알린다 (사용자 설정 파일에 줄이 생기니까). launcher 는 창이 없어서
+    상태 폴더에 알릴 내용을 남기고, worker 가 창이 뜬 뒤 보여 준다. 그 파일을 지우는 데 성공한
+    worker 만 보여 주므로 worker 가 여럿이어도 한 번이다.
 - **`tildaz --toggle N` 의 계약** ([#489](https://github.com/ensky0/tildaz/issues/489)).
   아래 DE 들이 등록하는 단축키 명령이 전부 이것이라, 세 상태의 동작을 여기서 고정한다.
   판정은 **socket 과 lock 두 신호**를 함께 본다 — `connect` 실패는 "워커 없음" 과
@@ -346,6 +357,12 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   숨김 중에도 client 가 키를 계속 받아 Alt+Enter 토글 + 타이핑이 새어든다 (#247).
   실행 중 확장을 끄면 셸 세션은 종료하지 않는다. 확장이 최소화된 창을 먼저 복원하고
   above/sticky/창 목록 숨김과 전역 hotkey를 해제해 보이는 일반 창으로 남긴다 (#676).
+  숨기고 꺼낼 때 셸의 최소화 · 복원 효과는 그 한 번만 건너뛴다 — GNOME 은
+  `Main.wm.skipNextEffect`, Cinnamon 6.6 은 그 함수가 없어 `Main.wm._shouldAnimate` 가 표시해
+  둔 창에 한 번만 false 를 돌려준다 ([#709](https://github.com/ensky0/tildaz/issues/709)). GNOME
+  확장의 `shell-version` 은 45~51 이다 — GNOME 은 목록 밖의 확장을 오류 없이 건너뛰므로, 새 GNOME
+  이 나오면 [이전 안내](https://gjs.guide/extensions/upgrading/) 를 확인하고 목록에 더한다
+  ([#710](https://github.com/ensky0/tildaz/issues/710)).
 
 **drop-down 재표시 정책.** 기본은 hide 시 surface destroy → 다음 show 에서
 재생성(destroy/recreate, 모든 compositor 일관). 예외는 **KWin 한 곳** — surface 를
@@ -1787,8 +1804,10 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 `--release`를 명시한다. 종류별 설치 스크립트를 따로 두지 않는다. 저장소에서는 선택한
 종류로 빌드한 뒤 설치한다. Linux tarball의 같은 `install.sh`도 `--release`로 실행하며,
 옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`ReleaseFast` 등)은 앱 신원과 별개다.
-Linux 의 `install.sh` · `uninstall.sh` 는 사용자 데스크톱 설정 파일을 직접 고치지 않고
-`tildaz --desktop add` · `tildaz --desktop remove` 를 부른다 ([#700](https://github.com/ensky0/tildaz/issues/700)). `uninstall.sh` 는
+Linux 의 `install.sh` · `uninstall.sh` 는 사용자 데스크톱 설정 파일을 직접 고치지 않는다
+([#700](https://github.com/ensky0/tildaz/issues/700)). sway · Hyprland 자동 실행은 launcher 가 넣으므로
+`install.sh` 는 아무것도 부르지 않고 ([#701](https://github.com/ensky0/tildaz/issues/701)), `uninstall.sh` 는
+`tildaz --desktop remove` 를 부른다. `uninstall.sh` 는
 실행 파일을 지우기 **전에** 부르고, 실행 파일이 없으면 손으로 지울 곳을 알린다. KDE 단축키는
 kglobalaccel 이 떠 있으면 D-Bus 로만 지우고 (그 파일을 kglobalaccel 이 메모리에서 다시
 쓴다), 안 떠 있을 때만 `kglobalshortcutsrc` 에서 우리 그룹을 지운다.
@@ -1807,7 +1826,11 @@ lock · 소켓 · desktop 항목 · autostart 가 모두 그것을 탄다. macOS
 묶는다. 세 OS 의 state 디렉터리는 모두 `<base>/<앱이름>/run` 모양이다 — 예전에는 macOS 만
 대문자 `TildaZ` 였고 `/run` 이 붙다 말았다 (#654 ⓐⓑ). 확장이 쓰는 `instanceN.hotkey` 도
 같은 디렉터리라, 확장 소스의 경로 규칙은 `paths.lockDir` 와 **모양까지** 같아야 한다
-(`paths.zig` 의 #510 테스트가 본다).
+(`paths.zig` 의 #510 테스트가 본다). 셸은 확장 코드를 로그인 때 한 번만 올리므로 업그레이드
+뒤 첫 실행에는 **옛 확장 + 새 앱** 이 되고, v0.10.1 까지의 확장은 옛 자리
+(`$XDG_RUNTIME_DIR/tildaz/instanceN.hotkey`) 에 쓴다. 그래서 릴리즈 판 앱은 새 자리에 없으면
+그 자리도 읽고, 새 확장은 켜질 때 그 파일을 지운다 ([#708](https://github.com/ensky0/tildaz/issues/708)).
+옛 확장이 남은 사용자가 없을 때 걷어낸다.
 
 파일이 없으면 첫 실행 시 default 가 자동 생성된다.
 
@@ -1820,7 +1843,24 @@ entry만 중복 실행 방지를 위해 정리한다 ([XDG Base Directory](https
 desktop 항목과 GNOME · Cinnamon 확장은 유효한 절대 `XDG_DATA_HOME` (fallback
 `~/.local/share`) 아래 둔다 — 두 셸 모두 `g_get_user_data_dir()` 로 사용자 확장을 찾는다.
 앱이 기억해 둘 사실 (COSMIC 단축키 백업 `backup/` · 자동 시작 항목을 만든 표시
-`autostart-created`) 은 로그와 같은 `$XDG_STATE_HOME/<앱이름>/` 에 둔다 ([#700](https://github.com/ensky0/tildaz/issues/700)).
+`autostart-created` · sway · Hyprland 자동 실행을 넣은 표시 `autostart-<sway|hyprland>-included` ·
+worker 가 보여 줄 안내 `autostart-notice-pending`) 은 로그와 같은 `$XDG_STATE_HOME/<앱이름>/` 에 둔다
+([#700](https://github.com/ensky0/tildaz/issues/700) · [#701](https://github.com/ensky0/tildaz/issues/701)).
+
+**앱이 끝난 뒤에도 남아 실행되는 명령에는 실행 파일의 지속 경로를 적는다**
+([#706](https://github.com/ensky0/tildaz/issues/706)). 자동 시작 항목 · 메뉴 항목 · COSMIC 단축키 ·
+sway · Hyprland 자동 실행 파일이 그렇다. 보통은 `/proc/self/exe` 와 같지만 AppImage 는 그 값이
+임시 마운트 폴더 (`/tmp/.mount_…`) 라 앱이 끝나면 사라진다. 그래서 AppImage runtime 이 넣어 주는
+`APPIMAGE` (그 파일의 절대 경로) 를 쓴다 — 실행 파일이 `APPDIR` 아래에 있을 때만이다 (환경변수는
+자식 셸로 물려줘서, TildaZ 안의 셸에서 다른 방식으로 깐 `tildaz` 를 실행하면 남의 값을 보게 된다)
+([AppImage 환경변수](https://docs.appimage.org/packaging-guide/environment-variables.html)). worker 를 띄우는
+경로와 런타임 단축키는 앱이 떠 있을 때만 쓰여서 마운트 경로 그대로 둔다.
+
+GNOME 확장은 로그인 때 띄울 실행 파일을 메뉴 항목 `<앱이름>.desktop` 에서 찾고, 없으면 앱이
+스스로 쓰는 `<앱이름>.instance0.desktop` (`NoDisplay`) 에서 찾는다 ([#707](https://github.com/ensky0/tildaz/issues/707)).
+메뉴 항목은 패키지와 `install.sh` 만 깔고, AppImage 의 메뉴 항목은 통합 도구가 경로 해시를 붙인
+이름으로 만들어서 그 이름으로는 못 찾는다 ([libappimage](https://docs.appimage.org/api/libappimage/api/classappimage_1_1desktop__integration_1_1IntegrationManager.html)).
+앱이 메뉴 항목을 스스로 깔지 않는 이유는 통합 도구가 만든 항목과 메뉴에 두 번 보이기 때문이다.
 
 로그 경로는 worker index가 정해진 뒤 처음 사용할 때 실제 길이만큼 동적으로
 준비해 process lifetime 동안 하나의 값으로 보관한다. 로그 기록, About의 `log`

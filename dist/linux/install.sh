@@ -9,9 +9,8 @@
 #       동일 출처)
 #   ~/.local/bin/tildaz  → binary symlink (PATH 노출 — dmenu 등 launcher 에서
 #     `tildaz` 로 실행/재실행). ln -sf 라 재실행 idempotent.
-#   sway · Hyprland 자동실행 — `tildaz --desktop add` 가 한다 (#700). 명령은 우리 파일
-#     (`~/.config/sway/<id>.conf` · `~/.config/hypr/<id>.lua|conf`) 에 두고, 사용자 설정에는
-#     그 파일을 불러오는 줄 하나만 넣는다. 이 스크립트는 사용자 설정을 직접 고치지 않는다.
+#   sway · Hyprland 자동실행은 이 스크립트가 넣지 않는다 — TildaZ 를 처음 띄울 때 launcher 가
+#     넣는다 (#701). 이 스크립트는 사용자 설정을 직접 고치지 않는다.
 #
 # desktop database / icon cache refresh 는 best-effort (없으면 skip).
 #
@@ -187,22 +186,13 @@ BIN_LINK="$HOME/.local/bin/$TILDAZ_ID"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 
-# sway · Hyprland 자동실행과 데스크톱 단축키 등록은 `tildaz --desktop add` 가 한다 (#700).
-# 예전에는 이 자리에서 셸이 사용자 설정을 줄 단위로 고쳤다 (`awk` · `sed -i` · `mv`). 그래서
-# 바꿀 게 없어도 Hyprland 설정을 다시 써서 단축키가 사라졌고 (#698), 사용자가 고친 줄을
-# 덮어썼다. 이제 이 스크립트는 사용자 설정 파일을 직접 고치지 않는다. 그 명령이 하는 일은
-#   - 명령은 우리 파일에 둔다 — sway `~/.config/sway/<id>.conf`, Hyprland `~/.config/hypr/<id>.lua`
-#     (`.conf` 설정이면 `<id>.conf`).
-#   - 사용자 설정에는 그 파일을 불러오는 줄 하나와 표식만, 없을 때 넣는다.
-#   - 예전 이 스크립트가 넣은 블록은 그 줄이 우리 명령 모양일 때만 옮긴다.
-#   - sway 설정이 없으면 sway 가 깔려 있을 때만 만든다. Hyprland 설정이 없으면 Hyprland 이
-#     깔려 있을 때만 `Hyprland --verify-config` 로 기본 설정을 만든다.
-# 자세한 규칙은 `src/desktop_setup/sway_hyprland.zig` 머리 주석에 있다.
-DESKTOP_MSG=""
-if ! DESKTOP_MSG="$("$TILDAZ_EXE" --desktop add 2>&1)"; then
-    DESKTOP_MSG="$DESKTOP_MSG
-WARNING: '$TILDAZ_EXE --desktop add' failed — sway · Hyprland autostart may be missing. Run it again to retry."
-fi
+# sway · Hyprland 자동실행은 여기서 넣지 않는다 — TildaZ 를 처음 띄울 때 launcher 가 넣는다
+# (#701). 패키지 (deb · rpm · Arch pkg · AppImage) 에는 이 스크립트가 없어서, 여기서 넣으면
+# tar.gz 사용자만 자동실행이 걸렸다. 이제 모든 형식이 같은 길을 탄다 — KDE Plasma · Cinnamon ·
+# COSMIC 의 XDG 자동 시작도 launcher 가 넣는다. 지금 세션이 sway · Hyprland 일 때만 넣고,
+# 사용자 설정에는 우리 파일을 불러오는 줄 하나만 둔다. 규칙은 `src/desktop_setup/sway_hyprland.zig`
+# 머리 주석에 있다. 손으로 넣으려면 `tildaz --desktop add` 다 (제거는 `uninstall.sh` 가
+# `tildaz --desktop remove` 로 한다).
 
 # COSMIC hotkey 는 여기서 등록하지 않는다 — TildaZ 가 실행될 때 등록한다.
 # 예전에는 이 자리에서 RON custom shortcut(`~/.config/cosmic/...Shortcuts/v1/custom`)
@@ -210,7 +200,7 @@ fi
 # launcher 가 자기 항목으로 알아보지 못하고 하나 더 썼다 — 같은 hotkey 가 두 번
 # 등록됐다 ([#514](https://github.com/ensky0/tildaz/issues/514)). writer 를 둘 두면
 # 표식이 갈라지고, 갈라지면 같은 단축키가 둘 남는다(#484 — COSMIC 은 뒤의 것만 쓴다. #700 조사).
-# Hyprland 도 같은 이유로 hotkey 를 런타임 등록으로 옮겼다 (옛 정적 줄은 `--desktop add` 가 옮긴다).
+# Hyprland 도 같은 이유로 hotkey 를 런타임 등록으로 옮겼다 (옛 정적 줄은 launcher 가 자동실행을 넣을 때 옮긴다).
 # 이 스크립트가 예전에 남긴 줄은 TildaZ 가 처음 실행될 때 흡수한다
 # (`src/shortcut_sync/linux.zig` 의 `legacyInstallScriptEntryIndex`).
 # GNOME Shell extension — GNOME(mutter) 은 wlr-layer-shell 미지원이라 drop-down
@@ -340,7 +330,6 @@ echo "Installed:"
 echo "  $DESKTOP_OUT  (Exec=$TILDAZ_EXE)"
 echo "  $ICON_OUT"
 echo "  $BIN_LINK -> $TILDAZ_EXE"
-[[ -n "$DESKTOP_MSG" ]] && printf '%s\n' "$DESKTOP_MSG" | sed 's/^/  /'
 [[ -n "$EXT_MSG" ]] && echo "  $EXT_MSG"
 [[ -n "$CIN_MSG" ]] && echo "  $CIN_MSG"
 echo ""
@@ -351,10 +340,11 @@ echo "           Wayland 라 로그아웃→로그인해야 extension 이 활성
 echo "  - Cinnamon: 위 extension 이 drop-down 위치/단축키를 담당 (Cinnamon on Wayland)."
 echo "              extension 은 재로그인 없이 바로 켜짐 (#654 실측). 앱은 메뉴에서 실행하거나"
 echo "              다음 로그인의 autostart 로 뜸. X11 세션엔 tildaz 안 뜸."
-echo "  - sway: ~/.config/sway/$TILDAZ_ID.conf 의 exec 로 자동실행 (sway 설정이 그 파일을 include)."
-echo "          로그인 후 hotkey(기본 F1) 토글. exit 후 재실행은 launcher 에서 'tildaz'."
+echo "  - sway: sway 세션에서 TildaZ 를 한 번 띄우면 ~/.config/sway/$TILDAZ_ID.conf 의 exec 로"
+echo "          자동실행이 걸림 (sway 설정이 그 파일을 include). 로그인 후 hotkey(기본 F1) 토글."
 echo "  - Hyprland: layer-shell drop-down. hotkey 는 실행 시 config_N별 hyprctl bind→'tildaz --toggle N'."
-echo "          ~/.config/hypr/$TILDAZ_ID.lua(.conf) 의 자동실행은 다음 로그인부터. 설정을 다시 읽어도 단축키는 다시 걸림."
+echo "          Hyprland 세션에서 TildaZ 를 한 번 띄우면 ~/.config/hypr/$TILDAZ_ID.lua(.conf) 로 자동실행이 걸림."
+echo "          설정을 다시 읽어도 단축키는 다시 걸림."
 echo "  - COSMIC: layer-shell drop-down. hotkey 는 실행 시 config_N별 RON shortcut→'tildaz --toggle N'(portal 우회)."
 echo "          TildaZ 를 한 번 띄우면 ~/.config/cosmic/...Shortcuts/v1/custom 에 등록됨 → cosmic-comp 가 live 반영(안 되면 재로그인)."
 echo "          자동실행은 config.auto_start=true 면 XDG autostart 로 동작."

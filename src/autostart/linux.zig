@@ -31,6 +31,7 @@
 const std = @import("std");
 const app_id = @import("../app_id.zig");
 const paths = @import("../paths.zig");
+const exe_path = @import("../exe_path.zig");
 const log = @import("../log.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
@@ -67,13 +68,11 @@ fn removeLegacyEntryIfDifferent(rt: Runtime, allocator: std.mem.Allocator, curre
     }
 }
 
-/// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등.
+/// 현재 실행 중 binary 의 절대 경로. macOS `currentExePath` 동등. AppImage 면 임시 마운트
+/// 경로가 아니라 그 파일의 경로다 (#706 — `exe_path.persistent`).
 fn currentExePath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
-    const n = try std.process.executablePath(rt.io, &buf);
-    const slice = buf[0..n];
-    return allocator.dupe(u8, slice);
+    return allocator.dupe(u8, try exe_path.persistent(rt, &buf));
 }
 
 const created_marker = "autostart-created";

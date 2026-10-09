@@ -381,13 +381,7 @@ pub const HotkeyState = enum { unavailable, ok, failed };
 /// 실제로 동작하지 않는다는 기동 실패다. 설정 목록의 active와 이 결과가 둘 다 있어야
 /// Shell extension을 창 lifecycle owner로 인정한다.
 pub fn shellExtensionHotkeyState(rt: Runtime, allocator: std.mem.Allocator, index: u32) HotkeyState {
-    const path = paths.instanceHotkeyStatePath(rt, allocator, index) catch return .unavailable;
-    defer allocator.free(path);
-
-    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return .unavailable;
-    defer file.close(rt.io);
-    var file_reader = file.reader(rt.io, &.{});
-    const content = file_reader.interface.allocRemaining(allocator, .limited(4 * 1024)) catch return .unavailable;
+    const content = readHotkeyState(rt, allocator, index) orelse return .unavailable;
     defer allocator.free(content);
 
     const line = std.mem.trim(u8, content[0 .. std.mem.findScalar(u8, content, '\n') orelse content.len], " \t\r");
@@ -414,6 +408,27 @@ pub fn shellExtensionHotkeyState(rt: Runtime, allocator: std.mem.Allocator, inde
         return .failed;
     }
     return .unavailable;
+}
+
+/// 상태 파일 내용. 새 자리에 없으면 옛 확장의 자리를 본다 — 업그레이드 뒤 첫 실행에는 셸에
+/// 아직 옛 확장 코드가 올라가 있다 (#708, `paths.legacyHotkeyStatePath`). 내용 검사는
+/// 두 자리가 같다 — 형식이 같고 (`v1 …`), hotkey 가 지금 config 와 같아야 한다.
+fn readHotkeyState(rt: Runtime, allocator: std.mem.Allocator, index: u32) ?[]u8 {
+    const path = paths.instanceHotkeyStatePath(rt, allocator, index) catch return null;
+    defer allocator.free(path);
+    if (readSmallFile(rt, allocator, path)) |content| return content;
+    const legacy = (paths.legacyHotkeyStatePath(rt, allocator, index) catch return null) orelse return null;
+    defer allocator.free(legacy);
+    const content = readSmallFile(rt, allocator, legacy) orelse return null;
+    log.appendLine("hotkey", "shell extension state read from the old extension's path (the shell still runs the previous extension until the next login)", .{});
+    return content;
+}
+
+fn readSmallFile(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return null;
+    defer file.close(rt.io);
+    var file_reader = file.reader(rt.io, &.{});
+    return file_reader.interface.allocRemaining(allocator, .limited(4 * 1024)) catch null;
 }
 
 /// 처음 활성화된 extension의 config monitor가 상태 파일을 쓰는 짧은 구간을 기다린다.

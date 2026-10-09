@@ -41,11 +41,12 @@ Internal changes belong in neither.
 - New `[keys]` actions `increase_font_size`, `decrease_font_size` and `reset_font_size`.
   Your existing config does not have them yet, so they use the defaults and the startup
   notice lists them each time until you add them. ([#679](https://github.com/ensky0/tildaz/issues/679))
-- **sway and Hyprland: the autostart line moved into a file of its own.** Running
-  `./install.sh --release` again replaces the old two-line block in your sway or Hyprland
-  config with one line that loads `~/.config/sway/tildaz.conf` or `~/.config/hypr/tildaz.lua`.
-  Your other lines are not touched. `tildaz --desktop remove` takes it out again.
-  ([#700](https://github.com/ensky0/tildaz/issues/700))
+- **sway and Hyprland: TildaZ now sets up its autostart itself.** The first time you start
+  TildaZ in a sway or Hyprland session, it adds one line to your sway or Hyprland config that
+  loads `~/.config/sway/tildaz.conf` or `~/.config/hypr/tildaz.lua`, and tells you once. An old
+  two-line block from `install.sh` is replaced the same way. Your other lines are not touched.
+  If you delete the line, TildaZ won't add it back; `tildaz --desktop add` does.
+  ([#700](https://github.com/ensky0/tildaz/issues/700) · [#701](https://github.com/ensky0/tildaz/issues/701))
 - **COSMIC: TildaZ backs up your shortcuts file before it edits it.** The first copy is kept
   as `~/.local/state/tildaz/backup/cosmic-shortcuts-custom.orig`.
   ([#700](https://github.com/ensky0/tildaz/issues/700))
@@ -79,5 +80,14 @@ Internal changes belong in neither.
 - sway and Hyprland: the hotkey keeps working after you reload the config. Reinstalling no
   longer rewrites your Hyprland config when nothing changed.
   ([#698](https://github.com/ensky0/tildaz/issues/698))
+- sway and Hyprland: autostart now works with every Linux package (deb, rpm, Arch, AppImage),
+  not only the tarball. ([#701](https://github.com/ensky0/tildaz/issues/701))
+- AppImage: autostart, menu entries and the COSMIC hotkey stopped working once TildaZ quit —
+  they pointed at a temporary folder. They now point at the AppImage file. On GNOME, the extension now finds
+  an AppImage too. ([#706](https://github.com/ensky0/tildaz/issues/706) · [#707](https://github.com/ensky0/tildaz/issues/707))
+- GNOME 51: TildaZ's Shell extension now loads. It was skipped, so TildaZ stopped with
+  "Shell Extension Required". ([#710](https://github.com/ensky0/tildaz/issues/710))
+- Cinnamon: hiding and showing TildaZ no longer shrinks it into the panel first, the same as on
+  GNOME. ([#709](https://github.com/ensky0/tildaz/issues/709))
 - Turning TildaZ off in your desktop's startup settings now sticks. It used to come back on
   the next start. ([#700](https://github.com/ensky0/tildaz/issues/700))

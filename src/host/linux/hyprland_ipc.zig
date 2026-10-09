@@ -29,12 +29,32 @@ pub const Tail = struct {
     };
 };
 
-/// 이벤트 소켓에 붙는다. Hyprland 이 아니거나 붙지 못하면 `null` (로그만 남긴다).
-pub fn subscribeReload(rt: Runtime) ?posix.fd_t {
+fn eventSocketPath(rt: Runtime, buf: []u8) ?[]const u8 {
     const runtime_dir = rt.environ.getPosix("XDG_RUNTIME_DIR") orelse return null;
     const signature = rt.environ.getPosix("HYPRLAND_INSTANCE_SIGNATURE") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/hypr/{s}/.socket2.sock", .{ runtime_dir, signature }) catch null;
+}
+
+/// #701 — 지금 그리기로 연결한 compositor 가 Hyprland 인가. `sway_ipc.isSwayCompositor` 와
+/// 같은 판정이다 — 환경변수가 있는지만 보지 않고, 이벤트 소켓의 주인 (`SO_PEERCRED` PID) 이
+/// `wayland_fd` 의 상대와 같은 프로세스인지 본다. 로그아웃한 세션의 환경변수가 다음 세션에
+/// 남아도 (systemd user 환경) 오판하지 않는다.
+pub fn isHyprlandCompositor(rt: Runtime, wayland_fd: posix.fd_t) bool {
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/hypr/{s}/.socket2.sock", .{ runtime_dir, signature }) catch {
+    const path = eventSocketPath(rt, &path_buf) orelse return false;
+    const fd = unix_socket.openSocket(posix.SOCK.CLOEXEC) catch return false;
+    defer unix_socket.closeFd(fd);
+    unix_socket.connect(fd, path) catch return false;
+    const hyprland_pid = unix_socket.peerPid(fd) orelse return false;
+    const compositor_pid = unix_socket.peerPid(wayland_fd) orelse return false;
+    return hyprland_pid == compositor_pid;
+}
+
+/// 이벤트 소켓에 붙는다. Hyprland 이 아니거나 붙지 못하면 `null` (로그만 남긴다).
+pub fn subscribeReload(rt: Runtime) ?posix.fd_t {
+    if (rt.environ.getPosix("XDG_RUNTIME_DIR") == null or rt.environ.getPosix("HYPRLAND_INSTANCE_SIGNATURE") == null) return null;
+    var path_buf: [256]u8 = undefined;
+    const path = eventSocketPath(rt, &path_buf) orelse {
         log.appendLine("hyprland", "event socket path too long", .{});
         return null;
     };

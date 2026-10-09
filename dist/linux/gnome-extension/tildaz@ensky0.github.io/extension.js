@@ -110,6 +110,37 @@ function writeHotkeyState(index, hotkey, ok) {
   }
 }
 
+/**
+ * #708 — 옛 확장 (v0.10.1 까지) 은 runtime 갈래에 `/run` 없이
+ * `$XDG_RUNTIME_DIR/tildaz/instanceN.hotkey` 에 썼다. 업그레이드 뒤 첫 실행에는 셸에 아직
+ * 옛 확장이 올라가 있어서, 앱은 그 자리도 읽는다 (`paths.legacyHotkeyStatePath`). 새 확장이
+ * 켜지면 그 파일을 지워 옛 기록이 남지 않게 한다 — 남아 있으면 확장이 꺼진 뒤에도 앱이
+ * "확장이 돈다" 로 읽을 수 있다. 릴리즈 이름일 때만이다 (dev 는 그 자리를 쓴 적이 없다).
+ */
+function removeLegacyHotkeyState() {
+  if (APP !== "tildaz") return;
+  const runtime = GLib.getenv("XDG_RUNTIME_DIR");
+  if (!runtime || !GLib.path_is_absolute(runtime)) return;
+  const dir = Gio.File.new_for_path(GLib.build_filenamev([runtime, APP]));
+  let children;
+  try {
+    children = dir.enumerate_children("standard::name", Gio.FileQueryInfoFlags.NONE, null);
+  } catch (e) {
+    return; // 그 디렉터리가 없다 — 지울 것도 없다
+  }
+  let info;
+  while ((info = children.next_file(null)) !== null) {
+    const name = info.get_name();
+    if (!/^instance(0|[1-9][0-9]*)\.hotkey$/.test(name)) continue;
+    try {
+      dir.get_child(name).delete(null);
+    } catch (e) {
+      console.log(`${LOG_TAG} could not remove the old extension's hotkey state ${name}: ${e}`);
+    }
+  }
+  children.close(null);
+}
+
 /** #510 — 확장이 물러나면 기록도 거둔다. 남겨 두면 worker 가 없는 실패를 읽는다. */
 function clearHotkeyState(index) {
   try {
@@ -235,6 +266,7 @@ const POSITION_KEYCODES = {
 
 export default class TildazExtension extends Extension {
   enable() {
+    removeLegacyHotkeyState();
     this._appSystem = Shell.AppSystem.get_default();
     this._configs = this._readConfigs();
     this._mapWaitId = 0;
@@ -830,17 +862,39 @@ export default class TildazExtension extends Extension {
   // enable 에서 이미 걸림)가 config(hidden_start) 기준으로 처리한다. auto_start
   // preload 전용 경로다(수동 실행은 .desktop activate 가 직접 같은 핸들러를 탄다).
   _launchAutostart() {
-    const app = this._appSystem.lookup_app(DESKTOP_ID);
-    if (!app) {
-      Main.notify("TildaZ", `${DESKTOP_ID} not found — run dist/linux/install.sh`);
+    const exe = this._launcherExecutable();
+    if (!exe) {
+      Main.notify("TildaZ", `${DESKTOP_ID} not found — start TildaZ once from a terminal`);
       return;
     }
-    const exe = app.get_app_info()?.get_executable();
-    if (!exe) return;
     try {
       Gio.Subprocess.new([exe, "--autostart"], Gio.SubprocessFlags.NONE);
     } catch (e) {
       console.log(`${LOG_TAG} autostart launch failed: ${e}`);
+    }
+  }
+
+  // 띄울 실행 파일. 메뉴 항목 (`<APP>.desktop`) 은 패키지와 install.sh 가 까는데, AppImage 에는
+  // 없다 — AppImage 의 메뉴 항목은 통합 도구 (appimaged · AppImageLauncher) 가 경로 해시를 붙인
+  // 이름으로 만들어서 이 이름으로는 찾을 수 없다. 그때는 앱이 실행될 때마다 스스로 쓰는 instance
+  // 0 항목 (NoDisplay) 의 실행 파일을 쓴다. AppImage 면 그 값이 AppImage 파일 경로다 (#706).
+  // (#707)
+  _launcherExecutable() {
+    const launcher = this._appSystem.lookup_app(DESKTOP_ID)?.get_app_info()?.get_executable();
+    if (launcher) return launcher;
+    // instance 항목의 Exec 는 공백 있는 경로를 지키려고 경로를 큰따옴표로 감싼다
+    // (`instance_identity.ensureDesktopEntry`). `get_executable()` 은 Exec 를 첫 공백에서
+    // 자르기만 하고 따옴표를 벗기지 않아서 (GLib 2.90 `binary_from_exec`) 따옴표가 붙은
+    // 이름을 돌려준다 — 2026-10-09 GNOME 51 실기에서 그 이름으로 띄우다 실패했다. GLib 이
+    // 앱을 띄울 때처럼 명령줄을 `shell_parse_argv` 로 나눠 첫 단어를 쓴다.
+    const cmdline = Gio.DesktopAppInfo.new(`${APP}.instance0.desktop`)?.get_commandline();
+    if (!cmdline) return null;
+    try {
+      const [, argv] = GLib.shell_parse_argv(cmdline);
+      return argv[0] ?? null;
+    } catch (e) {
+      console.log(`${LOG_TAG} could not read the instance entry's command: ${e}`);
+      return null;
     }
   }
 

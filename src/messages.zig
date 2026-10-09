@@ -185,6 +185,12 @@ pub const desktop_hyprland_not_installed_msg =
     "Hyprland autostart: skipped (Hyprland is not installed). Run \"tildaz --desktop add\" again after installing Hyprland.";
 pub const desktop_hyprland_system_config_msg =
     "Hyprland autostart: skipped (Hyprland reads a system config, not one in your home folder).";
+/// #701 — launcher 가 sway · Hyprland 자동 실행을 처음 넣었을 때, worker 가 창이 뜬 뒤 한 번
+/// 보여 준다 (`desktop_setup/autostart_notice.zig`). 사용자 설정 파일에 줄이 생기니 알린다.
+/// fmt 슬롯: 데스크톱 이름 (`sway` · `Hyprland`), 고친 파일, 넣은 줄.
+pub const desktop_autostart_added_title = "TildaZ Autostart";
+pub const desktop_autostart_added_format =
+    "TildaZ will now start when you log in to {s}.\n\nThis line was added to {s}:\n  {s}\n\nTo turn it off, delete the line. TildaZ won't add it back.";
 
 /// #383 — CLI 출력. 창을 띄우기 전에 콘솔로 나가는 유일한 텍스트 묶음이라 dialog 를
 /// 거치지 않고 `console.zig` 가 직접 쓴다.
