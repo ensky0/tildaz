@@ -326,6 +326,8 @@ fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool
         }
         if (!autostart_launch) {
             if (any_auto_start) try autostart.enable(rt, allocator) else autostart.disable(rt, allocator);
+            // #701 — sway · Hyprland 는 XDG 자동 시작을 읽지 않아 그 설정에 따로 넣는다.
+            desktop_setup.onLaunch(rt, allocator);
         }
 
         try shortcut_sync.sync(rt, allocator, indices);

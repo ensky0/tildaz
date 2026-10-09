@@ -70,6 +70,7 @@ const system_open = @import("../../system_open.zig");
 const link = @import("../../link.zig");
 const dialog_mod = @import("../../dialog.zig");
 const dialog_linux = @import("../../dialog/linux.zig");
+const autostart_notice = @import("../../desktop_setup/autostart_notice.zig");
 const instance_context = @import("../../instance_context.zig");
 const instances = @import("../../instances.zig");
 const instance_identity = @import("instance_identity.zig");
@@ -1297,6 +1298,9 @@ const Client = struct {
     /// #655 — config 를 고쳐서 띄웠다는 안내가 밀려 있는가. 문구 자체는 `config.zig` 가
     /// 들고 있어 (`pendingConfigNotice`) 여기는 한 번만 부르게 하는 빗장이다.
     pending_config_repair: bool = false,
+    /// #701 — launcher 가 남긴 sway · Hyprland 자동 실행 안내를 이미 찾아봤는가. 파일을
+    /// iteration 마다 읽지 않으려는 빗장이다.
+    desktop_notice_checked: bool = false,
     /// #655 — 안내 오버레이의 Cancel 자리 버튼이 할 일. `null` 이면 그 자리는 평소대로
     /// 창을 닫는 취소다. **누르면 실행만 하고 창은 남는다.**
     notice_inline_action: ?*const fn () void = null,
@@ -10839,6 +10843,18 @@ const Client = struct {
             defer g_notice_client = null;
             config_mod.showConfigNotice(self.rt, self.allocator, self.run_opts.isStressRun(), yieldTopmostForNotice);
         }
+        // #701 — launcher 가 sway · Hyprland 자동 실행을 처음 넣었다는 안내. 위 안내와 같은 이유로
+        // 창이 뜬 뒤 여기서 낸다. `-e` 측정 인스턴스는 가져가지 않는다 — 사용자의 창이 보여 줘야 한다.
+        if (!self.desktop_notice_checked and !self.dialog.active()) {
+            self.desktop_notice_checked = true;
+            if (self.run_opts.isStressRun()) return;
+            const notice = autostart_notice.take(self.rt, self.allocator) orelse return;
+            defer notice.deinit(self.allocator);
+            var buf: [2048]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, messages.desktop_autostart_added_format, .{ notice.desktop, notice.path, notice.line }) catch return;
+            log.appendLine("desktop", "autostart notice shown ({s})", .{notice.desktop});
+            dialog_mod.showInfo(self.rt, messages.desktop_autostart_added_title, text);
+        }
     }
 
     fn drainInfoRequest(self: *Client) void {
@@ -11488,7 +11504,9 @@ fn reportWaylandSocketFailure(
     log.userFacing("fatal", text);
 }
 
-fn waylandSocketPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+/// #701 — launcher 도 지금 compositor 를 알아보려고 이 경로에 잠깐 붙는다
+/// (`desktop_setup/linux.zig` 의 `currentCompositor`).
+pub fn waylandSocketPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     if (rt.envAlloc(allocator, "WAYLAND_DISPLAY")) |display| {
         if (display.len > 0 and display[0] == '/') return display;
         errdefer allocator.free(display);

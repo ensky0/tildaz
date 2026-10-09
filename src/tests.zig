@@ -19,6 +19,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("cosmic_ron.zig");
     _ = @import("desktop_setup.zig");
     _ = @import("exe_path.zig");
+    _ = @import("desktop_setup/autostart_notice.zig");
     _ = @import("dialog.zig");
     _ = @import("font/display_width.zig");
     _ = @import("renderer/glyph_atlas_common.zig");
