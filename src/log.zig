@@ -358,6 +358,11 @@ pub fn logFontSizeIgnoredForFixedGrid(change: []const u8) void {
     appendLine("font", "terminal font size {s} ignored — -size fixes the grid", .{change});
 }
 
+/// #693 · #692 — 글자 크기를 바꾸려다 폰트를 다시 만들지 못했다. 크기는 그대로 둔다. 세 host 공통.
+pub fn logFontSizeRebuildFailed(err: anyerror, kept_point: f32) void {
+    appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), kept_point });
+}
+
 pub fn logPaneSeparatorMoved(node: anytype, axis: []const u8, placed: anytype) void {
     appendLine("pane", "separator drag — node {} to {s} {}", .{ node, axis, placed });
 }

@@ -18,6 +18,7 @@ const terminal_interaction = @import("../../terminal_interaction.zig");
 const mouse_report = @import("../../mouse_report.zig");
 const tab_interaction = @import("../../tab_interaction.zig");
 const tab_actions = @import("../../tab_actions.zig");
+const app_actions = @import("../../app_actions.zig");
 const tab_layout = @import("../../tab_layout.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 const scrollbar = @import("../../scrollbar.zig");
@@ -3331,30 +3332,6 @@ const Client = struct {
         if (self.dialog.surface_id != 0) self.renderer.ensureDialogFonts(self.allocator);
     }
 
-    /// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 모든 탭의 격자를 맞춘다. 사본에
-    /// 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도 renderer 도 그대로다.
-    ///
-    /// `-size` 회차는 무시한다 — 그 회차는 격자를 요청값에 고정하고, 글자가 커져 화면에 안 들어가면
-    /// `guardRequestedGridFits` 가 실행을 끝낸다.
-    fn handleFontSize(self: *Client, change: terminal_size.Change) void {
-        if (self.run_opts.grid != null) {
-            log.logFontSizeIgnoredForFixedGrid(@tagName(change));
-            return;
-        }
-        var next = self.font_size;
-        if (!next.apply(change)) return;
-        self.rebuildRendererFonts(next.spec(), self.preferred_scale) catch |err| {
-            log.appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), self.font_size.size_logical });
-            return;
-        };
-        self.font_size = next;
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("font", "ensureSessionGrid after font size change failed: {s}", .{@errorName(err)});
-        };
-        log.logFontSize(@tagName(change), self.font_size.size_logical, self.renderer.cellWidth(), self.renderer.cellHeight());
-        self.requestRedraw();
-    }
-
     /// #356 — **화면 dims 가 바뀌었을 때의 처리를 모아 둔 단일 지점.** 출처가 둘이다:
     ///   (1) 같은 output 의 mode 변경 — `handleOutputEvent` 의 `wl_output.mode`
     ///   (2) basis output 전환으로 dims 가 달라짐 — `applyBasisOutput`
@@ -6182,32 +6159,6 @@ const Client = struct {
         };
     }
 
-    /// L12-β — Ctrl+Shift+T 새 탭. 32-tab cap 도달 시 dialog + skip.
-    /// L12-γ-2 — macOS `commitPendingInput` 정책 — 단축키 진입 시 진행 중
-    /// preedit 을 commit (보존).
-    /// #536 — 새 탭은 다른 셸이므로 조합 중인 dead key 는 버린다 (`leaveShell`). 단축키 · `+` 클릭 ·
-    /// `⋯` 메뉴가 모두 여기로 모인다.
-    fn handleNewTab(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        if (tab_actions.checkAtLimitAndDialog(self.rt, &host)) return;
-        // #248 — shell 이 런타임에 사라졌으면 (패키지 업데이트 등) 조용히 죽는 대신 알림.
-        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
-        const active = self.activeTabOrNull() orelse return;
-        self.session.?.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
-            log.logNewTabFailed(err);
-            return;
-        };
-        // #127 — 1 → 2 탭 전환 시 탭바 등장으로 cell 영역 변함 → 모든 탭
-        // cols/rows 재계산. mac `syncTerminalGeometry` 동등.
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("tab", "ensureSessionGrid after new tab failed: {s}", .{@errorName(err)});
-        };
-        self.tab_scroll_override = false;
-        self.needs_redraw = true;
-    }
-
     /// L12-γ-2 — macOS `commitPendingInput` 동등. focus loss / hide / 단축키
     /// 등 "지금 멈춰" 시점에 진행 중인 입력 (cell preedit + IME pending) 을
     /// 활성 탭 PTY 로 **commit** (cancel 아님). Escape 만 명시적 cancel —
@@ -6391,24 +6342,6 @@ const Client = struct {
         self.needs_redraw = true;
     }
 
-    /// L12-β — Ctrl+Shift+W. 활성 탭 닫기. 마지막 탭이면 `terminate` 콜백
-    /// (= shell_exited true) → main loop 가 종료. 다중 탭이면 그 탭만.
-    /// L12-γ-2 — 단축키 진입 시 commitPendingInput.
-    /// #536 — pane 이 여럿이면 닫은 뒤 형제 pane 이 활성이 되어 셸이 바뀐다 → `leaveShell`.
-    fn handleCloseTab(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        const outcome = tab_actions.closeActive(&host);
-        // #127 — 2 → 1 탭 전환 시 탭바 사라지면서 cell 영역 변함. `.changed`
-        // 면 grid 재계산. `.ended` 는 main loop 가 종료 처리.
-        if (outcome == .changed) {
-            self.ensureSessionGrid() catch |err| {
-                log.appendLine("tab", "ensureSessionGrid after close failed: {s}", .{@errorName(err)});
-            };
-        }
-    }
-
     /// #544 — 마우스 chrome 의 `×` 가 부르는 자리. **탭바의 `×` 와 단일 탭 컨트롤 스트립의 `×`
     /// 가 같은 함수를 타게** 둔다 — 예전에는 전자가 `closeIndex(activeIndex())`, 후자가
     /// `handleCloseTab` 이라 helper 가 갈렸고, #483 이 그 helper 하나만 pane 닫기로 바꾸는
@@ -6427,124 +6360,116 @@ const Client = struct {
         }
     }
 
-    /// #544 — `close_pane`. 활성 pane 하나를 닫는다 (pane 이 마지막이면 탭, 마지막 탭이면 앱
-    /// 종료 — `tab_actions.closeActivePane` 이 정책을 든다). 셸에 `exit` 를 치는 것과 결과가
-    /// 같다 (`closeTabByPtr` 와 같은 규칙). `handleCloseTab` 은 탭 통째로다.
-    /// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않는다.
-    fn handleFind(self: *Client) void {
-        const session = &(self.session orelse return);
-        const tab = session.activeTab() orelse return;
-        tab.search.open();
-        self.needs_redraw = true;
+    /// #692 — `app_actions` 에 넘기는 host 어댑터. 세션이 아직 없으면 null — 액션이 할 일이 없다.
+    /// `tabs()` 가 그 안의 `tab_actions.Host` 를 가리키므로 호출자는 `var` 로 받아 포인터를 넘긴다.
+    fn actionHost(self: *Client) ?LinuxActionHost {
+        if (self.session == null) return null;
+        return .{ .client = self, .tab_host = self.buildTabActionsHost() };
     }
 
-    fn handleClosePane(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        const outcome = tab_actions.closeActivePane(&host);
-        // 남은 pane 이 자리를 이어받으므로 격자를 맞춘다 (2 → 1 탭 전환도 같은 경로).
-        if (outcome == .changed) {
-            self.ensureSessionGrid() catch |err| {
-                log.appendLine("pane", "ensureSessionGrid after close pane failed: {s}", .{@errorName(err)});
+    /// #692 — 공통 액션 처리부 (`app_actions.zig`) 가 부르는 Linux 쪽 훅.
+    const LinuxActionHost = struct {
+        client: *Client,
+        tab_host: tab_actions.Host,
+
+        pub fn session(h: *LinuxActionHost) *session_core.SessionCore {
+            return &h.client.session.?;
+        }
+        pub fn tabs(h: *LinuxActionHost) *tab_actions.Host {
+            return &h.tab_host;
+        }
+        pub fn rt(h: *LinuxActionHost) Runtime {
+            return h.client.rt;
+        }
+        pub fn allocator(h: *LinuxActionHost) std.mem.Allocator {
+            return h.client.allocator;
+        }
+        pub fn shell(h: *LinuxActionHost) []const u8 {
+            return h.client.config.shell;
+        }
+        pub fn paneArea(h: *LinuxActionHost) pane_layout.Rect {
+            return h.client.paneArea();
+        }
+        pub fn paneMetrics(h: *LinuxActionHost) pane_layout.Metrics {
+            return h.client.paneMetrics();
+        }
+        /// #536 — IME preedit 은 확정하고 조합 중인 dead key 는 버린다. dead key 를 앱이 직접
+        /// 조합하는 host 는 Linux 뿐이다.
+        pub fn leaveShell(h: *LinuxActionHost) void {
+            h.client.leaveShell();
+        }
+        pub fn stopAutoScroll(h: *LinuxActionHost) void {
+            h.client.sel_autoscroll_dir = 0;
+        }
+        pub fn syncGrids(h: *LinuxActionHost) void {
+            h.client.ensureSessionGrid() catch |err| {
+                log.appendLine("pane", "ensureSessionGrid failed: {s}", .{@errorName(err)});
             };
         }
-    }
-
-    /// #483 4b — 활성 pane 을 `dir` 쪽으로 가른다. 새 pane 은 새 셸이라 `handleNewTab` 과 같은 셸
-    /// 존재 확인 (#248) 을 거친다. 거부 (`TooSmall` · `TooManyPanes`) 는 단축키에 시각 피드백이 없으므로
-    /// 탭 한도와 같은 dialog 로 안내한다 (확정 설계 §② "거부 + 안내"). 격자는 `splitActive` 가 맞춘다.
-    fn handleSplit(self: *Client, dir: pane_layout.Direction) void {
-        if (self.session == null) return;
-        // #536 — 새 pane 은 다른 셸이므로 조합 중인 dead key 는 버린다.
-        self.leaveShell();
-        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.config.shell)) return;
-        self.session.?.splitActive(dir, self.paneArea(), self.paneMetrics()) catch |err| switch (err) {
-            error.TooSmall => {
-                // #483 — 거부도 로그를 남긴다. 다이얼로그는 사용자에게만 보이므로, 로그로 판정하는
-                // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
-                log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
-                var buf: [160]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
-                    messages.pane_too_small_format;
-                dialog_mod.showInfo(self.rt, messages.pane_too_small_title, msg);
-                return;
-            },
-            error.TooManyPanes => {
-                log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
-                var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
-                    messages.pane_limit_format;
-                dialog_mod.showInfo(self.rt, messages.pane_limit_title, msg);
-                return;
-            },
-            error.NoActiveTab => return,
-            else => {
-                log.logPaneSplitFailed(err);
-                return;
-            },
-        };
-        const group = self.session.?.activeGroup().?;
-        log.logPaneSplit(@tagName(dir), self.session.?.active_tab, group.paneCount(), group.active_pane);
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 포커스를 `dir` 쪽 이웃 pane 으로. 탭 전환 (`tab_actions.switchTab`) 과 같이 떠나는
-    /// pane 의 진행 중 pointer mode (선택 · scrollbar 드래그) 를 정리한다.
-    fn handleFocusPane(self: *Client, dir: pane_layout.Direction) void {
-        const session = if (self.session) |*s| s else return;
-        const leaving = session.activeTab() orelse return;
-        // #536 — 지금은 키보드 전용 경로라 `processKeyEvent` 의 defer 와 겹치지만, "활성 pane 을
-        // 바꾸는 handler 는 `leaveShell`" 규칙을 여기서도 지켜 마우스 진입점이 붙어도 안전하게 둔다.
-        self.leaveShell();
-        if (!session.focusPane(dir, self.paneArea(), self.paneMetrics())) return;
-        leaving.interaction.cancelPointerModes();
-        self.sel_autoscroll_dir = 0;
-        // 4c — 최대화가 풀렸을 수 있다 → 펼친 격자로 (같으면 건너뛴다).
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("pane", "ensureSessionGrid after focus failed: {s}", .{@errorName(err)});
-        };
-        log.logPaneFocus(@tagName(dir), session.activeGroup().?.active_pane);
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 활성 pane 에 닿은 분할선을 `dir` 쪽으로 한 셀 옮긴다 (격자는 `resizeActivePane` 이 맞춘다).
-    fn handleResizePane(self: *Client, dir: pane_layout.Direction) void {
-        const session = if (self.session) |*s| s else return;
-        if (!session.resizeActivePane(dir, 1, self.paneArea(), self.paneMetrics())) return;
-        self.needs_redraw = true;
-    }
-
-    /// #483 4b — 활성 탭의 한 줄씩을 고르게 (`Tree.equalize` — 같은 축은 한 줄로 보고 행 · 열 수로 나눔).
-    fn handleEqualizePanes(self: *Client) void {
-        const session = if (self.session) |*s| s else return;
-        const group = session.activeGroup() orelse return;
-        session.equalizeActive(self.paneArea(), self.paneMetrics());
-        log.logPaneEqualize(group.tree.count());
-        self.needs_redraw = true;
-    }
+        /// 탭바가 생기거나 사라진 것도 `ensureSessionGrid` 가 맞춘다 (`-size` 회차의 창 다시 요청 포함).
+        pub fn syncAfterTabCountChange(h: *LinuxActionHost) void {
+            h.syncGrids();
+        }
+        pub fn layoutChanged(h: *LinuxActionHost) void {
+            h.client.needs_redraw = true;
+        }
+        /// `-size` 회차는 격자를 요청값에 고정한다. 글자가 커져 화면에 안 들어가면
+        /// `guardRequestedGridFits` 가 실행을 끝내므로 글자 크기 단축키를 받지 않는다.
+        pub fn fixedGrid(h: *LinuxActionHost) bool {
+            return h.client.run_opts.grid != null;
+        }
+        pub fn fontSize(h: *LinuxActionHost) *terminal_size.TerminalFontSize {
+            return &h.client.font_size;
+        }
+        pub fn cellSize(h: *LinuxActionHost) app_actions.CellSize {
+            return .{ .w = @intCast(h.client.renderer.cellWidth()), .h = @intCast(h.client.renderer.cellHeight()) };
+        }
+        pub fn rebuildFonts(h: *LinuxActionHost, spec: font_spec.Spec) !void {
+            try h.client.rebuildRendererFonts(spec, h.client.preferred_scale);
+        }
+        pub fn yieldTopmost(h: *LinuxActionHost) void {
+            h.client.yieldTopmostUntilNextShow();
+        }
+        pub fn fullscreenKind(h: *LinuxActionHost) ?app_actions.FullscreenKind {
+            return switch (h.client.fullscreen_mode) {
+                .none => null,
+                .cover => .screen,
+                .avoid => .workarea,
+            };
+        }
+        pub fn toggleFullscreen(h: *LinuxActionHost, kind: app_actions.FullscreenKind) void {
+            h.client.toggleFullscreen(switch (kind) {
+                .screen => .cover,
+                .workarea => .avoid,
+            });
+        }
+        pub fn toggleVisibility(h: *LinuxActionHost) void {
+            h.client.handleActivatedToggle() catch |err| {
+                log.appendLine("command-menu", "toggle failed: {s}", .{@errorName(err)});
+            };
+        }
+        /// #213 — About 은 reentrancy 밖 `drainAboutRequest` 가 연다. 여기서는 flag 만.
+        pub fn showAbout(h: *LinuxActionHost) void {
+            h.client.pending_about_request = true;
+        }
+        pub fn paste(h: *LinuxActionHost) void {
+            h.client.requestPaste();
+        }
+        /// main loop 의 `drainQuitRequest` 가 확인 다이얼로그를 띄운다.
+        pub fn quit(h: *LinuxActionHost) void {
+            h.client.pending_quit_request = true;
+        }
+    };
 
     /// #483 4c — `+` 클릭. Alt 를 누르고 있으면 새 탭이 아니라 활성 pane 분할 (Windows Terminal 의 Alt+클릭
     /// 선례). 방향은 활성 pane 의 모양대로 — 넓으면 오른쪽, 높으면 아래 (WT 의 `auto`).
     fn handlePlusClick(self: *Client) void {
-        // #536 — 조합 버림은 `handleNewTab` · `handleSplit` 안에 있다 (여기서 먼저 부르면 활성 pane
+        // #536 — 조합 버림은 `app_actions.newTab` · `app_actions.split` 안에 있다 (여기서 먼저 부르면 활성 pane
         // 을 못 찾아 아무 일도 안 하는 경우에도 조합이 사라진다).
-        if (!self.keyboard.altActive()) return self.handleNewTab();
+        var h = self.actionHost() orelse return;
+        if (!self.keyboard.altActive()) return app_actions.newTab(&h);
         const pr = self.activePaneRect() orelse return;
-        self.handleSplit(if (pr.rect.w >= pr.rect.h) .right else .down);
-    }
-
-    /// #483 4c — 활성 pane 최대화 토글 (`Ctrl+Shift+Z`). 켜면 그 pane 이 탭 영역 전체를 쓰고 다른 pane 은
-    /// 그리지 않는다 (셸은 계속 돈다). 격자는 `ensureSessionGrid` 가 맞춘다 (켤 때 그 pane 만, 풀 때 모두).
-    fn handleZoomPane(self: *Client) void {
-        const session = if (self.session) |*s| s else return;
-        self.commitPendingInput();
-        if (!session.toggleZoomActive()) return;
-        self.ensureSessionGrid() catch |err| {
-            log.appendLine("pane", "ensureSessionGrid after zoom failed: {s}", .{@errorName(err)});
-        };
-        log.logPaneZoom(session.activeGroup().?.zoomed != null, session.activeGroup().?.active_pane);
-        self.needs_redraw = true;
+        app_actions.split(&h, if (pr.rect.w >= pr.rect.h) .right else .down);
     }
 
     /// #483 4c — 분할선 드래그를 놓았다: 여기서 한 번만 트리에 적용하고 격자를 맞춘다 (PTY resize 한 번).
@@ -6745,33 +6670,6 @@ const Client = struct {
         const world_x: f32 = px_f - layout.tab_area_x + self.tab_scroll_x;
         _ = self.tab_drag.move(@trunc(world_x));
         self.needs_redraw = true;
-    }
-
-    /// #536 — 활성 탭이 바뀌면 셸이 바뀐다 → `leaveShell`. 키보드 전용 경로라 `processKeyEvent` 의
-    /// defer 와 겹치지만, 불변식 ("활성 pane · 탭을 바꾸는 handler 는 `leaveShell`") 을 여기서도 지킨다.
-    fn handleNextTab(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        tab_actions.nextTab(&host);
-    }
-
-    /// #536 — `handleNextTab` 과 같다.
-    fn handlePrevTab(self: *Client) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        tab_actions.prevTab(&host);
-    }
-
-    /// SPEC §2.2 — Alt+1..9 탭 인덱스 점프 (Win 동등, `window.zig:1194-1200`).
-    /// 1 → index 0, 9 → index 8. 탭 수보다 큰 인덱스는 `setActiveTab` 가 false
-    /// 반환하고 no-op.
-    fn handleSwitchTab(self: *Client, idx: usize) void {
-        if (self.session == null) return;
-        self.leaveShell();
-        var host = self.buildTabActionsHost();
-        tab_actions.switchTab(&host, idx);
     }
 
     /// L10-α — `text_input.enable()` + content_type + cursor_rect + commit 한
@@ -7325,7 +7223,10 @@ const Client = struct {
                     .run_action => {
                         // `.paste` 는 위에서 돌아갔고 `.interrupt` 의 target 은 `.pty`
                         // 이므로 여기 오는 것은 `.shortcut` 뿐이다.
-                        self.runShortcut(classified.input.shortcut, classified.tab_index, classified.direction, classified.font_size);
+                        // #692 — 실행은 공통 처리부 (`app_actions.run`). pending (preedit) 은 위
+                        // `disp.pending` 이 이미 처리했다.
+                        var h = self.actionHost() orelse return;
+                        _ = app_actions.run(&h, classified);
                         return;
                     },
                     // interrupt \x03 는 아래 escape / utf8 로. paste 는 위에서 처리.
@@ -7531,109 +7432,11 @@ const Client = struct {
         return key_encode.Options.fromTerminal(&tab.terminal);
     }
 
-    /// #296 — resolve 가 run_action 으로 판정한 전역 단축키 실행. pending
-    /// (preedit) commit 은 resolve 의 `.commit` 이 이미 처리하므로 여기선 action 만.
-    ///
-    /// #493 3-c — 예전엔 keysym 으로 다시 분기했다 (`sym == xkb_key_t_lower` ...).
-    /// 즉 어느 키가 어느 동작인지를 **분류와 실행 두 곳**에 적고 있었고, 그 둘이
-    /// 갈라지는 것이 #484 의 원인이기도 했다. 이제 분류가 이미 `Shortcut` 을 줬으므로
-    /// 여기서는 그것만 보고 실행한다.
-    fn runShortcut(self: *Client, shortcut: input_policy.Shortcut, tab_index: ?usize, direction: ?pane_layout.Direction, font_size: ?terminal_size.Change) void {
-        switch (shortcut) {
-            .copy => self.copyActiveSelection(),
-            .new_tab => self.handleNewTab(),
-            .close_tab => self.handleCloseTab(),
-            .next_tab => self.handleNextTab(),
-            .prev_tab => self.handlePrevTab(),
-            // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). 예전엔 여기서
-            // `sym - xkb_key_1` 로 뽑았다.
-            .switch_tab => self.handleSwitchTab(@intCast(tab_index orelse return)),
-            // #213 — About 은 reentrancy 밖 drainAboutRequest 가 열도록 flag 만.
-            .show_about => self.pending_about_request = true,
-            // 둘 다 **바깥 앱을 띄운다** — 먼저 비켜 주지 않으면 우리 창 뒤에 열린다
-            // (#655). macOS · Windows 의 같은 갈래와 짝이 맞는다.
-            .open_config => {
-                const cfg_path = paths.configPath(self.rt, self.allocator) catch return;
-                defer self.allocator.free(cfg_path);
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, cfg_path);
-            },
-            .open_log => {
-                const log_path = log.filePath() orelse return;
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, log_path);
-            },
-            .reset_terminal => {
-                if (self.session) |*session| {
-                    if (session.resetActive()) self.requestRedraw();
-                }
-            },
-            .dump_perf => perf.dumpAndReset(self.rt, "snapshot"),
-            .quit => self.pending_quit_request = true,
-            // #493 3-c — 두 fullscreen 이 이제 별 변종이다. 예전엔 `fullscreen` 하나에
-            // "Shift 가 눌렸으면 avoid" 라는 암묵 규칙이 붙어 있었는데, 사용자가
-            // `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있으므로 그 규칙으로는
-            // 안 된다.
-            .fullscreen => self.toggleFullscreen(.cover),
-            .fullscreen_workarea => self.toggleFullscreen(.avoid),
-            // 이 host 의 키 경로가 내지 않는 것들 — command menu 와 toggle 은 다른
-            // 진입점 (마우스 · 전역 핫키) 이 처리한다.
-            .toggle_visibility, .open_command_menu => {},
-            // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
-            .open_shortcuts => {
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
-            },
-            // #483 4b — 분할 · 포커스 · 크기 · 균등. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
-            .split => self.handleSplit(direction orelse return),
-            .focus_pane => self.handleFocusPane(direction orelse return),
-            .resize_pane => self.handleResizePane(direction orelse return),
-            .equalize_panes => self.handleEqualizePanes(),
-            .zoom_pane => self.handleZoomPane(),
-            // #544 — pane 하나 닫기. 탭 닫기 (`handleCloseTab`) 와 나란한 자리다.
-            .close_pane => self.handleClosePane(),
-            .find => self.handleFind(),
-            .font_size => self.handleFontSize(font_size orelse return),
-        }
-    }
-
     fn executeCommandMenu(self: *Client, command: command_menu.Command) void {
         self.closeCommandMenu();
-        switch (command) {
-            .toggle_visibility => self.handleActivatedToggle() catch |err| {
-                log.appendLine("command-menu", "toggle failed: {s}", .{@errorName(err)});
-            },
-            .new_tab => self.handleNewTab(),
-            // #483 4c — 메뉴의 분할 항목 (마우스 경로).
-            .split_right => self.handleSplit(.right),
-            .split_down => self.handleSplit(.down),
-            .close_active_tab => self.handleCloseTab(),
-            .copy => self.copyActiveSelection(),
-            .paste => self.requestPaste(),
-            // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-            .find => self.handleFind(),
-            // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
-            // 해제, 아니면 cover 진입 (키보드 self-symmetric 정책은 그대로).
-            .fullscreen => self.toggleFullscreen(if (self.fullscreen_mode != .none) self.fullscreen_mode else .cover),
-            // 셋 다 **바깥 앱을 띄운다** — 먼저 비켜 준다 (#655). macOS 의 같은 세 갈래와
-            // 짝이 맞는다.
-            .open_config => {
-                const path = paths.configPath(self.rt, self.allocator) catch return;
-                defer self.allocator.free(path);
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, path);
-            },
-            .open_log => {
-                const log_path = log.filePath() orelse return;
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, log_path);
-            },
-            .keyboard_shortcuts => {
-                self.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
-            },
-            .about => self.pending_about_request = true,
-        }
+        // #692 — 실행은 공통 처리부. 조합 정리는 각 액션이 `leaveShell` 훅으로 한다.
+        var h = self.actionHost() orelse return;
+        app_actions.runMenuCommand(&h, command);
         self.needs_redraw = true;
     }
 
@@ -8535,29 +8338,12 @@ const Client = struct {
         self.clearClipboardOwnership();
     }
 
-    /// 활성 탭의 ghostty selection 을 추출해 wayland clipboard owner 로 등록.
-    /// macOS / Windows 의 `tab_actions.copyActiveSelection` 와 결과 동등.
+    /// 활성 탭의 ghostty selection 을 wayland clipboard owner 로 등록. #692 — 세 host 가 같은
+    /// `tab_actions.copyActiveSelection` 을 쓴다. Wayland 쪽 등록은 `linuxTabClipboardCopy` 가 한다.
     fn copyActiveSelection(self: *Client) void {
-        if (self.data_device_id == 0) return; // clipboard protocol 없음 — graceful.
-        const tab = self.activeTabOrNull() orelse return;
-        const screen = tab.terminal.screens.active;
-        const sel = screen.selection orelse return;
-        // ghostty selectionString 은 *우리가 넘긴 allocator* 로 결과를 할당하고 그
-        // ownership 을 caller(우리)에게 준다 (ghostty Screen.zig doc 명시: "owned by
-        // the caller and allocated using alloc"). 따라서 우리가 free 해야 한다 — 안
-        // 하면 누수(#235, 종료 시 GPA leak 리포트로 확인). 반환 타입은 sentinel slice
-        // ([:0]const u8, 할당 = len+1) 라 *그 타입 그대로* free 해야 길이가 맞다(defer).
-        // clipboard 에는 sentinel 없는 []u8 dupe 본을 보관한다 — setClipboardText 가
-        // []const u8 (길이 N) 로 free 하므로, sentinel 본(N+1)을 그대로 넘기면 길이
-        // 불일치 free 가 난다(이게 #189 에서 "invalid free panic" 으로 보였던 증상 —
-        // ownership 이 ghostty arena 라서가 아니라 sentinel 길이 불일치였음).
-        const ghostty_text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
-        defer self.allocator.free(ghostty_text);
-        if (ghostty_text.len == 0) return;
-        const owned = self.allocator.dupe(u8, ghostty_text) catch return;
-        self.setClipboardText(owned) catch {
-            self.allocator.free(owned);
-        };
+        if (self.session == null) return;
+        var host = self.buildTabActionsHost();
+        tab_actions.copyActiveSelection(&host, self.allocator);
     }
 
     /// 새 clipboard text 로 owner 갱신. 기존 source 가 있으면 cleanup 후 새로.
@@ -11207,11 +10993,18 @@ fn linuxTabInvalidate(host: *tab_actions.Host) void {
     client.needs_redraw = true;
 }
 
-fn linuxTabClipboardCopy(_: *tab_actions.Host, _: [:0]const u8) void {
-    // L12-β 에서 미사용 — Linux 는 자체 `copyActiveSelection` path 가 직접
-    // wl_data_source 로 보낸다. `tab_actions.copyActiveSelection` helper 도
-    // 우리는 호출 안 함 (selection 자동 copy 는 wl_pointer.button release 가
-    // 직접 처리). callback contract 만 만족.
+/// `tab_actions.copyActiveSelection` 이 고른 텍스트를 Wayland clipboard 로 넘긴다 (#692 — 예전에는
+/// Linux 만 같은 추출을 따로 했다).
+///
+/// ghostty `selectionString` 의 결과는 sentinel slice (할당 = len+1) 라 helper 가 그 타입 그대로
+/// 해제한다. 여기서는 sentinel 없는 사본을 맡긴다 — `setClipboardText` 가 `[]const u8` (길이 N) 로
+/// 해제하므로, sentinel 본을 넘기면 길이가 안 맞는다 (#189 의 "invalid free panic" 이 그것이었다).
+/// `setClipboardText` 가 실패하면 사본은 우리가 해제한다.
+fn linuxTabClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
+    if (client.data_device_id == 0) return; // clipboard protocol 없음 — graceful.
+    const owned = client.allocator.dupe(u8, text) catch return;
+    client.setClipboardText(owned) catch client.allocator.free(owned);
 }
 
 fn linuxTabTerminate(host: *tab_actions.Host) void {

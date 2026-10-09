@@ -1,7 +1,6 @@
 //! About / 버전 확인 다이얼로그.
 //!   - Linux: F1 으로 띄운 후 Ctrl+Shift+I.
-//!   - macOS: Shift+Cmd+I (mainMenu "About TildaZ" 의 keyEquivalent — 메뉴바
-//!     UI 는 Accessory mode 라 안 보이지만 키 dispatch 는 동작).
+//!   - macOS: Shift+Cmd+I (`[keys]` 의 `show_about` — `tildazPerformKeyEquivalent` 가 받는다).
 //!   - Windows: F1 으로 띄운 후 Ctrl+Shift+I.
 //!
 //! Platform 별로 modifier 가 다른 이유: macOS 표준 modifier 가 Cmd, 다른 탭

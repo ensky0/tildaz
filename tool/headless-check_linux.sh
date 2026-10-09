@@ -11,6 +11,7 @@
 #   tool/headless-check_linux.sh seat-replug         # #347 — 가상 키보드를 뽑았다 꽂은 뒤에도 키가 닿는지 (wl_keyboard 재생성)
 #   tool/headless-check_linux.sh compositor-exit     # #613 — compositor 가 먼저 끝나면 정상 종료 (exit 0 · failed to start 없음). sway 를 내리니 마지막에
 #   tool/headless-check_linux.sh launcher-fatal gnome|cinnamon   # A2 — nested GNOME / Cinnamon 의 xdg_toplevel fatal 다이얼로그 (#577)
+#   tool/headless-check_linux.sh actions             # #692 — 공통 처리부 (app_actions.zig) 로 옮긴 액션을 단축키로 눌러 로그 · 셸로 판정
 #   tool/headless-check_linux.sh key-bytes [legacy|mok2]   # #684 — Ctrl + 기호 · 숫자 · Space 의 PTY 바이트 (표: tool/key-bytes-cases.tsv)
 #   tool/headless-check_linux.sh down                # 앱 · vkbd · sway 정리
 #
@@ -69,9 +70,13 @@ cmd_up() {
         # 같은 판의 사용자 config 를 먼저, 없으면 릴리즈 config 를 복사한다.
         src=${XDG_CONFIG_HOME:-$HOME/.config}/$APP/config_0.toml
         [ -f "$src" ] || src=${XDG_CONFIG_HOME:-$HOME/.config}/tildaz/config_0.toml
-        [ -f "$src" ] || die "복사할 config_0.toml 이 없다: $src"
-        sed 's|^auto_start  *= .*|auto_start       = false|' "$src" > "$CFG"
-        echo "config: $CFG (auto_start=false · 나머지는 사용자 config_0 그대로)"
+        if [ -f "$src" ]; then
+            sed 's|^auto_start  *= .*|auto_start       = false|' "$src" > "$CFG"
+            echo "config: $CFG (auto_start=false · 나머지는 사용자 config_0 그대로)"
+        else
+            # 설치를 지운 기기 — 복사할 것이 없으면 앱이 첫 실행에 기본 config 를 만든다 (#620 이후 단축키도 기본값).
+            echo "config: 복사할 사용자 config_0.toml 이 없다 ($src) — 앱이 첫 실행에 기본값으로 만든다"
+        fi
     }
     if [ ! -S $R/wayland-1 ]; then
         printf 'output HEADLESS-1 resolution 1600x1000\ndefault_border none\nfocus_follows_mouse no\n' > $WORK/sway.conf
@@ -95,6 +100,8 @@ cmd_down() {
     kill_tz
     [ -p $FIFO ] && echo quit > $FIFO
     pkill -f "vkbd_linux.py --fifo $FIFO" 2>/dev/null
+    [ -p $R/vptr.fifo ] && echo quit > $R/vptr.fifo
+    pkill -f "vptr_linux.py --fifo $R/vptr.fifo" 2>/dev/null
     [ -n "${SWAYSOCK:-}" ] && swaymsg exit >/dev/null 2>&1
     sleep 1; rm -rf $R
     echo "남은 tildaz: $(pgrep -a tildaz | tr '\n' ';')"
@@ -360,6 +367,129 @@ cmd_key_bytes() {   # #684 — Ctrl + 기호 · 숫자 · Space 의 PTY 바이�
     echo "RESULT key-bytes: $([ $fail = 0 ] && echo '전부 OK' || echo '기대와 다른 칸 있음') (수신 원본: $OUT/received_*.txt)"
 }
 
+cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액션을 단축키로 누른다. 판정은 앱 로그 줄과 셸의 `stty size`
+    env_sway; OUT=$WORK/actions; rm -rf $OUT; mkdir -p $OUT/xdg/config $OUT/xdg/state
+    kill_tz
+    # 빈 config 홈 — 기본 바인딩 (Linux 표) 으로 돈다. 사용자 config 의 `[keys]` 가 회차를 바꾸지 않게.
+    export XDG_CONFIG_HOME=$OUT/xdg/config XDG_STATE_HOME=$OUT/xdg/state
+    local L=$OUT/xdg/state/$APP/tildaz_0.log fail=0 base
+    # 메뉴 · `+` 칸을 위한 가상 포인터 — 앱보다 먼저 꽂는다 (seat 에 pointer 가 처음부터 있게).
+    local PF=$R/vptr.fifo
+    if ! pgrep -f "vptr_linux.py --fifo $PF" >/dev/null; then
+        rm -f $PF
+        setsid nohup python3 "$ROOT/tool/vptr_linux.py" --fifo $PF >$WORK/vptr.log 2>&1 </dev/null &
+        sleep 1.5
+    fi
+    ptr() { printf '%s\n' "$@" > $PF; }
+    TILDAZ_VERBOSE=1 nohup "$TILDAZ" --instance 0 >/dev/null 2>&1 </dev/null & WPID=$!; sleep 4
+    kill -0 $WPID 2>/dev/null || die "worker 가 뜨지 않았다 — $L"
+    focus_probe
+    base=$(wc -l < $L)
+    # $1 이름 · $2 키 · $3 기다릴 로그 (ERE). 앞 칸 뒤에 새로 생긴 줄만 본다 — 순서로 맞추면 한 칸이 빠질 때 뒤가 밀린다.
+    step() {
+        snd "key $2"
+        local i; for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -qE "$3" && break; done
+        if tail -n +$((base+1)) $L | grep -qE "$3"; then echo "OK   $1"; else echo "FAIL $1 — 로그에 /$3/ 없음"; fail=1; fi
+        base=$(wc -l < $L)
+    }
+    # 활성 pane 의 셸에서 `stty size` 를 파일로 — 격자가 실제로 바뀌었는지 (크기 조절은 로그를 남기지 않는다).
+    size_of() { rm -f $1; snd "type stty size > $1" "key Return"; wait_file $1 >/dev/null || true; cat $1 2>/dev/null; }
+    step "split right"   ctrl+shift+right 'split right — tab [0-9]+ has 2 panes'
+    step "split down"    ctrl+shift+down  'split down — tab [0-9]+ has 3 panes'
+    step "focus up"      alt+up           'focus up — active pane'
+    local A=/tmp/tzac-$$-a B=/tmp/tzac-$$-b sa sb
+    sa=$(size_of $A)
+    snd "key shift+alt+left"; sleep 1
+    sb=$(size_of $B)
+    # 오른쪽 위 pane 에서 왼쪽 분할선을 한 칸 왼쪽으로 → 열이 하나 는다.
+    if [ -n "$sa" ] && [ "${sa% *}" = "${sb% *}" ] && [ $(( ${sb#* } - ${sa#* } )) = 1 ]; then
+        echo "OK   resize left — stty $sa → $sb"
+    else echo "FAIL resize left — stty '$sa' → '$sb' (열 +1 기대)"; fail=1; fi
+    base=$(wc -l < $L)
+    step "equalize"      shift+alt+0      'equalize — 3 panes'
+    step "zoom on"       ctrl+shift+z     'zoom on — active pane'
+    step "zoom off"      ctrl+shift+z     'zoom off — active pane'
+    # pane 닫기는 따로 로그가 없다 — 닫힌 pane 의 셸이 끝난 줄로 본다.
+    step "close pane"    ctrl+shift+x     'shell exited'
+    # 남은 오른쪽 pane (창 절반 · 40 열 남짓) 을 좌우로 가르면 반쪽이 20 열보다 좁다 → 거부 + 다이얼로그.
+    step "split rejected (too small)" ctrl+shift+right 'split right rejected: pane would be under 20x5'
+    snd "key Return"; sleep 1   # 다이얼로그 OK
+    # 닫기가 pane 하나만 닫았다면 지금 2 개 → 위아래로 가르면 3 개다.
+    step "split after close" ctrl+shift+down 'split down — tab [0-9]+ has 3 panes'
+
+    # 검색바가 열려 있으면 글자는 검색 입력칸으로 간다 — 셸에 친 `touch` 가 실행되지 않아야 한다.
+    local M=/tmp/tzac-$$-m C=/tmp/tzac-$$-c; rm -f $M $C
+    snd "key ctrl+shift+f"; sleep 0.8
+    snd "type touch $M" "key Return"; sleep 2
+    if [ ! -e $M ]; then echo "OK   find — 글자가 검색 입력칸으로 갔다"; else echo "FAIL find — 셸이 touch 를 실행했다"; fail=1; fi
+    snd "key escape"; sleep 0.5
+    snd "type touch $M" "key Return"; wait_file $M >/dev/null || true
+    if [ -e $M ]; then echo "OK   find 닫기 — Esc 뒤 셸로"; else echo "FAIL find 닫기 — Esc 뒤에도 셸에 안 닿는다"; fail=1; fi
+    rm -f $M; base=$(wc -l < $L)
+    step "font increase"  ctrl+shift+equal     'terminal font size increase — '
+    step "font decrease"  ctrl+shift+minus     'terminal font size decrease — '
+    snd "key ctrl+shift+equal"; sleep 1; base=$(wc -l < $L)
+    step "font reset"     ctrl+shift+backspace 'terminal font size reset — '
+    step "fullscreen"     alt+return           'fullscreen → cover'
+    step "fullscreen off" alt+return           'fullscreen → none'
+    step "workarea"       shift+alt+return     'fullscreen → avoid'
+    step "workarea off"   shift+alt+return     'fullscreen → none'
+    step "about"          ctrl+shift+i         '\[dialog\] open '
+    snd "key Return"; sleep 1   # About 닫기
+    # 새 탭에서 `cat` 을 띄워 두고 Alt+1 → 첫 탭의 셸이면 `touch` 가 실행된다 (아니면 cat 의 입력이 된다).
+    step "new tab"        ctrl+shift+t         'new tab cwd='
+    sleep 1.5
+    snd "type cat > $C" "key Return"; sleep 1
+    snd "key alt+1"; sleep 0.8
+    snd "type touch $M" "key Return"; wait_file $M >/dev/null || true
+    if [ -e $M ]; then echo "OK   switch tab — Alt+1 뒤 첫 탭의 셸"; else echo "FAIL switch tab — touch 가 첫 탭에 안 닿았다"; fail=1; fi
+    # 첫 탭 (pane 3 개) 을 통째로 닫는다 → 셸 셋이 끝난다.
+    base=$(wc -l < $L); snd "key ctrl+shift+w"; sleep 2
+    local ended; ended=$(tail -n +$((base+1)) $L | grep -c 'shell exited')
+    if [ "$ended" = 3 ]; then echo "OK   close tab — pane 3 개의 셸이 끝났다"; else echo "FAIL close tab — shell exited $ended 줄 (3 기대)"; fail=1; fi
+    rm -f $M $C
+
+    # 마우스 경로 — 컨트롤 스트립은 창 오른쪽 위 `+ × ⋯` (sway 에서 창은 출력의 오른쪽 절반 · 배율 1).
+    # 포인터를 처음 꽂은 뒤에는 같은 자리로 움직여도 진입 (enter) 이 안 와서 구석까지 크게 움직인다.
+    local PLUS="1540 14" MORE="1588 14"
+    ptr "move 0 0" "move 1599 999" "move 1200 500"; sleep 0.5
+    # `⋯` → End → ↑ 네 번 = *Fullscreen*. 메뉴의 전체화면은 상태 기준 토글이라 두 번 눌러 켜고 끈다
+    # (`fullscreenKind` 훅).
+    base=$(wc -l < $L)
+    menu_fullscreen() {
+        ptr "move $MORE"; sleep 0.3; ptr "click left"; sleep 0.8
+        snd "key end" "key up" "key up" "key up" "key up"; sleep 0.3
+    }
+    menu_fullscreen; step "menu → Fullscreen"     Return 'fullscreen → cover'
+    sleep 0.5; ptr "move 1200 500"; sleep 0.3
+    menu_fullscreen; step "menu → Fullscreen off" Return 'fullscreen → none'
+    # #712 — `⋯` → Home → ↓ 세 번 = *Split Right*. 화면 차례는 Show/Hide · New Tab · Close Tab ·
+    # Split Right 다. 키 이동이 enum 차례였을 때는 여기서 *Split Down* 이 실행됐다.
+    sleep 0.5; ptr "move 1200 500"; sleep 0.3
+    ptr "move $MORE"; sleep 0.3; ptr "click left"; sleep 0.8
+    snd "key home" "key down" "key down" "key down"; sleep 0.3
+    step "menu → Split Right (#712)" Return 'split right — tab [0-9]+ has 2 panes'
+    # `+` = 새 탭. 분할이 아니어야 한다.
+    ptr "move $PLUS"; sleep 0.3; ptr "click left"
+    local i; for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -q 'new tab cwd=' && break; done
+    if tail -n +$((base+1)) $L | grep -q 'new tab cwd=' && ! tail -n +$((base+1)) $L | grep -q '\] split '; then
+        echo "OK   + click → new tab"; else echo "FAIL + click — 새 탭 줄이 없거나 분할이 됐다"; fail=1; fi
+    base=$(wc -l < $L)
+    # Alt 를 누른 채 `+` = 활성 pane 분할 (새 탭의 pane 하나 → 2 개).
+    sleep 1; ptr "move 1200 500" "move $PLUS"; sleep 0.3
+    snd "hold alt"; sleep 0.2; ptr "click left"; sleep 0.2; snd "release alt"
+    for i in $(seq 10); do sleep 0.3; tail -n +$((base+1)) $L | grep -qE 'split (right|down) — tab [0-9]+ has 2 panes' && break; done
+    if tail -n +$((base+1)) $L | grep -qE 'split (right|down) — tab [0-9]+ has 2 panes'; then
+        echo "OK   alt + click → split"; else echo "FAIL alt + click — 분할 줄 없음"; fail=1; fi
+    grim $OUT/screen.png
+    kill -0 $WPID 2>/dev/null || { echo "FAIL 앱이 회차 중에 끝났다"; fail=1; }
+    grep -E '\[(fatal|panic)\]' $L && fail=1
+    echo "RESULT actions: $([ $fail = 0 ] && echo '전부 OK' || echo '실패 칸 있음') (로그: $L · 캡처: $OUT/screen.png)"
+    rm -f $A $B
+    kill -TERM $WPID; wait_exit $WPID >/dev/null
+    export XDG_CONFIG_HOME=$XDG/config XDG_STATE_HOME=$XDG/state
+}
+
 case ${1:-} in
     up) cmd_up ;;
     key-bytes) cmd_key_bytes "${2:-}" ;;
@@ -369,8 +499,9 @@ case ${1:-} in
     prompt) cmd_prompt ;;
     scale) cmd_scale ;;
     first-run) cmd_first_run ;;
+    actions) cmd_actions ;;
     seat-replug) cmd_seat_replug ;;
     compositor-exit) cmd_compositor_exit ;;
     launcher-fatal) cmd_launcher_fatal "${2:-}" ;;
-    *) sed -n '2,16p' "$0"; exit 2 ;;
+    *) sed -n '2,17p' "$0"; exit 2 ;;
 esac

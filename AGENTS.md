@@ -514,6 +514,8 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 - **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
 - **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.
 
+**액션의 실행은 [`src/app_actions.zig`](src/app_actions.zig) 한 곳에 더해요** ([#692](https://github.com/ensky0/tildaz/issues/692)). host 마다 한 벌씩 쓰지 않아요. `config.KeyAction` · `inputForAction` · `input_policy.Shortcut` 에 값을 더하면 `app_actions.run` 의 `switch` 를 컴파일러가 짚어 줘요. OS 에 닿는 일이 필요하면 세 어댑터 (`App.ActionHost` · `MacActionHost` · `Client.LinuxActionHost`) 에 훅을 하나씩 더해요. 하나라도 빠지면 그 host 의 컴파일에서 걸려요 (`zig build check`).
+
 **액션을 더하면 config 스키마가 바뀌어요.** 기존 `config_N.toml` 에는 그 키가 없으니 **기본 바인딩으로 돌고 시작 안내에 한 줄이 뜹니다** ([#655](https://github.com/ensky0/tildaz/issues/655) 이전에는 `missing required key "<액션>"` 으로 **부팅이 막혔어요** — 원칙 5 가 그것을 뒤집었어요). 부팅을 막지는 않지만 **사용자가 안내를 보는 것은 그대로**라, 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
 
 # 커밋 메시지
@@ -861,6 +863,17 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 - **입력 소스가 한국어 (2벌식) 면 `cliclick t:` 글자가 IME 에 먹혀 안 닿아요** — `mac-input ime-get` 으로 먼저
   보고, ASCII 가 필요하면 `mac-input ime-ascii` 로 바꾼 뒤 끝나면 되돌려요 (사용자 입력 소스를 바꾸는 일이라
   알리고). `deadkey-check_macos.sh` 는 ABC 가 아니면 스스로 멈춰요.
+- **⚠️ `mac-input` 으로 조합키를 보낸 뒤 `cliclick t:` 로 글자를 치면 `⌘` 이 붙어요.** 새 합성 이벤트는 직전
+  조합키의 수식키를 물려받아요. `mac-input` 은 flags 를 늘 정해서 막지만 (`postKey` 주석) `cliclick t:` 는 안
+  막아요. 2026-10-09 [#692](https://github.com/ensky0/tildaz/issues/692#issuecomment-6083877407) 회차에서
+  `⌘↑` 뒤에 친 `stty` 가 `⌘S ⌘T ⌘T ⌘Y` 로 들어가 탭이 잔뜩 생겼어요. 조합키를 쓰는 회차는 **글자도
+  `mac-input send` 로** 보내요 (`>` 는 `shift+period` 처럼 키 이름으로 바꿔서).
+- **⚠️ `mac-input` 이 보낸 키는 2벌식에서 조합되지 않아요.** `g k s` 가 `한` 이 아니라 `ㅎㅏㄴ` 으로 따로
+  확정돼요. 이벤트 소스를 `kCGEventSourceStateHIDSystemState` 로 만들어 보내면 `한` 으로 조합됐어요 (같은 회차
+  실측). 한글 조합 칸은 그렇게 만든 소스로 보내요 — `mac-input` 의 `Private` 소스는 위 수식키 문제를 막으려고
+  고른 것이라 그대로 두었어요. 그리고 **조합 결과를 입력 소스 전환으로 확정하지 말아요.** 조합 중에 바꾸면
+  글자가 사라지는 회차가 있어요 ([#715](https://github.com/ensky0/tildaz/issues/715)) — 단축키나 Return 으로
+  확정한 뒤에 바꿔요.
 
 # macOS — 키보드 layout 조회 실측 방법
 
@@ -958,6 +971,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
 
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
+| [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -967,6 +981,8 @@ tool\key-bytes-check_windows.ps1 -Mode layout                       # 비US 배�
 tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
 tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 21 항목 (캡처 30 장 남짓)
 tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
+tool\actions-check_windows.ps1                                      # 다섯 모드 전부 (창 5 회 · 8 분 남짓)
+tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   # 대조군 — _internal 도 그 옆에 있어야 한다
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -1074,6 +1090,31 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
   정확히 그 차이로 한쪽에만 났어요. **같은 회차 안에 "그 UI 를 연 채" 와 "닫고" 두 번을 넣어 대조**하면 앱 결함인지
   환경 탓인지 바로 갈려요.
 - **`$VK.<이름>` 오타 · 누락은 `$null` → VK 0 으로 조용히 눌려요.** 앱에는 `wParam=0 scan=0` 으로 도착해 아무 바이트도 안 나와요 — "앱이 안 낸다" 로 보이지만 도구 표를 먼저 봐요 (2026-09-03 `Ctrl` 이 그랬어요).
+- **마우스가 연결되지 않은 기기에서는 `GetCursorInfo` 가 늘 `hCursor = 0` 이에요.** Windows 가 커서를 숨겨서예요
+  (`GetSystemMetrics(SM_MOUSEPRESENT)` 가 0). 2026-10-09 데스크탑 Ryzen 7 5700G 에서 `search-bar-check -Mode D` 의
+  D28 이 네 자리 모두 `hidden` 으로 떨어졌어요. 그때는 **포인터 아래 창의 스레드에 `AttachThreadInput` 으로 잠깐
+  붙어 `GetCursor()`** 를 읽으면 그 스레드가 정한 모양이 나와요 (셀 `ibeam` · 분할선 `sizewe` 실측).
+  `search-bar-check` · `link-click-check` 의 `CursorName()` 이 숨김일 때 그렇게 물러서고, `actions-check` 는 처음부터
+  그 방식이에요. 합성 마우스 이동 (`SendInput`) 은 마우스가 없어도 `WM_SETCURSOR` 를 일으켜요.
+- **커서가 "배치 직후 바로 바뀌는지" 는 `Ctrl` 이 든 단축키로 못 가려요.** #647 이 `Ctrl` 을 누르고 **뗄 때**
+  `refreshCursor` 를 불러서 (`window.zig` 의 `WM_KEYUP`), 수정 전 판도 `Ctrl+Shift+→` 뒤에 커서가 맞게 바뀌어요.
+  `actions-check -Mode cursor` 를 커서 수정 (`754722a`) 전 판과 견주니 X2 (분할) 는 둘 다 통과, X3 (검색바) 는 수정 전 판이
+  세 회 중 한 회만 실패했어요. `Ctrl` 이 없는 X2b (`Shift+Alt+0`) 도 수정 전 판이 통과했는데 그 이유는 **확인 필요**예요.
+  **수정 전후를 안정적으로 가른 것은 X4 (포인터가 남의 창 위일 때 `Ctrl`) 하나**예요 — 수정 전 판 `arrow` 2/2.
+  커서 판정을 새로 만들면 수정 전 판을 대조군으로 함께 돌려요.
+- **초기화 (`Ctrl+Shift+R`) 는 셸에 `Ctrl+L` (`0x0c`) 을 보내요** (`SessionCore.resetActive` — 프롬프트를 다시 그리게).
+  자식이 `Read-Host` 면 그 글자가 다음 줄 앞에 담겨 `line \x0c fz` 가 돼요. 줄을 `^line <글자>` 로 맞추면 놓쳐요.
+- **PowerShell 이 .NET 문자열 인자로 넘기는 `$null` 은 빈 문자열이에요.** `FindWindowW($null, '제목')` 은
+  `FindWindowW("", '제목')` 이 되어 아무것도 못 찾아요. `[NullString]::Value` 로 넘겨요.
+- **콘솔 창의 `GetWindowThreadProcessId` 는 그 콘솔에 붙은 프로세스 pid 를 돌려줘요.** 보조 창 (폼 등) 을 띄운
+  PowerShell 의 창을 pid 로 찾으면 **콘솔 창**이 잡혀요. 제목으로 찾고, 콘솔 창은 `ShowWindow(GetConsoleWindow(), 0)` 로 숨겨요.
+- **보조 프로세스도 DPI 인식으로 만들어요.** 비인식이면 준 좌표가 150 % 에서 1.5 배가 되어 엉뚱한 자리 (2026-10-10 에는
+  tildaz 창 위) 에 떠요.
+- **새 프로세스를 띄운 직후 몇 초는 "앱 시작 중" 커서 (`IDC_APPSTARTING`) 가 섞여요.** 커서를 재기 전에 기다려요.
+- **창 이름은 판마다 달라요** (#654) — dev 빌드 (기본) `TildaZ-devWindow` · `TildaZ-dev-stress`, 릴리즈 `TildaZWindow` ·
+  `TildaZ-stress`. `send-keys_windows.ps1` · `split-panes_windows.ps1` · `compare-terminals.sh` 가 릴리즈 이름으로 고정돼
+  기본 빌드의 창을 못 찾았어요 (2026-10-10 발견). 지금은 둘 다 찾고, 둘 다 떠 있으면 멈춰요. config 폴더도 dev 는
+  `%APPDATA%\tildaz-dev` 예요.
 
 # Windows — 키보드 layout 조회 실측 방법
 
@@ -1495,7 +1536,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/vptr_linux.py`](tool/vptr_linux.py) | `zwlr_virtual_pointer_v1` 가상 **포인터**를 한 번 꽂고 유지하며 FIFO 로 `move x y` · `moveby` · `down/up left` · `click` · `scroll <칸수>` (음수 = 위로) 를 받는 데몬. `motion_absolute` 라 **출력 픽셀과 1:1** 이고 포인터 가속이 없어요 — `ydotool mousemove -a` 가 조용히 무시되는 문제 (아래) 를 안 겪어요. 휠은 `axis_source` (wheel) → `axis_discrete` → `frame` 순서로 한 칸씩 내요 (`axis` 를 따로 보내면 client 가 두 배로 세요) |
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
-| [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
+| [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `actions` (#692 — 공통 처리부로 옮긴 액션을 단축키로 눌러 로그 줄 · `stty size` 로 판정) · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh

@@ -63,6 +63,10 @@ public static class TzLink {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
+  [DllImport("user32.dll")] public static extern IntPtr GetCursor();
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern IntPtr LoadCursorW(IntPtr hInst, IntPtr name);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] p, int cb);
@@ -138,7 +142,15 @@ public static class TzLink {
   public static string CursorName() {
     var ci = new CURSORINFO(); ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
     if (!GetCursorInfo(ref ci)) return "query-failed";
-    if (ci.hCursor == IntPtr.Zero) return "hidden";
+    // 마우스가 연결되지 않은 기기 (SM_MOUSEPRESENT 0) 는 커서를 숨겨 hCursor 가 늘 0 이다 (2026-10-09
+    // 데스크탑 5700G). 그때는 포인터 아래 창의 스레드에 잠깐 붙어 그 스레드가 정한 커서를 읽는다.
+    if (ci.hCursor == IntPtr.Zero) {
+      IntPtr w = WindowFromPoint(ci.pt);
+      if (w == IntPtr.Zero) return "hidden";
+      uint pid; uint them = GetWindowThreadProcessId(w, out pid); uint me = GetCurrentThreadId();
+      AttachThreadInput(me, them, true); ci.hCursor = GetCursor(); AttachThreadInput(me, them, false);
+      if (ci.hCursor == IntPtr.Zero) return "hidden";
+    }
     if (ci.hCursor == LoadCursorW(IntPtr.Zero, new IntPtr(32649))) return "hand";
     if (ci.hCursor == LoadCursorW(IntPtr.Zero, new IntPtr(32513))) return "ibeam";
     if (ci.hCursor == LoadCursorW(IntPtr.Zero, new IntPtr(32512))) return "arrow";

@@ -17,6 +17,9 @@
 # `Ctrl+;` 처럼 C0 가 없는 키만 `CSI 27;5;<cp>~` 가 된다 (function_keys.zig 의 modifier 번호에서 ctrl = 5).
 # 수정 전 판에서 돌리면 **어긋나는 칸이 곧 현재 동작**이다 — 도구가 받은 바이트를 늘 같이 찍는다.
 #
+# `Ctrl+Shift+-` 는 넣지 않는다 — Linux · Windows 에서는 #693 의 글자 작게 단축키라 바이트가 안 나가고 macOS 만 `1f`
+# 다 (2026-10-10 #692 Windows 회차). `Ctrl+_` (`1f`) 는 위 `Ctrl+/` 줄이 본다.
+#
 # mode	name	expect	key
 legacy	/	2f	slash
 legacy	Ctrl+A	01	ctrl+a
@@ -29,14 +32,12 @@ legacy	Ctrl+8	7f	ctrl+8
 legacy	Ctrl+0	30	ctrl+0
 legacy	Ctrl+1	31	ctrl+1
 legacy	Ctrl+9	39	ctrl+9
-legacy	Ctrl+Shift+-	1f	ctrl+shift+minus
 legacy	Ctrl+;	-	ctrl+semicolon
 mok2	/	2f	slash
 mok2	Ctrl+A	01	ctrl+a
 mok2	Ctrl+/	1f	ctrl+slash
 mok2	Ctrl+Space	00	ctrl+space
 mok2	Ctrl+6	1e	ctrl+6
-mok2	Ctrl+Shift+-	1f	ctrl+shift+minus
 mok2	Ctrl+;	1b 5b 32 37 3b 35 3b 35 39 7e	ctrl+semicolon
 mok2	Ctrl+[	1b 5b 32 37 3b 35 3b 39 31 7e	ctrl+bracketleft
 mok2	Ctrl+I	1b 5b 32 37 3b 35 3b 31 30 35 7e	ctrl+i

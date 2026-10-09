@@ -394,14 +394,38 @@ pub const KeyOutcome = union(enum) {
     activate: Command,
 };
 
+/// #712 — 키보드 이동의 차례. **화면 차례 (`entries`) 에서 구분선만 뺀 것**이다.
+///
+/// 예전에는 `Command` enum 차례로 움직였다. #646 이 `entries` 만 다시 배치하면서 둘이
+/// 갈려, *New Tab* 에서 `↓` 를 누르면 바로 아래 *Close Tab* 을 건너뛰었다. 차례를 여기
+/// 한 곳에서 `entries` 로 만들어 두면 다시 갈릴 수 없다.
+const key_order = blk: {
+    var out: [@typeInfo(Command).@"enum".fields.len]Command = undefined;
+    var n: usize = 0;
+    for (entries) |entry| {
+        const command = entry orelse continue;
+        out[n] = command;
+        n += 1;
+    }
+    if (n != out.len) @compileError("command_menu.entries 는 모든 Command 를 정확히 한 번씩 담아야 한다");
+    break :blk out;
+};
+
+fn keyIndex(command: Command) usize {
+    for (key_order, 0..) |c, i| {
+        if (c == command) return i;
+    }
+    unreachable; // key_order 는 모든 Command 를 담는다 (위 compileError).
+}
+
 fn stepCommand(current: ?Command, forward: bool) Command {
-    const count = @typeInfo(Command).@"enum".fields.len;
+    const count = key_order.len;
     const cur = current orelse {
-        return if (forward) @enumFromInt(0) else @enumFromInt(count - 1);
+        return if (forward) key_order[0] else key_order[count - 1];
     };
-    const i: usize = @intFromEnum(cur);
+    const i = keyIndex(cur);
     const next = if (forward) (i + 1) % count else (i + count - 1) % count;
-    return @enumFromInt(next);
+    return key_order[next];
 }
 
 /// 메뉴가 열린 동안의 키 입력. 어떤 키든 소비된다 — native menu 와 동일하게
@@ -418,16 +442,16 @@ pub fn onKey(key: MenuKey, focused: *?Command) KeyOutcome {
             return .consumed;
         },
         .home => {
-            focused.* = @enumFromInt(0);
+            focused.* = key_order[0];
             return .consumed;
         },
         .end => {
-            focused.* = @enumFromInt(@typeInfo(Command).@"enum".fields.len - 1);
+            focused.* = key_order[key_order.len - 1];
             return .consumed;
         },
         .enter, .space => {
             if (focused.*) |command| return .{ .activate = command };
-            focused.* = @enumFromInt(0);
+            focused.* = key_order[0];
             return .consumed;
         },
         .other => return .consumed,
@@ -537,6 +561,41 @@ test "#329 menu keyboard focus cycles, activates, and consumes unknown keys" {
     var blank: ?Command = null;
     try std.testing.expectEqual(KeyOutcome.consumed, onKey(.enter, &blank));
     try std.testing.expectEqual(Command.toggle_visibility, blank.?);
+}
+
+test "#712 ↓ · ↑ 는 화면 차례대로 모든 항목을 지나고 구분선을 건너뛴다" {
+    // 화면에 그리는 차례 (구분선 제외). 양 끝만 보면 #646 의 갈림을 못 잡는다 — 그 끝은
+    // enum 차례와 같았다. 그래서 항목마다 다음 칸을 본다.
+    var shown: [@typeInfo(Command).@"enum".fields.len]Command = undefined;
+    var n: usize = 0;
+    for (entries) |entry| {
+        if (entry) |command| {
+            shown[n] = command;
+            n += 1;
+        }
+    }
+    try std.testing.expectEqual(shown.len, n);
+
+    var focused: ?Command = shown[0];
+    for (1..shown.len) |i| {
+        _ = onKey(.down, &focused);
+        try std.testing.expectEqual(shown[i], focused.?);
+    }
+    _ = onKey(.down, &focused); // 끝에서 처음으로
+    try std.testing.expectEqual(shown[0], focused.?);
+    var i: usize = shown.len;
+    while (i > 0) {
+        i -= 1;
+        _ = onKey(.up, &focused); // 처음에서 끝으로, 그다음 거꾸로
+        try std.testing.expectEqual(shown[i], focused.?);
+    }
+
+    // 지금 화면 차례 그대로 — New Tab 다음은 Close Tab 이다 (#712 의 증상 자리).
+    focused = .new_tab;
+    _ = onKey(.down, &focused);
+    try std.testing.expectEqual(Command.close_active_tab, focused.?);
+    _ = onKey(.down, &focused);
+    try std.testing.expectEqual(Command.split_right, focused.?);
 }
 
 test "#343 rects — 정본 순서와 지오메트리 (배경 → 강조 → 구분선)" {
