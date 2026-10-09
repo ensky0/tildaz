@@ -124,6 +124,15 @@ pub fn dataHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_DATA_HOME", "/.local/share");
 }
 
+/// #700 — 우리가 고친 사용자 파일 (COSMIC 단축키 파일) 의 원본을 두는 곳.
+/// `$XDG_STATE_HOME/<id>/backup` — 로그와 같은 상태 폴더다. 고친 파일 옆에 두지 않는 이유는
+/// COSMIC 이 그 설정 폴더 안의 파일을 하나하나 키로 읽어서, 거기 두면 엉뚱한 키가 생기기 때문이다.
+pub fn backupDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
+    const base = try stateHome(rt, allocator);
+    defer allocator.free(base);
+    return std.fmt.allocPrint(allocator, "{s}/{s}/backup", .{ base, app_id.name });
+}
+
 /// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.
 fn stateHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     return xdgHome(rt, allocator, "XDG_STATE_HOME", "/.local/state");

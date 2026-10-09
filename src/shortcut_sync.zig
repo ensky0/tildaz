@@ -19,7 +19,5 @@ test "platform shortcut synchronization helpers" {
         var buf: [96]u8 = undefined;
         const hotkey = config.Hotkey.fromString("ctrl+shift+f12").?;
         try std.testing.expectEqualStrings("CTRL SHIFT ,F12", try impl.hyprlandAccel(&buf, hotkey));
-        try std.testing.expectEqual(@as(?usize, 2), impl.findClosingMapLine("{\n}\n"));
-        try std.testing.expectEqual(@as(?usize, null), impl.findClosingMapLine("{}\n"));
     }
 }

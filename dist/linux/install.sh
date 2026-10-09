@@ -328,7 +328,7 @@ fi
 # 을 직접 썼는데, 그 줄에는 우리 표식(`description: Some("TildaZ_<index>")`)이 없어서
 # launcher 가 자기 항목으로 알아보지 못하고 하나 더 썼다 — 같은 hotkey 가 두 번
 # 등록됐다 ([#514](https://github.com/ensky0/tildaz/issues/514)). writer 를 둘 두면
-# 표식이 갈라지고, 갈라지면 중복 맵 키로 COSMIC 이 파일을 통째로 버린다(#484).
+# 표식이 갈라지고, 갈라지면 같은 단축키가 둘 남는다(#484 — COSMIC 은 뒤의 것만 쓴다. #700 조사).
 # Hyprland 도 같은 이유로 hotkey 를 런타임 등록으로 옮겼다(위 `remove_legacy_hypr_hotkey`).
 # 이 스크립트가 예전에 남긴 줄은 TildaZ 가 처음 실행될 때 흡수한다
 # (`src/shortcut_sync/linux.zig` 의 `legacyInstallScriptEntryIndex`).

@@ -77,6 +77,12 @@ const impl = switch (builtin.os.tag) {
     },
 };
 
+/// #700 — 로그 줄과 같은 지역 시각. COSMIC 단축키 백업 이름 (`<날짜>-<순번>`) 이 쓴다 — 로그와
+/// 같은 기준이라야 "그 시각에 무엇이 바뀌었나" 를 로그와 백업에서 맞춰 볼 수 있다.
+pub fn currentLocalTime() TimeFields {
+    return impl.currentLocalTime();
+}
+
 /// UTF-8 경로. `init` 전에는 null 이고 그동안의 기록은 조용히 버려진다 — 예전 lazy
 /// 준비도 실패하면 같은 결과였다.
 var g_path: ?[]const u8 = null;
