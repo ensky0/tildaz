@@ -57,6 +57,7 @@ const unix_socket = @import("unix_socket.zig");
 const closeFd = unix_socket.closeFd;
 const checkErr = unix_socket.checkErr;
 const sway_ipc = @import("sway_ipc.zig");
+const hyprland_ipc = @import("hyprland_ipc.zig");
 const signal_exit = @import("../../signal_exit.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const shortcut_sync_linux = @import("../../shortcut_sync/linux.zig");
@@ -1100,6 +1101,14 @@ const Client = struct {
     // 신호를 받는 Unix domain socket listener. -1 = listener 생성 실패 (이미
     // 다른 인스턴스가 사용 중 — 정상). createListener 가 실패해도 시작은 계속.
     toggle_listener_fd: posix.fd_t = -1,
+    /// #700 — 데스크톱이 설정을 다시 읽었다는 소식을 듣는 소켓. 다시 읽으면 IPC 로 건 단축키가
+    /// 사라지므로 다시 건다. sway 는 workspace 이벤트 구독 (`sway_ipc.subscribeReload`),
+    /// Hyprland 는 이벤트 소켓 (`hyprland_ipc.subscribeReload`). `-1` 이면 듣지 않는다 —
+    /// `poll` 이 그 항목을 건너뛴다.
+    sway_reload_fd: posix.fd_t = -1,
+    hyprland_reload_fd: posix.fd_t = -1,
+    /// `hyprland_reload_fd` 에서 앞서 읽은 끝부분 — 이벤트 줄이 두 번의 읽기에 갈라져도 찾는다.
+    hyprland_event_tail: hyprland_ipc.Tail = .start,
     /// #439 — PTY read thread 가 "출력이 ring 에 들어갔다" 고 알리는 `eventfd`.
     ///
     /// 이것이 없던 동안 유휴에서는 `poll` 의 `frame_poll_ms` (16 ms) timeout 이 유일한
@@ -1751,6 +1760,10 @@ const Client = struct {
             single_instance.cleanup(self.rt);
             self.toggle_listener_fd = -1;
         }
+        if (self.sway_reload_fd >= 0) closeFd(self.sway_reload_fd);
+        self.sway_reload_fd = -1;
+        if (self.hyprland_reload_fd >= 0) closeFd(self.hyprland_reload_fd);
+        self.hyprland_reload_fd = -1;
         if (self.kglobalaccel_client) |client| {
             client.deinit();
             self.allocator.destroy(client);
@@ -5475,6 +5488,16 @@ const Client = struct {
                 .events = posix.POLL.IN,
                 .revents = 0,
             },
+            .{
+                .fd = self.sway_reload_fd,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            },
+            .{
+                .fd = self.hyprland_reload_fd,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            },
         };
         const n = try posix.poll(&fds, timeout_ms);
         if (n == 0) return;
@@ -5493,6 +5516,12 @@ const Client = struct {
             self.output_wake_pending.store(false, .release);
             var counter: u64 = undefined;
             _ = posix.read(self.output_eventfd, std.mem.asBytes(&counter)) catch {};
+        }
+        if (self.sway_reload_fd >= 0 and (fds[3].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
+            self.handleSwayReloadEvent();
+        }
+        if (self.hyprland_reload_fd >= 0 and (fds[4].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
+            self.handleHyprlandReloadEvent();
         }
         if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
             // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
@@ -10695,6 +10724,37 @@ const Client = struct {
     /// **한 번 자리에 고정하면 group 전환에 영향받지 않는다.** 그래서 재등록이 없다 —
     /// 그것이 위치 등록을 고른 이유다. `bindsym` 으로 두면 활성 layout 이 바뀔 때마다
     /// 죽었다 살았다 한다.
+    /// #700 — sway 가 설정을 다시 읽으면 IPC 로 건 것이 모두 사라진다. 단축키는 기존 등록
+    /// 경로 (`drainSwayToggleRegister`) 를 다시 태우고, 창 규칙 (`for_window`) 도 다시 건다.
+    /// 소켓이 끊기면 (sway 가 끝났다) 닫고 더 듣지 않는다.
+    fn handleSwayReloadEvent(self: *Client) void {
+        const reloaded = sway_ipc.readReloadEvent(self.sway_reload_fd) catch |err| {
+            log.appendLine("sway", "reload subscription closed: {s}", .{@errorName(err)});
+            closeFd(self.sway_reload_fd);
+            self.sway_reload_fd = -1;
+            return;
+        };
+        if (!reloaded) return;
+        log.appendLine("sway", "config reloaded — registering the hotkey and window rules again", .{});
+        sway_ipc.registerWindowRuleIfSway(self.rt, self.allocator, self.config);
+        self.pending_sway_toggle_register = true;
+    }
+
+    /// #700 — Hyprland 이 설정을 다시 읽으면 런타임 바인딩이 모두 지워진다. config 번호마다
+    /// 다시 맞춘다 (`shortcut_sync.resyncHyprland` — worker 여럿이 동시에 받아도 잠금으로
+    /// 한 번씩 돌고, 뒤에 도는 쪽은 이미 걸린 것을 보고 아무것도 안 한다).
+    fn handleHyprlandReloadEvent(self: *Client) void {
+        const reloaded = hyprland_ipc.readReloadEvent(self.hyprland_reload_fd, &self.hyprland_event_tail) catch |err| {
+            log.appendLine("hyprland", "reload subscription closed: {s}", .{@errorName(err)});
+            closeFd(self.hyprland_reload_fd);
+            self.hyprland_reload_fd = -1;
+            return;
+        };
+        if (!reloaded) return;
+        log.appendLine("hyprland", "config reloaded — registering the hotkeys again", .{});
+        shortcut_sync_linux.resyncHyprland(self.rt, self.allocator);
+    }
+
     fn drainSwayToggleRegister(self: *Client) void {
         if (!self.pending_sway_toggle_register) return;
         if (self.keyboard.keymap == null) return;
@@ -11201,6 +11261,12 @@ pub fn runBaselineWindow(
     // gate 는 `client.is_sway` (peer PID 비교) 다 — SWAYSOCK 존재만 보면 stale 변수가
     // 남은 KDE 세션에서 무의미한 IPC 시도가 나간다 (`isSwayCompositor` 주석).
     if (!opts.isStressRun() and client.is_sway) sway_ipc.registerWindowRuleIfSway(rt, allocator, cfg);
+    // #700 — 데스크톱이 설정을 다시 읽으면 IPC 로 건 단축키가 사라진다. 그 소식을 듣는다.
+    // 측정 인스턴스는 단축키를 걸지 않으므로 듣지도 않는다.
+    if (!opts.isStressRun()) {
+        if (client.is_sway) client.sway_reload_fd = sway_ipc.subscribeReload(rt, allocator) orelse -1;
+        if (currentDesktopContains(rt, "hyprland")) client.hyprland_reload_fd = hyprland_ipc.subscribeReload(rt) orelse -1;
+    }
     client.run() catch |err| switch (err) {
         // #613 — main loop 의 `pollAndDispatch` 는 이 오류를 안에서 잡지만, 종료를 **write 로 먼저** 만나면
         // (`maybeRedraw` · `maybeRepeatKey` 등 `try` 로 올라오는 송신) 여기까지 온다. 어느 쪽이든 compositor 가

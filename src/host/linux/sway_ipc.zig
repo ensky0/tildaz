@@ -34,6 +34,10 @@ const native_endian = builtin.target.cpu.arch.endian();
 
 /// i3-ipc message type — RUN_COMMAND. (`bindsym ...` 같은 sway 명령 실행.)
 const ipc_run_command: u32 = 0;
+/// #700 — SUBSCRIBE. 이벤트 종류 이름의 JSON 배열을 보낸다 (`man 7 sway-ipc`).
+const ipc_subscribe: u32 = 2;
+/// 이벤트는 type 의 최상위 비트가 켜져 온다. workspace 이벤트는 그 아래 0 이다.
+const ipc_event_workspace: u32 = 0x80000000;
 const ipc_magic = "i3-ipc";
 const ipc_header_len = ipc_magic.len + 8; // magic(6) + len(4) + type(4)
 
@@ -518,6 +522,85 @@ fn extractJsonError(payload: []const u8, out: []u8) []const u8 {
         written += 1;
     }
     return out[0..written];
+}
+
+/// #700 — sway 가 설정을 다시 읽는 것을 듣는 소켓을 연다. 실패하면 `null` (로그만 남긴다).
+///
+/// `reload` 하면 IPC 로 건 것 (`bindsym` · `bindcode` · `for_window`) 이 모두 사라진다. sway 는
+/// 성공한 reload 뒤 workspace 이벤트 `"change": "reload"` 를 보낸다 (`man 7 sway-ipc` 의
+/// WORKSPACE 절). 그래서 worker 가 이 소켓을 `poll` 해 그 순간 다시 건다. sway 는 설정 파일을
+/// 스스로 감시하지 않으므로 다른 신호는 없다.
+pub fn subscribeReload(rt: Runtime, allocator: std.mem.Allocator) ?posix.fd_t {
+    const sock_path = rt.environ.getPosix("SWAYSOCK") orelse return null;
+    const fd = unix_socket.openSocket(posix.SOCK.CLOEXEC) catch |err| {
+        log.appendLine("sway", "reload subscription failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    subscribeOn(allocator, fd, sock_path) catch |err| {
+        log.appendLine("sway", "reload subscription failed: {s}", .{@errorName(err)});
+        unix_socket.closeFd(fd);
+        return null;
+    };
+    log.appendLine("sway", "listening for config reloads", .{});
+    return fd;
+}
+
+fn subscribeOn(allocator: std.mem.Allocator, fd: posix.fd_t, sock_path: []const u8) !void {
+    try unix_socket.connect(fd, sock_path);
+    const payload = "[\"workspace\"]";
+    var req: [ipc_header_len + payload.len]u8 = undefined;
+    @memcpy(req[0..ipc_magic.len], ipc_magic);
+    std.mem.writeInt(u32, req[ipc_magic.len..][0..4], payload.len, native_endian);
+    std.mem.writeInt(u32, req[ipc_magic.len + 4 ..][0..4], ipc_subscribe, native_endian);
+    @memcpy(req[ipc_header_len..], payload);
+    try writeAll(fd, &req);
+
+    // 답은 `{"success": true}` 하나다. 구독이 붙기 전에 이벤트가 끼지 않으므로 바로 읽는다.
+    var hdr: [ipc_header_len]u8 = undefined;
+    try readAll(fd, &hdr);
+    if (!std.mem.eql(u8, hdr[0..ipc_magic.len], ipc_magic)) return error.SwayIpcBadMagic;
+    const len = std.mem.readInt(u32, hdr[ipc_magic.len..][0..4], native_endian);
+    if (len == 0 or len > 4096) return error.SwayIpcBadLength;
+    const reply = try allocator.alloc(u8, len);
+    defer allocator.free(reply);
+    try readAll(fd, reply);
+    if (std.mem.find(u8, reply, "true") == null) return error.SwaySubscribeRejected;
+}
+
+/// `subscribeReload` 의 소켓이 읽기 가능할 때 부른다. 이벤트 하나를 읽고 reload 면 `true`.
+/// 연결이 끊기면 error — 호출자는 소켓을 닫고 더 듣지 않는다 (sway 가 끝난 것이다).
+///
+/// workspace 이벤트는 창 트리를 통째로 담아 커질 수 있다. 판정에는 앞부분만 있으면 되므로
+/// (`"change"` 가 첫 키다) 고정 버퍼에 앞부분만 받고 나머지는 읽어 버린다.
+pub fn readReloadEvent(fd: posix.fd_t) !bool {
+    var hdr: [ipc_header_len]u8 = undefined;
+    try readAll(fd, &hdr);
+    if (!std.mem.eql(u8, hdr[0..ipc_magic.len], ipc_magic)) return error.SwayIpcBadMagic;
+    const len = std.mem.readInt(u32, hdr[ipc_magic.len..][0..4], native_endian);
+    const kind = std.mem.readInt(u32, hdr[ipc_magic.len + 4 ..][0..4], native_endian);
+    var head: [256]u8 = undefined;
+    const head_len = @min(len, head.len);
+    try readAll(fd, head[0..head_len]);
+    var left: usize = len - head_len;
+    var sink: [4096]u8 = undefined;
+    while (left > 0) {
+        const n = @min(left, sink.len);
+        try readAll(fd, sink[0..n]);
+        left -= n;
+    }
+    return kind == ipc_event_workspace and isReloadPayload(head[0..head_len]);
+}
+
+fn isReloadPayload(head: []const u8) bool {
+    return std.mem.find(u8, head, "\"change\": \"reload\"") != null or
+        std.mem.find(u8, head, "\"change\":\"reload\"") != null;
+}
+
+test "#700 only the workspace reload event asks for re-registration" {
+    try std.testing.expect(isReloadPayload("{ \"change\": \"reload\", \"old\": null, \"current\": null }"));
+    try std.testing.expect(isReloadPayload("{\"change\":\"reload\"}"));
+    try std.testing.expect(!isReloadPayload("{ \"change\": \"focus\", \"current\": { \"name\": \"reload\" } }"));
+    try std.testing.expect(!isReloadPayload(""));
 }
 
 const writeAll = unix_socket.writeAll;

@@ -67,7 +67,7 @@ test "aggregate root imports every common and native-host test module" {
 
     switch (builtin.os.tag) {
         .linux => {
-            // Linux native modules (11 files).
+            // Linux native modules (22 files).
             _ = @import("dialog/linux.zig");
             _ = @import("font/linux/font.zig");
             _ = @import("host/linux/dialog_layout.zig");
@@ -78,6 +78,7 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("renderer/linux/gl_rects.zig");
             _ = @import("renderer/linux/gl_text.zig");
             _ = @import("host/linux/hotkey_format.zig");
+            _ = @import("host/linux/hyprland_ipc.zig");
             _ = @import("host/linux/kglobalaccel.zig");
             _ = @import("host/linux/instance_identity.zig");
             _ = @import("host/linux/shell_extension.zig");
@@ -85,6 +86,8 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("host/linux/software_terminal.zig");
             _ = @import("host/linux/wayland_minimal.zig");
             _ = @import("host/linux/xkb.zig");
+            _ = @import("desktop_setup/wm_files.zig");
+            _ = @import("desktop_setup/wm_linux.zig");
             _ = @import("shortcut_sync/linux.zig");
             _ = @import("terminal/posix/pty.zig");
         },

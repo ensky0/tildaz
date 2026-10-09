@@ -25,6 +25,40 @@ pub fn sync(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !vo
     };
 }
 
+/// #700 — 제거. COSMIC 단축키 파일은 세션과 무관하게 치운다 (`sync` 는 COSMIC 세션에서만
+/// 그 파일을 본다 — 다른 세션에서 고칠 이유가 없어서다). Hyprland 런타임 바인딩은 그 세션이
+/// 떠 있을 때만 지울 수 있고, 아니면 다음 로그인에 저절로 없다.
+pub fn removeAll(rt: Runtime, allocator: std.mem.Allocator) !void {
+    try sync(rt, allocator, &.{});
+    if (!desktopContains(rt, "cosmic")) syncCosmic(rt, allocator, &.{}) catch |err| {
+        log.appendLine("cosmic", "shortcut cleanup skipped: {s}", .{@errorName(err)});
+    };
+}
+
+/// #700 — Hyprland 이 설정을 다시 읽은 뒤 우리 바인딩을 다시 건다 (worker 의
+/// `handleHyprlandReloadEvent`). worker 마다 같은 이벤트를 받으므로 **배타 잠금 안에서** 돈다 —
+/// 먼저 잡은 쪽이 걸고, 뒤에 잡은 쪽은 이미 걸린 것을 보고 아무것도 안 한다 (`syncHyprland`
+/// 가 지금 바인딩을 읽고 빠진 것만 건다). 실패는 로그만 남긴다 — 실행 중인 앱을 멈출 일이
+/// 아니다.
+pub fn resyncHyprland(rt: Runtime, allocator: std.mem.Allocator) void {
+    resyncHyprlandLocked(rt, allocator) catch |err| {
+        log.appendLine("hyprland", "re-registration after reload failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn resyncHyprlandLocked(rt: Runtime, allocator: std.mem.Allocator) !void {
+    const dir = try paths.lockDir(rt, allocator);
+    defer allocator.free(dir);
+    try paths.ensureDir(rt, dir);
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ dir, "hyprland-sync.lock" });
+    defer allocator.free(lock_path);
+    const lock = try std.Io.Dir.createFileAbsolute(rt.io, lock_path, .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(rt.io);
+    const indices = try instances.listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try syncHyprland(rt, allocator, indices);
+}
+
 /// #451 — `posix.getenv` ➡️ `Environ.getPosix`. POSIX 는 블록을 그대로 훑어 할당이 없다.
 fn desktopContains(rt: Runtime, name: []const u8) bool {
     const value = rt.environ.getPosix("XDG_CURRENT_DESKTOP") orelse return false;
@@ -346,7 +380,7 @@ fn luaUnbindCode(allocator: std.mem.Allocator, keys: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-fn appendLuaString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+pub fn appendLuaString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
     try out.append(allocator, '"');
     for (value) |c| switch (c) {
         '\\', '"' => {

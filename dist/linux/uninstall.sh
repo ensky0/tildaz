@@ -11,12 +11,9 @@
 #   GNOME / Cinnamon 이전판의 gsettings custom keybinding tildaz-N
 #     — 리스트 항목 + dconf 서브트리
 #   KDE ~/.config/kglobalshortcutsrc 의 [tildaz.instanceN] 그룹
-#   ~/.config/sway/config 의 tildaz 블록 (install.sh 가 넣은 marker+exec 2줄만.
-#     파일/본문은 보존, marker 없는 사용자 작성 줄은 안 건드림)
-#   ~/.config/cosmic/...Shortcuts/v1/custom 의 TildaZ 단축키 줄 (표식 있는 줄 +
-#     예전 install.sh 가 쓴 표식 없는 줄. 사용자가 이름 붙인 줄은 보존)
-#   ~/.config/hypr/{hyprland.conf,hyprland.lua} 의 tildaz 블록 (marker + 다음 줄
-#     2줄만. .conf=exec-once / .lua=hl.on, 동일 규칙. 본문 보존)
+#   sway · Hyprland 자동실행 · COSMIC 단축키 — `tildaz --desktop remove` 가 지운다 (#700).
+#     이 스크립트는 그 사용자 설정 파일을 직접 고치지 않는다. 실행 파일을 지우기 **전에**
+#     부르고, 실행 파일이 없으면 손으로 지울 것을 안내한다.
 #
 # 보존:
 #   $XDG_CONFIG_HOME/tildaz/config_N.toml  (fallback: ~/.config, 사용자 설정)
@@ -64,20 +61,46 @@ for id in "${TILDAZ_IDS[@]}"; do
         "$HOME/.config/autostart/$id.desktop"
     )
 done
-SWAY_CFG="$HOME/.config/sway/config"
-HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
-HYPR_LUA="$HOME/.config/hypr/hyprland.lua"
 # 확장 UUID 도 두 갈래다 (#654). 예전에는 하나뿐이라 **개발 빌드를 지우면 릴리즈의
 # 확장까지 지워졌다** (실기 확인). 위 `TILDAZ_IDS` 와 같은 이유로 둘 다 훑는다.
 TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
-# install.sh 와 *글자 단위로 동일해야* 매칭됨. sway/hyprlang(.conf) 는 `#` 주석,
-# Hyprland Lua 는 `--` 주석이라 marker 가 두 가지.
-# marker 는 id 마다 하나다 (#654) — 릴리즈는 예전 그대로 `# tildaz autostart …`, dev 는
-# `# tildaz-dev autostart …`. 아래 `remove_tildaz_block` 이 두 id 를 다 돈다.
-marker_for() { echo "# $1 autostart (added by install.sh — uninstall.sh removes this)"; }
-marker_lua_for() { echo "-- $1 autostart (added by install.sh — uninstall.sh removes this)"; }
-
 removed=0
+
+# 사용자 데스크톱 설정은 tildaz 가 지운다 (#700) — sway · Hyprland 자동실행 (우리 파일과 불러오는
+# 줄, 예전 이 스크립트 쌍이 넣은 블록), COSMIC 단축키, KDE 전역 단축키, desktop 항목. 예전에는
+# 여기서 셸이 그 파일들을 줄 단위로 고쳤다 (#681 — COSMIC 파일이 깨졌다). 실행 파일을 지우기
+# **전에** 부른다 — 아래에서 `~/.local/bin/<id>` 를 지우면 부를 것이 없다.
+for id in "${TILDAZ_IDS[@]}"; do
+    exe=""
+    if [[ -L "$HOME/.local/bin/$id" ]]; then
+        exe="$(readlink -f "$HOME/.local/bin/$id" 2>/dev/null || true)"
+    fi
+    if [[ -n "$exe" && -x "$exe" ]]; then
+        if out="$("$exe" --desktop remove 2>&1)"; then
+            if [[ -n "$out" ]]; then
+                printf '%s\n' "$out"
+                removed=$((removed + 1))
+            fi
+        else
+            printf '%s\n' "$out"
+            echo "WARNING: '$exe --desktop remove' failed — see the TildaZ log."
+        fi
+        continue
+    fi
+    # 실행 파일이 없다 — 남은 흔적이 있으면 손으로 지울 것을 알린다. 흔적을 이 스크립트가
+    # 지우지 않는 이유는 위와 같다 (사용자 설정 파일을 셸이 고치지 않는다).
+    left=()
+    for f in "$CONFIG_HOME/sway/$id.conf" "$CONFIG_HOME/hypr/$id.lua" "$CONFIG_HOME/hypr/$id.conf"; do
+        [[ -e "$f" ]] && left+=("$f")
+    done
+    for f in "$HOME/.sway/config" "$CONFIG_HOME/sway/config" "$CONFIG_HOME/hypr/hyprland.lua" "$CONFIG_HOME/hypr/hyprland.conf"; do
+        [[ -f "$f" ]] && grep -qF -e "$id autostart" -e "$id.conf" -e "require, \"$id\")" "$f" && left+=("$f (the $id autostart lines)")
+    done
+    if [[ ${#left[@]} -gt 0 ]]; then
+        echo "The $id executable is gone, so its desktop settings were not removed. Remove these by hand:"
+        for f in "${left[@]}"; do echo "  $f"; done
+    fi
+done
 for f in "${USER_FILES[@]}"; do
     if [[ -f "$f" ]]; then
         rm "$f"
@@ -268,55 +291,6 @@ if [[ -f "$KGLOBAL" ]]; then
     fi
 fi
 
-# WM config 에서 install.sh 가 넣은 tildaz 블록(marker 줄 + 바로 다음 줄)만 제거.
-# awk exact-string 비교라 정규식 escape 불필요. marker 없으면(사용자가 직접 쓴
-# exec/exec-once 등) 손대지 않는다. 파일 본문/나머지는 그대로 보존. sway·Hyprland 공통.
-remove_tildaz_block() {
-    local cfg="$1" marker="$2" label="$3"
-    if [[ -f "$cfg" ]] && grep -qF -e "$marker" "$cfg"; then
-        local tmp="$cfg.tildaz-uninstall-tmp"
-        awk -v m="$marker" 'skip { skip=0; next } $0 == m { skip=1; next } { print }' "$cfg" > "$tmp"
-        # 블록 제거 후 남는 trailing 빈 줄 정리 → install/uninstall 반복 시 빈 줄 누적 방지.
-        # $(< file) 가 trailing newline 전부 제거 + printf 가 정확히 하나 복원.
-        printf '%s\n' "$(< "$tmp")" > "$cfg"
-        rm -f "$tmp"
-        echo "Removed: tildaz autostart block in $cfg ($label)"
-        removed=$((removed + 1))
-    fi
-}
-for id in "${TILDAZ_IDS[@]}"; do
-    remove_tildaz_block "$SWAY_CFG"  "$(marker_for "$id")"     "$id · marker + exec 2줄"
-    remove_tildaz_block "$HYPR_CONF" "$(marker_for "$id")"     "$id · marker + exec-once 2줄"
-    remove_tildaz_block "$HYPR_LUA"  "$(marker_lua_for "$id")" "$id · marker + hl.on 2줄"
-done
-
-# COSMIC RON custom shortcut — marker 블록이 아니라 단일 라인이라 줄 단위로 지운다.
-# 지우는 것은 둘뿐이다.
-#   ① 우리 표식이 붙은 줄 — `description: Some("TildaZ_<index>")` 또는 dev 판의
-#      `Some("TildaZ-dev_<index>")` (#654 · `app_id.window_base`). 바이너리 경로 · 이름과
-#      무관하게 우리 것이다.
-#   ② 표식이 아예 없고 명령이 `tildaz --toggle[ N]` 인 줄 — 예전 install.sh 가 쓴 것
-#      (#514). 지금 install.sh 는 COSMIC 항목을 쓰지 않는다.
-# 사용자가 이름을 붙인 줄(`description: Some("My wrapper")`)은 명령이 겹쳐도 보존한다 —
-# 명령 문자열로 판정하면 남의 항목을 지운다(#484). 바깥 '{ }' 와 다른 단축키도 보존.
-# 경로를 안 보는 이유는 uninstall 시점엔 binary 가 이미 없을 수 있어서다.
-COSMIC_CUSTOM="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
-if [[ -f "$COSMIC_CUSTOM" ]]; then
-    tmp="$COSMIC_CUSTOM.tildaz-uninstall-tmp"
-    awk '
-        /description: Some\("TildaZ(-dev)?_[0-9]+"\)/ { next }
-        /description:/ { print; next }
-        /Spawn\("[^"]*tildaz --toggle( [0-9]+)?"\)/ { next }
-        { print }
-    ' "$COSMIC_CUSTOM" > "$tmp"
-    if cmp -s "$tmp" "$COSMIC_CUSTOM"; then
-        rm -f "$tmp"
-    else
-        mv "$tmp" "$COSMIC_CUSTOM"
-        echo "Removed: tildaz hotkey shortcut in $COSMIC_CUSTOM"
-        removed=$((removed + 1))
-    fi
-fi
 
 if [[ "$removed" -eq 0 ]]; then
     echo "Nothing to remove (already uninstalled)."
