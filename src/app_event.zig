@@ -1,10 +1,14 @@
 const pane_layout = @import("pane_layout.zig");
+const config = @import("config.zig");
 const terminal_size = @import("font/terminal_size.zig");
 
 pub const Event = union(enum) {
     text_input: u21,
     key_input: KeyInput,
-    shortcut: Shortcut,
+    /// 창 안 단축키 · 전역 hotkey 의 액션. #692 — 예전에는 `Shortcut` 이라는 Windows 전용 표로
+    /// 한 번 더 옮겼다가 `app_controller` 가 다시 `input_policy.Shortcut` 으로 되돌렸다. 이제
+    /// `config.inputForAction` 의 결과를 그대로 싣는다 (세 host 가 같은 값을 `app_actions.run` 에 넘긴다).
+    action: config.ActionInput,
     /// 클립보드 paste (#142). UTF-8 bytes. `app_controller` 가 입력 정책
     /// (preedit commit) 적용 후 PTY 로 라우팅한다.
     paste: []const u8,
@@ -35,37 +39,6 @@ pub const Event = union(enum) {
     mouse_leave: void,
     focus_lost: void,
     tab_closed: usize,
-};
-
-pub const Shortcut = union(enum) {
-    new_tab: void,
-    close_active_tab: void,
-    reset_terminal: void,
-    dump_perf: void,
-    show_about: void,
-    open_config: void,
-    open_log: void,
-    /// #682 — 단축키 문서를 연다.
-    open_shortcuts: void,
-    switch_tab: usize,
-    next_tab: void,
-    prev_tab: void,
-    copy: void,
-    toggle_visibility: void,
-    /// false = monitor fullscreen, true = work-area fullscreen.
-    fullscreen: bool,
-    /// #483 — 화면 분할. 방향은 액션 이름에서 왔다 (`config.ActionInput.direction`).
-    split: pane_layout.Direction,
-    focus_pane: pane_layout.Direction,
-    resize_pane: pane_layout.Direction,
-    equalize_panes: void,
-    zoom_pane: void,
-    /// #544 — 활성 pane 하나 닫기. `close_active_tab` 은 탭 통째로다.
-    close_pane: void,
-    /// #646 — 활성 pane 의 검색바를 연다.
-    find: void,
-    /// #693 — 터미널 글자 크기를 창 전체에서 바꾼다.
-    font_size: terminal_size.Change,
 };
 
 pub const KeyInput = enum {

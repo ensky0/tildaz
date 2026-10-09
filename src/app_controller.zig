@@ -5,6 +5,7 @@ const key_encode = @import("key_encode.zig");
 const app_event = @import("app_event.zig");
 const input_policy = @import("input_policy.zig");
 const terminal_size = @import("font/terminal_size.zig");
+const font_spec = @import("font/spec.zig");
 const windows_input_adapter = @import("windows_input_adapter.zig");
 const session_core = @import("session_core.zig");
 const pane_layout = @import("pane_layout.zig");
@@ -463,32 +464,72 @@ pub const App = struct {
         pub fn layoutChanged(h: ActionHost) void {
             h.app.window.requestRender();
         }
-    };
-
-    /// #693 — 글자 크기 단축키. 셀을 다시 재고 (`Window.rebuildFonts`) renderer 를 다시 만든 뒤
-    /// (`onFontChange` — DPI 변경과 같은 경로) 격자를 맞춘다. 창 크기는 그대로라 `WM_SIZE` 가
-    /// 오지 않으므로 격자는 여기서 직접 맞춘다.
-    ///
-    /// `-size` 회차는 무시한다 — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를
-    /// 지킬 수 없다 (세 platform 공통 · Linux `handleFontSize`).
-    fn handleFontSize(self: *App, change: terminal_size.Change) void {
-        if (self.grid != null) {
-            log.logFontSizeIgnoredForFixedGrid(@tagName(change));
-            return;
+        /// `-size` 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를 지킬 수 없다.
+        pub fn fixedGrid(h: ActionHost) bool {
+            return h.app.grid != null;
         }
-        if (!self.window.font_size.apply(change)) return;
-        self.window.rebuildFonts(self.window.font_size.spec(), self.window.current_dpi);
-        onFontChange(&self.window, self);
-        self.syncPaneGrids();
-        log.logFontSize(@tagName(change), self.window.font_size.size_logical, self.window.cell_width_px, self.window.cell_height_px);
-        self.window.requestRender();
-    }
+        pub fn fontSize(h: ActionHost) *terminal_size.TerminalFontSize {
+            return &h.app.window.font_size;
+        }
+        pub fn cellSize(h: ActionHost) app_actions.CellSize {
+            return .{ .w = @intCast(h.app.window.cell_width_px), .h = @intCast(h.app.window.cell_height_px) };
+        }
+        /// 셀을 다시 재고 (`Window.rebuildFonts`) renderer 를 다시 만든다 — DPI 변경의 `onFontChange`
+        /// 와 같은 두 단계를, 아직 반영하지 않은 `spec` 으로 한다. renderer 가 실패하면 셀 메트릭을
+        /// 지금 크기로 되돌려 둘이 어긋나지 않게 한다 (renderer 는 실패하면 이전 폰트 그대로다).
+        pub fn rebuildFonts(h: ActionHost, spec: font_spec.Spec) !void {
+            const w = &h.app.window;
+            const dpi = w.current_dpi;
+            w.rebuildFonts(spec, dpi);
+            if (h.app.renderer) |*r| {
+                r.rebuildFonts(w.hwnd, w.font_chain[0..w.font_chain_count], spec, @intCast(w.cell_width_px), @intCast(w.cell_height_px)) catch |err| {
+                    w.rebuildFonts(w.font_size.spec(), dpi);
+                    return err;
+                };
+            }
+            h.app.applyDpiScale(dpi);
+        }
+        /// 우리 창은 `WS_EX_TOPMOST` 라 새로 뜨는 편집기가 뒤로 가려진다. topmost 만 잠시 내리고,
+        /// 다음 토글의 `show()` 가 되돌린다.
+        pub fn yieldTopmost(h: ActionHost) void {
+            h.app.window.yieldTopmostUntilNextShow();
+        }
+        pub fn fullscreenKind(h: ActionHost) ?app_actions.FullscreenKind {
+            return switch (h.app.window.fullscreen_mode) {
+                .none => null,
+                .monitor => .screen,
+                .workarea => .workarea,
+            };
+        }
+        pub fn toggleFullscreen(h: ActionHost, kind: app_actions.FullscreenKind) void {
+            h.app.window.toggleFullscreenMode(switch (kind) {
+                .screen => .monitor,
+                .workarea => .workarea,
+            });
+        }
+        pub fn toggleVisibility(h: ActionHost) void {
+            h.app.window.toggle();
+        }
+        pub fn showAbout(h: ActionHost) void {
+            about.showAboutDialog(h.app.rt, &h.app.menu_hints);
+        }
+        /// 입력 정책 (`Input.paste`) 은 `requestPaste` 가 스스로 적용한다.
+        pub fn paste(h: ActionHost) void {
+            h.app.window.requestPaste();
+        }
+        /// 키 경로의 `quit` 은 `Window.runKeyAction` 이 먼저 `WM_CLOSE` 로 보낸다. 여기는 그 밖의
+        /// 진입점이 생겨도 같은 확인 다이얼로그를 타게 둔 자리다.
+        pub fn quit(h: ActionHost) bool {
+            h.app.window.requestClose();
+            return true;
+        }
+    };
 
     /// `+` 클릭 — Alt 를 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례). 방향은
     /// pane 모양대로 — 넓으면 오른쪽, 높으면 아래.
     fn handlePlusClick(self: *App) void {
         if (!self.window.isAltDown()) {
-            if (self.resolveRunAction(.new_tab)) self.handleNewTab();
+            if (self.resolveRunAction(.new_tab)) app_actions.newTab(self.actionHost() orelse return);
             return;
         }
         if (!self.resolveRunAction(.split)) return;
@@ -972,34 +1013,6 @@ pub const App = struct {
         }
     }
 
-    pub fn handleNewTab(self: *App) void {
-        if (tab_actions.checkAtLimitAndDialog(self.rt, &self.host)) return;
-        // #248 — shell 이 런타임에 사라졌으면 조용히 죽는 대신 알림 후 취소.
-        if (!shell_validate.checkForNewTab(self.rt, self.allocator, self.shell)) return;
-        self.createTab() catch |err| {
-            log.logNewTabFailed(err);
-        };
-    }
-
-    pub fn handleCloseActiveTab(self: *App) void {
-        // closeActive helper 가 마지막 탭 → terminate (`window.closeAfterShellExit`),
-        // 그 외 → override clear + invalidate. .changed 일 때만 platform-specific
-        // grid resize (2 → 1 전환에서 탭바 사라짐, #127).
-        if (tab_actions.closeActive(&self.host) == .changed) {
-            // #483 — pane 이 닫혀도 (탭 수 그대로) 남은 pane 이 자리를 이어받으므로 격자를 맞춘다; 2 → 1 탭
-            // 전환 (#127) 도 같은 경로다 (`applyLayouts` 는 같은 격자면 건너뛴다).
-            self.syncGeometryAfterTabCountChange();
-        }
-    }
-
-    pub fn handleSwitchTab(self: *App, index: usize) void {
-        // 활성 탭 변경 — 사용자 화살표 override 해제. 이 시점부터
-        // ensureActiveTabVisible 가 다시 동작해 viewport 가 활성 탭을 따라감
-        // (Alt+N 으로 화살표 너머의 탭으로 이동했을 때 viewport 가 그 탭이
-        // 보이는 위치로 minimum 이동). handleTabClick 동일 패턴.
-        tab_actions.switchTab(&self.host, index);
-    }
-
     pub fn handleScroll(self: *App, event: app_event.ScrollEvent) void {
         // #483 6단계 결정 B — 휠은 **포인터 아래 pane** 을 스크롤하고 포커스는 바꾸지 않는다 (분할선 위나 pane
         // 밖이면 활성 pane). 페이지 키는 키라 활성 pane. 행 수는 그 pane 의 것.
@@ -1234,14 +1247,6 @@ pub const App = struct {
         };
     }
 
-    /// #646 — 활성 pane 의 검색바를 연다. 단축키와 메뉴가 **같은 함수**를 쓴다.
-    /// 이미 열려 있으면 검색어를 지우지 않는다 (다시 눌러도 치던 것이 사라지지 않는다).
-    fn handleFind(self: *App) void {
-        const tab = self.session.activeTab() orelse return;
-        tab.search.open();
-        self.window.requestRender();
-    }
-
     /// 메뉴 / 탭바 버튼의 상태 변경 명령 공통 진입 — keyboard shortcut 과 같은
     /// 입력 정책(IMM complete → action)을 거친다 (#329).
     /// false 면 IMM complete 실패 등으로 action 을 보류해야 한다.
@@ -1252,39 +1257,13 @@ pub const App = struct {
 
     fn executeCommandMenu(self: *App, command: command_menu.Command) void {
         self.closeCommandMenu();
-        // paste 만 commit 정책이 다른 `Input.paste` 경로 — requestPaste 가
-        // onAppEvent(.paste) → resolveWindowsInput(.paste) 를 그대로 탄다.
-        switch (command) {
-            .toggle_visibility => if (self.resolveRunAction(.toggle_visibility)) self.window.toggle(),
-            .new_tab => if (self.resolveRunAction(.new_tab)) self.handleNewTab(),
-            // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-            .split_right => if (self.resolveRunAction(.split)) app_actions.split(self.actionHost() orelse return, .right),
-            .split_down => if (self.resolveRunAction(.split)) app_actions.split(self.actionHost() orelse return, .down),
-            .close_active_tab => if (self.resolveRunAction(.close_tab)) self.handleCloseActiveTab(),
-            .copy => if (self.resolveRunAction(.copy)) tab_actions.copyActiveSelection(&self.host, self.allocator),
-            .paste => self.window.requestPaste(),
-            // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-            .find => if (self.resolveRunAction(.find)) self.handleFind(),
-            // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
-            // 해제, 아니면 monitor 진입 (키보드 self-symmetric 정책은 그대로).
-            .fullscreen => if (self.resolveRunAction(.fullscreen)) self.window.toggleFullscreenMode(if (self.window.fullscreen_mode != .none) self.window.fullscreen_mode else .monitor),
-            .open_config => if (self.resolveRunAction(.open_config)) {
-                const path = paths.configPath(self.rt, self.allocator) catch return;
-                defer self.allocator.free(path);
-                self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, path);
-            },
-            .open_log => if (self.resolveRunAction(.open_log)) {
-                const path = log.filePath() orelse return;
-                self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, path);
-            },
-            .keyboard_shortcuts => if (self.resolveRunAction(.open_shortcuts)) {
-                self.window.yieldTopmostUntilNextShow();
-                system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
-            },
-            .about => if (self.resolveRunAction(.show_about)) about.showAboutDialog(self.rt, &self.menu_hints),
+        // #329 — 메뉴의 상태 변경 명령도 단축키와 같은 입력 정책 (IMM complete → action) 을 거친다.
+        // paste 만 commit 정책이 다른 `Input.paste` 경로라 `window.requestPaste` 가 스스로 적용한다.
+        if (app_actions.menuCommandShortcut(command)) |sc| {
+            if (!self.resolveRunAction(sc)) return;
         }
+        // #692 — 실행은 공통 처리부.
+        app_actions.runMenuCommand(self.actionHost() orelse return, command);
     }
 
     /// #268/#329 — 탭바 컨트롤 버튼 hover 갱신.
@@ -1683,34 +1662,6 @@ pub const App = struct {
         }
     }
 
-    /// #296 — app_event.Shortcut → 입력 정책 Shortcut 매핑 (commit 여부 판정용).
-    fn appShortcutToPolicy(sc: app_event.Shortcut) input_policy.Shortcut {
-        return switch (sc) {
-            .new_tab => .new_tab,
-            .close_active_tab => .close_tab,
-            .reset_terminal => .reset_terminal,
-            .dump_perf => .dump_perf,
-            .show_about => .show_about,
-            .open_config => .open_config,
-            .open_log => .open_log,
-            .open_shortcuts => .open_shortcuts,
-            .switch_tab => .switch_tab,
-            .next_tab => .next_tab,
-            .prev_tab => .prev_tab,
-            .copy => .copy,
-            .toggle_visibility => .toggle_visibility,
-            .fullscreen => .fullscreen,
-            .split => .split,
-            .focus_pane => .focus_pane,
-            .resize_pane => .resize_pane,
-            .equalize_panes => .equalize_panes,
-            .zoom_pane => .zoom_pane,
-            .close_pane => .close_pane,
-            .find => .find,
-            .font_size => .font_size,
-        };
-    }
-
     /// Windows의 실제 IMM preedit 상태로 공통 입력 정책을 resolve하고 native
     /// pending 을 적용한다. `imeCompleteComposition` 안에서 GCS_RESULTSTR가
     /// 동기 text_input으로 원래 대상에 먼저 들어온다. complete가 실패하면
@@ -1868,121 +1819,18 @@ pub const App = struct {
                 self.closeCommandMenu();
                 return true;
             },
-            .shortcut => |shortcut| {
+            .action => |action| {
                 // #329 — 단축키는 메뉴를 먼저 닫고 정상 실행 (toggle 로 hide
                 // 해도 열린 메뉴가 남지 않음).
                 if (self.command_menu_open) self.closeCommandMenu();
                 // #296 — 단축키의 preedit commit 여부는 입력 정책(input_policy)
                 // 한 곳에서. 상태 변경 단축키는 focus_loss 로 preedit 을 commit
                 // 후 실행 (SPEC §4.1).
-                const disposition = self.resolveWindowsInput(.{ .shortcut = appShortcutToPolicy(shortcut) }) orelse return true;
+                const disposition = self.resolveWindowsInput(action.input) orelse return true;
                 if (disposition.target != .run_action) return true;
-                switch (shortcut) {
-                    .new_tab => {
-                        self.handleNewTab();
-                        return true;
-                    },
-                    .close_active_tab => {
-                        self.handleCloseActiveTab();
-                        return true;
-                    },
-                    .reset_terminal => {
-                        tab_actions.resetActive(&self.host);
-                        return true;
-                    },
-                    .dump_perf => {
-                        perf.dumpAndReset(self.rt, "snapshot");
-                        return true;
-                    },
-                    .show_about => {
-                        about.showAboutDialog(self.rt, &self.menu_hints);
-                        return true;
-                    },
-                    .open_config => {
-                        const path = paths.configPath(self.rt, self.allocator) catch return true;
-                        defer self.allocator.free(path);
-                        // 우리 창은 WS_EX_TOPMOST 라 새로 launch 되는 editor 가
-                        // 그 뒤로 가려져 사용자에겐 안 보임. topmost flag 만 잠시
-                        // 내려 → editor 가 자연스럽게 우리 위. 다음 F1 toggle 시
-                        // show() 의 applyRect 가 HWND_TOPMOST 복귀.
-                        self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.rt, self.allocator, path);
-                        return true;
-                    },
-                    .open_log => {
-                        const path = log.filePath() orelse return true;
-                        self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.rt, self.allocator, path);
-                        return true;
-                    },
-                    // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
-                    .open_shortcuts => {
-                        self.window.yieldTopmostUntilNextShow();
-                        system_open.openInDefaultApp(self.rt, self.allocator, app_version.keyboard_shortcuts_url);
-                        return true;
-                    },
-                    .switch_tab => |index| {
-                        self.handleSwitchTab(index);
-                        return true;
-                    },
-                    .next_tab => {
-                        tab_actions.nextTab(&self.host); // #117 — 활성 탭 보이도록 ensure 재가동
-                        return true;
-                    },
-                    .prev_tab => {
-                        tab_actions.prevTab(&self.host);
-                        return true;
-                    },
-                    .copy => {
-                        // Ctrl+Shift+C — 현재 highlight 된 selection 을 clipboard 로
-                        // (#120). 드래그 직후 finishTerminalSelection 이 자동 copy
-                        // 하지만, 그 후 사용자가 키로 다시 트리거하고 싶을 때.
-                        tab_actions.copyActiveSelection(&self.host, self.allocator);
-                        return true;
-                    },
-                    .toggle_visibility => {
-                        self.window.toggle();
-                        return true;
-                    },
-                    .fullscreen => |workarea| {
-                        self.window.toggleFullscreenMode(if (workarea) .workarea else .monitor);
-                        return true;
-                    },
-                    // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c · macOS 와 같은 배선).
-                    .split => |dir| {
-                        if (self.actionHost()) |h| app_actions.split(h, dir);
-                        return true;
-                    },
-                    .focus_pane => |dir| {
-                        if (self.actionHost()) |h| app_actions.focusPane(h, dir);
-                        return true;
-                    },
-                    .resize_pane => |dir| {
-                        if (self.actionHost()) |h| app_actions.resizePane(h, dir);
-                        return true;
-                    },
-                    .equalize_panes => {
-                        if (self.actionHost()) |h| app_actions.equalizePanes(h);
-                        return true;
-                    },
-                    .zoom_pane => {
-                        if (self.actionHost()) |h| app_actions.zoomPane(h);
-                        return true;
-                    },
-                    .find => {
-                        self.handleFind();
-                        return true;
-                    },
-                    // #544 — pane 하나 닫기 (`close_active_tab` 은 탭 통째로).
-                    .close_pane => {
-                        if (self.actionHost()) |h| app_actions.closePane(h);
-                        return true;
-                    },
-                    .font_size => |change| {
-                        self.handleFontSize(change);
-                        return true;
-                    },
-                }
+                // #692 — 실행은 공통 처리부. 창이 아직 없으면 할 일이 없다.
+                _ = app_actions.run(self.actionHost() orelse return true, action);
+                return true;
             },
             .mouse_down => |mouse| {
                 // #502 — 가운데 / 오른쪽 버튼은 chrome 에 역할이 없다. reporting 이

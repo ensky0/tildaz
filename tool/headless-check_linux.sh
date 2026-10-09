@@ -406,6 +406,38 @@ cmd_actions() {   # #692 — 공통 처리부 (`app_actions.zig`) 로 옮긴 액
     snd "key Return"; sleep 1   # 다이얼로그 OK
     # 닫기가 pane 하나만 닫았다면 지금 2 개 → 위아래로 가르면 3 개다.
     step "split after close" ctrl+shift+down 'split down — tab [0-9]+ has 3 panes'
+
+    # 검색바가 열려 있으면 글자는 검색 입력칸으로 간다 — 셸에 친 `touch` 가 실행되지 않아야 한다.
+    local M=/tmp/tzac-$$-m C=/tmp/tzac-$$-c; rm -f $M $C
+    snd "key ctrl+shift+f"; sleep 0.8
+    snd "type touch $M" "key Return"; sleep 2
+    if [ ! -e $M ]; then echo "OK   find — 글자가 검색 입력칸으로 갔다"; else echo "FAIL find — 셸이 touch 를 실행했다"; fail=1; fi
+    snd "key escape"; sleep 0.5
+    snd "type touch $M" "key Return"; wait_file $M >/dev/null || true
+    if [ -e $M ]; then echo "OK   find 닫기 — Esc 뒤 셸로"; else echo "FAIL find 닫기 — Esc 뒤에도 셸에 안 닿는다"; fail=1; fi
+    rm -f $M; base=$(wc -l < $L)
+    step "font increase"  ctrl+shift+equal     'terminal font size increase — '
+    step "font decrease"  ctrl+shift+minus     'terminal font size decrease — '
+    snd "key ctrl+shift+equal"; sleep 1; base=$(wc -l < $L)
+    step "font reset"     ctrl+shift+backspace 'terminal font size reset — '
+    step "fullscreen"     alt+return           'fullscreen → cover'
+    step "fullscreen off" alt+return           'fullscreen → none'
+    step "workarea"       shift+alt+return     'fullscreen → avoid'
+    step "workarea off"   shift+alt+return     'fullscreen → none'
+    step "about"          ctrl+shift+i         '\[dialog\] open '
+    snd "key Return"; sleep 1   # About 닫기
+    # 새 탭에서 `cat` 을 띄워 두고 Alt+1 → 첫 탭의 셸이면 `touch` 가 실행된다 (아니면 cat 의 입력이 된다).
+    step "new tab"        ctrl+shift+t         'new tab cwd='
+    sleep 1.5
+    snd "type cat > $C" "key Return"; sleep 1
+    snd "key alt+1"; sleep 0.8
+    snd "type touch $M" "key Return"; wait_file $M >/dev/null || true
+    if [ -e $M ]; then echo "OK   switch tab — Alt+1 뒤 첫 탭의 셸"; else echo "FAIL switch tab — touch 가 첫 탭에 안 닿았다"; fail=1; fi
+    # 첫 탭 (pane 3 개) 을 통째로 닫는다 → 셸 셋이 끝난다.
+    base=$(wc -l < $L); snd "key ctrl+shift+w"; sleep 2
+    local ended; ended=$(tail -n +$((base+1)) $L | grep -c 'shell exited')
+    if [ "$ended" = 3 ]; then echo "OK   close tab — pane 3 개의 셸이 끝났다"; else echo "FAIL close tab — shell exited $ended 줄 (3 기대)"; fail=1; fi
+    rm -f $M $C
     grim $OUT/screen.png
     kill -0 $WPID 2>/dev/null || { echo "FAIL 앱이 회차 중에 끝났다"; fail=1; }
     grep -E '\[(fatal|panic)\]' $L && fail=1

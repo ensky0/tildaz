@@ -28,6 +28,7 @@ const key_encode = @import("../key_encode.zig");
 const display_width = @import("../font/display_width.zig");
 const renderer_module = @import("../renderer.zig");
 const terminal_size = @import("../font/terminal_size.zig");
+const font_spec = @import("../font/spec.zig");
 // macOS 전용 host — render present/합성 게이트(#255 Phase 2) free 함수 직접 접근.
 const mac_renderer = @import("../renderer/macos.zig");
 const ui_metrics = @import("../ui_metrics.zig");
@@ -1518,49 +1519,10 @@ fn runKeyAction(action: config.KeyAction) bool {
         handlePaste();
         return true;
     }
-    const shortcut = mapped.input.shortcut;
-    applyShortcutInputPolicy(shortcut);
-    switch (shortcut) {
-        .copy => handleCopy(),
-        .new_tab => handleNewTab(),
-        .close_tab => handleCloseActiveTab(),
-        // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). `keycodeToTabIndex` 가
-        // 하던 일이다.
-        .switch_tab => tab_actions.switchTab(&g_host, mapped.tab_index orelse return false),
-        .prev_tab => tab_actions.prevTab(&g_host),
-        .next_tab => tab_actions.nextTab(&g_host),
-        .reset_terminal => tab_actions.resetActive(&g_host),
-        .dump_perf => perf.dumpAndReset(g_rt, "snapshot"),
-        // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 여기서 Shift 를 다시 읽어
-        // 갈랐는데, 사용자가 `fullscreen_workarea` 에 Shift 없는 조합을 줄 수도 있으므로
-        // 그 규칙으로는 안 된다.
-        .fullscreen => toggleFullscreenMode(.monitor),
-        .fullscreen_workarea => toggleFullscreenMode(.workarea),
-        // macOS 는 이 넷을 mainMenu 가 소유한다 (Cmd+Q / About / Config / Log). 메뉴
-        // 항목과 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키
-        // 경로에서는 소비하지 않고 흘린다 — 메뉴가 받는다.
-        // `quit` 은 `tildazPerformKeyEquivalent` 의 `⌘Q` 와 mainMenu 가 맡는다.
-        .quit => return false,
-        // #682 — 명령 메뉴와 같은 함수다. 예전에는 mainMenu 의 고정 단축키 (`⇧⌘I` 등) 에
-        // 맡겨서 사용자가 binding 을 바꿔도 따라가지 않았다.
-        .show_about => executeCommandMenu(.about),
-        .open_config => executeCommandMenu(.open_config),
-        .open_log => executeCommandMenu(.open_log),
-        .toggle_visibility, .open_command_menu => return false,
-        // #682 — 메뉴의 `Keyboard Shortcuts` 와 같다.
-        .open_shortcuts => executeCommandMenu(.keyboard_shortcuts),
-        // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화 (Linux 4b · 4c 와 같은 배선).
-        .split => app_actions.split(actionHost() orelse return true, mapped.direction orelse return false),
-        .focus_pane => app_actions.focusPane(actionHost() orelse return true, mapped.direction orelse return false),
-        .resize_pane => app_actions.resizePane(actionHost() orelse return true, mapped.direction orelse return false),
-        .equalize_panes => app_actions.equalizePanes(actionHost() orelse return true),
-        .zoom_pane => app_actions.zoomPane(actionHost() orelse return true),
-        // #544 — pane 하나 닫기 (`handleCloseActiveTab` 은 탭 통째로).
-        .close_pane => app_actions.closePane(actionHost() orelse return true),
-        .find => handleFind(),
-        .font_size => handleFontSize(mapped.font_size orelse return false),
-    }
-    return true;
+    applyShortcutInputPolicy(mapped.input.shortcut);
+    // #692 — 실행은 공통 처리부. `quit` 은 false 로 돌아와 키 경로가 흘린다 — `⌘Q` 와 mainMenu 가
+    // 받는다 (`MacActionHost.quit`).
+    return app_actions.run(actionHost() orelse return true, mapped);
 }
 
 /// #538 — `keyUp:`. kitty keyboard protocol 의 `report_events` 를 켠 앱에만 의미가 있다.
@@ -3441,42 +3403,8 @@ fn handleCommandMenuKey(menu_key: command_menu.MenuKey) void {
 
 fn executeCommandMenu(command: command_menu.Command) void {
     closeCommandMenu();
-    switch (command) {
-        .toggle_visibility => toggleWindow(),
-        .new_tab => handleNewTab(),
-        // #483 5단계 — 메뉴의 분할 항목 (마우스 경로).
-        .split_right => if (actionHost()) |h| app_actions.split(h, .right),
-        .split_down => if (actionHost()) |h| app_actions.split(h, .down),
-        .close_active_tab => handleCloseActiveTab(),
-        .copy => handleCopy(),
-        .paste => handlePaste(),
-        // #646 — 메뉴로도 검색을 연다 (단축키를 모르는 사용자의 경로).
-        .find => handleFind(),
-        // #334 — 메뉴는 상태 기준 토글: 어떤 모드든 전체화면이면 그 모드를
-        // 해제, 아니면 monitor 진입. 키보드의 self-symmetric(들어간 키로만
-        // 나옴) 정책은 그대로 — workarea 상태에서 메뉴가 no-op 이던 문제.
-        .fullscreen => toggleFullscreenMode(if (g_fullscreen_mode != .none) g_fullscreen_mode else .monitor),
-        // 셋 다 **바깥 앱을 띄운다** — 먼저 비켜 주지 않으면 우리 창 뒤에 열린다
-        // (`yieldTopmostUntilNextShow`). Windows `app_controller.zig` 의 같은 세 갈래와
-        // 짝이 맞는다.
-        .open_config => {
-            const allocator = g_gpa.allocator();
-            const path = @import("../paths.zig").configPath(g_rt, allocator) catch return;
-            defer allocator.free(path);
-            yieldTopmostUntilNextShow();
-            @import("../system_open.zig").openInDefaultApp(g_rt, allocator, path);
-        },
-        .open_log => {
-            const path = log.filePath() orelse return;
-            yieldTopmostUntilNextShow();
-            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), path);
-        },
-        .keyboard_shortcuts => {
-            yieldTopmostUntilNextShow();
-            @import("../system_open.zig").openInDefaultApp(g_rt, g_gpa.allocator(), app_version.keyboard_shortcuts_url);
-        },
-        .about => showAbout(),
-    }
+    // #692 — 실행은 공통 처리부. 조합은 호출자가 먼저 확정했다 (`commitPendingInput`).
+    if (actionHost()) |h| app_actions.runMenuCommand(h, command);
     requestRender();
 }
 
@@ -3710,7 +3638,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             },
             .close => {
                 tab.interaction.cancelPointerModes();
-                handleCloseActiveTab();
+                if (actionHost()) |h| app_actions.closeTab(h);
                 return;
             },
             .more => {
@@ -3757,7 +3685,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
             },
             // #268 — 우측 끝 `x` = 활성 탭 닫기 (per-tab close 대체).
             .close => {
-                handleCloseActiveTab();
+                if (actionHost()) |h| app_actions.closeTab(h);
                 return;
             },
             .more => {
@@ -4196,39 +4124,63 @@ const MacActionHost = struct {
     pub fn layoutChanged(_: MacActionHost) void {
         afterPaneLayoutChange();
     }
-};
-
-/// #693 — 글자 크기 단축키. 지금 배율 그대로 폰트를 다시 만들고 (`rebuildFonts` — 배율 변경과 같은
-/// 함수) 모든 탭의 격자를 맞춘다. 사본에 먼저 적용해 폰트를 만든 뒤에 반영한다 — 실패하면 크기도
-/// renderer 도 그대로다.
-///
-/// `-size` 회차는 무시한다 — 그 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를
-/// 지킬 수 없다 (세 platform 공통 · Linux `handleFontSize`).
-fn handleFontSize(change: terminal_size.Change) void {
-    if (g_renderer == null) return;
-    if (g_run_opts.grid != null) {
-        log.logFontSizeIgnoredForFixedGrid(@tagName(change));
-        return;
+    /// `-size` 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를 지킬 수 없다.
+    pub fn fixedGrid(_: MacActionHost) bool {
+        return g_run_opts.grid != null;
     }
-    var next = g_font_size;
-    if (!next.apply(change)) return;
-    const r = &g_renderer.?;
-    r.rebuildFonts(next.spec(), r.scale) catch |err| {
-        log.appendLine("font", "rebuildFonts failed: {s} — keeping {d} pt", .{ @errorName(err), g_font_size.size_logical });
-        return;
-    };
-    g_font_size = next;
-    syncTerminalGeometry();
-    log.logFontSize(@tagName(change), g_font_size.size_logical, r.font.cell_width_px, r.font.cell_height_px);
-    afterPaneLayoutChange();
-}
+    pub fn fontSize(_: MacActionHost) *terminal_size.TerminalFontSize {
+        return &g_font_size;
+    }
+    pub fn cellSize(_: MacActionHost) app_actions.CellSize {
+        const r = &g_renderer.?;
+        return .{ .w = @intCast(r.font.cell_width_px), .h = @intCast(r.font.cell_height_px) };
+    }
+    /// 배율 변경과 같은 함수 (`MetalRenderer.rebuildFonts`) — 지금 배율 그대로 다시 만든다.
+    pub fn rebuildFonts(_: MacActionHost, spec: font_spec.Spec) !void {
+        const r = &g_renderer.?;
+        try r.rebuildFonts(spec, r.scale);
+    }
+    pub fn yieldTopmost(_: MacActionHost) void {
+        yieldTopmostUntilNextShow();
+    }
+    pub fn fullscreenKind(_: MacActionHost) ?app_actions.FullscreenKind {
+        return switch (g_fullscreen_mode) {
+            .none => null,
+            .monitor => .screen,
+            .workarea => .workarea,
+        };
+    }
+    pub fn toggleFullscreen(_: MacActionHost, kind: app_actions.FullscreenKind) void {
+        toggleFullscreenMode(switch (kind) {
+            .screen => .monitor,
+            .workarea => .workarea,
+        });
+    }
+    pub fn toggleVisibility(_: MacActionHost) void {
+        toggleWindow();
+    }
+    pub fn showAbout(_: MacActionHost) void {
+        about.showAboutDialog(g_rt, &g_menu_hints);
+    }
+    /// 메뉴 경로의 붙여넣기. 키 경로는 `runKeyAction` 이 입력 정책 (`applyPasteInputPolicy`) 을
+    /// 먼저 적용하고 `handlePaste` 를 직접 부른다.
+    pub fn paste(_: MacActionHost) void {
+        handlePaste();
+    }
+    /// macOS 는 종료를 mainMenu 가 맡는다 (`⌘Q` · `tildazPerformKeyEquivalent`). 메뉴 항목과
+    /// 단축키가 둘 다 살아 있으면 어느 쪽이 이겼는지 알 수 없으므로 키 경로는 소비하지 않는다.
+    pub fn quit(_: MacActionHost) bool {
+        return false;
+    }
+};
 
 /// `+` 클릭 — Option(Alt) 을 누르고 있으면 새 탭 대신 활성 pane 분할 (Windows Terminal 의 Alt+클릭 선례).
 /// 방향은 pane 모양대로 — 넓으면 오른쪽, 높으면 아래.
 fn handlePlusClick(event: objc.id) void {
-    if (!eventMouseMods(event).alt) return handleNewTab();
+    const h = actionHost() orelse return;
+    if (!eventMouseMods(event).alt) return app_actions.newTab(h);
     const pr = activePaneRectMac() orelse return;
-    app_actions.split(actionHost() orelse return, if (pr.rect.w >= pr.rect.h) .right else .down);
+    app_actions.split(h, if (pr.rect.w >= pr.rect.h) .right else .down);
 }
 
 /// 포인터 아래 pane 이 활성 pane 이 아니면 그 pane 으로 포커스를 옮기고 true (Linux `focusPaneUnderPointer`).
@@ -4257,50 +4209,6 @@ fn finishSeparatorDrag(d: SepDrag) void {
         log.logPaneSeparatorUnchanged(d.node);
     }
     afterPaneLayoutChange();
-}
-
-/// Cmd+W — 활성 탭을 즉시 정리. PTY 자식이 살아 있어도 deinit 의 SIGHUP +
-/// fd close 로 정상 hangup 후 종료. 마지막 탭이 닫혔는지는 다음 frame 의
-/// drainExitedTabs 가 검사 (closeTab 이 컬렉션에서 즉시 제거하므로 사실 이번
-/// frame 끝에 count == 0 일 수 있음 — drainExitedTabs 의 빈 컬렉션 분기로
-/// 통일).
-fn handleCloseActiveTab() void {
-    // closeActive helper 가 마지막 탭 → terminate, 그 외 → override clear +
-    // invalidate. mac 의 사후 처리는 .changed 일 때 syncTerminalGeometry 만 —
-    // 2 → 1 전환에서 탭바 사라져 cell 영역 늘어나는 케이스 대응 (#127).
-    if (tab_actions.closeActive(&g_host) == .changed) {
-        syncGeometryAfterTabCountChange();
-        afterPaneLayoutChange();
-    }
-}
-
-/// #544 — `Shift+Cmd+X` (`close_pane`). 활성 pane 하나를 닫는다 — 마지막 pane 이면 탭,
-/// 마지막 탭이면 앱 종료 (`tab_actions.closeActivePane` 이 정책을 든다). 사후 처리는
-/// `handleCloseActiveTab` 과 같다. `Cmd+W` 는 탭 통째로다.
-/// #646 — 활성 pane 의 검색바를 연다. 이미 열려 있으면 검색어를 지우지 않고 그대로 둔다
-/// (같은 단축키를 다시 눌러도 치던 것이 사라지지 않는다).
-fn handleFind() void {
-    const tab = g_session.activeTab() orelse return;
-    const was_open = tab.search.is_open;
-    tab.search.open();
-    // 바가 새로 떴으면 그 자리의 커서 모양이 바뀐다 (터미널 I-beam → 컨트롤 화살표).
-    if (!was_open) invalidateCursorRects();
-    requestRender();
-}
-
-/// Cmd+T — 활성 탭의 cols/rows 와 같은 크기로 새 탭 생성 후 syncTerminalGeometry
-/// 가 1 → 2 전환 시 탭바 등장으로 줄어드는 cell 영역에 맞춰 모든 탭 resize.
-fn handleNewTab() void {
-    if (tab_actions.checkAtLimitAndDialog(g_rt, &g_host)) return;
-    // #248 — shell 이 런타임에 사라졌으면 (brew 업데이트 등) 조용히 죽는 대신 알림.
-    if (!@import("../shell_validate.zig").checkForNewTab(g_rt, g_gpa.allocator(), g_config.shell)) return;
-    const active = g_session.activeTab() orelse return;
-    g_session.createTab(active.terminal.cols, active.terminal.rows) catch |err| {
-        log.logNewTabFailed(err);
-        return;
-    };
-    syncGeometryAfterTabCountChange();
-    g_tab_scroll_user_override = false;
 }
 
 /// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
@@ -4587,7 +4495,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // applicationShouldTerminate: hook (#116) — 다중 탭에서 Cmd+Q / 메뉴 Quit
     // 시 confirm 다이얼로그. NSApp.terminate 모든 path 를 한 곳에서 가로챔
     // (mainMenu 의 Quit + 마지막 탭 닫힘 자동 terminate). 마지막 탭 종료 후
-    // 자동 호출되는 path (drainExitedTabs / handleCloseActiveTab /
+    // 자동 호출되는 path (drainExitedTabs / app_actions.closeTab /
     // handleTabBarClick) 는 count == 0 이라 자동 통과.
     try installAppDelegate();
 

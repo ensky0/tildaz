@@ -1941,7 +1941,7 @@ pub const Window = struct {
             },
             WM_HOTKEY => {
                 if (wParam == HOTKEY_ID) {
-                    if (!self.dispatchAppEvent(.{ .shortcut = .toggle_visibility })) self.toggle();
+                    if (!self.dispatchAppEvent(.{ .action = .{ .input = .{ .shortcut = .toggle_visibility } } })) self.toggle();
                 }
                 return 0;
             },
@@ -2849,6 +2849,12 @@ pub const Window = struct {
         _ = PostMessageW(self.requireHwnd(), WM_CLOSE, 0, 0);
     }
 
+    /// 사용자가 닫기를 요청했다 (`quit` 액션). `WM_CLOSE` 를 보내 `onQuitRequest` 의 확인
+    /// 다이얼로그 경로를 그대로 탄다 — `Alt+F4` 를 `DefWindowProcW` 가 처리할 때와 같은 메시지다.
+    pub fn requestClose(self: *Window) void {
+        _ = PostMessageW(self.requireHwnd(), WM_CLOSE, 0, 0);
+    }
+
     pub fn postTabClosed(self: *const Window, tab_ptr: usize) void {
         _ = PostMessageW(self.requireHwnd(), WM_TAB_CLOSED, tab_ptr, 0);
     }
@@ -3125,61 +3131,28 @@ pub const Window = struct {
     /// 같은 키 표가 있었다는 뜻이고, 그 이중 기술이 갈라지는 것이 #484 의 원인이었다).
     fn runKeyAction(self: *Window, action: config_mod.KeyAction) void {
         const mapped = config_mod.inputForAction(action);
-        // `paste` 는 `app_event.Shortcut` 에 없다 — 클립보드 읽기가 host 쪽 일이고
-        // preedit commit 정책도 달라서 (`Input.paste`) 따로 처리한다.
+        // `paste` 는 클립보드 읽기가 host 쪽 일이고 preedit commit 정책도 달라서 (`Input.paste`)
+        // 따로 처리한다.
         if (mapped.input == .paste) {
             if (self.write_fn) |write_fn| self.pasteClipboard(write_fn);
             return;
         }
-        const shortcut: app_event.Shortcut = switch (mapped.input.shortcut) {
-            .new_tab => .new_tab,
-            .close_tab => .close_active_tab,
-            .next_tab => .next_tab,
-            .prev_tab => .prev_tab,
-            // 인덱스는 액션 이름에서 왔다 (`switch_tab3` → 2). 예전엔 여기서
-            // `wParam - 0x31` 로 뽑았다.
-            .switch_tab => .{ .switch_tab = mapped.tab_index orelse return },
-            .reset_terminal => .reset_terminal,
-            .show_about => .show_about,
-            .open_config => .open_config,
-            .open_log => .open_log,
-            .open_shortcuts => .open_shortcuts,
-            .copy => .copy,
-            .dump_perf => .dump_perf,
-            // #493 3-c — 두 fullscreen 이 별 액션이 됐다. 예전엔 `GetAsyncKeyState`
-            // 로 Shift 를 다시 읽어 갈랐는데, 사용자가 `fullscreen_workarea` 에
-            // Shift 없는 조합을 줄 수도 있으므로 그 규칙으로는 안 된다.
-            .fullscreen => .{ .fullscreen = false },
-            .fullscreen_workarea => .{ .fullscreen = true },
-            .quit => {
-                // Alt+F4 는 원래 `DefWindowProcW` 가 `SC_CLOSE` → `WM_CLOSE` 로
-                // 처리했다. 이제 액션으로 잡으므로 같은 메시지를 직접 보낸다 —
-                // `onQuitRequest` 의 확인 다이얼로그 경로가 그대로 이어진다.
-                //
-                // 사용자가 `quit` 을 다른 키로 옮겨도 Alt+F4 자체는 OS 가 계속
-                // 닫는다. 그것을 막으려면 `SC_CLOSE` 를 가로채야 하는데, 시스템
-                // 메뉴의 닫기까지 무력화되므로 하지 않는다.
-                _ = PostMessageW(self.requireHwnd(), WM_CLOSE, 0, 0);
-                return;
-            },
-            // 이 host 의 키 경로가 내지 않는 것들 — toggle 은 전역 핫키가, menu 는
-            // 마우스가 진입점이다.
-            .toggle_visibility, .open_command_menu => return,
-            // #483 4a — 분할 액션. `app_event.Shortcut` 매핑과 배선은 5단계 (Linux 4b 먼저).
-            // #483 5단계 — 분할 · 포커스 · 크기 · 균등 · 최대화. 방향은 액션 이름에서 왔다 (`split_right` → `.right`).
-            .split => .{ .split = mapped.direction orelse return },
-            .focus_pane => .{ .focus_pane = mapped.direction orelse return },
-            .resize_pane => .{ .resize_pane = mapped.direction orelse return },
-            .equalize_panes => .equalize_panes,
-            .zoom_pane => .zoom_pane,
-            .close_pane => .close_pane,
-            .find => .find,
-            .font_size => .{ .font_size = mapped.font_size orelse return },
-        };
-        if (!self.dispatchAppEvent(.{ .shortcut = shortcut })) {
+        if (mapped.input.shortcut == .quit) {
+            // Alt+F4 는 원래 `DefWindowProcW` 가 `SC_CLOSE` → `WM_CLOSE` 로 처리했다. 이제 액션으로
+            // 잡으므로 같은 메시지를 직접 보낸다 — `onQuitRequest` 의 확인 다이얼로그 경로가 그대로
+            // 이어진다.
+            //
+            // 사용자가 `quit` 을 다른 키로 옮겨도 Alt+F4 자체는 OS 가 계속 닫는다. 그것을 막으려면
+            // `SC_CLOSE` 를 가로채야 하는데, 시스템 메뉴의 닫기까지 무력화되므로 하지 않는다.
+            self.requestClose();
+            return;
+        }
+        // #692 — 나머지는 `ActionInput` 을 그대로 app 에 넘긴다. 실행은 공통 처리부 (`app_actions.run`).
+        if (!self.dispatchAppEvent(.{ .action = mapped })) {
             // app 이 소비하지 않은 fullscreen 은 window 가 직접 처리한다 (기존 동작).
-            switch (shortcut) {
-                .fullscreen => |workarea| self.toggleFullscreenMode(if (workarea) .workarea else .monitor),
+            switch (mapped.input.shortcut) {
+                .fullscreen => self.toggleFullscreenMode(.monitor),
+                .fullscreen_workarea => self.toggleFullscreenMode(.workarea),
                 else => {},
             }
         }

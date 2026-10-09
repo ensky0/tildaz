@@ -514,6 +514,8 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 - **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
 - **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.
 
+**액션의 실행은 [`src/app_actions.zig`](src/app_actions.zig) 한 곳에 더해요** ([#692](https://github.com/ensky0/tildaz/issues/692)). host 마다 한 벌씩 쓰지 않아요. `config.KeyAction` · `inputForAction` · `input_policy.Shortcut` 에 값을 더하면 `app_actions.run` 의 `switch` 를 컴파일러가 짚어 줘요. OS 에 닿는 일이 필요하면 세 어댑터 (`App.ActionHost` · `MacActionHost` · `Client.LinuxActionHost`) 에 훅을 하나씩 더해요. 하나라도 빠지면 그 host 의 컴파일에서 걸려요 (`zig build check`).
+
 **액션을 더하면 config 스키마가 바뀌어요.** 기존 `config_N.toml` 에는 그 키가 없으니 **기본 바인딩으로 돌고 시작 안내에 한 줄이 뜹니다** ([#655](https://github.com/ensky0/tildaz/issues/655) 이전에는 `missing required key "<액션>"` 으로 **부팅이 막혔어요** — 원칙 5 가 그것을 뒤집었어요). 부팅을 막지는 않지만 **사용자가 안내를 보는 것은 그대로**라, 새 액션은 [`dist/release-notes/UNRELEASED.md`](dist/release-notes/UNRELEASED.md) 의 `Upgrade notes` 에 **같은 PR 에서** 한 줄을 더해요 (아래 `# 릴리즈` 의 운반책 규칙). 이미 그 안내가 있으면 개수를 고쳐요.
 
 # 커밋 메시지
