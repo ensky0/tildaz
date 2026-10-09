@@ -459,10 +459,15 @@ pub const App = struct {
         pub fn syncAfterTabCountChange(h: ActionHost) void {
             h.app.syncGeometryAfterTabCountChange();
         }
-        /// `wndProc` 이 tick 이 아닌 모든 메시지에서 이미 다시 그리기를 연다 (`Window.needs_render`).
+        /// 다시 그리기는 `wndProc` 이 tick 이 아닌 모든 메시지에서 이미 연다 (`Window.needs_render`) —
         /// 다른 host 와 같은 자리에서 부르도록 둔다.
+        ///
+        /// 커서는 다시 정해야 한다. `WM_SETCURSOR` 는 마우스가 움직일 때만 와서, 분할 · 검색바처럼
+        /// 포인터 아래가 바뀌어도 포인터를 움직이기 전까지 옛 모양이 남는다 (#692 — macOS 는
+        /// `invalidateCursorRects`, Linux 는 루프의 `updateCursorShape` 가 같은 일을 한다).
         pub fn layoutChanged(h: ActionHost) void {
             h.app.window.requestRender();
+            h.app.window.refreshCursor();
         }
         /// `-size` 회차는 창을 요청 격자에 맞추므로 글자 크기가 바뀌면 격자를 지킬 수 없다.
         pub fn fixedGrid(h: ActionHost) bool {

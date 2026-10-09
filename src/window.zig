@@ -294,6 +294,7 @@ extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.c) isize;
 extern "user32" fn LoadCursorW(HINSTANCE, ?*const anyopaque) callconv(.c) HCURSOR;
 extern "user32" fn SetCursor(HCURSOR) callconv(.c) HCURSOR;
 extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.c) BOOL;
+extern "user32" fn WindowFromPoint(POINT) callconv(.c) HWND;
 /// #647 — `TrackMouseEvent` 인자. `cbSize` 를 반드시 채운다 (Win32 의 버전 구분 방식).
 const TRACKMOUSEEVENT = extern struct {
     cbSize: DWORD,
@@ -1766,7 +1767,14 @@ pub const Window = struct {
     /// #647 — 포인터가 있는 자리의 커서를 **지금** 다시 지정한다.
     ///
     /// `WM_SETCURSOR` 는 마우스가 움직일 때만 오므로, 수식키만 누른 순간에는 커서가 따라오지
-    /// 않는다. 그때 이것을 불러 같은 판정 (`cursor_region_fn`) 을 한 번 더 태운다.
+    /// 않는다. 그때 이것을 불러 같은 판정 (`cursor_region_fn`) 을 한 번 더 태운다. #692 — 분할 ·
+    /// 검색바처럼 배치가 바뀐 뒤에도 부른다 (`App.ActionHost.layoutChanged`). macOS 의
+    /// `invalidateCursorRects`, Linux 루프의 `updateCursorShape` 와 같은 자리다.
+    ///
+    /// **포인터가 우리 창 위일 때만** 바꾼다. `SetCursor` 문서가 *"커서는 공유 자원이다. 창은
+    /// 커서가 자기 client 영역에 있을 때만 모양을 정해야 한다"* 고 적는다 — 키를 누른 순간
+    /// 포인터가 다른 앱 위에 있으면 그 앱의 커서를 바꾸게 된다. 우리 창에는 자식 창이 없어
+    /// `WindowFromPoint` 를 그대로 비교한다.
     pub fn refreshCursor(self: *Window) void {
         const region_fn = self.cursor_region_fn orelse return;
         if (self.hwnd == null) return;
@@ -1776,6 +1784,7 @@ pub const Window = struct {
         // 두었고 `toBool()` 이 그 자리다.
         var pt: POINT = undefined;
         if (!GetCursorPos(&pt).toBool()) return;
+        if (WindowFromPoint(pt) != self.hwnd) return;
         if (!ScreenToClient(self.hwnd, &pt).toBool()) return;
         const handle: HCURSOR = switch (region_fn(@intCast(pt.x), @intCast(pt.y), self.userdata)) {
             .cell => self.cursor_ibeam,
