@@ -115,6 +115,66 @@ hygiene_overlay_set() {
     powershell -NoProfile -Command "Add-Type -Namespace H -Name S -MemberDefinition '[DllImport(\"powrprof.dll\")] public static extern uint PowerSetActiveOverlayScheme(System.Guid g);'; exit ([int][H.S]::PowerSetActiveOverlayScheme([System.Guid]'$1'))" >/dev/null 2>&1
 }
 
+# Windows 의 `현재 최대` 주사율을 `"<현재> <최대>"` 로 낸다 (#729). 못 읽으면 빈 문자열.
+#
+# - **현재**는 `Win32_VideoController.CurrentRefreshRate` 그대로다. DRR 이 켜져 있으면 이 값이
+#   기본값 (대개 60) 으로 나오는 것이 DRR 탐지의 근거라서 (README 의 DRR 절) 바꾸지 않는다.
+# - **최대**는 `MaxRefreshRate` 를 쓰지 않는다. 그 값은 **모든 모드의 최대**라 3840x2160@60 화면이
+#   `1280x1024@75` 때문에 *"최대 75 Hz"* 로 늘 걸렸다 (데스크탑 Ryzen 7 5700G · Dell U2723QE 실측).
+#   대신 `EnumDisplaySettingsW` 로 **지금 해상도의 모드만** 훑는다 — Linux 의 `kscreen-doctor`
+#   경로가 같은 오탐을 고친 방식과 같다.
+#
+# 여러 줄 C# 라 한 줄 `-Command` 에 넣지 않고 임시 `.ps1` 로 부른다 (따옴표가 두 겹으로 엉킨다).
+hygiene_refresh_windows() {
+    _ps=$(mktemp --suffix=.ps1) || return 0
+    cat > "$_ps" <<'PS1'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class TzRefresh {
+    // wingdi.h 의 DEVMODEW. 화면용 union 갈래 (position · orientation · fixed output) 로 둔다.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct DEVMODEW {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion; public ushort dmDriverVersion; public ushort dmSize; public ushort dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX; public int dmPositionY; public uint dmDisplayOrientation; public uint dmDisplayFixedOutput;
+        public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels; public uint dmBitsPerPel; public uint dmPelsWidth; public uint dmPelsHeight;
+        public uint dmDisplayFlags; public uint dmDisplayFrequency;
+        public uint dmICMMethod; public uint dmICMIntent; public uint dmMediaType; public uint dmDitherType;
+        public uint dmReserved1; public uint dmReserved2; public uint dmPanningWidth; public uint dmPanningHeight;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODEW dm);
+    const int ENUM_CURRENT_SETTINGS = -1;
+
+    // 주 화면의 지금 해상도에서 고를 수 있는 가장 높은 주사율. 못 읽으면 0.
+    public static uint MaxAtCurrentResolution() {
+        DEVMODEW cur = new DEVMODEW();
+        cur.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODEW));
+        if (!EnumDisplaySettingsW(null, ENUM_CURRENT_SETTINGS, ref cur)) return 0;
+        uint max = 0;
+        for (int i = 0; ; i++) {
+            DEVMODEW m = new DEVMODEW();
+            m.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODEW));
+            if (!EnumDisplaySettingsW(null, i, ref m)) break;
+            if (m.dmPelsWidth == cur.dmPelsWidth && m.dmPelsHeight == cur.dmPelsHeight && m.dmDisplayFrequency > max)
+                max = m.dmDisplayFrequency;
+        }
+        return max;
+    }
+}
+'@
+$v = Get-CimInstance Win32_VideoController | Select-Object -First 1
+$max = [TzRefresh]::MaxAtCurrentResolution()
+if ($null -ne $v.CurrentRefreshRate -and $max -gt 0) { "$($v.CurrentRefreshRate) $max" }
+PS1
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$_ps")" 2>/dev/null | tr -d '\r'
+    rm -f "$_ps"
+}
+
 # 열려 있는 창을 전부 최소화한다 (Windows). KDE 쪽 `hygiene_minimize_windows` 와 같은
 # 의미다. 예전 `measure-repeat.ps1` 이 자기 안에서 부르던 COM 호출을 여기로 들여왔다.
 hygiene_minimize_win32() {
@@ -265,14 +325,16 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
             else
                 HYG_POWER=AC
             fi
-            _rr=$(powershell -NoProfile -Command "\$v=Get-CimInstance Win32_VideoController | Select-Object -First 1; \"\$(\$v.CurrentRefreshRate) \$(\$v.MaxRefreshRate)\"" 2>/dev/null | tr -d '\r')
+            _rr=$(hygiene_refresh_windows)
             _cur=${_rr% *}; _max=${_rr#* }
-            if [ -n "$_cur" ] && [ "$_cur" != "$_max" ]; then
+            if [ -n "$_cur" ]; then
                 HYG_REFRESH="${_cur}Hz"
-                _warn="$_warn
-주사율이 $_cur Hz 인데 최대는 $_max Hz 예요 — 동적 새로 고침 빈도(DRR)를 끄고 고정 값을 골라요"
-            elif [ -n "$_cur" ]; then
-                HYG_REFRESH="${_cur}Hz"
+                # 1 Hz 차이는 같은 값으로 본다 — `CurrentRefreshRate` 가 60 Hz 화면을 59 로
+                # 보고하고 모드 목록은 60 이다 (#729 실측). DRR 은 60 ↔ 120 처럼 크게 갈린다.
+                if [ -n "$_max" ] && [ "$((_max - _cur))" -gt 1 ]; then
+                    _warn="$_warn
+주사율이 $_cur Hz 인데 이 해상도의 최대는 $_max Hz 예요 — 동적 새로 고침 빈도(DRR)를 끄고 고정 값을 골라요"
+                fi
             fi
             ;;
     esac
