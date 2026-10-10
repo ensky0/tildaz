@@ -1,0 +1,181 @@
+macOS 표시 대기열 진단 패치 (#476 · #732) — 커밋하지 않고 측정할 때만 잠깐 얹는다.
+
+쓰는 법과 읽는 법은 AGENTS.md 의 "# macOS — 표시 대기열을 재는 법" 절이 단일 출처예요.
+
+  git apply tool/present-latency-probe_macos.patch     # 얹기
+  git apply -R tool/present-latency-probe_macos.patch  # 걷기 (또는 git checkout -- src/)
+
+perf 덤프에 세 줄이 더해진다.
+  TEMPdraw  nextDrawable 대기 (표본 · 합 · 최악 · 분포)
+  TEMPfdrn  renderFrameTick 안의 drainOutputForRender
+  TEMPpres  present 호출 → presentedTime (화면 표시) · drop = presentedTime 0
+환경변수 TILDAZ_TEMP476=drawables2 | nosync 로 대조 실험을 고른다 (maximumDrawableCount = 2 ·
+displaySyncEnabled = NO). 값이 없으면 기본 설정 그대로다.
+
+diff --git a/src/host/macos.zig b/src/host/macos.zig
+index db7fe88..4c255b2 100644
+--- a/src/host/macos.zig
++++ b/src/host/macos.zig
+@@ -4685,6 +4685,18 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
+     const setClipsToBounds = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+     setClipsToBounds(content_view, objc.sel("setClipsToBounds:"), true);
+     g_metal_layer = layer;
++    // TEMP #476 — 대기열 가설 대조 실험. 원인 확정 뒤 걷는다.
++    if (std.c.getenv("TILDAZ_TEMP476")) |raw| {
++        const mode = std.mem.span(raw);
++        if (std.mem.eql(u8, mode, "drawables2")) {
++            const setCount = objc.objcSend(fn (objc.id, objc.SEL, c_ulong) callconv(.c) void);
++            setCount(layer, objc.sel("setMaximumDrawableCount:"), 2);
++        } else if (std.mem.eql(u8, mode, "nosync")) {
++            const setSync = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
++            setSync(layer, objc.sel("setDisplaySyncEnabled:"), false);
++        }
++        log.appendLine("startup", "TEMP476 mode={s}", .{mode});
++    }
+ 
+     // 4. 첫 dock rect 적용 후 표시 (hidden_start 면 표시 생략 — 첫 hotkey 까지
+     //    윈도우는 unmapped, F1 처음 눌렀을 때 첫 노출. Windows windows_host.run
+@@ -5124,7 +5136,9 @@ fn renderFrameTick() void {
+     // #255 Phase 2 / #269 — 모든 탭 output ring을 공통 예산 안에서 drain + parse.
+     // 반환값은 활성 탭 본문 또는 어느 탭이든 제목이 바뀌어 현재 화면 redraw가
+     // 필요한지 나타낸다. 비활성 탭 본문만 바뀌면 parse하되 GPU render는 생략한다.
++    const temp_fd_t0 = perf.now(); // TEMP #476
+     const had_output = g_session.drainOutputForRender();
++    perf.tempAddFrameDrain(temp_fd_t0); // TEMP #476
+     // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ preedit/autoscroll
+     // ④ blink 위상 전환 (#376).
+     const force_render = g_preedit_len > 0 or did_autoscroll;
+diff --git a/src/perf.zig b/src/perf.zig
+index 37a1e88..f3a6d92 100644
+--- a/src/perf.zig
++++ b/src/perf.zig
+@@ -359,6 +359,33 @@ pub fn snapshot(c: *Counter) [4]u64 {
+     };
+ }
+ 
++// TEMP #476 진단 — macOS `nextDrawable` 대기 · 프레임 안의 드레인. 원인 확정 뒤 걷는다.
++pub var temp_drawable_wait: Counter = .{};
++pub var temp_drawable_wait_hist: Histogram = .{};
++pub var temp_frame_drain: Counter = .{};
++pub var temp_frame_drain_hist: Histogram = .{};
++pub fn tempAddDrawableWait(start: Timestamp) void {
++    const dt = nsSince(start) orelse return;
++    recordLatency(&temp_drawable_wait, &temp_drawable_wait_hist, dt);
++}
++// TEMP #476 — present → 화면 표시 (`presentedTime` − present 시각). 0 이면 표시되지 못한 프레임.
++pub var temp_present_lat: Counter = .{};
++pub var temp_present_lat_hist: Histogram = .{};
++pub var temp_present_drop: Counter = .{};
++pub fn tempAddPresentLatency(presented_s: f64, present_call_s: f64) void {
++    if (presented_s <= 0 or present_call_s <= 0) {
++        _ = temp_present_drop.calls.fetchAdd(1, .monotonic);
++        return;
++    }
++    const d = presented_s - present_call_s;
++    if (d < 0) return;
++    recordLatency(&temp_present_lat, &temp_present_lat_hist, @intFromFloat(d * 1e9));
++}
++pub fn tempAddFrameDrain(start: Timestamp) void {
++    const dt = nsSince(start) orelse return;
++    recordLatency(&temp_frame_drain, &temp_frame_drain_hist, dt);
++}
++
+ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
+     const rl = snapshot(&readloop);
+     const pu = snapshot(&push);
+@@ -490,7 +517,37 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
+         },
+     ) catch return;
+ 
+-    log.appendBlock(buf[0 .. text.len + tail.len]);
++    // TEMP #476 진단.
++    const dw = snapshot(&temp_drawable_wait);
++    const dwh = temp_drawable_wait_hist.take();
++    const fd = snapshot(&temp_frame_drain);
++    const fdh = temp_frame_drain_hist.take();
++    const pl = snapshot(&temp_present_lat);
++    const plh = temp_present_lat_hist.take();
++    const pd = snapshot(&temp_present_drop);
++    const temp = std.fmt.bufPrint(
++        buf[text.len + tail.len ..],
++        "TEMPdraw samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n" ++
++            "TEMPfdrn samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n" ++
++            "TEMPpres samples={d} ms={d:.3} max_ms={d:.3} hist={any} drop={d}\n",
++        .{
++            dw[0],
++            @as(f64, @floatFromInt(dw[1])) / 1_000_000.0,
++            @as(f64, @floatFromInt(dw[3])) / 1_000_000.0,
++            dwh,
++            fd[0],
++            @as(f64, @floatFromInt(fd[1])) / 1_000_000.0,
++            @as(f64, @floatFromInt(fd[3])) / 1_000_000.0,
++            fdh,
++            pl[0],
++            @as(f64, @floatFromInt(pl[1])) / 1_000_000.0,
++            @as(f64, @floatFromInt(pl[3])) / 1_000_000.0,
++            plh,
++            pd[0],
++        },
++    ) catch return;
++
++    log.appendBlock(buf[0 .. text.len + tail.len + temp.len]);
+ }
+ 
+ /// #396 — 측정 인스턴스는 종료 직전에 스냅숏을 **자동으로 한 번** 남긴다. 손으로
+diff --git a/src/renderer/macos.zig b/src/renderer/macos.zig
+index c2a6238..0370f9b 100644
+--- a/src/renderer/macos.zig
++++ b/src/renderer/macos.zig
+@@ -90,6 +90,26 @@ var presented_block: PresentedBlock = .{
+     .descriptor = &presented_block_descriptor,
+ };
+ 
++// TEMP #476 — present → 화면 표시 지연. present 시각을 drawableID 칸에 적고, 표시 handler 가 읽는다.
++extern "QuartzCore" fn CACurrentMediaTime() f64;
++var temp_present_t: [64]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0));
++fn tempPresentedInvoke(_: *PresentedBlock, drawable: objc.id) callconv(.c) void {
++    if (drawable == null) return;
++    const presentedTimeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
++    const idOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
++    const pt = presentedTimeOf(drawable, objc.sel("presentedTime"));
++    const id = idOf(drawable, objc.sel("drawableID"));
++    const t0: f64 = @bitCast(temp_present_t[id % 64].load(.acquire));
++    perf.tempAddPresentLatency(pt, t0);
++}
++var temp_presented_block: PresentedBlock = .{
++    .isa = null,
++    .flags = BLOCK_IS_GLOBAL,
++    .reserved = 0,
++    .invoke = &tempPresentedInvoke,
++    .descriptor = &presented_block_descriptor,
++};
++
+ /// 마지막 show 이후 drawable 이 화면에 표시된 적 있나 (host 의 pause 게이트).
+ pub fn frameWasPresented() bool {
+     return g_frame_presented.load(.seq_cst);
+@@ -631,7 +651,9 @@ pub const MetalRenderer = struct {
+         // #483 2단계 ② — 프레임 시작. 이 프레임의 pane 수를 0 으로.
+         self.panes_drawn = 0;
+         const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
++        const temp_dw_t0 = perf.now(); // TEMP #476
+         const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
++        perf.tempAddDrawableWait(temp_dw_t0); // TEMP #476
+         if (drawable == null) {
+             self.pending_tabs = null;
+             return;
+@@ -798,6 +820,15 @@ pub const MetalRenderer = struct {
+             addHandler(self.current_drawable, objc.sel("addPresentedHandler:"), &presented_block);
+         }
+ 
++        // TEMP #476 — present 시각 기록 + 표시 handler.
++        {
++            const idOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ulong);
++            const id = idOf(self.current_drawable, objc.sel("drawableID"));
++            temp_present_t[id % 64].store(@bitCast(CACurrentMediaTime()), .release);
++            temp_presented_block.isa = &_NSConcreteGlobalBlock;
++            const addHandlerT = objc.objcSend(fn (objc.id, objc.SEL, *PresentedBlock) callconv(.c) void);
++            addHandlerT(self.current_drawable, objc.sel("addPresentedHandler:"), &temp_presented_block);
++        }
+         // #160 — present(drawable 표시 + commit) 계측.
+         const present_t0 = perf.now();
+         objc.msgSendVoid1(self.current_cmd_buf, objc.sel("presentDrawable:"), self.current_drawable);

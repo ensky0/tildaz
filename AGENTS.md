@@ -830,6 +830,54 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   (`pkill -x tildaz` 는 사용자의 instance 0 도 죽여요 — #583 A12). 실기라서 `# 실행 환경` 대로
   **시작 전에 창이 몇 번 뜨는지 알리고** 그동안 키 · 마우스를 건드리지 말라고 해요.
 
+# macOS — 표시 대기열을 재는 법
+
+키를 눌러 화면에 보이기까지는 **우리가 재던 `input` (키 → present 호출) 보다 훨씬 길어요.** present 한
+그림은 macOS 표시 대기열을 지나 **3~4 프레임 뒤**에 나와요 ([#476](https://github.com/ensky0/tildaz/issues/476)
+2026-10-10 실측: 유휴 23.5 ms · 폭포 31.8 ms, 120 Hz). 그 대기열이 꽉 차는 위상에 들어가면
+`CAMetalLayer.nextDrawable` 이 프레임마다 4~8 ms 막혀요. 이 구간은 perf 의 어느 조각에도 잡히지 않아요
+— `render` 는 첫 `drawPane` 부터 재요.
+
+그래서 재는 패치를 [`tool/present-latency-probe_macos.patch`](tool/present-latency-probe_macos.patch) 에
+뒀어요. **측정할 때만 얹고 커밋하지 않아요.**
+
+```sh
+git apply tool/present-latency-probe_macos.patch
+zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+tool/stress/measure-input-latency.sh --mode both --presses 30            # 10 회 연속이 기본
+TILDAZ_TEMP476=drawables2 tool/stress/measure-input-latency.sh …         # 대조 실험 (아래)
+git apply -R tool/present-latency-probe_macos.patch
+```
+
+perf 덤프에 세 줄이 붙어요.
+
+| 줄 | 무엇 |
+|---|---|
+| `TEMPdraw` | `nextDrawable` 대기 — 표본 · 합 · 최악 · 분포 |
+| `TEMPfdrn` | `renderFrameTick` 안의 `drainOutputForRender` (드레인은 대부분 프레임 밖이라 0 에 가까워요) |
+| `TEMPpres` | present 호출 → `presentedTime` (화면 표시). `drop` 은 표시되지 못한 프레임이에요 |
+
+- **블록을 골라 읽어요.** 회차 하나에 블록이 여럿 찍혀요 (유휴 · 폭포 시작 직후 · 측정 구간 · 그 뒤).
+  폭포 측정 구간은 *`input samples=30` 이면서 프레임이 500 개 넘는 블록*이에요. `input samples=30`
+  만으로 고르면 유휴 블록이 먼저 걸려요.
+- **느린 상태는 간헐적이에요.** 5 회 중 2 회, 5 회 중 0 회, 10 회 중 1 회처럼 들쭉날쭉했고 같은 실행
+  안에서도 켜졌다 꺼졌어요. 측정 구간 밖의 블록에서 잡히는 경우가 많으니 **모든 블록을** 봐요.
+- **대조 실험 스위치** — `TILDAZ_TEMP476=drawables2` 는 `maximumDrawableCount = 2`, `nosync` 는
+  `displaySyncEnabled = NO` 예요. 수정안이 아니라 가설을 가르는 대조군이에요. **`nosync` 에서는
+  `presentedTime` 이 실제 표시 시각을 뜻하지 않을 수 있어요** (2.2 ms 가 나왔는데 확인할 방법이
+  없었어요).
+- **Terminal.app 이 떠 있으면 측정이 시작되지 않아요** — `hygiene.sh` 가 비교 대상 터미널로 보고
+  막아요. 측정 스크립트는 VS Code 터미널에서 돌려요.
+- **CPU · GPU 상태를 함께 보려면 `powermetrics` 를 VS Code 터미널에서 사람이 띄워요** (sudo 가
+  필요해서 에이전트가 못 띄워요).
+
+    ```sh
+    sudo powermetrics --samplers cpu_power,gpu_power -i 200 -n 2500 -o /tmp/pm.txt
+    ```
+
+  샘플 시각은 **초 단위**라 1 초 남짓한 블록과는 거칠게만 맞대져요. #476 에서는 GPU 가 폭포 내내
+  최저 클럭 (338 MHz) 이었고, 코어 배치와 GPU 상태 모두 느린 상태와 맞물리지 않았어요.
+
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
 사람 손 없이 클릭 · 키를 보내 판정하는 도구 셋이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A3 · A4 · [#684](https://github.com/ensky0/tildaz/issues/684)).
