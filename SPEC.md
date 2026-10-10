@@ -1811,7 +1811,10 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 | `c` · 그 밖의 값 | CLIPBOARD | 시스템 클립보드 |
 | `s` · `p` | PRIMARY (가운데 클릭 저장소, foot 와 같다) | 버린다 (그 저장소가 없다) |
 
-빈 payload (지우기) 와 글자가 아닌 표현만 온 요청은 버린다. 글자는 마우스 복사와 같은 host 함수를 탄다 (`SessionCore.setClipboardWrite`). Windows 는 conhost 가 OSC 52 를 받으면 포커스가 있을 때 직접 클립보드에 쓴다 ([`outputStream.cpp`](https://github.com/microsoft/terminal/blob/main/src/host/outputStream.cpp) 의 `CopyToClipboard`). 그 시퀀스가 우리 파서에도 오는지는 **확인 필요** (실기).
+빈 payload (지우기) 와 글자가 아닌 표현만 온 요청은 버린다. 글자는 마우스 복사와 같은 host 함수를 탄다 (`SessionCore.setClipboardWrite`).
+
+- **Windows** — OSC 52 는 ConPTY 를 지나 우리 파서까지 온다. 클립보드에 쓰는 것은 conhost 가 아니라 우리다. 이 배선이 없는 판에서는 PowerShell · WSL 탭 모두 클립보드가 바뀌지 않았다 (2026-10-10 실기, [#266](https://github.com/ensky0/tildaz/issues/266)). conhost 소스에는 포커스가 있을 때 직접 쓰는 경로가 있지만 ([`outputStream.cpp`](https://github.com/microsoft/terminal/blob/main/src/host/outputStream.cpp) 의 `CopyToClipboard`) ConPTY 에서는 그 경로로 쓰지 않았다.
+- **Linux** — Wayland 는 클립보드를 바꿀 때 입력 serial 을 요구한다. 그래서 창이 입력을 한 번도 받기 전에 온 OSC 52 는 버려진다 (`setSelectionText` 의 `last_serial == 0`). 평소처럼 그 터미널에서 타이핑한 뒤라면 늘 채워진 조건이다.
 
 ---
 

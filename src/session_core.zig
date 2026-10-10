@@ -347,7 +347,8 @@ pub const Tab = struct {
         // #266 — OSC 52 복사 (`clipboard_write`) 는 세 OS 모두 건다. 프로그램에 되돌려 보내는
         // 응답이 없어서 (OSC 52 는 reply 를 버린다) 위의 Windows 누출과 무관하다. Windows 는
         // 그래서 `write_pty` 없이 이 effect 하나만 단 stream 이다 — 나머지 질의는 예전처럼
-        // 무시된다. ConPTY 의 conhost 가 OSC 52 를 우리에게 넘겨주는지는 실기로 본다.
+        // 무시된다. ConPTY 의 conhost 는 OSC 52 를 우리에게 넘겨준다 — 이 effect 가 없는
+        // 판에서는 클립보드가 바뀌지 않았다 (2026-10-10 Windows 실기).
         var vt_handler = tab.terminal.vtHandler();
         vt_handler.effects.clipboard_write = &vtClipboardWrite;
         if (comptime builtin.os.tag != .windows) {
