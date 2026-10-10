@@ -1121,8 +1121,8 @@ tool\selection-check\selection-check_windows.ps1 -WtCopyOnSelect   # tildaz 창 
   `%APPDATA%\tildaz-dev` 예요.
 - **⚠️ `GetClassNameW` · `GetWindowTextW` 에 `StringBuilder` 를 넘길 때는 `CharSet = CharSet.Unicode` 를 붙여요.**
   빠지면 ANSI 로 마샬돼 **첫 글자만** 돌아와요 (`CASCADIA_HOSTING_WINDOW_CLASS` 가 `C`). 오류가 없어서 "창이 없다" 로 읽혀요
-  (2026-10-10 `selection-check_windows.ps1` 첫 WT 회차). `link-click-check_windows.ps1` 의 `CloseStaleErrorDialogs` 도
-  같은 선언이라 `#32770` 비교가 늘 어긋나요 (확인 필요 — 그 경로를 따로 돌려 보지는 않았어요).
+  (2026-10-10 `selection-check_windows.ps1` 첫 WT 회차). `link-click-check_windows.ps1` 도 같은 선언이라
+  `CloseStaleErrorDialogs` 의 `#32770` 비교가 늘 어긋났어요 — 같은 날 고쳤어요 (수정 전 선언은 `MozillaWindowClass` 를 `M` 으로 읽었어요).
 - **Windows Terminal 창을 찾을 때는 pid 가 아니라 클래스 (`CASCADIA_HOSTING_WINDOW_CLASS`) 로, 띄우기 전과 비교해** 새로 생긴
   것을 골라요. `wt.exe` 는 띄우고 바로 끝나서 창의 주인은 `WindowsTerminal.exe` 예요. 같은 이유로 `SetForegroundWindow` 가
   조용히 무시될 수 있어 창 안 빈 자리를 한 번 클릭해 포커스를 되찾아요.
