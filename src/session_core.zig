@@ -285,6 +285,11 @@ pub const Tab = struct {
     /// 집는다 — host 없이 도는 경로 (stress 하네스 · 단위 테스트) 의 정상 값이다.
     output_wake_fn: ?SessionCore.OutputWakeNotify = null,
     output_wake_userdata: ?*anyopaque = null,
+    /// #266 — 프로그램이 OSC 52 로 클립보드에 쓴 글자를 host 에 넘긴다. 파싱 도중에
+    /// 불리므로 **드레인하는 UI thread** 에서 불린다 (세 host 모두 그 thread 가 클립보드를
+    /// 쓴다). `null` 이면 버린다 — host 없이 도는 경로 (stress 하네스 · 단위 테스트).
+    clipboard_write_fn: ?SessionCore.ClipboardWriteNotify = null,
+    clipboard_write_userdata: ?*anyopaque = null,
 
     fn init(
         rt: Runtime,
@@ -332,25 +337,31 @@ pub const Tab = struct {
         // DA1 응답을 10초 기다리다 경고. effects 에 write_pty (응답 송신 통로)
         // + 콜백들을 연결하면 나머지 질의는 ghostty-vt 가 내장 처리한다.
         //
-        // Windows 는 종전 readonly 유지 — ConPTY 구조에서는 자식 앱의 질의에
+        // Windows 는 응답 effect 를 걸지 않는다 — ConPTY 구조에서는 자식 앱의 질의에
         // conhost 가 터미널 역할로 직접 응답하므로 우리 응답의 수신자가 없다.
         // 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response
         // (terminal/windows/pty.zig) 로 이미 답을 받은 상태라, 파서의 두 번째
         // 응답을 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 "62;22c"
         // 가 찍히는 leak 이 Windows 시연에서 확인됨 (#266).
+        //
+        // #266 — OSC 52 복사 (`clipboard_write`) 는 세 OS 모두 건다. 프로그램에 되돌려 보내는
+        // 응답이 없어서 (OSC 52 는 reply 를 버린다) 위의 Windows 누출과 무관하다. Windows 는
+        // 그래서 `write_pty` 없이 이 effect 하나만 단 stream 이다 — 나머지 질의는 예전처럼
+        // 무시된다. ConPTY 의 conhost 가 OSC 52 를 우리에게 넘겨주는지는 실기로 본다.
+        var vt_handler = tab.terminal.vtHandler();
+        vt_handler.effects.clipboard_write = &vtClipboardWrite;
         if (comptime builtin.os.tag != .windows) {
-            var vt_handler = tab.terminal.vtHandler();
             vt_handler.effects.write_pty = &vtWritePty;
             vt_handler.effects.device_attributes = &vtDeviceAttributes;
             vt_handler.effects.xtversion = &vtXtversion;
             vt_handler.effects.color_scheme = &vtColorScheme;
             vt_handler.effects.title_changed = &vtTitleChanged;
-            // #451 — `Stream.initAlloc(alloc, handler)` 가 `init(Options)` 하나로 합쳐졌다.
-            // `allocator` 가 optional 이라, 넣으면 예전 `initAlloc` · 빼면 예전 `init` 이다.
-            tab.stream = .init(.{ .handler = vt_handler, .allocator = alloc });
-        } else {
-            tab.stream = tab.terminal.vtStream();
         }
+        // #451 — `Stream.initAlloc(alloc, handler)` 가 `init(Options)` 하나로 합쳐졌다.
+        // `allocator` 가 optional 이라, 넣으면 예전 `initAlloc` · 빼면 예전 `init` 이다.
+        // 예전 Windows 의 `vtStream()` 은 terminal 의 `gpa()` 를 넣었는데 그것이 이 `alloc`
+        // 과 같다 (`initVtTerminal` 이 같은 `alloc` 으로 terminal 을 만든다).
+        tab.stream = .init(.{ .handler = vt_handler, .allocator = alloc });
         tab.write_thread = try std.Thread.spawn(.{}, writeLoop, .{tab});
 
         return tab;
@@ -445,11 +456,32 @@ pub const Tab = struct {
 
     /// #269 — Linux · macOS effects stream 의 OSC 0/2 알림. ghostty-vt 가
     /// `Terminal.setTitle` 을 먼저 끝낸 뒤 호출하므로 공통 동기화 함수에서 새
-    /// 상태를 읽는다. Windows 는 readonly stream 을 유지해야 해서 drainOutput
-    /// 직후 같은 함수를 호출한다.
+    /// 상태를 읽는다. Windows 는 이 effect 를 걸지 않은 stream 이라 (아래 #266)
+    /// drainOutput 직후 같은 함수를 호출한다.
     fn vtTitleChanged(handler: *ghostty.TerminalStream.Handler) void {
         const tab: *Tab = @alignCast(@fieldParentPtr("terminal", handler.terminal));
         tab.syncTerminalTitle();
+    }
+
+    /// #266 — ghostty-vt `Effects.clipboard_write`. OSC 52 복사 (그리고 같은 effect 로 오는
+    /// OSC 1337 Copy · kitty clipboard OSC 5522 쓰기) 의 글자를 host 클립보드로 넘긴다.
+    ///
+    /// - 쓰기만 받는다. 읽기 (`?`) 는 `clipboard_read` 를 걸지 않아 lib 이 무시한다 —
+    ///   Alacritty 의 기본값 `OnlyCopy` 와 같다.
+    /// - lib 이 base64 를 풀어 준다. 빈 내용 (클립보드 지우기) 과 글자가 아닌 표현만 온
+    ///   요청은 받지 않는다.
+    /// - 요청과 그 내용은 이 호출 동안만 유효하다. host 의 복사 함수는 동기로 복사하고
+    ///   끝나므로 (`tab_actions.Host.clipboard_copy`) 우리 사본은 여기서 바로 푼다.
+    fn vtClipboardWrite(handler: *ghostty.TerminalStream.Handler, req: ghostty.clipboard.Write) void {
+        const tab: *Tab = @alignCast(@fieldParentPtr("terminal", handler.terminal));
+        const notify = tab.clipboard_write_fn orelse return req.reply(.unsupported);
+        const text = clipboardWriteText(req.contents) orelse return req.reply(.unsupported);
+        const alloc = handler.terminal.gpa();
+        // host 의 복사 함수가 `[:0]` 을 받는다 (Windows 클립보드 API 가 널 종단을 요구).
+        const owned = alloc.dupeZ(u8, text) catch return req.reply(.io_error);
+        defer alloc.free(owned);
+        notify(tab.clipboard_write_userdata, clipboardTarget(req.location), owned);
+        req.reply(.{ .success = .{} });
     }
 
     /// ghostty-vt 가 module root (`lib_vt.zig`) 에 `device_attributes.Attributes`
@@ -485,9 +517,9 @@ pub const Tab = struct {
 
         const parse_t0 = perf.now();
         tab.stream.nextSlice(buf[0..n]);
-        // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 effects 없는
-        // readonly stream 을 유지한다. readonly 여도 OSC 0/2 는 Terminal.title
-        // 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
+        // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 응답 effect 를
+        // 걸지 않는다 (OSC 52 쓰기만 건다). effect 가 없어도 OSC 0/2 는
+        // Terminal.title 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
         if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
         perf.addTimed(&perf.parse, parse_t0);
         perf.addTimedBytes(&perf.drain, drain_t0, @intCast(n));
@@ -613,6 +645,29 @@ pub const Tab = struct {
 /// **같은 정의**를 쓰도록 한 곳에 둔다 — 하네스가 이 구성을 베껴 쓰면 한쪽만
 /// 바뀌었을 때 앱과 다른 파서 설정을 재게 되고, 그 차이는 숫자에 조용히 섞인다.
 ///
+/// #266 — 클립보드 쓰기 요청에서 넘길 글자를 고른다. 글자 MIME 인 첫 표현이다 (OSC 52 ·
+/// OSC 1337 은 `text/plain` 하나만 오고, kitty OSC 5522 는 여럿이 올 수 있다). 빈 요청
+/// (지우기) · 글자 표현이 없는 요청 · 빈 글자는 `null` 이다 — host 의 복사 함수는 빈 글자를
+/// 받지 않는다.
+fn clipboardWriteText(contents: []const ghostty.clipboard.Content) ?[]const u8 {
+    for (contents) |c| {
+        if (!ghostty.clipboard.isTextMime(c.mime)) continue;
+        return if (c.data.len == 0) null else c.data;
+    }
+    return null;
+}
+
+/// #266 — OSC 52 의 대상 글자 (`c` · `s` · `p`) 를 우리 클립보드로 옮긴다. lib 이 `s` 를
+/// `.selection`, `p` 를 `.primary`, 나머지를 `.standard` 로 준다. X11 · Wayland 에서 둘 다
+/// 가운데 클릭 저장소라 PRIMARY 하나로 모은다 (foot 와 같다). PRIMARY 가 없는 macOS ·
+/// Windows 는 host 가 그 요청을 버린다.
+fn clipboardTarget(location: ghostty.clipboard.Location) SessionCore.ClipboardTarget {
+    return switch (location) {
+        .selection, .primary => .primary,
+        else => .clipboard,
+    };
+}
+
 /// #451 — scrollback 은 이제 **줄 수로 직접** 건넨다. 예전에는 ghostty 가 byte 예산만
 /// 받아서 우리 config 의 줄 수를 cols 에 따른 page 용량으로 환산했는데, upstream 이
 /// `max_scrollback_lines` 를 추가해 그 환산이 필요 없어졌다.
@@ -716,6 +771,99 @@ test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled"
     // XTGETTCAP `Co` (hex 43 6F) → 256 (hex 32 35 36).
     stream.nextSlice("\x1bP+q436F\x1b\\");
     try Capture.expect("\x1bP1+r436F=323536\x1b\\");
+}
+
+test "#266 — OSC 52 쓰기는 대상과 글자를 넘기고, 읽기는 아무것도 안 한다" {
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 10_000, null);
+    defer term.deinit(std.testing.allocator);
+
+    const Capture = struct {
+        var text: [64]u8 = undefined;
+        var len: usize = 0;
+        var has_text = false;
+        var target: SessionCore.ClipboardTarget = .clipboard;
+        var calls: usize = 0;
+        var pty_writes: usize = 0;
+
+        fn reset() void {
+            len = 0;
+            has_text = false;
+            calls = 0;
+            pty_writes = 0;
+        }
+
+        // `Tab.vtClipboardWrite` 와 같은 판정을 쓴다 (탭은 PTY 가 있어야 만들 수 있다).
+        fn clip(_: *ghostty.TerminalStream.Handler, req: ghostty.clipboard.Write) void {
+            calls += 1;
+            target = clipboardTarget(req.location);
+            if (clipboardWriteText(req.contents)) |t| {
+                @memcpy(text[0..t.len], t);
+                len = t.len;
+                has_text = true;
+            }
+            req.reply(.{ .success = .{} });
+        }
+
+        fn writePty(_: *ghostty.TerminalStream.Handler, _: []const u8) void {
+            pty_writes += 1;
+        }
+
+        fn expectText(expected: []const u8, expected_target: SessionCore.ClipboardTarget) !void {
+            try std.testing.expectEqual(@as(usize, 1), calls);
+            try std.testing.expect(has_text);
+            try std.testing.expectEqualStrings(expected, text[0..len]);
+            try std.testing.expectEqual(expected_target, target);
+            try std.testing.expectEqual(@as(usize, 0), pty_writes);
+            reset();
+        }
+    };
+    Capture.reset();
+
+    var handler = term.vtHandler();
+    handler.effects.clipboard_write = &Capture.clip;
+    // 읽기 요청이 응답을 쓰지 않는지 보려고 연결한다 (`clipboard_read` 는 안 건다).
+    handler.effects.write_pty = &Capture.writePty;
+    var stream: ghostty.TerminalStream = .init(.{
+        .handler = handler,
+        .allocator = std.testing.allocator,
+    });
+    defer stream.deinit();
+
+    stream.nextSlice("\x1b]52;c;aGk=\x07");
+    try Capture.expectText("hi", .clipboard);
+    // ST 종결자 · 여러 바이트 글자 (`한글`).
+    stream.nextSlice("\x1b]52;c;7ZWc6riA\x1b\\");
+    try Capture.expectText("한글", .clipboard);
+    stream.nextSlice("\x1b]52;p;aGk=\x07");
+    try Capture.expectText("hi", .primary);
+    stream.nextSlice("\x1b]52;s;aGk=\x07");
+    try Capture.expectText("hi", .primary);
+
+    // 빈 payload 는 지우기 요청이다 — 콜백은 오지만 넘길 글자가 없다.
+    stream.nextSlice("\x1b]52;c;\x07");
+    try std.testing.expectEqual(@as(usize, 1), Capture.calls);
+    try std.testing.expect(!Capture.has_text);
+    Capture.reset();
+
+    // 읽기 (`?`) — `clipboard_read` 가 없으니 쓰기 콜백도 응답도 없다. (잘못된 base64 를
+    // lib 이 버리는 것은 lib 의 동작이고 `warn` 로그를 남겨 테스트 출력이 실패처럼 보여서
+    // 여기서 재지 않는다.)
+    stream.nextSlice("\x1b]52;c;?\x07");
+    try std.testing.expectEqual(@as(usize, 0), Capture.calls);
+    try std.testing.expectEqual(@as(usize, 0), Capture.pty_writes);
+}
+
+test "#266 — 클립보드 쓰기는 글자 MIME 의 첫 표현을 고른다" {
+    const C = ghostty.clipboard.Content;
+    try std.testing.expectEqual(@as(?[]const u8, null), clipboardWriteText(&.{}));
+    try std.testing.expectEqual(@as(?[]const u8, null), clipboardWriteText(&[_]C{.{ .mime = "image/png", .data = "x" }}));
+    try std.testing.expectEqual(@as(?[]const u8, null), clipboardWriteText(&[_]C{.{ .mime = "text/plain", .data = "" }}));
+    try std.testing.expectEqualStrings("b", clipboardWriteText(&[_]C{
+        .{ .mime = "image/png", .data = "a" },
+        .{ .mime = "text/plain;charset=utf-8", .data = "b" },
+        .{ .mime = "text/plain", .data = "c" },
+    }).?);
 }
 
 /// 고정 크기 탭 제목 버퍼에 유효한 UTF-8 prefix 만 복사한다. byte 한도에서
@@ -1040,6 +1188,9 @@ pub const SessionCore = struct {
     /// `HWND` 와 macOS 의 `CFRunLoopSource` 는 세션보다 **뒤에** 준비된다).
     output_wake_fn: ?OutputWakeNotify = null,
     output_wake_userdata: ?*anyopaque = null,
+    /// #266 — OSC 52 복사를 host 클립보드로. `setClipboardWrite` 로 넣는다.
+    clipboard_write_fn: ?ClipboardWriteNotify = null,
+    clipboard_write_userdata: ?*anyopaque = null,
     /// #483 3단계 — 탭바의 탭 (화면) 목록. 각 탭은 pane (`Tab`) 들의 그룹이다.
     tabs: std.ArrayList(*TabGroup) = .empty,
     active_tab: usize = 0,
@@ -1079,6 +1230,10 @@ pub const SessionCore = struct {
     pub const TabExitNotify = *const fn (usize, ?*anyopaque) void;
     /// #439 — "PTY 출력이 ring 에 들어갔다" 는 host 통보. `Tab.output_wake_fn` 주석 참고.
     pub const OutputWakeNotify = *const fn (?*anyopaque) void;
+    /// #266 — 프로그램이 쓴 클립보드. `primary` 는 가운데 클릭 저장소 (Linux 만 있다).
+    pub const ClipboardTarget = enum { clipboard, primary };
+    /// #266 — 글자는 이 호출 동안만 유효하다. host 는 동기로 복사하고 끝낸다.
+    pub const ClipboardWriteNotify = *const fn (?*anyopaque, ClipboardTarget, [:0]const u8) void;
     pub const CloseResult = enum {
         none,
         changed,
@@ -1120,6 +1275,20 @@ pub const SessionCore = struct {
                 const tab = p orelse continue;
                 tab.output_wake_fn = wake_fn;
                 tab.output_wake_userdata = userdata;
+            }
+        }
+    }
+
+    /// #266 — OSC 52 복사를 받을 host 함수를 배선한다. `setOutputWake` 처럼 이미 있는
+    /// 탭에도 퍼뜨린다 — 첫 탭만 복사가 안 되는 비대칭을 막는다.
+    pub fn setClipboardWrite(self: *SessionCore, write_fn: ?ClipboardWriteNotify, userdata: ?*anyopaque) void {
+        self.clipboard_write_fn = write_fn;
+        self.clipboard_write_userdata = userdata;
+        for (self.tabs.items) |group| {
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                tab.clipboard_write_fn = write_fn;
+                tab.clipboard_write_userdata = userdata;
             }
         }
     }
@@ -1235,6 +1404,8 @@ pub const SessionCore = struct {
         // 통보 없이 지나갈 수 있다.
         tab.output_wake_fn = self.output_wake_fn;
         tab.output_wake_userdata = self.output_wake_userdata;
+        tab.clipboard_write_fn = self.clipboard_write_fn;
+        tab.clipboard_write_userdata = self.clipboard_write_userdata;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
         return tab;
     }

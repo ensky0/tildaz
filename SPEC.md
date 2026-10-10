@@ -1789,7 +1789,7 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 
 앱이 터미널에게 보내는 질의 (응답을 PTY 로 되돌려야 하는 시퀀스) 의 응답 사양. 파싱과 응답 생성은 ghostty-vt 가 담당하고, [`session_core.zig`](src/session_core.zig) 의 Tab.init 이 `vtHandler().effects` 에 콜백을 연결한다 (응답 송신은 `write_pty` → `tab.queueWrite`).
 
-**macOS · Linux 만 배선 — Windows 는 의도적으로 readonly 유지.** ConPTY 구조에서는 자식 앱의 질의에 conhost 가 터미널 역할로 직접 응답하므로 (아래 표의 동작을 conhost 가 제공) 우리 응답의 수신자가 없다. 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response ([terminal/windows/pty.zig](src/terminal/windows/pty.zig)) 로 이미 답을 받은 상태라, 파서가 두 번째 응답을 보내면 conhost 가 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 `62;22c` 가 찍히는 leak 이 실기에서 확인됐다 (#266 Windows 시연).
+**응답 배선은 macOS · Linux 만 — Windows 는 의도적으로 응답하지 않는다.** Windows 의 stream 에는 응답이 없는 OSC 52 쓰기 (아래 표) 하나만 건다. ConPTY 구조에서는 자식 앱의 질의에 conhost 가 터미널 역할로 직접 응답하므로 (아래 표의 동작을 conhost 가 제공) 우리 응답의 수신자가 없다. 오히려 conhost 자신의 DA1 질의는 spawn 직후 pre-response ([terminal/windows/pty.zig](src/terminal/windows/pty.zig)) 로 이미 답을 받은 상태라, 파서가 두 번째 응답을 보내면 conhost 가 소비하지 않고 자식 입력으로 흘려보내 cmd 프롬프트에 `62;22c` 가 찍히는 leak 이 실기에서 확인됐다 (#266 Windows 시연).
 
 > **Windows 한계 — 기본색 질의 (OSC 10/11) 는 ConPTY 전체의 platform 한계** (#266 W8 로 확정). conhost 는 headless 에서 기본 fg/bg 를 모르며 (`INVALID_COLOR` 초기화, [RenderSettings 생성자](https://github.com/microsoft/terminal/blob/main/src/renderer/base/RenderSettings.cpp)), 모르는 색 질의는 **응답도 호스트 전달도 없이 소멸**시키고 ([RequestXtermColorResource](https://github.com/microsoft/terminal/blob/main/src/terminal/adapter/adaptDispatch.cpp) — `INVALID_COLOR` 면 응답 생략, else 분기 없음), 밖에서 conhost 에 색을 알려줄 통로도 없다. Windows 에 응답을 배선해도 질의가 우리에게 도달하지 않음을 실기로 확인 (실험 [288e266](https://github.com/ensky0/tildaz/commit/288e266282b4a120e62c71181ffb3e6009adf3a1) → 판정 후 revert). **Microsoft 의 Windows Terminal 도 동일하게 무응답** (실기 확인). 즉 WSL 앱의 theme 자동 감지 (`fish_terminal_color_theme` 등) 가 Windows 에서 빈 값인 것은 정상이며, 이 용도는 spawn 시 넘기는 `COLORFGBG` (§9) 가 담당한다.
 
@@ -1802,7 +1802,16 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 | XTVERSION (`\e[>0q`) | `tildaz <version>` (`build_options.version`) | `xtversion` 콜백 |
 | OSC 4 / 10 / 11 색 질의 | 현재 palette / fg / bg 색 | lib 내장 (ghostty pin [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d)+) |
 | color scheme DSR (`\e[?996n`) | `\e[?997;1n` (dark) / `2n` (light) — terminal *현재* 배경색의 `themes.isDarkRgb` | `color_scheme` 콜백 |
-| XTGETTCAP | **미구현** — upstream lib 도 DCS 무시. #266 3단계 후보 | — |
+| XTGETTCAP | terminfo 의 capability 값 (`Co` → 256 등) | lib 내장 (ghostty pin [94d775fe](https://github.com/ghostty-org/ghostty/commit/94d775fefc21f74d9cc85a46b34c4e1d85318fd0)+, `session_core.zig` 의 #451 테스트) |
+
+**OSC 52 — 프로그램이 클립보드에 쓴다 (세 OS).** 응답이 없는 시퀀스라 질의 표와 따로 적는다. 쓰기만 받고 읽기 (`?`) 는 받지 않는다 — `clipboard_read` 를 걸지 않아 lib 이 무시한다. 다른 터미널도 쓰기는 기본 허용이다 (ghostty `clipboard-write = allow` · kitty `write-clipboard` · Alacritty `OnlyCopy` · foot `enabled`, 근거는 [#266](https://github.com/ensky0/tildaz/issues/266)). 같은 effect 로 OSC 1337 Copy 와 kitty clipboard (OSC 5522) 쓰기도 들어온다.
+
+| 대상 글자 | Linux | macOS · Windows |
+|---|---|---|
+| `c` · 그 밖의 값 | CLIPBOARD | 시스템 클립보드 |
+| `s` · `p` | PRIMARY (가운데 클릭 저장소, foot 와 같다) | 버린다 (그 저장소가 없다) |
+
+빈 payload (지우기) 와 글자가 아닌 표현만 온 요청은 버린다. 글자는 마우스 복사와 같은 host 함수를 탄다 (`SessionCore.setClipboardWrite`). Windows 는 conhost 가 OSC 52 를 받으면 포커스가 있을 때 직접 클립보드에 쓴다 ([`outputStream.cpp`](https://github.com/microsoft/terminal/blob/main/src/host/outputStream.cpp) 의 `CopyToClipboard`). 그 시퀀스가 우리 파서에도 오는지는 **확인 필요** (실기).
 
 ---
 
