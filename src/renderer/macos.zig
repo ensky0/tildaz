@@ -16,6 +16,7 @@ const CoreTextFontContext = mac_font.CoreTextFontContext;
 const font_spec = @import("../font/spec.zig");
 const font_constants = @import("../font/constants.zig");
 const macos_glyph_atlas = @import("macos/glyph_atlas.zig");
+const surface_target = @import("macos/surface_target.zig");
 const ui_metrics = @import("../ui_metrics.zig");
 const chrome_palette = @import("../chrome_palette.zig");
 const themes = @import("../themes.zig");
@@ -55,42 +56,15 @@ const DrawKind = enum(u8) { bg, text, tab_text };
 const DrawRange = struct { kind: DrawKind, offset: u32, count: u32 };
 
 // --- #255 Phase 2: CADisplayLink pause 합성 게이트 ---
-// drawable 이 *실제로 화면에 표시*됐는지 확인하는 신호. host 가 idle 시 displayLink
-// 를 pause 하려면 "show 직후 첫 프레임이 합성(composite)됐다"를 알아야 한다 — 안
-// 그러면 합성 전 1프레임만 그리고 멈춰 빈 화면(#252 의 근본). `addPresentedHandler:`
-// 는 drawable 이 표시된 *직후* 호출되고 `presentedTime>0` 이면 표시 확정. 핸들러는
-// CoreAnimation presentation 스레드에서 불리므로 atomic. captures 없는 global block.
-const BlockDescriptor = extern struct {
-    reserved: c_ulong = 0,
-    size: c_ulong,
-};
-const PresentedBlock = extern struct {
-    isa: ?*const anyopaque,
-    flags: c_int,
-    reserved: c_int = 0,
-    invoke: *const fn (*PresentedBlock, objc.id) callconv(.c) void,
-    descriptor: *const BlockDescriptor,
-};
-extern const _NSConcreteGlobalBlock: anyopaque;
-const BLOCK_IS_GLOBAL: c_int = 1 << 28;
+// host 가 idle 시 displayLink 를 pause 하려면 "show 직후 첫 프레임이 화면에 들어갔다" 를 알아야
+// 한다 — 안 그러면 합성 전 1프레임만 그리고 멈춰 빈 화면이 된다 (#252 의 근본). `CAMetalLayer`
+// 시절에는 창이 합성되기 전에 present 한 drawable 이 버려질 수 있어 `presentedTime > 0` 을
+// 기다렸다. #732 — 이제는 `CALayer.contents` 에 넣는다. layer 가 그 surface 를 들고 있다가 창이
+// 합성될 때 그대로 쓰므로, **contents 를 넣은 것** 으로 확정한다. 메인 스레드에서만 쓰지만 host 의
+// 다른 자리와 같은 규칙으로 atomic 을 둔다.
 var g_frame_presented = std.atomic.Value(bool).init(false);
 
-fn presentedInvoke(_: *PresentedBlock, drawable: objc.id) callconv(.c) void {
-    if (drawable == null) return;
-    const presentedTimeOf = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
-    if (presentedTimeOf(drawable, objc.sel("presentedTime")) > 0)
-        g_frame_presented.store(true, .seq_cst);
-}
-var presented_block_descriptor: BlockDescriptor = .{ .reserved = 0, .size = @sizeOf(PresentedBlock) };
-var presented_block: PresentedBlock = .{
-    .isa = null, // 런타임에 _NSConcreteGlobalBlock 로 설정 (extern 주소는 comptime 불가).
-    .flags = BLOCK_IS_GLOBAL,
-    .reserved = 0,
-    .invoke = &presentedInvoke,
-    .descriptor = &presented_block_descriptor,
-};
-
-/// 마지막 show 이후 drawable 이 화면에 표시된 적 있나 (host 의 pause 게이트).
+/// 마지막 show 이후 그림을 화면 쪽 (`CALayer.contents`) 에 넣은 적 있나 (host 의 pause 게이트).
 pub fn frameWasPresented() bool {
     return g_frame_presented.load(.seq_cst);
 }
@@ -325,11 +299,19 @@ pub const MetalRenderer = struct {
     bg_needed: u32 = 0,
     text_needed: u32 = 0,
 
-    // Frame in progress — renderTabBar 가 begin (drawable + cmd_buf + encoder
-    // 생성 + clear), drawPane 이 pane 마다 encode, endFrame 이 end (탭바 encode +
-    // present + commit).
+    // Frame in progress — renderTabBar 가 begin (표시 대상 + cmd_buf 준비 + clear),
+    // drawPane 이 pane 마다 encode, endFrame 이 end (탭바 encode + commit + contents).
     // Windows 의 self.rtv 패턴과 같은 의도. null = frame 진행 중 아님.
-    current_drawable: objc.id = null,
+    current_target: ?*surface_target.Target = null,
+    /// #732 — 표시 대상 세 장. 화면에 걸린 것 · 직전 것 (합성기가 아직 읽고 있을 수 있다) 을
+    /// 피해 가장 오래된 것에 그린다 — ghostty 의 `swap_chain_count = 3` 과 같다.
+    targets: [3]?surface_target.Target = .{ null, null, null },
+    /// 마지막으로 `contents` 에 넣은 대상. 다음 프레임은 그 다음 칸에 그린다.
+    shown_target: usize = 0,
+    /// #732 — IOSurface 텍스처의 `MTLStorageMode` (통합 메모리 `shared` 0 · 외장 GPU `managed` 1).
+    target_storage_mode: objc.NSUInteger = 0,
+    /// #349 — 표시 대상에 붙일 sRGB 색공간. `CAMetalLayer.setColorspace:` 를 대신한다.
+    target_colorspace: ?ct.CGColorSpaceRef = null,
     current_cmd_buf: objc.id = null,
     current_encoder: objc.id = null,
     /// #591 — 이 프레임에 그릴 구간의 순서 목록. 셀 루프 (`drawPane`) 는 담기만 하고 draw 는
@@ -480,29 +462,17 @@ pub const MetalRenderer = struct {
         const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
         const tab_atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
 
-        // CAMetalLayer 설정 (device 등록 + pixel format).
-        objc.msgSendVoid1(layer, objc.sel("setDevice:"), device);
-        objc.msgSendVoid1(layer, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
-
-        // #349 — layer 색공간을 sRGB 로 명시. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고
-        // (#334 / #342 anchor, #335 파생식) window server 는 이 태그를 보고 디스플레이
-        // 색공간으로 변환한다.
-        //
-        // 명시하는 이유: 바로 위 `setPixelFormat:` 호출이 colorspace 를 자동으로
-        // `kCGColorSpaceSRGB` 로 채우는데 (실측) 이건 문서에 없는 동작이다. Apple 문서와
-        // `CAMetalLayer.h` 가 적어 둔 기본값은 `nil` = "no colormatching" 이라, 문서만
-        // 읽으면 우리가 색 변환을 안 한다고 정반대로 이해하게 된다. 자동 기본값에
-        // 색 정확성을 맡기지 않고 같은 값을 직접 넣는다 — 실측으로 자동값과 **같은
-        // 싱글턴 인스턴스**라 픽셀은 한 비트도 바뀌지 않는다.
-        //
-        // null 이면 지정하지 않는다: `colorspace = nil` 은 변환을 없애서 wide-gamut
-        // 디스플레이에서 실제로 색이 진해진다 (실측: amber `#F7A41D` 가 P3 원색으로).
-        if (ct.CGColorSpaceCreateWithName(ct.kCGColorSpaceSRGB)) |cs| {
-            defer ct.CGColorSpaceRelease(cs);
-            objc.msgSendVoid1(layer, objc.sel("setColorspace:"), cs);
-        } else {
-            std.log.warn("sRGB color space creation failed — keeping the layer color space unchanged", .{});
-        }
+        // #349 — 표시 대상에 붙일 색공간. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고 (#334 / #342
+        // anchor, #335 파생식) window server 는 이 꼬리표를 보고 디스플레이 색공간으로 변환한다.
+        // 꼬리표가 없으면 변환이 없어 wide-gamut 디스플레이에서 색이 진해진다 (실측: amber `#F7A41D`
+        // 가 P3 원색으로). #732 전에는 `CAMetalLayer.setColorspace:` 로 같은 일을 했다.
+        const target_colorspace = ct.CGColorSpaceCreateWithName(ct.kCGColorSpaceSRGB);
+        if (target_colorspace == null)
+            std.log.warn("sRGB color space creation failed — surfaces are left untagged", .{});
+        // #732 — IOSurface 텍스처는 `private` 를 쓸 수 없다. 통합 메모리면 `shared`, 아니면 `managed`
+        // (ghostty `Device.zig` 의 `default_storage_mode` 와 같은 기준).
+        const has_unified = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) bool)(device, objc.sel("hasUnifiedMemory"));
+        const target_storage_mode: objc.NSUInteger = if (has_unified) 0 else 1;
 
         return .{
             .rt = rt,
@@ -513,6 +483,8 @@ pub const MetalRenderer = struct {
             .tab_atlas = tab_glyph_atlas,
             .device = device,
             .layer = layer,
+            .target_colorspace = target_colorspace,
+            .target_storage_mode = target_storage_mode,
             .command_queue = cmd_queue,
             .bg_pipeline = bg_pipeline,
             .text_pipeline = text_pipeline,
@@ -591,7 +563,38 @@ pub const MetalRenderer = struct {
         self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
+        for (&self.targets) |*slot| {
+            if (slot.*) |*t| t.deinit();
+            slot.* = null;
+        }
+        if (self.target_colorspace) |cs| ct.CGColorSpaceRelease(cs);
         // Metal 객체는 ARC / process exit 으로 정리.
+    }
+
+    /// #732 — 다음 프레임을 그릴 표시 대상. 화면에 걸린 칸의 다음 칸이고, 크기가 지금 viewport 와
+    /// 다르면 그 칸만 다시 만든다 (크기를 바꾸면 세 칸이 차례로 새로 만들어진다). viewport 가 아직
+    /// 0 이면 (host 가 `resize` 전) 이 프레임을 건너뛴다.
+    fn acquireTarget(self: *MetalRenderer) ?*surface_target.Target {
+        if (self.vp_width == 0 or self.vp_height == 0) return null;
+        const idx = (self.shown_target + 1) % self.targets.len;
+        const slot = &self.targets[idx];
+        if (slot.*) |*t| {
+            if (t.width == self.vp_width and t.height == self.vp_height) return t;
+            t.deinit();
+            slot.* = null;
+        }
+        slot.* = surface_target.Target.init(self.device, self.vp_width, self.vp_height, self.target_colorspace, self.target_storage_mode) catch |err| {
+            std.log.err("surface target creation failed: {s}", .{@errorName(err)});
+            return null;
+        };
+        return &slot.*.?;
+    }
+
+    fn targetIndex(self: *MetalRenderer, t: *surface_target.Target) usize {
+        for (&self.targets, 0..) |*slot, i| {
+            if (slot.*) |*cand| if (cand == t) return i;
+        }
+        return self.shown_target;
     }
 
     pub fn resize(self: *MetalRenderer, width: u32, height: u32) void {
@@ -631,12 +634,12 @@ pub const MetalRenderer = struct {
         // #483 2단계 ② — 프레임 시작. 이 프레임의 pane 수를 0 으로.
         self.panes_drawn = 0;
         const frame_bg = cell_color.resolveFrameBackground(terminal_background, self.fallback_bg);
-        const drawable = objc.msgSend(self.layer, objc.sel("nextDrawable"));
-        if (drawable == null) {
+        // #732 — `nextDrawable` 대신 우리 표시 대상의 다음 칸이다. 합성기를 기다리지 않는다.
+        const target = self.acquireTarget() orelse {
             self.pending_tabs = null;
             return;
-        }
-        self.current_drawable = drawable;
+        };
+        self.current_target = target;
 
         // 직전 frame 이 요청한 instance 수가 buffer 용량을 넘었으면 키운다. 누적-offset
         // 방식이라 buffer 는 frame 전체 instance 를 동시에 담아야 하는데, 초과 시
@@ -653,7 +656,7 @@ pub const MetalRenderer = struct {
 
         const cmd_buf = objc.msgSend(self.command_queue, objc.sel("commandBuffer"));
         if (cmd_buf == null) {
-            self.current_drawable = null;
+            self.current_target = null;
             self.pending_tabs = null;
             return;
         }
@@ -669,7 +672,7 @@ pub const MetalRenderer = struct {
         const bg_ptr = objc.msgSend(self.bg_buffer, objc.sel("contents"));
         const text_ptr = objc.msgSend(self.text_buffer, objc.sel("contents"));
         if (bg_ptr == null or text_ptr == null) {
-            self.current_drawable = null;
+            self.current_target = null;
             self.current_cmd_buf = null;
             self.pending_tabs = null;
             return;
@@ -790,18 +793,24 @@ pub const MetalRenderer = struct {
         if (self.panes_drawn > 0) perf.addTimed(&perf.render, self.render_t0);
         self.panes_drawn = 0;
 
-        // #255 Phase 2 — 표시 확정 전이면 presented handler 부착(present *전*에 등록).
-        // 표시 확정되면 더는 안 닮 — host 가 idle 시 frameWasPresented() 로 pause 판단.
-        if (!g_frame_presented.load(.seq_cst)) {
-            presented_block.isa = &_NSConcreteGlobalBlock;
-            const addHandler = objc.objcSend(fn (objc.id, objc.SEL, *PresentedBlock) callconv(.c) void);
-            addHandler(self.current_drawable, objc.sel("addPresentedHandler:"), &presented_block);
-        }
-
-        // #160 — present(drawable 표시 + commit) 계측.
+        // #160 · #732 — present 계측. commit 부터 그림을 화면 쪽에 넘길 때까지다.
+        //
+        // #732 — **동기로 넘긴다.** GPU 가 끝나기를 메인 스레드에서 기다리고 (`waitUntilCompleted`)
+        // 그 자리에서 `contents` 에 넣는다. 기다리는 것은 우리 GPU 일뿐이라 상한이 그 크기로 정해진다
+        // — 실측 폭포 0.4 ms · 유휴 1.4 ms (#732 측정 댓글). 합성기가 drawable 을 돌려주기를
+        // 기다리던 `nextDrawable` 은 표시 대기열 위상에 따라 프레임마다 4~8 ms 였다 (#476).
+        // 비동기 (완료 handler → 메인 큐) 는 드레인 중인 메인을 기다려 오히려 늦어질 수 있어
+        // 먼저 동기로 재고 정한다 (#732 사용자 결정).
         const present_t0 = perf.now();
-        objc.msgSendVoid1(self.current_cmd_buf, objc.sel("presentDrawable:"), self.current_drawable);
-        objc.msgSendVoid(self.current_cmd_buf, objc.sel("commit"));
+        const cmd_buf = self.current_cmd_buf;
+        objc.msgSendVoid(cmd_buf, objc.sel("commit"));
+        objc.msgSendVoid(cmd_buf, objc.sel("waitUntilCompleted"));
+        if (self.current_target) |t| {
+            // layer 서브클래스가 `actionForKey:` 로 기본 애니메이션을 끈다 (host 의 `TildazSurfaceLayer`).
+            objc.msgSendVoid1(self.layer, objc.sel("setContents:"), @as(objc.id, @ptrCast(t.surface)));
+            self.shown_target = self.targetIndex(t);
+            g_frame_presented.store(true, .seq_cst);
+        }
         perf.addTimed(&perf.present, present_t0);
         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
         perf.completeInput();
@@ -811,7 +820,7 @@ pub const MetalRenderer = struct {
         // Frame end — state reset.
         self.current_encoder = null;
         self.current_cmd_buf = null;
-        self.current_drawable = null;
+        self.current_target = null;
         self.pending_tabs = null;
         self.bg_map = null;
         self.text_map = null;
@@ -821,7 +830,7 @@ pub const MetalRenderer = struct {
     fn abandonFrame(self: *MetalRenderer) void {
         self.current_encoder = null;
         self.current_cmd_buf = null;
-        self.current_drawable = null;
+        self.current_target = null;
         self.pending_tabs = null;
         self.bg_map = null;
         self.text_map = null;
@@ -956,8 +965,8 @@ pub const MetalRenderer = struct {
     /// 픽셀 좌표 UV 라 최종 크기 하나로 맞다. 구간 목록은 비운다. 실패하면 null.
     fn beginPassWithRanges(self: *MetalRenderer) objc.id {
         const cmd_buf = self.current_cmd_buf;
-        const drawable = self.current_drawable;
-        if (cmd_buf == null or drawable == null) return null;
+        const target = self.current_target orelse return null;
+        if (cmd_buf == null) return null;
 
         self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
         self.updateConstants();
@@ -968,7 +977,7 @@ pub const MetalRenderer = struct {
         self.syncAtlasTexture(&self.tab_atlas, &self.tab_atlas_texture, &self.tab_atlas_texture_size);
         self.uploadTabAtlasIfDirty();
 
-        const texture = objc.msgSend(drawable, objc.sel("texture"));
+        const texture = target.texture;
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
         const rpd = objc.msgSend(rpd_class, objc.sel("renderPassDescriptor"));
         const attachments = objc.msgSend(rpd, objc.sel("colorAttachments"));

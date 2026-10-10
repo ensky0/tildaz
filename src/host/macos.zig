@@ -393,6 +393,29 @@ var g_app_delegate_class: ?objc.Class = null;
 var g_app_delegate_instance: objc.id = null;
 var g_new_instance_observer_registered = false;
 
+// #732 — `contents` 를 바꿀 때 Core Animation 의 기본 애니메이션 (0.25 초 페이드) 이 붙지
+// 않게 하는 `CALayer` 서브클래스. `actionForKey:` 가 늘 `NSNull` 을 돌려준다 — ghostty
+// `IOSurfaceLayer.zig` 의 `getSubclass` 와 같다.
+extern "QuartzCore" const kCAGravityTopLeft: objc.id;
+var g_surface_layer_class: ?objc.Class = null;
+
+fn surfaceLayerActionForKey(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) objc.id {
+    const NSNull = objc.getClass("NSNull");
+    return objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id)(NSNull, objc.sel("null"));
+}
+
+fn surfaceLayerClass() !objc.Class {
+    if (g_surface_layer_class) |c| return c;
+    const CALayer = objc.getClass("CALayer");
+    const cls = objc.objc_allocateClassPair(CALayer, "TildazSurfaceLayer", 0) orelse
+        return error.MetalLayerAllocFailed;
+    if (!objc.class_addMethod(cls, objc.sel("actionForKey:"), @ptrCast(&surfaceLayerActionForKey), "@@:@"))
+        return error.MetalLayerAllocFailed;
+    objc.objc_registerClassPair(cls);
+    g_surface_layer_class = cls;
+    return cls;
+}
+
 fn installAppDelegate() !void {
     if (g_app_delegate_instance != null) return;
     const NSObject = objc.getClass("NSObject");
@@ -2905,7 +2928,7 @@ fn syncGeometryAfterScreenChange() void {
     repositionWindow();
 
     // 2. contentView bounds + backingScaleFactor 다시 읽기 (DPI 변경 시 scale
-    //    바뀜). layer.frame / contentsScale / drawableSize 갱신.
+    //    바뀜). layer.frame / contentsScale 갱신 (그릴 크기는 3 의 `resize`, #732).
     const get_cv = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = get_cv(g_window, objc.sel("contentView")) orelse return;
     const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
@@ -2917,11 +2940,7 @@ fn syncGeometryAfterScreenChange() void {
     set_layer_frame(g_metal_layer, objc.sel("setFrame:"), cv_bounds);
     const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
     set_contents_scale(g_metal_layer, objc.sel("setContentsScale:"), scale_pt);
-    const set_drawable_size = objc.objcSend(fn (objc.id, objc.SEL, NSSize) callconv(.c) void);
-    set_drawable_size(g_metal_layer, objc.sel("setDrawableSize:"), .{
-        .width = cv_bounds.size.width * scale_pt,
-        .height = cv_bounds.size.height * scale_pt,
-    });
+    // #732 — 그릴 크기는 아래 `renderer.resize` 가 정한다 (표시 대상을 그 크기로 다시 만든다).
 
     // 3. Renderer viewport 갱신 + (#253) scale 이 실제로 바뀌었으면 폰트 cell
     //    재측정 + glyph atlas 재구성 + renderer scale 갱신. 다른 scale(DPI) 모니터로
@@ -4669,10 +4688,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     const contentView_get = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const content_view = contentView_get(g_window, objc.sel("contentView")) orelse return error.ContentViewMissing;
 
-    const CAMetalLayer = objc.getClass("CAMetalLayer");
+    // #732 — `CAMetalLayer` 가 아니라 `CALayer` 다. 렌더러가 IOSurface 에 그려 `contents` 에
+    // 넣는다 (`renderer/macos/surface_target.zig`).
+    const SurfaceLayer = try surfaceLayerClass();
     const init_obj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
-    const layer_alloc = alloc(CAMetalLayer, objc.sel("alloc")) orelse return error.MetalLayerAllocFailed;
+    const layer_alloc = alloc(SurfaceLayer, objc.sel("alloc")) orelse return error.MetalLayerAllocFailed;
     const layer = init_obj(layer_alloc, objc.sel("init")) orelse return error.MetalLayerInitFailed;
+    // 크기를 바꿀 때 새 프레임이 그려지기 전의 contents 가 늘어나 보이지 않게 왼쪽 위에 붙인다
+    // (ghostty `IOSurfaceLayer.zig` 와 같다).
+    objc.msgSendVoid1(layer, objc.sel("setContentsGravity:"), kCAGravityTopLeft);
 
     const device = MTLCreateSystemDefaultDevice() orelse return error.MetalDeviceMissing;
 
@@ -4735,11 +4759,6 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     const scale_pt = backing_scale(g_window, objc.sel("backingScaleFactor"));
     const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
     set_contents_scale(layer, objc.sel("setContentsScale:"), scale_pt);
-    const set_drawable_size = objc.objcSend(fn (objc.id, objc.SEL, NSSize) callconv(.c) void);
-    set_drawable_size(layer, objc.sel("setDrawableSize:"), .{
-        .width = cv_bounds.size.width * scale_pt,
-        .height = cv_bounds.size.height * scale_pt,
-    });
 
     // 5. CGEventTap 으로 이 worker config의 글로벌 hotkey 등록. Cmd+Q 는 여기서
     //    잡지 않는다 — 우리 창이 key 일 때 `[keys]` 의 `quit` 으로 받는다 (#153 — 글로벌
@@ -4795,7 +4814,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #527 — 첫 글리프를 그리기 전에 넣는다.
     if (g_renderer) |*r| r.setFontSmoothing(g_config.macos_font_smoothing);
     // #382 — renderer 가 생겨 셀 크기를 알므로 여기서 `-size` 를 적용한다. 창을 격자에
-    // 맞추고 layer / drawable / bounds 를 새 크기로 되돌린다. 아래 `terminalGrid` 가 그
+    // 맞추고 layer / bounds 를 새 크기로 되돌린다 (그릴 크기는 아래 `resize` 가 정한다). 아래 `terminalGrid` 가 그
     // 창에서 격자를 다시 계산하므로, 요청한 셀 수가 그대로 나오는지 그 값으로 확인된다.
     if (g_run_opts.grid != null) {
         // #506 — 요청 격자를 이 화면에서 끝까지 지킬 수 있는지 **첫 탭 · PTY 를 만들기
@@ -4804,10 +4823,6 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         repositionWindow();
         cv_bounds = get_rect(content_view, objc.sel("bounds"));
         set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
-        set_drawable_size(layer, objc.sel("setDrawableSize:"), .{
-            .width = cv_bounds.size.width * scale_pt,
-            .height = cv_bounds.size.height * scale_pt,
-        });
     }
 
     // viewport / cell metrics 모두 pixel 단위로 통일 — pt/px mixing 시 글리프
