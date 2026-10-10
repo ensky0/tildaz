@@ -29,6 +29,7 @@ const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const objc = @import("../macos_objc.zig");
 const dialog = @import("../dialog.zig");
+const hotkey_status = @import("../hotkey_status.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
@@ -687,13 +688,9 @@ fn measureDialogBodyAtWidth(
     return dialogTextNaturalSize(tv, layout_manager, text_container, minimum);
 }
 
-/// 모든 정상 다이얼로그의 본문 NSScrollView + NSTextView. `reserved_h`는
-/// branded header와 prompt input/status처럼 accessoryView 안에 고정할 높이다.
-/// 짧은 본문은 자연 높이를 사용하고 scroller가 숨으며, 화면을 넘을 때만 본문
-/// viewport가 줄어든다. NSTextView라 read-only selection/copy도 모든 길이에서 같다.
-fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: f64) ?DialogBodyView {
-    // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
-    // 화면 가용 높이를 넘을 때만 AppKit scroller가 나타난다.
+/// 다이얼로그가 뜰 화면의 가용 영역. 터미널 창이 있으면 그 화면, 없으면 주 화면이다.
+/// 본문 폭 (`makeDialogBody`) 과 prompt 상태 칸 폭 (#721) 이 같은 화면을 봐야 해서 한 곳에 둔다.
+fn dialogVisibleFrame() NSAlertRect {
     const getScreen = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     var screen: objc.id = if (host_window != null) getScreen(host_window, objc.sel("screen")) else null;
     if (screen == null) {
@@ -701,10 +698,44 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         const mainScreen = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
         screen = mainScreen(NSScreen, objc.sel("mainScreen"));
     }
-    const visible_frame = if (screen != null) blk: {
-        const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
-        break :blk getRect(screen, objc.sel("visibleFrame"));
-    } else NSAlertRect{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    if (screen == null) return .{ .x = 0, .y = 0, .w = 800, .h = 600 };
+    const getRect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertRect);
+    return getRect(screen, objc.sel("visibleFrame"));
+}
+
+/// #721 — `hotkey_status.fit` 에 넘기는 macOS 측정기. 화면에 놓일 상태 칸 `NSTextField`
+/// 자체의 셀로 재서, 잰 글꼴 · 여백과 그려질 것이 같다. 재는 동안 글자를 바꾸므로 끝나면
+/// 호출자가 비워 둔다.
+const StatusFieldMeasurer = struct {
+    field: objc.id,
+
+    fn sizeAt(self: StatusFieldMeasurer, text: []const u8, width: f64) NSAlertSize {
+        const setStr = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+        setStr(self.field, objc.sel("setStringValue:"), nsStringFromSlice(text));
+        const getObj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        const cell = getObj(self.field, objc.sel("cell")) orelse return .{ .w = 0, .h = 0 };
+        const cellSize = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) NSAlertSize);
+        const size = cellSize(cell, objc.sel("cellSizeForBounds:"), .{ .x = 0, .y = 0, .w = width, .h = 10_000_000 });
+        return .{ .w = @ceil(size.w), .h = @ceil(size.h) };
+    }
+
+    pub fn naturalWidth(self: StatusFieldMeasurer, text: []const u8) f64 {
+        return self.sizeAt(text, 10_000_000).w;
+    }
+
+    pub fn wrappedHeight(self: StatusFieldMeasurer, text: []const u8, width: f64) f64 {
+        return self.sizeAt(text, width).h;
+    }
+};
+
+/// 모든 정상 다이얼로그의 본문 NSScrollView + NSTextView. `reserved_h`는
+/// branded header와 prompt input/status처럼 accessoryView 안에 고정할 높이다.
+/// 짧은 본문은 자연 높이를 사용하고 scroller가 숨으며, 화면을 넘을 때만 본문
+/// viewport가 줄어든다. NSTextView라 read-only selection/copy도 모든 길이에서 같다.
+fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: f64) ?DialogBodyView {
+    // accessoryView: 세로 NSScrollView + NSTextView. 평소에는 본문 자연 높이,
+    // 화면 가용 높이를 넘을 때만 AppKit scroller가 나타난다.
+    const visible_frame = dialogVisibleFrame();
     const max_accessory_w = dialogMaxAccessoryWidth(visible_frame.w);
     const preferred_accessory_w = dialogPreferredAccessoryWidth(visible_frame.w);
     const min_accessory_w = @min(minimum_w, max_accessory_w);
@@ -1298,31 +1329,14 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
     _ = addButton(alert, messages.button_cancel);
     setButtonEsc(alert, 1);
 
-    const prompt_controls_h = 52.0;
-    const prompt_body_gap = 16.0;
-    const actions = [_]DialogAction{
-        .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
-        .{ .title = messages.button_create, .response = 1000, .key_equivalent = "\r" },
-    };
-    const attached = attachBrandedContent(
-        alert,
-        title,
-        message,
-        prompt_controls_h + prompt_body_gap,
-        360.0,
-        actions[0..],
-    ) orelse return null;
-    const branded = attached.content;
-    const container_w = branded.width;
-    const prompt_controls_y = dialogActionReservedHeight();
-
     const NSTextField = objc.getClass("NSTextField");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const field_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const status_alloc = alloc(NSTextField, objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
-    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = prompt_controls_y + 26, .w = container_w, .h = 26 }) orelse return null;
-    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = prompt_controls_y, .w = container_w, .h = 22 }) orelse return null;
+    const zero = NSAlertRect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const field = initWithFrame(field_alloc, objc.sel("initWithFrame:"), zero) orelse return null;
+    const status = initWithFrame(status_alloc, objc.sel("initWithFrame:"), zero) orelse return null;
     const setBool = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
     for ([_]objc.id{ field, status }) |label| {
         setBool(label, objc.sel("setEditable:"), false);
@@ -1340,6 +1354,49 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
         const setColor = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
         setColor(status, objc.sel("setTextColor:"), red);
     }
+
+    // #721 — 상태 칸은 여러 줄을 허용한다. 예전에는 한 줄 (높이 22) 이라 긴 문구가 잘렸다.
+    const getObj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+    if (getObj(status, objc.sel("cell"))) |status_cell| {
+        setBool(status_cell, objc.sel("setUsesSingleLineMode:"), false);
+        setBool(status_cell, objc.sel("setWraps:"), true);
+        const setLineBreak = objc.objcSend(fn (objc.id, objc.SEL, usize) callconv(.c) void);
+        setLineBreak(status_cell, objc.sel("setLineBreakMode:"), 0); // NSLineBreakByWordWrapping
+    }
+    // 세 OS 공통 규칙으로 자리를 정한다 — 짧으면 한 줄로 두고 창을 그만큼 넓히되 본문 기본
+    // 폭까지, 넘으면 그 폭에서 줄바꿈. 높이는 후보 중 최대라 키를 눌러도 창이 안 바뀐다.
+    const status_cap = dialogPreferredAccessoryWidth(dialogVisibleFrame().w);
+    const status_fit = hotkey_status.fit(f64, StatusFieldMeasurer{ .field = status }, status_cap);
+    // 재느라 바꾼 글자를 비워 둔다 — 첫 키를 누르기 전에는 상태 문구가 없다.
+    const setStr = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
+    setStr(status, objc.sel("setStringValue:"), nsStringFromSlice(""));
+    const status_h = @max(22.0, status_fit.height);
+
+    const field_h = 26.0;
+    const field_gap = 4.0;
+    const prompt_controls_h = status_h + field_gap + field_h;
+    const prompt_body_gap = 16.0;
+    const actions = [_]DialogAction{
+        .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
+        .{ .title = messages.button_create, .response = 1000, .key_equivalent = "\r" },
+    };
+    const attached = attachBrandedContent(
+        alert,
+        title,
+        message,
+        prompt_controls_h + prompt_body_gap,
+        @max(360.0, status_fit.width),
+        actions[0..],
+    ) orelse return null;
+    const branded = attached.content;
+    const container_w = branded.width;
+    const prompt_controls_y = dialogActionReservedHeight();
+
+    const setFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) void);
+    setFrame(field, objc.sel("setFrame:"), .{ .x = 0, .y = prompt_controls_y + status_h + field_gap, .w = container_w, .h = field_h });
+    // 상태 칸은 본문 기본 폭을 넘지 않고 가운데다 — 높이를 그 폭에서 쟀다.
+    const status_w = @min(container_w, status_cap);
+    setFrame(status, objc.sel("setFrame:"), .{ .x = (container_w - status_w) / 2.0, .y = prompt_controls_y, .w = status_w, .h = status_h });
     const addSubview = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     addSubview(branded.view, objc.sel("addSubview:"), field);
     addSubview(branded.view, objc.sel("addSubview:"), status);

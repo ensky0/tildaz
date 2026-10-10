@@ -6,6 +6,7 @@
 const std = @import("std");
 const display_width = @import("../../font/display_width.zig");
 const font_validate = @import("../../font/validate.zig");
+const hotkey_status = @import("../../hotkey_status.zig");
 const messages = @import("../../messages.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
 
@@ -70,6 +71,25 @@ pub const Layout = struct {
     message_scroll_max: usize,
     show_icon: bool,
     fits: bool,
+    /// #721 — prompt 상태 문구를 접는 폭 (**픽셀**). prompt 가 아니면 0. 렌더러가 이 폭으로
+    /// `WrappedLines` 를 돌려 줄마다 가운데에 그린다.
+    status_wrap_width: i32 = 0,
+};
+
+/// #721 — `hotkey_status.fit` 에 넘기는 Linux 측정기. 본문과 **같은 측정 · 같은 줄바꿈**을
+/// 써서, 잰 높이와 그린 줄 수가 정확히 같다.
+const StatusMeasurer = struct {
+    measure: Measure,
+    row_h: i32,
+
+    pub fn naturalWidth(self: StatusMeasurer, text: []const u8) i32 {
+        return self.measure.width(text);
+    }
+
+    pub fn wrappedHeight(self: StatusMeasurer, text: []const u8, width: i32) i32 {
+        const rows = measureMessage(text, width, self.measure).rows;
+        return @as(i32, @intCast(rows)) * self.row_h;
+    }
 };
 
 /// 본문을 `max_width` (**픽셀**) 안에서 접는 iterator. 레이아웃 계산과 렌더링이
@@ -223,7 +243,14 @@ fn computeWithinSurface(
     var wrap_width = @min(@max(natural_width, min_width), preferred_content_room_w);
     var measured = measureMessage(message, wrap_width, body_measure);
 
-    const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 3 else 0;
+    // #721 — prompt 는 입력 칸 (한 줄 + 위아래 반 줄) 과 상태 칸이다. 상태 칸은 나올 수
+    // 있는 문구를 모두 재서 잡는다 — 짧으면 한 줄로 두고 창을 넓히되 본문 기본 폭까지,
+    // 넘으면 그 폭에서 줄바꿈한다. 높이는 후보 중 최대라 키를 눌러도 창이 안 바뀐다.
+    const status: hotkey_status.Fit(i32) = if (kind == .prompt)
+        hotkey_status.fit(i32, StatusMeasurer{ .measure = body_measure, .row_h = metrics.body_cell_h }, preferred_content_room_w)
+    else
+        .{ .width = 0, .height = 0 };
+    const prompt_h: i32 = if (kind == .prompt) metrics.body_cell_h * 2 + status.height else 0;
     const fixed_h = metrics.padding * 2 +
         metrics.title_cell_h +
         metrics.body_cell_h + // separator row
@@ -277,7 +304,7 @@ fn computeWithinSurface(
     const scroll_extra = if (message_scroll_max > 0) metrics.scrollbar_w + metrics.scrollbar_gap else 0;
     const body_w = measured.max_width + scroll_extra;
     const title_w: i32 = title_measure.width(title);
-    const inner_w = @max(body_w, title_w);
+    const inner_w = @max(@max(body_w, title_w), status.width);
     const buttons_w = switch (kind) {
         .info, .about => metrics.button_w,
         .confirm, .prompt => metrics.button_w * 2 + metrics.button_gap,
@@ -303,6 +330,7 @@ fn computeWithinSurface(
         .message_scroll_max = message_scroll_max,
         .show_icon = show_icon,
         .fits = desired_w <= width_limit and desired_h <= max_surface.h,
+        .status_wrap_width = status.width,
     };
 }
 
@@ -531,6 +559,50 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     };
 
     for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind, case.standard_scroll_by_scale);
+}
+
+test "#721 prompt status widens the box up to the preferred width and wraps beyond it" {
+    var prompt_buf: [256]u8 = undefined;
+    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
+    const m = testMetrics(100);
+    const viewport = Size{ .w = 1280, .h = 800 };
+    const room = m.preferred_w - m.shadow_margin * 2 - m.padding * 2;
+    // 가장 긴 후보 — 문구가 바뀌어도 테스트가 따라가게 후보 목록에서 고른다.
+    var longest: []const u8 = "";
+    for (hotkey_status.candidates) |c| {
+        if (c.len > longest.len) longest = c;
+    }
+    const statusRows = struct {
+        fn f(width: i32, measure: Measure) usize {
+            var rows: usize = 0;
+            for (hotkey_status.candidates) |c| rows = @max(rows, measureMessage(c, width, measure).rows);
+            return rows;
+        }
+    }.f;
+
+    // 기본 글꼴 — 가장 긴 후보가 기본 폭 안에 든다. 한 줄이고, 본문보다 길어서 창이 그
+    // 문구만큼 넓어진다.
+    const f = testFonts(100);
+    const one = compute(messages.new_instance_title, prompt_msg, .prompt, m, f.body(), f.title(), viewport);
+    try std.testing.expect(9 * @as(i32, @intCast(longest.len)) < room);
+    try std.testing.expectEqual(9 * @as(i32, @intCast(longest.len)), one.status_wrap_width);
+    try std.testing.expectEqual(@as(usize, 1), statusRows(one.status_wrap_width, f.body()));
+    try std.testing.expect(one.size.w >= one.status_wrap_width + m.padding * 2 + m.shadow_margin * 2);
+    try std.testing.expect(longestExplicitLineWidth(prompt_msg, f.body()) < one.status_wrap_width);
+
+    // 넓은 글꼴 — 기본 폭을 넘는다. 그 폭에서 줄바꿈하고, 늘어난 줄만큼 창이 높다. 본문도
+    // 같은 글꼴이라 함께 줄이 늘 수 있어, 높이 차이는 본문 줄 차이와 상태 줄 차이의 합이다.
+    const wide = testFontsWithCellWidths(100, 15, 18);
+    const wrapped = compute(messages.new_instance_title, prompt_msg, .prompt, m, wide.body(), wide.title(), viewport);
+    try std.testing.expectEqual(room, wrapped.status_wrap_width);
+    const rows = statusRows(room, wide.body());
+    try std.testing.expect(rows > 1);
+    const extra_rows = (wrapped.visible_message_rows - one.visible_message_rows) + (rows - 1);
+    try std.testing.expectEqual(@as(i32, @intCast(extra_rows)) * m.body_cell_h, wrapped.size.h - one.size.h);
+
+    // prompt 가 아니면 상태 칸이 없다.
+    const info = compute(messages.new_instance_title, prompt_msg, .info, m, f.body(), f.title(), viewport);
+    try std.testing.expectEqual(@as(i32, 0), info.status_wrap_width);
 }
 
 fn expectFitsLogicalMinimum(

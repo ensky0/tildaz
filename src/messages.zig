@@ -806,8 +806,6 @@ pub const hotkey_hook_failed_fallback_msg = "Failed to install the keyboard hook
 pub const new_instance_title = "Create TildaZ Instance";
 pub const new_instance_hotkey_prompt_format =
     "A total of {d} TildaZ instances will run.\n\nPress a hotkey for the new instance.";
-pub const new_instance_hotkey_invalid_msg =
-    "That hotkey is invalid. Press another combination, for example F2, Ctrl+Space, or Shift+Cmd+T.";
 pub const new_instance_hotkey_duplicate_format =
     "Already used by TildaZ {d}.";
 pub const new_instance_hotkey_duplicate_fallback =

@@ -2012,6 +2012,8 @@ pub const Renderer = struct {
         confirm_focus_ok: ?bool,
         prompt_input: ?[]const u8,
         prompt_status: ?[]const u8,
+        /// #721 — 상태 문구를 접는 폭 (`dialog_layout.Layout.status_wrap_width`).
+        prompt_status_width: i32,
         prompt_available: bool,
         wrap_width: i32,
         message_rows: usize,
@@ -2137,10 +2139,19 @@ pub const Renderer = struct {
             text_y += field_h + @divTrunc(ch, 2);
         }
         if (prompt_status) |status| {
-            if (status.len > 0) {
-                self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, text_x, text_y + ascent, status, .{ .r = 190, .g = 45, .b = 45 });
+            // #721 — 배치가 잡은 폭에서 접고 줄마다 가운데에 둔다. 높이는 배치가 후보 중
+            // 최대로 미리 잡아 두었으므로 여기서는 그리기만 한다.
+            const status_measure = self.dialogBodyMeasure();
+            var status_lines = dialog_layout.WrappedLines{
+                .msg = status,
+                .max_width = prompt_status_width,
+                .measure = status_measure,
+            };
+            while (status_lines.next()) |line| {
+                const line_x = text_x + @divTrunc(inner_w - status_measure.width(line), 2);
+                self.drawDialogTextLine(self.dialogFont(), memory, buffer_w, buffer_h, stride, line_x, text_y + ascent, line, .{ .r = 190, .g = 45, .b = 45 });
+                text_y += ch;
             }
-            text_y += ch;
         }
 
         // (5) 버튼 — Info 모드: OK 하나만 중앙. Confirm 모드: OK + Cancel 그룹,
@@ -3291,6 +3302,7 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         null,
         null,
         null,
+        0,
         false,
         layout.wrap_width,
         layout.message_rows,
@@ -3334,6 +3346,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         null,
+        0,
         false,
         layout.wrap_width,
         layout.message_rows,
@@ -3402,6 +3415,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         null,
+        0,
         false,
         layout.wrap_width,
         layout.message_rows,
@@ -3426,6 +3440,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
         null,
         null,
         null,
+        0,
         false,
         layout.wrap_width,
         layout.message_rows,
