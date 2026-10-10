@@ -838,7 +838,7 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 |---|---|
 | [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
 | [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
-| [`tool/selection-check/selection-check_macos.sh`](tool/selection-check/selection-check_macos.sh) | 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). 좌표는 앱 로그의 `renderer init: … scale= cell= pad=` 에서 읽는다. **클립보드를 잠깐 바꾸므로 글자가 아닌 것 (이미지 · 파일) 이 들어 있으면 멈춘다** — `pbpaste` 는 그것을 못 읽어 되돌릴 수 없다 (2026-10-10 에 한 번 빈 글자로 덮었다) |
+| [`tool/selection-check/selection-check_macos.sh`](tool/selection-check/selection-check_macos.sh) | 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). 좌표는 앱 로그의 `renderer init: … scale= cell= pad=` 에서 읽는다. **클립보드를 잠깐 바꾸므로 순수 글자 말고 다른 형식 (HTML · RTF · 이미지 · 파일) 이 함께 있으면 멈춘다** — `pbpaste` 는 글자 형식만 읽어 나머지를 되돌릴 수 없다 (2026-10-10 에 빈 글자로 한 번, HTML 서식을 한 번 잃었다) |
 | [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos` 로 keyCode + flags 를 보낸다 |
 
 - **`key-bytes-check_macos.sh` 는 켜진 시스템 단축키를 보내지 않고 SKIP 해요.** `⌃Space` 를 보내면 사용자의 입력 소스가

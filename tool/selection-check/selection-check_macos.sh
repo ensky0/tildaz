@@ -41,13 +41,14 @@ if [ "$(ioreg -n Root -d1 -r 2>/dev/null | grep -c CGSSessionScreenIsLocked)" !=
     echo "화면이 잠겨 있다 — 클릭이 잠금 화면으로 간다" >&2; exit 2
 fi
 
-# 클립보드 — 글자만 있거나 비어 있을 때만 진행한다.
+# 클립보드 — **순수 글자만** 있거나 비어 있을 때만 진행한다. `pbpaste` 는 글자 형식만 읽어서,
+# 다른 형식 (HTML · RTF · 이미지 · 파일) 이 함께 있으면 되돌릴 때 그것이 사라진다. 2026-10-10 에
+# 이미지 검사만 두었다가 HTML 이 섞인 클립보드의 서식을 잃었다 — 그래서 허용 목록으로 본다.
 info=$(osascript -e 'clipboard info' 2>/dev/null)
-if printf '%s' "$info" | grep -q -v -E '^$' && ! printf '%s' "$info" | grep -q -E 'string|utf8|Unicode text'; then
-    echo "클립보드에 글자가 아닌 것이 있다 ($info) — 되돌릴 수 없어서 멈춘다" >&2; exit 2
-fi
-if printf '%s' "$info" | grep -q -E 'PNGf|TIFF|furl|JPEG|PDF'; then
-    echo "클립보드에 글자 말고 다른 형식도 있다 ($info) — 되돌릴 수 없어서 멈춘다" >&2; exit 2
+others=$(printf '%s' "$info" | tr ',' '\n' | sed 's/^ *//' | grep -E '^(«class|[A-Za-z])' |
+    grep -v -E '^(«class utf8»|«class ut16»|string|Unicode text)$' | grep -v -E '^[0-9]+$' | head -3)
+if [ -n "$others" ]; then
+    echo "클립보드에 글자 말고 다른 형식이 있다 ($(echo $others)) — 되돌릴 수 없어서 멈춘다" >&2; exit 2
 fi
 
 W=${TMPDIR:-/tmp}/tildaz-selection-check; mkdir -p "$W"
