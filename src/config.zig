@@ -3208,7 +3208,7 @@ pub const Config = struct {
             // #577 — free 를 parse **뒤로** 옮겼다. parse 가 이제 오류로 돌아올 수
             // 있고, 그 경로는 `defaultOwned(allocator, shell_resolved)` 로 떨어지므로
             // 먼저 free 하면 해제된 메모리를 넘기게 된다.
-            const parsed_config = parse(rt, allocator, content, path) catch {
+            const parsed_config = parseWithShell(rt, allocator, content, path, shell_resolved) catch {
                 // 문구는 `pendingFatalNotice` 에 담겼다. host 가 다이얼로그를 그릴 수
                 // 있게 된 뒤 읽어 안내하고 종료한다 — 여기서 죽지 않는 것이 요점이다.
                 //
@@ -3302,6 +3302,13 @@ pub const Config = struct {
         return recordConfigFatalMsg(rt, config_path, msg);
     }
 
+    /// #718 — config 경로의 인스턴스 번호. `config_N.toml` 이 아니면 (단위 테스트 등) 지금
+    /// 프로세스의 번호, 그것도 없으면 0 이다.
+    fn configIndexForPath(config_path: []const u8) u32 {
+        if (instances.parseConfigFileName(std.Io.Dir.path.basename(config_path))) |index| return index;
+        return instance_context.workerIndex() orelse 0;
+    }
+
     /// #218 — fail 경로 공통: shell 은 인수한 `shell_resolved`(owned) 보관, static
     /// default `font_families` 를 owned dupe 로 정규화 → deinit 이 일관 free.
     ///
@@ -3357,7 +3364,25 @@ pub const Config = struct {
     }
 
     fn parse(rt: Runtime, allocator: std.mem.Allocator, content: []const u8, config_path: []const u8) LoadError!Config {
+        return parseWithShell(rt, allocator, content, config_path, null);
+    }
+
+    /// `missing_shell` — 파일에 `shell` 줄이 없을 때 쓸 셸. `load` 는 host 가 고른 셸 (`$SHELL`) 을
+    /// 넘긴다 — config 가 아예 없을 때 새 파일에 적는 그 값이다 (#718). null 이면 `Defaults.shell`.
+    /// 이 함수는 그 값을 복사해 쓰고 소유하지 않는다.
+    fn parseWithShell(
+        rt: Runtime,
+        allocator: std.mem.Allocator,
+        content: []const u8,
+        config_path: []const u8,
+        missing_shell: ?[]const u8,
+    ) LoadError!Config {
         var config = Config{};
+        // #718 — `hotkey` 줄이 없거나 틀리면 **이 config 번호**의 기본 키다 (config 가 없을 때
+        // `defaultOwned` 가 고르는 키와 같다). 필드 기본값은 0 번의 키라, 그대로 두면 `config_1`
+        // 이 0 번과 같은 키가 되어 중복 검사 (#431) 에 걸렸다. 번호는 경로에서 읽는다 — 다른
+        // 인스턴스의 config 를 읽을 때도 그 config 의 번호여야 해서다.
+        if (Hotkey.fromString(Defaults.hotkeyFor(configIndexForPath(config_path)))) |hk| config.hotkey = hk;
         // #655 — 이 한 번의 읽기가 만든 안내만 담는다. 한 프로세스에서 두 번 읽으면
         // (launcher 가 instance 별로 훑는 경로) 같은 줄이 두 벌 쌓여 다이얼로그가
         // 같은 말을 반복한다. `load` 를 거치지 않고 부르는 test 를 위해 여기서도 심는다.
@@ -3476,6 +3501,12 @@ pub const Config = struct {
             } else {
                 config.shell = "";
             }
+        } else {
+            // #655 이후 빠진 키는 기본값이다 — config 가 없을 때와 같은 셸 (`missing_shell`).
+            // 필드 기본값은 comptime 상수라 `deinit` 이 해제하면 죽는다 — 종료할 때 segfault
+            // 였다 (#718 — #656 의 Linux 회차에서 `[input]` 한 줄짜리 config 로 드러났다). 복사본으로 둔다.
+            const fallback = missing_shell orelse default_shell;
+            config.shell = allocator.dupe(u8, fallback) catch default_shell;
         }
 
         // auto_start / hidden_start
@@ -3490,6 +3521,7 @@ pub const Config = struct {
         // **그 자리에서 패닉** 이었고, 스키마가 거부해 주는 덕에 닿지 않던 코드였다.
         // 이제 거부하지 않으므로 없는 섹션이 여기까지 온다.
         var chain_count: usize = 0;
+        var fallback_value: ?toml.Value = null;
         if (root.table.get("font")) |fv| {
             if (fv.table.get("size_point")) |v|
                 config.font_size_point = @intCast(intInRange(v, "font.size_point", terminal_size.MIN_SIZE_POINT, terminal_size.MAX_SIZE_POINT, Defaults.font_size_point));
@@ -3509,39 +3541,48 @@ pub const Config = struct {
                     noticeBadValue("font.family", Defaults.font_family);
                 }
             }
+            fallback_value = fv.table.get("glyph_fallback");
+        }
 
-            // font.glyph_fallback — string 의 배열. 빈 배열은 허용 (시스템 fallback 만
-            // 쓰겠다는 뜻이다). 배열 **안쪽** 타입은 `repairStructure` 가 보지 않으므로
-            // 여기서 본다 — 나쁜 항목만 버리고 나머지는 그대로 쓴다 (SPEC §7.3).
-            if (fv.table.get("glyph_fallback")) |v| {
-                for (v.array.items) |item| {
-                    if (item != .string) {
-                        noticeDropped("font.glyph_fallback", messages.config_notice_key_reason_not_text);
-                        continue;
-                    }
-                    if (item.string.len == 0) continue;
-                    if (chain_count >= MAX_FONT_FAMILIES) {
-                        // 조용히 자르지 않는다 — 사용자가 적은 폰트가 왜 안 먹는지
-                        // 알 수 없게 된다.
-                        noticeDropped("font.glyph_fallback", item.string);
-                        continue;
-                    }
-                    config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
-                    chain_count += 1;
+        // #718 — **빠진 쪽만 기본값이다** (config 가 없을 때와 같다). 예전에는 `family` 가
+        // 없으면 첫 대체 폰트가 주 폰트 자리에 들어갔고, `glyph_fallback` 줄이 없으면 대체
+        // 폰트가 하나도 없어 한글 · 이모지가 빠졌다. 기본값도 복사본이다 — 상수 그대로 두면
+        // `deinit` 이 해제하다 죽는다 (`shell` 과 같은 이유).
+        if (chain_count == 0) {
+            config.font_families[0] = allocator.dupe(u8, Defaults.font_family) catch Defaults.font_family;
+            chain_count = 1;
+        }
+
+        // font.glyph_fallback — string 의 배열. 빈 배열은 허용 (시스템 fallback 만
+        // 쓰겠다는 뜻이다). 배열 **안쪽** 타입은 `repairStructure` 가 보지 않으므로
+        // 여기서 본다 — 나쁜 항목만 버리고 나머지는 그대로 쓴다 (SPEC §7.3).
+        if (fallback_value) |v| {
+            for (v.array.items) |item| {
+                if (item != .string) {
+                    noticeDropped("font.glyph_fallback", messages.config_notice_key_reason_not_text);
+                    continue;
                 }
+                if (item.string.len == 0) continue;
+                if (chain_count >= MAX_FONT_FAMILIES) {
+                    // 조용히 자르지 않는다 — 사용자가 적은 폰트가 왜 안 먹는지
+                    // 알 수 없게 된다.
+                    noticeDropped("font.glyph_fallback", item.string);
+                    continue;
+                }
+                config.font_families[chain_count] = allocator.dupe(u8, item.string) catch item.string;
+                chain_count += 1;
+            }
+        } else {
+            for (Defaults.glyph_fallback) |f| {
+                if (chain_count >= MAX_FONT_FAMILIES) break;
+                config.font_families[chain_count] = allocator.dupe(u8, f) catch f;
+                chain_count += 1;
             }
         }
 
-        // `family` 를 못 읽었으면 chain 이 비어 있다. 기본 chain 을 그대로 쓴다 —
-        // 여기서 빈 chain 을 넘기면 renderer 가 글리프를 하나도 못 찾는다.
-        if (chain_count == 0) {
-            config.font_families = defaultFontFamiliesArray();
-            config.font_family_count = DEFAULT_FONT_CHAIN_COUNT;
-        } else {
-            var i = chain_count;
-            while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
-            config.font_family_count = @intCast(chain_count);
-        }
+        var i = chain_count;
+        while (i < MAX_FONT_FAMILIES) : (i += 1) config.font_families[i] = "";
+        config.font_family_count = @intCast(chain_count);
 
         parseKeys(root, &config);
 
@@ -4718,6 +4759,73 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
     // "지울 것" 묶음에 들어가야 한다 — "넣을 것" 과 사용자가 할 일이 다르다.
     try std.testing.expect(std.mem.indexOf(u8, notice.removable, "bogus_key") != null);
     try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
+}
+
+test "#718 shell · [font] 가 빠진 config 도 deinit 이 상수를 해제하지 않는다" {
+    // 빠진 키를 기본값으로 채울 때 comptime 상수를 그대로 두면 `deinit` 이 그것을 해제한다.
+    // testing allocator 는 자기가 주지 않은 메모리의 해제를 잡는다 — 그 자리를 지킨다.
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    var config = try Config.parse(rt, allocator, "[input]\ncopy_on_select = true\n", "/home/user/.config/tildaz/config_1.toml");
+    defer config.deinit(allocator);
+    try std.testing.expectEqualStrings(Defaults.shell, config.shell);
+    try std.testing.expectEqualStrings(Defaults.font_family, config.font_families[0]);
+    try std.testing.expect(config.copy_on_select);
+}
+
+test "#718 빠진 줄은 config 가 없을 때와 같은 값이다 — hotkey · shell · 폰트 체인" {
+    const allocator = std.testing.allocator;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+
+    // hotkey — 경로의 번호로 고른다. 줄이 없을 때와 값이 틀렸을 때 모두.
+    const cases = [_]struct { path: []const u8, toml_text: []const u8, index: u32 }{
+        .{ .path = "/home/user/.config/tildaz/config_3.toml", .toml_text = "[input]\n", .index = 3 },
+        .{ .path = "/home/user/.config/tildaz/config_2.toml", .toml_text = "hotkey = \"nosuchkey\"\n", .index = 2 },
+    };
+    for (cases) |c| {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        var config = try Config.parse(rt, allocator, c.toml_text, c.path);
+        defer config.deinit(allocator);
+        try std.testing.expectEqual(Hotkey.fromString(Defaults.hotkeyFor(c.index)).?, config.hotkey);
+    }
+
+    // shell — `load` 가 넘긴 셸 (`$SHELL`) 이다. 넘긴 값은 복사해 쓴다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        var config = try Config.parseWithShell(rt, allocator, "[input]\n", "/home/user/.config/tildaz/config_0.toml", "/opt/homebrew/bin/zsh");
+        defer config.deinit(allocator);
+        try std.testing.expectEqualStrings("/opt/homebrew/bin/zsh", config.shell);
+    }
+
+    // 폰트 — 빠진 쪽만 기본값이다.
+    const font_cases = [_]struct { toml_text: []const u8, primary: []const u8, fallback_count: usize }{
+        // family 만 — 기본 대체 목록이 붙는다 (예전에는 대체가 하나도 없었다).
+        .{ .toml_text = "[font]\nfamily = \"Iosevka\"\n", .primary = "Iosevka", .fallback_count = Defaults.glyph_fallback.len },
+        // glyph_fallback 만 — 주 폰트는 기본값이다 (예전에는 첫 대체 폰트가 주 폰트였다).
+        .{ .toml_text = "[font]\nglyph_fallback = [\"A\", \"B\"]\n", .primary = Defaults.font_family, .fallback_count = 2 },
+        // 빈 목록은 "대체 없이" 라는 뜻이라 그대로 둔다.
+        .{ .toml_text = "[font]\nfamily = \"Iosevka\"\nglyph_fallback = []\n", .primary = "Iosevka", .fallback_count = 0 },
+    };
+    for (font_cases) |c| {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        var config = try Config.parse(rt, allocator, c.toml_text, "/home/user/.config/tildaz/config_0.toml");
+        defer config.deinit(allocator);
+        try std.testing.expectEqualStrings(c.primary, config.font_families[0]);
+        try std.testing.expectEqual(c.fallback_count + 1, @as(usize, config.font_family_count));
+    }
 }
 
 test "#656 copy_on_select — 기본은 꺼짐, 적으면 따르고, 없거나 틀리면 기본값 + 안내" {

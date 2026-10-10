@@ -44,7 +44,7 @@ read exactly as written, and nothing rewrites its `hotkey`.
 >
 > | What is wrong | What TildaZ does |
 > |---|---|
-> | A key is missing | Uses the default. Add the key to keep it. |
+> | A key is missing | Uses the value TildaZ would write into a new file: your `$SHELL` for `shell` (`cmd.exe` on Windows), the instance's own hotkey (`F2` for `config_1.toml`) for `hotkey`. In `[font]`, only the missing half falls back — `family` alone keeps the default fallback list. Add the key to keep it. |
 > | A key it does not know | Ignores it. Delete it. |
 > | A value it cannot read | Uses the default. |
 > | A number out of range | Clamps it to the nearest limit — it does not fall back to the default. |
@@ -183,7 +183,7 @@ dialog names the field.
 | `window.offset_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Position along edge (0 = start, 50 = center, 100 = end) |
 | `window.opacity_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Window opacity (%) — internally converted to 0–255 alpha |
 | `font.family` | string | — | "DejaVu Sans Mono" | "Menlo" | "Cascadia Code" | Primary font. Must be installed on the system; missing → fatal |
-| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Noto Sans CJK KR", "Noto Color Emoji"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only) |
+| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Noto Sans CJK KR", "Noto Color Emoji"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only). Leave the key out to keep the default list; `[]` means no fallback fonts |
 | `font.size_point` | int | 8–72 | 15 | 15 | 15 | Logical font size (host applies the OS scale; the legacy key name does not mean a physical 1/72-inch point) |
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
