@@ -1765,6 +1765,13 @@ pub const Defaults = struct {
     /// 조절. Linux · macOS · Windows 공통 기본값.
     pub const line_height_ratio: f32 = 1.1;
 
+    /// #527 — macOS 의 Apple font smoothing (획을 굵히는 회색 테두리). 끈다 — iTerm2
+    /// (Retina 의 thin strokes) · ghostty (`font-thicken = false`) · kitty
+    /// (`macos_thicken_font = 0`) 와 같은 굵기다. 켜면 Terminal.app · Alacritty 의 기본 굵기다
+    /// (#157 이 이쪽이었다). 두 판을 나란히 놓고 보고 고른 값이다 (2026-10-10 사용자 결정).
+    /// Linux · Windows 에서는 읽히지 않는다 (그쪽에 대응하는 스위치가 없다 — #527 본문).
+    pub const macos_font_smoothing: bool = false;
+
     /// host 의 `resolveShell` 이 `$SHELL` env 가 비어있을 때 쓰는 fallback.
     /// 첫 실행 시 host 는 `$SHELL` (있으면) 또는 이 값을 disk JSON 에 명시.
     /// Windows 는 POSIX `$SHELL` 컨벤션 없어 무조건 cmd.exe.
@@ -1937,6 +1944,10 @@ pub fn defaultConfigToml(
         \\size_point        = {d}
         \\cell_width_ratio  = {d:.1}
         \\line_height_ratio = {d:.1}
+        \\# macOS only. false draws thin strokes, as iTerm2 and Ghostty do.
+        \\# true draws each stroke a little heavier, as Terminal.app does.
+        \\# On Linux and Windows this key is read but not used.
+        \\macos_smoothing   = {}
         \\
         \\[input]
         \\# macOS only. On Linux and Windows this key is read but not used --
@@ -1983,6 +1994,7 @@ pub fn defaultConfigToml(
         Defaults.font_size_point,
         Defaults.cell_width_ratio,
         Defaults.line_height_ratio,
+        Defaults.macos_font_smoothing,
         Defaults.macos_option_as_alt,
         Defaults.copy_on_select,
     });
@@ -3159,6 +3171,8 @@ pub const Config = struct {
     cell_width_ratio: f32 = default_cell_width_ratio,
     /// line height ratio — 측정된 ascent+descent+leading 에 곱해 줄 높이 조절.
     line_height_ratio: f32 = default_line_height_ratio,
+    /// #527 — `[font] macos_smoothing`. macOS 만 쓴다 (`Defaults.macos_font_smoothing`).
+    macos_font_smoothing: bool = Defaults.macos_font_smoothing,
     /// chain = primary + glyph_fallback (parse 후 합쳐짐). chain[0] 은 primary,
     /// chain[1..] 은 glyph fallback 순서. host / renderer 가 한 개의 array 로 받음.
     font_families: [MAX_FONT_FAMILIES][]const u8 = defaultFontFamiliesArray(),
@@ -3548,6 +3562,8 @@ pub const Config = struct {
                 config.cell_width_ratio = floatInRange(v, "font.cell_width_ratio", 0.5, 2.0, Defaults.cell_width_ratio);
             if (fv.table.get("line_height_ratio")) |v|
                 config.line_height_ratio = floatInRange(v, "font.line_height_ratio", 0.5, 2.0, Defaults.line_height_ratio);
+            // #527 — 타입은 `repairStructure` 가 이미 걸렀다 (틀리면 지워져 기본값이 남는다).
+            if (fv.table.get("macos_smoothing")) |v| config.macos_font_smoothing = v.boolean;
 
             // font.family — primary, 단일 string. 타입은 `repairStructure` 가 이미
             // 걸렀으므로 남은 것은 빈 문자열뿐이다. 비었으면 기본 폰트로 간다 —
@@ -4868,6 +4884,69 @@ test "#718 빠진 줄은 config 가 없을 때와 같은 값이다 — hotkey ·
         defer config.deinit(allocator);
         try std.testing.expectEqualStrings(c.primary, config.font_families[0]);
         try std.testing.expectEqual(c.fallback_count + 1, @as(usize, config.font_family_count));
+    }
+}
+
+test "#527 macos_smoothing — 기본은 끔, 적으면 따르고, 없거나 틀리면 기본값 + 안내" {
+    const allocator = std.testing.allocator;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const path = "/home/user/.config/tildaz/config_0.toml";
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const default_line = "macos_smoothing   = false";
+    try std.testing.expect(std.mem.indexOf(u8, full, default_line) != null);
+
+    // ① 새 config 는 끔이고 안내가 없다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        var config = try Config.parse(rt, allocator, full, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(!config.macos_font_smoothing);
+        try std.testing.expect(pendingConfigNotice() == null);
+    }
+    // ② `true` 를 적으면 따른다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const on = try replaceFirst(allocator, full, default_line, "macos_smoothing = true");
+        defer allocator.free(on);
+        var config = try Config.parse(rt, allocator, on, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(config.macos_font_smoothing);
+    }
+    // ③ 줄이 없는 옛 config — 기본값이고, 빠진 키로 안내한다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const old = try replaceFirst(allocator, full, default_line, "");
+        defer allocator.free(old);
+        var config = try Config.parse(rt, allocator, old, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(!config.macos_font_smoothing);
+        const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "font.macos_smoothing") != null);
+    }
+    // ④ 형이 틀리면 지워져 기본값이 남는다 — `v.boolean` 이 터지지 않는다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const broken = try replaceFirst(allocator, full, default_line, "macos_smoothing = \"no\"");
+        defer allocator.free(broken);
+        var config = try Config.parse(rt, allocator, broken, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(pendingFatalNotice() == null);
+        try std.testing.expect(!config.macos_font_smoothing);
+        const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "macos_smoothing") != null);
     }
 }
 

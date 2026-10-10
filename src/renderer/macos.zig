@@ -539,6 +539,14 @@ pub const MetalRenderer = struct {
     /// 탭바가 배율만큼 틀어진다. 같은 scale 이동은 host 가 부르지 않는다 (viewport 만).
     /// #693 — 세 platform 공통 이름이다 (Linux · Windows renderer 의 `rebuildFonts` 와 같은
     /// 역할). 크기는 host 의 `TerminalFontSize.spec()` 이 정하고, 배율 타입만 platform 마다 다르다.
+    /// #527 — `[font] macos_smoothing`. 터미널 글자와 탭바 글자가 같은 굵기여야 하므로 두
+    /// 아틀라스에 함께 넣는다. host 가 첫 프레임 전에 부른다 — 이미 그린 글리프는 캐시에 남아
+    /// 바뀌지 않는다 (config 는 실행 중에 다시 읽지 않는다).
+    pub fn setFontSmoothing(self: *MetalRenderer, on: bool) void {
+        self.atlas.smooth_fonts = on;
+        self.tab_atlas.smooth_fonts = on;
+    }
+
     pub fn rebuildFonts(self: *MetalRenderer, terminal_font: font_spec.Spec, new_scale: f32) !void {
         // 1. 새 scale 로 폰트 cell 재측정. 성공 후에만 기존 font 교체(실패 시 unchanged).
         var new_font = try CoreTextFontContext.init(

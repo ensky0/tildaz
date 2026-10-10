@@ -4792,6 +4792,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         },
         else => return err,
     };
+    // #527 — 첫 글리프를 그리기 전에 넣는다.
+    if (g_renderer) |*r| r.setFontSmoothing(g_config.macos_font_smoothing);
     // #382 — renderer 가 생겨 셀 크기를 알므로 여기서 `-size` 를 적용한다. 창을 격자에
     // 맞추고 layer / drawable / bounds 를 새 크기로 되돌린다. 아래 `terminalGrid` 가 그
     // 창에서 격자를 다시 계산하므로, 요청한 셀 수가 그대로 나오는지 그 값으로 확인된다.
