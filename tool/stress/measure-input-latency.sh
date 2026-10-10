@@ -243,7 +243,15 @@ fi
 APP=""
 cleanup() {
     [ -n "$APP" ] && kill "$APP" 2>/dev/null
-    [ -n "$YDOTOOLD_PID" ] && kill "$YDOTOOLD_PID" 2>/dev/null
+    # **끝날 때까지 기다린다** (#736). `ydotoold` 는 SIGTERM 뒤 약 65 ms 더 살아 있다. 기다리지 않고
+    # 나가면, 곧바로 이어 부른 다음 호출이 죽는 중인 데몬을 `pgrep` 으로 보고 "떠 있다" 로 판정해
+    # 새로 띄우지 않는다 → 그 데몬이 사라지면 첫 키 확인이 실패해 회차가 앱 없이 끝난다 (한 회차
+    # 걸러 빈다 — #728 측정에서 9 회 중 4 회).
+    if [ -n "$YDOTOOLD_PID" ]; then
+        kill "$YDOTOOLD_PID" 2>/dev/null
+        wait "$YDOTOOLD_PID" 2>/dev/null
+        YDOTOOLD_PID=""
+    fi
     [ -n "$IME_RESTORE" ] && fcitx5-remote -o >/dev/null 2>&1   # 원래대로 한글
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1
     [ -n "$MAC_INPUT_DIR" ] && rm -rf "$MAC_INPUT_DIR"
