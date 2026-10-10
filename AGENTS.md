@@ -974,7 +974,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
 | [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
-| [`tool/selection-check/selection-check_windows.ps1`](tool/selection-check/selection-check_windows.ps1) | macOS 판의 여섯 칸 — 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). **같은 칸을 Windows Terminal 에서도 돌려 견줘요** (`-Target wt`, `-WtCopyOnSelect` 면 WT 의 `copyOnSelect` 를 잠깐 `true` 로). 좌표는 tildaz 는 로그의 `window initialized: dpi= cell=` 와 여백 `round(6 × dpi/96)`, WT 는 캡처에서 찾은 0 행 글자 범위예요. 수신자는 python 이 아닌 PowerShell 자식이에요 (`ENABLE_VIRTUAL_TERMINAL_INPUT` + `ReadFile`). 클립보드에 순수 글자 말고 다른 형식 (`HTML Format` 등) 이 있으면 멈춰요 |
+| [`tool/selection-check/selection-check_windows.ps1`](tool/selection-check/selection-check_windows.ps1) | macOS 판의 여섯 칸 — 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). **같은 칸을 Windows Terminal 에서도 돌려 견줘요** (`-Target wt`, `-WtCopyOnSelect` 면 WT 의 `copyOnSelect` 를 잠깐 `true` 로). tildaz 는 Windows 전용 칸 ⑦~⑪ 도 봐요 — 메뉴가 열린 채 오른쪽 클릭 · `Ctrl+Shift+C` · 메뉴 *Copy* · 비활성 pane 오른쪽 클릭 (pane 판정은 로그의 `focus by click` 과 pane 마다의 수신 파일). 좌표는 tildaz 는 로그의 `window initialized: dpi= cell=` 와 여백 `round(6 × dpi/96)`, WT 는 캡처에서 찾은 0 행 글자 범위예요. 수신자는 python 이 아닌 PowerShell 자식이에요 (`ENABLE_VIRTUAL_TERMINAL_INPUT` + `ReadFile`). 클립보드에 순수 글자 말고 다른 형식 (`HTML Format` 등) 이 있으면 멈춰요 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -1129,6 +1129,9 @@ tool\selection-check\selection-check_windows.ps1 -WtCopyOnSelect   # tildaz 창 
 - **WT 의 클라이언트 영역은 둥근 모서리 · 테두리까지 덮어서 가장자리에 뒤쪽 창이 비쳐요.** 캡처에서 글자 줄을 찾으면 맨 위 몇
   px 의 비친 글자를 잡아요 — 첫 회차에서 셀 폭이 76 px 로 나와 칸이 전부 엉뚱한 자리를 눌렀어요. 가장자리를 빼고 높이가 글자만
   한 띠만 봐요. WT 는 `-f` (focus 모드) 로 띄우면 탭 줄 · 제목 줄이 없어 0 행이 창 맨 위예요.
+- **NVIDIA 그래픽 드라이버가 있는 기기에서는 화면 오른쪽 아래에 *"Alt+Z 을(를) 눌러서 NVIDIA 오버레이를 엽니다"* 알림이 떠요.**
+  Direct3D 앱이 뜰 때 나오는 것으로 추정해요 (확인 필요). 화면 캡처 (`CopyFromScreen`) 에 찍히고, 클릭 자리를 덮을 수도 있어요 —
+  2026-10-10 `selection-check_windows.ps1` 회차에서 창 아래쪽을 덮은 채 찍혔어요 (클릭은 창 위쪽이라 영향이 없었어요).
 
 # Windows — 키보드 layout 조회 실측 방법
 

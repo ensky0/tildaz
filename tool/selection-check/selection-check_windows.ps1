@@ -15,7 +15,10 @@
 #    tildaz 는 `--instance 9 -e <자식>` (config 도 hotkey 등록도 안 만든다), WT 는 `wt -w new -f` (focus 모드 —
 #    탭 줄 · 제목 줄이 없어 0 행이 창 맨 위다).
 # 2. `SendInput` 으로 끌어 선택 · 오른쪽 클릭 · 더블 클릭을 하고, 클립보드와 받은 바이트로 판정한다.
-# 3. tildaz 는 기본값 회차 뒤 `copy_on_select = true` 회차. 그 회차만 `config_9.toml` 을 잠깐 만들고 지운다.
+# 3. tildaz 는 기본값 회차 끝에 **Windows 전용 칸** (⑦~⑪) 을 더 본다 — 메뉴가 열린 채 오른쪽 클릭 ·
+#    `Ctrl+Shift+C` · 메뉴 *Copy* · 비활성 pane 오른쪽 클릭 (선택 없을 때 · 활성 pane 에 선택이 있을 때).
+#    pane 판정은 로그의 `focus by click` 줄과 pane 마다의 수신 파일 (`recv_….txt` · `….txt.2`) 이다. `-NoExtra` 로 뺀다.
+# 4. tildaz 는 기본값 회차 뒤 `copy_on_select = true` 회차. 그 회차만 `config_9.toml` 을 잠깐 만들고 지운다.
 #
 # 좌표 —
 #  - tildaz 는 앱 로그의 `window initialized: dpi= cell=WxH` 와 여백 `round(6 pt × dpi / 96)` 로 계산한다
@@ -43,7 +46,9 @@ param(
     [ValidateSet('all', 'tildaz', 'wt')][string]$Target = 'all',
     # 기본값은 본문에서 채운다 — `[CmdletBinding()]` 의 param 기본값에서는 `$PSScriptRoot` 가 비어 있다.
     [string]$Bin = '',
-    [switch]$WtCopyOnSelect
+    [switch]$WtCopyOnSelect,
+    # tildaz 기본값 회차 끝의 Windows 전용 칸 (⑦~⑪) 을 건너뛴다.
+    [switch]$NoExtra
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,7 +82,9 @@ public static class TzSel {
   [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] p, int cb);
   [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
-  [StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mi; }
+  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mi; [FieldOffset(8)] public KEYBDINPUT ki; }
+  [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint c, uint t);
 
   public static void MakeDpiAware() { try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {} }
   // `Process.MainWindowHandle` 은 owner 가 달린 진짜 창을 건너뛰어 0 이다 (#584) — pid + 보임 + 크기로 찾는다.
@@ -162,6 +169,20 @@ public static class TzSel {
     MoveTo(x, y); System.Threading.Thread.Sleep(100);
     Send(0x0002); Send(0x0004); System.Threading.Thread.Sleep(60); Send(0x0002); Send(0x0004);
   }
+  // 키 — INPUT 은 PowerShell 이 아니라 여기서 만든다 (중첩 값 타입 대입이 PowerShell 에서 조용히 사라진다 · AGENTS.md).
+  // control pad (방향 · Home 등) 는 확장 (0xE0) 플래그가 있어야 numpad 로 안 간다.
+  static INPUT Key(ushort vk, bool up) {
+    var i = new INPUT(); i.type = 1; i.ki.wVk = vk; i.ki.wScan = (ushort)MapVirtualKeyW(vk, 0);
+    bool ext = vk == 0x21 || vk == 0x22 || vk == 0x23 || vk == 0x24 || vk == 0x25 || vk == 0x26 || vk == 0x27 || vk == 0x28;
+    i.ki.dwFlags = (uint)((up ? 2 : 0) | (ext ? 1 : 0)); return i;
+  }
+  // 순서대로 누르고 역순으로 뗀다.
+  public static uint Chord(ushort[] keys) {
+    var a = new INPUT[keys.Length * 2];
+    for (int i = 0; i < keys.Length; i++) a[i] = Key(keys[i], false);
+    for (int i = 0; i < keys.Length; i++) a[keys.Length + i] = Key(keys[keys.Length - 1 - i], true);
+    return SendInput((uint)a.Length, a, Marshal.SizeOf(typeof(INPUT)));
+  }
   public static void Topmost(IntPtr h, bool on) { SetWindowPos(h, new IntPtr(on ? -1 : -2), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); }
 }
 "@
@@ -189,7 +210,10 @@ $ClipWasEmpty = (@(Clip-Formats).Count -eq 0)
 # ── 수신자 — 0 행에 `COPYME word2` 를 찍고 받은 바이트를 hex 로 남긴다 ─────────────────────
 $Child = Join-Path $W 'child.ps1'
 $childSrc = @'
-$out = $args[0]
+$base = $args[0]
+# pane 을 나누면 같은 `-e` 명령이 한 번 더 뜬다 — 뒤에 뜬 자식은 `<이름>.2` 처럼 비어 있는 이름을 고른다.
+$out = $base; $k = 2
+while ($true) { try { [IO.File]::Open($out, 'CreateNew').Close(); break } catch { $out = "$base.$k"; $k++ } }
 [Console]::Out.Write("COPYME word2`r`n")
 $sig = '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); [DllImport("kernel32.dll")] public static extern bool ReadFile(IntPtr h, byte[] b, int n, out int r, IntPtr o);'
 $K = Add-Type -MemberDefinition $sig -Name Con -Namespace TzSelChild -PassThru
@@ -207,9 +231,9 @@ while ($true) {
 [IO.File]::WriteAllText($Child, $childSrc, (New-Object System.Text.UTF8Encoding $true))
 
 function Hex-Of([string]$s) { ([Text.Encoding]::UTF8.GetBytes($s) | ForEach-Object { '{0:x2}' -f $_ }) -join ' ' }
-function Lines-Of { if (Test-Path $script:OUT) { @(Get-Content $script:OUT) } else { @() } }
-function Hex-Since([int]$n) {
-    $l = Lines-Of
+function Lines-Of([string]$f = $script:OUT) { if (Test-Path $f) { @(Get-Content $f) } else { @() } }
+function Hex-Since([int]$n, [string]$f = $script:OUT) {
+    $l = Lines-Of $f
     if ($l.Count -le $n) { return '' }
     (@($l[$n..($l.Count - 1)] | Where-Object { $_ -match '^[0-9a-f]{2}( [0-9a-f]{2})*$' })) -join ' '
 }
@@ -225,7 +249,8 @@ function Verdict([string]$name, [string]$wantClip, [string]$wantApp, [int]$n) { 
     $script:rows += "$($script:who)`t$line"
 }
 function Guard {
-    if ([TzSel]::GetForegroundWindow() -ne $script:H) { throw "foreground 가 측정 창이 아니다 — 합성 입력을 멈춘다" }
+    $fg = [TzSel]::GetForegroundWindow()
+    if ($fg -ne $script:H) { throw "foreground 가 측정 창이 아니다 — 합성 입력을 멈춘다 (앞에 있는 창 $([TzSel]::Describe($fg)) · $((Get-Process -Id ([TzSel]::Describe($fg) -replace '.*pid=(\d+).*', '$1') -ErrorAction SilentlyContinue).ProcessName))" }
 }
 
 # ── tildaz ──────────────────────────────────────────────────────────────────────────
@@ -254,7 +279,7 @@ function Wait-Ready {
     throw "수신자가 준비되지 않았다 — $($script:OUT)"
 }
 function Launch-Tz([string]$tag) {
-    $script:OUT = Join-Path $W "recv_tildaz_$tag.txt"; Remove-Item $script:OUT -ErrorAction SilentlyContinue
+    $script:OUT = Join-Path $W "recv_tildaz_$tag.txt"; Remove-Item "$($script:OUT)*" -ErrorAction SilentlyContinue
     Stop-Tz
     $before = @{}; foreach ($d in $LogDirs) { $f = Join-Path $d 'tildaz_stress.log'; $before[$d] = if (Test-Path $f) { @(Get-Content $f).Count } else { 0 } }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File $Child $($script:OUT)"
@@ -279,6 +304,8 @@ function Launch-Tz([string]$tag) {
     }
     if (-not $init) { throw "로그에서 'window initialized' 줄을 못 찾았다" }
     $dpi = [int]$init[1]; $cw = [int]$init[2]; $ch = [int]$init[3]
+    $script:Scale = $dpi / 96.0
+    $script:LogFile = Join-Path $script:AppDir 'tildaz_stress.log'
     $pad = [int][Math]::Round(6 * $dpi / 96.0, [MidpointRounding]::AwayFromZero)
     $y = $pad + [int]($ch / 2)
     $script:P0 = [TzSel]::ToScreen($script:H, $pad + [int]($cw / 2), $y)
@@ -323,6 +350,75 @@ function Default-Cells {
     # (①은 ②가 같은 증거다). macOS 판에는 없는 줄이다.
     $n = (Lines-Of).Count; Right-Here;  Verdict '  ④ 의 증거 — 이어서 오른쪽 클릭' 'word2' '' $n
 }
+# ── Windows 전용 칸 (tildaz 기본값 회차 끝) — 오른쪽 클릭의 두 예외와 명시적 복사 ─────────────
+# 오른쪽 클릭은 **메뉴 닫기 → 비활성 pane 포커스 → 선택 복사 → 붙여넣기** 순서로 판정된다
+# (`app_controller.zig` 의 `.mouse_right_down`). 앞 둘은 "아무 일도 안 한다" 가 기대라, 칸마다 이어서
+# 오른쪽 클릭을 한 번 더 해 **그 조작이 실제로 닿았다**는 증거를 함께 본다.
+$VK = @{ Ctrl = 0x11; Shift = 0x10; C = 0x43; Right = 0x27; Home = 0x24; Down = 0x28; Enter = 0x0D }
+function Log-Count { if ($script:LogFile -and (Test-Path $script:LogFile)) { @(Get-Content $script:LogFile -Encoding UTF8).Count } else { 0 } }
+function Log-Since([int]$n) { if (-not (Test-Path $script:LogFile)) { return @() }; @(Get-Content $script:LogFile -Encoding UTF8 | Select-Object -Skip $n) }
+function Send-Keys([uint16[]]$keys, [int]$ms = 300) { Guard; [void][TzSel]::Chord($keys); Start-Sleep -Milliseconds $ms }
+# 컨트롤 스트립 `⋯` — 창 오른쪽 위 (`actions-check_windows.ps1` 의 `MorePt` 와 같은 계산).
+function Open-Menu {
+    Guard
+    $c = New-Object TzSel+RECT; [void][TzSel]::GetClientRect($script:H, [ref]$c)
+    $p = [TzSel]::ToScreen($script:H, [int]($c.R - 13 * $script:Scale), [int](13 * $script:Scale))
+    [TzSel]::LeftClick($p.x, $p.y); Start-Sleep -Milliseconds 600
+}
+function Click-At($pt) { Guard; [TzSel]::LeftClick($pt.x, $pt.y); Start-Sleep -Milliseconds 500 }
+function Right-At($pt) { Guard; [TzSel]::RightClick($pt.x, $pt.y); Start-Sleep -Milliseconds 800 }
+# 클립보드 · 두 pane 의 수신 바이트 · (있으면) 로그 줄 하나를 함께 판정한다. '-' = 안 봄, '' = 없음.
+function Mark { @{ a = (Lines-Of $script:OUT).Count; b = (Lines-Of "$($script:OUT).2").Count; log = (Log-Count) } }
+function Verdict2([string]$name, [string]$wantClip, [string]$wantA, [string]$wantB, $m, [string]$logRe = '') {
+    $gc = Clip-Get; $ga = Hex-Since $m.a $script:OUT; $gb = Hex-Since $m.b "$($script:OUT).2"; $ok = 'OK'
+    if ($wantClip -ne '-' -and $gc -cne $wantClip) { $ok = 'FAIL' }
+    if ($wantA -ne '-' -and $ga -ne $wantA) { $ok = 'FAIL' }
+    if ($wantB -ne '-' -and $gb -ne $wantB) { $ok = 'FAIL' }
+    $gl = ''
+    if ($logRe) { $hit = @(Log-Since $m.log | Where-Object { $_ -match $logRe }); if ($hit.Count -eq 0) { $ok = 'FAIL'; $gl = ' 로그=[없음]' } else { $gl = ' 로그=[' + ($hit[-1] -replace '^\[[^\]]+\]\s*', '') + ']' } }
+    if ($ok -ne 'OK') { $script:fail = 1 }
+    $line = '{0,-4} {1,-38} 클립보드=[{2}]  pane1=[{3}]  pane2=[{4}]{5}' -f $ok, $name, $gc, $ga, $gb, $gl
+    $line
+    $script:rows += "$($script:who)`t$line"
+}
+function Extra-Cells {
+    $ORIGH = Hex-Of 'ORIG'
+    # ⑦ 메뉴가 열린 채 오른쪽 클릭 — 메뉴만 닫는다.
+    Clip-Set 'ORIG'; Drag-Row0; Open-Menu
+    $m = Mark; Right-Here; Verdict2 '⑦ 선택 + 메뉴 연 채 오른쪽 클릭' 'ORIG' '' '-' $m
+    Shot 'after_menu_right'
+    $m = Mark; Right-Here; Verdict2 '  ⑦ 의 증거 — 메뉴가 닫혀 이번엔 복사' $SEL '' '-' $m
+    # ⑧ Ctrl+Shift+C — copy_on_select 와 무관하게 CLIPBOARD 로.
+    Clip-Set 'ORIG'; Drag-Row0
+    $m = Mark; Send-Keys @($VK.Ctrl, $VK.Shift, $VK.C) 600; Verdict2 '⑧ 선택 + Ctrl+Shift+C' $SEL '' '-' $m
+    # ⑨ 메뉴 Copy — 화면 차례 Show/Hide · New Tab · Close Tab · Split Right · Split Down · Copy (#712).
+    Clip-Set 'ORIG'; Drag-Row0; Open-Menu
+    $m = Mark
+    foreach ($k in @($VK.Home, $VK.Down, $VK.Down, $VK.Down, $VK.Down, $VK.Down)) { Send-Keys @($k) 150 }
+    Send-Keys @($VK.Enter) 700
+    Verdict2 '⑨ 선택 + 메뉴 Copy' $SEL '' '-' $m
+    # 선택을 지우고 (빈 자리 한 번 클릭) 오른쪽으로 나눈다 — 새 pane (pane 2) 이 활성이다.
+    Click-At ([TzSel]::ToScreen($script:H, [int](9 * $script:Scale), [int](120 * $script:Scale)))
+    $n = Log-Count; Send-Keys @($VK.Ctrl, $VK.Shift, $VK.Right) 400
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt 10000 -and -not ((Lines-Of "$($script:OUT).2") -contains '[ready]')) { Start-Sleep -Milliseconds 200 }
+    if (-not ((Lines-Of "$($script:OUT).2") -contains '[ready]')) { throw "분할한 pane 의 수신자가 준비되지 않았다 — 로그: $((Log-Since $n | Where-Object { $_ -match '\[pane\]' }) -join ' / ')" }
+    Start-Sleep -Milliseconds 800
+    "     분할: $(((Log-Since $n | Where-Object { $_ -match 'split right' }) | Select-Object -Last 1) -replace '^\[[^\]]+\]\s*', '')"
+    Shot 'after_split'
+    $c = New-Object TzSel+RECT; [void][TzSel]::GetClientRect($script:H, [ref]$c)
+    $pane1 = $script:P0                                                  # 왼쪽 pane 의 0 행 첫 칸
+    $pane2 = [TzSel]::ToScreen($script:H, [int]($c.R * 0.75), [int]($c.B * 0.5))   # 오른쪽 pane 가운데
+    Clip-Set 'ORIG'
+    # ⑩ 선택 없이 비활성 pane (pane 1) 을 오른쪽 클릭 — 포커스만 옮긴다.
+    $m = Mark; Right-At $pane1; Verdict2 '⑩ 선택 없이 비활성 pane 오른쪽 클릭' 'ORIG' '' '' $m 'focus by click'
+    $m = Mark; Right-At $pane1; Verdict2 '  ⑩ 의 증거 — 다시 누르면 그 pane 에 붙음' 'ORIG' $ORIGH '' $m
+    # ⑪ 활성 pane (pane 1) 에 선택이 있는 채 비활성 pane (pane 2) 을 오른쪽 클릭 — 복사하지 않는다.
+    Drag-Row0
+    $m = Mark; Right-At $pane2; Verdict2 '⑪ 선택 있는 채 비활성 pane 오른쪽 클릭' 'ORIG' '' '' $m 'focus by click'
+    $m = Mark; Right-At $pane2; Verdict2 '  ⑪ 의 증거 — 다시 누르면 그 pane 에 붙음' 'ORIG' '' $ORIGH $m
+    Shot 'after_panes'
+}
 function On-Cells {
     Clip-Set 'ORIG'
     $n = (Lines-Of).Count; Drag-Row0;   Verdict '⑤ 끌어 선택' $SEL '' $n
@@ -334,7 +430,7 @@ $WtClass = 'CASCADIA_HOSTING_WINDOW_CLASS'
 $WtSettings = Get-ChildItem "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal*\LocalState\settings.json" -ErrorAction SilentlyContinue | Select-Object -First 1
 $WtBak = Join-Path $W 'wt-settings.bak'
 function Launch-Wt([string]$tag) {
-    $script:OUT = Join-Path $W "recv_wt_$tag.txt"; Remove-Item $script:OUT -ErrorAction SilentlyContinue
+    $script:OUT = Join-Path $W "recv_wt_$tag.txt"; Remove-Item "$($script:OUT)*" -ErrorAction SilentlyContinue
     $old = @([TzSel]::WindowsOfClass($WtClass))
     # -f = focus 모드 (탭 줄 · 제목 줄 없음). --size 는 칸 수.
     Start-Process wt.exe -ArgumentList '-w', 'new', '-f', '--size', '60,12', 'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Child, $script:OUT | Out-Null
@@ -379,6 +475,7 @@ try {
         "===== tildaz · 기본값 (copy_on_select = false)  ($Bin)"
         Launch-Tz 'default'
         Default-Cells
+        if (-not $NoExtra) { "----- Windows 전용 칸 — 오른쪽 클릭의 예외 · 명시적 복사"; Extra-Cells }
         Stop-Tz
         "===== tildaz · copy_on_select = true (임시 config_9.toml)"
         $Cfg9 = Join-Path $script:AppDir 'config_9.toml'
