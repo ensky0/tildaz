@@ -129,14 +129,18 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         .window = .{ .rt = rt, .key_bindings = config.key_bindings[0..config.key_binding_count] },
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
+        .copy_on_select = config.copy_on_select, // #656
     };
     // #382 — `-e <실행파일>` 이면 셸 대신 그것을 띄운다. Windows 의 `ShellCommand` 는
-    // UTF-16 이라 변환한다 (`run()` 이 끝날 때까지 살아 있어야 해서 여기서 free 하지
-    // 않는다 — 프로세스 수명과 같다).
+    // UTF-16 이라 변환한다. 세션이 새 탭 · pane 에서도 이 포인터를 쓰므로 `run()` 이
+    // 끝날 때 돌려준다 — 이 `defer` 가 `app.session.deinit()` 보다 먼저 선언돼 그보다
+    // 늦게 돈다. 예전에는 프로세스 수명과 같다고 보고 놓아두어 `-e` 회차마다
+    // `gpa.deinit()` 이 누수 한 건을 로그에 남겼다 (2026-10-10 · #656 Windows 회차).
     const stress_shell_w: ?[:0]const u16 = if (opts.command) |cmd|
         std.unicode.utf8ToUtf16LeAllocZ(alloc, cmd) catch null
     else
         null;
+    defer if (stress_shell_w) |w| alloc.free(w);
     app.session = SessionCore.init(
         rt,
         alloc,

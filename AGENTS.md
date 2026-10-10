@@ -838,6 +838,7 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 |---|---|
 | [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
 | [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
+| [`tool/selection-check/selection-check_macos.sh`](tool/selection-check/selection-check_macos.sh) | 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). 좌표는 앱 로그의 `renderer init: … scale= cell= pad=` 에서 읽는다. **클립보드를 잠깐 바꾸므로 순수 글자 말고 다른 형식 (HTML · RTF · 이미지 · 파일) 이 함께 있으면 멈춘다** — `pbpaste` 는 글자 형식만 읽어 나머지를 되돌릴 수 없다 (2026-10-10 에 빈 글자로 한 번, HTML 서식을 한 번 잃었다) |
 | [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos` 로 keyCode + flags 를 보낸다 |
 
 - **`key-bytes-check_macos.sh` 는 켜진 시스템 단축키를 보내지 않고 SKIP 해요.** `⌃Space` 를 보내면 사용자의 입력 소스가
@@ -973,6 +974,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
 | [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
+| [`tool/selection-check/selection-check_windows.ps1`](tool/selection-check/selection-check_windows.ps1) | macOS 판의 여섯 칸 — 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). **같은 칸을 Windows Terminal 에서도 돌려 견줘요** (`-Target wt`, `-WtCopyOnSelect` 면 WT 의 `copyOnSelect` 를 잠깐 `true` 로). tildaz 는 Windows 전용 칸 ⑦~⑪ 도 봐요 — 메뉴가 열린 채 오른쪽 클릭 · `Ctrl+Shift+C` · 메뉴 *Copy* · 비활성 pane 오른쪽 클릭 (pane 판정은 로그의 `focus by click` 과 pane 마다의 수신 파일). 좌표는 tildaz 는 로그의 `window initialized: dpi= cell=` 와 여백 `round(6 × dpi/96)`, WT 는 캡처에서 찾은 0 행 글자 범위예요. 수신자는 python 이 아닌 PowerShell 자식이에요 (`ENABLE_VIRTUAL_TERMINAL_INPUT` + `ReadFile`). 클립보드에 순수 글자 말고 다른 형식 (`HTML Format` 등) 이 있으면 멈춰요 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -984,6 +986,7 @@ tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 
 tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
 tool\actions-check_windows.ps1                                      # 다섯 모드 전부 (창 5 회 · 8 분 남짓)
 tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   # 대조군 — _internal 도 그 옆에 있어야 한다
+tool\selection-check\selection-check_windows.ps1 -WtCopyOnSelect   # tildaz 창 2 회 + WT 창 2 회 · 클립보드 · WT 설정 잠깐
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -1116,6 +1119,19 @@ tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   #
   `TildaZ-stress`. `send-keys_windows.ps1` · `split-panes_windows.ps1` · `compare-terminals.sh` 가 릴리즈 이름으로 고정돼
   기본 빌드의 창을 못 찾았어요 (2026-10-10 발견). 지금은 둘 다 찾고, 둘 다 떠 있으면 멈춰요. config 폴더도 dev 는
   `%APPDATA%\tildaz-dev` 예요.
+- **⚠️ `GetClassNameW` · `GetWindowTextW` 에 `StringBuilder` 를 넘길 때는 `CharSet = CharSet.Unicode` 를 붙여요.**
+  빠지면 ANSI 로 마샬돼 **첫 글자만** 돌아와요 (`CASCADIA_HOSTING_WINDOW_CLASS` 가 `C`). 오류가 없어서 "창이 없다" 로 읽혀요
+  (2026-10-10 `selection-check_windows.ps1` 첫 WT 회차). `link-click-check_windows.ps1` 도 같은 선언이라
+  `CloseStaleErrorDialogs` 의 `#32770` 비교가 늘 어긋났어요 — 같은 날 고쳤어요 (수정 전 선언은 `MozillaWindowClass` 를 `M` 으로 읽었어요).
+- **Windows Terminal 창을 찾을 때는 pid 가 아니라 클래스 (`CASCADIA_HOSTING_WINDOW_CLASS`) 로, 띄우기 전과 비교해** 새로 생긴
+  것을 골라요. `wt.exe` 는 띄우고 바로 끝나서 창의 주인은 `WindowsTerminal.exe` 예요. 같은 이유로 `SetForegroundWindow` 가
+  조용히 무시될 수 있어 창 안 빈 자리를 한 번 클릭해 포커스를 되찾아요.
+- **WT 의 클라이언트 영역은 둥근 모서리 · 테두리까지 덮어서 가장자리에 뒤쪽 창이 비쳐요.** 캡처에서 글자 줄을 찾으면 맨 위 몇
+  px 의 비친 글자를 잡아요 — 첫 회차에서 셀 폭이 76 px 로 나와 칸이 전부 엉뚱한 자리를 눌렀어요. 가장자리를 빼고 높이가 글자만
+  한 띠만 봐요. WT 는 `-f` (focus 모드) 로 띄우면 탭 줄 · 제목 줄이 없어 0 행이 창 맨 위예요.
+- **NVIDIA 그래픽 드라이버가 있는 기기에서는 화면 오른쪽 아래에 *"Alt+Z 을(를) 눌러서 NVIDIA 오버레이를 엽니다"* 알림이 떠요.**
+  Direct3D 앱이 뜰 때 나오는 것으로 추정해요 (확인 필요). 화면 캡처 (`CopyFromScreen`) 에 찍히고, 클릭 자리를 덮을 수도 있어요 —
+  2026-10-10 `selection-check_windows.ps1` 회차에서 창 아래쪽을 덮은 채 찍혔어요 (클릭은 창 위쪽이라 영향이 없었어요).
 
 # Windows — 키보드 layout 조회 실측 방법
 
@@ -1371,7 +1387,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
   안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
   `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.
   키는 **그때 포커스를 가진 창으로 가요** (위 경고와 같아요) — 시작 전에 알리고, `systemd-inhibit` 로 유휴 잠금을 막아요.
-- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
+- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요. **51 은 `--devkit` 도 없어요** — 아래 nested 코드 블록의 `--headless` 를 써요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
 
@@ -1404,10 +1420,15 @@ gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=sway sway -c <config>
 env -u XDG_CURRENT_DESKTOP WAYLAND_DISPLAY=wayland-0 Hyprland -c <config>
 
-# GNOME 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
+# GNOME 50 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
 # 버스가 필요해서 `dbus-run-session` 으로 감싸요.
 XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
   gnome-shell --devkit --wayland --wayland-display=wayland-9
+
+# GNOME 51 은 `--devkit` 도 없어요 (`알 수 없는 옵션`). 화면 없이 globals · 로그만 보면
+# 되는 회차는 headless 로 띄워요 (2026-10-10 · GNOME Shell 51.0 · #656).
+XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
+  gnome-shell --headless --wayland --no-x11 --virtual-monitor 1024x700 --wayland-display=wayland-77
 
 # COSMIC 은 `WAYLAND_DISPLAY` 가 있으면 스스로 중첩해요.
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
@@ -1538,6 +1559,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `actions` (#692 — 공통 처리부로 옮긴 액션을 단축키로 눌러 로그 줄 · `stty size` 로 판정) · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
+| [`tool/selection-check/selection-check_linux.sh`](tool/selection-check/selection-check_linux.sh) | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 남기는 것 ([#656](https://github.com/ensky0/tildaz/issues/656) · [#657](https://github.com/ensky0/tildaz/issues/657)). 판정은 같은 sway 에 붙은 `wl-paste` · `wl-paste --primary` 와 수신자 바이트. headless sway 를 격리 경로에 띄우므로 **이 Mac 의 lima VM 에서도** 같은 명령으로 돈다 (`--bin` 으로 크로스빌드 바이너리를 준다) |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
@@ -1573,6 +1595,16 @@ grim shot.png                                                          # sway �
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
   **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
+- **⚠️ sway 의 일반 창 (앱에 `SWAYSOCK` 이 보이는 경로) 은 맨 위에 sway 의 제목 막대가 있어요.** layer-shell 창처럼
+  "창 맨 위에서 14 px" 을 0 행으로 잡으면 **제목 막대를 끌게 되어** 선택이 안 생겨요. 오른쪽 · 가운데 클릭은 아래쪽을
+  눌러서 닿아요. 좌표는 `swaymsg -t get_tree` 의 `rect` (제목 막대를 뺀 자리) + `window_rect` 로 잡아요. 그러면 가상
+  포인터의 끌기도 선택을 만들어요 (2026-10-10 · 미니PC Firebat ZY-A8 headless sway 1.12 · [#656](https://github.com/ensky0/tildaz/issues/656)).
+  실제 sway 1.12 에서 사람이 긁어도 선택돼요 (같은 날 tty3). `selection-check_linux.sh` 는 좌표가 간단한 layer-shell 경로로
+  띄워요 (`env -u SWAYSOCK`).
+- **실제 sway 는 자기 VT 를 떠나면 화면 (output) 을 모두 내려놓아요.** 다른 VT (KDE 등) 에 있는 동안 `get_outputs` 가 빈
+  목록이에요. 그때 띄운 창은 화면이 돌아와도 sway 트리에 나타나지 않았어요 (같은 회차 · tildaz 는 map 됐다고 기록). foot 은
+  화면이 없으면 시작을 거부해 대조군이 안 돼요 (`no monitors available`). 다른 VT 의 sway 에 창을 띄우는 회차는 **그 VT 가
+  켜진 동안** 띄워요 — `/sys/class/tty/tty0/active` 가 그 tty 가 되기를 기다려 실행하면 돼요.
 - **sway 회차에서는 `-size` 를 못 써요.** `SWAYSOCK` 이 보이면 tildaz 가 layer-shell 대신 scratchpad 경로를 타서 (#454)
   창 크기를 우리가 못 정하고, 앱이 `-size cannot be used on this desktop` 으로 **부팅을 멈춰요** (2026-09-15 실측). 창은
   타일링으로 출력 전체가 되니 칸 수는 로그의 `terminal session created cols= rows=` 에서 읽어요. 반대로 `SWAYSOCK` 을
