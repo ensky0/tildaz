@@ -99,6 +99,7 @@ line_height_ratio = 1.1
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
+copy_on_select = false         # true: every mouse selection replaces the clipboard
 ```
 
 ### macOS
@@ -130,6 +131,7 @@ line_height_ratio = 1.1
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
+copy_on_select = false         # true: every mouse selection replaces the clipboard
 ```
 
 ### Windows
@@ -161,6 +163,7 @@ line_height_ratio = 1.1
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
+copy_on_select = false         # true: every mouse selection replaces the clipboard
 ```
 
 ## Field reference
@@ -185,6 +188,7 @@ dialog names the field.
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
 | `input.macos_option_as_alt` | string | none / both / left / right | "none" | "none" | "none" | **macOS only** — whether Option acts as Alt. On macOS the OS turns `Option+a` into a character (`å` on ABC, `ê` on French), so one key press has two meanings and you pick one: `none` types the character (the macOS default), `both` makes Option act as Alt so `Alt+n` reaches zellij, tmux and emacs, `left` / `right` pick one side and leave the other typing characters. The key exists on all three platforms so a single config file stays portable, but Linux and Windows read it without using it — there Alt is always Meta, because `Alt+a` produces no character |
+| `input.copy_on_select` | bool | true / false | false | false | false | Copy to the clipboard as soon as you finish a mouse selection. `false` keeps what you copied with `Ctrl+Shift+C` (`Cmd+C` on macOS): copy a selection with that key or a **right-click** — right-click with nothing selected pastes, as in Windows Terminal. `true` makes every selection replace the clipboard, and right-click always pastes. **On Linux the selection also goes to the primary selection either way** — middle-click pastes it (when the app has turned on mouse reporting, middle-click goes to the app; `Shift`+middle-click still pastes) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"` — so the first space ends the executable path; a path that itself contains spaces has to be quoted inside the value, as in `shell = "\"C:\\Program Files\\Git\\bin\\bash.exe\""`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
 | `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |

@@ -20,9 +20,12 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 - macOS: `⌘Q` now follows the `quit` entry in `[keys]`. If you changed or emptied it, `⌘Q` no longer quits ([#713](https://github.com/ensky0/tildaz/issues/713)).
+- Selecting text with the mouse no longer replaces the clipboard. Copy with `Ctrl+Shift+C` (`Cmd+C` on macOS) or a right-click, or set `copy_on_select = true` in `[input]` to get the old behavior back ([#656](https://github.com/ensky0/tildaz/issues/656)).
 
 ## Body candidates
 
 - macOS: changing the quit shortcut in `[keys]` now works ([#713](https://github.com/ensky0/tildaz/issues/713)).
 - The arrow keys in the `⋯` menu now move in the order you see ([#712](https://github.com/ensky0/tildaz/issues/712)).
 - Windows: a new tab scrolls into view in the tab bar, and the pointer shape updates right after a split ([#692](https://github.com/ensky0/tildaz/issues/692)).
+- Linux: a mouse selection goes to the primary selection, and middle-click pastes it ([#657](https://github.com/ensky0/tildaz/issues/657)).
+- Right-click copies the selection when there is one, and pastes when there is none ([#656](https://github.com/ensky0/tildaz/issues/656)).

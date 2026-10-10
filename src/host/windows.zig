@@ -129,6 +129,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         .window = .{ .rt = rt, .key_bindings = config.key_bindings[0..config.key_binding_count] },
         .allocator = alloc,
         .shell = config.shell, // #248 — 런타임 새 탭 재검증용 (config 생존 동안 유효).
+        .copy_on_select = config.copy_on_select, // #656
     };
     // #382 — `-e <실행파일>` 이면 셸 대신 그것을 띄운다. Windows 의 `ShellCommand` 는
     // UTF-16 이라 변환한다 (`run()` 이 끝날 때까지 살아 있어야 해서 여기서 free 하지

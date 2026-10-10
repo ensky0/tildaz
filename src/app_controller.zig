@@ -51,6 +51,8 @@ pub const App = struct {
     /// #248 — `config.shell` (UTF-8 원본). 런타임 새 탭 생성 직전 shell 바이너리
     /// 재검증용 (startup `validateOrFatal` 과 같은 값). host(`windows.zig`)가 set.
     shell: []const u8 = "",
+    /// #656 — `[input] copy_on_select`. host (`windows.zig`) 가 심는다.
+    copy_on_select: bool = false,
     renderer: ?RendererBackend = null,
     /// [#506](https://github.com/ensky0/tildaz/issues/506) — `-size COLSxROWS` 요청.
     /// host (`windows.zig`) 가 심는다. 창 크기를 boot 에서 한 번 정하고 마는 것이
@@ -1588,14 +1590,8 @@ pub const App = struct {
     fn finishTerminalSelection(self: *App) void {
         const tab = self.activeTabPtr() orelse return;
         if (!tab.interaction.selection.finish()) return;
-
-        const screen: *ghostty.Screen = tab.terminal.screens.active;
-        const sel = screen.selection orelse return;
-        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
-        defer self.allocator.free(text);
-        if (text.len > 0) {
-            self.window.copyToClipboard(text);
-        }
+        // #656 — CLIPBOARD 에 넣을지는 `[input] copy_on_select` 가 정한다 (세 host 공통).
+        tab_actions.selectionFinished(&self.host, self.allocator, self.copy_on_select);
     }
 
     // ── #647 링크 (Ctrl + 클릭으로 브라우저 열기) ────────────────────────────
@@ -1656,14 +1652,8 @@ pub const App = struct {
 
         const screen: *ghostty.Screen = tab.terminal.screens.active;
         if (!terminal_interaction.selectWord(screen, cell)) return;
-
-        // Copy word to clipboard
-        const sel = screen.selection orelse return;
-        const text = screen.selectionString(self.allocator, .{ .sel = sel }) catch return;
-        defer self.allocator.free(text);
-        if (text.len > 0) {
-            self.window.copyToClipboard(text);
-        }
+        // #656 — 선택이 끝난 것이라 드래그를 놓을 때와 같은 곳을 부른다.
+        tab_actions.selectionFinished(&self.host, self.allocator, self.copy_on_select);
     }
 
     /// Windows의 실제 IMM preedit 상태로 공통 입력 정책을 resolve하고 native
@@ -1782,6 +1772,9 @@ pub const App = struct {
                 // #483 5단계 — 비활성 pane 우클릭은 포커스만 옮기고 붙여넣지 않는다 (확정 설계 축 3). true 면
                 // window 가 붙여넣기를 건너뛴다.
                 if (self.focusPaneUnderPointer(mouse.x, mouse.y)) return true;
+                // #656 — `copy_on_select` 가 꺼져 있고 선택이 있으면 붙여넣지 않고 복사한다
+                // (Windows Terminal 과 같다).
+                if (tab_actions.rightClickCopiesSelection(&self.host, self.allocator, self.copy_on_select)) return true;
                 return false;
             },
             .link_mods_changed => |ctrl| {

@@ -40,6 +40,11 @@ pub const Host = struct {
     /// 자연스럽게 호환. caller 가 이미 비어있지 않음 보장.
     clipboard_copy: *const fn (*Host, [:0]const u8) void,
 
+    /// #657 — 텍스트를 PRIMARY selection 으로 (가운데 클릭으로 붙는 곳). Linux 만 채운다 —
+    /// macOS · Windows 에는 그런 저장소가 없다. compositor 가 프로토콜을 안 내주면 콜백 안에서
+    /// 조용히 끝난다.
+    primary_copy: ?*const fn (*Host, [:0]const u8) void = null,
+
     /// 마지막 탭 닫혔을 때 — mac NSApp.terminate / win
     /// `self.window.closeAfterShellExit()`. 양쪽 다 "탭 0 = 앱 종료" 동일 정책,
     /// API 만 차이.
@@ -179,6 +184,40 @@ pub fn copyActiveSelection(host: *Host, alloc: std.mem.Allocator) void {
     defer alloc.free(text);
     if (text.len == 0) return;
     host.clipboard_copy(host, text);
+}
+
+/// #656 · #657 — 마우스 선택이 끝났을 때 (드래그를 놓을 때 · 더블 클릭). 선택 글자를 한 번
+/// 뽑아 PRIMARY (있는 host 만) 와, `copy_on_select` 면 CLIPBOARD 에 넘긴다. 세 host 가 이 한
+/// 곳을 부른다 — 예전에는 host 마다 그 자리에서 CLIPBOARD 로 직접 복사했다.
+pub fn selectionFinished(host: *Host, alloc: std.mem.Allocator, copy_on_select: bool) void {
+    if (host.primary_copy == null and !copy_on_select) return;
+    const tab = host.session.activeTab() orelse return;
+    const screen: *ghostty.Screen = tab.terminal.screens.active;
+    const sel = screen.selection orelse return;
+    const text = screen.selectionString(alloc, .{ .sel = sel }) catch return;
+    defer alloc.free(text);
+    if (text.len == 0) return;
+    if (host.primary_copy) |primary| primary(host, text);
+    if (copy_on_select) host.clipboard_copy(host, text);
+}
+
+/// #656 — 오른쪽 클릭이 붙여넣기 전에 부른다. `copy_on_select` 가 꺼져 있고 선택이 있으면
+/// 그것을 CLIPBOARD 로 복사하고 선택을 지운 뒤 true 를 돌려준다 — 그때는 붙여넣지 않는다.
+/// Windows Terminal 과 같다 (`ControlInteractivity.cpp` 의 오른쪽 버튼 분기: 켜져 있으면 늘
+/// 붙여넣고, 꺼져 있으면 선택이 있을 때 복사, 없을 때 붙여넣기).
+pub fn rightClickCopiesSelection(host: *Host, alloc: std.mem.Allocator, copy_on_select: bool) bool {
+    if (copy_on_select) return false;
+    const tab = host.session.activeTab() orelse return false;
+    const screen: *ghostty.Screen = tab.terminal.screens.active;
+    const sel = screen.selection orelse return false;
+    const text = screen.selectionString(alloc, .{ .sel = sel }) catch return false;
+    defer alloc.free(text);
+    // 빈 선택 (공백뿐인 줄 끝 등) 은 복사할 것이 없다 — Windows Terminal 처럼 붙여넣기로 간다.
+    if (text.len == 0) return false;
+    host.clipboard_copy(host, text);
+    screen.clearSelection();
+    host.invalidate(host);
+    return true;
 }
 
 /// paste 텍스트 라우팅 — session.pasteToActive. bracketed paste mode 검사 +

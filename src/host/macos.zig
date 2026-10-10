@@ -3811,12 +3811,12 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
         const px = eventToWindowPx(self_view, event);
         if (!routeMouseMac(.press, .left, px.x, px.y, eventMouseMods(event), true)) return;
     }
-    // double-click → word selection + 자동 copy (Windows `selectWordAt` 와 동등).
+    // double-click → word selection. 선택이 끝난 것이라 드래그를 놓을 때와 같은 곳을 부른다 (#656).
     const get_count = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_long);
     const click_count = get_count(event, objc.sel("clickCount"));
     if (click_count >= 2) {
         if (terminal_interaction.selectWord(tab.terminal.screens.active, cell)) {
-            handleCopy();
+            handleSelectionFinished();
         }
         tab.interaction.selection.cancel(); // word selection 자체 완료, drag 모드 X.
         return;
@@ -3964,11 +3964,9 @@ fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         if (!routeMouseMac(.release, .left, px.x, px.y, eventMouseMods(event), false)) return;
     }
 
-    // 셀 selection finish — Windows `selection.finish()` → `copyToClipboard`
-    // 패턴 (#122). selection 변화 있었으면 자동 clipboard copy. Cmd+C 없이도
-    // 드래그 후 즉시 paste 가능.
+    // 셀 selection finish (#122). CLIPBOARD 에 넣을지는 `[input] copy_on_select` 가 정한다 (#656).
     if (tab.interaction.selection.finish()) {
-        handleCopy();
+        handleSelectionFinished();
     }
 }
 
@@ -4080,6 +4078,8 @@ fn tildazRightMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callcon
         const xy = eventToWindowPx(self_view, event);
         if (focusPaneUnderPointer(xy.x, xy.y)) return;
     }
+    // #656 — `copy_on_select` 가 꺼져 있고 선택이 있으면 붙여넣지 않고 복사한다 (Windows Terminal 과 같다).
+    if (tab_actions.rightClickCopiesSelection(&g_host, g_gpa.allocator(), g_config.copy_on_select)) return;
     handlePaste();
 }
 
@@ -4263,11 +4263,9 @@ fn finishSeparatorDrag(d: SepDrag) void {
     afterPaneLayoutChange();
 }
 
-/// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
-/// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
-/// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
-fn handleCopy() void {
-    tab_actions.copyActiveSelection(&g_host, g_gpa.allocator());
+/// #656 — 마우스 선택이 끝났을 때. macOS 에는 PRIMARY 가 없어 `copy_on_select` 만 본다.
+fn handleSelectionFinished() void {
+    tab_actions.selectionFinished(&g_host, g_gpa.allocator(), g_config.copy_on_select);
 }
 
 fn handlePaste() void {
@@ -4300,6 +4298,9 @@ fn handlePaste() void {
     tab_actions.routePaste(&g_host, cstr[0..len]);
 }
 
+/// 마우스 휠 / 트랙패드 스크롤 → ghostty Terminal 의 viewport scroll. 양수
+/// deltaY (콘텐츠가 아래로 = 손가락 위로) 면 scrollback 의 위쪽 (오래된 내용)
+/// 보임. trackpad 의 작은 precise delta 도 그대로 1+ row 단위로 변환.
 fn tildazScrollWheel(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     requestRender(); // #255 Phase2 — 휠 스크롤 → 렌더 (viewport 변경, 출력 없음).
     const tab = g_session.activeTab() orelse return;

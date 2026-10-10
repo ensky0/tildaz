@@ -1719,6 +1719,10 @@ pub const Defaults = struct {
     /// #533 — macOS 표준을 기본으로 둔다. Option 으로 특수문자를 쓰던 사용자가
     /// 업그레이드로 그것을 잃지 않게 한다. Linux · Windows 에서는 읽히지 않는다.
     pub const macos_option_as_alt: []const u8 = "none";
+    /// #656 — 선택을 끝낼 때 CLIPBOARD 에도 넣을지. 끈다 — 긁기만 해도 사용자가
+    /// `Ctrl+C` 로 담아 둔 내용이 날아갔다. kitty · Alacritty · Ghostty 도 CLIPBOARD 를
+    /// 덮지 않는다. Linux 의 PRIMARY (#657) 는 이 값과 상관없이 늘 쓴다.
+    pub const copy_on_select: bool = false;
     pub const theme: []const u8 = "Tilda";
     /// #683 — dev 판은 끈다. 한 번 띄운 dev 판이 다음 로그인부터 릴리즈와 함께 뜨지 않게.
     /// 이미 있는 config 는 적힌 값을 따른다.
@@ -1950,6 +1954,18 @@ pub fn defaultConfigToml(
         \\#   right   The mirror of "left".
         \\macos_option_as_alt = "{s}"
         \\
+        \\# Copy to the clipboard as soon as you finish selecting with the mouse.
+        \\#
+        \\#   false   The clipboard keeps what you copied. Copy the selection
+        \\#           with Ctrl+Shift+C (Cmd+C on macOS) or a right-click.
+        \\#           Right-click with nothing selected pastes.
+        \\#   true    Every selection replaces the clipboard. Right-click
+        \\#           always pastes.
+        \\#
+        \\# On Linux the selection also goes to the primary selection either
+        \\# way -- middle-click pastes it.
+        \\copy_on_select = {}
+        \\
     , .{
         hotkey,
         shell_resolved,
@@ -1968,6 +1984,7 @@ pub fn defaultConfigToml(
         Defaults.cell_width_ratio,
         Defaults.line_height_ratio,
         Defaults.macos_option_as_alt,
+        Defaults.copy_on_select,
     });
     defer allocator.free(head);
 
@@ -3095,6 +3112,9 @@ pub const Config = struct {
     /// #533 — macOS 의 Option 을 Alt 로 볼지. 다른 두 platform 에서는 값이 읽히지만
     /// 쓰이지 않는다 (`MacOptionAsAlt` 의 주석 참고).
     macos_option_as_alt: MacOptionAsAlt = default_macos_option_as_alt,
+    /// #656 — 선택을 끝낼 때 CLIPBOARD 에도 넣을지 (`Defaults.copy_on_select`). 오른쪽 클릭의
+    /// "선택이 있으면 복사" 도 이 값이 꺼져 있을 때만이다 (`tab_actions.rightClick`).
+    copy_on_select: bool = Defaults.copy_on_select,
     dock_position: DockPosition = default_dock_position,
     /// 화면 가로 점유율 percent (1..100, f32). 실수 허용 — 세밀 조정용.
     width_percent: f32 = Defaults.width_percent,
@@ -3380,6 +3400,8 @@ pub const Config = struct {
                     noticeBadValue("input.macos_option_as_alt", Defaults.macos_option_as_alt);
                 }
             }
+            // #656 — 형이 틀리면 `repairStructure` 가 이미 지우고 안내했다. 여기 남은 것은 bool 이다.
+            if (iv.table.get("copy_on_select")) |v| config.copy_on_select = v.boolean;
         }
 
         // window section
@@ -4698,6 +4720,69 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
     try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
 }
 
+test "#656 copy_on_select — 기본은 꺼짐, 적으면 따르고, 없거나 틀리면 기본값 + 안내" {
+    const allocator = std.testing.allocator;
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const path = "/home/user/.config/tildaz/config_0.toml";
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    const default_line = "copy_on_select = false";
+    try std.testing.expect(std.mem.indexOf(u8, full, default_line) != null);
+
+    // ① 새 config 는 꺼짐이고 안내가 없다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        var config = try Config.parse(rt, allocator, full, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(!config.copy_on_select);
+        try std.testing.expect(pendingConfigNotice() == null);
+    }
+    // ② `true` 를 적으면 따른다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const on = try replaceFirst(allocator, full, default_line, "copy_on_select = true");
+        defer allocator.free(on);
+        var config = try Config.parse(rt, allocator, on, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(config.copy_on_select);
+    }
+    // ③ 줄이 없는 옛 config — 기본값이고, 빠진 키로 안내한다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const old = try replaceFirst(allocator, full, default_line, "");
+        defer allocator.free(old);
+        var config = try Config.parse(rt, allocator, old, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(!config.copy_on_select);
+        const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "input.copy_on_select") != null);
+    }
+    // ④ 형이 틀리면 지워져 기본값이 남는다 — `v.boolean` 이 터지지 않는다.
+    {
+        resetFatalNoticeForTest();
+        defer resetFatalNoticeForTest();
+        clearConfigNotice();
+        defer clearConfigNotice();
+        const broken = try replaceFirst(allocator, full, default_line, "copy_on_select = \"yes\"");
+        defer allocator.free(broken);
+        var config = try Config.parse(rt, allocator, broken, path);
+        defer config.deinit(allocator);
+        try std.testing.expect(pendingFatalNotice() == null);
+        try std.testing.expect(!config.copy_on_select);
+        const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "copy_on_select") != null);
+    }
+}
+
 test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse 가 터지지 않는다" {
     const allocator = std.testing.allocator;
     resetFatalNoticeForTest();
@@ -4912,8 +4997,9 @@ test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액�
     defer clearConfigNotice();
     const a = arena.allocator();
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
-    // `copy` 의 목록에 쓰레기 하나를 끼워 넣는다.
-    const at = std.mem.indexOf(u8, full, "copy") orelse return error.TestUnexpectedResult;
+    // `copy` 의 목록에 쓰레기 하나를 끼워 넣는다. 줄 머리의 `copy ` 로 찾는다 — 그냥 `copy` 면
+    // 그보다 앞의 `[input] copy_on_select` (#656) 를 잡는다.
+    const at = (std.mem.indexOf(u8, full, "\ncopy ") orelse return error.TestUnexpectedResult) + 1;
     const line_end = std.mem.indexOfScalarPos(u8, full, at, '\n') orelse return error.TestUnexpectedResult;
     const close = std.mem.lastIndexOfScalar(u8, full[at..line_end], ']') orelse return error.TestUnexpectedResult;
     const broken = try std.mem.concat(a, u8, &.{

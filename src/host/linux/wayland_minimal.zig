@@ -308,19 +308,82 @@ const screen_fallback_height: i32 = 1080;
 // `width_percent`/`height_percent` 100 에서 margin 이 정확히 0 이 되므로 "거의 100"
 // 을 따로 판정할 이유가 없다. 이 상수는 그 강제 0 과 overscan gating 에만 쓰였다.
 
-// wl_data_device_manager / wl_data_device / wl_data_source / wl_data_offer
-// opcodes (request side, used by us).
-const wl_data_device_manager_request_create_data_source: u16 = 0;
-const wl_data_device_manager_request_get_data_device: u16 = 1;
-const wl_data_source_request_offer: u16 = 0;
-const wl_data_source_request_destroy: u16 = 1;
-const wl_data_device_request_set_selection: u16 = 1;
-// wl_data_offer requests: 0=accept (안 씀), 1=receive, 2=destroy.
-// 처음 a9dab9e (L6.3 우클릭 paste) 에선 한 칸씩 어긋난 값 (0, 1) 으로 적혀
-// receive 가 accept 자리로 보내져 서버가 args 검사 실패 → protocol error.
-// L6.4 의 Ctrl+Shift+V 시연에서 첫 발현.
-const wl_data_offer_request_receive: u16 = 1;
-const wl_data_offer_request_destroy: u16 = 2;
+/// #657 — selection 프로토콜 하나의 요청 · 이벤트 번호. CLIPBOARD (`wl_data_device`) 와
+/// PRIMARY (`zwp_primary_selection_device_v1`) 는 객체 모양이 같고 번호만 달라서, 상태는
+/// `SelectionChannel` 하나로 다루고 번호만 이 표로 가른다. 번호는 XML 의 선언 순서다
+/// (`wayland.xml` · `primary-selection-unstable-v1.xml`).
+const SelectionProtocol = struct {
+    // manager 요청
+    create_source: u16,
+    get_device: u16,
+    // source 요청 · 이벤트
+    source_offer: u16,
+    source_destroy: u16,
+    ev_source_send: u16,
+    ev_source_cancelled: u16,
+    // device 요청 · 이벤트
+    set_selection: u16,
+    ev_data_offer: u16,
+    ev_selection: u16,
+    // offer 요청 · 이벤트
+    offer_receive: u16,
+    offer_destroy: u16,
+    ev_offer_mime: u16,
+};
+
+/// `wl_data_device_manager` · `wl_data_device` · `wl_data_source` · `wl_data_offer`.
+/// wl_data_offer 요청은 0=accept (안 씀), 1=receive, 2=destroy 다. 처음 a9dab9e (L6.3 우클릭
+/// paste) 에선 한 칸씩 어긋난 값 (0, 1) 으로 적혀 receive 가 accept 자리로 보내져 서버가 args
+/// 검사 실패 → protocol error 였다 (L6.4 의 Ctrl+Shift+V 시연에서 첫 발현).
+const clipboard_protocol: SelectionProtocol = .{
+    .create_source = 0,
+    .get_device = 1,
+    .source_offer = 0,
+    .source_destroy = 1,
+    .ev_source_send = 1, // 0=target 은 dnd 용
+    .ev_source_cancelled = 2,
+    .set_selection = 1, // 0=start_drag
+    .ev_data_offer = 0,
+    .ev_selection = 5, // 1..4 = enter / leave / motion / drop (dnd)
+    .offer_receive = 1,
+    .offer_destroy = 2,
+    .ev_offer_mime = 0,
+};
+
+/// #657 — `zwp_primary_selection_*_v1`. dnd 가 없어 번호가 앞으로 당겨진다 — offer 의
+/// `receive` 가 **0 번**이다 (`wl_data_offer` 는 1 번). 위 표를 그대로 베끼면 틀린다.
+const primary_protocol: SelectionProtocol = .{
+    .create_source = 0,
+    .get_device = 1,
+    .source_offer = 0,
+    .source_destroy = 1,
+    .ev_source_send = 0,
+    .ev_source_cancelled = 1,
+    .set_selection = 0,
+    .ev_data_offer = 0,
+    .ev_selection = 1,
+    .offer_receive = 0,
+    .offer_destroy = 1,
+    .ev_offer_mime = 0,
+};
+
+/// #657 — selection 채널 하나 (CLIPBOARD 또는 PRIMARY) 의 상태. `manager_id` 가 0 이면 그
+/// compositor 가 프로토콜을 내주지 않은 것이고, 이 채널의 쓰기 · 읽기는 조용히 아무 일도 안 한다.
+const SelectionChannel = struct {
+    proto: SelectionProtocol,
+    manager_id: u32 = 0,
+    device_id: u32 = 0,
+    /// 우리가 owner 일 때의 source 와 그 글자. `text` 는 Client 가 소유한다.
+    source_id: u32 = 0,
+    text: ?[]const u8 = null,
+    // 우리가 paste 받기 위해 추적하는 offer 객체. data_offer event 가 새 객체를 알리면
+    // pending 자리, selection event 가 그 객체를 인정하면 `paste_*` 로 승격. mime 광고는
+    // offer event 가 도착할 때마다 누적.
+    pending_offer_id: u32 = 0,
+    pending_offer_has_utf8: bool = false,
+    paste_offer_id: u32 = 0,
+    paste_offer_has_utf8: bool = false,
+};
 
 // xdg_toplevel request opcodes (xdg-shell stable). 선언 순서 = opcode:
 // destroy=0 set_parent=1 set_title=2 set_app_id=3 show_window_menu=4 move=5
@@ -436,6 +499,8 @@ const Capabilities = struct {
     layer_shell: Global = .{},
     text_input_v3: Global = .{},
     data_device_manager: Global = .{},
+    /// #657 — `zwp_primary_selection_device_manager_v1` (가운데 클릭 붙여넣기).
+    primary_selection_manager: Global = .{},
     // (#295: wl_output 은 여기 아닌 Client.outputs slot 이 *전부* 추적 —
     // handleRegistryGlobal 참고. 첫 번째만 쓰던 L8-β scope 제한 해소.)
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등.
@@ -473,6 +538,8 @@ const Capabilities = struct {
             self.text_input_v3 = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wl_data_device_manager")) {
             self.data_device_manager = .{ .name = name, .version = advertised_version };
+        } else if (std.mem.eql(u8, interface, "zwp_primary_selection_device_manager_v1")) {
+            self.primary_selection_manager = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_viewporter")) {
             self.viewporter = .{ .name = name, .version = advertised_version };
         } else if (std.mem.eql(u8, interface, "wp_fractional_scale_manager_v1")) {
@@ -1542,18 +1609,11 @@ const Client = struct {
     pointer_x_px: i32 = -1,
     pointer_y_px: i32 = -1,
     pointer_inside: bool = false,
-    data_device_manager_id: u32 = 0,
-    data_device_id: u32 = 0,
-    active_data_source_id: u32 = 0,
-    clipboard_text: ?[]const u8 = null,
+    /// CLIPBOARD (`Ctrl+Shift+C` · `Ctrl+Shift+V` · 오른쪽 클릭) 와 PRIMARY (마우스 선택 ·
+    /// 가운데 클릭, #657). 같은 코드가 두 채널을 다룬다 (`SelectionChannel`).
+    clipboard: SelectionChannel = .{ .proto = clipboard_protocol },
+    primary: SelectionChannel = .{ .proto = primary_protocol },
     last_serial: u32 = 0,
-    // 우리가 paste 받기 위해 추적하는 wl_data_offer 객체. data_offer event 가
-    // 새 객체를 알리면 pending 자리, selection event 가 그 객체를 인정하면
-    // `paste_*` 로 승격. mime 광고는 offer event 가 도착할 때마다 누적.
-    pending_offer_id: u32 = 0,
-    pending_offer_has_utf8: bool = false,
-    paste_offer_id: u32 = 0,
-    paste_offer_has_utf8: bool = false,
     // 더블클릭 검출 — wayland `wl_pointer.button` event 에 click count 정보 없음.
     // 같은 cell 의 좌클릭 press 가 `double_click_threshold_ms` 이내 두 번이면 더블클릭.
     last_left_click_time_ms: u32 = 0,
@@ -1778,7 +1838,8 @@ const Client = struct {
             session.deinit();
             self.dbus_session = null;
         }
-        self.clearClipboardOwnership();
+        self.clearSelectionOwnership(&self.clipboard);
+        self.clearSelectionOwnership(&self.primary);
         self.keyboard.deinit();
         self.pending_preedit.deinit(self.allocator);
         self.pending_commit.deinit(self.allocator);
@@ -2325,12 +2386,23 @@ const Client = struct {
             log.appendLineVerbose("wayland", "wl_seat bound version={} (advertised {}) (#562)", .{ seat_version, self.caps.seat.version });
         }
         if (self.caps.data_device_manager.name != 0) {
-            self.data_device_manager_id = self.allocId();
+            self.clipboard.manager_id = self.allocId();
             try self.bind(
                 self.caps.data_device_manager.name,
                 "wl_data_device_manager",
                 @min(self.caps.data_device_manager.version, 3),
-                self.data_device_manager_id,
+                self.clipboard.manager_id,
+            );
+        }
+        // #657 — 내주지 않는 compositor 면 `primary.manager_id` 가 0 으로 남아 PRIMARY 쓰기 ·
+        // 읽기가 조용히 건너뛰어진다 (CLIPBOARD 와 같은 graceful degrade).
+        if (self.caps.primary_selection_manager.name != 0) {
+            self.primary.manager_id = self.allocId();
+            try self.bind(
+                self.caps.primary_selection_manager.name,
+                "zwp_primary_selection_device_manager_v1",
+                1,
+                self.primary.manager_id,
             );
         }
         // L8-α — `zwlr_layer_shell_v1` bind. advertise 안 됐으면 (GNOME 등)
@@ -2433,12 +2505,13 @@ const Client = struct {
         }
         // #197 — 개별 protocol object id 는 wire-level detail 이라 verbose.
         // production 용 capabilities 요약은 boot 시 logCapabilities() 가 담당.
-        log.appendLineVerbose("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={} output_id={}", .{
+        log.appendLineVerbose("wayland", "bound globals compositor_id={} shm_id={} wm_base_id={} seat_id={} data_device_manager_id={} primary_selection_manager_id={} text_input_manager_id={} text_input_id={} layer_shell_id={} output_id={}", .{
             self.compositor_id,
             self.shm_id,
             self.wm_base_id,
             self.seat_id,
-            self.data_device_manager_id,
+            self.clipboard.manager_id,
+            self.primary.manager_id,
             self.text_input_manager_id,
             self.text_input_id,
             self.layer_shell_id,
@@ -2628,18 +2701,16 @@ const Client = struct {
         return true;
     }
 
-    /// seat 와 data_device_manager 가 모두 있으면 wl_data_device 객체 생성.
-    /// clipboard 의 선결 조건. 없으면 자동 copy / paste 불가하지만 terminal 자체는
-    /// 정상 — graceful degrade.
-    fn createDataDeviceIfAvailable(self: *Client) !void {
-        if (self.data_device_id != 0) return;
-        if (self.seat_id == 0 or self.data_device_manager_id == 0) return;
-        self.data_device_id = self.allocId();
-        try self.sendArgs(
-            self.data_device_manager_id,
-            wl_data_device_manager_request_get_data_device,
-            &.{ self.data_device_id, self.seat_id },
-        );
+    /// seat 와 manager 가 모두 있으면 채널마다 device 객체를 만든다. copy / paste 의 선결
+    /// 조건이다. 없으면 그 채널의 copy / paste 는 불가하지만 terminal 자체는 정상 — graceful
+    /// degrade. #657 — PRIMARY 채널도 같은 자리에서 만든다.
+    fn createSelectionDevicesIfAvailable(self: *Client) !void {
+        if (self.seat_id == 0) return;
+        for ([_]*SelectionChannel{ &self.clipboard, &self.primary }) |ch| {
+            if (ch.device_id != 0 or ch.manager_id == 0) continue;
+            ch.device_id = self.allocId();
+            try self.sendArgs(ch.manager_id, ch.proto.get_device, &.{ ch.device_id, self.seat_id });
+        }
     }
 
     fn createShellObjects(self: *Client) !void {
@@ -5692,21 +5763,23 @@ const Client = struct {
             try self.handlePointerEvent(opcode, payload);
             return;
         }
-        if (self.data_device_id != 0 and id == self.data_device_id) {
-            try self.handleDataDeviceEvent(opcode, payload);
-            return;
-        }
-        if (self.active_data_source_id != 0 and id == self.active_data_source_id) {
-            try self.handleDataSourceEvent(opcode, payload);
-            return;
-        }
-        if (self.pending_offer_id != 0 and id == self.pending_offer_id) {
-            try self.handleDataOfferEvent(opcode, payload, true);
-            return;
-        }
-        if (self.paste_offer_id != 0 and id == self.paste_offer_id) {
-            try self.handleDataOfferEvent(opcode, payload, false);
-            return;
+        for ([_]*SelectionChannel{ &self.clipboard, &self.primary }) |ch| {
+            if (ch.device_id != 0 and id == ch.device_id) {
+                self.handleSelectionDeviceEvent(ch, opcode, payload);
+                return;
+            }
+            if (ch.source_id != 0 and id == ch.source_id) {
+                self.handleSelectionSourceEvent(ch, opcode, payload);
+                return;
+            }
+            if (ch.pending_offer_id != 0 and id == ch.pending_offer_id) {
+                handleSelectionOfferEvent(ch, opcode, payload, true);
+                return;
+            }
+            if (ch.paste_offer_id != 0 and id == ch.paste_offer_id) {
+                handleSelectionOfferEvent(ch, opcode, payload, false);
+                return;
+            }
         }
         if (self.handleBufferEvent(id, opcode)) return;
         if (self.findOutputSlot(.{ .object_id = id })) |slot| {
@@ -6033,7 +6106,7 @@ const Client = struct {
             if (t.pointer == .lost) self.releasePointer();
             if (self.keyboard_id == 0) try self.createKeyboardIfAvailable();
             if (self.pointer_id == 0) try self.createPointerIfAvailable();
-            if (self.data_device_id == 0) try self.createDataDeviceIfAvailable();
+            try self.createSelectionDevicesIfAvailable();
             return;
         }
     }
@@ -6154,6 +6227,7 @@ const Client = struct {
             .override_ptr = &self.tab_scroll_override,
             .invalidate = linuxTabInvalidate,
             .clipboard_copy = linuxTabClipboardCopy,
+            .primary_copy = linuxTabPrimaryCopy,
             .terminate = linuxTabTerminate,
             .user_data = self,
         };
@@ -7837,14 +7911,30 @@ const Client = struct {
             if (state == wl_pointer_button_state_pressed and self.focusPaneUnderPointer()) return;
             // 우클릭 — pressed edge 에서 paste (cmd.exe console 표준 + Windows /
             // macOS 와 같은 정책. SPEC.md §3). #333 — preedit 정책은 requestPaste.
-            if (state == wl_pointer_button_state_pressed) self.requestPaste();
+            if (state == wl_pointer_button_state_pressed) {
+                // #656 — `copy_on_select` 가 꺼져 있고 선택이 있으면 붙여넣지 않고 복사한다
+                // (Windows Terminal 과 같다).
+                if (self.session != null) {
+                    var host = self.buildTabActionsHost();
+                    if (tab_actions.rightClickCopiesSelection(&host, self.allocator, self.config.copy_on_select)) return;
+                }
+                self.requestPaste();
+            }
             return;
         }
-        // #502 — 가운데 버튼은 chrome 에 역할이 없어 reporting 전용이다. reporting 이
-        // 꺼져 있으면 아무 일도 하지 않는다.
+        // #502 · #657 — 가운데 버튼은 앱이 마우스를 켰으면 앱에 간다 (reporting). 앱이 안 가져가면
+        // (reporting 꺼짐 · Shift 우회) 누르는 순간 PRIMARY 를 붙인다 — xterm 관례. 우클릭처럼 열린
+        // 메뉴는 닫기만 하고, 비활성 pane 은 포커스만 옮긴다.
         if (button == wl_pointer_button_middle) {
             const down = state == wl_pointer_button_state_pressed;
-            _ = self.routeMouseLinux(if (down) .press else .release, .middle, down);
+            if (self.command_menu_open) {
+                if (down) self.closeCommandMenu();
+                return;
+            }
+            if (!self.routeMouseLinux(if (down) .press else .release, .middle, down)) return;
+            if (!down) return;
+            if (self.focusPaneUnderPointer()) return;
+            self.requestPasteFrom(&self.primary);
             return;
         }
         if (button != wl_pointer_button_left) return;
@@ -7969,9 +8059,9 @@ const Client = struct {
                     // selectWord 는 screen.selection 을 직접 갱신 (cross-platform
                     // 단일 구현 — [`terminal_interaction.selectWord`](src/terminal_interaction.zig)).
                     // SelectionState.begin 안 함 → 다음 release 의 finish 가 false
-                    // → 자동 copy 중복 방지. 여기서 명시 copy 호출.
+                    // → 중복 방지. 선택이 끝난 것이라 여기서 부른다 (#656 · #657).
                     if (terminal_interaction.selectWord(tab.terminal.screens.active, cell)) {
-                        self.copyActiveSelection();
+                        self.selectionFinished();
                         self.requestRedraw();
                     }
                     return;
@@ -8034,7 +8124,7 @@ const Client = struct {
                 // 버튼 상태를 잃지 않는다 (그 규칙은 인코더가 갖는다).
                 if (!self.routeMouseLinux(.release, .left, false)) return;
                 if (tab.interaction.selection.finish()) {
-                    self.copyActiveSelection();
+                    self.selectionFinished();
                     self.requestRedraw();
                 }
             },
@@ -8149,76 +8239,78 @@ const Client = struct {
         }
     }
 
-    /// wl_data_device 이벤트.
-    /// - opcode 0: data_offer(new_id) — compositor 가 새 wl_data_offer 객체를
-    ///   알린다. selection event 직전 단계라 일단 pending 자리에 기록.
-    /// - opcode 5: selection(id) — clipboard 현재 owner 의 offer (id=0 이면 빈).
-    ///   pending 을 paste 위치로 승격하거나, 이전 paste offer 를 정리한다.
-    /// - 그 외 (enter / leave / motion / drop) — drag-and-drop 용이라 무관.
-    fn handleDataDeviceEvent(self: *Client, opcode: u16, payload: []const u8) !void {
-        switch (opcode) {
-            0 => {
-                if (payload.len < 4) return;
-                self.discardPendingOffer();
-                self.pending_offer_id = readU32(payload[0..4]);
-                self.pending_offer_has_utf8 = false;
-            },
-            5 => self.handleDataDeviceSelection(payload),
-            else => {},
+    /// selection device 이벤트 (#657 — CLIPBOARD · PRIMARY 공통, 번호는 `ch.proto`).
+    /// - data_offer(new_id) — compositor 가 새 offer 객체를 알린다. selection event 직전 단계라
+    ///   일단 pending 자리에 기록.
+    /// - selection(id) — 현재 owner 의 offer (id=0 이면 빈). pending 을 paste 위치로 승격하거나,
+    ///   이전 paste offer 를 정리한다.
+    /// - 그 외 (CLIPBOARD 의 enter / leave / motion / drop) — drag-and-drop 용이라 무관.
+    fn handleSelectionDeviceEvent(self: *Client, ch: *SelectionChannel, opcode: u16, payload: []const u8) void {
+        if (opcode == ch.proto.ev_data_offer) {
+            if (payload.len < 4) return;
+            self.discardPendingOffer(ch);
+            ch.pending_offer_id = readU32(payload[0..4]);
+            ch.pending_offer_has_utf8 = false;
+        } else if (opcode == ch.proto.ev_selection) {
+            self.handleSelectionDeviceSelection(ch, payload);
         }
     }
 
-    fn handleDataDeviceSelection(self: *Client, payload: []const u8) void {
+    fn handleSelectionDeviceSelection(self: *Client, ch: *SelectionChannel, payload: []const u8) void {
         const offer_id: u32 = if (payload.len >= 4) readU32(payload[0..4]) else 0;
 
         // 이전 paste offer 정리.
-        if (self.paste_offer_id != 0) {
-            self.sendNoArgs(self.paste_offer_id, wl_data_offer_request_destroy) catch {};
-            self.paste_offer_id = 0;
-            self.paste_offer_has_utf8 = false;
+        if (ch.paste_offer_id != 0) {
+            self.sendNoArgs(ch.paste_offer_id, ch.proto.offer_destroy) catch {};
+            ch.paste_offer_id = 0;
+            ch.paste_offer_has_utf8 = false;
         }
 
-        if (offer_id != 0 and offer_id == self.pending_offer_id) {
-            self.paste_offer_id = self.pending_offer_id;
-            self.paste_offer_has_utf8 = self.pending_offer_has_utf8;
-            self.pending_offer_id = 0;
-            self.pending_offer_has_utf8 = false;
+        if (offer_id != 0 and offer_id == ch.pending_offer_id) {
+            ch.paste_offer_id = ch.pending_offer_id;
+            ch.paste_offer_has_utf8 = ch.pending_offer_has_utf8;
+            ch.pending_offer_id = 0;
+            ch.pending_offer_has_utf8 = false;
         } else {
             // 빈 selection 또는 우리가 추적 못 한 offer — pending 도 청소.
-            self.discardPendingOffer();
+            self.discardPendingOffer(ch);
         }
     }
 
-    fn discardPendingOffer(self: *Client) void {
-        if (self.pending_offer_id != 0) {
-            self.sendNoArgs(self.pending_offer_id, wl_data_offer_request_destroy) catch {};
-            self.pending_offer_id = 0;
-            self.pending_offer_has_utf8 = false;
+    fn discardPendingOffer(self: *Client, ch: *SelectionChannel) void {
+        if (ch.pending_offer_id != 0) {
+            self.sendNoArgs(ch.pending_offer_id, ch.proto.offer_destroy) catch {};
+            ch.pending_offer_id = 0;
+            ch.pending_offer_has_utf8 = false;
         }
     }
 
-    /// wl_data_offer 이벤트. 우리가 관심 있는 것은 offer(mime) 만.
-    /// `is_pending` 은 caller 가 분기 — 같은 코드, 다른 flag 슬롯.
-    fn handleDataOfferEvent(self: *Client, opcode: u16, payload: []const u8, is_pending: bool) !void {
-        if (opcode != 0) return; // source_actions / action 은 dnd 전용이라 무시.
+    /// offer 이벤트. 우리가 관심 있는 것은 offer(mime) 만 — CLIPBOARD 의 source_actions /
+    /// action 은 dnd 전용이라 무시. `is_pending` 은 caller 가 분기 — 같은 코드, 다른 flag 슬롯.
+    fn handleSelectionOfferEvent(ch: *SelectionChannel, opcode: u16, payload: []const u8, is_pending: bool) void {
+        if (opcode != ch.proto.ev_offer_mime) return;
         var p = Parser{ .buf = payload };
         const mime = p.readString() catch return;
         if (!isAcceptableTextMime(mime)) return;
         if (is_pending) {
-            self.pending_offer_has_utf8 = true;
+            ch.pending_offer_has_utf8 = true;
         } else {
-            self.paste_offer_has_utf8 = true;
+            ch.paste_offer_has_utf8 = true;
         }
     }
 
     /// 우클릭 paste — Windows / macOS 와 같은 패턴 ([SPEC.md §3 우클릭 paste]).
-    /// 현재 paste_offer 가 utf8 광고했으면 pipe 만든 뒤 wl_data_offer.receive 로
-    /// write end 를 송신측에 넘기고, read end 에서 끝까지 읽어 PTY 로 paste.
     /// #333 — paste semantic entry. 우클릭(BTN_RIGHT) / keyboard / command menu 가
     /// 공통으로 이걸 거쳐 input_policy.resolve(.paste)를 정확히 한 번 적용한다.
     /// terminal preedit 이면 먼저 commit(자모 flush 로 '하'+'X' 순서 보존,
     /// #282 A2/A4).
     fn requestPaste(self: *Client) void {
+        self.requestPasteFrom(&self.clipboard);
+    }
+
+    /// #657 — 붙여넣을 채널을 고른다. 가운데 클릭은 PRIMARY, 그 밖은 CLIPBOARD (`requestPaste`).
+    /// 입력 정책은 둘이 같다 — 조합 중이던 글자를 먼저 확정한다.
+    fn requestPasteFrom(self: *Client, ch: *SelectionChannel) void {
         const searching = self.searchFocused();
         const disp = input_policy.resolve(.paste, .{
             .terminal_preedit_active = self.preedit_text.items.len > 0 and !searching,
@@ -8231,20 +8323,21 @@ const Client = struct {
             // paste 정책에 discard 없음 (input_policy.resolve 참고).
             .discard => unreachable,
         }
-        self.pasteFromClipboard();
+        self.pasteFromSelection(ch);
     }
 
-    fn pasteFromClipboard(self: *Client) void {
-        if (self.paste_offer_id == 0 or !self.paste_offer_has_utf8) return;
+    /// 현재 paste offer 가 utf8 을 광고했으면 pipe 를 만들어 offer.receive 로 write end 를
+    /// 송신측에 넘기고, read end 에서 끝까지 읽어 PTY 로 paste.
+    fn pasteFromSelection(self: *Client, ch: *SelectionChannel) void {
+        if (ch.paste_offer_id == 0 or !ch.paste_offer_has_utf8) return;
         const session = if (self.session) |*s| s else return;
         _ = session.activeTab() orelse return;
 
-        // self-paste 가드: 우리 자신이 마지막 clipboard owner 면 wayland 경유
-        // 시 compositor 가 우리 source.send event 를 main thread 로 보내는데
-        // 우리는 아래 posix.read 에서 blocking → wayland event 못 들어와
-        // deadlock. 우리 buffer 직접 사용.
-        if (self.active_data_source_id != 0) {
-            if (self.clipboard_text) |text| {
+        // self-paste 가드: 우리 자신이 owner 면 wayland 경유 시 compositor 가 우리 source.send
+        // event 를 main thread 로 보내는데 우리는 아래 posix.read 에서 blocking → wayland event
+        // 못 들어와 deadlock. 우리 buffer 직접 사용.
+        if (ch.source_id != 0) {
+            if (ch.text) |text| {
                 self.routePasteToSink(text);
             }
             return;
@@ -8259,8 +8352,8 @@ const Client = struct {
         const write_fd = pipe_fds[1];
 
         self.sendStringWithFd(
-            self.paste_offer_id,
-            wl_data_offer_request_receive,
+            ch.paste_offer_id,
+            ch.proto.offer_receive,
             clipboard_mime_utf8,
             write_fd,
         ) catch {
@@ -8298,25 +8391,24 @@ const Client = struct {
         self.requestRedraw();
     }
 
-    /// wl_data_source 이벤트 분기.
-    /// - opcode 1: send(mime, fd) — compositor 가 paste 요청. fd 에 우리 clipboard
-    ///   text 를 동기 write 후 close.
-    /// - opcode 2: cancelled — 다른 앱이 clipboard 점유. 우리 source 정리.
-    /// - 그 외 (target / dnd_*) — drag-and-drop 용이라 우리 흐름에 무관.
-    fn handleDataSourceEvent(self: *Client, opcode: u16, payload: []const u8) !void {
-        switch (opcode) {
-            1 => try self.handleDataSourceSend(payload),
-            2 => self.handleDataSourceCancelled(),
-            else => {},
+    /// selection source 이벤트 분기.
+    /// - send(mime, fd) — compositor 가 paste 요청. fd 에 우리 text 를 동기 write 후 close.
+    /// - cancelled — 다른 앱이 그 selection 을 점유. 우리 source 정리.
+    /// - 그 외 (CLIPBOARD 의 target / dnd_*) — drag-and-drop 용이라 우리 흐름에 무관.
+    fn handleSelectionSourceEvent(self: *Client, ch: *SelectionChannel, opcode: u16, payload: []const u8) void {
+        if (opcode == ch.proto.ev_source_send) {
+            self.handleSelectionSourceSend(ch, payload);
+        } else if (opcode == ch.proto.ev_source_cancelled) {
+            self.clearSelectionOwnership(ch);
         }
     }
 
-    fn handleDataSourceSend(self: *Client, payload: []const u8) !void {
+    fn handleSelectionSourceSend(self: *Client, ch: *SelectionChannel, payload: []const u8) void {
         _ = payload; // mime 문자열은 우리가 advertise 한 유일 mime 라 검사 생략.
         const fd = self.takeReceivedFd() catch return;
         defer closeFd(fd);
 
-        const text = self.clipboard_text orelse return;
+        const text = ch.text orelse return;
         // fd 가 pipe 이므로 한 번에 다 못 보낼 수 있다 — 짧은 selection 위주라
         // loop 으로 끝까지 시도. SIGPIPE 는 wayland 가 자기 reader 쪽에서 처리한다.
         var offset: usize = 0;
@@ -8334,54 +8426,51 @@ const Client = struct {
         }
     }
 
-    fn handleDataSourceCancelled(self: *Client) void {
-        self.clearClipboardOwnership();
-    }
-
-    /// 활성 탭의 ghostty selection 을 wayland clipboard owner 로 등록. #692 — 세 host 가 같은
-    /// `tab_actions.copyActiveSelection` 을 쓴다. Wayland 쪽 등록은 `linuxTabClipboardCopy` 가 한다.
-    fn copyActiveSelection(self: *Client) void {
+    /// #656 · #657 — 마우스 선택이 끝났을 때 (버튼을 놓을 때 · 더블 클릭). PRIMARY 는 늘,
+    /// CLIPBOARD 는 `[input] copy_on_select` 일 때 (`tab_actions.selectionFinished`).
+    fn selectionFinished(self: *Client) void {
         if (self.session == null) return;
         var host = self.buildTabActionsHost();
-        tab_actions.copyActiveSelection(&host, self.allocator);
+        tab_actions.selectionFinished(&host, self.allocator, self.config.copy_on_select);
     }
 
-    /// 새 clipboard text 로 owner 갱신. 기존 source 가 있으면 cleanup 후 새로.
+    /// `tab_actions` 의 콜백이 넘긴 sentinel 본을 sentinel 없는 사본으로 바꿔 그 채널에 맡긴다
+    /// (해제 규칙은 `linuxTabClipboardCopy` 주석). 채널이 없으면 (compositor 가 프로토콜을 안
+    /// 내줌) 조용히 끝난다.
+    fn copyToSelectionChannel(self: *Client, ch: *SelectionChannel, text: [:0]const u8) void {
+        if (ch.device_id == 0) return;
+        const owned = self.allocator.dupe(u8, text) catch return;
+        self.setSelectionText(ch, owned) catch self.allocator.free(owned);
+    }
+
+    /// 새 text 로 그 채널의 owner 갱신. 기존 source 가 있으면 cleanup 후 새로.
     /// `text` ownership 을 self 가 가져간다. 호출 후 호출자는 free 하지 않는다.
-    fn setClipboardText(self: *Client, text: []const u8) !void {
+    fn setSelectionText(self: *Client, ch: *SelectionChannel, text: []const u8) !void {
         if (self.last_serial == 0) {
             // 어떤 input event 도 아직 못 받았으면 wayland 가 set_selection 을 거부.
             // 실용적으로 거의 불가능한 path 지만 안전상 명시.
             self.allocator.free(text);
             return;
         }
-        self.clearClipboardOwnership();
+        self.clearSelectionOwnership(ch);
 
         const source_id = self.allocId();
-        try self.sendNewId(
-            self.data_device_manager_id,
-            wl_data_device_manager_request_create_data_source,
-            source_id,
-        );
-        try self.sendString(source_id, wl_data_source_request_offer, clipboard_mime_utf8);
-        try self.sendArgs(
-            self.data_device_id,
-            wl_data_device_request_set_selection,
-            &.{ source_id, self.last_serial },
-        );
+        try self.sendNewId(ch.manager_id, ch.proto.create_source, source_id);
+        try self.sendString(source_id, ch.proto.source_offer, clipboard_mime_utf8);
+        try self.sendArgs(ch.device_id, ch.proto.set_selection, &.{ source_id, self.last_serial });
 
-        self.active_data_source_id = source_id;
-        self.clipboard_text = text;
+        ch.source_id = source_id;
+        ch.text = text;
     }
 
-    fn clearClipboardOwnership(self: *Client) void {
-        if (self.active_data_source_id != 0) {
-            self.sendNoArgs(self.active_data_source_id, wl_data_source_request_destroy) catch {};
-            self.active_data_source_id = 0;
+    fn clearSelectionOwnership(self: *Client, ch: *SelectionChannel) void {
+        if (ch.source_id != 0) {
+            self.sendNoArgs(ch.source_id, ch.proto.source_destroy) catch {};
+            ch.source_id = 0;
         }
-        if (self.clipboard_text) |buf| {
+        if (ch.text) |buf| {
             self.allocator.free(buf);
-            self.clipboard_text = null;
+            ch.text = null;
         }
     }
 
@@ -10876,7 +10965,7 @@ const Client = struct {
         // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
             "startup",
-            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} dmabuf_modifiers={} gles_capable={} render_path={s}",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} primary_selection={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} dmabuf_modifiers={} gles_capable={} render_path={s}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -10884,6 +10973,7 @@ const Client = struct {
                 self.caps.layer_shell.name != 0,
                 self.caps.text_input_v3.name != 0,
                 self.caps.data_device_manager.name != 0,
+                self.caps.primary_selection_manager.name != 0,
                 self.caps.keyboard_shortcuts_inhibit.name != 0,
                 self.saw_xrgb8888,
                 self.saw_argb8888,
@@ -10997,14 +11087,18 @@ fn linuxTabInvalidate(host: *tab_actions.Host) void {
 /// Linux 만 같은 추출을 따로 했다).
 ///
 /// ghostty `selectionString` 의 결과는 sentinel slice (할당 = len+1) 라 helper 가 그 타입 그대로
-/// 해제한다. 여기서는 sentinel 없는 사본을 맡긴다 — `setClipboardText` 가 `[]const u8` (길이 N) 로
+/// 해제한다. 여기서는 sentinel 없는 사본을 맡긴다 — `setSelectionText` 가 `[]const u8` (길이 N) 로
 /// 해제하므로, sentinel 본을 넘기면 길이가 안 맞는다 (#189 의 "invalid free panic" 이 그것이었다).
-/// `setClipboardText` 가 실패하면 사본은 우리가 해제한다.
+/// `setSelectionText` 가 실패하면 사본은 우리가 해제한다 (`copyToSelectionChannel`).
 fn linuxTabClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
     const client: *Client = @ptrCast(@alignCast(host.user_data.?));
-    if (client.data_device_id == 0) return; // clipboard protocol 없음 — graceful.
-    const owned = client.allocator.dupe(u8, text) catch return;
-    client.setClipboardText(owned) catch client.allocator.free(owned);
+    client.copyToSelectionChannel(&client.clipboard, text);
+}
+
+/// #657 — 마우스 선택을 PRIMARY 로 (`tab_actions.selectionFinished`). 해제 규칙은 위와 같다.
+fn linuxTabPrimaryCopy(host: *tab_actions.Host, text: [:0]const u8) void {
+    const client: *Client = @ptrCast(@alignCast(host.user_data.?));
+    client.copyToSelectionChannel(&client.primary, text);
 }
 
 fn linuxTabTerminate(host: *tab_actions.Host) void {
