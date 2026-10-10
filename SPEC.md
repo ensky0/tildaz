@@ -1700,7 +1700,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 - `hotkey` — **그 config 번호**의 기본 키 (`Defaults.hotkeyFor(N)`). 번호는 파일 이름 (`config_N.toml`) 에서 읽는다. 값을 못 읽을 때도 같다.
 - `[font]` — `family` 와 `glyph_fallback` 은 **빠진 쪽만** 기본값이다. `family` 만 적으면 기본 대체 목록이 붙고, `glyph_fallback` 만 적으면 주 폰트가 기본값이다. `glyph_fallback = []` 은 "대체 없이" 라는 뜻이라 그대로 둔다.
 
-이 규칙은 앱 본체의 `Config.parse` 몫이다. config 를 따로 읽는 곳 (launcher 의 자동 시작 판정 · Linux 단축키 동기화 · GNOME · Cinnamon 확장) 은 아직 옛 규칙이다 — [#719](https://github.com/ensky0/tildaz/issues/719).
+config 를 `parse` 밖에서 읽는 곳도 같은 규칙이다 ([#719](https://github.com/ensky0/tildaz/issues/719)) — launcher 의 자동 시작 판정 · Linux 단축키 동기화 · 새 인스턴스의 핫키 확인은 `config.autoStartOrDefault` · `config.hotkeyTextOrDefault` 를 부르고, GNOME · Cinnamon 확장은 같은 표 (`DEFAULT_HOTKEYS`) 를 들고 있다. 그 표는 Zig 테스트가 `Defaults.hotkeyFor` 와 대조한다. 예전에는 `auto_start` 줄이 없는 config 하나로 launcher 가 `InvalidConfig` 로 멈췄다.
 
 **안내에는 상한이 없다.** 목록이 길수록 사용자에게 필요한 정보가 많은데, 고정 버퍼로
 자르면 **바로 그때** 잘린다. 세 다이얼로그 backend 는 이미 임의 길이를 받아 스크롤하므로

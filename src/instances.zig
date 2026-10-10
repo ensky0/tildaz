@@ -647,9 +647,9 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
     // 보여 주는 문구가 "InvalidConfig" 하나로 줄어 원인을 못 알린다 (#495).
     var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
     defer parsed.deinit();
-    const value = parsed.value.get("auto_start") orelse return error.InvalidConfig;
-    if (value != .boolean) return error.InvalidConfig;
-    return value.boolean;
+    // #719 — 빠진 줄 · 틀린 형은 config 가 없을 때와 같은 값이다. 예전에는 `error.InvalidConfig`
+    // 였고 launcher 가 `try` 로 받아 실행이 통째로 실패했다.
+    return config.autoStartOrDefault(&parsed.value);
 }
 
 pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
@@ -666,9 +666,8 @@ pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) !
     defer parser.deinit();
     var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
     defer parsed.deinit();
-    const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
-    if (value != .string) return error.InvalidConfig;
-    return allocator.dupe(u8, value.string);
+    // #719 — 빠진 줄 · 읽을 수 없는 값은 그 번호의 기본 키다 (앱 본체 `parse` 와 같은 규칙).
+    return allocator.dupe(u8, config.hotkeyTextOrDefault(&parsed.value, index));
 }
 
 pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
@@ -685,9 +684,8 @@ pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u
         defer parser.deinit();
         var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
         defer parsed.deinit();
-        const value = parsed.value.get("hotkey") orelse return error.InvalidConfig;
-        if (value != .string) return error.InvalidConfig;
-        const existing = config.Hotkey.fromString(value.string) orelse return error.InvalidConfig;
+        // #719 — `configHotkeyText` 와 같은 규칙. 그 인스턴스가 실제로 쓰는 키와 견준다.
+        const existing = config.Hotkey.fromString(config.hotkeyTextOrDefault(&parsed.value, index)) orelse continue;
         if (std.meta.eql(existing, candidate)) return index;
     }
     return null;
@@ -704,9 +702,10 @@ pub const HotkeyEntry = struct { index: u32, hotkey: ?config.Hotkey };
 /// 멈추면 사용자는 아무 인스턴스도 못 쓴다. 낮은 쪽을 살려 두면 항상 정확히 한 쪽만 멈춘다.
 ///
 /// `hotkey == null` 인 항목은 건너뛴다 — *남의* config 가 깨져서 내가 못 뜨는 일을 만들지
-/// 않는다. 같은 파일을 읽는 `hotkeyOwner` 가 `error.InvalidConfig` 를 전파하는 것과 정책이
+/// 않는다. 같은 파일을 읽는 `hotkeyOwner` 가 읽기 · TOML 문법 오류를 전파하는 것과 정책이
 /// 반대인데, 그쪽은 사용자가 키를 **고르는 중**이라 "검사하지 못했다" 를 알려야 해서다
-/// (`dialog.HotkeyValidation.check_failed`).
+/// (`dialog.HotkeyValidation.check_failed`). #719 부터 `hotkey` 줄이 빠졌거나 값을 못 읽는 것은
+/// 깨진 것이 아니라 그 번호의 기본 키다 — 그래서 `null` 은 파일을 못 읽었을 때뿐이다.
 ///
 /// I/O 가 없어 단위 테스트가 그대로 태울 수 있다 — 디스크를 읽는 부분은
 /// `lowerIndexHotkeyConflict` 가 맡는다.

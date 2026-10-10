@@ -36,6 +36,18 @@ import * as Main from "resource:///org/gnome/shell/ui/main.js";
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+/**
+ * #719 — config 에 `hotkey` 줄이 없거나 읽을 수 없을 때의 키. 앱의 `Defaults.hotkeyFor` 와 같은
+ * 규칙이다 — dev 판은 표를 거꾸로 읽는다 (같은 키를 두 판이 함께 등록하면 먼저 등록한 쪽만
+ * 발화한다). 앱이 그 config 로 실제로 쓰는 키와 같아야 등록 · grab 결과 기록이 어긋나지 않는다.
+ * `src/host/linux/shell_extension.zig` 의 테스트가 렌더된 이 표를 Zig 의 표와 대조한다.
+ */
+const DEFAULT_HOTKEYS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
+const IS_DEV = APP.endsWith("-dev");
+function defaultHotkeyFor(index) {
+  const i = IS_DEV ? DEFAULT_HOTKEYS.length - 1 - index : index;
+  return DEFAULT_HOTKEYS[i] || null;
+}
 const EXTENSION_UUID = "__TILDAZ_EXT_UUID__";
 // 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
 // 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
@@ -496,16 +508,20 @@ export default class TildazExtension extends Extension {
 
   /** XDG config의 config_N.toml 읽기 (실패 시 해당 항목 제외). */
   _readConfig(index) {
+    // #719 — 빠진 줄 · 읽을 수 없는 값은 앱이 그 config 로 쓰는 키다 (`defaultHotkeyFor`).
+    const fallback = defaultHotkeyFor(index);
     const out = {
-      accel: "<Super>grave",
+      accel: fallback ? this._toAccel(fallback) : null,
       // #510 — config 에 적힌 **원문**. worker 가 grab 결과 기록의 stale 여부를 이 값으로
-      // 판정하므로 `accel` 로 변환하기 전 문자열이 그대로 필요하다.
-      hotkey: null,
+      // 판정하므로 `accel` 로 변환하기 전 문자열이 그대로 필요하다. 줄이 없으면 기본 키 글자다 —
+      // worker 도 같은 글자를 본다 (`instances.configHotkeyText`).
+      hotkey: fallback,
       dock: "top",
       wp: 50,
       hp: 100,
       op: 100,
-      autoStart: true,
+      // #719 — 앱의 `Defaults.auto_start` 와 같다 (dev 판은 끈다).
+      autoStart: !IS_DEV,
       hiddenStart: false,
     };
     try {
@@ -517,12 +533,14 @@ export default class TildazExtension extends Extension {
       if (ok) {
         const j = parseTomlSubset(new TextDecoder().decode(bytes));
         if (typeof j.hotkey === "string") {
-          // **못 읽으면 기본값으로 떨어지지 않는다.** config 가 source of truth 인데
-          // `<Super>grave` 로 조용히 바뀌면 사용자가 적지 않은 조합이 걸린다 — 위치
-          // 표기를 받으면서 이 경로가 처음 닿게 됐다 (#496 1-c). Cinnamon 쪽은
-          // 기본값이 빈 문자열이라 이미 이렇게 동작한다.
-          out.accel = this._toAccel(j.hotkey);
-          out.hotkey = j.hotkey;
+          // 못 읽는 값은 앱과 같이 그 번호의 기본 키로 간다 (#719). 예전에는 `<Super>grave` 로
+          // 떨어져 사용자가 적지 않은 조합이 걸렸고 (#496 1-c), 그래서 아예 안 잡게 했었다 —
+          // 걱정은 *앱과 다른* 키였고, 지금 기본값은 앱이 실제로 쓰는 키다.
+          const accel = this._toAccel(j.hotkey);
+          if (accel) {
+            out.accel = accel;
+            out.hotkey = j.hotkey;
+          }
         }
         const w = j.window || {};
         if (typeof w.dock_position === "string") out.dock = w.dock_position;

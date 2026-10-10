@@ -173,6 +173,37 @@ fn compileGnomeSchemas(rt: Runtime, allocator: std.mem.Allocator, extension_dir:
     _ = try syncFile(rt, allocator, compiled_source, compiled_destination);
 }
 
+test "#719 확장의 기본 키 표는 앱의 Defaults.hotkeyFor 와 같다" {
+    // JS 에 `hotkeyFor` 규칙의 사본이 있다 (`DEFAULT_HOTKEYS` · `IS_DEV`). 어긋나면 config 에
+    // `hotkey` 줄이 없을 때 확장이 앱과 다른 키를 잡는다 — 그 자리를 여기서 지킨다.
+    const config = @import("../../config.zig");
+    const instances = @import("../../instances.zig");
+    const count = instances.max_config_index + 1;
+    for ([_][]const u8{ gnome_resources[0].content, cinnamon_resources[0].content }) |js| {
+        // 표 — 릴리즈 차례로 적혀 있다. dev 판의 앱은 그것을 거꾸로 읽는다.
+        const open = "const DEFAULT_HOTKEYS = [";
+        const at = (std.mem.indexOf(u8, js, open) orelse return error.DefaultHotkeyTableMissing) + open.len;
+        const close = std.mem.indexOfScalarPos(u8, js, at, ']') orelse return error.DefaultHotkeyTableMissing;
+        var it = std.mem.tokenizeAny(u8, js[at..close], "\", ");
+        var i: u32 = 0;
+        while (it.next()) |name| : (i += 1) {
+            try std.testing.expect(i < count);
+            const app_index = if (app_id.is_dev) count - 1 - i else i;
+            try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(app_index), name);
+        }
+        try std.testing.expectEqual(count, i);
+        // 거꾸로 읽는 조건과 그 판정 — 렌더된 `APP` 가 dev 판에서만 `-dev` 로 끝나야 한다.
+        try std.testing.expect(std.mem.indexOf(u8, js, "const IS_DEV = APP.endsWith(\"-dev\");") != null);
+        try std.testing.expect(std.mem.indexOf(u8, js, "IS_DEV ? DEFAULT_HOTKEYS.length - 1 - index : index") != null);
+        const rendered = try render(std.testing.allocator, js);
+        defer std.testing.allocator.free(rendered);
+        var app_line_buf: [64]u8 = undefined;
+        const app_line = try std.fmt.bufPrint(&app_line_buf, "const APP = \"{s}\";", .{app_id.name});
+        try std.testing.expect(std.mem.indexOf(u8, rendered, app_line) != null);
+        try std.testing.expectEqual(app_id.is_dev, std.mem.endsWith(u8, app_id.name, "-dev"));
+    }
+}
+
 test "shell extension manifests contain required runtime files" {
     try std.testing.expectEqualStrings("extension.js", gnome_resources[0].relative_path);
     try std.testing.expectEqualStrings("metadata.json", gnome_resources[1].relative_path);
