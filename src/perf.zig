@@ -283,21 +283,58 @@ pub fn noteFrameTick() void {
 ///
 /// 그래서 에코를 **골라내서** 잰다. 폭포 producer 의 `plain` 은 `line ` · 숫자 · 소문자뿐이라
 /// ([`workload.zig`](stress/workload.zig) `renderPlain`) 그 밖의 글자를 보내면 출력에서 찾을 수
-/// 있다. 표식은 `é` (U+00E9) 다 — ASCII 는 터미널 제어 시퀀스의 문자와 겹칠 수 있어 피했다.
-/// 하네스가 `--echo` 로 이 글자를 보낸다 (`tool/stress/measure-input-latency.sh` — Windows 전용).
+/// 있다. 기본 표식은 `é` (U+00E9) 다 — Windows 는 ConPTY 가 화면을 다시 그리는 제어 시퀀스를
+/// 보내서, ASCII 표식은 그 문자와 겹칠 수 있다. 하네스가 `--echo` 로 이 글자를 보낸다
+/// (`tool/stress/measure-input-latency.sh`).
+///
+/// #728 — **측정 인스턴스는 `TILDAZ_ECHO_MARKER` (1~8 바이트) 로 표식을 바꿀 수 있다**
+/// (`loadEchoMarker`). Linux (`ydotool`) · macOS (`mac-input`) 합성 입력은 US 배열에 없는 `é` 를
+/// 보낼 길이 없어서, 하네스가 그 두 OS 에서는 `Q` 를 보내고 이 변수를 함께 준다. `Q` 는
+/// `plain` · `cjk` · `emoji_vs16` 출력 어디에도 없다 (`cjk` 에는 `A` `B` `C` 가 있다).
 ///
 /// **측정 인스턴스에서만 찾는다** (`noteEchoBytes` 의 호출부 — `session_core.drainOutputChunk`).
 /// 평소 앱의 drain 경로에는 검색을 넣지 않는다.
 pub var input_echo: Counter = .{};
 pub var input_echo_hist: Histogram = .{};
-pub const echo_marker = "\u{e9}";
+pub const default_echo_marker = "\u{e9}";
+const echo_marker_max = 8;
+
+/// 지금 쓰는 표식. `loadEchoMarker` 가 시작할 때 한 번 바꿀 수 있다 — 그 뒤로는 읽기만 한다.
+var echo_marker_buf: [echo_marker_max]u8 = default_echo_marker.* ++ .{0} ** (echo_marker_max - default_echo_marker.len);
+var echo_marker_len: usize = default_echo_marker.len;
+
+fn echoMarker() []const u8 {
+    return echo_marker_buf[0..echo_marker_len];
+}
+
+/// 측정 인스턴스가 시작할 때 부른다 (`SessionCore.init`). `TILDAZ_ECHO_MARKER` 가 1~8 바이트면
+/// 표식으로 쓰고, 없거나 길이가 맞지 않으면 기본값 (`é`) 을 그대로 둔다. 조회 방식은
+/// `dumpOnExit` 와 같다 (무할당 조회 — 그쪽 주석).
+pub fn loadEchoMarker(rt: Runtime) void {
+    var buf: [echo_marker_max * 3]u8 = undefined;
+    const val: []const u8 = if (builtin.os.tag == .windows) blk: {
+        const key_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral("TILDAZ_ECHO_MARKER");
+        const val_w = rt.environ.getWindows(key_w) orelse return;
+        if (val_w.len * 3 > buf.len) return;
+        break :blk buf[0..std.unicode.wtf16LeToWtf8(&buf, val_w)];
+    } else rt.environ.getPosix("TILDAZ_ECHO_MARKER") orelse return;
+    setEchoMarker(val);
+}
+
+fn setEchoMarker(m: []const u8) void {
+    if (m.len == 0 or m.len > echo_marker_max) return;
+    @memcpy(echo_marker_buf[0..m.len], m);
+    echo_marker_len = m.len;
+}
 
 /// 에코를 기다리는 키의 수신 시각. `pending_input_ns` 와 같은 이유로 덮지 않는다.
 var echo_wait_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 /// 에코를 파싱했고 present 를 기다리는 키의 수신 시각.
 var echo_parsed_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-/// 앞 조각이 표식의 첫 바이트로 끝났는가 — 표식이 두 조각에 걸쳐 갈린 경우를 잡는다.
-var echo_carry: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+/// 앞 조각의 끝 (표식 길이 − 1 바이트까지) — 표식이 두 조각에 걸쳐 갈린 경우를 잡는다.
+/// drain 은 UI 스레드 하나가 하므로 원자 변수가 아니다.
+var echo_tail: [echo_marker_max - 1]u8 = undefined;
+var echo_tail_len: usize = 0;
 
 /// 파서에 넣은 출력 조각을 받는다. 기다리는 키가 있고 조각에 표식이 있으면 *"파싱됨"* 으로 넘긴다.
 ///
@@ -306,13 +343,35 @@ var echo_carry: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 pub fn noteEchoBytes(bytes: []const u8) void {
     const key = echo_wait_ns.load(.acquire);
     if (key == 0) {
-        echo_carry.store(false, .monotonic);
+        echo_tail_len = 0;
         return;
     }
     if (bytes.len == 0) return;
-    const carried = echo_carry.load(.monotonic) and bytes[0] == echo_marker[1];
-    echo_carry.store(bytes[bytes.len - 1] == echo_marker[0], .monotonic);
-    if (!carried and std.mem.indexOf(u8, bytes, echo_marker) == null) return;
+    const m = echoMarker();
+    var hit = std.mem.indexOf(u8, bytes, m) != null;
+    if (!hit and echo_tail_len > 0) {
+        // 앞 조각의 끝과 이 조각의 앞을 이어 붙여 경계에 걸친 표식을 찾는다.
+        var stitch: [2 * (echo_marker_max - 1)]u8 = undefined;
+        const head_n = @min(bytes.len, m.len - 1);
+        @memcpy(stitch[0..echo_tail_len], echo_tail[0..echo_tail_len]);
+        @memcpy(stitch[echo_tail_len..][0..head_n], bytes[0..head_n]);
+        hit = std.mem.indexOf(u8, stitch[0 .. echo_tail_len + head_n], m) != null;
+    }
+    // 다음 조각을 위해 (앞 끝 ++ 이 조각) 의 마지막 `표식 길이 − 1` 바이트를 남긴다.
+    const keep = m.len - 1;
+    if (bytes.len >= keep) {
+        @memcpy(echo_tail[0..keep], bytes[bytes.len - keep ..]);
+        echo_tail_len = keep;
+    } else {
+        const total = echo_tail_len + bytes.len;
+        const drop = total -| keep;
+        var joined: [2 * (echo_marker_max - 1)]u8 = undefined;
+        @memcpy(joined[0..echo_tail_len], echo_tail[0..echo_tail_len]);
+        @memcpy(joined[echo_tail_len..][0..bytes.len], bytes);
+        echo_tail_len = total - drop;
+        @memcpy(echo_tail[0..echo_tail_len], joined[drop..total]);
+    }
+    if (!hit) return;
     if (echo_wait_ns.cmpxchgStrong(key, 0, .acq_rel, .monotonic) != null) return;
     _ = echo_parsed_ns.cmpxchgStrong(0, key, .acq_rel, .monotonic);
 }
@@ -448,7 +507,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     _ = pending_itw_ns.swap(0, .acq_rel);
     _ = echo_wait_ns.swap(0, .acq_rel);
     _ = echo_parsed_ns.swap(0, .acq_rel);
-    echo_carry.store(false, .monotonic);
+    echo_tail_len = 0;
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -637,12 +696,13 @@ test "echo marker is found only while a key waits, including across a chunk spli
     defer {
         echo_wait_ns.store(0, .monotonic);
         echo_parsed_ns.store(0, .monotonic);
-        echo_carry.store(false, .monotonic);
+        echo_tail_len = 0;
+        setEchoMarker(default_echo_marker);
     }
-    try std.testing.expectEqualSlices(u8, &.{ 0xc3, 0xa9 }, echo_marker);
+    try std.testing.expectEqualSlices(u8, &.{ 0xc3, 0xa9 }, echoMarker());
 
     // 기다리는 키가 없으면 표식이 있어도 넘기지 않는다.
-    noteEchoBytes("line 000000001 abc" ++ echo_marker);
+    noteEchoBytes("line 000000001 abc" ++ default_echo_marker);
     try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
 
     // 폭포 출력만으로는 넘기지 않는다.
@@ -663,4 +723,36 @@ test "echo marker is found only while a key waits, including across a chunk spli
     noteEchoBytes("\xc3");
     noteEchoBytes("x\xa9");
     try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+}
+
+test "echo marker can be replaced for synthetic input that cannot type the default (#728)" {
+    defer {
+        echo_wait_ns.store(0, .monotonic);
+        echo_parsed_ns.store(0, .monotonic);
+        echo_tail_len = 0;
+        setEchoMarker(default_echo_marker);
+    }
+    // 빈 값 · 너무 긴 값은 무시하고 기본값을 둔다.
+    setEchoMarker("");
+    setEchoMarker("123456789");
+    try std.testing.expectEqualSlices(u8, default_echo_marker, echoMarker());
+
+    // 한 바이트 표식 — `cjk` 의 `A` `B` `C` 는 `Q` 로 오인하지 않는다.
+    setEchoMarker("Q");
+    echo_wait_ns.store(5, .monotonic);
+    noteEchoBytes("000000001 ABC 1 abc");
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+    noteEchoBytes("Q");
+    try std.testing.expectEqual(@as(u64, 5), echo_parsed_ns.load(.monotonic));
+
+    // 세 바이트 표식이 한 바이트씩 세 조각으로 갈려도 잡는다.
+    echo_parsed_ns.store(0, .monotonic);
+    echo_tail_len = 0;
+    setEchoMarker("xyz");
+    echo_wait_ns.store(9, .monotonic);
+    noteEchoBytes("..x");
+    noteEchoBytes("y");
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+    noteEchoBytes("z.");
+    try std.testing.expectEqual(@as(u64, 9), echo_parsed_ns.load(.monotonic));
 }

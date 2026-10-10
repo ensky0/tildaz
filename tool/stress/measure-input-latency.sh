@@ -8,7 +8,7 @@
 #
 #   tool/stress/measure-input-latency.sh                 # idle · flood 둘 다
 #   tool/stress/measure-input-latency.sh --mode idle --presses 50
-#   tool/stress/measure-input-latency.sh --echo          # 'é' 를 보내 in_echo 도 낸다 (Windows)
+#   tool/stress/measure-input-latency.sh --echo          # 표식 글자 (Windows 'é' · 나머지 'Q') 를 보내 in_echo 도 낸다
 #
 # ## 무엇이 재지는가
 #
@@ -18,7 +18,7 @@
 # 실제로 기다리는 시간**이다.
 #
 # **폭포 중에는 아니다** (#473). `completeInput` 은 대기 중인 키가 있으면 아무 present 에서나
-# 닫히므로 값이 *"키 → 다음 프레임"* 이 된다. 그래서 `--echo` 가 폭포 출력에 없는 글자 `é` 를
+# 닫히므로 값이 *"키 → 다음 프레임"* 이 된다. 그래서 `--echo` 가 폭포 출력에 없는 글자 (`é` · `Q`) 를
 # 보내고, 앱이 그 에코를 파싱한 뒤 첫 present 까지 (`in_echo`) 를 따로 잰다. 폭포 회차를 비교할
 # 때는 그 값을 본다 — `input` 만 보면 에코를 늦추는 변경이 좋아 보인다 (README 의 같은 절).
 #
@@ -73,6 +73,9 @@ set -u
 PRESSES=30
 MODE=both
 MB=2048
+# #728 — flood 모드의 폭포 워크로드. 기본 plain. `--echo` 를 쓸 때는 출력에 é 가 없는 워크로드여야 한다
+# (plain · cjk · emoji_vs16 · hangul 등 — `src/stress/workload.zig`).
+WORKLOAD=plain
 GAP=0.2
 SCROLLBACK=32767
 # 창을 클릭해 포커스를 줄 시간. **기본은 0 (사람 개입 없음)** 이다 — 새 창은 포커스를
@@ -82,7 +85,7 @@ FOCUS_WAIT=0
 # 표본 부족(포커스 실패)으로 폐기된 회차를 몇 번까지 다시 돌릴지.
 RETRIES=3
 IGNORE_HYGIENE=0
-# #473 — `a` 대신 `é` 를 보내 **에코를 그린 프레임까지** (`in_echo`) 를 함께 잰다. 아래 `--echo` 설명.
+# #473 — `a` 대신 표식 글자를 보내 **에코를 그린 프레임까지** (`in_echo`) 를 함께 잰다. 아래 `--echo` 설명.
 ECHO=0
 
 usage() {
@@ -92,15 +95,17 @@ usage() {
   --presses <N>   보낼 키 횟수 (기본 30)
   --mode <이름>   idle · flood · both (기본 both)
   --mb <N>        flood 모드의 폭포 분량 MiB (기본 2048)
+  --workload <이름> flood 모드의 폭포 워크로드 (기본 plain — `zig build stress -- --help` 의 목록)
   --gap <초>      키 사이 간격 (기본 0.2 — 각 키가 독립적으로 처리되도록)
   --focus-wait <초>  창을 클릭할 시간을 준다 (기본 0 = 개입 없음). **Linux 전용** —
                      macOS 는 CGEvent 로, Windows 는 SendInput 으로 직접 클릭한다.
                      표본이 부족하게 나오는 환경에서만 쓴다
   --retries <N>   폐기된 회차를 다시 돌릴 횟수 (기본 3)
   --ignore-hygiene  위생 점검에 걸려도 강행 (동작 확인용 — 기록용 측정에는 쓰지 않는다)
-  --echo          'a' 대신 'é' 를 보내고 키 → 에코를 그린 present (in_echo) 도 낸다.
-                  **Windows 전용** (#473). 폭포 중 'input' 은 키와 무관한 다음 프레임에서
-                  닫히므로, 폭포 회차를 비교할 때는 in_echo 를 본다
+  --echo          'a' 대신 표식 글자를 보내고 키 → 에코를 그린 present (in_echo) 도 낸다 (#473).
+                  Windows 는 'é', Linux · macOS 는 'Q' (Shift+Q) 를 보낸다 (#728). 폭포 중
+                  'input' 은 키와 무관한 다음 프레임에서 닫히므로, 폭포 회차를 비교할 때는
+                  in_echo 를 본다
 USAGE
 }
 
@@ -109,6 +114,7 @@ while [ $# -gt 0 ]; do
         --presses) PRESSES="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --mb) MB="$2"; shift 2 ;;
+        --workload) WORKLOAD="$2"; shift 2 ;;
         --gap) GAP="$2"; shift 2 ;;
         --focus-wait) FOCUS_WAIT="$2"; shift 2 ;;
         --retries) RETRIES="$2"; shift 2 ;;
@@ -127,9 +133,14 @@ case "$HYG_PLATFORM" in
     *) echo "이 스크립트는 Linux · macOS · Windows 전용이에요 ($(uname -s))." >&2
        exit 2 ;;
 esac
+# #728 — 표식 글자. Windows 는 앱의 기본 표식 'é' 를 `SendInput` 유니코드로 보낸다. Linux (`ydotool`) ·
+# macOS (`mac-input`) 는 US 배열에 없는 'é' 를 보낼 길이 없어서 'Q' 를 보내고, 앱에 표식을 알린다
+# (`perf.loadEchoMarker` — 측정 인스턴스만 읽는다). 'Q' 는 plain · cjk · emoji_vs16 출력에 없다.
+# Windows 에서 'Q' 를 쓰지 않는 이유는 ConPTY 가 화면을 다시 그리는 제어 시퀀스를 보내기 때문이다
+# (`perf.input_echo` 주석).
 if [ "$ECHO" = 1 ] && [ "$HYG_PLATFORM" != windows ]; then
-    echo "--echo 는 지금 Windows 전용이에요 — Linux · macOS 의 합성 입력은 'é' 를 보내는 길이 아직 없어요." >&2
-    exit 2
+    TILDAZ_ECHO_MARKER=Q
+    export TILDAZ_ECHO_MARKER
 fi
 
 # macOS 도구는 간격을 ms 로 받는다 (`--gap`). 초 단위 옵션을 한 번만 환산해 둔다.
@@ -336,7 +347,9 @@ send_keys() {
         "$MAC_INPUT" send shift+cmd+f12 --gap 500 >/dev/null 2>&1 # 여기까지를 앞 구간으로 버린다
         # 한 프로세스가 반복과 간격을 모두 처리한다 — 키마다 프로세스를 새로 띄우는
         # 기동 시간이 `--gap` 을 지배하지 않도록 (Windows 가 `.ps1` 한 번으로 보내는 것과 같은 이유).
-        "$MAC_INPUT" send a --repeat "$PRESSES" --gap "$GAP_MS" || {
+        _key=a
+        [ "$ECHO" = 1 ] && _key=shift+q   # #728 — 표식 'Q' (위 TILDAZ_ECHO_MARKER 주석)
+        "$MAC_INPUT" send "$_key" --repeat "$PRESSES" --gap "$GAP_MS" || {
             echo "⚠ mac-input 전송 실패 — 회차를 중단해요." >&2
             return 1
         }
@@ -363,13 +376,17 @@ send_keys() {
         return 0
     fi
 
+    # #728 — `--echo` 면 Shift+Q (LEFTSHIFT=42 · q=16) 를 보낸다 (위 TILDAZ_ECHO_MARKER 주석).
+    _keys="30:1 30:0"
+    [ "$ECHO" = 1 ] && _keys="42:1 16:1 16:0 42:0"
     i=1
     while [ "$i" -le "$PRESSES" ]; do
         # 첫 키는 실패를 삼키지 않는다 — 조용히 실패하면 표본 0 인 회차가 그대로 끝난다.
+        # shellcheck disable=SC2086
         if [ "$i" -eq 1 ]; then
-            ydotool key 30:1 30:0 || { echo "⚠ ydotool 전송 실패 — 회차를 중단해요." >&2; return 1; }
+            ydotool key $_keys || { echo "⚠ ydotool 전송 실패 — 회차를 중단해요." >&2; return 1; }
         else
-            ydotool key 30:1 30:0 >/dev/null 2>&1
+            ydotool key $_keys >/dev/null 2>&1
         fi
         sleep "$GAP"
         i=$((i + 1))
@@ -437,7 +454,7 @@ EOF
     if [ "$1" = flood ]; then
         cat > "$RUNNER" <<EOF
 #!/bin/sh
-TILDAZ_STRESS_WORKLOAD=plain
+TILDAZ_STRESS_WORKLOAD=$WORKLOAD
 TILDAZ_STRESS_BYTES=$((MB * 1024 * 1024))
 export TILDAZ_STRESS_WORKLOAD TILDAZ_STRESS_BYTES
 "$STRESS" &
@@ -461,7 +478,7 @@ run_one() {
     # 하지만 Windows 배치에서 같은 일을 하면 인용이 한 겹 더 붙으므로, **앱 프로세스의
     # 환경**에 실어 자식까지 물려준다. 두 platform 다 producer 가 같은 값을 받는다.
     if [ "$MODE_NAME" = flood ] && [ "$HYG_PLATFORM" = windows ]; then
-        TILDAZ_STRESS_WORKLOAD=plain
+        TILDAZ_STRESS_WORKLOAD=$WORKLOAD
         TILDAZ_STRESS_BYTES=$((MB * 1024 * 1024))
         export TILDAZ_STRESS_WORKLOAD TILDAZ_STRESS_BYTES
     else
@@ -574,7 +591,7 @@ run_one() {
         # 경우다. 화면에도 아무것도 안 찍혔는데 평균은 0.33 ms 로 그럴듯했다.
         else if (check_echo && echoed + 0 < want * 0.8) printf "   ⚠ 에코 %d B — 키가 앱엔 닿았는데 PTY 로 안 갔어요 (회차 폐기)", echoed + 0
         # `--echo` 인데 에코 표본이 모자라면 표식을 못 찾은 것이다 — `input` 만 보고 결론을 내지 않는다.
-        else if (show_echo && es + 0 < want * 0.8) printf "   ⚠ in_echo 표본 부족 — 출력에서 é 를 못 찾았어요 (회차 폐기)"
+        else if (show_echo && es + 0 < want * 0.8) printf "   ⚠ in_echo 표본 부족 — 출력에서 표식 글자를 못 찾았어요 (회차 폐기)"
         printf "\n"
     }' "$RAW")
     rm -f "$RAW"
@@ -603,7 +620,10 @@ case "$HYG_PLATFORM" in
     macos) KEY_SEQ="Ctrl+C → Shift+Cmd+F12 → 'a' × ${PRESSES} (간격 ${GAP}s) → Shift+Cmd+F12 → Ctrl+C → Cmd+W" ;;
     *)     KEY_SEQ="'a' × ${PRESSES} (간격 ${GAP}s) → Ctrl+C → Ctrl+Shift+F12 → Ctrl+Shift+W" ;;
 esac
-[ "$ECHO" = 1 ] && KEY_SEQ=$(printf '%s' "$KEY_SEQ" | sed "s/'a'/'é'/")
+if [ "$ECHO" = 1 ]; then
+    if [ "$HYG_PLATFORM" = windows ]; then _mark="'é'"; else _mark="'Q'"; fi
+    KEY_SEQ=$(printf '%s' "$KEY_SEQ" | sed "s/'a'/$_mark/")
+fi
 
 cat <<EOF
 

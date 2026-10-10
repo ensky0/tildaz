@@ -1272,6 +1272,8 @@ pub const SessionCore = struct {
         tab_exit_fn: TabExitNotify,
         tab_exit_userdata: ?*anyopaque,
     ) SessionCore {
+        // #728 — 측정 인스턴스는 에코 표식을 환경변수로 바꿀 수 있다 (`perf.loadEchoMarker`).
+        if (instance_context.isStress()) perf.loadEchoMarker(rt);
         return .{
             .rt = rt,
             .allocator = allocator,
