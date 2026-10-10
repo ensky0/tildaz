@@ -105,6 +105,11 @@ test "측정 창 타이틀은 어떤 worker 타이틀과도 겹치지 않는다"
     }
 }
 
+test "#721 상태 문구 후보의 번호 상한이 config 번호 상한과 같다" {
+    // 다르면 새 인스턴스 창이 재지 않은 번호 문구를 내게 된다.
+    try std.testing.expectEqual(max_config_index, @import("hotkey_status.zig").max_index);
+}
+
 test "창 타이틀은 역할에서 갈린다" {
     const instance_context = @import("instance_context.zig");
     const previous_role = instance_context.currentRole();

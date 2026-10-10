@@ -768,6 +768,8 @@ pub const DialogOverlay = struct {
     secondary_buf: [64]u8 = undefined,
     secondary_len: usize = 0,
     wrap_width: i32 = 1,
+    /// #721 — 상태 문구를 접는 폭. 배치가 정한다 (`dialog_layout.Layout.status_wrap_width`).
+    status_wrap_width: i32 = 0,
     message_rows: usize = 1,
     visible_message_rows: usize = 1,
     message_scroll_row: usize = 0,
@@ -9512,15 +9514,22 @@ const Client = struct {
         );
     }
 
-    fn applyCurrentDialogLayout(self: *Client) dialog_layout.Layout {
-        const layout = self.computeCurrentDialogLayout();
+    /// 배치 결과를 그리기 상태로 옮긴다. 두 계산 경로 (`compute` · `computeForSurface`) 가
+    /// 같은 필드를 옮겨야 해서 한 곳에 둔다 — 필드가 늘 때 한쪽만 고치는 일이 없게.
+    fn storeDialogLayout(self: *Client, layout: dialog_layout.Layout) void {
         self.dialog.wrap_width = layout.wrap_width;
+        self.dialog.status_wrap_width = layout.status_wrap_width;
         self.dialog.message_rows = layout.message_rows;
         self.dialog.visible_message_rows = layout.visible_message_rows;
         self.dialog.message_scroll_max = layout.message_scroll_max;
         self.dialog.message_scroll_row = @min(self.dialog.message_scroll_row, layout.message_scroll_max);
         self.dialog.show_icon = layout.show_icon;
         self.dialog.layout_fits = layout.fits;
+    }
+
+    fn applyCurrentDialogLayout(self: *Client) dialog_layout.Layout {
+        const layout = self.computeCurrentDialogLayout();
+        self.storeDialogLayout(layout);
         return layout;
     }
 
@@ -9532,13 +9541,7 @@ const Client = struct {
             surface.w,
             surface.h,
         );
-        self.dialog.wrap_width = layout.wrap_width;
-        self.dialog.message_rows = layout.message_rows;
-        self.dialog.visible_message_rows = layout.visible_message_rows;
-        self.dialog.message_scroll_max = layout.message_scroll_max;
-        self.dialog.message_scroll_row = @min(self.dialog.message_scroll_row, layout.message_scroll_max);
-        self.dialog.show_icon = layout.show_icon;
-        self.dialog.layout_fits = layout.fits;
+        self.storeDialogLayout(layout);
         return layout;
     }
 
@@ -10339,6 +10342,7 @@ const Client = struct {
             focus_arg,
             if (self.dialog.kind == .prompt) self.dialog.input() else null,
             if (self.dialog.kind == .prompt) self.dialog.status() else null,
+            self.dialog.status_wrap_width,
             self.dialog.prompt_available,
             self.dialog.wrap_width,
             self.dialog.message_rows,
@@ -10526,12 +10530,13 @@ const Client = struct {
             try self.sendNoArgs(self.dialog.surface_id, 6);
         }
         self.dialog.configured = true;
-        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_px={} rows={}/{} scroll_max={} icon={} fits={}", .{
+        log.appendLine("dialog", "configured logical={}x{} physical={}x{} wrap_px={} status_px={} rows={}/{} scroll_max={} icon={} fits={}", .{
             w_logical,
             h_logical,
             physical.w,
             physical.h,
             self.dialog.wrap_width,
+            self.dialog.status_wrap_width,
             self.dialog.visible_message_rows,
             self.dialog.message_rows,
             self.dialog.message_scroll_max,

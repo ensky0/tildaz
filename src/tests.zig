@@ -27,6 +27,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("font/spec.zig");
     _ = @import("font/terminal_size.zig");
     _ = @import("font/validate.zig");
+    _ = @import("hotkey_status.zig");
     _ = @import("input_policy.zig");
     _ = @import("instance_context.zig");
     _ = @import("instances.zig");

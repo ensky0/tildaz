@@ -7,6 +7,7 @@ const std = @import("std");
 const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const dialog = @import("../dialog.zig");
+const hotkey_status = @import("../hotkey_status.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
@@ -378,6 +379,34 @@ const DcWrapMeasurer = struct {
 
     fn measurer(self: *DcWrapMeasurer) WrapMeasurer {
         return .{ .ctx = self, .height_fn = measure };
+    }
+};
+
+/// #721 — `hotkey_status.fit` 에 넘기는 Windows 측정기. `dc` 에 상태 칸 글꼴 (본문 글꼴)
+/// 이 select 돼 있어야 한다. 줄바꿈은 상태 칸 `STATIC` (`SS_CENTER`) 이 쓰는 것과 같은
+/// `DT_WORDBREAK` 로 잰다.
+const DcStatusMeasurer = struct {
+    dc: HDC,
+
+    fn wide(buf: []WCHAR, text: []const u8) []const WCHAR {
+        const len = std.unicode.utf8ToUtf16Le(buf, text) catch 0;
+        return buf[0..len];
+    }
+
+    pub fn naturalWidth(self: DcStatusMeasurer, text: []const u8) c_int {
+        var buf: [256]WCHAR = undefined;
+        const w = wide(&buf, text);
+        var rect = RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        _ = DrawTextW(self.dc, w.ptr, @intCast(w.len), &rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        return @max(0, rect.right);
+    }
+
+    pub fn wrappedHeight(self: DcStatusMeasurer, text: []const u8, width: c_int) c_int {
+        var buf: [256]WCHAR = undefined;
+        const w = wide(&buf, text);
+        var rect = RECT{ .left = 0, .top = 0, .right = @max(1, width), .bottom = 0 };
+        _ = DrawTextW(self.dc, w.ptr, @intCast(w.len), &rect, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        return @max(0, rect.bottom);
     }
 };
 
@@ -1558,6 +1587,8 @@ fn promptLayout(
     frame: FrameMetrics,
     metrics: TextMetrics,
     wrap: WrapMeasurer,
+    /// #721 — 상태 문구 후보 중 가장 큰 높이 (`hotkey_status.fit`). 0 = 못 쟀다.
+    status_text_h: c_int,
 ) PromptLayout {
     const widths = dialogWidths(dpi, work, frame);
     const margin = widths.margin;
@@ -1570,7 +1601,9 @@ fn promptLayout(
 
     // client 좌표로 각 컨트롤 위치를 위→아래로 누적.
     const capture_h = scaled(40, dpi); // 캡처된 키 표시 (큰 폰트)
-    const status_h = scaled(28, dpi); // 에러 상태 텍스트
+    // #721 — 에러 상태 텍스트. 후보 중 가장 긴 것까지 들어가게 미리 잡는다 — 키를 누를
+    // 때마다 창이 바뀌지 않게. 한 줄짜리는 예전 높이를 그대로 둔다.
+    const status_h = @max(scaled(28, dpi), status_text_h);
     const button_h = scaled(32, dpi);
     const button_w = scaled(96, dpi);
     const icon_y = scaled(20, dpi);
@@ -1611,7 +1644,14 @@ fn promptLayout(
         .separator = .{ .x = margin, .y = header.separator_y, .w = content_w, .h = header.separator_h },
         .message = .{ .x = margin, .y = msg_y, .w = content_w, .h = msg_h },
         .capture = .{ .x = margin, .y = capture_y, .w = content_w, .h = capture_h },
-        .status = .{ .x = margin, .y = status_y, .w = content_w, .h = status_h },
+        // #721 — 상태 칸은 본문 기본 폭을 넘지 않는다 (본문이 넘쳐 창이 더 넓어진 경우).
+        // 높이를 그 폭에서 쟀으므로 줄바꿈도 같은 폭이어야 한다.
+        .status = .{
+            .x = margin + @divTrunc(content_w - @min(content_w, widths.preferred_content_w), 2),
+            .y = status_y,
+            .w = @min(content_w, widths.preferred_content_w),
+            .h = status_h,
+        },
         .cancel = .{ .x = cancel_x, .y = button_y, .w = button_w, .h = button_h },
         .create = .{ .x = create_x, .y = button_y, .w = button_w, .h = button_h },
         .message_overflow = message_overflow,
@@ -1632,6 +1672,7 @@ fn measurePromptLayout(
 
     var metrics = TextMetrics{ .title_h = scaled(24, dpi), .body_line_h = scaled(20, dpi) };
     var wrap_ctx = DcWrapMeasurer{ .dc = null, .text = message_w, .inset = edit_inset };
+    var status_text_h: c_int = 0;
 
     const dc = GetDC(null);
     var previous: ?*anyopaque = null;
@@ -1651,9 +1692,11 @@ fn measurePromptLayout(
         _ = DrawTextW(dc, body_line_sample, 2, &body_line_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
         if (body_line_rect.bottom > 0) metrics.body_line_h = @intCast(body_line_rect.bottom);
         wrap_ctx.dc = dc;
+        // 상태 칸도 본문 글꼴이다 (`setPromptFonts`). 세 OS 공통 규칙으로 자리를 정한다.
+        status_text_h = hotkey_status.fit(c_int, DcStatusMeasurer{ .dc = dc }, widths.preferred_content_w).height;
     }
 
-    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer());
+    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer(), status_text_h);
 
     if (dc != null) {
         if (previous != null) _ = SelectObject(dc, previous);
@@ -1835,7 +1878,9 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
         null,
     ) orelse return null;
     ctx.controls.capture = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, 0, 0, 0, 0, hwnd, @ptrFromInt(100), hinstance, null);
-    ctx.controls.status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE, 0, 0, 0, 0, hwnd, null, hinstance, null);
+    // #721 — `SS_CENTERIMAGE` 를 두지 않는다. 그 스타일은 글자를 한 줄로만 그려서 긴 문구가
+    // 잘렸다. 줄바꿈은 `SS_CENTER` 의 기본 동작이다.
+    ctx.controls.status = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("STATIC"), std.unicode.utf8ToUtf16LeStringLiteral(""), WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 0, 0, 0, hwnd, null, hinstance, null);
     ctx.controls.cancel = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral(messages.button_cancel), WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 0, 0, hwnd, @ptrFromInt(IDCANCEL), hinstance, null);
     ctx.controls.create = CreateWindowExW(0, std.unicode.utf8ToUtf16LeStringLiteral("BUTTON"), std.unicode.utf8ToUtf16LeStringLiteral(messages.button_create), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 0, 0, hwnd, @ptrFromInt(IDOK), hinstance, null);
     if (ctx.controls.create != null) _ = EnableWindow(ctx.controls.create, 0);
@@ -1970,7 +2015,7 @@ test "#540 핫키 캡처 다이얼로그도 같은 규칙을 지킨다" {
     for ([_]UINT{ 96, 144, 192 }) |dpi| {
         const frame = testFrame(dpi);
         var wrap = FakeWrap{ .total_px = 200_000 };
-        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer());
+        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0);
 
         try std.testing.expect(layout.win_w <= test_work.right - test_work.left);
         try std.testing.expect(layout.win_h <= test_work.bottom - test_work.top);
@@ -1991,6 +2036,27 @@ test "#540 핫키 캡처 다이얼로그도 같은 규칙을 지킨다" {
         try std.testing.expect(layout.cancel.x >= 0);
         try std.testing.expect(layout.cancel.x + layout.cancel.w <= layout.create.x);
         try std.testing.expect(layout.create.y + layout.create.h <= layout.client_h);
+    }
+}
+
+test "#721 상태 문구가 여러 줄이면 그만큼 자리를 잡고 버튼을 내린다" {
+    for ([_]UINT{ 96, 144, 192 }) |dpi| {
+        const frame = testFrame(dpi);
+        var wrap = FakeWrap{ .total_px = 200_000 };
+        const one = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0);
+        const tall_h = scaled(28, dpi) + scaled(40, dpi);
+        const tall = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), tall_h);
+
+        // 한 줄 (또는 못 잰 경우) 은 예전 높이 그대로다.
+        try std.testing.expectEqual(scaled(28, dpi), one.status.h);
+        try std.testing.expectEqual(tall_h, tall.status.h);
+        // 늘어난 만큼 버튼과 창이 내려간다 — 상태 칸이 버튼과 겹치지 않는다.
+        try std.testing.expectEqual(one.create.y + scaled(40, dpi), tall.create.y);
+        try std.testing.expectEqual(one.client_h + scaled(40, dpi), tall.client_h);
+        try std.testing.expect(tall.status.y + tall.status.h <= tall.create.y);
+        // 상태 칸은 본문 기본 폭을 넘지 않는다.
+        const widths = dialogWidths(dpi, test_work, frame);
+        try std.testing.expect(tall.status.w <= widths.preferred_content_w);
     }
 }
 
