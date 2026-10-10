@@ -78,7 +78,7 @@ STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress"
 case "$HYG_PLATFORM" in
     # `paths.zig` 의 `logDir` 와 같은 규칙이다. `-e` 로 띄운 회차는 **`tildaz_stress.log`**
     # 로 간다 (`instance_context.isStress`) — 평소의 `tildaz_N.log` 가 아니다.
-    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
+    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz-dev/tildaz_stress.log" ;;
     macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     *)
         echo "이 스크립트는 Linux · macOS 전용이에요 ($(uname -s))." >&2

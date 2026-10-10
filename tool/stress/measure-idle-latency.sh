@@ -76,7 +76,7 @@ done
 [ -x "$EXE" ] || { echo "tildaz 없음: $EXE  (먼저 zig build)" >&2; exit 1; }
 
 case "$HYG_PLATFORM" in
-    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
+    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz-dev/tildaz_stress.log" ;;
     macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     windows) LOG="$(cygpath -u "$APPDATA")/tildaz-dev/tildaz_stress.log" ;;
     *) echo "모르는 platform 이에요 ($(uname -s))." >&2; exit 2 ;;

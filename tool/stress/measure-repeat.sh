@@ -127,7 +127,7 @@ STRESS="$REPO_ROOT/zig-out/bin/tildaz-stress$EXE_SUFFIX"
 case "$HYG_PLATFORM" in
     # paths.zig 의 `logDir` 와 같은 규칙이다. 여기서 어긋나면 회차는 도는데 표가 비어서
     # 원인을 찾기 어려우니, 그 파일이 단일 출처라는 것을 기억해요.
-    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
+    linux) LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz-dev/tildaz_stress.log" ;;
     macos) LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     # `$APPDATA` 는 `C:\Users\…\AppData\Roaming` 형태로 오므로 POSIX 경로로 바꿔서 쓴다 —
     # 아래에서 `wc -c` · `tail -c` 로 직접 읽는 대상이기 때문이다.

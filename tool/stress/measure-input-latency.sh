@@ -139,7 +139,7 @@ MACINPUT_SRC="$REPO_ROOT/tool/input_macos.m"
 
 # `paths.zig` 의 `logDir` 와 같은 규칙이다 (`measure-repeat.sh` 와 같은 표).
 case "$HYG_PLATFORM" in
-    linux)   LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log" ;;
+    linux)   LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz-dev/tildaz_stress.log" ;;
     macos)   LOG="$HOME/Library/Logs/tildaz-dev/tildaz_stress.log" ;;
     windows) LOG="$(cygpath -u "$APPDATA")/tildaz-dev/tildaz_stress.log" ;;
 esac
