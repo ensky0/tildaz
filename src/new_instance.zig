@@ -17,7 +17,9 @@ const ValidationContext = struct {
 
 fn validateHotkey(ctx_ptr: *anyopaque, text: []const u8) dialog.HotkeyValidation {
     const ctx: *ValidationContext = @ptrCast(@alignCast(ctx_ptr));
-    const hotkey = config.Hotkey.fromString(text) orelse return .invalid;
+    // 캡처한 글자는 늘 다시 해석되므로 실패할 수 없다 (#721 · `hotkey_status.HotkeyValidation`).
+    // 그래도 실패하면 "확인 못 함" 으로 둔다 — 문구가 뜨고 자리도 맞다.
+    const hotkey = config.Hotkey.fromString(text) orelse return .check_failed;
     const current_indices = instances.listConfigIndices(ctx.rt, ctx.allocator) catch return .check_failed;
     defer ctx.allocator.free(current_indices);
     const owner = instances.hotkeyOwner(ctx.rt, ctx.allocator, current_indices, hotkey) catch return .check_failed;

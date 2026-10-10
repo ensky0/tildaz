@@ -12,10 +12,12 @@
 const std = @import("std");
 const messages = @import("messages.zig");
 
+/// "잘못된 키" 상태는 없다 (#721). 검증에 들어가는 글자는 세 OS 모두 캡처
+/// (`config.capturedHotkeyText`) 에서만 오고, 캡처는 허용되지 않는 키를 거르며 낸 글자는
+/// 다시 해석된다 — 그런 문구는 나올 수 없는데 가장 길어서 창을 넓히고 빈 줄을 만들었다.
 pub const HotkeyValidation = union(enum) {
     available,
     duplicate: u32,
-    invalid,
     check_failed,
 };
 
@@ -27,20 +29,18 @@ pub fn message(buf: []u8, result: HotkeyValidation) []const u8 {
     return switch (result) {
         .available => "",
         .duplicate => |index| std.fmt.bufPrint(buf, messages.new_instance_hotkey_duplicate_format, .{index}) catch messages.new_instance_hotkey_duplicate_fallback,
-        .invalid => messages.new_instance_hotkey_invalid_msg,
         .check_failed => messages.new_instance_hotkey_check_failed_msg,
     };
 }
 
 /// 상태 칸에 나올 수 있는 문구 **전부**. 번호 문구는 0 부터 상한까지 하나씩 넣는다 —
 /// 비례폭 글꼴은 숫자마다 폭이 다를 수 있어서, 대표 하나로 재면 근사가 된다.
-pub const candidates: [3 + max_index + 1][]const u8 = blk: {
-    var list: [3 + max_index + 1][]const u8 = undefined;
-    list[0] = messages.new_instance_hotkey_invalid_msg;
-    list[1] = messages.new_instance_hotkey_check_failed_msg;
-    list[2] = messages.new_instance_hotkey_duplicate_fallback;
+pub const candidates: [2 + max_index + 1][]const u8 = blk: {
+    var list: [2 + max_index + 1][]const u8 = undefined;
+    list[0] = messages.new_instance_hotkey_check_failed_msg;
+    list[1] = messages.new_instance_hotkey_duplicate_fallback;
     for (0..max_index + 1) |i| {
-        list[3 + i] = std.fmt.comptimePrint(messages.new_instance_hotkey_duplicate_format, .{i});
+        list[2 + i] = std.fmt.comptimePrint(messages.new_instance_hotkey_duplicate_format, .{i});
     }
     const final = list;
     break :blk final;
@@ -88,7 +88,6 @@ test "#721 candidates cover every status message that can appear" {
         }
     }.f;
     var buf: [128]u8 = undefined;
-    try std.testing.expect(has(message(&buf, .invalid)));
     try std.testing.expect(has(message(&buf, .check_failed)));
     for (0..max_index + 1) |i| try std.testing.expect(has(message(&buf, .{ .duplicate = @intCast(i) })));
     // 버퍼가 모자라면 번호 없는 문구로 물러선다 — 그것도 후보다.
@@ -117,9 +116,12 @@ test "#721 fit keeps every candidate on one line when the longest fits the cap" 
 }
 
 test "#721 fit wraps at the cap and reserves the tallest candidate" {
-    const got = fit(i32, FixedMeasurer{}, 40);
-    try std.testing.expectEqual(@as(i32, 40), got.width);
-    // 가장 긴 후보 (잘못된 키 · 95 자) 가 40 폭에서 세 줄이다.
-    const invalid_rows: i32 = @intCast((messages.new_instance_hotkey_invalid_msg.len + 39) / 40);
-    try std.testing.expectEqual(10 * invalid_rows, got.height);
+    var longest: usize = 0;
+    for (candidates) |c| longest = @max(longest, c.len);
+    // 가장 긴 후보보다 좁은 폭 — 그 폭에서 줄바꿈하고, 가장 긴 후보의 줄 수만큼 잡는다.
+    const cap: i32 = @intCast(longest - 1);
+    const got = fit(i32, FixedMeasurer{}, cap);
+    try std.testing.expectEqual(cap, got.width);
+    const rows: i32 = @intCast((longest + longest - 2) / (longest - 1));
+    try std.testing.expectEqual(10 * rows, got.height);
 }

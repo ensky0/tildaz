@@ -567,25 +567,38 @@ test "#721 prompt status widens the box up to the preferred width and wraps beyo
     const m = testMetrics(100);
     const viewport = Size{ .w = 1280, .h = 800 };
     const room = m.preferred_w - m.shadow_margin * 2 - m.padding * 2;
-    const invalid = messages.new_instance_hotkey_invalid_msg;
+    // 가장 긴 후보 — 문구가 바뀌어도 테스트가 따라가게 후보 목록에서 고른다.
+    var longest: []const u8 = "";
+    for (hotkey_status.candidates) |c| {
+        if (c.len > longest.len) longest = c;
+    }
+    const statusRows = struct {
+        fn f(width: i32, measure: Measure) usize {
+            var rows: usize = 0;
+            for (hotkey_status.candidates) |c| rows = @max(rows, measureMessage(c, width, measure).rows);
+            return rows;
+        }
+    }.f;
 
-    // 좁은 글꼴 — 가장 긴 후보 (잘못된 키) 가 기본 폭 안에 든다. 한 줄이고, 본문보다 길어서
-    // 창이 그 문구만큼 넓어진다.
-    const narrow = testFontsWithCellWidths(100, 5, 6);
-    const one = compute(messages.new_instance_title, prompt_msg, .prompt, m, narrow.body(), narrow.title(), viewport);
-    try std.testing.expect(5 * @as(i32, @intCast(invalid.len)) < room);
-    try std.testing.expectEqual(5 * @as(i32, @intCast(invalid.len)), one.status_wrap_width);
-    try std.testing.expect(one.size.w >= one.status_wrap_width + m.padding * 2 + m.shadow_margin * 2);
-    try std.testing.expect(longestExplicitLineWidth(prompt_msg, narrow.body()) < one.status_wrap_width);
-
-    // 기본 글꼴 — 기본 폭을 넘는다. 그 폭에서 줄바꿈하고, 늘어난 줄만큼 창이 높다.
+    // 기본 글꼴 — 가장 긴 후보가 기본 폭 안에 든다. 한 줄이고, 본문보다 길어서 창이 그
+    // 문구만큼 넓어진다.
     const f = testFonts(100);
-    const wrapped = compute(messages.new_instance_title, prompt_msg, .prompt, m, f.body(), f.title(), viewport);
+    const one = compute(messages.new_instance_title, prompt_msg, .prompt, m, f.body(), f.title(), viewport);
+    try std.testing.expect(9 * @as(i32, @intCast(longest.len)) < room);
+    try std.testing.expectEqual(9 * @as(i32, @intCast(longest.len)), one.status_wrap_width);
+    try std.testing.expectEqual(@as(usize, 1), statusRows(one.status_wrap_width, f.body()));
+    try std.testing.expect(one.size.w >= one.status_wrap_width + m.padding * 2 + m.shadow_margin * 2);
+    try std.testing.expect(longestExplicitLineWidth(prompt_msg, f.body()) < one.status_wrap_width);
+
+    // 넓은 글꼴 — 기본 폭을 넘는다. 그 폭에서 줄바꿈하고, 늘어난 줄만큼 창이 높다. 본문도
+    // 같은 글꼴이라 함께 줄이 늘 수 있어, 높이 차이는 본문 줄 차이와 상태 줄 차이의 합이다.
+    const wide = testFontsWithCellWidths(100, 15, 18);
+    const wrapped = compute(messages.new_instance_title, prompt_msg, .prompt, m, wide.body(), wide.title(), viewport);
     try std.testing.expectEqual(room, wrapped.status_wrap_width);
-    const rows = measureMessage(invalid, room, f.body()).rows;
+    const rows = statusRows(room, wide.body());
     try std.testing.expect(rows > 1);
-    try std.testing.expectEqual(one.message_rows, wrapped.message_rows);
-    try std.testing.expectEqual(@as(i32, @intCast(rows - 1)) * m.body_cell_h, wrapped.size.h - one.size.h);
+    const extra_rows = (wrapped.visible_message_rows - one.visible_message_rows) + (rows - 1);
+    try std.testing.expectEqual(@as(i32, @intCast(extra_rows)) * m.body_cell_h, wrapped.size.h - one.size.h);
 
     // prompt 가 아니면 상태 칸이 없다.
     const info = compute(messages.new_instance_title, prompt_msg, .info, m, f.body(), f.title(), viewport);
