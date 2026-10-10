@@ -839,7 +839,10 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 — `render` 는 첫 `drawPane` 부터 재요.
 
 그래서 재는 패치를 [`tool/present-latency-probe_macos.patch`](tool/present-latency-probe_macos.patch) 에
-뒀어요. **측정할 때만 얹고 커밋하지 않아요.**
+뒀어요. **측정할 때만 얹고 커밋하지 않아요.** [#732](https://github.com/ensky0/tildaz/issues/732) 가 표시 경로를
+IOSurface + `CALayer.contents` 로 바꾼 뒤로는 이 패치가 고치는 자리 (`nextDrawable` · `presentDrawable:`) 가 없어서
+**`main` 에는 들어가지 않아요** — #732 이전 판 (예: `feeddc7`) 과 견줄 때 그 판에 얹어요. 지금 판의 키 → 화면은
+아래 `key-to-screen` 으로 재요.
 
 ```sh
 git apply tool/present-latency-probe_macos.patch
@@ -877,6 +880,39 @@ perf 덤프에 세 줄이 붙어요.
 
   샘플 시각은 **초 단위**라 1 초 남짓한 블록과는 거칠게만 맞대져요. #476 에서는 GPU 가 폭포 내내
   최저 클럭 (338 MHz) 이었고, 코어 배치와 GPU 상태 모두 느린 상태와 맞물리지 않았어요.
+
+**키 → 화면은 앱 밖에서 재요** — [`tool/key-to-screen_macos.m`](tool/key-to-screen_macos.m). 합성 키를 보낸
+`mach_absolute_time` 과, ScreenCaptureKit 이 그 창에서 **그림이 처음 바뀐 프레임**의 `SCStreamFrameInfoDisplayTime`
+("when the frame was displayed by the window server") 의 차이예요. 앱 내부와 무관해서 표시 경로가 다른 두 판도
+같은 잣대로 견줘요.
+
+```sh
+clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMedia \
+      -framework CoreVideo -o /tmp/key-to-screen tool/key-to-screen_macos.m
+/tmp/key-to-screen --window <id> --presses 30 --gap-ms 250 [--x0 0.55 --x1 1.0]
+```
+
+- **유휴만 재면 차이가 안 보여요.** 표시 대기열은 매 프레임 그릴 때 차요. #732 실측 유휴 중앙값은
+  #732 이전 19.35 ms · 이후 18.93 ms 로 같았고, **폭포 중**에는 26.3~27.3 → 18.1~19.0 ms (4 회) 로 한 프레임
+  당겨졌어요.
+- **폭포 중에는 pane 을 나눠 재요.** 창 전체가 계속 바뀌어 "글자가 나타났다" 를 가를 수 없으니, 한 pane 에
+  출력을 쏟고 다른 pane 은 `cat` 으로 키만 받게 한 뒤 `--x0` · `--x1` (창 폭의 비율) 로 조용한 pane 만 해시해요.
+  `-e` 의 새 pane 은 같은 스크립트를 다시 실행하므로, 스크립트가 잠금 폴더로 첫 pane 인지 가려요:
+
+    ```sh
+    # flood-or-cat.sh — 첫 pane 은 쏟고, 그 뒤 pane 은 키만 받는다
+    if mkdir "$TZ_K2S_LOCK" 2>/dev/null; then exec yes 'flood 0123456789'; fi
+    exec cat
+    ```
+
+  띄운 뒤 `⌥⌘→` 로 오른쪽에 pane 을 만들면 포커스가 `cat` pane 으로 가요. 두 판을 **번갈아** 띄워요.
+- **절대값은 다른 계측과 견주지 않아요.** 같은 유휴에서 `presentedTime` 기준 (위 `TEMPpres`) 은 present 뒤
+  23.5 ms 였는데 이 도구는 키부터 19 ms 였어요 — 두 시각이 가리키는 지점이 다른 것으로 보여요 (추정). 판정은
+  같은 도구 안의 **두 판 차이**로 해요.
+- 회차마다 30 번 중 3 번은 판정을 못 했어요 (`miss`). 두 판이 늘 같은 수라 비교에는 지장이 없었고, 원인은
+  보지 않았어요.
+- 도구는 `[NSApplication sharedApplication]` 으로 창 서버에 먼저 연결해요. 없으면 `SCStream` 이
+  `CGS_REQUIRE_INIT` 단언으로 멈춰요 (한 장만 찍는 `color-capture` 는 필요 없었어요).
 
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
