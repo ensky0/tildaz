@@ -76,6 +76,18 @@ const Main = imports.ui.main;
  * `tildaz-dev` 도 아닌 이름을 찾게 된다. 확장을 손으로 시험할 때는 치환한 사본을 쓴다.
  */
 const APP = "__TILDAZ_APP__";
+/**
+ * #719 — config 에 `hotkey` 줄이 없거나 읽을 수 없을 때의 키. 앱의 `Defaults.hotkeyFor` 와 같은
+ * 규칙이다 — dev 판은 표를 거꾸로 읽는다 (같은 키를 두 판이 함께 등록하면 먼저 등록한 쪽만
+ * 발화한다). 앱이 그 config 로 실제로 쓰는 키와 같아야 등록 · grab 결과 기록이 어긋나지 않는다.
+ * `src/host/linux/shell_extension.zig` 의 테스트가 렌더된 이 표를 Zig 의 표와 대조한다.
+ */
+const DEFAULT_HOTKEYS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
+const IS_DEV = APP.endsWith("-dev");
+function defaultHotkeyFor(index) {
+  const i = IS_DEV ? DEFAULT_HOTKEYS.length - 1 - index : index;
+  return DEFAULT_HOTKEYS[i] || null;
+}
 // 셸 로그의 접두어. 두 판 (`tildaz` · `tildaz-dev`) 이 같은 세션 로그에 쓰므로 어느 확장이 낸
 // 줄인지 태그로 갈려야 한다 (#654 — 리터럴 `[tildaz]` 였을 때 dev 확장의 줄이 릴리즈 것으로 읽혔다).
 const LOG_TAG = `[${APP}]`;
@@ -464,7 +476,9 @@ function disable() {
 function readConfig(index) {
   // #510 — `hotkey` 는 config 원문이다. worker 가 grab 결과 기록의 stale 여부를 이 값으로
   // 판정하므로 `accel` 로 변환하기 전 문자열이 그대로 필요하다.
-  const out = { accel: "", hotkey: null, dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
+  // #719 — 빠진 줄 · 읽을 수 없는 값은 앱이 그 config 로 쓰는 키다 (`defaultHotkeyFor`).
+  const fallback = defaultHotkeyFor(index);
+  const out = { accel: (fallback && toAccel(fallback)) || "", hotkey: fallback, dock: "top", wp: 50, hp: 100, op: 100, hidden: false };
   try {
     const path = GLib.build_filenamev([
       configDirPath(),
@@ -474,9 +488,11 @@ function readConfig(index) {
     if (ok) {
       const j = parseTomlSubset(new TextDecoder().decode(bytes));
       if (typeof j.hotkey === "string") {
-        out.hotkey = j.hotkey;
         const a = toAccel(j.hotkey);
-        if (a) out.accel = a;
+        if (a) {
+          out.accel = a;
+          out.hotkey = j.hotkey;
+        }
       }
       if (typeof j.hidden_start === "boolean") out.hidden = j.hidden_start;
       const w = j.window || {};

@@ -2029,6 +2029,25 @@ const default_font_size_point: u8 = Defaults.font_size_point;
 const default_cell_width_ratio: f32 = Defaults.cell_width_ratio;
 const default_line_height_ratio: f32 = Defaults.line_height_ratio;
 const default_shell: []const u8 = Defaults.shell;
+
+/// #719 — config 를 **`parse` 밖에서** 읽는 곳 (launcher 의 자동 시작 판정 · 단축키 동기화 · 새
+/// 인스턴스의 핫키 확인) 이 쓰는 규칙. 빠진 줄 · 형이 틀린 값은 config 가 없을 때와 같은 값이다
+/// (#718 과 같은 원칙). 예전에는 그 자리들이 `error.InvalidConfig` 를 냈고, launcher 는 그것을
+/// `try` 로 받아 **실행 자체가 실패**했다.
+pub fn autoStartOrDefault(table: *const toml.Table) bool {
+    const v = table.get("auto_start") orelse return Defaults.auto_start;
+    return if (v == .boolean) v.boolean else Defaults.auto_start;
+}
+
+/// #719 — 위와 같은 규칙의 `hotkey`. 읽을 수 없는 값도 그 번호의 기본 키다 — 앱 본체 (`parse`)
+/// 가 그렇게 돌므로, 밖에서 읽는 쪽도 같은 키를 봐야 등록 · 중복 판정이 앱과 어긋나지 않는다.
+/// 돌려주는 글자는 `table` 이나 정적 상수를 가리킨다 — 호출부가 `table` 을 풀기 전에 복사한다.
+pub fn hotkeyTextOrDefault(table: *const toml.Table, index: u32) []const u8 {
+    if (table.get("hotkey")) |v| {
+        if (v == .string and Hotkey.fromString(v.string) != null) return v.string;
+    }
+    return Defaults.hotkeyFor(index);
+}
 /// Internal chain = primary (Defaults.font_family) + glyph_fallback. parse 후
 /// `Config.font_families` 도 같은 의미 — chain[0] 은 primary, chain[1..] 은
 /// glyph fallback. host / renderer 가 보는 인터페이스는 합친 chain 한 개.
@@ -3510,7 +3529,7 @@ pub const Config = struct {
         }
 
         // auto_start / hidden_start
-        if (root.table.get("auto_start")) |v| config.auto_start = v.boolean;
+        config.auto_start = autoStartOrDefault(root.table);
         if (root.table.get("hidden_start")) |v| config.hidden_start = v.boolean;
 
         // max_scroll_lines
@@ -4759,6 +4778,30 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
     // "지울 것" 묶음에 들어가야 한다 — "넣을 것" 과 사용자가 할 일이 다르다.
     try std.testing.expect(std.mem.indexOf(u8, notice.removable, "bogus_key") != null);
     try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
+}
+
+test "#719 parse 밖에서 읽어도 빠진 줄 · 틀린 값은 config 가 없을 때와 같은 값이다" {
+    const allocator = std.testing.allocator;
+    const Case = struct { text: []const u8, auto_start: bool, hotkey: []const u8 };
+    const cases = [_]Case{
+        // 빠진 줄 — 기본값.
+        .{ .text = "", .auto_start = Defaults.auto_start, .hotkey = Defaults.hotkeyFor(4) },
+        // 형이 틀림 — 기본값 (`parse` 의 `repairStructure` 와 같다).
+        .{ .text = "auto_start = \"yes\"\nhotkey = 7\n", .auto_start = Defaults.auto_start, .hotkey = Defaults.hotkeyFor(4) },
+        // 읽을 수 없는 키 — 그 번호의 기본 키 (`parse` 와 같다).
+        .{ .text = "hotkey = \"nosuchkey\"\n", .auto_start = Defaults.auto_start, .hotkey = Defaults.hotkeyFor(4) },
+        // 제대로 적은 값은 그대로.
+        .{ .text = "auto_start = true\nhotkey = \"F7\"\n", .auto_start = true, .hotkey = "F7" },
+        .{ .text = "auto_start = false\n", .auto_start = false, .hotkey = Defaults.hotkeyFor(4) },
+    };
+    for (cases) |c| {
+        var parser: toml.Parser(toml.Table) = .init(allocator);
+        defer parser.deinit();
+        var parsed = try parser.parseString(c.text);
+        defer parsed.deinit();
+        try std.testing.expectEqual(c.auto_start, autoStartOrDefault(&parsed.value));
+        try std.testing.expectEqualStrings(c.hotkey, hotkeyTextOrDefault(&parsed.value, 4));
+    }
 }
 
 test "#718 shell · [font] 가 빠진 config 도 deinit 이 상수를 해제하지 않는다" {
