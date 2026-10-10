@@ -528,6 +528,9 @@ pub const Tab = struct {
         if (instance_context.isStress()) {
             tab.stress_drain_chunks += 1;
             tab.stress_drain_bytes += n;
+            // #473 — 키 → 에코를 그린 present (`perf.input_echo`). 파서에 **넣은 뒤**라
+            // 표식을 본 순간 그 글자는 이미 터미널 상태에 있다.
+            perf.noteEchoBytes(buf[0..n]);
         }
         return n;
     }

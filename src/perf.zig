@@ -142,6 +142,8 @@ pub fn markInput() void {
     _ = gate_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
     // #481 — 키 → PTY write 구간. `markPtyWrite` 에서 닫힌다.
     _ = pending_itw_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+    // #473 — 키 → 에코를 그린 present. `noteEchoBytes` · `completeEcho` 에서 닫힌다.
+    _ = echo_wait_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
 }
 
 /// present 가 끝난 자리에서 부른다. 대기 중인 키가 있으면 지연을 적고 비운다.
@@ -271,6 +273,59 @@ pub fn noteFrameTick() void {
     if (out_start != 0 and t > out_start) recordLatency(&output_gate, &output_gate_hist, t - out_start);
 }
 
+/// #473 — **키를 받은 순간부터 그 키의 에코를 파싱한 뒤 첫 present 가 끝날 때까지.**
+///
+/// 왜 필요한가. `input_latency` 는 대기 중인 키가 있으면 **아무 present 에서나** 닫힌다
+/// (`completeInput`). 유휴에서는 그다음 present 가 곧 에코를 그린 프레임이라 문제가 없지만,
+/// 폭포 중에는 키와 무관한 출력 프레임이 먼저 와서 값이 사실상 *"키 → 다음 프레임"* 이 된다.
+/// 그러면 *"키를 받자마자 한 번 그리는"* 변경이 에코를 하나도 앞당기지 않아도 그 값을 줄인다 —
+/// 키는 그 뒤에야 PTY 로 쓰이므로 그 프레임에는 키의 결과가 담길 수 없다.
+///
+/// 그래서 에코를 **골라내서** 잰다. 폭포 producer 의 `plain` 은 `line ` · 숫자 · 소문자뿐이라
+/// ([`workload.zig`](stress/workload.zig) `renderPlain`) 그 밖의 글자를 보내면 출력에서 찾을 수
+/// 있다. 표식은 `é` (U+00E9) 다 — ASCII 는 터미널 제어 시퀀스의 문자와 겹칠 수 있어 피했다.
+/// 하네스가 `--echo` 로 이 글자를 보낸다 (`tool/stress/measure-input-latency.sh` — Windows 전용).
+///
+/// **측정 인스턴스에서만 찾는다** (`noteEchoBytes` 의 호출부 — `session_core.drainOutputChunk`).
+/// 평소 앱의 drain 경로에는 검색을 넣지 않는다.
+pub var input_echo: Counter = .{};
+pub var input_echo_hist: Histogram = .{};
+pub const echo_marker = "\u{e9}";
+
+/// 에코를 기다리는 키의 수신 시각. `pending_input_ns` 와 같은 이유로 덮지 않는다.
+var echo_wait_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+/// 에코를 파싱했고 present 를 기다리는 키의 수신 시각.
+var echo_parsed_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+/// 앞 조각이 표식의 첫 바이트로 끝났는가 — 표식이 두 조각에 걸쳐 갈린 경우를 잡는다.
+var echo_carry: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+/// 파서에 넣은 출력 조각을 받는다. 기다리는 키가 있고 조각에 표식이 있으면 *"파싱됨"* 으로 넘긴다.
+///
+/// **넣은 뒤**에 부른다 — 이 함수가 표식을 본 순간 그 글자는 이미 터미널 상태에 들어가 있어서,
+/// 그 뒤 첫 present 가 그것을 그린 프레임이다.
+pub fn noteEchoBytes(bytes: []const u8) void {
+    const key = echo_wait_ns.load(.acquire);
+    if (key == 0) {
+        echo_carry.store(false, .monotonic);
+        return;
+    }
+    if (bytes.len == 0) return;
+    const carried = echo_carry.load(.monotonic) and bytes[0] == echo_marker[1];
+    echo_carry.store(bytes[bytes.len - 1] == echo_marker[0], .monotonic);
+    if (!carried and std.mem.indexOf(u8, bytes, echo_marker) == null) return;
+    if (echo_wait_ns.cmpxchgStrong(key, 0, .acq_rel, .monotonic) != null) return;
+    _ = echo_parsed_ns.cmpxchgStrong(0, key, .acq_rel, .monotonic);
+}
+
+/// present 가 끝난 자리에서 부른다 (`completeInput` 과 같은 자리).
+pub fn completeEcho() void {
+    const start = echo_parsed_ns.swap(0, .acq_rel);
+    if (start == 0) return;
+    const t = now() orelse return;
+    if (t <= start) return;
+    recordLatency(&input_echo, &input_echo_hist, t - start);
+}
+
 /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
 /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
 /// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
@@ -381,6 +436,8 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const ogh = output_gate_hist.take();
     const prth = pty_rt_hist.take();
     const itwh = itw_hist.take();
+    const ie = snapshot(&input_echo);
+    const ieh = input_echo_hist.take();
     // 대기 중인 키는 스냅숏 경계를 넘기지 않는다 — 다음 구간에서 present 가 되면
     // *이전 구간에 눌린* 키의 지연이 그쪽에 잡혀 구간 귀속이 어긋난다.
     _ = pending_input_ns.swap(0, .acq_rel);
@@ -389,6 +446,9 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     _ = gate_output_ns.swap(0, .acq_rel);
     _ = pending_write_ns.swap(0, .acq_rel);
     _ = pending_itw_ns.swap(0, .acq_rel);
+    _ = echo_wait_ns.swap(0, .acq_rel);
+    _ = echo_parsed_ns.swap(0, .acq_rel);
+    echo_carry.store(false, .monotonic);
 
     var buf: [4096]u8 = undefined;
     const text = std.fmt.bufPrint(
@@ -467,7 +527,11 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             "pty_rt   samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n" ++
             // #481 — 키 → PTY write. 네 조각을 합쳐도 `input` 에 못 미치던 표본이 어디서
             // 늦었는지를 이 값이 메운다 (`input = itw + pty_rt + in_gate + 렌더 · present`).
-            "itw      samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n",
+            "itw      samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n" ++
+            // #473 — 키 → **그 키의 에코를 그린** present. `input` 은 아무 present 에서나
+            // 닫혀 폭포 중에는 *"키 → 다음 프레임"* 이 된다 (`input_echo` 주석). 표식 글자
+            // (`é`) 를 보낸 회차에서만 표본이 생긴다.
+            "in_echo  samples={d} ms={d:.3} max_ms={d:.3} hist={any}\n",
         .{
             ig[0],
             @as(f64, @floatFromInt(ig[1])) / 1_000_000.0,
@@ -487,6 +551,10 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             @as(f64, @floatFromInt(itw[1])) / 1_000_000.0,
             @as(f64, @floatFromInt(itw[3])) / 1_000_000.0,
             itwh,
+            ie[0],
+            @as(f64, @floatFromInt(ie[1])) / 1_000_000.0,
+            @as(f64, @floatFromInt(ie[3])) / 1_000_000.0,
+            ieh,
         },
     ) catch return;
 
@@ -563,4 +631,36 @@ test "unavailable clock sample does not update counters" {
     try std.testing.expectEqual(@as(u64, 0), counter.calls.load(.monotonic));
     try std.testing.expectEqual(@as(u64, 0), counter.ns.load(.monotonic));
     try std.testing.expectEqual(@as(u64, 0), counter.bytes.load(.monotonic));
+}
+
+test "echo marker is found only while a key waits, including across a chunk split" {
+    defer {
+        echo_wait_ns.store(0, .monotonic);
+        echo_parsed_ns.store(0, .monotonic);
+        echo_carry.store(false, .monotonic);
+    }
+    try std.testing.expectEqualSlices(u8, &.{ 0xc3, 0xa9 }, echo_marker);
+
+    // 기다리는 키가 없으면 표식이 있어도 넘기지 않는다.
+    noteEchoBytes("line 000000001 abc" ++ echo_marker);
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+
+    // 폭포 출력만으로는 넘기지 않는다.
+    echo_wait_ns.store(42, .monotonic);
+    noteEchoBytes("line 000000002 abcdefghijklmnopqrstuvwxyz0123456789\n");
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+
+    // 표식이 두 조각에 걸쳐 갈려도 잡는다.
+    noteEchoBytes("line 000000003 xyz\xc3");
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
+    noteEchoBytes("\xa9\n");
+    try std.testing.expectEqual(@as(u64, 42), echo_parsed_ns.load(.monotonic));
+    try std.testing.expectEqual(@as(u64, 0), echo_wait_ns.load(.monotonic));
+
+    // 앞 조각 끝의 `0xc3` 이 표식이 아니었으면 (다른 글자의 시작) 다음 조각의 `0xa9` 만으로는 안 잡는다.
+    echo_parsed_ns.store(0, .monotonic);
+    echo_wait_ns.store(7, .monotonic);
+    noteEchoBytes("\xc3");
+    noteEchoBytes("x\xa9");
+    try std.testing.expectEqual(@as(u64, 0), echo_parsed_ns.load(.monotonic));
 }

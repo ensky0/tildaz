@@ -42,7 +42,12 @@ param(
     # 한글 입력 상태에서 문자 키가 어떻게 되는지 보려는 회차. 기본은 영문으로 맞춘다.
     [switch]$KeepImeMode,
     # 마지막 종료 키 (Ctrl+Shift+W) 를 보내지 않는다 — 창을 남겨 두고 확인할 때.
-    [switch]$NoQuit
+    [switch]$NoQuit,
+    # #473 — `a` 대신 보낼 글자의 코드 포인트 (BMP). `KEYEVENTF_UNICODE` 로 보내서 (앱에는
+    # `VK_PACKET` + `WM_CHAR`) 자판과 무관하다. 폭포 출력에 없는 글자 (`é` = 233) 를 보내야 앱이
+    # 에코를 골라내 `in_echo` 를 잰다 (`perf.input_echo` 주석). 글자가 아니라 숫자로 받는 것은
+    # Git Bash → `powershell` 인자의 인코딩에 기대지 않으려는 것이다.
+    [int]$CharCode = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,6 +104,7 @@ public static class TzInput
     public const uint INPUT_MOUSE = 0;
     public const uint INPUT_KEYBOARD = 1;
     public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
     public const uint MOUSEEVENTF_MOVE = 0x0001;
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -197,6 +203,25 @@ public static class TzInput
         foreach (ushort vk in downs) inputs[n++] = One(vk, 0);
         foreach (ushort vk in ups) inputs[n++] = One(vk, KEYEVENTF_KEYUP);
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    // #473 — 글자 하나를 눌렀다 뗀다. `wVk` 는 0 이고 `wScan` 이 UTF-16 코드 단위다.
+    public static uint SendUnicode(ushort unit)
+    {
+        INPUT[] inputs = new INPUT[] { Unicode(unit, 0), Unicode(unit, KEYEVENTF_KEYUP) };
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    }
+
+    private static INPUT Unicode(ushort unit, uint flags)
+    {
+        INPUT i = new INPUT();
+        i.type = INPUT_KEYBOARD;
+        i.ki.wVk = 0;
+        i.ki.wScan = unit;
+        i.ki.dwFlags = KEYEVENTF_UNICODE | flags;
+        i.ki.time = 0;
+        i.ki.dwExtraInfo = IntPtr.Zero;
+        return i;
     }
 
     // `wScan` 을 반드시 채운다. scan code 가 0 이면 `TranslateMessage` 의 `ToUnicode` 가
@@ -348,10 +373,21 @@ function Send-Key {
     return ($n -eq ($Downs.Length + $Ups.Length))
 }
 
+function Send-Char {
+    if (-not (Assert-Focus)) { return $false }
+    return ([TzInput]::SendUnicode([uint16]$CharCode) -eq 2)
+}
+
+if ($CharCode -lt 0 -or $CharCode -gt 0xFFFF -or ($CharCode -ge 0xD800 -and $CharCode -le 0xDFFF)) {
+    Write-Output "  ❌ -CharCode 는 BMP 의 글자 하나예요 (받은 값: $CharCode)"
+    exit 2
+}
+
 $sent = 0
 $fail = ''
 for ($i = 1; $i -le $Presses; $i++) {
-    if (-not (Send-Key -Downs @($VK.a) -Ups @($VK.a))) {
+    $ok = if ($CharCode -ne 0) { Send-Char } else { Send-Key -Downs @($VK.a) -Ups @($VK.a) }
+    if (-not $ok) {
         $fail = "키 $i 번째에서 멈췄어요 (포커스를 잃었거나 SendInput 이 거부됐어요)"
         break
     }
