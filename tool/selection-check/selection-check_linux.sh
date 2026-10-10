@@ -75,8 +75,8 @@ launch() {   # $1 = 회차 이름 · $2 = 수신자가 먼저 쓸 escape (없으
     OUT=$T/recv_$1.txt; rm -f $OUT
     printf '#!/bin/sh\nprintf "COPYME word2\\n%s"\nexec python3 "%s" legacy > %s 2>&1\n' "$2" "$ROOT/tool/key-bytes.py" "$OUT" > $T/child_$1.sh
     chmod +x $T/child_$1.sh
-    # 앱에는 `SWAYSOCK` 을 넘기지 않는다 — layer-shell 경로로 뜬다. sway 전용 경로 (일반 창) 에서는
-    # 가상 포인터의 왼쪽 끌기가 선택을 만들지 않았다 (main 판도 같다 — #656 의 Linux 회차 댓글).
+    # 앱에는 `SWAYSOCK` 을 넘기지 않는다 — layer-shell 경로로 뜬다. 창이 화면 위에 바로 붙어서 아래 좌표
+    # 계산이 간단하다. sway 일반 창이면 맨 위에 sway 제목 막대가 있어 "창 위에서 14 px" 이 그 막대를 끈다 (#656).
     env -u SWAYSOCK TILDAZ_VERBOSE=1 "$BIN" --instance 1 -e $T/child_$1.sh > $T/app_$1.out 2>&1 &
     for _ in $(seq 60); do grep -q '^\[legacy\]' $OUT 2>/dev/null && break; sleep 0.25; done
     sleep 1

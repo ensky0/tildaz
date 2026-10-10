@@ -1372,7 +1372,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
   안 내주고 `ydotool` 은 이 기기에 없어서 `/dev/uinput` 으로 직접 꽂아요 (`vkbd_linux.py` 의 짝). 한 번 꽂고 FIFO 로
   `key F10` 을 보내요 — 판정은 `TILDAZ_VERBOSE=1` 의 `drainSurfaceOutputs entered=[]` (숨김) → `entered=[11 ]` (복귀) 예요.
   키는 **그때 포커스를 가진 창으로 가요** (위 경고와 같아요) — 시작 전에 알리고, `systemd-inhibit` 로 유휴 잠금을 막아요.
-- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요.
+- **GNOME 50 은 `--nested` 가 없어요.** `gnome-shell --nested` 가 `Unknown option` 이고, 그냥 `--wayland` 만 주면 native backend 를 골라 `Failed to take control of the session: EBUSY` 로 끝나요. 지금 이름은 **`--devkit`** 이에요. **51 은 `--devkit` 도 없어요** — 아래 nested 코드 블록의 `--headless` 를 써요.
 
 **KDE 에서 layout 전환하기.** 배열은 **시스템 설정 → 입력 장치 → 키보드 → 배열** 에서 먼저 추가해요 — `kxkbrc` 를 직접 고치면 KWin 이 재시작 전까지 안 읽어요 (`reconfigure` · `kcminit` 둘 다 무반응). **다른 세션에서 미리 고쳐 두는 우회도 안 돼요** — KWin 이 안 떠 있는 COSMIC 세션에서 `LayoutList=us,fr` 로 고쳐 두고 KDE 로 로그인했더니 **로그인 시점에 `LayoutList=us` 로 되돌려 쓰였어요** (2026-08-26 실측). GUI 로 추가하는 수밖에 없어요. 추가한 뒤에는 D-Bus 로 전환해요 — 그쪽은 문서대로 잘 돼요.
 
@@ -1405,10 +1405,15 @@ gdbus call --session --dest org.kde.keyboard --object-path /Layouts \
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=sway sway -c <config>
 env -u XDG_CURRENT_DESKTOP WAYLAND_DISPLAY=wayland-0 Hyprland -c <config>
 
-# GNOME 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
+# GNOME 50 은 `--devkit` 이 nested 예요 (`--nested` 는 50 에서 없어졌어요). 자기 세션
 # 버스가 필요해서 `dbus-run-session` 으로 감싸요.
 XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
   gnome-shell --devkit --wayland --wayland-display=wayland-9
+
+# GNOME 51 은 `--devkit` 도 없어요 (`알 수 없는 옵션`). 화면 없이 globals · 로그만 보면
+# 되는 회차는 headless 로 띄워요 (2026-10-10 · GNOME Shell 51.0 · #656).
+XDG_CURRENT_DESKTOP=GNOME dbus-run-session -- \
+  gnome-shell --headless --wayland --no-x11 --virtual-monitor 1024x700 --wayland-display=wayland-77
 
 # COSMIC 은 `WAYLAND_DISPLAY` 가 있으면 스스로 중첩해요.
 WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=COSMIC cosmic-comp
@@ -1575,10 +1580,16 @@ grim shot.png                                                          # sway �
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
   **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
-- **⚠️ sway 의 일반 창 (앱에 `SWAYSOCK` 이 보이는 경로) 에서는 가상 포인터 (`tool/vptr_linux.py`) 의 왼쪽 끌기가 선택을 만들지 않아요.**
-  오른쪽 · 가운데 클릭은 닿는데 끌기만 안 돼요. main 판도 같아서 #656 과 무관한 기존 동작이에요 (2026-10-10 · lima VM 의
-  headless sway 1.11 실측). 실제 sway 에서 사람이 긁어도 그런지는 아직 안 봤어요 (확인 필요). 선택을 재는 회차는 앱에서
-  `SWAYSOCK` 을 빼고 (`env -u SWAYSOCK`) layer-shell 경로로 띄워요 — `selection-check_linux.sh` 가 그래요.
+- **⚠️ sway 의 일반 창 (앱에 `SWAYSOCK` 이 보이는 경로) 은 맨 위에 sway 의 제목 막대가 있어요.** layer-shell 창처럼
+  "창 맨 위에서 14 px" 을 0 행으로 잡으면 **제목 막대를 끌게 되어** 선택이 안 생겨요. 오른쪽 · 가운데 클릭은 아래쪽을
+  눌러서 닿아요. 좌표는 `swaymsg -t get_tree` 의 `rect` (제목 막대를 뺀 자리) + `window_rect` 로 잡아요. 그러면 가상
+  포인터의 끌기도 선택을 만들어요 (2026-10-10 · 미니PC Firebat ZY-A8 headless sway 1.12 · [#656](https://github.com/ensky0/tildaz/issues/656)).
+  실제 sway 1.12 에서 사람이 긁어도 선택돼요 (같은 날 tty3). `selection-check_linux.sh` 는 좌표가 간단한 layer-shell 경로로
+  띄워요 (`env -u SWAYSOCK`).
+- **실제 sway 는 자기 VT 를 떠나면 화면 (output) 을 모두 내려놓아요.** 다른 VT (KDE 등) 에 있는 동안 `get_outputs` 가 빈
+  목록이에요. 그때 띄운 창은 화면이 돌아와도 sway 트리에 나타나지 않았어요 (같은 회차 · tildaz 는 map 됐다고 기록). foot 은
+  화면이 없으면 시작을 거부해 대조군이 안 돼요 (`no monitors available`). 다른 VT 의 sway 에 창을 띄우는 회차는 **그 VT 가
+  켜진 동안** 띄워요 — `/sys/class/tty/tty0/active` 가 그 tty 가 되기를 기다려 실행하면 돼요.
 - **sway 회차에서는 `-size` 를 못 써요.** `SWAYSOCK` 이 보이면 tildaz 가 layer-shell 대신 scratchpad 경로를 타서 (#454)
   창 크기를 우리가 못 정하고, 앱이 `-size cannot be used on this desktop` 으로 **부팅을 멈춰요** (2026-09-15 실측). 창은
   타일링으로 출력 전체가 되니 칸 수는 로그의 `terminal session created cols= rows=` 에서 읽어요. 반대로 `SWAYSOCK` 을
