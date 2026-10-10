@@ -1989,6 +1989,7 @@ pub const D3d11Renderer = struct {
         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
         perf.completeInput();
         perf.completeOutput();
+        perf.completeEcho(); // #473
     }
 
     /// #329 — 단일 탭 terminal 위에 우측 `[+][×][…]`만 최종 합성한다.

@@ -8,12 +8,19 @@
 #
 #   tool/stress/measure-input-latency.sh                 # idle · flood 둘 다
 #   tool/stress/measure-input-latency.sh --mode idle --presses 50
+#   tool/stress/measure-input-latency.sh --echo          # 'é' 를 보내 in_echo 도 낸다 (Windows)
 #
 # ## 무엇이 재지는가
 #
 # 앱이 `perf.markInput()` (키 수신) 부터 `perf.completeInput()` (그 뒤 첫 present 완료) 까지를
-# 잰다. 그래서 이 값은 **키 → PTY write → 셸 에코 → PTY read → parse → render → present** 를
-# 전부 포함한다. 셸 왕복이 섞이지만 **그게 사용자가 실제로 기다리는 시간**이다.
+# 잰다. 유휴에서는 그 present 가 곧 에코를 그린 프레임이라 이 값이 **키 → PTY write → 셸 에코 →
+# PTY read → parse → render → present** 를 전부 포함한다. 셸 왕복이 섞이지만 **그게 사용자가
+# 실제로 기다리는 시간**이다.
+#
+# **폭포 중에는 아니다** (#473). `completeInput` 은 대기 중인 키가 있으면 아무 present 에서나
+# 닫히므로 값이 *"키 → 다음 프레임"* 이 된다. 그래서 `--echo` 가 폭포 출력에 없는 글자 `é` 를
+# 보내고, 앱이 그 에코를 파싱한 뒤 첫 present 까지 (`in_echo`) 를 따로 잰다. 폭포 회차를 비교할
+# 때는 그 값을 본다 — `input` 만 보면 에코를 늦추는 변경이 좋아 보인다 (README 의 같은 절).
 #
 # 못 재는 것: `present → 실제 화면 발광` (외부 장비가 필요하다) 과 `키 눌림 → 앱 수신`
 # (compositor / OS 몫이 섞인다).
@@ -75,6 +82,8 @@ FOCUS_WAIT=0
 # 표본 부족(포커스 실패)으로 폐기된 회차를 몇 번까지 다시 돌릴지.
 RETRIES=3
 IGNORE_HYGIENE=0
+# #473 — `a` 대신 `é` 를 보내 **에코를 그린 프레임까지** (`in_echo`) 를 함께 잰다. 아래 `--echo` 설명.
+ECHO=0
 
 usage() {
     cat <<'USAGE'
@@ -89,6 +98,9 @@ usage() {
                      표본이 부족하게 나오는 환경에서만 쓴다
   --retries <N>   폐기된 회차를 다시 돌릴 횟수 (기본 3)
   --ignore-hygiene  위생 점검에 걸려도 강행 (동작 확인용 — 기록용 측정에는 쓰지 않는다)
+  --echo          'a' 대신 'é' 를 보내고 키 → 에코를 그린 present (in_echo) 도 낸다.
+                  **Windows 전용** (#473). 폭포 중 'input' 은 키와 무관한 다음 프레임에서
+                  닫히므로, 폭포 회차를 비교할 때는 in_echo 를 본다
 USAGE
 }
 
@@ -101,6 +113,7 @@ while [ $# -gt 0 ]; do
         --focus-wait) FOCUS_WAIT="$2"; shift 2 ;;
         --retries) RETRIES="$2"; shift 2 ;;
         --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
+        --echo) ECHO=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "모르는 옵션: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -114,6 +127,10 @@ case "$HYG_PLATFORM" in
     *) echo "이 스크립트는 Linux · macOS · Windows 전용이에요 ($(uname -s))." >&2
        exit 2 ;;
 esac
+if [ "$ECHO" = 1 ] && [ "$HYG_PLATFORM" != windows ]; then
+    echo "--echo 는 지금 Windows 전용이에요 — Linux · macOS 의 합성 입력은 'é' 를 보내는 길이 아직 없어요." >&2
+    exit 2
+fi
 
 # macOS 도구는 간격을 ms 로 받는다 (`--gap`). 초 단위 옵션을 한 번만 환산해 둔다.
 GAP_MS=$(awk "BEGIN{printf \"%d\", $GAP * 1000}")
@@ -306,8 +323,13 @@ send_keys() {
     if [ "$HYG_PLATFORM" = windows ]; then
         # 한 회차의 키 순서를 **한 번의 호출로** 보낸다. 키마다 powershell 을 띄우면 그
         # 기동 시간이 `--gap` 을 지배한다. 실패 (창 없음 · 포커스 상실) 는 종료 코드로 온다.
+        # `--echo` 면 'é' (U+00E9 = 233) 를 보낸다. 글자가 아니라 코드 포인트로 넘기는 이유는
+        # `send-keys_windows.ps1` 의 `-CharCode` 주석에 있다.
+        ECHO_ARGS=""
+        [ "$ECHO" = 1 ] && ECHO_ARGS="-CharCode 233"
+        # shellcheck disable=SC2086
         powershell -NoProfile -ExecutionPolicy Bypass -File "$(native_path "$SENDKEYS")" \
-            -Presses "$PRESSES" -GapSec "$GAP" || {
+            -Presses "$PRESSES" -GapSec "$GAP" $ECHO_ARGS || {
             echo "⚠ 합성 입력이 실패했어요 — 회차를 중단해요." >&2
             return 1
         }
@@ -490,28 +512,32 @@ run_one() {
     CHECK_ECHO=0
     [ "$HYG_PLATFORM" = macos ] && [ "$MODE_NAME" = idle ] && CHECK_ECHO=1
 
-    VERDICT=$(awk -v mode="$MODE_NAME" -v want="$PRESSES" -v hint="$SHORT_HINT" -v check_echo="$CHECK_ECHO" '
-    /^=== snapshot/ { snap = 1; cur_drain = 0; next }
-    /^=== /         { snap = 0 }
-    /^drain / {
-        if (snap) for (i = 1; i <= NF; i++) if ($i ~ /^bytes=/) { split($i, a, "="); cur_drain = a[2] + 0 }
+    # `in_echo` 는 같은 블록의 **두 번째 조각**에 있다 (`perf.dumpAndReset`). 그래서 `input` 줄에서
+    # 블록을 닫지 않고, 블록이 끝날 때 (다음 `===` 또는 파일 끝) 그 블록을 고른다.
+    VERDICT=$(awk -v mode="$MODE_NAME" -v want="$PRESSES" -v hint="$SHORT_HINT" -v check_echo="$CHECK_ECHO" -v show_echo="$ECHO" '
+    function field(name,   i, a) {
+        for (i = 1; i <= NF; i++) if (index($i, name "=") == 1) { split($i, a, "="); return a[2] + 0 }
+        return 0
     }
-    /^input / {
-        if (!snap) next
-        smp = 0; tot = 0; mx = 0
-        for (i = 1; i <= NF; i++) {
-            if ($i ~ /^samples=/)     { split($i, a, "="); smp = a[2] + 0 }
-            else if ($i ~ /^ms=/)     { split($i, a, "="); tot = a[2] + 0 }
-            else if ($i ~ /^max_ms=/) { split($i, a, "="); mx = a[2] + 0 }
-        }
-        if (smp > s) { s = smp; t = tot; m = mx; echoed = cur_drain }
+    function close_block() {
+        if (snap && cs > s) { s = cs; t = ct; m = cm; echoed = cd; es = ces; et = cet; em = cem }
         snap = 0
     }
+    /^=== / { close_block() }
+    /^=== snapshot/ { snap = 1; cd = 0; cs = 0; ct = 0; cm = 0; ces = 0; cet = 0; cem = 0; next }
+    /^drain /   { if (snap) cd = field("bytes") }
+    /^input /   { if (snap) { cs = field("samples"); ct = field("ms"); cm = field("max_ms") } }
+    /^in_echo / { if (snap) { ces = field("samples"); cet = field("ms"); cem = field("max_ms") } }
     END {
+        close_block()
         if (s + 0 == 0) { printf "  %-6s  ❌ 표본 없음 — 키가 앱에 안 갔거나 화면이 안 바뀌었어요\n", mode; exit }
         printf "  %-6s  표본 %3d / %d", mode, s, want
         if (check_echo) printf "   에코 %4d B", echoed + 0
         printf "   평균 %6.2f ms   최악 %6.2f ms", t / s, m
+        if (show_echo) {
+            if (es + 0 == 0) printf "   in_echo 표본 0"
+            else printf "   in_echo %3d 평균 %6.2f ms 최악 %6.2f ms", es, et / es, em
+        }
         # 8 할 미만이면 회차를 믿지 않는다 — 남은 표본으로 낸 평균은 그럴듯해 보이지만
         # 어떤 키가 빠졌는지 모르므로 대표성이 없다.
         if (s < want * 0.8) printf "   ⚠ 표본 부족 — %s (회차 폐기)", hint
@@ -519,6 +545,8 @@ run_one() {
         # 회차가 macOS 에서 실제로 있었다 — modifier 가 남은 채 `a` 가 나가 `Cmd+A` 로 읽힌
         # 경우다. 화면에도 아무것도 안 찍혔는데 평균은 0.33 ms 로 그럴듯했다.
         else if (check_echo && echoed + 0 < want * 0.8) printf "   ⚠ 에코 %d B — 키가 앱엔 닿았는데 PTY 로 안 갔어요 (회차 폐기)", echoed + 0
+        # `--echo` 인데 에코 표본이 모자라면 표식을 못 찾은 것이다 — `input` 만 보고 결론을 내지 않는다.
+        else if (show_echo && es + 0 < want * 0.8) printf "   ⚠ in_echo 표본 부족 — 출력에서 é 를 못 찾았어요 (회차 폐기)"
         printf "\n"
     }' "$RAW")
     rm -f "$RAW"
@@ -547,6 +575,7 @@ case "$HYG_PLATFORM" in
     macos) KEY_SEQ="Ctrl+C → Shift+Cmd+F12 → 'a' × ${PRESSES} (간격 ${GAP}s) → Shift+Cmd+F12 → Ctrl+C → Cmd+W" ;;
     *)     KEY_SEQ="'a' × ${PRESSES} (간격 ${GAP}s) → Ctrl+C → Ctrl+Shift+F12 → Ctrl+Shift+W" ;;
 esac
+[ "$ECHO" = 1 ] && KEY_SEQ=$(printf '%s' "$KEY_SEQ" | sed "s/'a'/'é'/")
 
 cat <<EOF
 

@@ -5422,6 +5422,7 @@ const Client = struct {
         // 은 자기가 `now()` 를 다시 부르므로 순서 차이가 값에 섞이지 않는다.
         defer perf.completeInput();
         defer perf.completeOutput();
+        defer perf.completeEcho(); // #473
         // wl_surface.attach (opcode 1) — (buffer_id, x=0, y=0).
         try self.sendArgs(self.surface_id, 1, &.{ buffer.id, 0, 0 });
         // wl_surface.damage_buffer (opcode 9) — viewport 적용된 surface 에서는
