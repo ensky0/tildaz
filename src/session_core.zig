@@ -624,16 +624,20 @@ pub fn initVtTerminal(
     max_scroll_lines: usize,
     theme: ?*const themes.Theme,
 ) !ghostty.Terminal {
-    const term_colors = if (theme) |t| ghostty.Terminal.Colors{
+    // #723 — upstream 이 `DynamicPalette` 의 원본을 공유 기본값 포인터로 바꿨다. 기본값이
+    // 아닌 팔레트는 `init` 이 `alloc` 으로 복사본을 만들고, 그 해제는 `Terminal.deinit` 이
+    // 같은 `alloc` 으로 한다. `Terminal.init` 은 실패할 때 `opts.colors` 를 풀지 않으므로
+    // (screen 만 errdefer 한다) 그 실패에서만 여기서 푼다.
+    var term_colors = if (theme) |t| ghostty.Terminal.Colors{
         .foreground = ghostty.color.DynamicRGB.init(t.foreground),
         .background = ghostty.color.DynamicRGB.init(t.background),
         .cursor = .unset,
-        .palette = ghostty.color.DynamicPalette.init(themes.buildPalette(t.palette)),
+        .palette = try ghostty.color.DynamicPalette.init(alloc, themes.buildPalette(t.palette)),
     } else ghostty.Terminal.Colors.default;
 
     // #451 — ghostty main 의 `Terminal.init` 도 `std.Io` 를 첫 인자로 받는다 (upstream 이
     // 같은 0.16 전환을 했다). 우리 `rt.io` 가 그대로 들어간다.
-    var term = try ghostty.Terminal.init(rt.io, alloc, .{
+    var term = ghostty.Terminal.init(rt.io, alloc, .{
         .cols = cols,
         .rows = rows,
         // #451 — 우리 config 의 `max_scroll_lines` 와 **단위가 같다** (물리 줄 수).
@@ -646,7 +650,10 @@ pub fn initVtTerminal(
         // 먼저 잘려 줄 수 제한이 무의미해진다. `null` = 무제한이고, 상한은 줄 수가 정한다.
         .max_scrollback_bytes = null,
         .colors = term_colors,
-    });
+    }) catch |err| {
+        term_colors.palette.deinit(alloc);
+        return err;
+    };
     errdefer term.deinit(alloc);
 
     // Mode 2027 (grapheme cluster) — VS-16 / skin tone modifier (U+1F3FB-FF)
