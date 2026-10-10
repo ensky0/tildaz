@@ -11,6 +11,8 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TILDAZ=${TILDAZ:-$ROOT/zig-out/bin/tildaz}
+# 앱 이름 — config · 로그 폴더가 판마다 갈린다 (#654). 기본 빌드는 dev 다. 릴리즈 판을 재면 TZRS_APP=tildaz.
+APP=${TZRS_APP:-tildaz-dev}
 WORK=${TZRS_WORK:-${TMPDIR:-/tmp}/tildaz-real-session}
 mkdir -p $WORK/xdg/config/tildaz-dev $WORK/xdg/state/tildaz-dev   # state/tildaz-dev 까지 — 회차가 로그 파일을 비우려 할 때 앱이 아직 안 만들었다
 die() { echo "$*" >&2; exit 1; }
@@ -50,7 +52,7 @@ print(L[-1]["instance"], L[-1]["wl_socket"]) if L else None' 2>/dev/null)
     local mon; mon=$(hyprctl -j monitors | python3 -c 'import json,sys; m=json.load(sys.stdin)[0]; print(m["name"], m["width"], m["height"], m["scale"])')
     read -r MON_NAME MON_W MON_H MON_SCALE0 <<<"$mon"
     echo "Hyprland $(hyprctl version | head -1 | cut -c1-40) · 출력 $MON_NAME ${MON_W}x${MON_H} · 세션 배율 $MON_SCALE0 · socket $WAYLAND_DISPLAY"
-    LOG=$XDG_STATE_HOME/tildaz/tildaz_stress.log
+    LOG=$XDG_STATE_HOME/$APP/tildaz_stress.log
 }
 
 cmd_hypr_scale() {
@@ -103,12 +105,12 @@ cmd_no_layer_shell() {
     wayland-info 2>/dev/null | grep -E "interface: '(wp_fractional_scale_manager_v1|wp_viewporter|zwlr_layer_shell_v1|wl_output)'" | sed 's/^/    /'
     echo "== ② 앱이 고른 scale 소스 (격리 config · -e 화면 5 초)"
     export XDG_CONFIG_HOME=$WORK/xdg/config XDG_STATE_HOME=$WORK/xdg/state
-    local LOG=$XDG_STATE_HOME/tildaz/tildaz_stress.log; : > $LOG
+    local LOG=$XDG_STATE_HOME/$APP/tildaz_stress.log; : > $LOG
     TILDAZ_VERBOSE=1 timeout 6 "$TILDAZ" --instance 0 -e $WORK/bands.sh >/dev/null 2>&1
     grep -E 'scale preferred|capabilities:|output mode|basis output' $LOG | sed -E 's/^\[[^]]+\] /    /; s/(capabilities: ).*(layer_shell=[a-z]+).*/\1\2/' | head -6
     echo "== ③ #577 — 깨진 config_9 + 인자 없는 launcher → 다이얼로그 (xdg_toplevel fallback) · 캡처"
-    printf 'this is not toml [[[\n' > $XDG_CONFIG_HOME/tildaz/config_9.toml
-    local L0=$XDG_STATE_HOME/tildaz/tildaz_0.log; : > $L0
+    printf 'this is not toml [[[\n' > $XDG_CONFIG_HOME/$APP/config_9.toml
+    local L0=$XDG_STATE_HOME/$APP/tildaz_0.log; : > $L0
     TILDAZ_VERBOSE=1 "$TILDAZ" >$WORK/launcher.out 2>&1 & local lp=$!; sleep 4
     grep -E 'fatal|dialog\] (open|configured|createDialogSurface)' $L0 | sed -E 's/^\[[^]]+\] /    /' | head -6
     # 캡처 — 포털이 유일하게 남는 자동 경로다 (GNOME 은 screencopy 미노출 · Shell D-Bus 는 AccessDenied).
@@ -121,7 +123,7 @@ cmd_no_layer_shell() {
         echo "    ⚠️ 자동 캡처 실패 — 다이얼로그를 띄워 둔 채 **사용자가 PrtSc** 로 찍는다 (아래 30 초 대기)"
         sleep 30
     fi
-    kill -TERM $lp 2>/dev/null; rm -f $XDG_CONFIG_HOME/tildaz/config_9.toml
+    kill -TERM $lp 2>/dev/null; rm -f $XDG_CONFIG_HOME/$APP/config_9.toml
 }
 
 # #619 실험 ③ — **한 배율 안에서** 논리 높이만 바꾼다. 배율을 바꾸는 회차 (`hypr-scale`) 는 "배율이 원인" 까지만

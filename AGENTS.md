@@ -2000,7 +2000,7 @@ EOF
 limactl copy tildaz-linux:/tmp/tz-shot.png /tmp/tz-shot.png                # 회수해서 눈으로 · 픽셀로
 ```
 
-- **격리**는 `env -i` + `/tmp/tz-*` 홈 · config · state 로 해요. 로그는 `/tmp/tz-state/tildaz/tildaz_*.log`
+- **격리**는 `env -i` + `/tmp/tz-*` 홈 · config · state 로 해요. 로그는 `/tmp/tz-state/tildaz-dev/tildaz_*.log` (릴리즈 판은 `tildaz/`)
   (`-e` 화면은 측정 역할이라 `tildaz_stress.log`). `-e` 는 인자를 못 받으니 화면은 스크립트 파일로
   (`tool/clusters.py` 가 만들어 줘요).
 - **창은 화면 오른쪽 절반 (x 640~1280 · 640×800)** 이에요 — tildaz 가 sway IPC 로 `resize set width 50 ppt`

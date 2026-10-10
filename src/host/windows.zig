@@ -187,6 +187,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #439 — PTY 출력 도착을 UI 스레드에 알린다. 이것이 없으면 유휴에서 `WaitMessage` 가
     // 다음 `WM_FRAME_TICK` 까지 자고, 그 주기가 그대로 응답 지연이 된다.
     app.session.setOutputWake(onOutputWake, &app.window);
+    // #266 — OSC 52 복사. 이미 있는 탭에도 `setClipboardWrite` 가 퍼뜨린다.
+    app.session.setClipboardWrite(onClipboardWrite, &app.window);
     log.logOutputWakeInstalled();
     const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
@@ -359,6 +361,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 fn onOutputWake(userdata: ?*anyopaque) void {
     const window: *Window = @ptrCast(@alignCast(userdata.?));
     window.notifyPtyOutput();
+}
+
+/// #266 — 프로그램이 OSC 52 로 쓴 글자. 마우스 복사와 같은 `copyToClipboard` 다. Windows 에는
+/// PRIMARY (가운데 클릭 저장소) 가 없어 `s` · `p` 대상은 버린다. 드레인은 UI 스레드에서
+/// 돌므로 `OpenClipboard(hwnd)` 를 그 스레드에서 부른다.
+fn onClipboardWrite(userdata: ?*anyopaque, target: SessionCore.ClipboardTarget, text: [:0]const u8) void {
+    if (target != .clipboard) return;
+    const window: *Window = @ptrCast(@alignCast(userdata.?));
+    window.copyToClipboard(text);
 }
 
 /// Buffer lifetime: process lifetime static (다음 호출 시 덮어쓰지만 SessionCore

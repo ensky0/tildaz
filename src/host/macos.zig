@@ -619,6 +619,14 @@ fn macHostClipboardCopy(_: *tab_actions.Host, text: [:0]const u8) void {
     _ = setString(pb, objc.sel("setString:forType:"), ns_text, ns_type);
 }
 
+/// #266 — 프로그램이 OSC 52 로 쓴 글자. 마우스 복사와 같은 NSPasteboard 경로다. macOS 에는
+/// PRIMARY (가운데 클릭 저장소) 가 없어 `s` · `p` 대상은 버린다 — ghostty 도 그 대상을
+/// 지원하지 않는다고 답한다 (`apprt/embedded.zig` 의 `supportsClipboard(.primary)`).
+fn macClipboardWrite(_: ?*anyopaque, target: session_core.SessionCore.ClipboardTarget, text: [:0]const u8) void {
+    if (target != .clipboard) return;
+    macHostClipboardCopy(&g_host, text);
+}
+
 fn macHostTerminate(_: *tab_actions.Host) void {
     log.appendLine("tab", "last tab closed, terminating tildaz", .{});
     const terminate_sel = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
@@ -4898,6 +4906,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         add_to_run_loop(g_display_link, objc.sel("addToRunLoop:forMode:"), run_loop, kCFRunLoopCommonModes);
         log.appendLine("startup", "CADisplayLink installed (vsync render driver)", .{});
     }
+
+    // #266 — OSC 52 복사. 첫 탭이 이미 있어도 `setClipboardWrite` 가 퍼뜨린다.
+    g_session.setClipboardWrite(macClipboardWrite, null);
 
     // #439 — PTY 출력 도착 통보 source. displayLink 와 같은 자리에 두는 이유도 같다 —
     // `g_session` 과 첫 탭이 준비된 뒤여야 한다. common modes 로 등록해 리사이즈 / 모달

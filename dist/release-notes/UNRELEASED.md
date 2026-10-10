@@ -29,3 +29,5 @@ Internal changes belong in neither.
 - Windows: a new tab scrolls into view in the tab bar, and the pointer shape updates right after a split ([#692](https://github.com/ensky0/tildaz/issues/692)).
 - Linux: a mouse selection goes to the primary selection, and middle-click pastes it ([#657](https://github.com/ensky0/tildaz/issues/657)).
 - Right-click copies the selection when there is one, and pastes when there is none ([#656](https://github.com/ensky0/tildaz/issues/656)).
+- Programs can copy to the clipboard with OSC 52, so copying in tmux, even over SSH, lands in your clipboard ([#266](https://github.com/ensky0/tildaz/issues/266)).
+- Fixed a crash when a narrower window or pane cut a wide character such as Korean in a full-screen app ([#723](https://github.com/ensky0/tildaz/issues/723)).

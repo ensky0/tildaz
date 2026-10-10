@@ -4113,6 +4113,8 @@ const Client = struct {
         // #439 — 첫 탭을 만들기 전에 배선한다 (`setOutputWake` 는 이미 있는 탭에도
         // 전파하지만, 여기서 먼저 걸면 첫 탭이 태어날 때부터 통보가 붙는다).
         self.session.?.setOutputWake(linuxOutputWake, self);
+        // #266 — OSC 52 복사. 같은 이유로 첫 탭 전에 건다.
+        self.session.?.setClipboardWrite(linuxClipboardWrite, self);
         if (self.output_eventfd >= 0) {
             log.logOutputWakeInstalled();
         } else {
@@ -11104,6 +11106,18 @@ fn linuxTabClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
 fn linuxTabPrimaryCopy(host: *tab_actions.Host, text: [:0]const u8) void {
     const client: *Client = @ptrCast(@alignCast(host.user_data.?));
     client.copyToSelectionChannel(&client.primary, text);
+}
+
+/// #266 — 프로그램이 OSC 52 로 쓴 글자. `c` 는 CLIPBOARD, `s` · `p` 는 PRIMARY 다 (foot 와
+/// 같다). 마우스 복사와 같은 채널을 타고, 해제 규칙도 위와 같다. set_selection 의 serial 은
+/// 마우스 복사처럼 마지막 입력의 것을 쓴다 — foot 도 같다.
+fn linuxClipboardWrite(userdata: ?*anyopaque, target: session_core.SessionCore.ClipboardTarget, text: [:0]const u8) void {
+    const client: *Client = @ptrCast(@alignCast(userdata.?));
+    const ch = switch (target) {
+        .clipboard => &client.clipboard,
+        .primary => &client.primary,
+    };
+    client.copyToSelectionChannel(ch, text);
 }
 
 fn linuxTabTerminate(host: *tab_actions.Host) void {

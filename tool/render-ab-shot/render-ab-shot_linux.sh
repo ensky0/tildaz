@@ -17,7 +17,8 @@
 #   ⚠️ **crop 은 이미지마다 괄호로 감싼다** — `A -crop G B -crop G` 는 두 번째 `-crop` 이 A 에도 다시 걸려 크기가 다른
 #   두 이미지를 견주게 되고, 그러면 **모든 쌍이 정확히 같은 수로 다른** 가짜 차이가 난다 (2026-09-03 실기에서 걸렸다 —
 #   같은 프로세스의 두 캡처까지 34 % 가 다르게 보였다). offset 이 crop 결과 밖이면 경고만 내고 무시돼 우연히 맞는다.
-# - 로그는 `-e` 라 `$XDG_STATE_HOME/tildaz/tildaz_stress.log` 다. 판마다 지우고 새로 받아 `log_<i>.txt` 로 남긴다 —
+# - 로그는 `-e` 라 `$XDG_STATE_HOME/<앱>/tildaz_stress.log` 다. `<앱>` 은 dev 판 (기본 빌드, #654) 이 `tildaz-dev`,
+#   릴리즈 판이 `tildaz` 라 두 자리를 다 본다. 판마다 지우고 새로 받아 `log_<i>.txt` 로 남긴다 —
 #   픽셀 대조에는 `atlas grew` · `atlas full` 회수도 같이 본다.
 # - 인스턴스 9 만 내린다 — `pkill -f` 는 자기 셸을 죽인다 (AGENTS.md). 그리고 **`pgrep -x tildaz` 도 안 된다** — 판 바이너리를
 #   `tildaz-4096` 처럼 이름 붙이면 comm 이 달라 하나도 안 잡힌다 (2026-09-03 실기에서 창 17 개가 남았다). `/proc/<pid>/cmdline` 의
@@ -27,11 +28,12 @@ set -u
 TARGET="${1:?화면.sh}"; SIZE="${2:?격자 (예 88x33)}"; WAIT="${3:?대기초}"; TAG="${4:?태그}"; shift 4
 [ $# -ge 2 ] || { echo "바이너리를 둘 이상 주세요"; exit 1; }
 OUT="${TMPDIR:-/tmp}/tildaz-ab-shot/$TAG"; mkdir -p "$OUT"
-LOG="${XDG_STATE_HOME:-$HOME/.local/state}/tildaz/tildaz_stress.log"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}"
+LOGS=("$STATE/tildaz-dev/tildaz_stress.log" "$STATE/tildaz/tildaz_stress.log")   # dev 판 · 릴리즈 판
 kill_tz() {   # 실행 파일이 tildaz* 이고 --instance 9 인 것만 — 판 바이너리는 tildaz-4096 처럼 이름이 달라 `pgrep -x tildaz` 로는 못 잡는다
   for p in $(pgrep -u "$(id -u)"); do
     local cl; cl=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || continue
-    case "$(basename "${cl%% *}")" in tildaz*) ;; *) continue ;; esac
+    case "$(basename -- "${cl%% *}")" in tildaz*) ;; *) continue ;; esac   # `--` — `-bash` 같은 이름을 옵션으로 읽지 않게
     case "$cl" in *"--instance 9"*) kill "$p" 2>/dev/null ;; esac
   done
 }
@@ -58,13 +60,14 @@ echo "md5:"; for b in "$@"; do printf '  %s  %s\n' "$(md5sum "$b" | cut -c1-32)"
 i=0
 for bin in "$@"; do
   i=$((i+1)); [ -x "$bin" ] || { echo "바이너리 없음: $bin"; exit 1; }
-  kill_tz; sleep 0.5; rm -f "$LOG"
+  kill_tz; sleep 0.5; rm -f "${LOGS[@]}"
   TILDAZ_VERBOSE=1 "$bin" --instance 9 -e "$TARGET" -size "$SIZE" >"$OUT/stdout_$i.txt" 2>&1 &
   pid=$!; sleep "$WAIT"
   if ! kill -0 "$pid" 2>/dev/null; then wait "$pid"; echo "판 $i 가 먼저 끝남 exit=$? — stdout:"; cat "$OUT/stdout_$i.txt"; fi
   rm -f "$OUT/full_$i.png"; spectacle -b -n -f -o "$OUT/full_$i.png" >/dev/null 2>&1
   for _ in $(seq 1 30); do [ -s "$OUT/full_$i.png" ] && break; sleep 0.2; done
-  sleep 0.5; cp "$LOG" "$OUT/log_$i.txt" 2>/dev/null || echo "(로그 없음)" > "$OUT/log_$i.txt"
+  sleep 0.5; got=""; for l in "${LOGS[@]}"; do [ -s "$l" ] && got=$l && break; done
+  if [ -n "$got" ]; then cp "$got" "$OUT/log_$i.txt"; else echo "(로그 없음)" > "$OUT/log_$i.txt"; fi
   kill_tz; sleep 0.5
   echo "판 $i: $(basename "$bin") · grew=$(grep -c 'atlas grew' "$OUT/log_$i.txt") full=$(grep -c 'atlas full' "$OUT/log_$i.txt") · $(grep -o 'render_path=[a-z-]*' "$OUT/log_$i.txt" | head -1)"
 done
