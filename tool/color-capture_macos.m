@@ -57,6 +57,35 @@ static SCShareableContent *shareableContentOrDie(void) {
     return result;
 }
 
+/// 창이 가장 많이 걸친 디스플레이의 배율 (#734). `SCWindow.frame` 은 CG 전역 좌표 (주 화면 왼쪽
+/// 위가 원점) 라 `NSScreen.frame` (Cocoa 좌표, 왼쪽 아래 원점) 과 견주면 안 된다 — 그렇게 견주던
+/// 예전 코드는 주 화면 위쪽에 놓인 화면의 창을 어느 화면과도 안 겹친다고 보고 배율 1 로 찍었다.
+/// 같은 CG 좌표인 `CGDisplayBounds` 와 겹치는 넓이로 고르고, 배율은 그 모드의 px / pt 다.
+static CGFloat windowScale(CGRect frame) {
+    // 창 서버 연결을 먼저 연다. 없으면 `CGGetDisplaysWithRect` 가 `CGS_REQUIRE_INIT` 단언으로
+    // 멈춘다 (예전 코드는 `NSScreen` 이 이 연결을 열어 줬다).
+    [NSApplication sharedApplication];
+    CGDirectDisplayID ids[16];
+    uint32_t n = 0;
+    if (CGGetDisplaysWithRect(frame, 16, ids, &n) != kCGErrorSuccess || n == 0) return 1.0;
+    CGDirectDisplayID best = ids[0];
+    CGFloat best_area = -1;
+    for (uint32_t i = 0; i < n; i++) {
+        CGRect r = CGRectIntersection(CGDisplayBounds(ids[i]), frame);
+        CGFloat area = r.size.width * r.size.height;
+        if (area > best_area) {
+            best_area = area;
+            best = ids[i];
+        }
+    }
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(best);
+    if (!mode) return 1.0;
+    size_t pt = CGDisplayModeGetWidth(mode);
+    CGFloat scale = pt ? (CGFloat)CGDisplayModeGetPixelWidth(mode) / (CGFloat)pt : 1.0;
+    CGDisplayModeRelease(mode);
+    return scale;
+}
+
 /// `app` 열 옆에 **bundle identifier** 를 함께 낸다 (#414).
 ///
 /// `applicationName` 은 **시스템 로케일로 번역된 표시 이름**이다. 한국어 macOS 에서
@@ -150,13 +179,7 @@ int main(int argc, const char **argv) {
 
         // 창의 물리 픽셀 크기로 캡처한다 — scalesToFit 를 끄고 크기를 정확히 맞춰
         // 리샘플링이 픽셀 값을 섞지 않게 한다 (색 실측에서는 치명적).
-        CGFloat scale = 1.0;
-        for (NSScreen *s in [NSScreen screens]) {
-            if (NSIntersectsRect(s.frame, target.frame)) {
-                scale = s.backingScaleFactor;
-                break;
-            }
-        }
+        CGFloat scale = windowScale(target.frame);
         SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
         config.width = (size_t)(target.frame.size.width * scale);
         config.height = (size_t)(target.frame.size.height * scale);

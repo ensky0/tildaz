@@ -215,6 +215,8 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkFramework("AppKit", .{});
         exe_mod.linkFramework("Metal", .{});
         exe_mod.linkFramework("QuartzCore", .{});
+        // #732 — 표시 대상 (IOSurface + `CALayer.contents`).
+        exe_mod.linkFramework("IOSurface", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.linkFramework("CoreFoundation", .{});
         // ApplicationServices — `AXIsProcessTrusted` (Accessibility 권한 체크).
@@ -413,6 +415,8 @@ pub fn build(b: *std.Build) void {
         test_mod.linkFramework("AppKit", .{});
         test_mod.linkFramework("Metal", .{});
         test_mod.linkFramework("QuartzCore", .{});
+        // #732 — 표시 대상 (IOSurface + `CALayer.contents`).
+        test_mod.linkFramework("IOSurface", .{});
         test_mod.linkFramework("CoreGraphics", .{});
         test_mod.linkFramework("CoreFoundation", .{});
         test_mod.linkFramework("ApplicationServices", .{});
@@ -519,6 +523,8 @@ pub fn build(b: *std.Build) void {
         stress_mod.linkFramework("AppKit", .{});
         stress_mod.linkFramework("Metal", .{});
         stress_mod.linkFramework("QuartzCore", .{});
+        // #732 — 표시 대상 (IOSurface + `CALayer.contents`).
+        stress_mod.linkFramework("IOSurface", .{});
         stress_mod.linkFramework("CoreGraphics", .{});
         stress_mod.linkFramework("CoreFoundation", .{});
         stress_mod.linkFramework("ApplicationServices", .{});
