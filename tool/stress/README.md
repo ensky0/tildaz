@@ -491,8 +491,12 @@ Windows 11 의 *동적 새로 고침 빈도* 는 화면 내용에 따라 주사�
   켜져 있으면 기본값 (대개 60) 으로 보고돼요.
 - 회차의 `render calls` 가 **한 중심 주위로 흩어지지 않고 두 무리로 갈리면** 거의 이것이에요.
   배수가 주사율 비 (60 ↔ 120 이면 약 2 배) 에 가까운지 보면 확실해요.
-- 확인: `Get-CimInstance Win32_VideoController` 의 `CurrentRefreshRate` 가 `MaxRefreshRate` 와
-  같은지 봐요. **전원도 함께 봐요** — `Get-CimInstance Win32_Battery` 의 `BatteryStatus` 가
+- 확인: `Get-CimInstance Win32_VideoController` 의 `CurrentRefreshRate` 가 **지금 해상도에서
+  고를 수 있는 최대**와 같은지 봐요 (1 Hz 차이는 같은 값 — 60 Hz 를 59 로 보고해요).
+  `MaxRefreshRate` 와 견주면 안 돼요 — 그 값은 **모든 해상도의 최대**라, 3840x2160 에서는 60 Hz
+  뿐인 화면이 `1280x1024@75` 때문에 75 로 나와요 ([#729](https://github.com/ensky0/tildaz/issues/729) ·
+  데스크탑 Ryzen 7 5700G 실측). `hygiene.sh` 는 `EnumDisplaySettingsW` 로 지금 해상도의 모드만 훑어요.
+  **전원도 함께 봐요** — `Get-CimInstance Win32_Battery` 의 `BatteryStatus` 가
   `2` 여야 AC 예요 (`1` = 배터리, 이때 패널이 60 Hz 로 강등되기도 해요).
 - 끄는 곳: **설정 → 시스템 → 디스플레이 → 고급 디스플레이 → 새로 고침 빈도** 에서 "동적" 이
   아닌 고정 값을 골라요.
