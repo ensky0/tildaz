@@ -96,6 +96,7 @@ glyph_fallback    = ["Noto Sans CJK KR", "Noto Color Emoji"]
 size_point        = 15
 cell_width_ratio  = 1.0
 line_height_ratio = 1.1
+macos_smoothing   = false   # macOS only
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
@@ -128,6 +129,7 @@ glyph_fallback    = ["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"
 size_point        = 15
 cell_width_ratio  = 1.0
 line_height_ratio = 1.1
+macos_smoothing   = false   # macOS only
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
@@ -160,6 +162,7 @@ glyph_fallback    = ["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]
 size_point        = 15
 cell_width_ratio  = 1.0
 line_height_ratio = 1.1
+macos_smoothing   = false   # macOS only
 
 [input]
 macos_option_as_alt = "none"   # none | both | left | right -- macOS only
@@ -187,6 +190,7 @@ dialog names the field.
 | `font.size_point` | int | 8–72 | 15 | 15 | 15 | Logical font size (host applies the OS scale; the legacy key name does not mean a physical 1/72-inch point) |
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
+| `font.macos_smoothing` | bool | true / false | false | false | false | **macOS only** — Apple font smoothing. `false` draws thin strokes, as iTerm2 and Ghostty do. `true` draws each stroke a little heavier, as Terminal.app does. Linux and Windows read the key without using it |
 | `input.macos_option_as_alt` | string | none / both / left / right | "none" | "none" | "none" | **macOS only** — whether Option acts as Alt. On macOS the OS turns `Option+a` into a character (`å` on ABC, `ê` on French), so one key press has two meanings and you pick one: `none` types the character (the macOS default), `both` makes Option act as Alt so `Alt+n` reaches zellij, tmux and emacs, `left` / `right` pick one side and leave the other typing characters. The key exists on all three platforms so a single config file stays portable, but Linux and Windows read it without using it — there Alt is always Meta, because `Alt+a` produces no character |
 | `input.copy_on_select` | bool | true / false | false | false | false | Copy to the clipboard as soon as you finish a mouse selection. `false` keeps what you copied with `Ctrl+Shift+C` (`Cmd+C` on macOS): copy a selection with that key or a **right-click** — right-click with nothing selected pastes, as in Windows Terminal. `true` makes every selection replace the clipboard, and right-click always pastes. **On Linux the selection also goes to the primary selection either way** — middle-click pastes it (when the app has turned on mouse reporting, middle-click goes to the app; `Shift`+middle-click still pastes) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |

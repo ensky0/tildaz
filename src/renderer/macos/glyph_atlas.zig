@@ -83,6 +83,11 @@ pub const GlyphAtlas = struct {
     // 글리프 라스터 임시 버퍼 (RGBA premultiplied, max 256x256).
     temp_buf: []u8,
 
+    /// #527 — Apple font smoothing (획을 굵히는 회색 테두리). `[font] macos_smoothing` 이
+    /// 정한다. 첫 글리프를 그리기 전에 host 가 넣는다 (`MetalRenderer.setFontSmoothing`) —
+    /// 이미 그린 글리프는 캐시에 남으므로 도중에 바꾸지 않는다.
+    smooth_fonts: bool = false,
+
     pub fn init(
         alloc: std.mem.Allocator,
         scale: f32,
@@ -406,7 +411,7 @@ pub const GlyphAtlas = struct {
 
         @memset(self.temp_buf[0 .. gw * gh * 4], 0);
         ct.CGContextSetAllowsFontSmoothing(ctx, true);
-        ct.CGContextSetShouldSmoothFonts(ctx, true);
+        ct.CGContextSetShouldSmoothFonts(ctx, self.smooth_fonts);
         ct.CGContextSetShouldAntialias(ctx, true);
         ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
         ct.CGContextScaleCTM(ctx, @floatCast(s), @floatCast(s));
@@ -529,12 +534,12 @@ pub const GlyphAtlas = struct {
         // 매 글리프마다 temp_buf 의 사용 영역 (gw*gh*4 bytes) 만 0 으로 clear.
         @memset(self.temp_buf[0 .. gw * gh * 4], 0);
 
-        // Apple 의 LCD font smoothing (회색 stroke fattening). Terminal.app /
-        // iTerm2 default 와 동등 (#157). retina 환경에서 stroke 약간 두꺼워져
-        // 검정 배경 흰 글자 가독성 향상. RGB subpixel 이 아니라 회색 fattening
-        // 이라 색 fringing 없음. 사용자 취향 차이 있어 향후 config 옵션화 검토.
+        // Apple 의 font smoothing (회색 stroke fattening). 켜면 Terminal.app 기본과 같은
+        // 굵기다 (#157). RGB subpixel 이 아니라 회색 fattening 이라 색 fringing 이 없다.
+        // 끄면 (기본) iTerm2 (Retina 의 thin strokes) · ghostty (`font-thicken = false`) 와
+        // 같은 굵기다 — `[font] macos_smoothing` 이 정한다 (#527).
         ct.CGContextSetAllowsFontSmoothing(ctx, true);
-        ct.CGContextSetShouldSmoothFonts(ctx, true);
+        ct.CGContextSetShouldSmoothFonts(ctx, self.smooth_fonts);
         ct.CGContextSetShouldAntialias(ctx, true);
 
         // 흰색 opaque fill — 일반 글리프엔 흰색 antialiased 마스크가 그려짐.

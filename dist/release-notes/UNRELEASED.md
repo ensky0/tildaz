@@ -22,6 +22,8 @@ Internal changes belong in neither.
 - macOS: `⌘Q` now follows the `quit` entry in `[keys]`. If you changed or emptied it, `⌘Q` no longer quits ([#713](https://github.com/ensky0/tildaz/issues/713)).
 - Selecting text with the mouse no longer replaces the clipboard. Copy with `Ctrl+Shift+C` (`Cmd+C` on macOS) or a right-click, or set `copy_on_select = true` in `[input]` to get the old behavior back ([#656](https://github.com/ensky0/tildaz/issues/656)).
 
+- macOS: text is drawn with thinner strokes by default, as in iTerm2 and Ghostty. For the old, heavier look, set `macos_smoothing = true` under `[font]` ([#527](https://github.com/ensky0/tildaz/issues/527)).
+
 ## Body candidates
 
 - macOS: changing the quit shortcut in `[keys]` now works ([#713](https://github.com/ensky0/tildaz/issues/713)).
@@ -31,3 +33,4 @@ Internal changes belong in neither.
 - Right-click copies the selection when there is one, and pastes when there is none ([#656](https://github.com/ensky0/tildaz/issues/656)).
 - Programs can copy to the clipboard with OSC 52, so copying in tmux, even over SSH, lands in your clipboard ([#266](https://github.com/ensky0/tildaz/issues/266)).
 - Fixed a crash when a narrower window or pane cut a wide character such as Korean in a full-screen app ([#723](https://github.com/ensky0/tildaz/issues/723)).
+- macOS: thinner, sharper text by default, with `[font] macos_smoothing` to switch back ([#527](https://github.com/ensky0/tildaz/issues/527)).
