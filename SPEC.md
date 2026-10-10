@@ -767,7 +767,22 @@ Windows 실측).
 
 **비US 배열 실기** (2026-10-01 · 노트북 Ryzen AI 7 350 · 창 스레드만 프랑스어 레거시 AZERTY 로 전환). 기대값은 `VkKeyScanExW` 로 재기 전에 뽑았다. 자리가 US 와 뒤바뀐 두 키에서 **라벨 기준**이 지켜진다 — `Ctrl+a` (US 의 `Q` 자리 · sc `0x10`) → `01`, `Ctrl+q` (US 의 `A` 자리 · sc `0x1E`) → `11`. AltGr 은 `AltGr+e` → `€` (`e2 82 ac`) 로 보존된다.
 
-**macOS 는 세 칸이 아직 다르다** ([#658](https://github.com/ensky0/tildaz/issues/658)) — `Ctrl+Tab` · `Ctrl+Escape` 가 AppKit 의 key-view loop 에 막혀 `keyDown:` 에 도달하지 않고, `Shift+Tab` · `Shift+Enter` · `Shift+Escape` 가 `imeDoCommand` 의 하드코딩 표를 지나 프로토콜을 무시하며, 한글 입력 소스에서 kitty 코드포인트가 자모다. 셋 다 이 규칙 이전부터 있던 것이다.
+**macOS 도 같은 바이트를 낸다** ([#658](https://github.com/ensky0/tildaz/issues/658), 2026-10-10). 그 전에는 두 자리가 인코더를 지나지 않았다.
+
+- `Ctrl+Tab` · `Ctrl+Escape` 는 `performKeyEquivalent:` 까지만 오고 `keyDown:` 에는 오지 않는다 — 거기서 `NO` 를 돌려주면 AppKit 이 가져간다 (실측 — 네 모드 모두 `keyDown:` 0 번). 그 자리에서 `keyDown:` 으로 넘긴다. ghostty 도 `performKeyEquivalent:` 에서 이벤트를 `keyDown:` 으로 다시 넣는다.
+- `Tab` · `Enter` · `Escape` · `Backspace` 는 한글 조합 확정 때문에 `interpretKeyEvents:` 를 지나고, IME 가 selector 로 돌려준다 (`imeDoCommand`). 예전에는 selector 마다 바이트를 박아 둔 표라 `Shift+Tab` · `Shift+Enter` · `Shift+Escape` 가 프로토콜을 무시했다. 지금은 selector 가 그 키에서 왔으면 키 이벤트를 인코딩한다 (ghostty 도 `doCommand(by:)` 에서 바이트를 만들지 않는다). legacy 값은 그대로다.
+
+한글 입력 소스의 kitty 코드포인트가 자모인 것 (`Ctrl+A` → `ESC[12609;5u`) 은 **규격대로라 바꾸지 않았다.** kitty 규격은 주 코드포인트를 지금 켜진 배열에서 뽑고, 물리 자리의 PC-101 글자는 앱이 alternate key 보고 (flag 4) 를 켰을 때 *base layout key* 칸에 싣는다 ([Key codes](https://sw.kovidgoyal.net/kitty/keyboard-protocol/#key-codes)). 실측 — flags 5 에서 `ESC[12609::97;5u`. Linux 가 `97` 인 것은 배열이 라틴이고 IME 가 그 위에 얹히기 때문이다.
+
+| macOS (2026-10-10 · MacBook Pro M5 Pro · macOS 27.0.1) | legacy | kitty | mok2 |
+|---|---|---|---|
+| `Ctrl+Tab` | `09` (전: 없음) | `ESC[9;5u` | `ESC[27;5;9~` |
+| `Ctrl+Escape` | `1b` (전: 없음) | `ESC[27;5u` | `ESC[27;5;27~` |
+| `Shift+Tab` | `ESC[Z` | `ESC[9;2u` (전: `ESC[Z`) | `ESC[27;2;9~` |
+| `Shift+Enter` | `0d` | `ESC[13;2u` (전: `0d`) | `ESC[27;2;13~` |
+| `Shift+Escape` | `1b` | `ESC[27;2u` (전: `1b`) | `ESC[27;2;27~` |
+
+mok2 칸은 전에는 legacy 칸과 같았다. `Ctrl+Shift+Tab` · `Ctrl+Shift+Escape` 는 legacy 에서 계속 0 바이트다 (위 규칙 ① · [#648](https://github.com/ensky0/tildaz/issues/648)).
 
 실기 — Linux (KDE Plasma Wayland · headless sway + `vkbd`) 19 키 × 3 모드, macOS 26 키 × 3 모드, Windows 는 #684 뒤 네 회차 60 칸 (legacy · kitty · mok2 · 비US 배열). 도구는 [`tool/key-bytes.py`](tool/key-bytes.py) (세 OS 공통) 와 [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) (자동 판정).
 
