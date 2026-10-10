@@ -942,6 +942,18 @@ fn tildazPerformKeyEquivalent(self_view: objc.id, _: objc.SEL, event: objc.id) c
         return true;
     }
 
+    // #658 — `Ctrl+Tab` · `Ctrl+Esc` 는 이 메서드까지만 오고 `keyDown:` 에는 오지 않는다. 여기서
+    // `false` 를 돌려주면 AppKit 이 가져간다 (실측 — 네 모드 모두 `keyDown:` 0 번). 그래서 여기서
+    // `keyDown:` 으로 넘긴다. ghostty 도 `performKeyEquivalent:` 에서 이벤트를 `keyDown:` 으로
+    // 다시 넣는다 (`SurfaceView_AppKit.swift` 의 `lastPerformKeyEvent`). 다른 Ctrl 조합은 원래
+    // `keyDown:` 까지 오므로 여기서 넘기면 두 번 처리된다 — 두 키만 넘긴다.
+    if (flags & (NSEventModifierFlagControl | NSEventModifierFlagCommand) == NSEventModifierFlagControl and
+        (kc == 0x30 or kc == 0x35)) // kVK_Tab · kVK_Escape
+    {
+        tildazKeyDown(self_view, objc.sel("keyDown:"), event);
+        return true;
+    }
+
     if (flags & NSEventModifierFlagCommand == 0) return false;
     // 명령 메뉴가 열려 있으면 Cmd 는 메뉴를 닫는다 — 예전에 `keyDown:` 이 하던 일이다.
     if (g_command_menu_open) closeCommandMenu();
@@ -1100,7 +1112,17 @@ fn keyEncodeOptionsMac(option_as_alt: bool) key_encode.Options {
     return opts;
 }
 
+/// #658 — `interpretKeyEvents:` 가 지금 처리하는 키 이벤트. IME 가 그 키를 selector 로
+/// 돌려줄 때 (`imeDoCommand`) 이것으로 인코더를 부른다. selector 에는 수식키가 없어서,
+/// 예전에는 `Shift+Tab` 에 `ESC[Z` 를 박아 두는 표로 바이트를 만들었고 kitty 를 켠 앱도
+/// 그 값을 받았다. ghostty 도 selector 로 바이트를 만들지 않는다 (`doCommand(by:)` 가 비어
+/// 있고 `keyDown:` 이 이벤트를 인코딩한다).
+var g_interpreting_key_event: objc.id = null;
+
 fn interpretSingleKeyEvent(self_view: objc.id, event: objc.id) void {
+    const prev_event = g_interpreting_key_event;
+    g_interpreting_key_event = event;
+    defer g_interpreting_key_event = prev_event;
     const NSArray = objc.getClass("NSArray");
     const arrayWithObject = objc.objcSend(fn (objc.Class, objc.SEL, objc.id) callconv(.c) objc.id);
     const array = arrayWithObject(NSArray, objc.sel("arrayWithObject:"), event);
@@ -2786,6 +2808,21 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
         return;
     }
 
+    // #658 — selector 가 지금 키에서 왔으면 그 키 이벤트를 인코더로 보낸다. 그래야
+    // `Shift+Tab` · `Shift+Enter` · `Shift+Esc` 가 kitty · modifyOtherKeys 를 따른다.
+    // legacy 값은 아래 표와 같다 (`key_encode` 의 #653 테스트).
+    //
+    // 키가 맞는지 보는 이유 — 같은 selector 가 다른 키에서도 온다. `⌘.` 는
+    // `cancelOperation:` 을 만들지만 Esc 키가 아니다. 그런 경우와 이벤트가 없는 경우는
+    // 아래 표가 지금처럼 맡는다.
+    const event = g_interpreting_key_event;
+    if (event != null) {
+        const get_keycode = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) c_ushort);
+        if (physical_key.fromMacKeyCode(get_keycode(event, objc.sel("keyCode")))) |code| {
+            if (commandSelectorIsKey(cmd_sel, code) and sendEncodedKeyMac(tab, event, "", macKeyAction(event))) return;
+        }
+    }
+
     const bytes: ?[]const u8 = if (cmd_sel == objc.sel("insertNewline:"))
         "\r"
     else if (cmd_sel == objc.sel("insertTab:"))
@@ -2826,6 +2863,18 @@ fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
     if (bytes) |b| {
         writeUserInput(tab, b);
     }
+}
+
+/// #658 — `imeDoCommand` 가 받은 selector 가 그 물리 키의 것인지. 맞을 때만 이벤트를
+/// 인코딩한다. 화살표 · Home · End 는 넣지 않았다 — 조합 중이면 `keyDown:` 이 확정 뒤 직접
+/// 인코딩하고, 아니면 `interpretKeyEvents:` 앞에서 이미 인코더로 나가서 여기 오지 않는다.
+fn commandSelectorIsKey(cmd_sel: objc.SEL, code: physical_key.PhysicalCode) bool {
+    if (cmd_sel == objc.sel("insertNewline:")) return code == .enter or code == .numpad_enter;
+    if (cmd_sel == objc.sel("insertTab:") or cmd_sel == objc.sel("insertBacktab:")) return code == .tab;
+    if (cmd_sel == objc.sel("cancelOperation:")) return code == .escape;
+    if (cmd_sel == objc.sel("deleteBackward:")) return code == .backspace;
+    if (cmd_sel == objc.sel("deleteForward:")) return code == .delete;
+    return false;
 }
 
 /// 모니터 / DPI / dock auto-hide / 해상도 변경 시 호출. NSApplicationDidChange
