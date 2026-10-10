@@ -838,6 +838,7 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
 |---|---|
 | [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
 | [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
+| [`tool/selection-check/selection-check_macos.sh`](tool/selection-check/selection-check_macos.sh) | 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). 좌표는 앱 로그의 `renderer init: … scale= cell= pad=` 에서 읽는다. **클립보드를 잠깐 바꾸므로 글자가 아닌 것 (이미지 · 파일) 이 들어 있으면 멈춘다** — `pbpaste` 는 그것을 못 읽어 되돌릴 수 없다 (2026-10-10 에 한 번 빈 글자로 덮었다) |
 | [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos` 로 keyCode + flags 를 보낸다 |
 
 - **`key-bytes-check_macos.sh` 는 켜진 시스템 단축키를 보내지 않고 SKIP 해요.** `⌃Space` 를 보내면 사용자의 입력 소스가
@@ -1538,6 +1539,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/link-click-check_linux.sh`](tool/link-click-check_linux.sh) | 링크 (#647) 회차 — `A` (평소 셸) · `B` (`DECSET 1000`) · `C` (클릭 뒤 수식키) · `D` (미끄러진 클릭) · `enter` (포인터 진입 · 이탈). 판정 셋은 **밑줄 픽셀 · 커서 모양 · `[link] opening link:` 로그 줄** 이에요 |
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `actions` (#692 — 공통 처리부로 옮긴 액션을 단축키로 눌러 로그 줄 · `stty size` 로 판정) · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
+| [`tool/selection-check/selection-check_linux.sh`](tool/selection-check/selection-check_linux.sh) | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 남기는 것 ([#656](https://github.com/ensky0/tildaz/issues/656) · [#657](https://github.com/ensky0/tildaz/issues/657)). 판정은 같은 sway 에 붙은 `wl-paste` · `wl-paste --primary` 와 수신자 바이트. headless sway 를 격리 경로에 띄우므로 **이 Mac 의 lima VM 에서도** 같은 명령으로 돈다 (`--bin` 으로 크로스빌드 바이너리를 준다) |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
@@ -1573,6 +1575,10 @@ grim shot.png                                                          # sway �
   (vkbd 를 띄우고 · 내리고 · 다시 띄워 세 번째에 `wl_keyboard … created` 와 키 도착을 봐요) 가 그 회귀 검사예요.
   compositor 가 먼저 끝나는 경우 (#613 — `swaymsg exit` 뒤 `failed to start` 가 아니라 정상 종료) 는
   **`headless-check_linux.sh compositor-exit`** 로 봐요 — 그 회차는 sway 를 내리므로 마지막에 돌리고 다시 `up` 해요.
+- **⚠️ sway 의 일반 창 (앱에 `SWAYSOCK` 이 보이는 경로) 에서는 가상 포인터 (`tool/vptr_linux.py`) 의 왼쪽 끌기가 선택을 만들지 않아요.**
+  오른쪽 · 가운데 클릭은 닿는데 끌기만 안 돼요. main 판도 같아서 #656 과 무관한 기존 동작이에요 (2026-10-10 · lima VM 의
+  headless sway 1.11 실측). 실제 sway 에서 사람이 긁어도 그런지는 아직 안 봤어요 (확인 필요). 선택을 재는 회차는 앱에서
+  `SWAYSOCK` 을 빼고 (`env -u SWAYSOCK`) layer-shell 경로로 띄워요 — `selection-check_linux.sh` 가 그래요.
 - **sway 회차에서는 `-size` 를 못 써요.** `SWAYSOCK` 이 보이면 tildaz 가 layer-shell 대신 scratchpad 경로를 타서 (#454)
   창 크기를 우리가 못 정하고, 앱이 `-size cannot be used on this desktop` 으로 **부팅을 멈춰요** (2026-09-15 실측). 창은
   타일링으로 출력 전체가 되니 칸 수는 로그의 `terminal session created cols= rows=` 에서 읽어요. 반대로 `SWAYSOCK` 을
