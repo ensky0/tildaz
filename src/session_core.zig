@@ -854,6 +854,24 @@ test "#266 — OSC 52 쓰기는 대상과 글자를 넘기고, 읽기는 아무�
     try std.testing.expectEqual(@as(usize, 0), Capture.pty_writes);
 }
 
+test "#723 — reflow 없이 줄여 wide char 꼬리가 잘려도 ICH · EL1 이 죽지 않는다" {
+    // upstream e6db5b63 의 재현이다. DECAWM 을 끈 primary (와 alt screen) 는 reflow 없이
+    // 줄인다. 그때 꼬리가 잘린 wide char 의 머리가 새 마지막 열에 남아, 머리와 다음 칸을
+    // 짝짓는 동작 (ICH · EL1) 이 행 끝을 넘었다 — 옛 pin 의 Debug 에서는 panic 이다.
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const alloc = std.testing.allocator;
+    var term = try initVtTerminal(rt, alloc, 3, 1, 100, null);
+    defer term.deinit(alloc);
+    var stream = term.vtStream();
+    defer stream.deinit();
+
+    stream.nextSlice("\x1b[?7la一");
+    try term.resize(alloc, .{ .cols = 2, .rows = 1 });
+    // 잘린 머리는 지워져야 한다.
+    try std.testing.expect(term.screens.active.pages.getCell(.{ .active = .{ .x = 1 } }).?.cell.isEmpty());
+    stream.nextSlice("\x1b[1;2H\x1b[@\x1b[1;2H\x1b[1K");
+}
+
 test "#266 — 클립보드 쓰기는 글자 MIME 의 첫 표현을 고른다" {
     const C = ghostty.clipboard.Content;
     try std.testing.expectEqual(@as(?[]const u8, null), clipboardWriteText(&.{}));
