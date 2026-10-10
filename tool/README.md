@@ -67,6 +67,7 @@
 | [`search-bar-check_windows.ps1`](search-bar-check_windows.ps1) | Windows | 버퍼 검색바의 배치 · 키보드 · IME · 마우스 · 메뉴 · pane 분할을 합성 입력과 캡처로 자동 판정 ([#646](https://github.com/ensky0/tildaz/issues/646) · [#675](https://github.com/ensky0/tildaz/issues/675)) | `# Windows — 합성 입력으로 …` |
 | [`render-process-check_macos.sh`](render-process-check_macos.sh) | macOS | 기동 직후부터 촘촘히 찍어 **그리는 과정**을 봄 | `# macOS — 렌더 결과와 …` |
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
+| [`present-latency-probe_macos.patch`](present-latency-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — `nextDrawable` 대기 · present → 화면 표시 지연 · 대조 실험 스위치 ([#476](https://github.com/ensky0/tildaz/issues/476) · [#732](https://github.com/ensky0/tildaz/issues/732)) | `# macOS — 표시 대기열을 재는 법` |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 (다른 Windows 도구 셋이 같이 씀) | `# Windows — 합성 입력으로 …` |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
 | [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` · `-Drelease` 절 |
