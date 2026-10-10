@@ -974,6 +974,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
 | [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
+| [`tool/selection-check/selection-check_windows.ps1`](tool/selection-check/selection-check_windows.ps1) | macOS 판의 여섯 칸 — 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). **같은 칸을 Windows Terminal 에서도 돌려 견줘요** (`-Target wt`, `-WtCopyOnSelect` 면 WT 의 `copyOnSelect` 를 잠깐 `true` 로). 좌표는 tildaz 는 로그의 `window initialized: dpi= cell=` 와 여백 `round(6 × dpi/96)`, WT 는 캡처에서 찾은 0 행 글자 범위예요. 수신자는 python 이 아닌 PowerShell 자식이에요 (`ENABLE_VIRTUAL_TERMINAL_INPUT` + `ReadFile`). 클립보드에 순수 글자 말고 다른 형식 (`HTML Format` 등) 이 있으면 멈춰요 |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -985,6 +986,7 @@ tool\search-bar-check_windows.ps1 -Mode B                           # 키보드 
 tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 리포팅을 켠 회차 (바 위 클릭이 앱에 안 가는지)
 tool\actions-check_windows.ps1                                      # 다섯 모드 전부 (창 5 회 · 8 분 남짓)
 tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   # 대조군 — _internal 도 그 옆에 있어야 한다
+tool\selection-check\selection-check_windows.ps1 -WtCopyOnSelect   # tildaz 창 2 회 + WT 창 2 회 · 클립보드 · WT 설정 잠깐
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에
@@ -1117,6 +1119,16 @@ tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   #
   `TildaZ-stress`. `send-keys_windows.ps1` · `split-panes_windows.ps1` · `compare-terminals.sh` 가 릴리즈 이름으로 고정돼
   기본 빌드의 창을 못 찾았어요 (2026-10-10 발견). 지금은 둘 다 찾고, 둘 다 떠 있으면 멈춰요. config 폴더도 dev 는
   `%APPDATA%\tildaz-dev` 예요.
+- **⚠️ `GetClassNameW` · `GetWindowTextW` 에 `StringBuilder` 를 넘길 때는 `CharSet = CharSet.Unicode` 를 붙여요.**
+  빠지면 ANSI 로 마샬돼 **첫 글자만** 돌아와요 (`CASCADIA_HOSTING_WINDOW_CLASS` 가 `C`). 오류가 없어서 "창이 없다" 로 읽혀요
+  (2026-10-10 `selection-check_windows.ps1` 첫 WT 회차). `link-click-check_windows.ps1` 의 `CloseStaleErrorDialogs` 도
+  같은 선언이라 `#32770` 비교가 늘 어긋나요 (확인 필요 — 그 경로를 따로 돌려 보지는 않았어요).
+- **Windows Terminal 창을 찾을 때는 pid 가 아니라 클래스 (`CASCADIA_HOSTING_WINDOW_CLASS`) 로, 띄우기 전과 비교해** 새로 생긴
+  것을 골라요. `wt.exe` 는 띄우고 바로 끝나서 창의 주인은 `WindowsTerminal.exe` 예요. 같은 이유로 `SetForegroundWindow` 가
+  조용히 무시될 수 있어 창 안 빈 자리를 한 번 클릭해 포커스를 되찾아요.
+- **WT 의 클라이언트 영역은 둥근 모서리 · 테두리까지 덮어서 가장자리에 뒤쪽 창이 비쳐요.** 캡처에서 글자 줄을 찾으면 맨 위 몇
+  px 의 비친 글자를 잡아요 — 첫 회차에서 셀 폭이 76 px 로 나와 칸이 전부 엉뚱한 자리를 눌렀어요. 가장자리를 빼고 높이가 글자만
+  한 띠만 봐요. WT 는 `-f` (focus 모드) 로 띄우면 탭 줄 · 제목 줄이 없어 0 행이 창 맨 위예요.
 
 # Windows — 키보드 layout 조회 실측 방법
 

@@ -25,7 +25,7 @@
 | [`deadkey-check/`](deadkey-check) | linux · macos · windows | dead key 조합이 실제로 들어오는지 합성 입력으로 판정 | `# Linux — headless sway …` · `# macOS — 합성 입력으로 …` · `# Windows — 합성 입력으로 …` |
 | [`layout-probe/`](layout-probe) | macos · windows | 활성 keyboard layout 이 어느 키에 어느 글자를 두는지 | `# macOS — 키보드 layout 조회 실측 방법` · `# Windows — 키보드 layout 조회 실측 방법` |
 | [`osc-title-probe/`](osc-title-probe) | linux · windows | 자식 셸의 OSC 제목이 언제 도착하는지 (독립 zig 도구 · `zig build probe-check`) | — (도구 머리 주석) |
-| [`selection-check/`](selection-check) | linux · macos (windows 는 그 기기에서) | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 무엇을 남기는지 자동 판정 (#656 · #657) | `# macOS — 합성 입력으로 …` · `# Linux — headless sway …` |
+| [`selection-check/`](selection-check) | linux · macos · windows | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 무엇을 남기는지 자동 판정 (#656 · #657). Windows 판은 같은 칸을 Windows Terminal 에서도 돌린다 | `# macOS — 합성 입력으로 …` · `# Linux — headless sway …` · `# Windows — 합성 입력으로 …` |
 | [`render-ab-shot/`](render-ab-shot) | linux · macos · windows | 두 앱 판을 같은 화면으로 찍어 최종 그림을 픽셀 수로 견줌 | `# macOS — 렌더 결과와 …` · `# Windows — 렌더 결과를 …` · `# Linux — 글리프 · cluster …` |
 
 ## 여러 파일로 된 도구
