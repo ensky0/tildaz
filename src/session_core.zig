@@ -703,8 +703,11 @@ pub const Tab = struct {
         // 즉시 반환하고, 카운터만 16 이 올라갔다. ConPTY 가 없는 Linux · macOS 는 0 이었다.
         //
         // 그 16 byte 는 **손실이 아니다** — 창이 닫히는 참의 모드 해제라 파싱할 것이 없다.
+        // Linux 의 bash 도 SIGHUP 에 같은 일을 한다 (`ESC[?2004l` 등 28 byte · #741).
         const wrote = tab.output_ring.push(data, tab.output_full_fn, tab.output_full_userdata);
         perf.addTimedBytes(&perf.push, t0, wrote);
+        // #745 — 버린 양을 따로 센다. 안 세면 `readloop − drain` 이 손실처럼 보인다.
+        if (wrote < data.len) perf.addBytes(&perf.dropped, data.len - wrote);
         // #439 — 유휴 응답 지연의 시작점. 여기부터 present 까지가 *"출력이 화면에 닿는
         // 시간"* 이다. 한 byte 도 안 들어간 경우 (닫히는 중) 는 잴 것이 없다.
         if (wrote > 0) {
@@ -2848,6 +2851,30 @@ test "POSIX: #741 — stress 에서 출력이 쏟아지는 중에 사용자가 �
     const drained = perf.snapshot(&perf.drain)[2];
     try std.testing.expect(drained > 0);
     try std.testing.expect(drained <= RingBuffer.SIZE);
+}
+
+test "POSIX: #745 — 닫힌 ring 이 버린 byte 는 push 가 아니라 dropped 로 센다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    var session = SessionCore.init(testRuntime(), std.testing.allocator, "/bin/sh", 100, null, null, &Exit.notify, null);
+    defer session.deinit();
+    try session.createTab(80, 24);
+    const tab = session.activeTab().?;
+
+    tab.output_ring.close();
+    _ = perf.snapshot(&perf.push);
+    _ = perf.snapshot(&perf.dropped);
+    defer _ = perf.snapshot(&perf.push);
+    defer _ = perf.snapshot(&perf.dropped);
+
+    const teardown = "\x1b[?2004l\r";
+    Tab.onPtyOutput(teardown, tab);
+    // 셸의 read thread 도 그 사이 닫힌 ring 에 넣으려 할 수 있어 "적어도" 로 본다.
+    try std.testing.expect(perf.snapshot(&perf.dropped)[2] >= teardown.len);
+    try std.testing.expectEqual(@as(u64, 0), perf.snapshot(&perf.push)[2]);
 }
 
 test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {

@@ -277,7 +277,7 @@ CSV="$OUT/$PHASE.csv"
 # 찍는 형식은 세 platform 공통이다.
 awk -v out_csv="$CSV" -v raw="$RAW" -v phase="$PHASE" -v order="$WORKLOAD_LIST" -v repeat="$REPEAT" '
 BEGIN {
-    print "workload,rl_calls,rl_bytes,readloop_ms,waits,drain_bytes,lost_bytes,drain_ms,parse_ms,render_calls,render_ms,shape_calls,shape_ms,miss,present_calls,present_ms,onrender_calls,onrender_ms,skip" > out_csv
+    print "workload,rl_calls,rl_bytes,readloop_ms,waits,drain_bytes,dropped_bytes,lost_bytes,drain_ms,parse_ms,render_calls,render_ms,shape_calls,shape_ms,miss,present_calls,present_ms,onrender_calls,onrender_ms,skip" > out_csv
     nw = split(order, wl, " ")
 }
 function trimmed(arr, n,   i, j, t, s, lo, hi, sum, cnt) {
@@ -308,10 +308,12 @@ function uniq(w, key,   i, seen, s) {
     }
     return s
 }
-/^=== .* @ ts=[0-9]+ms ===$/ { cur = $2; next }
+# #745 — `dropped` 줄이 없는 옛 판의 덤프에서 앞 블록 값이 남지 않게 블록마다 0 으로 둔다.
+/^=== .* @ ts=[0-9]+ms ===$/ { cur = $2; dropped_bytes = 0; next }
 cur != "" {
     if ($1 == "readloop") { split($2, a, "="); rl_calls = a[2]; split($3, a, "="); rl_bytes = a[2]; split($4, a, "="); readloop = a[2] }
     else if ($1 == "push") { split($4, a, "="); waits = a[2] }
+    else if ($1 == "dropped") { split($3, a, "="); dropped_bytes = a[2] }
     else if ($1 == "drain") { split($3, a, "="); drain_bytes = a[2]; split($4, a, "="); drain = a[2] }
     else if ($1 == "parse") { split($3, a, "="); parse = a[2] }
     else if ($1 == "render") { split($2, a, "="); render_calls = a[2]; split($3, a, "="); render = a[2] }
@@ -323,9 +325,11 @@ cur != "" {
         v[w, "readloop", n] = readloop; v[w, "drain", n] = drain; v[w, "parse", n] = parse
         v[w, "render", n] = render; v[w, "shape", n] = shape; v[w, "present", n] = present
         v[w, "rl_bytes", n] = rl_bytes; v[w, "drain_bytes", n] = drain_bytes
+        v[w, "dropped", n] = dropped_bytes
         # #397 의 핵심 지표. `readloop bytes >= 요청` 은 PTY 에서 읽은 양이라 부분 파싱을
-        # 못 잡는다 — 소화한 양과의 차이를 봐야 한다.
-        v[w, "lost", n] = rl_bytes - drain_bytes
+        # 못 잡는다 — 소화한 양과의 차이를 봐야 한다. #745 — 탭이 닫히는 참에 닫힌 ring 이
+        # 버린 byte (ConPTY 16 · bash 28) 는 손실이 아니라서 뺀다. 정상이면 0 이다.
+        v[w, "lost", n] = rl_bytes - drain_bytes - dropped_bytes
         v[w, "render_calls", n] = render_calls; v[w, "shape_calls", n] = shape_calls
         v[w, "miss", n] = miss; v[w, "present_calls", n] = present_calls
         v[w, "onrender_calls", n] = onrender_calls; v[w, "skip", n] = skip; v[w, "waits", n] = waits
@@ -336,8 +340,8 @@ cur != "" {
         v[w, "parse_share_p", n] = 100.0 * parse / (parse + render + present)
         v[w, "per_frame", n] = render_calls > 0 ? render / render_calls : 0
         v[w, "per_shape", n] = shape_calls > 0 ? 1000.0 * shape / shape_calls : 0
-        printf("%s,%d,%d,%.3f,%d,%d,%d,%.3f,%.3f,%d,%.3f,%d,%.3f,%d,%d,%.3f,%d,%.3f,%d\n",
-            w, rl_calls, rl_bytes, readloop, waits, drain_bytes, rl_bytes - drain_bytes, drain,
+        printf("%s,%d,%d,%.3f,%d,%d,%d,%d,%.3f,%.3f,%d,%.3f,%d,%.3f,%d,%d,%.3f,%d,%.3f,%d\n",
+            w, rl_calls, rl_bytes, readloop, waits, drain_bytes, dropped_bytes, rl_bytes - drain_bytes - dropped_bytes, drain,
             parse, render_calls, render, shape_calls, shape, miss,
             present_calls, present, onrender_calls, onrender, skip) > out_csv
         cur = ""
@@ -366,8 +370,8 @@ END {
         printf("shape calls %s · miss %s\n", uniq(w, "shape_calls"), uniq(w, "miss"))
         printf("그린 프레임 %s · skip %s / onrender %s · waits %s\n",
             uniq(w, "render_calls"), uniq(w, "skip"), uniq(w, "onrender_calls"), uniq(w, "waits"))
-        printf("읽은 바이트 %s · 소화 %s · 손실 %s\n",
-            uniq(w, "rl_bytes"), uniq(w, "drain_bytes"), uniq(w, "lost"))
+        printf("읽은 바이트 %s · 소화 %s · 닫힐 때 버림 %s · 손실 %s\n",
+            uniq(w, "rl_bytes"), uniq(w, "drain_bytes"), uniq(w, "dropped"), uniq(w, "lost"))
     }
     printf("\nraw=%s\ncsv=%s\n##### 끝 #####\n", raw, out_csv)
 }
