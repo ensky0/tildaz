@@ -417,13 +417,18 @@ pane 1 · 2 · 4 · 8 을 5 회씩 다시 잰 회차도 손실이 pane 당 16 by
 해요 — `ESC[?2004l` 등 **28 byte** 예요 ([#741](https://github.com/ensky0/tildaz/issues/741)). 셸이
 프롬프트로 남은 채 닫을 때만 나와서, producer 가 곧 `-e` 프로세스인 회차는 0 이에요.
 
+Windows 의 16 byte 도 **셸이 끝나 탭이 닫히면 버려지지 않아요** ([#744](https://github.com/ensky0/tildaz/issues/744)).
+그때는 conhost 가 마지막 클라이언트가 떠나며 스스로 끝나고, teardown 을 출력 EOF **전에** 보내서
+그대로 파싱돼요 (`readloop = drain` · `dropped` 0). `measure-repeat.sh` 의 1 pane 회차가 이 경우예요.
+사용자가 닫을 때 (`Ctrl+Shift+W`) 는 ring 을 먼저 닫으니 여전히 16 이에요.
+
 그래서 **`push bytes` 를 함께 봐요.**
 
 | 지표 | 뜻 | 정상값 |
 |---|---|---|
 | `readloop bytes` | PTY 에서 **읽은** 양 | teardown 을 포함해요 |
 | `push bytes` | ring 에 **넣은** 양 | — |
-| `dropped bytes` | ring 이 이미 닫혀 **버린** 양 — 위 teardown | Windows **16** · bash 프롬프트로 닫으면 **28** · 나머지 0 |
+| `dropped bytes` | ring 이 이미 닫혀 **버린** 양 — 위 teardown | Windows 는 사용자가 닫으면 **16** · 셸이 끝나 닫히면 0 · bash 프롬프트로 닫으면 **28** · 나머지 0 |
 | `drain bytes` | **소화한** 양 | — |
 | **`push − drain`** | 진짜 손실 | **0 이어야 해요** |
 | **`readloop − drain − dropped`** | 같은 손실을 읽은 양에서 본 것 (`measure-repeat` 의 `lost_bytes`) | **0 이어야 해요** |
