@@ -2737,7 +2737,10 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
   host 구조와는 무관하다. 지금은 ring 이 차면 read thread 가 잠든다. 같은 조건의 수정 전후는 미니PC Firebat ZY-A8
   (Ryzen 7 8845HS · 16 스레드) 에서 최장 드레인 8.39 → **5.35 ms** (5 회 절사평균) · 대기열 대기 합계 약 2.3 s → 2 ms 미만 ·
   처리량 32 → 65 MiB/s 다. 남은 초과는 대기가 아니라 그 호출이 CPU 를 실제로 쓴 몫이고, 수정 전 1 pane 에서도
-  5.49 ms 가 나왔다 — 16 pane 만의 문제가 아니다.
+  5.49 ms 가 나왔다 — 16 pane 만의 문제가 아니다. 같은 `yield` 는 세 OS 공통 코드였다. Windows (데스크탑 Ryzen 7 5700G ·
+  16 스레드) 도 read thread 16 개가 각 85~98 % 를 썼지만 드레인은 4.7 ms 에 묶였고, 낭비는 처리량으로 드러났다
+  (수정 뒤 +22 %). macOS (M5 Pro) 는 파싱이 PTY 보다 빨라 ring 이 드물게 찼다 (`yields` 가 Linux 의 약 1/6,000).
+  세 OS 실측은 #639 의 OS 별 결과 댓글이다.
 - **수정 전 공정성은 pane 2 개부터 나빠지고 host 마다 크게 달랐다.** `drainFrame` 이 매 호출 `group.panes` 를
   **처음부터** 도는데 (숨은 탭에는 `inactive_drain_cursor` 가 있지만 **보이는 pane 에는 커서가 없다**)
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는
