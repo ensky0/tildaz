@@ -350,6 +350,10 @@ pub const Tab = struct {
     /// #744 — 측정 역할에서 셸 종료와 출력 EOF 중 몇 개가 왔는지. 둘 다 와야 탭을 닫는다
     /// (`onStressEnd`). 두 통보가 다른 스레드 (wait · read) 에서 오므로 원자 값이다.
     stress_end_events: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    /// #744 — `deinit` 이 시작됐다. 그 뒤의 셸 종료 통보는 우리가 탭을 정리하며 셸을 끝낸
+    /// 결과라 "출력이 끝나기를 기다린다" 가 아니다 — `onStressEnd` 가 그 로그를 남기지 않는다.
+    /// wait thread 가 읽으므로 원자 값이다.
+    closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// #439 — PTY 출력이 ring 에 들어갔다는 것을 host 에 알린다 (유휴 깨우기).
     ///
     /// **read thread 에서 불린다** — 구현은 다른 스레드에서 불러도 되는 것만 써야 한다
@@ -456,6 +460,8 @@ pub const Tab = struct {
     }
 
     fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
+        // #744 — 아래 `backend.deinit` 이 셸을 끝내면 셸 종료 통보가 온다. 그보다 먼저 세운다.
+        tab.closing.store(true, .release);
         tab.write_queue.close();
         // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 기다리던
         // 중이라도 즉시 break. 이게 없으면 backend.deinit 의 read_thread.join
@@ -749,8 +755,9 @@ pub const Tab = struct {
             return;
         }
         // 먼저 온 쪽이다. 셸이 먼저 끝났으면 출력을 쥔 프로세스가 남아 있다는 뜻이라 남겨 둔다 —
-        // 측정이 안 끝날 때 이 줄이 원인을 가리킨다.
-        if (event == .shell_exited) log.appendLine("tab", "stress: shell exited before its output ended — keeping the tab until the output ends (#744)", .{});
+        // 측정이 안 끝날 때 이 줄이 원인을 가리킨다. 탭을 닫는 중이면 셸은 우리가 끝낸 것이라
+        // 남기지 않는다 — 예전에는 사용자가 닫을 때마다 이 줄이 찍혀 원인을 잘못 가리켰다.
+        if (event == .shell_exited and !tab.closing.load(.acquire)) log.appendLine("tab", "stress: shell exited before its output ended — keeping the tab until the output ends (#744)", .{});
     }
 
     /// stress 하네스 전용 통로 (#371) — `drainFrame` 의 프레임 예산을 거치지 않고
