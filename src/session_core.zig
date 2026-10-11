@@ -2916,9 +2916,15 @@ fn shellExitsBeforeOutput(role: instance_context.Role) ![2]u32 {
 test "POSIX: #744 — 측정 역할은 셸이 끝나도 출력이 끝날 때까지 탭을 닫지 않는다" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const got = try shellExitsBeforeOutput(.stress);
-    // 셸은 끝났지만 배경 writer 가 아직 쥐고 있다 — 닫지 않는다.
-    try std.testing.expectEqual(@as(u32, 0), got[0]);
-    // writer 가 끝나 출력 EOF 가 오면 한 번 닫는다.
+    // 셸이 끝난 직후의 닫기 요청 수는 OS 마다 다르다.
+    //
+    // - Linux: 셸은 끝났지만 배경 writer 가 아직 slave 를 쥐고 있어 EOF 가 안 온다 — 닫지 않는다.
+    // - macOS: 셸 (세션 리더) 이 끝나면 배경 writer 의 터미널도 막혀서 EOF 가 셸 종료와 함께
+    //   온다. 남은 출력이 생기지 않으니 바로 닫는 것이 맞다. macOS 27.0.1 에서 python
+    //   `pty.fork()` 로 같은 명령을 돌려 EOF 9 ms · 배경 `echo` 종료 코드 1 을 쟀다 (#744).
+    const closed_at_shell_exit: u32 = if (comptime builtin.os.tag.isDarwin()) 1 else 0;
+    try std.testing.expectEqual(closed_at_shell_exit, got[0]);
+    // 어느 쪽이든 결국 한 번만 닫는다 — 두 신호 (셸 종료 · 출력 EOF) 가 함께 와도 두 번 닫지 않는다.
     try std.testing.expectEqual(@as(u32, 1), got[1]);
 }
 
