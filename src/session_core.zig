@@ -484,6 +484,12 @@ pub const Tab = struct {
     /// payload 를 파싱한다. `closeTab` 과 다중 pane 의 `closePane`이 함께 부른다.
     /// 오류 정리와 SessionCore 자체 deinit 은 perf 스냅숏을 완성하는 경로가 아니므로
     /// 부르지 않는다 — producer 가 살아 있는 OOM 정리에서 출력을 기다리면 안 된다.
+    ///
+    /// #741 · #742 — **PTY 가 끝나서 닫을 때만** 부른다 (`SessionCore.CloseCause.pty_exited`).
+    /// 사용자가 닫으면 (`Ctrl+Shift+W` · `×` · 메뉴) producer 가 아직 살아 있어서, read
+    /// thread 가 ring 을 계속 다시 채우는 동안 이 루프가 UI thread 를 붙잡았다 — Linux 에서
+    /// 3.7 초, Windows 에서 producer 가 2 GiB 를 다 쓸 때까지 약 16 초 앱이 멈췄다. 사용자가
+    /// 닫은 것은 측정을 그만둔 것이라 마저 파싱할 것이 없다.
     fn finishStressOutput(tab: *Tab) void {
         if (!instance_context.isStress()) return;
         // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다. producer
@@ -1371,10 +1377,10 @@ pub const TabGroup = struct {
     /// pane 하나를 닫는다 — 형제가 자리를 이어받고 포커스는 맞닿아 있던 pane 으로
     /// (`pane_layout.Tree.close`). **마지막 pane 은 닫지 않고 false** — 호출처가 그룹(탭)을
     /// 닫는다.
-    fn closePane(group: *TabGroup, alloc: std.mem.Allocator, id: pane_layout.PaneId) bool {
+    fn closePane(group: *TabGroup, alloc: std.mem.Allocator, id: pane_layout.PaneId, cause: SessionCore.CloseCause) bool {
         const next = group.tree.close(id) catch return false;
         if (group.panes[id]) |tab| {
-            tab.finishStressOutput();
+            if (cause == .pty_exited) tab.finishStressOutput();
             tab.deinit(alloc);
         }
         group.panes[id] = null;
@@ -1646,7 +1652,21 @@ pub const SessionCore = struct {
         return tab;
     }
 
+    /// #741 — 탭 · pane 을 닫는 이유. 측정 인스턴스가 남은 출력을 마저 파싱하는 것은
+    /// PTY 가 끝났을 때뿐이다 (`Tab.finishStressOutput` 주석).
+    pub const CloseCause = enum {
+        /// 사용자가 닫았다 — 단축키 · 탭바 `×` · `⋯` 메뉴.
+        user,
+        /// 셸 (측정에서는 producer) 이 끝났다 — `tab_exit_fn` → `closeTabByPtr`.
+        pty_exited,
+    };
+
+    /// 사용자가 탭을 닫는다 (`CloseCause.user`).
     pub fn closeTab(self: *SessionCore, index: usize) CloseResult {
+        return self.closeTabFor(index, .user);
+    }
+
+    fn closeTabFor(self: *SessionCore, index: usize, cause: CloseCause) CloseResult {
         if (index >= self.tabs.items.len) return .none;
 
         const remaining_len = self.tabs.items.len - 1;
@@ -1654,7 +1674,7 @@ pub const SessionCore = struct {
         const group = self.tabs.orderedRemove(index);
         // #397 — 그룹 전체를 닫는 기존 측정 종료 보장. 실제 drain 로직은 #572 에서
         // closePane 과 공유하도록 Tab.finishStressOutput 으로 모았다.
-        for (group.panes) |p| if (p) |tab| tab.finishStressOutput();
+        if (cause == .pty_exited) for (group.panes) |p| if (p) |tab| tab.finishStressOutput();
         defer group.deinit(self.allocator);
 
         if (next_active) |active| {
@@ -1673,8 +1693,8 @@ pub const SessionCore = struct {
         const needle: *Tab = @ptrFromInt(tab_ptr);
         for (self.tabs.items, 0..) |group, i| {
             const id = group.paneIdOf(needle) orelse continue;
-            if (group.paneCount() > 1 and group.closePane(self.allocator, id)) return .changed;
-            return self.closeTab(i);
+            if (group.paneCount() > 1 and group.closePane(self.allocator, id, .pty_exited)) return .changed;
+            return self.closeTabFor(i, .pty_exited);
         }
         return .none;
     }
@@ -1719,7 +1739,7 @@ pub const SessionCore = struct {
     /// 잠깐 그 둘을 이 함수로 보냈는데, 액션 이름 · 라벨 · SPEC 이 모두 "탭" 이라 되돌렸다.
     pub fn closeActivePane(self: *SessionCore) CloseResult {
         const group = self.activeGroup() orelse return .none;
-        if (group.paneCount() > 1 and group.closePane(self.allocator, group.active_pane)) return .changed;
+        if (group.paneCount() > 1 and group.closePane(self.allocator, group.active_pane, .user)) return .changed;
         return self.closeTab(self.active_tab);
     }
 
@@ -2617,6 +2637,32 @@ fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {
     try std.testing.expect(drained[2] >= marker.len);
 }
 
+/// #741 · #742 — 사용자가 닫으면 (pane · 탭) 측정 인스턴스여도 남은 출력을 마저 파싱하지
+/// 않는다. 실제 앱에서는 producer 가 살아 있어 그 파싱이 끝나지 않았다 (`Tab.finishStressOutput`).
+/// `session` 에는 pane 하나짜리 탭 하나가 있어야 한다.
+fn expectStressUserCloseSkipsDrain(session: *SessionCore) !void {
+    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
+    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
+    try session.splitActive(.right, rect, m);
+    const marker = "\x1b]0;user-close-no-drain-regression\x07";
+
+    const previous_role = instance_context.currentRole();
+    instance_context.setRole(.stress);
+    defer instance_context.setRole(previous_role);
+    _ = perf.snapshot(&perf.drain);
+    defer _ = perf.snapshot(&perf.drain);
+
+    // pane 닫기 (`close_pane`) — 남은 출력이 있어도 파싱하지 않는다.
+    try std.testing.expectEqual(marker.len, session.activeTab().?.output_ring.push(marker, null, null));
+    try std.testing.expectEqual(SessionCore.CloseResult.changed, session.closeActivePane());
+    try std.testing.expectEqual(@as(u64, 0), perf.snapshot(&perf.drain)[2]);
+
+    // 탭 닫기 (`close_tab` · `×` · 메뉴) — 마지막 탭이어도 같다.
+    try std.testing.expectEqual(marker.len, session.activeTab().?.output_ring.push(marker, null, null));
+    try std.testing.expectEqual(SessionCore.CloseResult.closed_last, session.closeTab(session.active_tab));
+    try std.testing.expectEqual(@as(u64, 0), perf.snapshot(&perf.drain)[2]);
+}
+
 /// #696 — 분할한 pane 은 자기 탭의 번호를 물려받고, 다음 새 탭은 번호를 건너뛰지 않는다.
 /// `session` 에는 탭 하나 (`Tab 1`) 가 있어야 한다. 제목 문자열은 drain 전에만 본다 —
 /// 셸이 OSC 제목을 보내는 구성에서도 흔들리지 않게 그 뒤는 `default_title_id` 로 본다.
@@ -2782,6 +2828,7 @@ test "POSIX: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 
 
     try session.createTab(80, 24);
     try expectStressCloseDrainsUnreadPane(&session);
+    try expectStressUserCloseSkipsDrain(&session);
 }
 
 test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {
@@ -3150,6 +3197,7 @@ test "Windows: #572 — stress 중간 pane 종료는 unread ring 을 마저 drai
     };
 
     try expectStressCloseDrainsUnreadPane(&session);
+    try expectStressUserCloseSkipsDrain(&session);
 }
 
 test "tab title truncation preserves valid UTF-8 boundary" {
