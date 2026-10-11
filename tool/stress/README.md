@@ -625,10 +625,12 @@ Windows 는 [`split-panes_windows.ps1`](split-panes_windows.ps1) 이 이 순서 
   읽기 전용이고 macOS · Linux 는 질의 응답용 effects 가 붙어요 (#266). 이 하네스의
   워크로드에는 응답이 필요한 질의가 없어서 파싱 비용이 같을 것으로 보지만 **직접 재서
   확인하지는 않았어요.**
-- **`push` 의 `yields` 가 크면 우리가 못 따라가고 있다는 뜻이에요.** ring 이 가득 차서
-  read thread 가 양보한 횟수예요. 이 값이 크면 `push` 시간도 함께 커지고 (실측: macOS
-  `frame` cjk 에서 248 만 회 · 243 ms, Linux 는 `push` 가 `drain` 보다 컸어요) 압력이
-  producer 까지 전달돼요 — 실제 앱에서는 **셸이 느려지는 것**으로 나타나요.
+- **`push` 의 `waits` 가 크면 우리가 못 따라가고 있다는 뜻이에요.** ring 이 가득 차서
+  read thread 가 기다린 횟수예요. 이 값이 크면 `push` 시간 (기다린 시간 포함) 도 함께 커지고
+  압력이 producer 까지 전달돼요 — 실제 앱에서는 **셸이 느려지는 것**으로 나타나요.
+  [#639](https://github.com/ensky0/tildaz/issues/639) 전에는 이 자리가 `yields` (기다리며 `yield` 를 부른
+  횟수) 라 자릿수가 달라요 — 같은 16 pane 회차가 `yields` 약 7.9 억 · `waits` 16,528 이었어요. 옛 실측
+  (macOS `frame` cjk 에서 248 만 회 · 243 ms, Linux 는 `push` 가 `drain` 보다 컸어요) 은 `yields` 기준이에요.
 - **`readloop` 시간은 세 platform 이 이제 같은 범위예요** — 유휴 대기를 뺀 **read 복사 시간**
   ([#394](https://github.com/ensky0/tildaz/issues/394)). Windows 도 `ERROR_IO_PENDING` 대기를
   계측 밖으로 뺐어요. 예전의 *"Windows 만 유휴 대기 포함"* ([#254](https://github.com/ensky0/tildaz/issues/254)) 은
@@ -950,7 +952,7 @@ tool/stress/measure-input-latency.sh --mode flood --echo --workload cjk   # 폭�
 | **`in_echo` 평균 / 최악** | **37.6 / 45.7 ms** |
 
 에코 지연의 대부분은 **출력 ring (그때 4 MiB — [#728](https://github.com/ensky0/tildaz/issues/728) 에서 256 KiB 로 줄였어요) 에 밀린 출력 뒤에서 줄을 서는 시간**이에요. 폭포 중 ring 은 늘 가득
-차 있고 (`push yields` 가 수천만), 이 기기의 드레인 속도 약 150 MB/s 로 4 MiB 를 비우는 데 약 28 ms 가 걸려요.
+차 있고 (`push yields` 가 수천만 — [#639](https://github.com/ensky0/tildaz/issues/639) 전의 이름이고 지금은 `waits` 예요), 이 기기의 드레인 속도 약 150 MB/s 로 4 MiB 를 비우는 데 약 28 ms 가 걸려요.
 거기에 다음 프레임 대기 (평균 반 프레임) 와 렌더 · present 가 더해져요. 그래서 **렌더 시점을 바꾸는 것으로는
 이 값이 거의 안 줄어요** — 같은 A/B 에서 *"키 뒤 4 프레임 동안 드레인마다 바로 그리는"* 판도 평균 37.2 ms 로
 흔들림 폭 안이었고, 프레임은 15 % 더 그렸어요.

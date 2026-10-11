@@ -277,7 +277,7 @@ CSV="$OUT/$PHASE.csv"
 # 찍는 형식은 세 platform 공통이다.
 awk -v out_csv="$CSV" -v raw="$RAW" -v phase="$PHASE" -v order="$WORKLOAD_LIST" -v repeat="$REPEAT" '
 BEGIN {
-    print "workload,rl_calls,rl_bytes,readloop_ms,yields,drain_bytes,lost_bytes,drain_ms,parse_ms,render_calls,render_ms,shape_calls,shape_ms,miss,present_calls,present_ms,onrender_calls,onrender_ms,skip" > out_csv
+    print "workload,rl_calls,rl_bytes,readloop_ms,waits,drain_bytes,lost_bytes,drain_ms,parse_ms,render_calls,render_ms,shape_calls,shape_ms,miss,present_calls,present_ms,onrender_calls,onrender_ms,skip" > out_csv
     nw = split(order, wl, " ")
 }
 function trimmed(arr, n,   i, j, t, s, lo, hi, sum, cnt) {
@@ -311,7 +311,7 @@ function uniq(w, key,   i, seen, s) {
 /^=== .* @ ts=[0-9]+ms ===$/ { cur = $2; next }
 cur != "" {
     if ($1 == "readloop") { split($2, a, "="); rl_calls = a[2]; split($3, a, "="); rl_bytes = a[2]; split($4, a, "="); readloop = a[2] }
-    else if ($1 == "push") { split($4, a, "="); yields = a[2] }
+    else if ($1 == "push") { split($4, a, "="); waits = a[2] }
     else if ($1 == "drain") { split($3, a, "="); drain_bytes = a[2]; split($4, a, "="); drain = a[2] }
     else if ($1 == "parse") { split($3, a, "="); parse = a[2] }
     else if ($1 == "render") { split($2, a, "="); render_calls = a[2]; split($3, a, "="); render = a[2] }
@@ -328,7 +328,7 @@ cur != "" {
         v[w, "lost", n] = rl_bytes - drain_bytes
         v[w, "render_calls", n] = render_calls; v[w, "shape_calls", n] = shape_calls
         v[w, "miss", n] = miss; v[w, "present_calls", n] = present_calls
-        v[w, "onrender_calls", n] = onrender_calls; v[w, "skip", n] = skip; v[w, "yields", n] = yields
+        v[w, "onrender_calls", n] = onrender_calls; v[w, "skip", n] = skip; v[w, "waits", n] = waits
         v[w, "shape_ratio", n] = render > 0 ? 100.0 * shape / render : 0
         # `parse 비중` 은 표마다 계산식이 달랐다 (#389 의 Linux 표는 present 를 빼고 macOS
         # 표는 넣었다). 어느 쪽과 견주든 되게 둘 다 찍는다.
@@ -337,7 +337,7 @@ cur != "" {
         v[w, "per_frame", n] = render_calls > 0 ? render / render_calls : 0
         v[w, "per_shape", n] = shape_calls > 0 ? 1000.0 * shape / shape_calls : 0
         printf("%s,%d,%d,%.3f,%d,%d,%d,%.3f,%.3f,%d,%.3f,%d,%.3f,%d,%d,%.3f,%d,%.3f,%d\n",
-            w, rl_calls, rl_bytes, readloop, yields, drain_bytes, rl_bytes - drain_bytes, drain,
+            w, rl_calls, rl_bytes, readloop, waits, drain_bytes, rl_bytes - drain_bytes, drain,
             parse, render_calls, render, shape_calls, shape, miss,
             present_calls, present, onrender_calls, onrender, skip) > out_csv
         cur = ""
@@ -364,8 +364,8 @@ END {
         row("프레임당render ms", w, "per_frame",    "%-16s %10.2f   min~max %.2f ~ %.2f\n")
         row("호출당shape us",   w, "per_shape",     "%-16s %10.2f   min~max %.2f ~ %.2f\n")
         printf("shape calls %s · miss %s\n", uniq(w, "shape_calls"), uniq(w, "miss"))
-        printf("그린 프레임 %s · skip %s / onrender %s · yields %s\n",
-            uniq(w, "render_calls"), uniq(w, "skip"), uniq(w, "onrender_calls"), uniq(w, "yields"))
+        printf("그린 프레임 %s · skip %s / onrender %s · waits %s\n",
+            uniq(w, "render_calls"), uniq(w, "skip"), uniq(w, "onrender_calls"), uniq(w, "waits"))
         printf("읽은 바이트 %s · 소화 %s · 손실 %s\n",
             uniq(w, "rl_bytes"), uniq(w, "drain_bytes"), uniq(w, "lost"))
     }
