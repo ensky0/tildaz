@@ -26,9 +26,9 @@
 #
 # **Windows 는 Git Bash 에서 돌린다** (`compare-terminals.sh` 와 같은 제약이다).
 #
-# ⚠️ **macOS 경로는 아직 실기 검증하지 않았다** (2026-08-07 현재). Linux (KDE Plasma Wayland ·
-# Intel i5-1240P) 와 Windows (같은 기기) 에서만 돌려 봤다. macOS 에서 처음 쓸 때는
-# `caffeinate` 가 실제로 붙었는지와 로그 경로 (`~/Library/Logs/tildaz-dev/tildaz_stress.log`) 를 먼저 확인해요.
+# macOS 는 2026-10-11 [#745](https://github.com/ensky0/tildaz/issues/745) 회차 (MacBook Pro M5 Pro · macOS 27.0.1)
+# 에서 처음 실기로 돌렸다. 로그 경로 (`~/Library/Logs/tildaz-dev/tildaz_stress.log`) 와 집계는 맞았다.
+# ⚠️ **`caffeinate` 가 실제로 붙었는지는 아직 안 봤다** — 길게 돌릴 때는 먼저 확인해요.
 
 set -eu
 

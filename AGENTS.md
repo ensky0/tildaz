@@ -960,6 +960,12 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMed
   도구가 TIS 로 직접 바꾸면 (`mac-input ime-set` · `ime-ascii`) 글자가 사라졌다가 다음 확정 때 두 번 들어가는
   회차가 있어요 — 단축키 · 메뉴 막대로 바꿀 때는 40 회 동안 안 났어요 ([#715](https://github.com/ensky0/tildaz/issues/715#issuecomment-6085605195)).
   단축키나 Return 으로 확정한 뒤에 바꿔요.
+- **⚠️ `mac-input send … --gap 0` 은 키가 가끔 앱에 닿지 않아요.** `--gap` 은 키 사이 간격 (기본 200 ms) 이라 0 이면
+  마지막 키를 보내자마자 도구가 끝나요. 그 탓으로 추정해요 (확인 필요). 그 회차의 앱은 평소대로 이벤트를 기다리고 있어서
+  **앱 결함으로 읽기 쉬워요.** `--gap 50` 으로 바꾸자 12 번 모두 닿았어요 (2026-10-11 [#741](https://github.com/ensky0/tildaz/issues/741) macOS 회차).
+- **VS Code 같은 창이 화면을 다 덮고 있으면 새 tildaz 창이 그 뒤에 떠요.** 그러면 `mac-input focus` 의 가운데 클릭이 그 창으로
+  가요. 덮는 창을 줄이고 재요. 키가 닿았는지는 창 순서가 아니라 **앱 로그**로 확인해요 — ScreenCaptureKit 창 목록의 순서는 키가
+  닿은 회차에도 tildaz 를 뒤로 냈어요 (같은 회차).
 
 # macOS — 키보드 layout 조회 실측 방법
 
