@@ -428,6 +428,10 @@ pane 1 · 2 · 4 · 8 을 5 회씩 다시 잰 회차도 손실이 pane 당 16 by
 | **`push − drain`** | 진짜 손실 | **0 이어야 해요** |
 | **`readloop − drain − dropped`** | 같은 손실을 읽은 양에서 본 것 (`measure-repeat` 의 `lost_bytes`) | **0 이어야 해요** |
 
+사용자가 폭포 **중에** 닫으면 (`Ctrl+Shift+W`) 그 뒤에 읽힌 출력도 `dropped` 로 가요 — 닫을 때 ring 을
+먼저 닫아서예요 ([#741](https://github.com/ensky0/tildaz/issues/741)). 측정을 중간에 그만둔 것이라 손실이
+아니에요. 폭포를 다 보낸 뒤 닫으면 남은 출력은 그대로 다 파싱해서 `dropped` 는 teardown 몫뿐이에요.
+
 `push` 가 예전에는 `data.len` 을 세어서 (실제로 넣은 양이 아니라) 이 구분이 안 됐어요 — 그때는
 `push bytes == readloop bytes` 라 teardown 이 손실처럼 보였어요.
 
