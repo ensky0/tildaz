@@ -804,7 +804,7 @@ tool/stress/measure-input-latency.sh --mode idle --presses 50
 
 | | 합성 입력 | 창 포커스 | 덤프 · 종료 키 | 한/영 |
 |---|---|---|---|---|
-| **Linux** | `ydotool` (uinput) | 새 창이 자동으로 받아요 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | `fcitx5-remote` (전역) |
+| **Linux** | `ydotool` (uinput) | 새 창이 자동으로 받아요 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | `fcitx5-remote` — 측정 창이 포커스를 받은 뒤 그 창만 ([#736](https://github.com/ensky0/tildaz/issues/736)) |
 | **macOS** | `CGEvent` ([`input_macos.m`](../input_macos.m)) — 스크립트가 `clang` 으로 그 자리에서 빌드해요 | **클릭이 필요해요** (CGEvent 로 눌러요) | `Shift+Cmd+F12` · **`Cmd+W`** | `TISSelectInputSource` (전역) |
 | **Windows** | `SendInput` ([`send-keys_windows.ps1`](../send-keys_windows.ps1)) | 키마다 확인 + 클릭으로 회수 | `Ctrl+Shift+F12` · `Ctrl+Shift+W` | 창별 IME conversion mode |
 
@@ -1023,7 +1023,7 @@ in_gate max 1.369  ← 합계 3.0 ms 지만 input 최악은 8.8 ms
 
 | platform | 한글 모드에서 문자 키 | 표본 | 도구가 하는 일 |
 |---|---|---|---|
-| **Linux** (fcitx5) | IME 가 조합용으로 가져가요 (`ㅁ` 이 찍혀요) — 앱 키 핸들러를 **안 타요** | **0 개** | `fcitx5-remote` 로 영문 전환 후 측정, 끝나면 복원 |
+| **Linux** (fcitx5) | IME 가 조합용으로 가져가요 (`ㅁ` 이 찍혀요) — 앱 키 핸들러를 **안 타요** | **0 개** | 측정 창이 뜬 뒤 그 창만 `fcitx5-remote` 로 영문 전환. 창이 닫히니 되돌리지 않아요 ([#736](https://github.com/ensky0/tildaz/issues/736)) |
 | **macOS** (NSTextInputClient) | `keyDown:` 이 우리 뷰에 **먼저 오고** 앱이 `interpretKeyEvents:` 로 IME 에 넘겨요 — `markInput()` 이 `tildazKeyDown` 첫 줄이라 그대로 세어져요 | **정상** (실측 10/10) | `TISSelectInputSource` 로 영문 전환 후 측정, 끝나면 복원 |
 | **Windows** (IMM) | IME 가 쓰는데도 **`WM_KEYDOWN` 은 앱에 도달해요** (`VK_PROCESSKEY`) | **정상** (실측 11/11) | 그래도 영문으로 맞춰요 — 아래 참고 |
 
