@@ -165,7 +165,7 @@ esac
 [ -x "$STRESS" ] || { echo "tildaz-stress 없음: $STRESS  (먼저 zig build stress)" >&2; exit 1; }
 
 YDOTOOLD_PID=""
-IME_RESTORE=""
+HAS_FCITX5=""
 MAC_INPUT=""
 MAC_INPUT_DIR=""
 IME_RESTORE_ID=""
@@ -203,12 +203,11 @@ if [ "$HYG_PLATFORM" = linux ]; then
     #
     # Windows 는 이 자리가 없다 — 한/영이 keyboard layout 이 아니라 **창별 IME conversion
     # mode** 라서, 측정 창이 뜬 뒤에 `send-keys_windows.ps1` 이 그 창을 상대로 처리한다.
+    #
+    # **Linux 도 창마다 따로다** (#736). 그래서 전환은 여기가 아니라 측정 창이 포커스를 받은
+    # 뒤에 한다 (`run_one` 의 `ensure_ascii_ime`). 여기서는 도구가 있는지만 본다.
     if command -v fcitx5-remote >/dev/null 2>&1; then
-        if [ "$(fcitx5-remote 2>/dev/null)" = "2" ]; then
-            fcitx5-remote -c >/dev/null 2>&1      # deactivate = 영문
-            IME_RESTORE=1
-            echo "  입력기가 한글이라 영문으로 바꿨어요 (측정이 끝나면 되돌립니다)."
-        fi
+        HAS_FCITX5=1
     else
         echo "  ⚠ fcitx5-remote 가 없어요 — 입력기가 한글이면 표본이 안 잡혀요. 영문인지 확인하세요." >&2
     fi
@@ -252,7 +251,6 @@ cleanup() {
         wait "$YDOTOOLD_PID" 2>/dev/null
         YDOTOOLD_PID=""
     fi
-    [ -n "$IME_RESTORE" ] && fcitx5-remote -o >/dev/null 2>&1   # 원래대로 한글
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1
     [ -n "$MAC_INPUT_DIR" ] && rm -rf "$MAC_INPUT_DIR"
     hygiene_end
@@ -299,6 +297,27 @@ if [ "$HYG_PLATFORM" = linux ]; then
 elif [ "$HYG_PLATFORM" = macos ]; then
     "$MAC_INPUT" check || exit 1
 fi
+
+# Linux · fcitx5 — **측정 창이 포커스를 받은 뒤에** 그 창의 입력기를 영문으로 둔다 (#736).
+#
+# `fcitx5-remote` 의 조회 · `-c` · `-o` 는 가장 최근 입력 문맥에 걸리고 (fcitx5 `Instance::state`),
+# 입력 문맥은 창마다 따로다. 그래서 예전처럼 창이 뜨기 전에 바꾸면 **다른 창**이 바뀐다. 그게
+# 맞아떨어진 것은 새 측정 창이 다른 창의 상태를 물려받았기 때문이다 (2026-10-11 실측 — 다른
+# 창이 한글이면 새 창도 한글로 시작했다). 조회한 창과 물려준 창이 갈리면 측정 창은 한글인 채로
+# 남고 보낸 문자 키가 조합된다 (#728 측정에서 한 번 — 표식 글자를 못 찾아 회차가 폐기됐다).
+#
+# 측정 창은 회차가 끝나면 닫히니 되돌릴 것이 없다. 다른 창은 건드리지 않는다.
+ensure_ascii_ime() {
+    [ "$HYG_PLATFORM" = linux ] && [ -n "$HAS_FCITX5" ] || return 0
+    [ "$(fcitx5-remote 2>/dev/null)" = "2" ] || return 0
+    fcitx5-remote -c >/dev/null 2>&1      # deactivate = 영문 — 지금 포커스된 측정 창에 걸린다
+    sleep 0.2
+    if [ "$(fcitx5-remote 2>/dev/null)" = "2" ]; then
+        echo "⚠ 측정 창의 입력기를 영문으로 못 바꿨어요 — 회차를 중단해요." >&2
+        return 1
+    fi
+    echo "  측정 창의 입력기가 한글이라 영문으로 바꿨어요."
+}
 
 # evdev 키코드 — `a`=30 · LEFTCTRL=29 · LEFTSHIFT=42 · c=46 · w=17 · F12=88.
 send_keys() {
@@ -490,6 +509,7 @@ run_one() {
         printf '\r     키 전송 시작.     \n'
     fi
 
+    ensure_ascii_ime || { kill "$APP" 2>/dev/null; [ -n "$RUNNER" ] && rm -f "$RUNNER"; return 1; }
     send_keys || { kill "$APP" 2>/dev/null; [ -n "$RUNNER" ] && rm -f "$RUNNER"; return 1; }
     wait_app
     APP=""
