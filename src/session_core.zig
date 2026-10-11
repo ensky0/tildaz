@@ -485,15 +485,23 @@ pub const Tab = struct {
     /// 오류 정리와 SessionCore 자체 deinit 은 perf 스냅숏을 완성하는 경로가 아니므로
     /// 부르지 않는다 — producer 가 살아 있는 OOM 정리에서 출력을 기다리면 안 된다.
     ///
-    /// #741 · #742 — **PTY 가 끝나서 닫을 때만** 부른다 (`SessionCore.CloseCause.pty_exited`).
-    /// 사용자가 닫으면 (`Ctrl+Shift+W` · `×` · 메뉴) producer 가 아직 살아 있어서, read
-    /// thread 가 ring 을 계속 다시 채우는 동안 이 루프가 UI thread 를 붙잡았다 — Linux 에서
-    /// 3.7 초, Windows 에서 producer 가 2 GiB 를 다 쓸 때까지 약 16 초 앱이 멈췄다. 사용자가
-    /// 닫은 것은 측정을 그만둔 것이라 마저 파싱할 것이 없다.
-    fn finishStressOutput(tab: *Tab) void {
+    /// #741 · #742 — **사용자가 닫으면 ring 을 먼저 닫는다** (`SessionCore.CloseCause.user`).
+    /// 그때는 producer 가 아직 살아 있을 수 있어서, read thread 가 ring 을 계속 다시 채우는
+    /// 동안 "빌 때까지" 루프가 끝나지 않고 UI thread 를 붙잡았다 — Linux 에서 3.7 초, Windows
+    /// 에서 producer 가 2 GiB 를 다 쓸 때까지 약 16 초 앱이 멈췄다. ring 을 닫으면 더는 들어오지
+    /// 않으므로 루프는 그때 남아 있던 만큼 (ring 하나) 만 돌고 끝난다. 폭포를 다 보낸 뒤
+    /// `Ctrl+Shift+W` 로 측정을 끝내는 회차는 남은 것을 그대로 다 파싱한다 (`tool/stress/README.md`).
+    fn finishStressOutput(tab: *Tab, cause: SessionCore.CloseCause) void {
         if (!instance_context.isStress()) return;
-        // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다. producer
-        // PTY exit 통보 뒤에는 EOF 에 도달했으므로 새 payload 는 더 오지 않는다.
+        if (cause == .user) tab.output_ring.close();
+        // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다.
+        //
+        // `.pty_exited` 는 ring 을 닫지 않는다 — 자식이 끝난 순간 PTY 에 남은 마지막 출력을
+        // read thread 가 마저 넣어야 해서다. 그런데 그 통보는 **자식 프로세스가 끝난 때**이지
+        // 출력이 끝난 때 (EOF) 가 아니다 (POSIX `waitpid` · Windows `WaitForSingleObject`).
+        // 그래서 `-e` 러너가 producer 를 배경으로 두고 먼저 끝나면, producer 가 쓰는 동안 이
+        // 루프가 사용자 닫기 때와 같이 돈다 (#741 댓글 — 코드 판정). 측정 절차는 끝을
+        // `Ctrl+Shift+W` 로 내고 `zig build stress` 는 producer 가 곧 `-e` 프로세스라 해당 없다.
         while (tab.drainOutputChunk() > 0) {}
     }
 
@@ -1380,7 +1388,7 @@ pub const TabGroup = struct {
     fn closePane(group: *TabGroup, alloc: std.mem.Allocator, id: pane_layout.PaneId, cause: SessionCore.CloseCause) bool {
         const next = group.tree.close(id) catch return false;
         if (group.panes[id]) |tab| {
-            if (cause == .pty_exited) tab.finishStressOutput();
+            tab.finishStressOutput(cause);
             tab.deinit(alloc);
         }
         group.panes[id] = null;
@@ -1652,8 +1660,8 @@ pub const SessionCore = struct {
         return tab;
     }
 
-    /// #741 — 탭 · pane 을 닫는 이유. 측정 인스턴스가 남은 출력을 마저 파싱하는 것은
-    /// PTY 가 끝났을 때뿐이다 (`Tab.finishStressOutput` 주석).
+    /// #741 — 탭 · pane 을 닫는 이유. 측정 인스턴스가 남은 출력을 마저 파싱하는 방법이
+    /// 갈린다 (`Tab.finishStressOutput` 주석).
     pub const CloseCause = enum {
         /// 사용자가 닫았다 — 단축키 · 탭바 `×` · `⋯` 메뉴.
         user,
@@ -1674,7 +1682,7 @@ pub const SessionCore = struct {
         const group = self.tabs.orderedRemove(index);
         // #397 — 그룹 전체를 닫는 기존 측정 종료 보장. 실제 drain 로직은 #572 에서
         // closePane 과 공유하도록 Tab.finishStressOutput 으로 모았다.
-        if (cause == .pty_exited) for (group.panes) |p| if (p) |tab| tab.finishStressOutput();
+        for (group.panes) |p| if (p) |tab| tab.finishStressOutput(cause);
         defer group.deinit(self.allocator);
 
         if (next_active) |active| {
@@ -2637,32 +2645,6 @@ fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {
     try std.testing.expect(drained[2] >= marker.len);
 }
 
-/// #741 · #742 — 사용자가 닫으면 (pane · 탭) 측정 인스턴스여도 남은 출력을 마저 파싱하지
-/// 않는다. 실제 앱에서는 producer 가 살아 있어 그 파싱이 끝나지 않았다 (`Tab.finishStressOutput`).
-/// `session` 에는 pane 하나짜리 탭 하나가 있어야 한다.
-fn expectStressUserCloseSkipsDrain(session: *SessionCore) !void {
-    const m: pane_layout.Metrics = .{ .cell_w = 19, .cell_h = 39, .pad = 12, .scrollbar_w = 20, .separator_w = 2 };
-    const rect: pane_layout.Rect = .{ .x = 0, .y = 0, .w = 3052, .h = 1000 };
-    try session.splitActive(.right, rect, m);
-    const marker = "\x1b]0;user-close-no-drain-regression\x07";
-
-    const previous_role = instance_context.currentRole();
-    instance_context.setRole(.stress);
-    defer instance_context.setRole(previous_role);
-    _ = perf.snapshot(&perf.drain);
-    defer _ = perf.snapshot(&perf.drain);
-
-    // pane 닫기 (`close_pane`) — 남은 출력이 있어도 파싱하지 않는다.
-    try std.testing.expectEqual(marker.len, session.activeTab().?.output_ring.push(marker, null, null));
-    try std.testing.expectEqual(SessionCore.CloseResult.changed, session.closeActivePane());
-    try std.testing.expectEqual(@as(u64, 0), perf.snapshot(&perf.drain)[2]);
-
-    // 탭 닫기 (`close_tab` · `×` · 메뉴) — 마지막 탭이어도 같다.
-    try std.testing.expectEqual(marker.len, session.activeTab().?.output_ring.push(marker, null, null));
-    try std.testing.expectEqual(SessionCore.CloseResult.closed_last, session.closeTab(session.active_tab));
-    try std.testing.expectEqual(@as(u64, 0), perf.snapshot(&perf.drain)[2]);
-}
-
 /// #696 — 분할한 pane 은 자기 탭의 번호를 물려받고, 다음 새 탭은 번호를 건너뛰지 않는다.
 /// `session` 에는 탭 하나 (`Tab 1`) 가 있어야 한다. 제목 문자열은 drain 전에만 본다 —
 /// 셸이 OSC 제목을 보내는 구성에서도 흔들리지 않게 그 뒤는 `default_title_id` 로 본다.
@@ -2828,7 +2810,44 @@ test "POSIX: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 
 
     try session.createTab(80, 24);
     try expectStressCloseDrainsUnreadPane(&session);
-    try expectStressUserCloseSkipsDrain(&session);
+}
+
+test "POSIX: #741 — stress 에서 출력이 쏟아지는 중에 사용자가 닫아도 바로 끝나고, 쌓인 것은 파싱한다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Exit = struct {
+        fn notify(_: usize, _: ?*anyopaque) void {}
+    };
+    const rt = testRuntime();
+    var session = SessionCore.init(rt, std.testing.allocator, "/bin/sh", 100, null, null, &Exit.notify, null);
+    defer session.deinit();
+    try session.createTab(80, 24);
+    const tab = session.activeTab().?;
+
+    // 실제 셸이 쉬지 않고 쓰게 한다 — read thread 가 ring 을 계속 다시 채운다 (실제 앱의
+    // 살아 있는 producer 와 같다). ring 이 차서 read thread 가 기다리기 시작할 때까지 둔다.
+    // NUL 은 파서가 버리는 문자라 Debug 빌드에서도 빨리 소화된다 (글자 줄은 ring 하나에 6 초
+    // 걸렸다).
+    tab.queueWrite("exec cat /dev/zero\n");
+    const timer: runtime.Timer = .start(rt);
+    while (!tab.output_ring.producer_waiting.load(.acquire)) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.RingNeverFilled;
+        rt.sleepNs(std.time.ns_per_ms);
+    }
+
+    const previous_role = instance_context.currentRole();
+    instance_context.setRole(.stress);
+    defer instance_context.setRole(previous_role);
+    _ = perf.snapshot(&perf.drain);
+    defer _ = perf.snapshot(&perf.drain);
+
+    // 고치기 전에는 여기서 끝나지 않았다 — `cat` 이 멈추지 않으니 ring 이 비지 않는다.
+    try std.testing.expectEqual(SessionCore.CloseResult.closed_last, session.closeTab(session.active_tab));
+    // 닫는 순간 쌓여 있던 것만 마저 파싱했다. 0 보다 크다 — 측정을 `Ctrl+Shift+W` 로 끝내는
+    // 회차의 근거다. ring 하나를 넘지 않는다 — read thread 가 더는 채우지 못했다.
+    const drained = perf.snapshot(&perf.drain)[2];
+    try std.testing.expect(drained > 0);
+    try std.testing.expect(drained <= RingBuffer.SIZE);
 }
 
 test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {
@@ -3197,7 +3216,6 @@ test "Windows: #572 — stress 중간 pane 종료는 unread ring 을 마저 drai
     };
 
     try expectStressCloseDrainsUnreadPane(&session);
-    try expectStressUserCloseSkipsDrain(&session);
 }
 
 test "tab title truncation preserves valid UTF-8 boundary" {
