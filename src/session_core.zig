@@ -27,7 +27,13 @@ const RingBuffer = struct {
     /// (Cmd+W 시연 시 발견된 회귀).
     closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    const SIZE = 4 * 1024 * 1024;
+    /// #728 — 256 KiB. 폭포 중 키의 에코는 ring 에 밀린 출력 뒤에서 기다리므로 그 대기가
+    /// *ring 크기 ÷ 파싱 속도* 다. 4 MiB 는 파싱이 느린 출력에서 에코를 0.1 초 넘게 늦췄다
+    /// (Windows `cjk` 109 ms · Linux `plain` 64 ms). 256 KiB 에서 세 OS 모두 에코가 바닥 근처로
+    /// 내려오고 (Windows `cjk` 19 ms · macOS 6 ms), 처리량은 판끼리 흔들림 폭 안이었다 — ring 이
+    /// 차면 UI 를 깨우는 통보 (`output_full_fn`) 가 있어야 성립한다 (macOS 는 그것 없이 `plain`
+    /// 이 최대 +205 % 느렸다). 실측과 다른 터미널의 관례 (24 KiB ~ 1 MiB) 는 #728 결과 댓글.
+    const SIZE = 256 * 1024;
 
     /// **실제로 ring 에 넣은 byte 수**를 돌려준다 (#398). `closed` 면 중간에 그만두므로
     /// `data.len` 보다 작을 수 있고, 호출자는 이 값을 세야 카운터가 사실과 맞는다.

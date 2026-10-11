@@ -35,3 +35,4 @@ Internal changes belong in neither.
 - Fixed a crash when a narrower window or pane cut a wide character such as Korean in a full-screen app ([#723](https://github.com/ensky0/tildaz/issues/723)).
 - macOS: thinner, sharper text by default, with `[font] macos_smoothing` to switch back ([#527](https://github.com/ensky0/tildaz/issues/527)).
 - macOS: while a program is printing a lot, keys show up on screen one frame sooner, and the occasional extra 4–8 ms wait is gone ([#732](https://github.com/ensky0/tildaz/issues/732)).
+- While a program is printing a lot, what you type shows up much sooner — often around 100 ms sooner for heavy output such as CJK or emoji ([#728](https://github.com/ensky0/tildaz/issues/728)).
