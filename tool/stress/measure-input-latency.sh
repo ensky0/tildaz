@@ -339,10 +339,9 @@ send_keys() {
         # 겪은 실패다 (헤더 주석 참고. 표본은 다 차고 평균만 0.33 ms 로 그럴듯했다).
         # 앞의 `Ctrl+C` 는 프롬프트를 먼저 새로 그려 그 출력까지 앞 구간으로 보낸다.
         #
-        # Linux · Windows 로 넓히지 않은 이유는 **기대 표본이 바뀌기 때문**이다. 지금 두
-        # platform 은 `Ctrl+C` 의 modifier 까지 세어 `키 수 + 1` 이 정상인데, 이 배치에서는
-        # 정확히 `키 수` 가 된다. 이미 5 회씩 측정을 마친 값이 있어 (Linux · Windows 코멘트)
-        # 도구를 바꾸면 재측정이 필요하다 — 그 판단은 각 platform 머신에서 한다.
+        # 끝의 `Ctrl+C` 를 덤프 **뒤에** 보내는 것은 세 platform 이 같다 (#481) — 덤프 앞에
+        # 보내면 그 키가 표본 하나로 들어가 최악을 오염시킨다. 앞쪽 덤프로 감싸 에코를 재는
+        # 것은 macOS 만이다 (Linux · Windows 는 표본 수와 에코 검사가 아직 그 배치를 전제하지 않는다).
         "$MAC_INPUT" send ctrl+c --gap 700 >/dev/null 2>&1        # 프롬프트를 새로 그린다
         "$MAC_INPUT" send shift+cmd+f12 --gap 500 >/dev/null 2>&1 # 여기까지를 앞 구간으로 버린다
         # 한 프로세스가 반복과 간격을 모두 처리한다 — 키마다 프로세스를 새로 띄우는
@@ -397,14 +396,18 @@ send_keys() {
         sleep "$GAP"
         i=$((i + 1))
     done
-    ydotool key 29:1 46:1 46:0 29:0 >/dev/null 2>&1   # Ctrl+C — 입력 줄 비우기
-    sleep 0.3
     # **덤프를 여기서 직접 남긴다.** 종료 시 자동 덤프 (#396) 에만 기대면, 앱이 제때
     # 안 닫혀 정리 대상이 됐을 때 값이 통째로 사라진다 — 실측에서 `Alt+F4` 가 도달해
     # `pending_quit_request` 까지 갔는데도 종료가 안 끝나 `kill -9` 했고, 그 회차는
     # `input` 줄 자체가 없어 "표본 없음" 으로 보였다.
     ydotool key 29:1 42:1 88:1 88:0 42:0 29:0 >/dev/null 2>&1   # Ctrl+Shift+F12 — perf 덤프
     sleep 0.5
+    # **`Ctrl+C` 는 덤프 뒤다** (#481). 덤프 앞에 보내면 그 키가 표본 하나로 들어간다 — 앱은
+    # 아무 키나 눌린 순간부터 재고, `ydotool key` 는 `Ctrl` 과 `C` 사이를 기본 12 ms 쉬어서 그
+    # 표본이 매 회차 12 ms 남짓의 "최악" 이 됐다. `Ctrl+C` 는 `interruptWrite` 로 write 큐를
+    # 건너뛰어 `itw` · `pty_rt` 에도 안 잡혔다.
+    ydotool key 29:1 46:1 46:0 29:0 >/dev/null 2>&1   # Ctrl+C — 입력 줄 비우기 (표본 밖)
+    sleep 0.3
     # **`Alt+F4` 가 아니라 `Ctrl+Shift+W` 다.** `Alt+F4` 는 종료 확인 다이얼로그를 띄우고
     # 기다려서 앱이 안 닫힌다 (그 다이얼로그가 포커스까지 가져간다). 탭이 하나면
     # `Ctrl+Shift+W` (탭 닫기) 가 곧 앱 종료다.
@@ -624,7 +627,7 @@ run_with_retry() {
 # macOS 만 문자 키를 덤프로 감싼다 (`send_keys` 주석 — 에코 검사를 만들기 위해서다).
 case "$HYG_PLATFORM" in
     macos) KEY_SEQ="Ctrl+C → Shift+Cmd+F12 → 'a' × ${PRESSES} (간격 ${GAP}s) → Shift+Cmd+F12 → Ctrl+C → Cmd+W" ;;
-    *)     KEY_SEQ="'a' × ${PRESSES} (간격 ${GAP}s) → Ctrl+C → Ctrl+Shift+F12 → Ctrl+Shift+W" ;;
+    *)     KEY_SEQ="'a' × ${PRESSES} (간격 ${GAP}s) → Ctrl+Shift+F12 → Ctrl+C → Ctrl+Shift+W" ;;
 esac
 if [ "$ECHO" = 1 ]; then
     if [ "$HYG_PLATFORM" = windows ]; then _mark="'é'"; else _mark="'Q'"; fi

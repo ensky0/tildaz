@@ -1,7 +1,7 @@
 ﻿# 응답 시간 측정 (#441 축 ②) 의 **Windows 합성 입력** — Linux 판의 `ydotool` 자리다.
 #
 # `measure-input-latency.sh` 가 Windows 회차에서 이 파일을 한 번 부르고, 이 스크립트가
-# **한 회차의 키 순서를 통째로** 보낸다 (`a` × N → Ctrl+C → Ctrl+Shift+F12 → Ctrl+Shift+W).
+# **한 회차의 키 순서를 통째로** 보낸다 (`a` × N → Ctrl+Shift+F12 → Ctrl+C → Ctrl+Shift+W).
 # 키마다 `powershell` 을 새로 띄우면 그 기동 시간 (수백 ms) 이 키 간격을 지배해서
 # `--gap` 이 의미를 잃는다.
 #
@@ -396,13 +396,15 @@ for ($i = 1; $i -le $Presses; $i++) {
 }
 
 if ($fail -eq '') {
-    # Ctrl+C — 입력 줄 비우기.
-    [void](Send-Key -Downs @($VK.Ctrl, $VK.c) -Ups @($VK.c, $VK.Ctrl))
-    Start-Sleep -Milliseconds 300
     # **덤프를 여기서 직접 남긴다.** 종료 덤프 (#396) 에만 기대면 앱이 제때 안 닫혔을 때
     # 값이 통째로 사라진다 (Linux 판이 실측으로 겪었다).
     [void](Send-Key -Downs @($VK.Ctrl, $VK.Shift, $VK.F12) -Ups @($VK.F12, $VK.Shift, $VK.Ctrl))
     Start-Sleep -Milliseconds 500
+    # Ctrl+C — 입력 줄 비우기. **덤프 뒤다** (#481) — 앞에 보내면 그 키가 표본 하나로 들어가
+    # 최악을 오염시킨다. `Ctrl+C` 는 `interruptWrite` 로 write 큐를 건너뛰어 `itw` · `pty_rt`
+    # 에도 안 잡혀서, 튄 표본의 내부가 보이지 않았다.
+    [void](Send-Key -Downs @($VK.Ctrl, $VK.c) -Ups @($VK.c, $VK.Ctrl))
+    Start-Sleep -Milliseconds 300
     if (-not $NoQuit) {
         # `Alt+F4` 가 아니라 `Ctrl+Shift+W` 다 — Alt+F4 는 종료 확인 다이얼로그를 띄우고
         # 기다려서 앱이 안 닫힌다. 탭이 하나면 탭 닫기가 곧 앱 종료다.
