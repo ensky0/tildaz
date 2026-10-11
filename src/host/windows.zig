@@ -141,6 +141,12 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     else
         null;
     defer if (stress_shell_w) |w| alloc.free(w);
+    // #728 — ring 이 찼다는 통보로 `messageLoop` 를 깨우는 이벤트. **세션보다 먼저 만들고 그
+    // `defer` 를 `app.session.deinit()` 보다 먼저 선언한다** — 그래야 세션 (read thread) 이 끝난
+    // 뒤에 닫힌다 (`Window.createOutputFullEvent` 주석). 창은 세션보다 먼저 정리되므로
+    // (`app.window.deinit` 의 `defer` 가 아래에 있다) 창 정리에서 닫으면 안 된다.
+    const output_full_event = Window.createOutputFullEvent();
+    defer Window.closeOutputFullEvent(output_full_event);
     app.session = SessionCore.init(
         rt,
         alloc,
@@ -187,6 +193,12 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #439 — PTY 출력 도착을 UI 스레드에 알린다. 이것이 없으면 유휴에서 `WaitMessage` 가
     // 다음 `WM_FRAME_TICK` 까지 자고, 그 주기가 그대로 응답 지연이 된다.
     app.session.setOutputWake(onOutputWake, &app.window);
+    // #728 — ring 이 차서 read thread 가 기다리기 시작하면 잠든 메시지 루프를 깨운다
+    // (`Window.notifyOutputFull` 주석). 이벤트를 못 만들었으면 배선하지 않는다 (예전과 같다).
+    if (output_full_event != null) {
+        app.window.output_full_event = output_full_event;
+        app.session.setOutputFull(onOutputFull, &app.window);
+    }
     // #266 — OSC 52 복사. 이미 있는 탭에도 `setClipboardWrite` 가 퍼뜨린다.
     app.session.setClipboardWrite(onClipboardWrite, &app.window);
     log.logOutputWakeInstalled();
@@ -361,6 +373,12 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 fn onOutputWake(userdata: ?*anyopaque) void {
     const window: *Window = @ptrCast(@alignCast(userdata.?));
     window.notifyPtyOutput();
+}
+
+/// #728 — ring 이 찼다는 통보. **PTY read thread 에서 불린다** (`Window.notifyOutputFull`).
+fn onOutputFull(userdata: ?*anyopaque) void {
+    const window: *Window = @ptrCast(@alignCast(userdata.?));
+    window.notifyOutputFull();
 }
 
 /// #266 — 프로그램이 OSC 52 로 쓴 글자. 마우스 복사와 같은 `copyToClipboard` 다. Windows 에는
