@@ -6174,11 +6174,15 @@ const Client = struct {
             wl_keyboard_event_enter => {
                 if (payload.len >= 8) {
                     self.last_keyboard_focus_surface_id = readU32(payload[4..8]);
+                    // #741 — 키보드 포커스가 언제 오고 가는지는 이 두 줄로만 보인다. 합성 키가
+                    // 앱에 안 닿을 때 "포커스가 떠났나" 를 가르는 근거다. 매 포커스 변화마다라 verbose.
+                    log.appendLineVerbose("wayland", "wl_keyboard enter surface={d} main={}", .{ self.last_keyboard_focus_surface_id, self.last_keyboard_focus_surface_id == self.surface_id });
                 }
             },
             wl_keyboard_event_leave => {
                 if (payload.len >= 8) {
                     const left_surface = readU32(payload[4..8]);
+                    log.appendLineVerbose("wayland", "wl_keyboard leave surface={d} main={}", .{ left_surface, left_surface == self.surface_id });
                     if (left_surface == self.last_keyboard_focus_surface_id) {
                         self.last_keyboard_focus_surface_id = 0;
                     }
