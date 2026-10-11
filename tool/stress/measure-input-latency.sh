@@ -377,16 +377,22 @@ send_keys() {
     fi
 
     # #728 — `--echo` 면 Shift+Q (LEFTSHIFT=42 · q=16) 를 보낸다 (위 TILDAZ_ECHO_MARKER 주석).
+    #
+    # **`-d 0` 으로 이벤트 사이 지연을 없앤다** (#737). `ydotool key` 는 기본으로 이벤트마다
+    # 12 ms 를 쉬는데, 앱은 Shift 가 눌린 순간부터 잰다 — 그러면 `Q` 가 눌리기 전 12 ms 가
+    # `in_echo` 에 통째로 들어간다 (`itw` 가 그 간격을 12.0 ms 로 보여 줬다). Windows 는 `é` 를,
+    # macOS 는 Shift+Q 를 이벤트 하나로 보내 이 간격이 없다.
     _keys="30:1 30:0"
-    [ "$ECHO" = 1 ] && _keys="42:1 16:1 16:0 42:0"
+    _delay=""
+    [ "$ECHO" = 1 ] && { _keys="42:1 16:1 16:0 42:0"; _delay="-d 0"; }
     i=1
     while [ "$i" -le "$PRESSES" ]; do
         # 첫 키는 실패를 삼키지 않는다 — 조용히 실패하면 표본 0 인 회차가 그대로 끝난다.
         # shellcheck disable=SC2086
         if [ "$i" -eq 1 ]; then
-            ydotool key $_keys || { echo "⚠ ydotool 전송 실패 — 회차를 중단해요." >&2; return 1; }
+            ydotool key $_delay $_keys || { echo "⚠ ydotool 전송 실패 — 회차를 중단해요." >&2; return 1; }
         else
-            ydotool key $_keys >/dev/null 2>&1
+            ydotool key $_delay $_keys >/dev/null 2>&1
         fi
         sleep "$GAP"
         i=$((i + 1))
