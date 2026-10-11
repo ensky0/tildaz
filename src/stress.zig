@@ -1554,10 +1554,10 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
             else
                 "read 복사만",
         });
-        // push 의 `extra` 는 ring 이 가득 차서 양보한 횟수다. 이 값이 크면 **우리가
-        // 소화보다 느려서 read thread 가 대기했다는 뜻** — producer 까지 압력이 갔다.
-        // 실측에서 Linux frame cjk 의 push 시간이 drain 보다 컸는데 그 정체가 이것이다.
-        writeCounter(&w, "push", counters.push, .{ .yields = counters.push[3] });
+        // push 의 `extra` 는 ring 이 가득 차서 read thread 가 기다린 횟수다 (#639 이전에는
+        // `yield` 를 부른 횟수라 값의 자릿수가 다르다). 이 값이 크면 **우리가 소화보다 느려서
+        // read thread 가 대기했다는 뜻** — producer 까지 압력이 갔다.
+        writeCounter(&w, "push", counters.push, .{ .waits = counters.push[3] });
         writeCounter(&w, "drain", counters.drain, .{});
         writeCounter(&w, "parse", counters.parse, .{ .show_bytes = false });
     } else {
@@ -1571,8 +1571,8 @@ const CounterOpts = struct {
     /// `parse` 는 시간만 재고 byte 를 세지 않아서 (`perf.addTimed`) 0 을 찍으면 "0 byte
     /// 를 파싱했다" 로 읽힌다. 그때는 칸을 비운다.
     show_bytes: bool = true,
-    /// ring 이 가득 차서 양보한 횟수 (`push` 만 의미가 있다).
-    yields: ?u64 = null,
+    /// ring 이 가득 차서 read thread 가 기다린 횟수 (`push` 만 의미가 있다).
+    waits: ?u64 = null,
     /// 그 카운터를 읽는 방법에 조건이 있으면 적는다.
     note: ?[]const u8 = null,
 };
@@ -1584,7 +1584,7 @@ fn writeCounter(w: *Report, name: []const u8, c: [4]u64, opts: CounterOpts) void
     } else {
         w.print("{s: <9} calls={d: <8} {s: <18} ms={d:.3}", .{ name, c[0], "", ms });
     }
-    if (opts.yields) |yields| w.print(" yields={d}", .{yields});
+    if (opts.waits) |waits| w.print(" waits={d}", .{waits});
     if (opts.note) |note| w.print("  ({s})", .{note});
     w.print("\n", .{});
 }

@@ -2730,9 +2730,14 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 - **예산은 상한으로 작동하지만 초과 폭이 pane 수에 따라 커진다.** 세 platform 다 최장 점유가 pane 수와 함께
   올라간다. 예산 검사가 청크 *사이*에만 있어 마지막 청크가 넘기 때문이고, macOS · Windows 는 16 pane 에서도
   초과 폭이 0.6 ms 안 (청크 하나) 에 머문다.
-- **Linux 만 16 pane 에서 상한이 깨진다** (6.98~11.27 ms). 원인 코드는 공통 `drainFrame` 이지만
-  **발현은 host 에서 갈린다** — macOS · Windows 는 같은 조건에서 묶였다. Linux host 의 드레인 구조로 따로 추적한다
-  ([#639](https://github.com/ensky0/tildaz/issues/639) · 원인 미확정 — 스케줄링 포화인지 `poll` timeout 0 드레인인지 Linux 에서 perf 로 가른 뒤 정한다).
+- **Linux 16 pane 에서 상한이 깨졌던 것** (6.98~11.27 ms) 은 드레인이 아니라 **출력 ring 이 찼을 때 read thread 가
+  `yield` 로 돌던 것** 때문이었다 ([#639](https://github.com/ensky0/tildaz/issues/639)). read thread 마다 CPU 하나를 거의 다
+  써서 (스레드마다 87~93 %) 깨어 있는 스레드가 하드웨어 스레드 수를 넘었고, 드레인하는 UI thread 가 실행 대기열에서
+  기다렸다 — 가장 긴 호출 9.84 ms 중 6.19 ms 가 대기였다. 이 표의 `frame` 층은 host 의 드레인 루프를 거치지 않으므로
+  host 구조와는 무관하다. 지금은 ring 이 차면 read thread 가 잠든다. 같은 조건의 수정 전후는 미니PC Firebat ZY-A8
+  (Ryzen 7 8845HS · 16 스레드) 에서 최장 드레인 8.39 → **5.35 ms** (5 회 절사평균) · 대기열 대기 합계 약 2.3 s → 2 ms 미만 ·
+  처리량 32 → 65 MiB/s 다. 남은 초과는 대기가 아니라 그 호출이 CPU 를 실제로 쓴 몫이고, 수정 전 1 pane 에서도
+  5.49 ms 가 나왔다 — 16 pane 만의 문제가 아니다.
 - **수정 전 공정성은 pane 2 개부터 나빠지고 host 마다 크게 달랐다.** `drainFrame` 이 매 호출 `group.panes` 를
   **처음부터** 도는데 (숨은 탭에는 `inactive_drain_cursor` 가 있지만 **보이는 pane 에는 커서가 없다**)
   예산이 한 바퀴를 못 채우면 뒤 pane 이 다음 프레임에도 계속 뒤로 밀린다. 한 프레임에 한 바퀴를 도는

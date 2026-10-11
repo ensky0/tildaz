@@ -22,10 +22,24 @@ const RingBuffer = struct {
     buf: [SIZE]u8 align(64) = undefined,
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    /// Tab.deinit 신호 — set 시 push 가 spin 풀고 즉시 break. read_thread 가
+    /// Tab.deinit 신호 — set 시 push 가 기다림을 풀고 즉시 break. read_thread 가
     /// ring full 에 갇혀 deinit 의 read_thread.join 이 deadlock 되는 것 방지
     /// (Cmd+W 시연 시 발견된 회귀).
     closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// #639 — ring 이 차면 read thread 가 이 futex 에서 잠든다. `pop` · `close` 가 공간을
+    /// 만들거나 닫을 때 값을 올리고 깨운다 (`waitForSpace` 주석).
+    ///
+    /// 예전에는 잠들지 않고 `std.Thread.yield()` 를 계속 불렀다. 폭포 중에는 ring 이 늘 차
+    /// 있어서 pane 마다 read thread 가 CPU 하나를 거의 다 썼고 (Linux 16 pane 실측: 스레드마다
+    /// 87~93 %), 깨어 있는 스레드가 코어보다 많아지면 드레인하는 UI thread 가 실행 대기열에서
+    /// 기다렸다 (가장 긴 드레인 9.84 ms 중 6.19 ms 가 대기열). kitty · Alacritty · ghostty 도
+    /// 버퍼가 차면 잠든다. 실측과 관례는 #639 결과 댓글.
+    space_seq: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    /// read thread 가 `waitForSpace` 안에 있다는 표시. `pop` 은 이것이 켜졌을 때만 깨운다 —
+    /// 평소 드레인에는 원자 읽기 하나만 더해진다.
+    producer_waiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// futex 를 쓰려고 담는다 (`WriteQueue.io` 와 같은 이유). `Tab.init` 이 넣는다.
+    io: std.Io,
 
     /// #728 — 256 KiB. 폭포 중 키의 에코는 ring 에 밀린 출력 뒤에서 기다리므로 그 대기가
     /// *ring 크기 ÷ 파싱 속도* 다. 4 MiB 는 파싱이 느린 출력에서 에코를 0.1 초 넘게 늦췄다
@@ -40,6 +54,9 @@ const RingBuffer = struct {
     ///
     /// #728 — ring 이 차서 기다리기 시작할 때 `full_fn` 을 **한 번** 부른다. 다시 써 넣으면
     /// 표시를 풀어 다음에 막힐 때 또 알린다. 이유는 `Tab.output_full_fn` 주석에 있다.
+    ///
+    /// #639 — ring 이 차면 `waitForSpace` 에서 잠든다. `perf.push` 의 extra 는 그렇게 기다린
+    /// 횟수다 (덤프의 `waits`).
     fn push(
         self: *RingBuffer,
         data: []const u8,
@@ -59,7 +76,7 @@ const RingBuffer = struct {
                     full_notified = true;
                     if (full_fn) |notify| notify(full_userdata);
                 }
-                std.Thread.yield() catch {};
+                self.waitForSpace();
                 continue;
             }
             full_notified = false;
@@ -75,8 +92,38 @@ const RingBuffer = struct {
         return i;
     }
 
+    /// ring 에 공간이 생기거나 닫힐 때까지 read thread 를 재운다. 깨어난 뒤 공간을 다시
+    /// 재는 것은 호출자 (`push` 루프) 다 — futex 는 이유 없이 깰 수도 있다 (`std.Io.futexWait`).
+    ///
+    /// 깨우기를 놓치지 않는 순서 (eventcount):
+    ///
+    /// 1. `space_seq` 를 먼저 읽는다.
+    /// 2. `producer_waiting` 을 켠다.
+    /// 3. 그다음에 공간과 `closed` 를 다시 본다. 아직 막혀 있을 때만 1 의 값으로 잔다.
+    ///
+    /// `pop` 은 `tail` 을 쓴 뒤 `producer_waiting` 을 보고, `close` 는 `closed` 를 쓴 뒤 무조건
+    /// `space_seq` 를 올린다. 모두 `seq_cst` 라 둘 중 하나는 반드시 성립한다 — 3 이 새 공간 ·
+    /// `closed` 를 보거나, 깨우는 쪽이 1 뒤에 `space_seq` 를 올려 futex 가 바로 돌아온다.
+    fn waitForSpace(self: *RingBuffer) void {
+        const seq = self.space_seq.load(.seq_cst);
+        self.producer_waiting.store(true, .seq_cst);
+        defer self.producer_waiting.store(false, .monotonic);
+        if (self.closed.load(.seq_cst)) return;
+        const pos = self.head.load(.monotonic);
+        const t = self.tail.load(.seq_cst);
+        const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
+        if (free != 0) return;
+        self.io.futexWaitUncancelable(u32, &self.space_seq.raw, seq);
+    }
+
+    fn wakeProducer(self: *RingBuffer) void {
+        _ = self.space_seq.fetchAdd(1, .seq_cst);
+        self.io.futexWake(u32, &self.space_seq.raw, 1);
+    }
+
     fn close(self: *RingBuffer) void {
-        self.closed.store(true, .release);
+        self.closed.store(true, .seq_cst);
+        self.wakeProducer();
     }
 
     fn isEmpty(self: *RingBuffer) bool {
@@ -94,7 +141,10 @@ const RingBuffer = struct {
         if (n > first) {
             @memcpy(out[first..n], self.buf[0 .. n - first]);
         }
-        self.tail.store((t + n) % SIZE, .release);
+        // #639 — `seq_cst` 는 `waitForSpace` 의 순서 주석 때문이다. 이 쓰기가 read thread 의
+        // 재확인보다 늦으면 그쪽이 켠 `producer_waiting` 을 반드시 본다.
+        self.tail.store((t + n) % SIZE, .seq_cst);
+        if (self.producer_waiting.load(.seq_cst)) self.wakeProducer();
         return n;
     }
 };
@@ -286,7 +336,8 @@ pub const Tab = struct {
     /// 곳 (`releaseHiddenRenderStates`) 이 비우고, 다음에 보일 때 `update` 가 다시 채운다
     /// — 이전 공유 state 가 탭 전환마다 전체 재구축하던 것과 같은 비용이다.
     render_state: ghostty.RenderState = .empty,
-    output_ring: RingBuffer = .{},
+    /// #639 — `io` 를 담아야 해서 기본값이 없다. `Tab.init` 이 `rt.io` 로 채운다.
+    output_ring: RingBuffer,
     /// stress 하네스가 pane별 공정성을 직접 재는 누적값. `drainOutputChunk`를 호출하는
     /// UI thread 하나만 쓰고 하네스가 같은 thread에서 읽으므로 atomic이 필요 없다.
     stress_drain_chunks: u64 = 0,
@@ -359,6 +410,7 @@ pub const Tab = struct {
             .stream = undefined,
             .backend = backend,
             .title_clock = title_clock,
+            .output_ring = .{ .io = rt.io },
             .write_queue = .{ .io = rt.io },
             .tab_exit_fn = tab_exit_fn,
             .tab_exit_userdata = tab_exit_userdata,
@@ -402,10 +454,10 @@ pub const Tab = struct {
 
     fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
         tab.write_queue.close();
-        // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 spin 하던
+        // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 기다리던
         // 중이라도 즉시 break. 이게 없으면 backend.deinit 의 read_thread.join
         // 이 deadlock: paste 후 ring full + main thread 가 deinit 진행 중이라
-        // drain 못 함 → push 가 free 공간 안 생겨 spin → join 영원히 안 됨.
+        // drain 못 함 → push 가 free 공간 안 생겨 기다림 → join 영원히 안 됨.
         tab.output_ring.close();
 
         // 순서 핵심 — backend.deinit 을 *먼저* 부른 뒤 write_thread.join.
@@ -761,7 +813,7 @@ pub fn initVtTerminal(
 
 test "#728 — ring 이 차면 기다리기 전에 한 번 알리고, 비면 마저 넣는다" {
     const State = struct {
-        ring: RingBuffer = .{},
+        ring: RingBuffer = .{ .io = std.testing.io },
         calls: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
         fn onFull(userdata: ?*anyopaque) void {
@@ -793,6 +845,79 @@ test "#728 — ring 이 차면 기다리기 전에 한 번 알리고, 비면 마
     thread.join();
     // 64 byte 를 비웠으니 16 byte 는 한 번 막힌 뒤 바로 들어간다 — 통보도 한 번이다.
     try std.testing.expectEqual(@as(u32, 1), state.calls.load(.acquire));
+}
+
+test "#639 — ring 이 차서 잠든 read thread 를 close 가 깨운다" {
+    const State = struct {
+        ring: RingBuffer = .{ .io = std.testing.io },
+        wrote: usize = std.math.maxInt(usize),
+
+        fn producer(self: *@This()) void {
+            self.wrote = self.ring.push("more", null, null);
+        }
+    };
+    const allocator = std.testing.allocator;
+    const state = try allocator.create(State);
+    defer allocator.destroy(state);
+    state.* = .{};
+
+    const fill = try allocator.alloc(u8, RingBuffer.SIZE - 1);
+    defer allocator.free(fill);
+    @memset(fill, 'x');
+    try std.testing.expectEqual(fill.len, state.ring.push(fill, null, null));
+
+    const thread = try std.Thread.spawn(.{}, State.producer, .{state});
+    // 잠들기 직전 표시가 켜질 때까지 기다린다. 켜진 뒤 바로 닫아도 순서 주석대로 놓치지 않는다.
+    while (!state.ring.producer_waiting.load(.acquire)) std.Thread.yield() catch {};
+    state.ring.close();
+    thread.join();
+    try std.testing.expectEqual(@as(usize, 0), state.wrote);
+}
+
+test "#639 — 잠들고 깨우는 동안 byte 를 잃거나 순서가 바뀌지 않는다" {
+    const total = 4 * 1024 * 1024;
+    const State = struct {
+        ring: RingBuffer = .{ .io = std.testing.io },
+
+        fn byteAt(i: usize) u8 {
+            return @truncate(i *% 31 +% (i >> 11));
+        }
+
+        // ring 보다 훨씬 많이 넣어 수없이 잠들게 한다. 깨우기를 하나라도 놓치면 여기서 멈춘다.
+        fn producer(self: *@This()) void {
+            var buf: [3000]u8 = undefined;
+            var i: usize = 0;
+            while (i < total) {
+                const n = @min(buf.len, total - i);
+                for (buf[0..n], 0..) |*b, k| b.* = byteAt(i + k);
+                _ = self.ring.push(buf[0..n], null, null);
+                i += n;
+            }
+        }
+    };
+    const allocator = std.testing.allocator;
+    const state = try allocator.create(State);
+    defer allocator.destroy(state);
+    state.* = .{};
+
+    const thread = try std.Thread.spawn(.{}, State.producer, .{state});
+    var out: [7001]u8 = undefined;
+    var got: usize = 0;
+    var mismatch: ?usize = null;
+    while (got < total) {
+        const n = state.ring.pop(&out);
+        if (n == 0) {
+            std.Thread.yield() catch {};
+            continue;
+        }
+        for (out[0..n], 0..) |b, k| {
+            if (mismatch == null and b != State.byteAt(got + k)) mismatch = got + k;
+        }
+        got += n;
+    }
+    thread.join();
+    try std.testing.expectEqual(@as(?usize, null), mismatch);
+    try std.testing.expect(state.ring.isEmpty());
 }
 
 test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled" {

@@ -36,3 +36,4 @@ Internal changes belong in neither.
 - macOS: thinner, sharper text by default, with `[font] macos_smoothing` to switch back ([#527](https://github.com/ensky0/tildaz/issues/527)).
 - macOS: while a program is printing a lot, keys show up on screen one frame sooner, and the occasional extra 4–8 ms wait is gone ([#732](https://github.com/ensky0/tildaz/issues/732)).
 - While a program is printing a lot, what you type shows up much sooner — often around 100 ms sooner for heavy output such as CJK or emoji ([#728](https://github.com/ensky0/tildaz/issues/728)).
+- While a program is printing a lot, each tab or pane no longer keeps a CPU core busy, so heavy output in many panes is faster ([#639](https://github.com/ensky0/tildaz/issues/639)).

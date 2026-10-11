@@ -103,7 +103,7 @@ fn recordLatency(c: *Counter, h: *Histogram, delta: u64) void {
 }
 
 pub var readloop: Counter = .{}; // ReadFile from ConPTY pipe
-pub var push: Counter = .{}; // ring.push — extra = yield spins (full)
+pub var push: Counter = .{}; // ring.push — extra = ring 이 차서 기다린 횟수 (#639)
 pub var drain: Counter = .{}; // drainOutput — ns covers whole loop, bytes = popped
 pub var parse: Counter = .{}; // stream.nextSlice alone
 pub var render: Counter = .{}; // 첫 drawPane 부터 endFrame 의 Present 직전까지 (프레임당 한 번)
@@ -514,7 +514,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
         &buf,
         "\n=== {s} @ ts={d}ms ===\n" ++
             "readloop calls={d} bytes={d} ms={d:.3}\n" ++
-            "push     calls={d} bytes={d} yields={d}\n" ++
+            "push     calls={d} bytes={d} waits={d}\n" ++
             "drain    calls={d} bytes={d} ms={d:.3}\n" ++
             "parse    calls={d} ms={d:.3}\n" ++
             "render   calls={d} ms={d:.3}\n" ++
