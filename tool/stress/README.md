@@ -405,24 +405,32 @@ pane 1 · 2 · 4 · 8 을 5 회씩 다시 잰 회차도 손실이 pane 당 16 by
 | Linux · Intel i5-1240P (64 MiB) | `zwj` **6.1~6.2 %** (5/5) · `plain` **0.9~2.5 %** (5/5) | **0** (10/10) |
 | Windows · AMD Ryzen AI 7 350 (64 MiB) | `zwj` **6.3~6.5 %** (5/5) · `plain` 2/5 에서 265 KB~1.25 MB | **16 byte** |
 
-그래서 판정은 `== 0` 이 아니라 **수십 byte 이내**예요. 실제 결함은 **수백 KB~수 MB** 규모라 이
-경계로 충분히 갈려요.
+예전 판정은 `== 0` 이 아니라 **수십 byte 이내**였어요 (아래 teardown 때문에). 지금은 그 byte 를
+`dropped` 로 따로 세서 **손실이 0 이어야 해요** ([#745](https://github.com/ensky0/tildaz/issues/745)).
+실제 결함은 **수백 KB~수 MB** 규모예요.
 
 **Windows 의 16 byte 는 ConPTY teardown 이에요 — 결함이 아니에요**
 ([#398](https://github.com/ensky0/tildaz/issues/398) 에서 확정). 자식이 끝날 때 ConPTY 가
 `ESC[?1004l` + `ESC[?9001l` (8+8 = **16 byte**) 를 보내요. 시작할 때 보내는 협상 preamble
 `…1004h` · `…9001h` 의 짝이고 ([#385](https://github.com/ensky0/tildaz/issues/385)), **창이 닫히는
-참의 모드 해제라 파싱할 것이 없어요.** ConPTY 가 없는 Linux · macOS 가 0 인 것도 이걸로 설명돼요.
+참의 모드 해제라 파싱할 것이 없어요.** Linux 의 bash 도 탭이 닫히며 SIGHUP 을 받으면 같은 일을
+해요 — `ESC[?2004l` 등 **28 byte** 예요 ([#741](https://github.com/ensky0/tildaz/issues/741)). 셸이
+프롬프트로 남은 채 닫을 때만 나와서, producer 가 곧 `-e` 프로세스인 회차는 0 이에요.
 
 그래서 **`push bytes` 를 함께 봐요.**
 
 | 지표 | 뜻 | 정상값 |
 |---|---|---|
-| `readloop bytes` | PTY 에서 **읽은** 양 | teardown 16 을 포함해요 (Windows) |
+| `readloop bytes` | PTY 에서 **읽은** 양 | teardown 을 포함해요 |
 | `push bytes` | ring 에 **넣은** 양 | — |
+| `dropped bytes` | ring 이 이미 닫혀 **버린** 양 — 위 teardown | Windows **16** · bash 프롬프트로 닫으면 **28** · 나머지 0 |
 | `drain bytes` | **소화한** 양 | — |
 | **`push − drain`** | 진짜 손실 | **0 이어야 해요** |
-| `readloop − drain` | 위 + teardown | Windows 는 **16**, 나머지는 0 |
+| **`readloop − drain − dropped`** | 같은 손실을 읽은 양에서 본 것 (`measure-repeat` 의 `lost_bytes`) | **0 이어야 해요** |
+
+사용자가 폭포 **중에** 닫으면 (`Ctrl+Shift+W`) 그 뒤에 읽힌 출력도 `dropped` 로 가요 — 닫을 때 ring 을
+먼저 닫아서예요 ([#741](https://github.com/ensky0/tildaz/issues/741)). 측정을 중간에 그만둔 것이라 손실이
+아니에요. 폭포를 다 보낸 뒤 닫으면 남은 출력은 그대로 다 파싱해서 `dropped` 는 teardown 몫뿐이에요.
 
 `push` 가 예전에는 `data.len` 을 세어서 (실제로 넣은 양이 아니라) 이 구분이 안 됐어요 — 그때는
 `push bytes == readloop bytes` 라 teardown 이 손실처럼 보였어요.

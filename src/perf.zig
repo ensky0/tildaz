@@ -104,6 +104,10 @@ fn recordLatency(c: *Counter, h: *Histogram, delta: u64) void {
 
 pub var readloop: Counter = .{}; // ReadFile from ConPTY pipe
 pub var push: Counter = .{}; // ring.push — extra = ring 이 차서 기다린 횟수 (#639)
+/// #745 — ring 이 이미 닫혀 `push` 가 못 넣고 버린 byte. 탭이 닫히는 참에 셸 · ConPTY 가 낸
+/// 모드 해제 같은 것이라 손실이 아니다 (Windows 16 · bash 28 byte). 따로 세어야 진짜 손실
+/// (`readloop − drain − dropped`) 이 0 으로 읽힌다.
+pub var dropped: Counter = .{};
 pub var drain: Counter = .{}; // drainOutput — ns covers whole loop, bytes = popped
 pub var parse: Counter = .{}; // stream.nextSlice alone
 pub var render: Counter = .{}; // 첫 drawPane 부터 endFrame 의 Present 직전까지 (프레임당 한 번)
@@ -460,6 +464,11 @@ pub fn addTimedBytes(c: *Counter, start: Timestamp, bytes: u64) void {
     _ = c.bytes.fetchAdd(bytes, .monotonic);
 }
 
+pub fn addBytes(c: *Counter, bytes: u64) void {
+    _ = c.calls.fetchAdd(1, .monotonic);
+    _ = c.bytes.fetchAdd(bytes, .monotonic);
+}
+
 pub fn incExtra(c: *Counter) void {
     _ = c.extra.fetchAdd(1, .monotonic);
 }
@@ -476,6 +485,7 @@ pub fn snapshot(c: *Counter) [4]u64 {
 pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     const rl = snapshot(&readloop);
     const pu = snapshot(&push);
+    const dp = snapshot(&dropped);
     const dr = snapshot(&drain);
     const pa = snapshot(&parse);
     const re = snapshot(&render);
@@ -515,6 +525,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
         "\n=== {s} @ ts={d}ms ===\n" ++
             "readloop calls={d} bytes={d} ms={d:.3}\n" ++
             "push     calls={d} bytes={d} waits={d}\n" ++
+            "dropped  calls={d} bytes={d}\n" ++
             "drain    calls={d} bytes={d} ms={d:.3}\n" ++
             "parse    calls={d} ms={d:.3}\n" ++
             "render   calls={d} ms={d:.3}\n" ++
@@ -540,6 +551,8 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
             pu[0],
             pu[2],
             pu[3],
+            dp[0],
+            dp[2],
             dr[0],
             dr[2],
             @as(f64, @floatFromInt(dr[1])) / 1_000_000.0,
