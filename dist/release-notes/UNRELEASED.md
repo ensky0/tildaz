@@ -19,21 +19,4 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-- macOS: `⌘Q` now follows the `quit` entry in `[keys]`. If you changed or emptied it, `⌘Q` no longer quits ([#713](https://github.com/ensky0/tildaz/issues/713)).
-- Selecting text with the mouse no longer replaces the clipboard. Copy with `Ctrl+Shift+C` (`Cmd+C` on macOS) or a right-click, or set `copy_on_select = true` in `[input]` to get the old behavior back ([#656](https://github.com/ensky0/tildaz/issues/656)).
-
-- macOS: text is drawn with thinner strokes by default, as in iTerm2 and Ghostty. For the old, heavier look, set `macos_smoothing = true` under `[font]` ([#527](https://github.com/ensky0/tildaz/issues/527)).
-
 ## Body candidates
-
-- macOS: changing the quit shortcut in `[keys]` now works ([#713](https://github.com/ensky0/tildaz/issues/713)).
-- The arrow keys in the `⋯` menu now move in the order you see ([#712](https://github.com/ensky0/tildaz/issues/712)).
-- Windows: a new tab scrolls into view in the tab bar, and the pointer shape updates right after a split ([#692](https://github.com/ensky0/tildaz/issues/692)).
-- Linux: a mouse selection goes to the primary selection, and middle-click pastes it ([#657](https://github.com/ensky0/tildaz/issues/657)).
-- Right-click copies the selection when there is one, and pastes when there is none ([#656](https://github.com/ensky0/tildaz/issues/656)).
-- Programs can copy to the clipboard with OSC 52, so copying in tmux, even over SSH, lands in your clipboard ([#266](https://github.com/ensky0/tildaz/issues/266)).
-- Fixed a crash when a narrower window or pane cut a wide character such as Korean in a full-screen app ([#723](https://github.com/ensky0/tildaz/issues/723)).
-- macOS: thinner, sharper text by default, with `[font] macos_smoothing` to switch back ([#527](https://github.com/ensky0/tildaz/issues/527)).
-- macOS: while a program is printing a lot, keys show up on screen one frame sooner, and the occasional extra 4–8 ms wait is gone ([#732](https://github.com/ensky0/tildaz/issues/732)).
-- While a program is printing a lot, what you type shows up much sooner — often around 100 ms sooner for heavy output such as CJK or emoji ([#728](https://github.com/ensky0/tildaz/issues/728)).
-- While a program is printing a lot, each tab or pane no longer keeps a CPU core busy, so heavy output in many panes is faster ([#639](https://github.com/ensky0/tildaz/issues/639)).
