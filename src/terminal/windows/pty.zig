@@ -88,12 +88,14 @@ const ConptyCreateFn = *const fn (COORD, HANDLE, HANDLE, DWORD, *HPCON) callconv
 const ConptyResizeFn = *const fn (HPCON, COORD) callconv(.c) HRESULT;
 const ConptyCloseFn = *const fn (HPCON) callconv(.c) void;
 const ConptyShowHideFn = *const fn (HPCON, BOOL) callconv(.c) HRESULT;
+const ConptyReleaseFn = *const fn (HPCON) callconv(.c) HRESULT;
 
 var conpty_dll_loaded: bool = false;
 var conpty_create_fn: ?ConptyCreateFn = null;
 var conpty_resize_fn: ?ConptyResizeFn = null;
 var conpty_close_fn: ?ConptyCloseFn = null;
 var conpty_show_hide_fn: ?ConptyShowHideFn = null;
+var conpty_release_fn: ?ConptyReleaseFn = null;
 
 // `buf` 의 dir prefix (`dir_end` 까지) 뒤에 `_internal\...` suffix + NUL 을 써서
 // 절대경로를 만든다. 버퍼가 모자라면 null. 반환 슬라이스는 buf 를 가리키므로
@@ -146,12 +148,16 @@ fn ensureConptyDll() void {
     // 순서를 따라 CreateProcessW 전에 호출해 OpenConsole 의 pseudo window 를
     // 활성화한다.
     conpty_show_hide_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyShowHidePseudoConsole")));
-    if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null) {
+    // #744 — Release 는 필수다. 이것이 없으면 마지막 클라이언트가 떠나도 conhost 가 살아 있어
+    // 출력 파이프가 끊기지 않고, 측정 역할의 탭이 영영 닫히지 않는다 (`ConPty.init` 의 호출 자리).
+    conpty_release_fn = @ptrCast(@alignCast(GetProcAddress(mod, "ConptyReleasePseudoConsole")));
+    if (conpty_create_fn == null or conpty_resize_fn == null or conpty_close_fn == null or conpty_release_fn == null) {
         log.appendLine("conpty", "bundled conpty.dll loaded but required symbols missing", .{});
         conpty_create_fn = null;
         conpty_resize_fn = null;
         conpty_close_fn = null;
         conpty_show_hide_fn = null;
+        conpty_release_fn = null;
         return;
     }
     // 성공 로그는 두지 않는다 — fallback 이 없어 "앱이 돌아감 = 번들 사용" 이
@@ -296,6 +302,8 @@ const GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
 const WAIT_OBJECT_0: DWORD = 0;
 const ERROR_IO_PENDING: DWORD = 997;
+/// #744 — `CancelIoEx` 로 취소된 read. `deinit` 이 read thread 를 멈추는 길이라 출력 EOF 가 아니다.
+const ERROR_OPERATION_ABORTED: DWORD = 995;
 
 /// `ClosePseudoConsole` 이 보낸 `CTRL_CLOSE_EVENT` 를 자식이 처리할 시간 (#611).
 ///
@@ -655,6 +663,21 @@ pub const ConPty = struct {
         restore_env(allocator, extra_env, &saved_vals);
         if (!spawned) return error.CreateProcessFailed;
 
+        // #744 — 우리 `HPCON` 이 쥔 참조 핸들 (`\Reference`) 을 놓는다. 그 핸들이 ConDrv 서버
+        // 파이프를 열어 두어 conhost 를 살려 두기 때문에, 놓지 않으면 마지막 콘솔 클라이언트가
+        // 떠나도 conhost 가 끝나지 않고 출력 파이프도 끊기지 않는다. 놓으면 마지막 클라이언트가
+        // 떠날 때 conhost 가 끝나고 `ReadFile` 이 `ERROR_BROKEN_PIPE` 를 낸다 — readLoop 의
+        // `eof_cb` 가 그것이다 ([winconpty.cpp](https://github.com/microsoft/terminal/blob/7d06b26f73ef4bcb78b56647c395251eeee4c2bc/src/winconpty/winconpty.cpp#L558-L562)).
+        // 자식을 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 로 붙인 **뒤**에 불러야 한다 — 그 전이면
+        // 클라이언트가 없는 순간 conhost 가 끝날 수 있다. Windows Terminal 도 같은 자리에서 부른다
+        // ([ConptyConnection.cpp](https://github.com/microsoft/terminal/blob/7d06b26f73ef4bcb78b56647c395251eeee4c2bc/src/cascadia/TerminalConnection/ConptyConnection.cpp#L451)).
+        // 일반 역할은 셸이 끝나면 바로 탭을 닫으므로 이 호출로 달라지는 것이 없다. 실패해도 셸은
+        // 이미 떴으니 되돌리지 않고 남긴다 — 그러면 측정 역할만 셸 종료 뒤 출력 EOF 를 못 받는다.
+        const release_hr = conpty_release_fn.?(hpc);
+        if (release_hr < 0) {
+            log.appendLine("conpty", "ConptyReleasePseudoConsole failed (hr=0x{x})", .{@as(u32, @bitCast(release_hr))});
+        }
+
         // ── DA1 pre-response (번들 OpenConsole 3초 지연 회피)
         //
         // microsoft/terminal `src/host/VtIo.cpp` 의 `StartIfNeeded()` 는 기동 시
@@ -766,12 +789,14 @@ pub const ConPty = struct {
         if (hr < 0) return error.ResizeFailed;
     }
 
-    pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, userdata: ?*anyopaque) !void {
-        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out_read, self.read_event, callback, userdata });
+    pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, eof_cb: ?ExitCallback, userdata: ?*anyopaque) !void {
+        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out_read, self.read_event, callback, eof_cb, userdata });
         self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.process_info.hProcess, exit_cb, userdata });
     }
 
-    fn readLoop(pipe: HANDLE, read_event: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
+    /// #744 — 출력 파이프가 끝나면 (오류 · 0 byte) `eof_cb` 를 부른다. `deinit` 의 `CancelIoEx` 로
+    /// 취소된 read (`ERROR_OPERATION_ABORTED`) 는 멈추라는 신호라 부르지 않는다.
+    fn readLoop(pipe: HANDLE, read_event: HANDLE, callback: ReadCallback, eof_cb: ?ExitCallback, userdata: ?*anyopaque) void {
         var buf: [READ_BUF_SIZE]u8 = undefined;
         while (true) {
             var overlapped = OVERLAPPED{ .hEvent = read_event };
@@ -802,14 +827,19 @@ pub const ConPty = struct {
             const ok = ReadFile(pipe, &buf, buf.len, &bytes_read, @ptrCast(&overlapped));
             if (!ok.toBool()) {
                 const err = GetLastError();
+                if (err == ERROR_OPERATION_ABORTED) return;
                 if (err != ERROR_IO_PENDING) break;
-                if (!GetOverlappedResult(pipe, &overlapped, &bytes_read, .TRUE).toBool()) break;
+                if (!GetOverlappedResult(pipe, &overlapped, &bytes_read, .TRUE).toBool()) {
+                    if (GetLastError() == ERROR_OPERATION_ABORTED) return;
+                    break;
+                }
                 t0 = perf.now();
             }
             perf.addTimedBytes(&perf.readloop, t0, @intCast(bytes_read));
             if (bytes_read == 0) break;
             callback(buf[0..bytes_read], userdata);
         }
+        if (eof_cb) |cb| cb(userdata);
     }
 
     fn processWaitLoop(process_handle: HANDLE, exit_cb: ExitCallback, userdata: ?*anyopaque) void {

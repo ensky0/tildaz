@@ -57,8 +57,10 @@ pub const Backend = struct {
         self: *Backend,
         read_cb: terminal.ReadCallback,
         exit_cb: terminal.ExitCallback,
+        /// #744 — 출력이 끝났을 때 (read 가 EOF · 파이프 끊김). 끝내라는 신호로 멈출 때는 안 온다.
+        eof_cb: ?terminal.ExitCallback,
         userdata: ?*anyopaque,
     ) !void {
-        return self.pty.startReadThread(read_cb, exit_cb, userdata);
+        return self.pty.startReadThread(read_cb, exit_cb, eof_cb, userdata);
     }
 };

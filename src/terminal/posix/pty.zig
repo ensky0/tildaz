@@ -252,9 +252,10 @@ pub const Pty = struct {
         self: *Pty,
         callback: ReadCallback,
         exit_cb: ExitCallback,
+        eof_cb: ?ExitCallback,
         userdata: ?*anyopaque,
     ) !void {
-        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.master_fd, self.shutdown_pipe[0], callback, userdata });
+        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.master_fd, self.shutdown_pipe[0], callback, eof_cb, userdata });
         self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.child_pid, &self.child_exited, exit_cb, userdata });
     }
 };
@@ -412,17 +413,19 @@ fn resizeFd(fd: posix.fd_t, cols: u16, rows: u16) !void {
     }
 }
 
-fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCallback, userdata: ?*anyopaque) void {
+/// #744 — master 가 EOF (`read` 0 · 오류 — Linux 는 slave 를 쥔 프로세스가 다 사라지면 `EIO`) 로
+/// 끝나면 `eof_cb` 를 부른다. shutdown pipe 로 멈출 때는 출력이 끝난 것이 아니라 부르지 않는다.
+fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCallback, eof_cb: ?Pty.ExitCallback, userdata: ?*anyopaque) void {
     var buf: [65536]u8 = undefined;
     var fds = [_]posix.pollfd{
         .{ .fd = master_fd, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = shutdown_fd, .events = posix.POLL.IN, .revents = 0 },
     };
     while (true) {
-        if (sysFailed(posix.system.poll(&fds, fds.len, -1))) break;
+        if (sysFailed(posix.system.poll(&fds, fds.len, -1))) return;
         // #223 — deinit 이 self-pipe 로 깨움 (daemon 이 slave 를 쥐어 master 에
         // EOF 가 안 와도 read thread 안전 종료 → join deadlock 회피).
-        if ((fds[1].revents & posix.POLL.IN) != 0) break;
+        if ((fds[1].revents & posix.POLL.IN) != 0) return;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0) {
             // #160/#254 — poll 대기 (idle) 는 계측 밖, read 복사 시간만.
             // #394 로 **Windows 도 같은 범위**다 (`terminal/windows/pty.zig` 의 readLoop
@@ -438,6 +441,7 @@ fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCa
             callback(buf[0..n], userdata);
         }
     }
+    if (eof_cb) |cb| cb(userdata);
 }
 
 fn processWaitLoop(
@@ -505,7 +509,7 @@ test "pty — /bin/sh spawn·echo 왕복·extra_env 우선·exit" {
     // extra_env 의 SHELL 이 부모값을 override 하는지 (#118 정책) 함께 검증.
     const extra = [_]Pty.EnvVar{.{ .name = "SHELL", .value = "/tmp/tz-pty-test-sentinel" }};
     var pty = try Pty.init(testRuntime(), std.testing.allocator, 80, 24, "/bin/sh", &extra, null);
-    try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
+    try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null, null);
 
     _ = try pty.write("echo pty_roundtrip_$SHELL\n");
     var waited_ms: u64 = 0;
@@ -548,7 +552,7 @@ test "pty — cwd 지정 시 그 디렉토리에서 시작, 갈 수 없으면 �
         TestCollector.reset();
         var pty = try Pty.init(testRuntime(), std.testing.allocator, 80, 24, "/bin/sh", null, "/");
         defer pty.deinit();
-        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
+        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null, null);
 
         _ = try pty.write("[ \"$PWD\" = \"/\" ] && echo tz366_root_ok\n");
         try std.testing.expect(waitFor("tz366_root_ok"));
@@ -568,7 +572,7 @@ test "pty — cwd 지정 시 그 디렉토리에서 시작, 갈 수 없으면 �
             "/tz366-does-not-exist",
         );
         defer pty.deinit();
-        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null);
+        try pty.startReadThread(TestCollector.onRead, TestCollector.onExit, null, null);
 
         // 현재 위치를 기억한 뒤 홈으로 이동해 같은 곳인지 본다 ($HOME 이 심볼릭
         // 링크여도 양쪽 모두 `getcwd` 결과라 문자열이 일치한다).

@@ -347,6 +347,13 @@ pub const Tab = struct {
     write_thread: ?std.Thread = null,
     tab_exit_fn: SessionCore.TabExitNotify,
     tab_exit_userdata: ?*anyopaque = null,
+    /// #744 — 측정 역할에서 셸 종료와 출력 EOF 중 몇 개가 왔는지. 둘 다 와야 탭을 닫는다
+    /// (`onStressEnd`). 두 통보가 다른 스레드 (wait · read) 에서 오므로 원자 값이다.
+    stress_end_events: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    /// #744 — `deinit` 이 시작됐다. 그 뒤의 셸 종료 통보는 우리가 탭을 정리하며 셸을 끝낸
+    /// 결과라 "출력이 끝나기를 기다린다" 가 아니다 — `onStressEnd` 가 그 로그를 남기지 않는다.
+    /// wait thread 가 읽으므로 원자 값이다.
+    closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// #439 — PTY 출력이 ring 에 들어갔다는 것을 host 에 알린다 (유휴 깨우기).
     ///
     /// **read thread 에서 불린다** — 구현은 다른 스레드에서 불러도 되는 것만 써야 한다
@@ -453,6 +460,8 @@ pub const Tab = struct {
     }
 
     fn deinit(tab: *Tab, alloc: std.mem.Allocator) void {
+        // #744 — 아래 `backend.deinit` 이 셸을 끝내면 셸 종료 통보가 온다. 그보다 먼저 세운다.
+        tab.closing.store(true, .release);
         tab.write_queue.close();
         // output_ring 도 close 신호 → read_thread 가 ring.push 안에서 기다리던
         // 중이라도 즉시 break. 이게 없으면 backend.deinit 의 read_thread.join
@@ -497,11 +506,10 @@ pub const Tab = struct {
         // drainOutputChunk 는 ring 이 비면 false 라 그 자체가 종료 조건이다.
         //
         // `.pty_exited` 는 ring 을 닫지 않는다 — 자식이 끝난 순간 PTY 에 남은 마지막 출력을
-        // read thread 가 마저 넣어야 해서다. 그런데 그 통보는 **자식 프로세스가 끝난 때**이지
-        // 출력이 끝난 때 (EOF) 가 아니다 (POSIX `waitpid` · Windows `WaitForSingleObject`).
-        // 그래서 `-e` 러너가 producer 를 배경으로 두고 먼저 끝나면, producer 가 쓰는 동안 이
-        // 루프가 사용자 닫기 때와 같이 돈다 (#741 댓글 — 코드 판정). 측정 절차는 끝을
-        // `Ctrl+Shift+W` 로 내고 `zig build stress` 는 producer 가 곧 `-e` 프로세스라 해당 없다.
+        // read thread 가 마저 넣어야 해서다. #744 이후 측정 역할의 그 닫기는 셸 종료와 **출력
+        // EOF 가 둘 다** 온 뒤에만 오므로 (`onStressEnd`) read thread 는 이미 끝났고, 이 루프는
+        // ring 에 남은 것만 돈다. 그 전에는 셸이 배경으로 띄운 producer 가 계속 쓰는 동안 여기서
+        // 멈췄다.
         while (tab.drainOutputChunk() > 0) {}
     }
 
@@ -725,7 +733,31 @@ pub const Tab = struct {
     fn onPtyExit(userdata: ?*anyopaque) void {
         const tab: *Tab = @ptrCast(@alignCast(userdata.?));
         log.appendLine("tab", "shell exited: title={s}", .{tab.title[0..tab.title_len]});
+        if (instance_context.isStress()) return tab.onStressEnd(.shell_exited);
         tab.tab_exit_fn(@intFromPtr(tab), tab.tab_exit_userdata);
+    }
+
+    /// #744 — 출력이 끝났다 (read 루프가 EOF 로 끝남). 일반 역할은 쓰지 않는다 — 셸이 끝나면
+    /// 바로 닫는다 (Alacritty · ghostty 와 같다).
+    fn onPtyEof(userdata: ?*anyopaque) void {
+        const tab: *Tab = @ptrCast(@alignCast(userdata.?));
+        if (instance_context.isStress()) tab.onStressEnd(.output_ended);
+    }
+
+    /// #744 — 측정 역할의 탭은 **셸 종료와 출력 EOF 가 둘 다** 온 뒤에 닫는다 (kitty 기본 ·
+    /// Windows Terminal 과 같다). 셸 종료만으로 닫으면, 셸이 배경으로 띄운 producer 가 계속
+    /// 쓰는 동안 `finishStressOutput` 이 UI thread 에서 "빌 때까지" 돌아 앱이 멈췄다 (Linux
+    /// 12.8 초 · Windows 15 초). 여기서 기다리면 그동안은 평소처럼 프레임마다 드레인하고, 닫을
+    /// 때는 read thread 가 이미 끝나 ring 하나만큼만 남는다.
+    fn onStressEnd(tab: *Tab, event: enum { shell_exited, output_ended }) void {
+        if (tab.stress_end_events.fetchAdd(1, .acq_rel) == 1) {
+            tab.tab_exit_fn(@intFromPtr(tab), tab.tab_exit_userdata);
+            return;
+        }
+        // 먼저 온 쪽이다. 셸이 먼저 끝났으면 출력을 쥔 프로세스가 남아 있다는 뜻이라 남겨 둔다 —
+        // 측정이 안 끝날 때 이 줄이 원인을 가리킨다. 탭을 닫는 중이면 셸은 우리가 끝낸 것이라
+        // 남기지 않는다 — 예전에는 사용자가 닫을 때마다 이 줄이 찍혀 원인을 잘못 가리켰다.
+        if (event == .shell_exited and !tab.closing.load(.acquire)) log.appendLine("tab", "stress: shell exited before its output ended — keeping the tab until the output ends (#744)", .{});
     }
 
     /// stress 하네스 전용 통로 (#371) — `drainFrame` 의 프레임 예산을 거치지 않고
@@ -1659,7 +1691,7 @@ pub const SessionCore = struct {
         tab.output_full_userdata = self.output_full_userdata;
         tab.clipboard_write_fn = self.clipboard_write_fn;
         tab.clipboard_write_userdata = self.clipboard_write_userdata;
-        try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
+        try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, Tab.onPtyEof, tab);
         return tab;
     }
 
@@ -2851,6 +2883,63 @@ test "POSIX: #741 — stress 에서 출력이 쏟아지는 중에 사용자가 �
     const drained = perf.snapshot(&perf.drain)[2];
     try std.testing.expect(drained > 0);
     try std.testing.expect(drained <= RingBuffer.SIZE);
+}
+
+/// #744 — 셸이 SIGHUP 을 무시하는 배경 writer 를 남기고 먼저 끝난다. 셸이 끝난 뒤 0.3 초에
+/// 받은 닫기 요청 수와, 그 뒤 5 초 안에 받은 닫기 요청 수를 돌려준다.
+fn shellExitsBeforeOutput(role: instance_context.Role) ![2]u32 {
+    const Exit = struct {
+        var calls = std.atomic.Value(u32).init(0);
+        fn notify(_: usize, _: ?*anyopaque) void {
+            _ = calls.fetchAdd(1, .acq_rel);
+        }
+    };
+    Exit.calls.store(0, .release);
+    const previous_role = instance_context.currentRole();
+    instance_context.setRole(role);
+    defer instance_context.setRole(previous_role);
+
+    const rt = testRuntime();
+    var session = SessionCore.init(rt, std.testing.allocator, "/bin/sh", 100, null, null, &Exit.notify, null);
+    defer session.deinit();
+    try session.createTab(80, 24);
+    const tab = session.activeTab().?;
+    tab.queueWrite("trap '' HUP; (sleep 1; echo late) & exit\n");
+
+    const timer: runtime.Timer = .start(rt);
+    while (!tab.backend.pty.child_exited.load(.acquire)) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.ShellNeverExited;
+        rt.sleepNs(std.time.ns_per_ms);
+    }
+    rt.sleepNs(300 * std.time.ns_per_ms);
+    const early = Exit.calls.load(.acquire);
+    const t1 = timer.read();
+    while (Exit.calls.load(.acquire) == 0 and timer.read() - t1 < 5 * std.time.ns_per_s) {
+        rt.sleepNs(std.time.ns_per_ms);
+    }
+    return .{ early, Exit.calls.load(.acquire) };
+}
+
+test "POSIX: #744 — 측정 역할은 셸이 끝나도 출력이 끝날 때까지 탭을 닫지 않는다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const got = try shellExitsBeforeOutput(.stress);
+    // 셸이 끝난 직후의 닫기 요청 수는 OS 마다 다르다.
+    //
+    // - Linux: 셸은 끝났지만 배경 writer 가 아직 slave 를 쥐고 있어 EOF 가 안 온다 — 닫지 않는다.
+    // - macOS: 셸 (세션 리더) 이 끝나면 배경 writer 의 터미널도 막혀서 EOF 가 셸 종료와 함께
+    //   온다. 남은 출력이 생기지 않으니 바로 닫는 것이 맞다. macOS 27.0.1 에서 python
+    //   `pty.fork()` 로 같은 명령을 돌려 EOF 9 ms · 배경 `echo` 종료 코드 1 을 쟀다 (#744).
+    const closed_at_shell_exit: u32 = if (comptime builtin.os.tag.isDarwin()) 1 else 0;
+    try std.testing.expectEqual(closed_at_shell_exit, got[0]);
+    // 어느 쪽이든 결국 한 번만 닫는다 — 두 신호 (셸 종료 · 출력 EOF) 가 함께 와도 두 번 닫지 않는다.
+    try std.testing.expectEqual(@as(u32, 1), got[1]);
+}
+
+test "POSIX: #744 — 일반 역할은 지금처럼 셸이 끝나면 바로 닫는다" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const got = try shellExitsBeforeOutput(.worker);
+    try std.testing.expectEqual(@as(u32, 1), got[0]);
+    try std.testing.expectEqual(@as(u32, 1), got[1]);
 }
 
 test "POSIX: #745 — 닫힌 ring 이 버린 byte 는 push 가 아니라 dropped 로 센다" {

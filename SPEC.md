@@ -1765,6 +1765,8 @@ TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 +
 
 그래서 Windows 도 macOS · Linux 와 **같은 모양**이 됐다 — 정상 종료를 기다리고, 유예 안에 안 끝나면 강제로 끝낸다 (POSIX 의 `SIGHUP` → 500ms → `SIGKILL` 에 대응). 유예가 1초인 근거는 [`pty.zig`](src/terminal/windows/pty.zig) 의 `CHILD_EXIT_GRACE_MS` 주석에 있다 — 이벤트를 *놓친* 자식은 더 기다려도 끝나지 않으므로, 값의 근거는 "종료 훅을 도는 셸에게 주는 시간" 뿐이다. 참고로 Windows Terminal (`ConptyConnection::Close`) 은 자식을 강제 종료하지 않는 대신 출력 스레드를 `CancelIoEx` + 타임아웃 루프로 깨우고, WezTerm 은 스레드 join 자체를 하지 않는다. 우리는 join 을 하므로 자식 정리까지 책임져야 한다.
 
+**Windows — 셸을 띄운 직후 `ConptyReleasePseudoConsole` 을 부른다** ([#744](https://github.com/ensky0/tildaz/issues/744) · 2026-10-11 확정). `HPCON` 이 쥔 참조 핸들이 conhost 를 살려 두어, 놓지 않으면 마지막 콘솔 클라이언트가 떠나도 conhost 가 끝나지 않고 출력 파이프가 끊기지 않는다 ([`winconpty.cpp`](https://github.com/microsoft/terminal/blob/7d06b26f73ef4bcb78b56647c395251eeee4c2bc/src/winconpty/winconpty.cpp#L558-L562) 주석). 놓으면 마지막 클라이언트가 떠날 때 `ReadFile` 이 `ERROR_BROKEN_PIPE` 를 낸다 — 측정 역할이 셸 종료가 아니라 출력 EOF 로 탭을 닫는 근거가 이것이다. Windows Terminal 도 같은 자리에서 부른다 ([`ConptyConnection.cpp`](https://github.com/microsoft/terminal/blob/7d06b26f73ef4bcb78b56647c395251eeee4c2bc/src/cascadia/TerminalConnection/ConptyConnection.cpp#L451)). 부르기 전에는 producer 가 끝나도 `OpenConsole.exe` 가 클라이언트 없이 남아 측정 인스턴스가 끝나지 않았다 (Windows 실기). 일반 역할은 셸이 끝나면 바로 닫으므로 달라지는 것이 없다.
+
 ---
 
 ## 9. 터미널 환경변수 (자식 셸에 전달)

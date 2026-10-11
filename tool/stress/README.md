@@ -365,7 +365,7 @@ perf 스냅숏에 답이 있어요 (측정 인스턴스는 종료할 때 자동�
 | 내리는 법 | 종료 덤프 | 비고 |
 |---|---|---|
 | **`Ctrl+Shift+W` · `⌘W`** (`close_tab`, 마지막 탭) | ✅ | 확인을 묻지 않아요. 공통 `tab_actions.closeActive` → `SessionCore.closeTab` 이라 **남은 ring 도 마저 파싱해요** (#397) — 그래서 이게 제일 정확해요 |
-| 프롬프트에 **`exit`** | ✅ | `-e` 로 띄운 프로세스가 끝나면 앱이 끝나요. 위와 같은 규칙이에요 (`closeByPtr`) |
+| 프롬프트에 **`exit`** | ✅ | `-e` 로 띄운 프로세스가 끝나고 **그 출력도 끝나면** (EOF) 앱이 끝나요 (`closeTabByPtr`). 배경으로 남아 계속 쓰는 프로세스가 있으면 그것이 끝날 때까지 탭이 남아요 — 그동안 화면은 평소처럼 돌아요 ([#744](https://github.com/ensky0/tildaz/issues/744)) |
 | **`Ctrl+Shift+F12` · `⇧⌘F12`** (`dump_perf`) 뒤 프로세스 종료 | ✅ `=== snapshot` | 카운터는 같지만 **ring 을 비우는 단계가 없어요.** 종료를 못 쓸 때만 |
 | `Ctrl+Q` · `⌘Q` (`quit`) | ❌ | 확인 다이얼로그가 막아요 |
 
@@ -417,13 +417,18 @@ pane 1 · 2 · 4 · 8 을 5 회씩 다시 잰 회차도 손실이 pane 당 16 by
 해요 — `ESC[?2004l` 등 **28 byte** 예요 ([#741](https://github.com/ensky0/tildaz/issues/741)). 셸이
 프롬프트로 남은 채 닫을 때만 나와서, producer 가 곧 `-e` 프로세스인 회차는 0 이에요.
 
+Windows 의 16 byte 도 **셸이 끝나 탭이 닫히면 버려지지 않아요** ([#744](https://github.com/ensky0/tildaz/issues/744)).
+그때는 conhost 가 마지막 클라이언트가 떠나며 스스로 끝나고, teardown 을 출력 EOF **전에** 보내서
+그대로 파싱돼요 (`readloop = drain` · `dropped` 0). `measure-repeat.sh` 의 1 pane 회차가 이 경우예요.
+사용자가 닫을 때 (`Ctrl+Shift+W`) 는 ring 을 먼저 닫으니 여전히 16 이에요.
+
 그래서 **`push bytes` 를 함께 봐요.**
 
 | 지표 | 뜻 | 정상값 |
 |---|---|---|
 | `readloop bytes` | PTY 에서 **읽은** 양 | teardown 을 포함해요 |
 | `push bytes` | ring 에 **넣은** 양 | — |
-| `dropped bytes` | ring 이 이미 닫혀 **버린** 양 — 위 teardown | Windows **16** · bash 프롬프트로 닫으면 **28** · 나머지 0 |
+| `dropped bytes` | ring 이 이미 닫혀 **버린** 양 — 위 teardown | Windows 는 사용자가 닫으면 **16** · 셸이 끝나 닫히면 0 · bash 프롬프트로 닫으면 **28** · 나머지 0 |
 | `drain bytes` | **소화한** 양 | — |
 | **`push − drain`** | 진짜 손실 | **0 이어야 해요** |
 | **`readloop − drain − dropped`** | 같은 손실을 읽은 양에서 본 것 (`measure-repeat` 의 `lost_bytes`) | **0 이어야 해요** |
