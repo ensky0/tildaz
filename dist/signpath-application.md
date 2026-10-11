@@ -50,7 +50,7 @@ Design decisions of note for a security-review audience:
   user's chosen shell (cmd.exe, PowerShell, wsl.exe, etc.). This is the same
   pattern used by Windows Terminal, WezTerm, Alacritty on Windows.
 - **Lock-free I/O**: PTY output is piped into a single-producer / single-consumer
-  ring buffer (4 MiB), drained on the UI thread through the ghostty VT parser.
+  ring buffer (256 KiB), drained on the UI thread through the ghostty VT parser.
 - **Native rendering**: Linux uses a direct Wayland software surface, macOS uses
   Metal with CoreText glyphs, and Windows uses DirectWrite glyph atlases with a
   Direct3D 11 dual-source ClearType pipeline.

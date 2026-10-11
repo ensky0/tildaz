@@ -913,17 +913,30 @@ histgate in={ 29, 2, 0, 0, 0, 0 } out={ … }    ← 게이트의 분포
 (`8-16` 버킷 1 개) 였는데 2 회차는 **2.20 ms** 로 전 표본이 4 ms 미만이었어요. 한 회차만 보고
 "있다 / 없다" 를 판정하지 말고, 튄 회차의 **분포와 게이트를 함께** 적어요.
 
-#### 에코가 화면에 나오기까지 (`in_echo` · `--echo`, Windows)
+#### 에코가 화면에 나오기까지 (`in_echo` · `--echo`)
 
 ```sh
-tool/stress/measure-input-latency.sh --echo        # 'a' 대신 'é' 를 보내요
+tool/stress/measure-input-latency.sh --echo                          # 'a' 대신 표식 글자를 보내요
+tool/stress/measure-input-latency.sh --mode flood --echo --workload cjk   # 폭포 워크로드를 바꿔서 (#728)
 ```
 
 `in_echo` 는 **키 → 그 키의 에코를 파싱한 뒤 첫 present** 예요 ([#473](https://github.com/ensky0/tildaz/issues/473)).
-폭포 producer 의 `plain` 은 `line ` · 숫자 · 소문자뿐이라 ([`workload.zig`](../../src/stress/workload.zig) `renderPlain`)
-그 밖의 글자 `é` 를 보내면 출력에서 에코를 골라낼 수 있어요. 앱은 **측정 인스턴스에서만** 드레인한 바이트에서
-그 글자를 찾아요 (`perf.noteEchoBytes`). 합성 입력은 `send-keys_windows.ps1 -CharCode 233` (`KEYEVENTF_UNICODE`)
-이라 자판과 무관해요. Linux · macOS 의 합성 입력에는 아직 이 글자를 보내는 길이 없어요.
+폭포 producer 의 출력에 없는 글자를 보내면 출력에서 에코를 골라낼 수 있어요. 앱은 **측정 인스턴스에서만** 드레인한
+바이트에서 그 글자를 찾아요 (`perf.noteEchoBytes`).
+
+| | 보내는 글자 | 합성 입력 |
+|---|---|---|
+| **Linux** | `Q` | `ydotool key` (Shift+Q) |
+| **macOS** | `Q` | `mac-input send shift+q` |
+| **Windows** | `é` | `send-keys_windows.ps1 -CharCode 233` (`KEYEVENTF_UNICODE` — 자판과 무관해요) |
+
+- **Windows 는 `é`, 나머지는 `Q` 예요** ([#728](https://github.com/ensky0/tildaz/issues/728)). `ydotool` · `mac-input` 은
+  US 배열에 없는 `é` 를 보낼 길이 없어요. 그래서 하네스가 `Q` 를 보내고 앱에 `TILDAZ_ECHO_MARKER=Q` 로 표식을 알려요
+  (`perf.loadEchoMarker` — 측정 인스턴스만 읽어요). Windows 에서 ASCII 를 피하는 이유는 ConPTY 가 화면을 다시 그리는
+  제어 시퀀스를 보내기 때문이에요.
+- **표식은 그 워크로드 출력에 없는 글자여야 해요.** `plain` 은 `line ` · 숫자 · 소문자, `cjk` 는 한글 · emoji · 블록과
+  `A` `B` `C`, `emoji_vs16` 은 숫자와 `❤️` 뿐이라 `é` · `Q` 둘 다 쓸 수 있어요 ([`workload.zig`](../../src/stress/workload.zig)).
+  다른 워크로드를 쓰려면 먼저 확인해요.
 
 **`input` 만 보면 거꾸로 판정해요.** 2026-10-10 A/B (데스크탑 Ryzen 7 5700G · Windows 11 · 60 Hz 고정 · 판마다
 5 회 절사평균) 에서 *"폭포 중 키를 받자마자 한 번 그리는"* 판이 `input` 을 10.8 → **5.0 ms** 로 줄였는데,
@@ -936,7 +949,7 @@ tool/stress/measure-input-latency.sh --echo        # 'a' 대신 'é' 를 보내�
 | `in_gate` 평균 (다음 프레임까지) | 6.1 ms |
 | **`in_echo` 평균 / 최악** | **37.6 / 45.7 ms** |
 
-에코 지연의 대부분은 **출력 ring (4 MiB) 에 밀린 출력 뒤에서 줄을 서는 시간**이에요. 폭포 중 ring 은 늘 가득
+에코 지연의 대부분은 **출력 ring (그때 4 MiB — [#728](https://github.com/ensky0/tildaz/issues/728) 에서 256 KiB 로 줄였어요) 에 밀린 출력 뒤에서 줄을 서는 시간**이에요. 폭포 중 ring 은 늘 가득
 차 있고 (`push yields` 가 수천만), 이 기기의 드레인 속도 약 150 MB/s 로 4 MiB 를 비우는 데 약 28 ms 가 걸려요.
 거기에 다음 프레임 대기 (평균 반 프레임) 와 렌더 · present 가 더해져요. 그래서 **렌더 시점을 바꾸는 것으로는
 이 값이 거의 안 줄어요** — 같은 A/B 에서 *"키 뒤 4 프레임 동안 드레인마다 바로 그리는"* 판도 평균 37.2 ms 로

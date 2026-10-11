@@ -243,12 +243,18 @@ while [ "$i" -le "$REPEAT" ]; do
             _have=$(tail -c "+$((_log_before + 1))" "$LOG" 2>/dev/null | grep -o 'has [0-9]* panes' | tail -1 | awk '{print $2}')
             [ -n "$_have" ] || _have=1
             if [ "$_have" != "$PANES" ]; then echo "⚠ pane 수 $_have ≠ $PANES ($w $i/$REPEAT) — 이 회차는 버려요" >&2; fi
+            # #728 — barrier 를 연 순간부터 앱이 **다 소화하고 내려갈 때까지**. producer 가 남기는
+            # 경과 시간은 마지막 write 에서 멈춰 출력 ring 에 남은 양을 빼먹으므로 (ring 이 클수록
+            # 유리하게 나온다), 처리량을 견줄 때는 이 값을 본다. 측정 인스턴스는 남은 출력을 다
+            # 파싱한 뒤 내려간다 (#397).
+            _t0=$(date +%s%N)
             if [ "$STAGGER_MS" = 0 ]; then
                 : > "$BARRIER"           # N 개 러너가 함께 시작한다
             else
                 _k=1; while [ "$_k" -le "$PANES" ]; do : > "$BARRIER-$_k"; _k=$((_k + 1)); sleep "$(awk -v ms="$STAGGER_MS" 'BEGIN{printf "%.3f", ms/1000}')"; done
             fi
             wait "$_app_pid" || echo "⚠ 회차 실패: $w ($i/$REPEAT)" >&2
+            echo "  barrier→종료 $(( ($(date +%s%N) - _t0) / 1000000 )) ms ($w $i/$REPEAT · pane $_have)"
             rm -rf "$BARRIER" "$BARRIER".slots "$BARRIER"-[0-9]*
         fi
         sleep 1.5

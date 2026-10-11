@@ -312,6 +312,15 @@ extern "kernel32" fn CreateWaitableTimerExW(?*anyopaque, ?[*:0]const WCHAR, DWOR
 extern "kernel32" fn SetWaitableTimer(?*anyopaque, *const i64, LONG, ?*anyopaque, ?*anyopaque, BOOL) callconv(.c) BOOL;
 extern "kernel32" fn WaitForSingleObject(?*anyopaque, DWORD) callconv(.c) DWORD;
 extern "kernel32" fn CloseHandle(?*anyopaque) callconv(.c) BOOL;
+// #728 — ring 이 찼다는 통보로 잠든 `messageLoop` 를 깨운다 (`output_full_event` 주석).
+extern "kernel32" fn CreateEventW(?*anyopaque, BOOL, BOOL, ?[*:0]const WCHAR) callconv(.c) ?*anyopaque;
+extern "kernel32" fn SetEvent(?*anyopaque) callconv(.c) BOOL;
+extern "user32" fn MsgWaitForMultipleObjectsEx(DWORD, [*]const ?*anyopaque, DWORD, DWORD, DWORD) callconv(.c) DWORD;
+/// `GetQueueStatus` 문서의 `QS_ALLINPUT` (Windows 8 이후 — `QS_TOUCH` · `QS_POINTER` 포함).
+/// `WaitMessage` 가 깨는 "모든 메시지" 와 같게 하려면 이 값이어야 한다 — 빼면 터치 입력이
+/// 루프를 못 깨운다.
+const QS_ALLINPUT: DWORD = 0x1CFF;
+const WAIT_FAILED: DWORD = 0xFFFFFFFF;
 extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
 /// #386 ② — 이 메시지들은 렌더 게이트를 **열지 않는다.** 그 밖의 모든 메시지는 연다
 /// (`wndProc` 참고 — 빠뜨려서 화면이 안 갱신되는 쪽보다 한 프레임 더 그리는 쪽이 낫다).
@@ -500,6 +509,10 @@ pub const Window = struct {
     /// read thread 가 초당 수천 번 통보하는데, 그대로 post 하면 메시지 큐가 그만큼 쌓여
     /// 정작 입력이 뒤로 밀린다. 미처리분이 있으면 더 넣지 않는다.
     output_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// #728 — ring 이 찼다는 통보로 잠든 `messageLoop` 를 깨우는 auto-reset 이벤트. host 가
+    /// 만들고 닫는다 (`createOutputFullEvent` 주석 — 세션의 read thread 보다 오래 살아야 한다).
+    /// `null` 이면 `messageLoop` 는 예전처럼 `WaitMessage` 로 잔다.
+    output_full_event: ?*anyopaque = null,
     /// #439 — 직전 프레임이 **그릴 것이 없어 건너뛰었는가** (= 유휴인가). `App.onRender` 가
     /// 갱신하고 read thread 가 읽어 통보 여부를 정한다 (`notifyPtyOutput`).
     frame_idle: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1597,6 +1610,34 @@ pub const Window = struct {
         _ = PostMessageW(hwnd, WM_PTY_OUTPUT, 0, 0);
     }
 
+    /// #728 — ring 이 차서 read thread 가 기다리기 시작했다는 통보. **read thread 에서 불린다.**
+    ///
+    /// 폭포 중에는 `notifyPtyOutput` 이 깨우지 않는다. 그래서 `messageLoop` 의 드레인이 ring 을
+    /// 다 비우고 잠들면 다음 `WM_FRAME_TICK` 까지 아무도 ring 을 비우지 않는다. 그동안 ring 이
+    /// 차면 read thread 는 기다리기만 한다 — 한 프레임에 들어오는 양보다 ring 이 작으면 처리량이
+    /// *ring 크기 × 주사율* 에 묶인다 (macOS 에서 실측한 고리 · `host/macos.zig` 의 `macOutputFull`).
+    ///
+    /// **메시지를 post 하지 않고 이벤트만 켠다.** 큐에 아무것도 안 넣으니 깨어난 루프는 빈 큐를
+    /// 보고 곧장 `idle_drain_fn` 으로 간다 — `notifyPtyOutput` 이 폭포 중에 post 하지 않는 이유
+    /// (큐가 안 비어 그 드레인이 굶는다) 를 그대로 피한다. macOS 의 `CFRunLoopWakeUp` 과 같은 자리다.
+    pub fn notifyOutputFull(self: *Window) void {
+        if (self.output_full_event) |ev| _ = SetEvent(ev);
+    }
+
+    /// #728 — `output_full_event` 를 만든다 (auto-reset · 처음엔 꺼짐). 못 만들면 `null` 이고
+    /// 동작은 예전과 같다 (깨우는 통보만 없다).
+    ///
+    /// **host 가 세션보다 먼저 만들고 세션이 끝난 뒤 닫는다.** read thread 가 `SetEvent` 를 부르는
+    /// 동안 닫히면 안 되고, `MsgWaitForMultipleObjectsEx` 는 기다리는 중에 핸들이 닫히면 동작이
+    /// 정의되지 않는다 (문서). Linux 의 `output_eventfd` 가 `session.deinit` 뒤에 닫히는 것과 같은 이유다.
+    pub fn createOutputFullEvent() ?*anyopaque {
+        return CreateEventW(null, .FALSE, .FALSE, null);
+    }
+
+    pub fn closeOutputFullEvent(ev: ?*anyopaque) void {
+        if (ev) |e| _ = CloseHandle(e);
+    }
+
     /// #386 — 프레임 clock 시작. `hide` 동안 깨어나지 않도록 `show` / create 에서만 켠다
     /// (이전 `SetTimer` 와 같은 수명). 이미 돌고 있으면 no-op.
     fn startFrameClock(self: *Window) void {
@@ -1889,14 +1930,15 @@ pub const Window = struct {
     /// 1. `PeekMessage` 가 먼저다 → 입력 · 프레임 tick 이 **항상 드레인보다 우선**한다.
     ///    Linux 는 iteration 마다 무조건 드레인하는데 이쪽은 "할 일이 없을 때만" 이다.
     /// 2. 드레인 한 번은 예산을 넘지 않으므로 입력 지연 상한이 그대로다 (= 사양 A).
-    /// 3. 둘 다 없으면 `WaitMessage` 로 블록해 **유휴 절전 (#386 ②) 을 유지**한다.
+    /// 3. 둘 다 없으면 블록해 **유휴 절전 (#386 ②) 을 유지**한다 — 새 메시지 또는 *"ring 이
+    ///    찼다"* 이벤트 (#728, `notifyOutputFull`) 가 깨운다. 이벤트가 없으면 `WaitMessage` 다.
     ///    `GetMessageW` 를 쓰면 메시지를 꺼내 버려서 1 번의 우선순위를 만들 수 없다.
     ///
     /// **스핀하지 않는 근거**: 콜백이 참이면 실제로 파싱했거나 ring 에 남아 있다는 뜻이다
     /// (`drainOutputChunk` 은 `output_ring.pop() == 0` 이면 false). 남아 있으면 다음 호출이
     /// 반드시 진행하므로 진행 없는 반복이 없다. 폭포 중에는 producer 가 계속 채워 루프가
     /// 블록하지 않는데 그건 의도한 동작이고 (일이 있는 동안 일한다), ring 이 비면 참이 안
-    /// 나와 `WaitMessage` 로 내려간다.
+    /// 나와 블록으로 내려간다.
     pub fn messageLoop(self: *Window) void {
         var msg: MSG = undefined;
         while (true) {
@@ -1908,6 +1950,15 @@ pub const Window = struct {
             }
             if (self.idle_drain_fn) |f| {
                 if (f(self.userdata)) continue;
+            }
+            // #728 — ring 이 찼다는 통보 (`notifyOutputFull`) 도 함께 기다린다. 플래그 0 (곧
+            // `MWMO_INPUTAVAILABLE` 없음) 이라 메시지 쪽 조건은 `WaitMessage` 와 같다 — 둘 다
+            // *"마지막으로 큐를 본 뒤 새로 온 메시지"* 에만 깬다 (두 함수의 문서 Remarks). 어느
+            // 쪽이 깨웠든 루프 처음으로 돌아가 빈 큐면 드레인을 잇는다. 대기가 실패하면 헛돌지
+            // 않게 예전 `WaitMessage` 로 물러선다.
+            if (self.output_full_event) |ev| {
+                const handles = [_]?*anyopaque{ev};
+                if (MsgWaitForMultipleObjectsEx(1, &handles, WAIT_INFINITE, QS_ALLINPUT, 0) != WAIT_FAILED) continue;
             }
             _ = WaitMessage();
         }

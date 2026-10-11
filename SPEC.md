@@ -2582,6 +2582,27 @@ iteration 마다라 *자리*가 바뀌지 않아 이 위험이 없다 — **Linu
 (2026-08-16 · KDE Plasma 60 Hz): 회귀의 지문인 `onrender` 회당 시간이 0.147 → 0.142 ms 로 늘지 않았고
 `drain` · `render` 총 시간과 처리량도 그대로다. 같은 회차에서 유휴 지연은 8.80 → 0.64 ms 다.
 
+**예외 — ring 이 차면 깨운다 ([#728](https://github.com/ensky0/tildaz/issues/728)).** 폭포 중에
+통보하지 않으면 빈틈이 하나 생긴다. 프레임 밖 드레인이 ring 을 다 비우면 UI 는 다음 프레임까지 자고,
+그동안 ring 이 차면 read thread 는 기다리기만 한다. 한 프레임에 들어오는 양보다 ring 이 작으면 처리량이
+*ring 크기 × 주사율* 에 묶인다 — macOS 에서 ring 256 KiB 의 `plain` 이 120 Hz +79 % · 60 Hz +205 %
+느렸다. 그래서 read thread 가 **ring 이 차서 기다리기 시작할 때 한 번** 알린다 (`output_full_fn`).
+host 는 그 통보에서 **잠든 UI 를 깨우되 할 일을 큐에 넣지 않는다** — 깨어난 UI 가 빈 큐를 보고 곧장
+프레임 밖 드레인으로 가야 위의 굶김이 생기지 않는다.
+
+| host | ring 이 찼을 때 |
+|---|---|
+| macOS | source 를 signal 하지 않고 `CFRunLoopWakeUp` 만 부른다. run loop 이 한 바퀴 돌며 `BeforeWaiting` 의 드레인을 다시 태운다 |
+| Windows | auto-reset 이벤트를 켠다 (`SetEvent`). `messageLoop` 가 `WaitMessage` 대신 `MsgWaitForMultipleObjectsEx` 로 메시지와 그 이벤트를 함께 기다리고, 깨어나면 빈 큐를 보고 `idle_drain_fn` 으로 간다 |
+| Linux | 따로 없다 — 출력마다 `eventfd` 로 깨우므로 *"read thread 가 막혀 있다"* 와 *"UI 가 잔다"* 가 동시에 생기지 않는다 (코드 판정 · 이 조건의 실측은 없다) |
+
+macOS 는 수정 뒤 같은 조건이 4 MiB 대비 +6 % · +3 % 이고, 폭포 중 입력 지연은 나빠지지 않았다
+(나빠진 쪽 최대 +0.75 ms) ([결과 댓글](https://github.com/ensky0/tildaz/issues/728#issuecomment-6102155976)).
+Windows 는 데스크탑 Ryzen 7 5700G 에서 손실 조건 자체가 안 생겼다 — 파싱이 PTY 보다 느려 ring 이 거의
+비지 않아, ring 을 32 KiB 로 줄인 진단판에서도 수정 전 처리량이 무너지지 않았다. 그래서 그 기기에서는
+**회귀가 없는 것만** 봤고 (처리량 · 에코 · 폭포 중 입력 지연 · 유휴가 수정 전과 같다), 효과는 파싱이 빠른
+기기에서 확인해야 한다.
+
 **(d) 유휴 타이머 정지는 하지 않기로 했다** (2026-08-16 사용자 결정, #439). 통보가 생겨 기술적으로는
 가능해졌지만 이득이 절전 ~0.2 W 뿐인 데 비해 실패 모드가 **화면이 멈추는 것**이고 (판정이 틀리면
 아무도 안 깨운다), 유휴 타이머가 host 마다 다른 장치라 (`poll` timeout · `CADisplayLink` ·

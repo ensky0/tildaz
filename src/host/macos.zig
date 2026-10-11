@@ -4961,6 +4961,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         if (g_idle_drain_observer == null) return error.RunLoopObserverCreateFailed;
         CFRunLoopAddObserver(CFRunLoopGetMain(), g_idle_drain_observer, kCFRunLoopCommonModes);
         log.appendLine("startup", "idle drain observer installed (frame-independent VT drain)", .{});
+        // #728 — ring 이 차면 이 observer 를 다시 돌게 깨운다 (`macOutputFull` 주석).
+        // observer 가 있어야 뜻이 있으므로 그 뒤에 배선한다.
+        g_session.setOutputFull(macOutputFull, null);
     }
 
     // 7. 이벤트 루프.
@@ -5080,6 +5083,23 @@ fn macOutputWake(_: ?*anyopaque) void {
     const source = g_output_source orelse return;
     if (g_output_wake_pending.swap(true, .acq_rel)) return;
     CFRunLoopSourceSignal(source);
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+/// #728 — ring 이 차서 read thread 가 기다리기 시작했다는 통보. **PTY read thread 에서
+/// 불린다.**
+///
+/// 폭포 중에는 `macOutputWake` 가 깨우지 않는다. 그래서 `idleDrainObserver` 가 ring 을 다
+/// 비우고 run loop 이 잠들면 다음 vsync 까지 아무도 ring 을 비우지 않는다. 그동안 ring 이
+/// 차면 read thread 는 기다리기만 한다 — 한 프레임에 들어오는 양보다 ring 이 작으면 처리량이
+/// *ring 크기 × 주사율* 에 묶였다 (#728 실측: 256 KiB `plain` 이 120 Hz +79 % · 60 Hz +205 %).
+///
+/// **source 를 signal 하지 않고 `CFRunLoopWakeUp` 만 부른다.** signal 된 source 가 있으면
+/// run loop 이 잠들지 않아 `kCFRunLoopBeforeWaiting` 이 오지 않는다 (`macOutputWake` 가
+/// 폭포에서 멈추는 이유). 깨우기만 하면 run loop 은 처리할 source 없이 한 바퀴 돌고
+/// 잠들기 직전에 `idleDrainObserver` 를 다시 부른다 — 그 observer 가 남은 출력이 있을 때
+/// 스스로 쓰는 방법과 같다.
+fn macOutputFull(_: ?*anyopaque) void {
     CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
