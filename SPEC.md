@@ -2582,6 +2582,17 @@ iteration 마다라 *자리*가 바뀌지 않아 이 위험이 없다 — **Linu
 (2026-08-16 · KDE Plasma 60 Hz): 회귀의 지문인 `onrender` 회당 시간이 0.147 → 0.142 ms 로 늘지 않았고
 `drain` · `render` 총 시간과 처리량도 그대로다. 같은 회차에서 유휴 지연은 8.80 → 0.64 ms 다.
 
+**예외 — ring 이 차면 깨운다 (macOS, [#728](https://github.com/ensky0/tildaz/issues/728)).** 폭포 중에
+통보하지 않으면 빈틈이 하나 생긴다. 프레임 밖 드레인이 ring 을 다 비우면 UI 는 다음 프레임까지 자고,
+그동안 ring 이 차면 read thread 는 기다리기만 한다. 한 프레임에 들어오는 양보다 ring 이 작으면 처리량이
+*ring 크기 × 주사율* 에 묶인다 — macOS 에서 ring 256 KiB 의 `plain` 이 120 Hz +79 % · 60 Hz +205 %
+느렸다. 그래서 read thread 가 **ring 이 차서 기다리기 시작할 때 한 번** 알린다 (`output_full_fn`).
+macOS 는 source 를 signal 하지 않고 `CFRunLoopWakeUp` 만 부른다. run loop 이 한 바퀴 돌며
+`BeforeWaiting` 의 드레인을 다시 태우므로 위의 굶김이 생기지 않는다. 수정 뒤 같은 조건은 4 MiB 대비
++6 % · +3 % 이고, 폭포 중 입력 지연은 나빠지지 않았다 (나빠진 쪽 최대 +0.75 ms)
+([결과 댓글](https://github.com/ensky0/tildaz/issues/728#issuecomment-6102155976)). Windows 도 같은
+구조라 잠재하지만 (`notifyPtyOutput`) 아직 배선하지 않았다. Linux 는 통보가 늘 깨워 해당 없다.
+
 **(d) 유휴 타이머 정지는 하지 않기로 했다** (2026-08-16 사용자 결정, #439). 통보가 생겨 기술적으로는
 가능해졌지만 이득이 절전 ~0.2 W 뿐인 데 비해 실패 모드가 **화면이 멈추는 것**이고 (판정이 틀리면
 아무도 안 깨운다), 유휴 타이머가 host 마다 다른 장치라 (`poll` timeout · `CADisplayLink` ·

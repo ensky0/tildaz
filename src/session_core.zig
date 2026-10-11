@@ -31,8 +31,17 @@ const RingBuffer = struct {
 
     /// **실제로 ring 에 넣은 byte 수**를 돌려준다 (#398). `closed` 면 중간에 그만두므로
     /// `data.len` 보다 작을 수 있고, 호출자는 이 값을 세야 카운터가 사실과 맞는다.
-    fn push(self: *RingBuffer, data: []const u8) usize {
+    ///
+    /// #728 — ring 이 차서 기다리기 시작할 때 `full_fn` 을 **한 번** 부른다. 다시 써 넣으면
+    /// 표시를 풀어 다음에 막힐 때 또 알린다. 이유는 `Tab.output_full_fn` 주석에 있다.
+    fn push(
+        self: *RingBuffer,
+        data: []const u8,
+        full_fn: ?SessionCore.OutputWakeNotify,
+        full_userdata: ?*anyopaque,
+    ) usize {
         var i: usize = 0;
+        var full_notified = false;
         while (i < data.len) {
             if (self.closed.load(.acquire)) return i;
             const pos = self.head.load(.monotonic);
@@ -40,9 +49,14 @@ const RingBuffer = struct {
             const free = if (t <= pos) (SIZE - pos + t - 1) else (t - pos - 1);
             if (free == 0) {
                 perf.incExtra(&perf.push);
+                if (!full_notified) {
+                    full_notified = true;
+                    if (full_fn) |notify| notify(full_userdata);
+                }
                 std.Thread.yield() catch {};
                 continue;
             }
+            full_notified = false;
             const batch = @min(data.len - i, free);
             const first = @min(batch, SIZE - pos);
             @memcpy(self.buf[pos..][0..first], data[i..][0..first]);
@@ -285,6 +299,18 @@ pub const Tab = struct {
     /// 집는다 — host 없이 도는 경로 (stress 하네스 · 단위 테스트) 의 정상 값이다.
     output_wake_fn: ?SessionCore.OutputWakeNotify = null,
     output_wake_userdata: ?*anyopaque = null,
+    /// #728 — ring 이 차서 read thread 가 기다리기 시작했다는 것을 host 에 알린다.
+    ///
+    /// `output_wake_fn` 은 유휴에서만 깨우므로 (폭포에서 깨우면 host 의 프레임 밖 드레인이
+    /// 굶는다 — macOS `macOutputWake` 주석), 폭포 중 UI 가 ring 을 다 비우고 다음 프레임까지
+    /// 자면 그동안 찬 ring 을 아무도 비우지 않는다. 한 프레임에 들어오는 양보다 ring 이
+    /// 작으면 처리량이 *ring 크기 × 주사율* 에 묶인다 (#728 macOS 실측: 256 KiB `plain` 이
+    /// 120 Hz 에서 +79 %, 60 Hz 에서 +205 %). 이 통보가 그 빈틈을 깨운다.
+    ///
+    /// **read thread 에서 불린다** — `output_wake_fn` 과 같은 제약이다. `null` 이면 지금처럼
+    /// 다음 프레임이 집는다.
+    output_full_fn: ?SessionCore.OutputWakeNotify = null,
+    output_full_userdata: ?*anyopaque = null,
     /// #266 — 프로그램이 OSC 52 로 클립보드에 쓴 글자를 host 에 넘긴다. 파싱 도중에
     /// 불리므로 **드레인하는 UI thread** 에서 불린다 (세 host 모두 그 thread 가 클립보드를
     /// 쓴다). `null` 이면 버린다 — host 없이 도는 경로 (stress 하네스 · 단위 테스트).
@@ -605,7 +631,7 @@ pub const Tab = struct {
         // 즉시 반환하고, 카운터만 16 이 올라갔다. ConPTY 가 없는 Linux · macOS 는 0 이었다.
         //
         // 그 16 byte 는 **손실이 아니다** — 창이 닫히는 참의 모드 해제라 파싱할 것이 없다.
-        const wrote = tab.output_ring.push(data);
+        const wrote = tab.output_ring.push(data, tab.output_full_fn, tab.output_full_userdata);
         perf.addTimedBytes(&perf.push, t0, wrote);
         // #439 — 유휴 응답 지연의 시작점. 여기부터 present 까지가 *"출력이 화면에 닿는
         // 시간"* 이다. 한 byte 도 안 들어간 경우 (닫히는 중) 는 잴 것이 없다.
@@ -725,6 +751,42 @@ pub fn initVtTerminal(
     term.modes.set(.grapheme_cluster, true);
 
     return term;
+}
+
+test "#728 — ring 이 차면 기다리기 전에 한 번 알리고, 비면 마저 넣는다" {
+    const State = struct {
+        ring: RingBuffer = .{},
+        calls: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+        fn onFull(userdata: ?*anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(userdata.?));
+            _ = self.calls.fetchAdd(1, .acq_rel);
+        }
+
+        // 통보가 온 뒤에야 비운다 — 통보 없이 push 가 끝날 길이 없게 한다.
+        fn consumer(self: *@This()) void {
+            while (self.calls.load(.acquire) == 0) std.Thread.yield() catch {};
+            var out: [64]u8 = undefined;
+            _ = self.ring.pop(&out);
+        }
+    };
+    const allocator = std.testing.allocator;
+    const state = try allocator.create(State);
+    defer allocator.destroy(state);
+    state.* = .{};
+
+    // ring 은 SIZE - 1 byte 까지 담는다 (head == tail 이 빈 상태라서).
+    const fill = try allocator.alloc(u8, RingBuffer.SIZE - 1);
+    defer allocator.free(fill);
+    @memset(fill, 'x');
+    try std.testing.expectEqual(fill.len, state.ring.push(fill, State.onFull, state));
+    try std.testing.expectEqual(@as(u32, 0), state.calls.load(.acquire));
+
+    const thread = try std.Thread.spawn(.{}, State.consumer, .{state});
+    try std.testing.expectEqual(@as(usize, 16), state.ring.push("0123456789abcdef", State.onFull, state));
+    thread.join();
+    // 64 byte 를 비웠으니 16 byte 는 한 번 막힌 뒤 바로 들어간다 — 통보도 한 번이다.
+    try std.testing.expectEqual(@as(u32, 1), state.calls.load(.acquire));
 }
 
 test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled" {
@@ -1210,6 +1272,9 @@ pub const SessionCore = struct {
     /// `HWND` 와 macOS 의 `CFRunLoopSource` 는 세션보다 **뒤에** 준비된다).
     output_wake_fn: ?OutputWakeNotify = null,
     output_wake_userdata: ?*anyopaque = null,
+    /// #728 — ring 이 찼다는 host 통보. `setOutputFull` 로 넣는다 (`Tab.output_full_fn` 주석).
+    output_full_fn: ?OutputWakeNotify = null,
+    output_full_userdata: ?*anyopaque = null,
     /// #266 — OSC 52 복사를 host 클립보드로. `setClipboardWrite` 로 넣는다.
     clipboard_write_fn: ?ClipboardWriteNotify = null,
     clipboard_write_userdata: ?*anyopaque = null,
@@ -1299,6 +1364,20 @@ pub const SessionCore = struct {
                 const tab = p orelse continue;
                 tab.output_wake_fn = wake_fn;
                 tab.output_wake_userdata = userdata;
+            }
+        }
+    }
+
+    /// #728 — ring 이 찼다는 통보를 배선한다. `setOutputWake` 와 같은 이유로 이미 만들어진
+    /// 탭에도 전파한다.
+    pub fn setOutputFull(self: *SessionCore, full_fn: ?OutputWakeNotify, userdata: ?*anyopaque) void {
+        self.output_full_fn = full_fn;
+        self.output_full_userdata = userdata;
+        for (self.tabs.items) |group| {
+            for (group.panes) |p| {
+                const tab = p orelse continue;
+                tab.output_full_fn = full_fn;
+                tab.output_full_userdata = userdata;
             }
         }
     }
@@ -1428,6 +1507,8 @@ pub const SessionCore = struct {
         // 통보 없이 지나갈 수 있다.
         tab.output_wake_fn = self.output_wake_fn;
         tab.output_wake_userdata = self.output_wake_userdata;
+        tab.output_full_fn = self.output_full_fn;
+        tab.output_full_userdata = self.output_full_userdata;
         tab.clipboard_write_fn = self.clipboard_write_fn;
         tab.clipboard_write_userdata = self.clipboard_write_userdata;
         try tab.backend.startReadThread(Tab.onPtyOutput, Tab.onPtyExit, tab);
@@ -2387,7 +2468,7 @@ fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {
     // target pane 의 ring 에 직접 둔다. closeTabByPtr 은 stress actual-app 에서 producer
     // 종료 통보가 타는 바로 그 경로다.
     const marker = "\x1b]0;close-pane-drain-regression\x07";
-    try std.testing.expectEqual(marker.len, closing.output_ring.push(marker));
+    try std.testing.expectEqual(marker.len, closing.output_ring.push(marker, null, null));
     try std.testing.expect(!closing.output_ring.isEmpty());
     _ = perf.snapshot(&perf.drain);
     defer _ = perf.snapshot(&perf.drain);
