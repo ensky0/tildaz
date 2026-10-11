@@ -296,6 +296,8 @@ const GENERIC_WRITE: DWORD = 0x40000000;
 const OPEN_EXISTING: DWORD = 3;
 const WAIT_OBJECT_0: DWORD = 0;
 const ERROR_IO_PENDING: DWORD = 997;
+/// #744 — `CancelIoEx` 로 취소된 read. `deinit` 이 read thread 를 멈추는 길이라 출력 EOF 가 아니다.
+const ERROR_OPERATION_ABORTED: DWORD = 995;
 
 /// `ClosePseudoConsole` 이 보낸 `CTRL_CLOSE_EVENT` 를 자식이 처리할 시간 (#611).
 ///
@@ -766,12 +768,14 @@ pub const ConPty = struct {
         if (hr < 0) return error.ResizeFailed;
     }
 
-    pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, userdata: ?*anyopaque) !void {
-        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out_read, self.read_event, callback, userdata });
+    pub fn startReadThread(self: *ConPty, callback: ReadCallback, exit_cb: ExitCallback, eof_cb: ?ExitCallback, userdata: ?*anyopaque) !void {
+        self.read_thread = try std.Thread.spawn(.{}, readLoop, .{ self.pipe_out_read, self.read_event, callback, eof_cb, userdata });
         self.wait_thread = try std.Thread.spawn(.{}, processWaitLoop, .{ self.process_info.hProcess, exit_cb, userdata });
     }
 
-    fn readLoop(pipe: HANDLE, read_event: HANDLE, callback: ReadCallback, userdata: ?*anyopaque) void {
+    /// #744 — 출력 파이프가 끝나면 (오류 · 0 byte) `eof_cb` 를 부른다. `deinit` 의 `CancelIoEx` 로
+    /// 취소된 read (`ERROR_OPERATION_ABORTED`) 는 멈추라는 신호라 부르지 않는다.
+    fn readLoop(pipe: HANDLE, read_event: HANDLE, callback: ReadCallback, eof_cb: ?ExitCallback, userdata: ?*anyopaque) void {
         var buf: [READ_BUF_SIZE]u8 = undefined;
         while (true) {
             var overlapped = OVERLAPPED{ .hEvent = read_event };
@@ -802,14 +806,19 @@ pub const ConPty = struct {
             const ok = ReadFile(pipe, &buf, buf.len, &bytes_read, @ptrCast(&overlapped));
             if (!ok.toBool()) {
                 const err = GetLastError();
+                if (err == ERROR_OPERATION_ABORTED) return;
                 if (err != ERROR_IO_PENDING) break;
-                if (!GetOverlappedResult(pipe, &overlapped, &bytes_read, .TRUE).toBool()) break;
+                if (!GetOverlappedResult(pipe, &overlapped, &bytes_read, .TRUE).toBool()) {
+                    if (GetLastError() == ERROR_OPERATION_ABORTED) return;
+                    break;
+                }
                 t0 = perf.now();
             }
             perf.addTimedBytes(&perf.readloop, t0, @intCast(bytes_read));
             if (bytes_read == 0) break;
             callback(buf[0..bytes_read], userdata);
         }
+        if (eof_cb) |cb| cb(userdata);
     }
 
     fn processWaitLoop(process_handle: HANDLE, exit_cb: ExitCallback, userdata: ?*anyopaque) void {

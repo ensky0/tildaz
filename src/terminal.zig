@@ -7,7 +7,7 @@
 //!   deinit()
 //!   write(data) → !usize
 //!   resize(cols, rows) → !void
-//!   startReadThread(read_cb, exit_cb, userdata) → !void
+//!   startReadThread(read_cb, exit_cb, eof_cb, userdata) → !void
 //!
 //! 실제 구현은 `terminal/windows.zig` (ConPTY) / `terminal/posix.zig`
 //! (Linux · macOS 공용, #294 G2). 각 모듈은 동일 API 시그니처를 export.

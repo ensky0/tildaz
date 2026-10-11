@@ -149,7 +149,7 @@ fn runPtySmoke(rt: Runtime, allocator: std.mem.Allocator) !void {
     });
     defer backend.deinit();
 
-    try backend.startReadThread(smokeRead, smokeExit, &done);
+    try backend.startReadThread(smokeRead, smokeExit, null, &done);
     _ = try backend.write("printf 'tildaz linux pty ok\\n'; exit\n");
 
     var elapsed_ms: u64 = 0;
