@@ -20,5 +20,3 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 ## Body candidates
-
-- Windows: Korean text no longer shows up as the wrong character (for example `8` in place of `사`) or slanted ([#749](https://github.com/ensky0/tildaz/issues/749)).
