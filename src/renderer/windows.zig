@@ -1773,6 +1773,9 @@ pub const D3d11Renderer = struct {
                 const single_offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
                 const single_result = dwrite_font.ClusterResult{
                     .face = single.face,
+                    // #749 — 빠뜨리면 모든 폰트가 id 하나를 나눠 써서 남의 글리프가 그려진다
+                    // (`사` 자리에 같은 번호의 Cascadia `8`).
+                    .font_id = single.font_id,
                     .indices = single_indices,
                     .advances = single_advances,
                     .offsets = single_offsets,
@@ -2665,13 +2668,14 @@ pub const D3d11Renderer = struct {
     ) void {
         if (self.font.chain_count == 0) return;
         const face = self.font.chain_faces[0] orelse return;
+        const font_id = self.font.chain_font_id[0];
         switch (match) {
             .single => |lg| {
-                self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(lg.glyph_index), x, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)));
+                self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, font_id, @intCast(lg.glyph_index), x, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)));
             },
             .spacer => |sp| {
                 for (0..sp.count) |i| {
-                    self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, @intCast(sp.glyph_indices[i]), x + i, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])));
+                    self.emitSingleGlyphCluster(text_buf, text_count, bg_buf, block_count, face, font_id, @intCast(sp.glyph_indices[i]), x + i, fy, cw, x_pad, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])));
                 }
             },
         }
@@ -2685,6 +2689,7 @@ pub const D3d11Renderer = struct {
         bg_buf: []BgInstance,
         block_count: *u32,
         face: *dw.IDWriteFontFace,
+        font_id: u64,
         glyph_index: u16,
         x: usize,
         fy: f32,
@@ -2699,6 +2704,7 @@ pub const D3d11Renderer = struct {
         const offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
         const result = dwrite_font.ClusterResult{
             .face = face,
+            .font_id = font_id,
             .indices = indices,
             .advances = advances,
             .offsets = offsets,

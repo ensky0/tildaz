@@ -31,7 +31,10 @@ pub const GlyphResult = struct {
     /// (`atlas_common.fontId`). Windows 의 단일 경로는 `glyph_map` 이 fallback face 를 붙잡아
     /// 주소가 안정적이지만, **키 타입을 세 platform 이 공유**하므로 여기도 id 를 싣는다.
     /// cluster 가 글리프 하나로 합성되는 경로는 그 캐시를 거치지 않아 id 가 실제로 필요하다.
-    font_id: u64 = 0,
+    ///
+    /// **기본값을 두지 않는다** ([#749](https://github.com/ensky0/tildaz/issues/749)). 빠뜨린 자리가
+    /// 0 을 받으면 모든 폰트가 한 id 를 나눠 써서, 같은 글리프 번호의 남의 그림이 그려진다.
+    font_id: u64,
 };
 
 /// ZWJ family / VS-16 / skin tone modifier cluster 의 multi-glyph 결과 (#139).
@@ -51,7 +54,10 @@ pub const ClusterResult = struct {
     /// 같은 그림이 id 마다 새로 담겨 atlas 가 부푼다.
     ///
     /// cluster 하나는 face 하나로 shape 하므로 macOS 처럼 run 별로 섞을 일이 없다 — 값 하나다.
-    font_id: u64 = 0,
+    ///
+    /// **기본값을 두지 않는다** (#749) — `GlyphResult.font_id` 와 같은 이유다. 단일 글리프 경로가
+    /// 이 값을 빠뜨려 맑은 고딕 `사` (1740) 자리에 Cascadia `8` (1740) 이 그려졌다.
+    font_id: u64,
     indices: [MAX_CLUSTER_GLYPHS]dw.UINT16,
     advances: [MAX_CLUSTER_GLYPHS]dw.FLOAT,
     offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET,
@@ -307,7 +313,35 @@ fn postscriptNameId(font: *dw.IDWriteFont) u64 {
     var u8_buf: [256]u8 = undefined;
     const len = std.unicode.utf16LeToUtf8(&u8_buf, name_w) catch return 0;
     if (len == 0) return 0;
-    return atlas_common.fontId(u8_buf[0..len]);
+    return withSimulations(atlas_common.fontId(u8_buf[0..len]), font.GetSimulations());
+}
+
+/// #749 — DirectWrite 가 **합성한 변종**은 regular 와 PostScript 이름이 같다. 맑은 고딕에는
+/// italic 파일이 없어서 `GetFirstMatchingFont(italic)` 이 regular 를 비스듬히 합성한 font
+/// (`DWRITE_FONT_SIMULATIONS_OBLIQUE`) 를 주는데, 이름만으로 id 를 만들면 같은 글리프 번호의
+/// 똑바른 그림과 기울인 그림이 atlas 한 칸을 나눠 쓴다 (실측: regular · italic 둘 다
+/// `7af3d9b85a9464a3`). 그래서 합성 비트를 id 에 섞는다. 합성이 없으면 값이 그대로라
+/// 기존 id 는 바뀌지 않는다.
+fn withSimulations(id: u64, simulations: u32) u64 {
+    if (id == 0 or simulations == dw.DWRITE_FONT_SIMULATIONS_NONE) return id;
+    var h = id;
+    for ([_]u8{ '+', 's', 'i', 'm', @truncate(simulations) }) |b| {
+        h ^= @as(u64, b);
+        h *%= 0x100000001b3;
+    }
+    return h;
+}
+
+test "withSimulations — 합성 변종은 regular 와 갈리고, 합성이 없으면 그대로다 (#749)" {
+    const base = atlas_common.fontId("MalgunGothic");
+    try std.testing.expectEqual(base, withSimulations(base, dw.DWRITE_FONT_SIMULATIONS_NONE));
+    const bold = withSimulations(base, 1);
+    const oblique = withSimulations(base, 2);
+    const both = withSimulations(base, 3);
+    try std.testing.expect(bold != base and oblique != base and both != base);
+    try std.testing.expect(bold != oblique and oblique != both and bold != both);
+    // 이름을 못 읽은 0 은 0 으로 둔다 — "모름" 을 다른 값으로 바꾸지 않는다.
+    try std.testing.expectEqual(@as(u64, 0), withSimulations(0, 2));
 }
 
 /// #584 — face 에서 `postscriptNameId` 를 얻는다. face 가 시스템 컬렉션에 없으면 0 이다.
