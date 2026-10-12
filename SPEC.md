@@ -2303,6 +2303,10 @@ glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 �
 
 **family 이름이 아니라 PostScript 이름이다.** `Menlo-Bold` 와 `Menlo-Regular` 는 family 가 둘 다 `"Menlo"` 라, family 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 — [#529](https://github.com/ensky0/tildaz/issues/529) 가 그것이었다.
 
+**Windows 는 합성 변종을 PostScript 이름과 함께 갈라야 한다** ([#749](https://github.com/ensky0/tildaz/issues/749)). 변종 파일이 없는 폰트에 `GetFirstMatchingFont` 이 주는 것은 regular 를 비스듬히 · 굵게 **합성한** font 인데, PostScript 이름은 regular 와 같다. 실측에서 `Malgun Gothic` 의 italic (`GetSimulations` = 2) 이 regular 와 같은 id `7af3d9b85a9464a3` 였고, 같은 글리프 번호의 똑바른 그림과 기울인 그림이 한 칸을 나눠 써 **한글 일부가 기울어져** 나왔다. 그래서 Windows 는 합성 비트가 0 이 아니면 그것을 id 에 섞는다 (`withSimulations`). 합성이 없는 폰트는 id 가 그대로다. macOS · Linux 는 합성 변종을 만들지 않아 해당이 없다.
+
+**단일 글리프 경로도 id 를 반드시 싣는다.** Windows 의 결과 구조체 (`GlyphResult` · `ClusterResult`) 는 `font_id` 에 기본값을 두지 않는다. 기본값 `0` 이 있던 동안 단일 글리프 경로 하나가 그 값을 빠뜨려 **모든 폰트가 id 0 하나를 나눠 썼고**, `Malgun Gothic` 의 `사` (글리프 1740) 자리에 `Cascadia Code` 의 `8` (같은 1740) 이 그려졌다 (#749). 빠뜨리면 컴파일이 실패해야 한다.
+
 **레지스트리가 아니라 해시다.** 이름 → id 표를 두면 상한과 초과 처리가 생긴다. 해시는 상태도 상한도 없고, 키에 `indices_hash` 가 함께 실려 이중이다. 이름을 못 읽으면 `0` 이다 — 이름 없는 폰트끼리 한 id 로 모여 그림이 섞일 수 있지만, 주소를 쓰던 때처럼 atlas 를 부풀리지는 않는다 (둘 중 덜 나쁜 쪽).
 
 **id 는 프로세스가 달라도 같다.** 주소와 갈리는 지점이다 — Windows 실측에서 `MV Boli` 가 세 번의 실행 내내 `0xbaa15b1cca03f6b6` 였다.

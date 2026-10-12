@@ -917,11 +917,17 @@ pub const IDWriteFont = extern struct {
         IsSymbolFont: *const anyopaque,
         GetFaceNames: *const anyopaque,
         GetInformationalStrings: *const fn (*IDWriteFont, UINT32, *?*IDWriteLocalizedStrings, *BOOL) callconv(.c) HRESULT,
-        GetSimulations: *const anyopaque,
+        GetSimulations: *const fn (*IDWriteFont) callconv(.c) u32,
         GetMetrics: *const anyopaque,
         HasCharacter: *const anyopaque,
         CreateFontFace: *const fn (*IDWriteFont, *?*IDWriteFontFace) callconv(.c) HRESULT,
     };
+
+    /// `DWRITE_FONT_SIMULATIONS` 비트 (bold 1 · oblique 2). DirectWrite 가 합성한 변종이면 0 이
+    /// 아니다 (#749 — 그 변종은 regular 와 PostScript 이름이 같아 id 를 따로 갈라야 한다).
+    pub fn GetSimulations(self: *IDWriteFont) u32 {
+        return self.vtable.GetSimulations(self);
+    }
 
     pub fn Release(self: *IDWriteFont) u32 {
         return self.vtable.Release(self);
