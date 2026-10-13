@@ -2283,7 +2283,7 @@ Dock · Spotlight 로 여는 길이에요. 처리량 · 지연의 AppleScript �
 
 - **화면 전체 하나** (노트북이면 내장 화면). 영역 · 창은 고르지 않아요 — 측정기는 화면 전체를 받아 창
   영역만 잘라 봐요. 다른 것을 고르면 측정기가 `스트림이 …x… 예요 — 화면 전체가 아니에요` 로 멈춰요.
-- "기억" 같은 체크가 있으면 켜요. 받은 토큰을 `$XDG_STATE_HOME/tildaz-bench/screencast.token` 에 두고 다음
+- "기억" 같은 체크가 있으면 켜요. 받은 토큰을 `$XDG_STATE_HOME/tildaz-bench/screencast-<데스크톱>.token` 에 두고 다음
   실행에 써서 창이 다시 안 떠요. **잘못 골랐으면 그 파일을 지워요** — 지우지 않으면 다음 실행도 같은 선택을
   조용히 써요.
 
@@ -2291,6 +2291,14 @@ Dock · Spotlight 로 여는 길이에요. 처리량 · 지연의 AppleScript �
 kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 주인이 다른 대상도 같은 규칙으로 잡혀요.
 포커스는 창 가운데를 절대좌표 uinput 포인터로 한 번 눌러 잡아요 — layer-shell 창 (TildaZ) 은 띄우기만 해서는
 키보드 포커스를 안 받아요.
+
+**GNOME 은 창 위치를 다른 프로세스에 안 알려 줘요** (`org.gnome.Shell.Introspect.GetWindows` 가 `AccessDenied`).
+그래서 GNOME 회차는 측정 프로그램이 처음에 화면을 마젠타로 칠하고, 측정기가 캡처에서 그 사각형을 찾아 영역으로
+써요 (`key-to-screen_linux.c` 의 `--find-marker`). 찾으면 `.go` 파일로 알리고, 프로그램이 화면을 지운 뒤 키를
+받아요. 화면 크기는 `gnome-screen_linux.py` 가 줘요. 시작 시간의 런처는 `gio launch` 예요. GNOME 에서는 TildaZ 에
+`-size` 를 안 줘요 (layer-shell 이 없어 앱이 거부해요) — 그래서 TildaZ 만 격자가 달라요.
+**GNOME 판은 권한 · 스트림 확인까지만 실기로 봤어요** (2026-10-13 GNOME Shell 51.0 — 스트림 2880x1800). 지연 ·
+시작 회차는 아직이에요 ([#761](https://github.com/ensky0/tildaz/issues/761)).
 
 ### 함정 — Linux 에서 밟은 것 (2026-10-13 · 노트북 AMD Ryzen AI 7 350 · KDE Plasma 6.7.5)
 

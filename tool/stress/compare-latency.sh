@@ -15,8 +15,10 @@
 # - **유휴 지연**이다 — 키를 기다리는 터미널에 키 하나를 보낸다. 출력이 쏟아지는 동안의 지연은
 #   재지 않는다.
 # - 대상을 띄우고 닫는 코드는 처리량 비교와 같다 (`terminals.sh`). 격자 · scrollback 도 같다.
-# - **macOS 와 Linux 의 KDE Plasma 만** 된다. GNOME · COSMIC 은 portal 경로가 같지만 실기 전이고,
-#   창 위치를 묻는 도구가 KWin 전용이다 (`tool/kwin-window_linux.py`). Windows 측정기는 아직 없다.
+# - **macOS 와 Linux 의 KDE Plasma · GNOME** 에서 된다. KDE 는 창 위치를 KWin 에 묻고
+#   (`tool/kwin-window_linux.py`), GNOME 은 창 위치를 안 알려 줘서 (`Introspect.GetWindows` 가 `AccessDenied`)
+#   측정 프로그램이 처음에 칠한 마젠타를 측정기가 캡처에서 찾는다 (`key-to-screen_linux.c` 의 `--find-marker`).
+#   Windows 측정기는 아직 없다.
 #
 # 터미널 안에서 도는 프로그램은 아래 `latency-child.sh` 하나다. 모든 대상에서 같다.
 #   1. 커서를 숨긴다 (`CSI ?25l`). **커서가 깜빡이면 그 변화를 키의 결과로 잘못 잰다** — 깜빡임
@@ -82,9 +84,10 @@ done
 . "$REPO_ROOT/tool/stress/terminals.sh"
 
 IS_KDE=0
-case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || [ "$IS_KDE" != 1 ]; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+IS_GNOME=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; esac
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ]; }; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
@@ -152,12 +155,30 @@ while [ "$_i" -lt 50 ]; do
     [ "${2:-0}x${1:-0}" = "$TILDAZ_STRESS_GRID" ] && break
     sleep 0.1; _i=$((_i + 1))
 done
+# 표식 회차 (GNOME) — 창 영역을 측정기가 찾도록 화면을 마젠타로 칠해 둔다. BCE (배경색 지우기) 를 안 하는
+# 터미널도 칠해지게 그 색의 공백 줄도 낸다 (`compare-startup.sh` 와 같은 표식).
+if [ "${TILDAZ_BENCH_MARKER:-0}" = 1 ]; then
+    printf '\033[48;5;201m\033[2J\033[H'
+    _j=0
+    while [ "$_j" -lt "${1:-40}" ]; do printf '%*s\n' "${2:-120}" ''; _j=$((_j + 1)); done
+fi
 # `pid` 는 Linux 가 창을 찾는 데 쓴다 — 창 주인은 이 셸의 조상 사슬에 있다 (`tool/kwin-window_linux.py`).
 printf 'cols=%s\nrows=%s\npid=%s\n' "${2:-0}" "${1:-0}" "$$" > "$TILDAZ_STRESS_TIMING_FILE"
+if [ "${TILDAZ_BENCH_MARKER:-0}" = 1 ]; then
+    # 측정기가 영역을 찾으면 `.go` 를 만든다. 그때 표식을 지우고 키를 받는다.
+    while [ ! -e "$TILDAZ_STRESS_TIMING_FILE.go" ]; do sleep 0.05; done
+    printf '\033[0m\033[2J\033[H'
+fi
 while IFS= read -r _line; do :; done
 EOF
 chmod +x "$PRODUCER"
 PRODUCER_ENV=""
+[ "$IS_GNOME" = 1 ] && PRODUCER_ENV="TILDAZ_BENCH_MARKER=1"
+# 표식 회차가 쓰는 화면 크기 (물리 px — `tool/gnome-screen_linux.py`).
+SCREEN_GEO=""
+if [ "$IS_GNOME" = 1 ]; then
+    SCREEN_GEO=$(python3 "$REPO_ROOT/tool/gnome-screen_linux.py") || { echo "화면 크기를 GNOME 에 못 물었어요." >&2; exit 1; }
+fi
 
 # `terminals.sh` 의 훅 — `--only` 에 없는 대상을 건너뛴다.
 terminal_skip() {
@@ -182,6 +203,14 @@ wait_ready() {
 #   measure_round_linux <터미널 안 프로그램의 pid> <대상 이름> <회차>
 measure_round_linux() {
     echo "$PRESSES" > "$WORK_DIR/round.miss"
+    if [ "$IS_GNOME" = 1 ]; then
+        _outp=$(printf '%s' "$SCREEN_GEO" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
+        _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
+            --find-marker --go-file "$WORK_DIR/$2.timing.go" --output "$_outp" --dpr 1 --click \
+            --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
+        measure_round_linux_tally "$2"
+        return 0
+    fi
     # 창이 KWin 목록에 올라올 때까지 (최대 5 초). `--activate` 로 앞에 올린다 — 클릭이 그 창으로 가게.
     _geo=""
     _t=0
@@ -198,12 +227,17 @@ measure_round_linux() {
     sleep 1
     _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
         --rect "$_rect" --output "$_outp" --dpr "$_dpr" --click --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
+    measure_round_linux_tally "$2"
+}
+
+# 측정기 출력 (`$_out` · `round.err`) 을 회차 표시 · miss · 표본으로 옮긴다.
+measure_round_linux_tally() {
     [ "$VERBOSE" = 1 ] && sed 's/^/    /' "$WORK_DIR/round.err" >&2
     _m=$(printf '%s\n' "$_out" | sed -n 's/.* miss=\([0-9]*\).*/\1/p' | tail -1)
     [ -n "$_m" ] || { sed 's/^/  ⚠ /' "$WORK_DIR/round.err" >&2; printf '!'; return 0; }
     echo "$_m" > "$WORK_DIR/round.miss"
     if [ "$_m" -gt $((PRESSES / 2)) ]; then printf '!'; return 0; fi
-    printf '%s\n' "$_out" | sed -n 's/^press *[0-9]* *\([0-9.]*\) ms$/\1/p' >> "$WORK_DIR/$2.samples"
+    printf '%s\n' "$_out" | sed -n 's/^press *[0-9]* *\([0-9.]*\) ms$/\1/p' >> "$WORK_DIR/$1.samples"
     printf '.'
 }
 
@@ -316,13 +350,18 @@ if [ "$IS_MACOS" = 1 ]; then
     fi
 elif pgrep -x fcitx5 >/dev/null 2>&1; then
     # 되살린 fcitx5 는 KDE 의 배열 목록을 자기 `Default Layout` 하나로 덮어쓴다 (AGENTS.md). 배열이
-    # 하나면 잃을 것이 없고, 둘 이상이면 사용자가 다시 추가해야 하니 멈춘다.
-    case "$(sed -n 's/^LayoutList=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kxkbrc" 2>/dev/null)" in
-        *,*)
-            echo "KDE 배열이 둘 이상이에요 — fcitx5 를 되살리면 목록이 지워져서 멈춰요. fcitx5 를 직접 끄고 다시 돌려요." >&2
-            exit 1
-            ;;
-    esac
+    # 하나면 잃을 것이 없고, 둘 이상이면 사용자가 다시 추가해야 하니 멈춘다. GNOME 입력 소스도 같은 일이
+    # 나는지는 확인 안 했다 — 안전한 쪽으로 같이 막는다.
+    if [ "$IS_KDE" = 1 ]; then
+        _layouts=$(sed -n 's/^LayoutList=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kxkbrc" 2>/dev/null | tr ',' '\n' | grep -c .)
+    else
+        # `[('xkb', 'us'), ('xkb', 'fr')]` — 항목마다 `('` 가 하나다.
+        _layouts=$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null | grep -o "('" | wc -l)
+    fi
+    if [ "${_layouts:-0}" -gt 1 ]; then
+        echo "입력 배열이 둘 이상이에요 — fcitx5 를 되살리면 목록이 지워질 수 있어서 멈춰요. fcitx5 를 직접 끄고 다시 돌려요." >&2
+        exit 1
+    fi
     pkill -x fcitx5 || true
     FCITX_RESTORE=1
     echo "fcitx5 를 잠깐 내렸어요 (끝나면 되살려요)."

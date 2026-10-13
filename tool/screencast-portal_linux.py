@@ -8,8 +8,10 @@
 명령의 것을 그대로 돌려준다.
 
 - **권한 창은 처음 한 번만 뜬다.** `persist_mode = 2` (권한을 거둘 때까지) 로 받은 `restore_token` 을
-  `--token-file` (기본 `$XDG_STATE_HOME/tildaz-bench/screencast.token`) 에 두고 다음 실행에 준다. 토큰은
-  한 번 쓰면 바뀌므로 매번 새 값으로 덮어쓴다 (portal 문서의 `restore_token`).
+  `--token-file` (기본 `$XDG_STATE_HOME/tildaz-bench/screencast-<데스크톱>.token`) 에 두고 다음 실행에 준다.
+  토큰은 한 번 쓰면 바뀌므로 매번 새 값으로 덮어쓴다 (portal 문서의 `restore_token`). **데스크톱마다 파일이
+  따로다** — 포털 구현 (KDE · GNOME · COSMIC) 마다 토큰이 달라서, 한 파일을 나눠 쓰면 데스크톱을 바꿀 때마다
+  서로 덮어써 권한 창이 다시 뜬다.
 - **창이 아니라 화면을 고른다.** 비교 측정은 회차마다 새 창을 띄워서, 창 단위로 고르면 매번 권한 창이 뜬다.
   창 영역은 측정기가 따로 받는다 (`tool/kwin-window_linux.py`).
 - 순서와 옵션 키는 OBS `plugins/linux-pipewire/screencast-portal.c` 와 같다 —
@@ -36,7 +38,8 @@ CURSOR_HIDDEN = 1
 
 def default_token_file():
     base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(base, "tildaz-bench", "screencast.token")
+    desk = (os.environ.get("XDG_CURRENT_DESKTOP") or "unknown").split(":")[0]
+    return os.path.join(base, "tildaz-bench", f"screencast-{desk}.token")
 
 
 class Portal:
