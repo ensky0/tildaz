@@ -466,6 +466,10 @@ hygiene_begin() {
     #    안 죽는다 — POSIX 는 AND-OR 리스트의 마지막이 아닌 명령만 -e 에서 빼는데, 함수 반환값은
     #    그 예외에 안 들어간다. 실측으로 갈라 확인했다.) 창이 안 내려간 건 사람이 직접 내리면
     #    되는 일이라 여기서 멈출 이유가 없다.
+    #
+    #    내리기 **직전에** 맨 앞의 앱 · 창을 적어 둔다 — 끝날 때 측정을 시킨 창을 부모 사슬로
+    #    못 찾으면 이것을 올린다 (`hygiene_raise_launcher`).
+    hygiene_note_front || true
     if hygiene_is_kde; then
         if hygiene_minimize_windows; then HYG_MINIMIZED=1; else
             echo "⚠ 창을 자동으로 못 내렸어요 (KWin 스크립팅 실패) — 직접 최소화해요" >&2
@@ -534,6 +538,29 @@ KWINJS
 #
 # 다른 Linux 데스크톱은 ③ 이 창을 안 내리므로 할 일이 없다. 실패해도 측정 결과와 무관해서 조용히
 # 넘어간다.
+#
+# **부모 사슬이 끊기면 대신 "내리기 직전에 맨 앞이던 앱 · 창" 을 올린다** (`hygiene_note_front`).
+# 측정을 `nohup … &` 로 띄우고 띄운 셸이 먼저 끝나면, 측정은 launchd · init 밑으로 옮겨 가서 사슬로
+# 앱에 닿지 않는다 (2026-10-13 macOS 실측 — 끝난 뒤 맨 앞이 Finder 였다). KDE 는 KWin 스크립트가
+# 값을 돌려주는 통로가 없어 이 대체 경로가 없다.
+HYG_FRONT=""
+hygiene_note_front() {
+    case "$HYG_PLATFORM" in
+        macos)
+            HYG_FRONT=$(osascript -e 'tell application "System Events" to get POSIX path of application file of first process whose frontmost is true' 2>/dev/null) || HYG_FRONT=""
+            ;;
+        windows)
+            HYG_FRONT=$(powershell -NoProfile -Command '
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TzFront { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }
+"@
+[TzFront]::GetForegroundWindow().ToInt64()' 2>/dev/null | tr -d '\r') || HYG_FRONT=""
+            ;;
+    esac
+    return 0
+}
 hygiene_raise_launcher() {
     case "$HYG_PLATFORM" in
         macos)
@@ -548,6 +575,9 @@ hygiene_raise_launcher() {
                 esac
                 _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
             done
+            case "$HYG_FRONT" in
+                *.app) open -a "$HYG_FRONT" >/dev/null 2>&1 || true ;;
+            esac
             ;;
         linux)
             hygiene_is_kde || return 0
@@ -586,7 +616,8 @@ KWINJS
             # PowerShell 의 조상을 따라간다 — MSYS 의 `$$` 는 Windows pid 가 아니다. 첫 조상은 이
             # 스크립트를 돌리는 bash 이고, 그 위로 mintty · VS Code · Windows Terminal 이 온다.
             # Windows Terminal 은 셸과 창 사이에 창 없는 OpenConsole 이 끼어 있어 건너뛴다.
-            powershell -NoProfile -Command '
+            # 사슬에서 못 찾으면 `TZ_FRONT_HWND` (내리기 직전의 맨 앞 창) 를 올린다.
+            TZ_FRONT_HWND="$HYG_FRONT" powershell -NoProfile -Command '
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -603,8 +634,13 @@ for ($i = 0; $p -and $i -lt 16; $i++) {
   if ($g -and $g.MainWindowHandle -ne [IntPtr]::Zero) {
     [void][TzRaise]::ShowWindow($g.MainWindowHandle, 9)
     [void][TzRaise]::SetForegroundWindow($g.MainWindowHandle)
-    break
+    exit 0
   }
+}
+if ($env:TZ_FRONT_HWND -match "^[1-9][0-9]*$") {
+  $h = [IntPtr][long]$env:TZ_FRONT_HWND
+  [void][TzRaise]::ShowWindow($h, 9)
+  [void][TzRaise]::SetForegroundWindow($h)
 }' >/dev/null 2>&1 || true
             ;;
     esac
