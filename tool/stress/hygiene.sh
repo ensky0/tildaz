@@ -48,6 +48,8 @@ HYG_INHIBIT_PID=""
 HYG_PROFILE_SAVED=""
 HYG_OVERLAY_SAVED=""
 HYG_MINIMIZED=0
+# 측정을 시킨 창을 이미 올렸는지 (`hygiene_end`).
+HYG_RAISED=0
 HYG_POWER="?"
 HYG_REFRESH="?"
 HYG_PROFILE="?"
@@ -515,6 +517,100 @@ KWINJS
     [ -n "$_num" ]
 }
 
+# 측정이 끝나면 **측정을 시킨 창 하나만** 다시 앞으로 올린다 (#756, 2026-10-13 사용자 요청).
+#
+# ③ 이 배경 앱을 전부 내리므로, 끝나도 화면이 비어 있어 측정이 끝났는지 알 수 없었다. 나머지
+# 창은 그대로 둔다 — "되돌리지 않는다" 는 ③ 의 결정은 그대로다.
+#
+# **"측정을 시킨 창" 은 이 스크립트의 부모 프로세스를 거슬러 올라가 찾는다.** VS Code 터미널이면
+# 셸 → VS Code, 에이전트가 돌리면 확장 → VS Code 로 이어진다. 시작할 때 앞에 있던 창으로 고르면
+# 그 사이 사용자가 다른 창을 누른 경우 틀린다.
+#
+#   | OS | 찾는 것 | 올리는 법 |
+#   |---|---|---|
+#   | macOS | 실행 파일 경로가 `.app/` 안에 있는 첫 조상 → **가장 바깥 `.app`** (`Code Helper (Plugin).app` 이 `Visual Studio Code.app` 안에 있다) | `open -a` — 앱을 활성화하면 숨김도 풀린다 |
+#   | Linux (KDE) | 조상 pid 목록 | KWin 스크립트로 pid 가 맞는 창을 복원 · 활성화 |
+#   | Windows | 창이 있는 첫 조상 (`MainWindowHandle`) | `SW_RESTORE` + `SetForegroundWindow` |
+#
+# 다른 Linux 데스크톱은 ③ 이 창을 안 내리므로 할 일이 없다. 실패해도 측정 결과와 무관해서 조용히
+# 넘어간다.
+hygiene_raise_launcher() {
+    case "$HYG_PLATFORM" in
+        macos)
+            _p=$$
+            while [ -n "$_p" ] && [ "$_p" -gt 1 ]; do
+                _c=$(ps -o comm= -p "$_p" 2>/dev/null)
+                case "$_c" in
+                    *.app/*)
+                        open -a "${_c%%.app/*}.app" >/dev/null 2>&1 || true
+                        return 0
+                        ;;
+                esac
+                _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+            done
+            ;;
+        linux)
+            hygiene_is_kde || return 0
+            _pids=""
+            _p=$$
+            while [ -n "$_p" ] && [ "$_p" -gt 1 ]; do
+                _pids="$_pids${_pids:+,}$_p"
+                _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+            done
+            _js=$(mktemp) || return 0
+            # `activeWindow` 는 Plasma 6, `activeClient` 는 5 다 (`hygiene_minimize_windows` 의 목록과 같은 갈림).
+            cat > "$_js" <<KWINJS
+var pids = [$_pids];
+var list = workspace.windowList ? workspace.windowList() : workspace.clientList();
+for (var i = 0; i < list.length; i++) {
+    var w = list[i];
+    if (w.normalWindow && pids.indexOf(w.pid) >= 0) {
+        w.minimized = false;
+        if (workspace.windowList) { workspace.activeWindow = w; } else { workspace.activeClient = w; }
+        break;
+    }
+}
+KWINJS
+            _id=$(gdbus call --session --dest org.kde.KWin --object-path /Scripting \
+                --method org.kde.kwin.Scripting.loadScript "$_js" "tildazstressraise" 2>/dev/null)
+            _num=$(printf '%s' "$_id" | tr -dc '0-9')
+            if [ -n "$_num" ]; then
+                gdbus call --session --dest org.kde.KWin --object-path "/Scripting/Script$_num" \
+                    --method org.kde.kwin.Script.run >/dev/null 2>&1
+                gdbus call --session --dest org.kde.KWin --object-path /Scripting \
+                    --method org.kde.kwin.Scripting.unloadScript "tildazstressraise" >/dev/null 2>&1
+            fi
+            rm -f "$_js"
+            ;;
+        windows)
+            # PowerShell 의 조상을 따라간다 — MSYS 의 `$$` 는 Windows pid 가 아니다. 첫 조상은 이
+            # 스크립트를 돌리는 bash 이고, 그 위로 mintty · VS Code · Windows Terminal 이 온다.
+            # Windows Terminal 은 셸과 창 사이에 창 없는 OpenConsole 이 끼어 있어 건너뛴다.
+            powershell -NoProfile -Command '
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TzRaise {
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+}
+"@
+$p = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
+for ($i = 0; $p -and $i -lt 16; $i++) {
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"
+  if (-not $p) { break }
+  $g = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+  if ($g -and $g.MainWindowHandle -ne [IntPtr]::Zero) {
+    [void][TzRaise]::ShowWindow($g.MainWindowHandle, 9)
+    [void][TzRaise]::SetForegroundWindow($g.MainWindowHandle)
+    break
+  }
+}' >/dev/null 2>&1 || true
+            ;;
+    esac
+    return 0
+}
+
 # --- 복원 -----------------------------------------------------------------
 #
 # 여러 번 불러도 안전하다 (호출자의 `trap` 과 명시 호출이 겹칠 수 있다).
@@ -533,4 +629,11 @@ hygiene_end() {
     fi
     # 창은 되돌리지 않는다 (`hygiene_begin` ③ 주석). CPU 프로파일은 되돌린다 — 그건
     # 남겨 두면 배터리를 계속 먹는다.
+    #
+    # 다만 **측정을 시킨 창 하나는 올린다** (`hygiene_raise_launcher`). ③ 이 실제로 창을 내린
+    # 실행에서만, 그리고 한 번만 — 이 함수는 trap 과 명시 호출로 두 번 불릴 수 있다.
+    if [ "$HYG_MINIMIZED" = 1 ] && [ "$HYG_RAISED" = 0 ]; then
+        HYG_RAISED=1
+        hygiene_raise_launcher || true
+    fi
 }
