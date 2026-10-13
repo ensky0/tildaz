@@ -1164,9 +1164,10 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
 - **`-e` 회차의 새 탭도 같은 `-e` 명령을 다시 실행해요.** `-NewTab` 으로 `Ctrl+Shift+T` 를 보내면 Tab 2 가 화면을 처음부터
   다시 뿌리고 (그동안 Tab 1 도 계속 출력), 캡처는 Tab 2 의 최종 화면 + 탭바예요. 대조에는 지장이 없지만 대기를 화면 출력
   시간만큼 넉넉히 둬요 (`overflow` 는 18 초로 돌렸어요).
-- 탭 atlas 의 UV 정규화 (#586 W-a) 를 가르려면 **본문 atlas 가 탭 atlas (2048) 보다 커진 뒤 탭바를 그린 화면**이어야 해요 —
-  `stack2` 는 512 판도 2048 에서 멈춰 조건이 안 돼요. `overflow` + `-NewTab` 을 **main 판** (고정 2048 + 안전망) 과 견줘요.
-  grow 판끼리는 같은 코드라 함정을 스스로 못 가르니까요 (2026-09-03 실측 `0 / 2,640,760 px`).
+- **탭바 글자는 본문 atlas 에 살아요** ([#762](https://github.com/ensky0/tildaz/issues/762) — 탭 atlas 가 없어졌어요).
+  그래서 탭바 그림을 가르려면 **본문 atlas 가 커진 뒤 탭바를 그린 화면**이 필요해요 — `overflow` + `-NewTab` 이에요.
+  견줄 판은 #762 이전 판이에요 (그때는 탭 atlas 가 따로라 크기가 갈려도 맞는지를 봤어요 — #586 W-a,
+  2026-09-03 실측 `0 / 2,640,760 px`).
 
 # Windows — 합성 입력으로 dead key · launcher 실패를 자동 검증하는 법
 

@@ -2,6 +2,7 @@
 //! 두 renderer 의 atlas 는 픽셀 포맷(BGRA premult vs ClearType)·업로드 경로가
 //! 달라 전체를 합치진 않지만, cache entry 구조와 row-based packing 은 라인 단위
 //! 동일했다. 그 공통분만 여기로 모은다 (per-OS 파일은 이 타입/함수를 사용).
+//! 크기 상수 · `Packer` · `GlyphSource` 는 Linux 도 쓴다.
 
 /// atlas cache entry — 글리프의 atlas 내 위치·크기·bearing·색 여부·advance.
 pub const AtlasEntry = struct {
@@ -19,7 +20,21 @@ pub const AtlasEntry = struct {
     advance: f32 = 0,
 };
 
-/// glyph cache key — 폰트 **id** + glyph index.
+/// 어느 폰트에서 구운 그림인지 — 터미널 폰트와 탭바 폰트 (탭바 · 컨트롤 스트립 · 검색바 · 메뉴).
+///
+/// **세 platform 이 한 atlas 에 두 폰트를 담기 때문에 키에 필요하다** ([#762](https://github.com/ensky0/tildaz/issues/762)).
+/// 탭바 폰트는 터미널 폰트와 크기가 달라서, 같은 PostScript 이름 · 같은 glyph index 라도 다른 그림이다
+/// (Menlo 15pt 본문과 Menlo 탭바 글자). 이 축이 없던 동안 macOS · Windows 는 atlas 를 폰트마다 따로 둬서
+/// 겹침을 피했는데, 탭바 atlas 는 커지지도 않으면서 본문과 같은 2048² 을 차지했다. Linux 는 처음부터
+/// 이 값으로 한 atlas 를 나눠 썼다 (`software_terminal.FontId` 가 이 타입이다).
+///
+/// 아이콘은 폰트가 아니라 `ICON_FONT_ID` 로 갈린다 — 탭바 쪽 그림이라 `.tab` 을 쓴다.
+pub const GlyphSource = enum(u8) {
+    terminal,
+    tab,
+};
+
+/// glyph cache key — 폰트 **id** + glyph index + 어느 폰트 (`source`).
 ///
 /// **주소를 쓰면 안 된다** ([#584](https://github.com/ensky0/tildaz/issues/584)). 예전 주석은
 /// *"단일 글리프 경로는 chain 폰트만 쓰므로 객체가 재사용된다"* 고 적었는데 **틀렸다.**
@@ -34,6 +49,8 @@ pub const GlyphKey = struct {
     /// `fontId(PostScript 이름)`. 아래 `ClusterKey.font_id` 와 같은 값을 쓴다.
     font_id: u64,
     index: u16,
+    /// #762 — 크기가 다른 두 폰트가 같은 atlas 를 쓴다. 위 `GlyphSource` 를 본다.
+    source: GlyphSource,
 };
 
 /// 탭바 아이콘 (`+` · `×` · `⋯`) 이 `GlyphKey.font_id` 에 쓰는 **예약값**.
@@ -93,6 +110,9 @@ pub const ClusterKey = struct {
     font_id: u64,
     /// 자르지 않는다 — 자르면 `GlyphKey.index` 대역과 겹칠 여지가 생긴다 (#529).
     indices_hash: u64,
+    /// #762 — `GlyphKey.source` 와 같은 축. 지금 cluster 는 터미널 폰트에서만 오지만 키의 뜻을
+    /// 두 키가 같게 둔다.
+    source: GlyphSource,
 };
 
 /// #586 — 시작 크기와 상한. 세 platform 이 같은 값 · 같은 정책이다 — **차면 두 배로 키운다** (`Packer.grownSize`),
@@ -237,7 +257,21 @@ test "Packer.grownSize — 두 배씩, 상한을 넘으면 null" {
 }
 
 test "ClusterKey — 폰트만 다르면 다른 키다" {
-    const a = ClusterKey{ .font_id = fontId("Menlo-Regular"), .indices_hash = 0x1234 };
-    const b = ClusterKey{ .font_id = fontId("Monaco"), .indices_hash = 0x1234 };
+    const a = ClusterKey{ .font_id = fontId("Menlo-Regular"), .indices_hash = 0x1234, .source = .terminal };
+    const b = ClusterKey{ .font_id = fontId("Monaco"), .indices_hash = 0x1234, .source = .terminal };
     try std.testing.expect(!std.meta.eql(a, b));
+}
+
+test "GlyphKey — 같은 폰트 · 같은 index 라도 터미널과 탭바는 다른 키다 (#762)" {
+    // 탭바 폰트는 크기가 달라 같은 그림이 아니다. 한 atlas 에 둘을 담으므로 이 축이 갈라야 한다.
+    const body = GlyphKey{ .font_id = fontId("Menlo-Regular"), .index = 36, .source = .terminal };
+    const tab = GlyphKey{ .font_id = fontId("Menlo-Regular"), .index = 36, .source = .tab };
+    try std.testing.expect(!std.meta.eql(body, tab));
+
+    var map = std.AutoHashMap(GlyphKey, u8).init(std.testing.allocator);
+    defer map.deinit();
+    try map.put(body, 1);
+    try map.put(tab, 2);
+    try std.testing.expectEqual(@as(usize, 2), map.count());
+    try std.testing.expectEqual(@as(?u8, 1), map.get(body));
 }

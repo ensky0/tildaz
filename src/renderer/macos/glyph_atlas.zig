@@ -34,7 +34,8 @@ const ClusterKey = atlas_common.ClusterKey;
 
 pub const GlyphAtlas = struct {
     alloc: std.mem.Allocator,
-    /// 단일 글리프 + 탭 아이콘. 키가 **진짜 glyph index** 다.
+    /// 단일 글리프 + 탭 아이콘. 키가 **진짜 glyph index** 다. #762 — 터미널 · 탭바 두 폰트의
+    /// 글리프가 함께 산다 (`GlyphKey.source` 가 가른다).
     cache: std.AutoHashMap(GlyphKey, AtlasEntry),
     /// 여러 글리프를 합성한 cluster (#401). **위 맵과 반드시 갈라 둔다** (#529) —
     /// 한 맵을 쓰면 cluster 해시가 진짜 glyph index 와 겹쳐 남의 그림이 나온다.
@@ -123,8 +124,10 @@ pub const GlyphAtlas = struct {
         /// codepoint 캐시가 없어 같은 글리프가 셀마다 새 키로 담긴다.
         font_id: u64,
         glyph_index: ct.CGGlyph,
+        /// #762 — 터미널 폰트인지 탭바 폰트인지. 두 폰트가 이 atlas 하나를 쓴다.
+        source: atlas_common.GlyphSource,
     ) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = font_id, .index = glyph_index };
+        const key = GlyphKey{ .font_id = font_id, .index = glyph_index, .source = source };
         if (self.cache.get(key)) |entry| return entry;
 
         const entry = self.rasterize(font, glyph_index) orelse return null;
@@ -154,9 +157,11 @@ pub const GlyphAtlas = struct {
         /// cluster 가 차지하는 가로 폭 (pt). 0 이면 모르는 것이라 첫 글리프 advance 로 물러선다.
         /// 폰트 층이 `CTRunGetTypographicBounds` 로 재서 넘긴다 (#401).
         cluster_advance_pt: f32,
+        /// #762 — `getOrInsert` 의 같은 인자.
+        source: atlas_common.GlyphSource,
     ) ?AtlasEntry {
         if (glyphs.len == 0) return null;
-        if (glyphs.len == 1) return self.getOrInsert(font, font_id, glyphs[0]);
+        if (glyphs.len == 1) return self.getOrInsert(font, font_id, glyphs[0], source);
 
         // 키는 글리프 인덱스들의 해시 + **폰트 id** 다. 같은 인덱스 조합이면 결과가 같다
         // (positions 는 그 조합에서 결정되므로 키에 안 넣는다).
@@ -171,7 +176,7 @@ pub const GlyphAtlas = struct {
         // 들어간 쪽의 비트맵이 나왔다 — 실기에서 `a̸` 자리에 `U` 가 그려졌다.
         var h = std.hash.Wyhash.init(0xC1_05_7E_47);
         for (glyphs) |g| h.update(std.mem.asBytes(&g));
-        const key = ClusterKey{ .font_id = font_id, .indices_hash = h.final() };
+        const key = ClusterKey{ .font_id = font_id, .indices_hash = h.final(), .source = source };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         const entry = self.rasterizeCluster(font, glyphs, positions, fonts, cluster_advance_pt) orelse return null;
@@ -186,7 +191,7 @@ pub const GlyphAtlas = struct {
     /// tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 

@@ -13,6 +13,7 @@ const chrome_palette = @import("../chrome_palette.zig");
 const themes = @import("../themes.zig");
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = @import("windows/glyph_atlas.zig").GlyphAtlas;
+const atlas_common = @import("glyph_atlas_common.zig");
 const AtlasEntry = @import("windows/glyph_atlas.zig").AtlasEntry;
 
 const perf = @import("../perf.zig");
@@ -201,8 +202,8 @@ pub const D3d11Renderer = struct {
     driver_type: DriverType,
     font: DWriteFontContext,
     atlas: GlyphAtlas,
+    /// 탭바 · 컨트롤 스트립 · 검색바 · 메뉴 글꼴. 글리프는 `atlas` 에 `.tab` 으로 담는다 (#762).
     tab_font: DWriteFontContext,
-    tab_atlas: GlyphAtlas,
     /// 현재 DPI scale (dpi/96). pt → px 변환에 곱하는 단일 scale 값 — UI metric
     /// (탭바 아이콘 크기/두께 등) 이 이 값을 쓴다. init / DPI 변경 시 갱신.
     pixels_per_dip: f32 = 1.0,
@@ -298,23 +299,13 @@ pub const D3d11Renderer = struct {
         return @as(f32, @floatFromInt(v)) / 255.0;
     }
 
-    const FontResources = struct {
-        font: DWriteFontContext,
-        atlas: GlyphAtlas,
-
-        fn deinit(self: *FontResources) void {
-            self.atlas.deinit();
-            self.font.deinit();
-        }
-    };
-
-    fn initTabFontResources(
+    /// 탭바 글꼴. #762 — 글리프는 본문 atlas 에 `.tab` 으로 담는다 (전에는 탭 atlas 를 따로 만들어
+    /// 함께 돌려줬다). atlas 가 이 글꼴의 em 크기를 알아야 하므로 atlas 보다 먼저 만든다.
+    fn initTabFont(
         alloc: std.mem.Allocator,
         font_chain: []const [*:0]const u16,
         dpi: c_uint,
-        device: *d3d.ID3D11Device,
-        ctx: *d3d.ID3D11DeviceContext,
-    ) !FontResources {
+    ) !DWriteFontContext {
         const effective_dpi: u32 = if (dpi > 0) dpi else 96;
         const pixels_per_dip = @as(f32, @floatFromInt(effective_dpi)) / 96.0;
         const spec = ui_metrics.tabLabelFontSpec();
@@ -326,10 +317,7 @@ pub const D3d11Renderer = struct {
         var font_ctx = try DWriteFontContext.init(alloc, font_chain, spec, cell_w, cell_h);
         errdefer font_ctx.deinit();
         font_ctx.ascent_px *= pixels_per_dip;
-
-        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device, ctx);
-        errdefer atlas.deinit();
-        return .{ .font = font_ctx, .atlas = atlas };
+        return font_ctx;
     }
 
     fn isLayeredWindow(hwnd: ?*anyopaque) bool {
@@ -772,11 +760,10 @@ pub const D3d11Renderer = struct {
         // Scale ascent_px to match actual rendered glyph pixels (font_em_size is unscaled,
         // but CreateGlyphRunAnalysis renders at font_em_size * pixels_per_dip)
         font_ctx.ascent_px *= pixels_per_dip;
-        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, device.?, ctx.?);
+        var tab_font = try initTabFont(alloc, font_chain, dpi);
+        errdefer tab_font.deinit();
+        var atlas = try GlyphAtlas.init(alloc, font_ctx.factory, font_ctx.font_em_size, tab_font.font_em_size, pixels_per_dip, device.?, ctx.?);
         errdefer atlas.deinit();
-
-        var tab_resources = try initTabFontResources(alloc, font_chain, dpi, device.?, ctx.?);
-        errdefer tab_resources.deinit();
 
         // 4. Compile shaders
         const bg_vs_blob = try compileShader(bg_shader_src, "bg_vs", "vs_4_0");
@@ -914,8 +901,7 @@ pub const D3d11Renderer = struct {
             .driver_type = driver_type,
             .font = font_ctx,
             .atlas = atlas,
-            .tab_font = tab_resources.font,
-            .tab_atlas = tab_resources.atlas,
+            .tab_font = tab_font,
             .pixels_per_dip = pixels_per_dip,
             .device = device.?,
             .ctx = ctx.?,
@@ -968,7 +954,6 @@ pub const D3d11Renderer = struct {
         _ = self.bg_ps.Release();
         _ = self.bg_vs.Release();
         if (self.rtv) |r| _ = r.Release();
-        self.tab_atlas.deinit();
         self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
@@ -1020,20 +1005,18 @@ pub const D3d11Renderer = struct {
         // `ascent_px` line up with the DPI-scaled raster.
         font_ctx.ascent_px *= pixels_per_dip;
 
-        var atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, pixels_per_dip, self.device, self.ctx);
+        var tab_font = try initTabFont(self.alloc, font_chain, dpi);
+        errdefer tab_font.deinit();
+
+        var atlas = try GlyphAtlas.init(self.alloc, font_ctx.factory, font_ctx.font_em_size, tab_font.font_em_size, pixels_per_dip, self.device, self.ctx);
         errdefer atlas.deinit();
 
-        var tab_resources = try initTabFontResources(self.alloc, font_chain, dpi, self.device, self.ctx);
-        errdefer tab_resources.deinit();
-
-        self.tab_atlas.deinit();
         self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
         self.font = font_ctx;
         self.atlas = atlas;
-        self.tab_font = tab_resources.font;
-        self.tab_atlas = tab_resources.atlas;
+        self.tab_font = tab_font;
         self.pixels_per_dip = pixels_per_dip;
     }
 
@@ -1222,7 +1205,7 @@ pub const D3d11Renderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                        const entry = c.self.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                        const entry = c.self.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
                             if (result.owned) _ = result.face.vtable.Release(result.face);
                             return;
                         };
@@ -1262,7 +1245,7 @@ pub const D3d11Renderer = struct {
         }
 
         if (text_count > 0) {
-            self.drawTextInstancesWithAtlas(text_instances[0..text_count], &self.tab_atlas);
+            self.drawTextInstances(text_instances[0..text_count]);
         }
 
         // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선.
@@ -1290,7 +1273,7 @@ pub const D3d11Renderer = struct {
                     var drag_n: u32 = 0;
                     const baseline_y2 = (tbh + self.tab_font.ascent_px - (ch - self.tab_font.ascent_px)) / 2.0;
                     emitTitle(self, tab_titles[di], dx, pad, layout.tab_area_x, tab_area_end, cw, tw - pad * 2, baseline_y2, &drag_text, &drag_n);
-                    if (drag_n > 0) self.drawTextInstancesWithAtlas(drag_text[0..drag_n], &self.tab_atlas);
+                    if (drag_n > 0) self.drawTextInstances(drag_text[0..drag_n]);
                 }
             }
         }
@@ -1309,7 +1292,7 @@ pub const D3d11Renderer = struct {
             fn run(rself: *D3d11Renderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh_: f32, isz: u32, istroke: f32, color: [4]f32, buf: []TextInstance, n: *u32) void {
                 if (n.* >= buf.len) return;
                 if (box_w <= 0 or isz == 0) return;
-                const entry = rself.tab_atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
+                const entry = rself.insertIconOrGrow(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
                 const gx = box_x + (box_w - fsz) * 0.5;
@@ -1339,7 +1322,7 @@ pub const D3d11Renderer = struct {
         // #268 — 우측 끝 활성 탭 닫기 버튼 `×`.
         drawIcon(self, .close, layout.close_x, layout.close_w, tbh, icon_size, icon_stroke, self.chrome.ctrl_active, &ctrl_text_buf, &ctrl_text_n);
         drawIcon(self, .more, layout.more_x, layout.more_w, tbh, icon_size, more_stroke, self.chrome.ctrl_active, &ctrl_text_buf, &ctrl_text_n);
-        if (ctrl_text_n > 0) self.drawTextInstancesWithAtlas(ctrl_text_buf[0..ctrl_text_n], &self.tab_atlas);
+        if (ctrl_text_n > 0) self.drawTextInstances(ctrl_text_buf[0..ctrl_text_n]);
 
         // Don't present — drawPane / endFrame will continue
     }
@@ -1847,7 +1830,7 @@ pub const D3d11Renderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.insertOrGrow(result.face, result.font_id, result.index) orelse {
+                const entry = self.insertOrGrow(result.face, result.font_id, result.index, .terminal) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
@@ -2034,7 +2017,7 @@ pub const D3d11Renderer = struct {
         const emit = struct {
             fn icon(r: *D3d11Renderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, icon_size: u32, icon_stroke: f32, out: []TextInstance, n: *u32) void {
                 if (w <= 0 or n.* >= out.len) return;
-                const entry = r.tab_atlas.getOrInsertIcon(kind, icon_size, icon_stroke) orelse return;
+                const entry = r.insertIconOrGrow(kind, icon_size, icon_stroke) orelse return;
                 const sf: f32 = @floatFromInt(icon_size);
                 out[n.*] = .{
                     .pos = .{ x + (w - sf) * 0.5, (bar_h - sf) * 0.5 },
@@ -2050,7 +2033,7 @@ pub const D3d11Renderer = struct {
         emit(self, .plus, layout.plus_x, layout.plus_w, h, size, stroke, &icons, &icon_n);
         emit(self, .close, layout.close_x, layout.close_w, h, size, stroke, &icons, &icon_n);
         emit(self, .more, layout.more_x, layout.more_w, h, size, more_stroke, &icons, &icon_n);
-        if (icon_n > 0) self.drawTextInstancesWithAtlas(icons[0..icon_n], &self.tab_atlas);
+        if (icon_n > 0) self.drawTextInstances(icons[0..icon_n]);
     }
 
     /// #646 — 검색바. 색칠 사각형은 `search_bar.rects` 가 만들고 여기서는 아이콘 · 텍스트 ·
@@ -2101,7 +2084,7 @@ pub const D3d11Renderer = struct {
         var icons: [4]TextInstance = undefined;
         var icon_n: u32 = 0;
         if (v.icon.w > 0) {
-            if (self.tab_atlas.getOrInsertIcon(.search, search_sz, search_stroke)) |entry| {
+            if (self.insertIconOrGrow(.search, search_sz, search_stroke)) |entry| {
                 icons[icon_n] = .{
                     .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -2117,7 +2100,7 @@ pub const D3d11Renderer = struct {
             const enabled = ui.total > 0;
             for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
                 const r = search_bar.controlRect(v, c);
-                const entry = self.tab_atlas.getOrInsertIcon(search_bar.controlIcon(c), isz, istroke) orelse continue;
+                const entry = self.insertIconOrGrow(search_bar.controlIcon(c), isz, istroke) orelse continue;
                 const size_f: f32 = @floatFromInt(isz);
                 icons[icon_n] = .{
                     .pos = .{
@@ -2134,7 +2117,7 @@ pub const D3d11Renderer = struct {
                 icon_n += 1;
             }
         }
-        if (icon_n > 0) self.drawTextInstancesWithAtlas(icons[0..icon_n], &self.tab_atlas);
+        if (icon_n > 0) self.drawTextInstances(icons[0..icon_n]);
 
         var glyphs: [256]TextInstance = undefined;
         var glyph_n: u32 = 0;
@@ -2150,7 +2133,7 @@ pub const D3d11Renderer = struct {
                         x += adv;
                         continue;
                     };
-                    const entry = r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         x += adv;
                         continue;
@@ -2188,7 +2171,7 @@ pub const D3d11Renderer = struct {
                 fn put(c: @This(), g: search_bar.Glyph) void {
                     if (c.n.* >= c.out.len) return;
                     const result = c.r.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                    const entry = c.r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                    const entry = c.r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         return;
                     };
@@ -2237,7 +2220,7 @@ pub const D3d11Renderer = struct {
             emit(self, txt, cx, baseline, color, cx + tw + 1, &glyphs, &glyph_n);
         }
 
-        if (glyph_n > 0) self.drawTextInstancesWithAtlas(glyphs[0..glyph_n], &self.tab_atlas);
+        if (glyph_n > 0) self.drawTextInstances(glyphs[0..glyph_n]);
     }
 
     fn drawCommandMenu(self: *D3d11Renderer, viewport_w: c_int, viewport_h: c_int, ui: command_menu.Ui, menu_hints: *const command_menu.Hints) void {
@@ -2281,7 +2264,7 @@ pub const D3d11Renderer = struct {
             var ind: [2]TextInstance = undefined;
             var ind_n: u32 = 0;
             for (pairs) |p| {
-                const entry = self.tab_atlas.getOrInsertIcon(p.kind, ind_size, ind_stroke) orelse continue;
+                const entry = self.insertIconOrGrow(p.kind, ind_size, ind_stroke) orelse continue;
                 ind[ind_n] = .{
                     .pos = .{ ind_cx, p.y },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -2292,7 +2275,7 @@ pub const D3d11Renderer = struct {
                 };
                 ind_n += 1;
             }
-            if (ind_n > 0) self.drawTextInstancesWithAtlas(ind[0..ind_n], &self.tab_atlas);
+            if (ind_n > 0) self.drawTextInstances(ind[0..ind_n]);
         }
 
         var glyphs: [512]TextInstance = undefined;
@@ -2306,7 +2289,7 @@ pub const D3d11Renderer = struct {
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(cp, .regular) orelse continue;
-                    const entry = r.tab_atlas.getOrInsert(result.face, result.font_id, result.index) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         continue;
                     };
@@ -2349,7 +2332,7 @@ pub const D3d11Renderer = struct {
                 }
             }
         }
-        if (glyph_n > 0) self.drawTextInstancesWithAtlas(glyphs[0..glyph_n], &self.tab_atlas);
+        if (glyph_n > 0) self.drawTextInstances(glyphs[0..glyph_n]);
     }
 
     // --- Internal draw helpers ---
@@ -2426,17 +2409,31 @@ pub const D3d11Renderer = struct {
     /// #586 — 본문 atlas 에 단일 글리프를 넣는다 — 차면 **키우고** 다시 넣는다. ① 비우기는 대기 중인
     /// 인스턴스를 flush 할 수 있는 셀 루프 (`emitClusterInstance`) 만 한다 — preedit · split cluster 의
     /// mark 처럼 그 버퍼가 없는 자리에서는 상한이면 그 글리프를 건너뛴다 (전과 같다).
-    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16) ?AtlasEntry {
-        var entry = self.atlas.getOrInsert(face, font_id, index);
+    ///
+    /// #762 — 탭바 · 스트립 · 검색바 · 메뉴 글자도 여기를 지난다 (`source = .tab`). 그 자리들도
+    /// 인스턴스를 모았다 한 번에 그리므로 ① 비우기를 하지 않는 이 함수가 맞다. 탭 atlas 가 따로이던
+    /// 때는 그쪽이 커지지 않아 차면 글자를 건너뛰었다.
+    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16, source: atlas_common.GlyphSource) ?AtlasEntry {
+        var entry = self.atlas.getOrInsert(face, font_id, index, source);
         while (entry == null and self.atlas.is_full and self.atlas.grow()) {
-            entry = self.atlas.getOrInsert(face, font_id, index);
+            entry = self.atlas.getOrInsert(face, font_id, index, source);
+        }
+        return entry;
+    }
+
+    /// `insertOrGrow` 의 탭바 아이콘 (`tab_icons`) 판 (#762).
+    fn insertIconOrGrow(self: *D3d11Renderer, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
+        var entry = self.atlas.getOrInsertIcon(icon, size, stroke_px);
+        while (entry == null and self.atlas.is_full and self.atlas.grow()) {
+            entry = self.atlas.getOrInsertIcon(icon, size, stroke_px);
         }
         return entry;
     }
 
     fn drawTextInstancesWithAtlas(self: *D3d11Renderer, instances: []const TextInstance, atlas: *const GlyphAtlas) void {
         if (instances.len == 0) return;
-        // #586 — 이 atlas 의 크기로 UV 를 정규화한다 (`grow` 뒤 본문과 탭 atlas 크기가 갈린다).
+        // #586 — 이 atlas 의 크기로 UV 를 정규화한다. 상수 버퍼는 draw 마다 다시 쓴다 — `grow` 가
+        // 프레임 중간에 크기를 바꿔도 앞서 기록된 draw 는 옛 값을 본다 (#762 로 atlas 는 하나다).
         self.writeConstants(atlas.pack.size);
 
         // Upload instance data
@@ -2519,11 +2516,11 @@ pub const D3d11Renderer = struct {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
         }
-        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
         // #586 — **먼저 키운다** (macOS #584 ② 와 같다). 키우면 프레임 중간에 비우는 상황이 없어 이미
         // emit 한 UV 가 무효화되지 않는다. 상한이면 아래 ① 안전망으로.
         while (entry_opt == null and self.atlas.is_full and self.atlas.grow()) {
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
         }
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
@@ -2535,7 +2532,7 @@ pub const D3d11Renderer = struct {
                 block_count.* = 0;
             }
             self.atlas.reset();
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -2607,7 +2604,7 @@ pub const D3d11Renderer = struct {
         const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
 
         for (split.marks[0..split.mark_count]) |m| {
-            const me = self.insertOrGrow(m.face, m.font_id, m.index) orelse {
+            const me = self.insertOrGrow(m.face, m.font_id, m.index, .terminal) orelse {
                 if (m.owned) _ = m.face.vtable.Release(m.face);
                 continue;
             };

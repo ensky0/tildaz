@@ -23,6 +23,7 @@ const themes = @import("../themes.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
+const atlas_common = @import("glyph_atlas_common.zig");
 const INITIAL_ATLAS_SIZE = macos_glyph_atlas.INITIAL_ATLAS_SIZE;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
@@ -50,9 +51,9 @@ const MAX_INSTANCES: u32 = 32768;
 /// #591 — 프레임 안에서 "무엇을 어떤 순서로 그리나" 의 기록 단위. 셀 루프는 인스턴스를 mapped
 /// 버퍼에 담고 여기에 (종류 · 시작 offset · 개수) 만 남긴다. draw 는 atlas 를 올린 **뒤**
 /// `beginPassWithRanges` 가 이 목록 순서대로 한 번에 한다.
-/// `.text` 는 본문 atlas, `.tab_text` 는 탭 atlas (탭바 · 스트립 · 메뉴 — #591 2 단계). 인스턴스는
-/// 같은 text 버퍼에 담기고 encode 때 텍스처와 constants 만 갈린다.
-const DrawKind = enum(u8) { bg, text, tab_text };
+/// #762 — text 는 하나다. 탭바 · 스트립 · 메뉴 글자도 본문 atlas 에 산다 (`GlyphKey.source` 가
+/// 두 폰트를 가른다). 전에는 탭 atlas 를 따로 둬 `.tab_text` 가 텍스처 · constants 를 갈았다.
+const DrawKind = enum(u8) { bg, text };
 const DrawRange = struct { kind: DrawKind, offset: u32, count: u32 };
 
 // --- #255 Phase 2: CADisplayLink pause 합성 게이트 ---
@@ -226,8 +227,8 @@ pub const MetalRenderer = struct {
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,
     atlas: GlyphAtlas,
+    /// 탭바 · 컨트롤 스트립 · 검색바 · 메뉴 글꼴. 글리프는 `atlas` 에 `.tab` 으로 담는다 (#762).
     tab_font: CoreTextFontContext,
-    tab_atlas: GlyphAtlas,
 
     // Metal 객체 (모두 ObjC id, 우리는 ARC 안 쓰지만 process 종료 시 회수).
     device: objc.id,
@@ -249,24 +250,17 @@ pub const MetalRenderer = struct {
     /// Windows (`UpdateSubresource`) · Linux (`glTexSubImage2D`) 는 글리프 단위로 즉시 올리는데
     /// macOS 만 프레임마다 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 올리고
     /// 있었다. blit 은 영역 지정이 자연스러워 `dirty_min_y`~`dirty_max_y` 만 올린다.
-    /// ⚠️ **atlas 마다 따로여야 한다.** blit 은 `replaceRegion` 과 달리 **GPU 가 나중에
-    /// 실행할 때** buffer 를 읽는다. 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의
-    /// blit 에 실려 **본문 blit 이 탭 데이터를 읽는다** (실측으로 화면이 깨졌다).
+    /// ⚠️ atlas 가 둘이던 동안은 **atlas 마다 따로여야 했다.** blit 은 `replaceRegion` 과 달리
+    /// **GPU 가 나중에 실행할 때** buffer 를 읽어서, 하나를 나눠 쓰면 본문 blit 이 탭 데이터를
+    /// 읽었다 (실측으로 화면이 깨졌다). #762 로 atlas 가 하나가 됐다.
     staging_buffer: objc.id,
     staging_bytes: u32 = 0,
-    tab_staging_buffer: objc.id,
-    tab_staging_bytes: u32 = 0,
     /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.pack.size` 가 이보다 커지면
     /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
     atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
-    tab_atlas_texture: objc.id,
-    tab_atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
+    /// float4 (screen_w, screen_h, atlas_w, atlas_h). #762 — atlas 가 하나라 constants 도 하나다
+    /// (탭 atlas 가 따로이던 때는 크기가 갈려 버퍼를 나눠야 했다 — #584 ②).
     constants_buffer: objc.id,
-    /// #584 ② — **탭 atlas 용 constants.** 셰이더가 UV 를 `atlas_w`/`atlas_h` 로 정규화하는데,
-    /// 본문 atlas 는 `grow` 로 커지고 탭 atlas 는 안 커진다 — 크기가 갈리면 uniform 하나로는
-    /// 둘 다 맞출 수 없다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않았고, 실측에서
-    /// 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다.
-    tab_constants_buffer: objc.id,
 
     // frame 내 누적된 instance 수. 매 `pushBg` / `pushText` 가
     // 같은 buffer 의 *다음 offset* 에 쓰고 setVertexBuffer offset 도 그에 맞게.
@@ -321,11 +315,9 @@ pub const MetalRenderer = struct {
     draw_ranges: std.ArrayListUnmanaged(DrawRange) = .empty,
     /// 열려 있는 구간의 시작 offset (null = 안 열림). `openRange` / `closeRange`.
     open_bg_start: ?u32 = null,
-    /// text 계열 (`.text` · `.tab_text`) 은 같은 버퍼라 **한 번에 하나만** 열린다 — 본문은
-    /// `drawPane` 안에서 닫히고 탭 · 메뉴는 `endFrame` 초입에서 순차로 연다. 어느 종류가
-    /// 열렸는지는 `open_text_kind` 가 기억한다.
+    /// text 구간은 **한 번에 하나만** 열린다 — 본문은 `drawPane` 안에서 닫히고 탭 · 메뉴는
+    /// `endFrame` 초입에서 순차로 연다.
     open_text_start: ?u32 = null,
-    open_text_kind: DrawKind = .text,
     /// 이 프레임에 이미 제출한 pass 수 (#584 ① 안전망이 프레임 중간에 제출한다). 0 이면 다음
     /// pass 는 Clear 로 열고, 아니면 앞 pass 가 그린 것을 Load 로 이어받는다.
     passes_submitted: u32 = 0,
@@ -414,9 +406,6 @@ pub const MetalRenderer = struct {
         );
         errdefer tab_font_ctx.deinit();
 
-        var tab_glyph_atlas = try GlyphAtlas.init(alloc, scale);
-        errdefer tab_glyph_atlas.deinit();
-
         // Metal 셰이더 컴파일.
         const source_str = objc.nsString(shader_source);
         var err: objc.id = null;
@@ -456,11 +445,8 @@ pub const MetalRenderer = struct {
         const const_buf = createBuffer(device, 16);
         // #585 — atlas 전체를 담을 수 있는 staging (grow 하면 재생성한다).
         const staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
-        const tab_staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
-        const tab_const_buf = createBuffer(device, 16);
 
         const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
-        const tab_atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
 
         // #349 — 표시 대상에 붙일 색공간. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고 (#334 / #342
         // anchor, #335 파생식) window server 는 이 꼬리표를 보고 디스플레이 색공간으로 변환한다.
@@ -480,7 +466,6 @@ pub const MetalRenderer = struct {
             .font = font_ctx,
             .atlas = glyph_atlas,
             .tab_font = tab_font_ctx,
-            .tab_atlas = tab_glyph_atlas,
             .device = device,
             .layer = layer,
             .target_colorspace = target_colorspace,
@@ -493,11 +478,7 @@ pub const MetalRenderer = struct {
             .atlas_texture = atlas_tex,
             .staging_buffer = staging,
             .staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
-            .tab_staging_buffer = tab_staging,
-            .tab_staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
-            .tab_atlas_texture = tab_atlas_tex,
             .constants_buffer = const_buf,
-            .tab_constants_buffer = tab_const_buf,
             .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
             .scale = scale,
@@ -511,12 +492,11 @@ pub const MetalRenderer = struct {
     /// 탭바가 배율만큼 틀어진다. 같은 scale 이동은 host 가 부르지 않는다 (viewport 만).
     /// #693 — 세 platform 공통 이름이다 (Linux · Windows renderer 의 `rebuildFonts` 와 같은
     /// 역할). 크기는 host 의 `TerminalFontSize.spec()` 이 정하고, 배율 타입만 platform 마다 다르다.
-    /// #527 — `[font] macos_smoothing`. 터미널 글자와 탭바 글자가 같은 굵기여야 하므로 두
-    /// 아틀라스에 함께 넣는다. host 가 첫 프레임 전에 부른다 — 이미 그린 글리프는 캐시에 남아
+    /// #527 — `[font] macos_smoothing`. 터미널 글자와 탭바 글자가 같은 굵기여야 한다 — #762 로
+    /// 둘이 한 atlas 라 한 번 넣으면 된다. host 가 첫 프레임 전에 부른다 — 이미 그린 글리프는 캐시에 남아
     /// 바뀌지 않는다 (config 는 실행 중에 다시 읽지 않는다).
     pub fn setFontSmoothing(self: *MetalRenderer, on: bool) void {
         self.atlas.smooth_fonts = on;
-        self.tab_atlas.smooth_fonts = on;
     }
 
     pub fn rebuildFonts(self: *MetalRenderer, terminal_font: font_spec.Spec, new_scale: f32) !void {
@@ -549,9 +529,7 @@ pub const MetalRenderer = struct {
         //    (atlas_texture 는 `syncAtlasTexture` 가 크기를 맞춘다 — #584 ②.)
         self.atlas.scale = new_scale;
         self.atlas.ascent_pt = self.font.ascent_px / self.font.retina_scale;
-        self.atlas.reset();
-        self.tab_atlas.scale = new_scale;
-        self.tab_atlas.reset();
+        self.atlas.reset(); // #762 — 탭바 글리프 · 아이콘도 여기 산다 (함께 비워진다).
 
         // 3. renderer scale 갱신 — 탭바/스크롤바/패딩 등 UI metric 이 곱해 쓰는 값.
         self.scale = new_scale;
@@ -559,7 +537,6 @@ pub const MetalRenderer = struct {
 
     pub fn deinit(self: *MetalRenderer) void {
         self.draw_ranges.deinit(self.alloc);
-        self.tab_atlas.deinit();
         self.tab_font.deinit();
         self.atlas.deinit();
         self.font.deinit();
@@ -863,10 +840,9 @@ pub const MetalRenderer = struct {
     fn openRange(self: *MetalRenderer, kind: DrawKind) void {
         switch (kind) {
             .bg => self.open_bg_start = self.bg_used,
-            .text, .tab_text => {
-                std.debug.assert(self.open_text_start == null); // text 계열은 한 번에 하나만
+            .text => {
+                std.debug.assert(self.open_text_start == null); // text 는 한 번에 하나만
                 self.open_text_start = self.text_used;
-                self.open_text_kind = kind;
             },
         }
     }
@@ -876,16 +852,16 @@ pub const MetalRenderer = struct {
     fn closeRange(self: *MetalRenderer, kind: DrawKind) void {
         const start = switch (kind) {
             .bg => self.open_bg_start,
-            .text, .tab_text => self.open_text_start,
+            .text => self.open_text_start,
         } orelse return;
         const used = switch (kind) {
             .bg => self.bg_used,
-            .text, .tab_text => self.text_used,
+            .text => self.text_used,
         };
         if (used > start) self.appendRange(kind, start, used - start);
         switch (kind) {
             .bg => self.open_bg_start = null,
-            .text, .tab_text => self.open_text_start = null,
+            .text => self.open_text_start = null,
         }
     }
 
@@ -906,11 +882,10 @@ pub const MetalRenderer = struct {
     /// 제출하기 직전에 부른다. 닫는 순서는 text → bg (text pass 의 최종 순서와 같다).
     fn splitOpenRanges(self: *MetalRenderer) void {
         const had_text = self.open_text_start != null;
-        const text_kind = self.open_text_kind;
         const had_bg = self.open_bg_start != null;
-        if (had_text) self.closeRange(text_kind);
+        if (had_text) self.closeRange(.text);
         if (had_bg) self.closeRange(.bg);
-        if (had_text) self.openRange(text_kind);
+        if (had_text) self.openRange(.text);
         if (had_bg) self.openRange(.bg);
     }
 
@@ -935,23 +910,37 @@ pub const MetalRenderer = struct {
     /// 글리프 하나를 atlas 에 넣는다 — 차면 `recoverFromAtlasFull` 로 복구하고 다시 넣는다.
     /// 최대 세 번 (2048 → 4096 → 8192 → 안전망). 모든 글리프 삽입이 이 함수를 지난다 — 전에는
     /// ligature 경로만 복구가 없어 atlas 가 차면 조용히 버렸다.
-    fn insertGlyphOrRecover(self: *MetalRenderer, font: ct.CTFontRef, font_id: u64, index: ct.CGGlyph) ?macos_glyph_atlas.AtlasEntry {
-        var entry = self.atlas.getOrInsert(font, font_id, index);
+    ///
+    /// #762 — 탭바 · 스트립 · 검색바 · 메뉴 글자도 여기를 지난다 (`source = .tab`). 탭 atlas 가 따로
+    /// 이던 때는 그쪽이 커지지도 비우지도 않아 차면 글자를 조용히 버렸다.
+    fn insertGlyphOrRecover(self: *MetalRenderer, font: ct.CTFontRef, font_id: u64, index: ct.CGGlyph, source: atlas_common.GlyphSource) ?macos_glyph_atlas.AtlasEntry {
+        var entry = self.atlas.getOrInsert(font, font_id, index, source);
         var tries: u8 = 0;
         while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
             if (!self.recoverFromAtlasFull()) break;
-            entry = self.atlas.getOrInsert(font, font_id, index);
+            entry = self.atlas.getOrInsert(font, font_id, index, source);
+        }
+        return entry;
+    }
+
+    /// `insertGlyphOrRecover` 의 탭바 아이콘 (`tab_icons`) 판 (#762).
+    fn insertIconOrRecover(self: *MetalRenderer, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?macos_glyph_atlas.AtlasEntry {
+        var entry = self.atlas.getOrInsertIcon(icon, size, stroke_px);
+        var tries: u8 = 0;
+        while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
+            if (!self.recoverFromAtlasFull()) break;
+            entry = self.atlas.getOrInsertIcon(icon, size, stroke_px);
         }
         return entry;
     }
 
     /// `insertGlyphOrRecover` 의 cluster (#401 합성 비트맵) 판.
     fn insertClusterOrRecover(self: *MetalRenderer, result: mac_font.GlyphResult) ?macos_glyph_atlas.AtlasEntry {
-        var entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+        var entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance, .terminal);
         var tries: u8 = 0;
         while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
             if (!self.recoverFromAtlasFull()) break;
-            entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance);
+            entry = self.atlas.getOrInsertCluster(result.font, result.font_id, result.glyphs[0..result.count], result.positions[0..result.count], result.fonts[0..result.count], result.advance, .terminal);
         }
         return entry;
     }
@@ -974,8 +963,6 @@ pub const MetalRenderer = struct {
             self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
             self.atlas.dirty = false;
         }
-        self.syncAtlasTexture(&self.tab_atlas, &self.tab_atlas_texture, &self.tab_atlas_texture_size);
-        self.uploadTabAtlasIfDirty();
 
         const texture = target.texture;
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -1001,8 +988,7 @@ pub const MetalRenderer = struct {
         for (self.draw_ranges.items) |r| {
             switch (r.kind) {
                 .bg => self.encodeBgRange(encoder, r.offset, r.count),
-                .text => self.encodeTextRange(encoder, r.offset, r.count, self.atlas_texture),
-                .tab_text => self.encodeTextRange(encoder, r.offset, r.count, self.tab_atlas_texture),
+                .text => self.encodeTextRange(encoder, r.offset, r.count),
             }
         }
         self.draw_ranges.clearRetainingCapacity();
@@ -1054,15 +1040,13 @@ pub const MetalRenderer = struct {
         );
     }
 
-    fn encodeTextRange(self: *MetalRenderer, encoder: objc.id, offset: u32, count: u32, texture: objc.id) void {
+    fn encodeTextRange(self: *MetalRenderer, encoder: objc.id, offset: u32, count: u32) void {
         if (count == 0) return;
         const offset_bytes: objc.NSUInteger = @as(objc.NSUInteger, offset) * @sizeOf(TextInstance);
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
-        // #584 ② — 탭 atlas 는 크기가 따로라 constants 도 따로다.
-        const consts = if (texture == self.tab_atlas_texture) self.tab_constants_buffer else self.constants_buffer;
-        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), consts, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), texture, @as(objc.NSUInteger, 0));
+        objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
         objc.msgSendVoid4(
             encoder,
             objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
@@ -1459,7 +1443,7 @@ pub const MetalRenderer = struct {
                     x += 1;
                     continue;
                 };
-                const single_opt = self.insertGlyphOrRecover(result.font, result.font_id, result.index);
+                const single_opt = self.insertGlyphOrRecover(result.font, result.font_id, result.index, .terminal);
                 const entry = single_opt orelse {
                     mac_font.releaseCluster(result);
                     x += 1;
@@ -1556,7 +1540,7 @@ pub const MetalRenderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_n >= 16) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index), .terminal) orelse {
                     mac_font.releaseCluster(result);
                     continue;
                 };
@@ -1693,7 +1677,7 @@ pub const MetalRenderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-                        const entry = c.self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                        const entry = c.self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
                             mac_font.releaseCluster(result);
                             return;
                         };
@@ -1717,7 +1701,7 @@ pub const MetalRenderer = struct {
             }
         }.f;
 
-        self.openRange(.tab_text);
+        self.openRange(.text);
         for (tab_titles, 0..) |title, i| {
             // #343 — 공통 계약: 이 인덱스는 맨 마지막에 그린다 (집어 든 탭이 맨 위 layer).
             if (built.deferred_title) |d| if (d == i) continue;
@@ -1730,7 +1714,7 @@ pub const MetalRenderer = struct {
             emitTitle(self, title, tab_x, tab_pad_px, layout.tab_area_x, tab_area_end, cw, max_text_w_px, text_y_top);
         }
         // 1차 구간 끝 — 탭 BG (위) · 제목 (여기).
-        self.closeRange(.tab_text);
+        self.closeRange(.text);
 
         // #343 — 제목 뒤 구간: 컨트롤 bg fill → hover 박스 → 세로 구분선.
         // 별도 구간인 이유는 그대로다 (#117) — 탭 텍스트 *후* 에 그려야
@@ -1739,7 +1723,7 @@ pub const MetalRenderer = struct {
         self.openRange(.bg);
         for (built.rects[built.before_titles..]) |r| self.pushBg(bgFromChrome(r));
         self.closeRange(.bg);
-        self.openRange(.tab_text);
+        self.openRange(.text);
 
         // #343 — 드래그 중인 탭의 제목을 2차 batch 에 넣는다 — 세로선·다른 탭 제목
         // **위**로 온다 (집어 든 탭이 맨 위 layer, 2026-07-31 사용자 결정).
@@ -1762,7 +1746,7 @@ pub const MetalRenderer = struct {
         const drawIcon = struct {
             fn run(rself: *MetalRenderer, icon: tab_icons.Icon, box_x: f32, box_w: f32, tbh: f32, isz: u32, istroke: f32, color: [4]f32) void {
                 if (box_w <= 0 or isz == 0) return;
-                const entry = rself.tab_atlas.getOrInsertIcon(icon, isz, istroke) orelse return;
+                const entry = rself.insertIconOrRecover(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
                 const gx = box_x + (box_w - fsz) * 0.5;
@@ -1791,7 +1775,7 @@ pub const MetalRenderer = struct {
         drawIcon(self, .close, layout.close_x, layout.close_w, tab_bar_h_px, icon_size, icon_stroke, self.chrome.ctrl_active);
         drawIcon(self, .more, layout.more_x, layout.more_w, tab_bar_h_px, icon_size, more_stroke, self.chrome.ctrl_active);
         // 2차 구간 끝 — 컨트롤 BG (위) · 드래그 제목 + 아이콘 (여기).
-        self.closeRange(.tab_text);
+        self.closeRange(.text);
     }
 
     /// #329 — 단일 탭 terminal 위에 우측 `[+][×][…]`만 최종 합성한다.
@@ -1832,7 +1816,7 @@ pub const MetalRenderer = struct {
         const emit = struct {
             fn icon(rself: *MetalRenderer, kind: tab_icons.Icon, x: f32, w: f32, bar_h: f32, size: u32, stroke: f32) void {
                 if (w <= 0) return;
-                const entry = rself.tab_atlas.getOrInsertIcon(kind, size, stroke) orelse return;
+                const entry = rself.insertIconOrRecover(kind, size, stroke) orelse return;
                 const size_f: f32 = @floatFromInt(size);
                 rself.pushText(.{
                     .pos = .{ x + (w - size_f) * 0.5, (bar_h - size_f) * 0.5 },
@@ -1846,18 +1830,18 @@ pub const MetalRenderer = struct {
         }.icon;
         // #591 — 여기서 담은 아이콘은 `endFrame` 의 pass 가 tab atlas 를 올린 **뒤에** 그리므로
         // 같은 프레임에 보인다 (전에는 encoder 안에서 그려 다음 프레임에야 올라갔다).
-        self.openRange(.tab_text);
+        self.openRange(.text);
         emit(self, .plus, layout.plus_x, layout.plus_w, h, icon_size, icon_stroke);
         emit(self, .close, layout.close_x, layout.close_w, h, icon_size, icon_stroke);
         emit(self, .more, layout.more_x, layout.more_w, h, icon_size, more_stroke);
-        self.closeRange(.tab_text);
+        self.closeRange(.text);
     }
 
     /// #646 — 입력칸 glyph 하나. `search_bar.iterFieldText` 가 보이는 것만 넘겨주므로
     /// 여기서는 클립을 다시 보지 않는다.
     fn emitFieldGlyph(self: *MetalRenderer, g: search_bar.Glyph, x0: f32, top: f32, color: [4]f32) void {
         const result = self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-        const entry = self.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+        const entry = self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
             mac_font.releaseCluster(result);
             return;
         };
@@ -1908,13 +1892,13 @@ pub const MetalRenderer = struct {
         }
         self.closeRange(.bg);
 
-        self.openRange(.tab_text);
+        self.openRange(.text);
 
         // 돋보기 — 탭바 컨트롤과 같은 rasterizer · 같은 stroke.
         if (v.icon.w > 0) {
             const isz: u32 = ui_metrics.scaledPx(u32, search_bar.ICON_PT, scale);
             const istroke = ui_metrics.strokePx(search_bar.ICON_STROKE_PT, scale);
-            if (self.tab_atlas.getOrInsertIcon(.search, isz, istroke)) |entry| {
+            if (self.insertIconOrRecover(.search, isz, istroke)) |entry| {
                 self.pushText(.{
                     .pos = .{ @round(v.icon.x * scale), @round(v.icon.y * scale) },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -1937,7 +1921,7 @@ pub const MetalRenderer = struct {
                         x += adv;
                         continue;
                     };
-                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
                         mac_font.releaseCluster(result);
                         x += adv;
                         continue;
@@ -2011,7 +1995,7 @@ pub const MetalRenderer = struct {
             const enabled = ui.total > 0;
             for ([_]search_bar.Control{ .prev, .next, .close }) |c| {
                 const r = search_bar.controlRect(v, c);
-                const entry = self.tab_atlas.getOrInsertIcon(search_bar.controlIcon(c), isz, istroke) orelse continue;
+                const entry = self.insertIconOrRecover(search_bar.controlIcon(c), isz, istroke) orelse continue;
                 const size_f: f32 = @floatFromInt(isz);
                 self.pushText(.{
                     .pos = .{
@@ -2028,7 +2012,7 @@ pub const MetalRenderer = struct {
             }
         }
 
-        self.closeRange(.tab_text);
+        self.closeRange(.text);
     }
 
     fn emitCommandMenu(self: *MetalRenderer, ui: command_menu.Ui, menu_hints: *const command_menu.Hints) void {
@@ -2052,8 +2036,8 @@ pub const MetalRenderer = struct {
         for (command_menu.rects(&menu_rects, v, ui, scale, &self.chrome)) |r| self.pushBg(bgFromChrome(r));
         self.closeRange(.bg);
 
-        // 스크롤 표시 chevron 과 라벨 · 힌트 글리프는 한 tab_text 구간이다 (겹치지 않는다).
-        self.openRange(.tab_text);
+        // 스크롤 표시 chevron 과 라벨 · 힌트 글리프는 한 text 구간이다 (겹치지 않는다).
+        self.openRange(.text);
 
         // #334 — 잘림 상태의 상/하단 스크롤 표시 행 (탭바 `<`/`>` 관례:
         // 끝에 닿으면 비활성 색, 클릭 = 한 entry 스크롤).
@@ -2069,7 +2053,7 @@ pub const MetalRenderer = struct {
                 .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
             };
             for (pairs) |p| {
-                const entry = self.tab_atlas.getOrInsertIcon(p.kind, ind_size, ind_stroke) orelse continue;
+                const entry = self.insertIconOrRecover(p.kind, ind_size, ind_stroke) orelse continue;
                 self.pushText(.{
                     .pos = .{ ind_cx, p.y },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -2089,7 +2073,7 @@ pub const MetalRenderer = struct {
                 var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
                 while (iter.nextCodepoint()) |cp| {
                     const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                    const entry = r.tab_atlas.getOrInsert(result.font, result.font_id, @intCast(result.index)) orelse {
+                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
                         mac_font.releaseCluster(result);
                         continue;
                     };
@@ -2128,7 +2112,7 @@ pub const MetalRenderer = struct {
                 }
             }
         }
-        self.closeRange(.tab_text);
+        self.closeRange(.text);
     }
 
     fn updateConstants(self: *MetalRenderer) void {
@@ -2139,17 +2123,6 @@ pub const MetalRenderer = struct {
                 @floatFromInt(self.vp_height),
                 @floatFromInt(self.atlas.pack.size),
                 @floatFromInt(self.atlas.pack.size),
-            };
-        }
-        // #584 ② — 탭 atlas 는 크기가 따로다 (`grow` 는 본문만 커진다). 셰이더가 UV 를 크기로
-        // 정규화하므로 버퍼도 따로 둔다.
-        if (objc.msgSend(self.tab_constants_buffer, objc.sel("contents"))) |ptr| {
-            const data: *[4]f32 = @ptrCast(@alignCast(ptr));
-            data.* = .{
-                @floatFromInt(self.vp_width),
-                @floatFromInt(self.vp_height),
-                @floatFromInt(self.tab_atlas.pack.size),
-                @floatFromInt(self.tab_atlas.pack.size),
             };
         }
     }
@@ -2249,12 +2222,6 @@ pub const MetalRenderer = struct {
         // 올린 구간은 깨끗해졌다.
         atlas.dirty_min_y = atlas.pack.size;
         atlas.dirty_max_y = 0;
-    }
-
-    fn uploadTabAtlasIfDirty(self: *MetalRenderer) void {
-        if (!self.tab_atlas.dirty) return;
-        self.uploadAtlas(&self.tab_atlas, self.tab_atlas_texture, &self.tab_staging_buffer, &self.tab_staging_bytes);
-        self.tab_atlas.dirty = false;
     }
 
     // --- Helpers ---
@@ -2400,13 +2367,13 @@ fn emitLigatureMatch(
 ) void {
     switch (match) {
         .single => |lg| {
-            const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index)) orelse return;
+            const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index), .terminal) orelse return;
             if (entry.w == 0 or entry.h == 0) return;
             self.pushText(makeTextInstance(entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset))));
         },
         .spacer => |sp| {
             for (0..sp.count) |i| {
-                const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i])) orelse continue;
+                const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i]), .terminal) orelse continue;
                 if (entry.w == 0 or entry.h == 0) continue;
                 self.pushText(makeTextInstance(entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i]))));
             }

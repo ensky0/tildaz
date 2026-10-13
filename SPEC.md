@@ -2408,7 +2408,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | Linux | 글리프 하나 (`glTexSubImage2D`) |
 | macOS | **dirty 구간** (`dirty_min_y`~`dirty_max_y`, blit encoder) — **프레임 끝 draw 직전** (`endFrame` → `beginPassWithRanges`) 과 안전망 제출 직전 |
 
-macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸다. blit 은 영역 지정이 자연스러워 dirty 구간만 올린다. staging buffer 는 **atlas 마다 따로** 둔다 — blit 은 GPU 가 나중에 실행할 때 buffer 를 읽으므로, 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의 blit 에 실린다 (실측으로 탭 아이콘이 깨졌다).
+macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸다. blit 은 영역 지정이 자연스러워 dirty 구간만 올린다. staging buffer 는 **atlas 마다 따로** 둬야 한다 — blit 은 GPU 가 나중에 실행할 때 buffer 를 읽으므로, 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의 blit 에 실린다 (탭 atlas 가 따로이던 때 실측으로 탭 아이콘이 깨졌다). [#762](https://github.com/ensky0/tildaz/issues/762) 로 atlas 가 하나가 되어 staging 도 하나다.
 
 **업로드 시점 — 담은 글리프는 세 platform 모두 같은 프레임에 보인다** ([#591](https://github.com/ensky0/tildaz/issues/591)).
 
@@ -2416,11 +2416,11 @@ macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow
 |---|---|
 | Windows | 삽입 즉시 `UpdateSubresource` → 그 프레임의 draw 가 본다 |
 | Linux | 삽입 즉시 `glTexSubImage2D` → 같음 |
-| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에 — 본문은 `.text`, 탭 atlas 는 `.tab_text`), `endFrame` 이 **두 atlas 의 dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
+| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에), `endFrame` 이 **atlas 의 dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
 
 macOS 가 그렇게 된 이유 — Metal 은 render encoder 가 열린 동안 텍스처를 갈 수 없다 (blit 은 encoder 밖). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을 끼울 수 없었고, **프레임 시작에 지난 프레임 것을 올리는** 2-frame 구조였다 — 새 글리프가 한 프레임 늦게 보였고 host 가 `atlas.dirty` 를 보고 한 프레임을 더 요청해야 했다. #591 에서 draw 를 셀 루프 뒤로 미루자 그 지연과 재요청이 함께 사라졌다. 실측 (한 줄 출력 화면 · 자연 종료 시 perf 덤프의 `render calls`): 전 **6 · 6 · 5** vs 후 **5 · 5 · 5** — 재요청 프레임 하나가 두 회차에서 보였고, 한 회차는 초기 프레임과 겹친 것으로 보이나 확정하지 않았다. 부수로 draw call 이 프레임당 구간 수만큼으로 줄고 (`MAX_CELLS` 4096 마다 하던 중간 flush 가 없다), 셀 루프의 지역 인스턴스 배열 (bg 48 B + text 64 B) × 4096 = 약 448 KiB 스택이 없어졌다. 그리기 순서는 구간을 닫는 순서로 지킨다 — 셀 bg · SGR 선 → 글리프 → block · box → 커서 → 스크롤바 → preedit 배경 → preedit 글자.
 
-**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 두 atlas 를 올리고 그린다. clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
+**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 atlas 를 올리고 그린다 (그때는 탭 atlas 가 따로라 둘을 올렸다 — #762 로 하나가 됐다). clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
 
 **비운 뒤 재시도는 한 번뿐이다** (세 platform 공통 — macOS 는 그 앞에 `grow` 가 최대 두 번 더 있어 `insert*OrRecover` 가 세 번까지 돈다). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 
@@ -2512,7 +2512,7 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 | 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
 | UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고, Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 surface 마다 **CPU shadow** 를 두고 (GLES2 에는 텍스처 간 복사가 없다 — `glCopyImageSubData` 는 3.2, `GL_ALPHA` 는 FBO 첨부 불가) 옛 내용을 새 shadow 에 옮겨 그것으로 새 텍스처를 만든다. Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
 
-**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).
+**탭바 글자는 본문 atlas 에 산다** ([#762](https://github.com/ensky0/tildaz/issues/762)). 세 platform 이 같은 구조다 — 키의 `GlyphSource` (`terminal` · `tab`) 가 크기가 다른 두 폰트를 가르고, 탭바 글자 · 아이콘도 본문과 같이 차면 키운다. 전에는 macOS · Windows 가 탭 atlas 를 따로 뒀는데 (키에 폰트 크기 축이 없었다) 그쪽은 커지지 않으면서 본문과 같은 크기를 차지했고, **uniform 을 atlas 마다 따로** 둬야 했다 — 본문만 커지면 크기가 갈려 하나로는 둘 다 맞출 수 없었다 (실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다). Linux 는 처음부터 한 atlas 였다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).
 
 **검증** (MacBook Pro M5 Pro · macOS 26.6.2 · 5120x2880 60 Hz · Menlo 15pt · `cell 19x39`). mark 를 둘 쌓은 cluster **10,000 종** 화면 (200 칸 × 50 줄) 이라 2048² 을 넘긴다. **`INITIAL_ATLAS_SIZE` 만 바꾼 세 판**을 맞댔다 — `grow` 가 정확하면 **시작 크기와 무관하게 최종 그림이 같아야** 한다.
 

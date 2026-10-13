@@ -154,10 +154,8 @@ pub const GlyphRef = union(enum) {
 
 /// #277 S2-5 — 글리프를 어느 폰트에서 구웠는지. atlas 캐시 키의 일부다 — 터미널
 /// 폰트와 탭바 폰트는 크기가 달라 같은 codepoint 라도 다른 그림이다.
-pub const FontId = enum(u8) {
-    terminal,
-    tab,
-};
+/// #762 — macOS · Windows 도 같은 축으로 탭바 atlas 를 본문 atlas 에 합쳤다. 정의는 공통 모듈 하나다.
+pub const FontId = @import("../../renderer/glyph_atlas_common.zig").GlyphSource;
 
 /// #277 S2-4 — 그릴 글리프 하나. **"어느 글리프를 어디에" 는 전부 여기 들어 있고,
 /// 두 경로는 이 값을 읽기만 한다** — shaping / ligature / wide 중앙정렬 / bearing
