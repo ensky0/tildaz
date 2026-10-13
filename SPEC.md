@@ -1565,6 +1565,25 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 - **전역 `hotkey` 가 받는 키는 모든 표에 이름이 있어야 한다** — Linux 등록 이름 (`linuxKeysymName`) · KDE (`kglobalaccel.qtKey`) · GNOME · Cinnamon 확장 (`_toAccel`) · 세 OS 의 캡처 표. 하나라도 빠지면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon · sway — `hotkey_format.gtkName`) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다. #693 이전에는 방향키가 Linux 의 모든 표에, `PageUp` · `PageDown` 이 KDE 와 확장 표에, 괄호가 확장 표에 없었다 (확장은 `<Control>pageup` 처럼 GTK 가 모르는 이름을 냈다). `config.zig` 의 #693 테스트가 이 표들을 맞춘다. 채운 뒤의 Linux 데스크톱 실기는 **확인 필요**.
 - **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), config 로드가 그 값을 기본 hotkey 로 바꾸고 시작 안내에 담는다 (위 *잘못된 hotkey 처리* · §7.3). #655 전에는 `dialog.showFatal` 로 알리고 종료했다.
 
+**캡처가 config 에 적는 이름 — 지금은 OS 마다 다르다** ([#760](https://github.com/ensky0/tildaz/issues/760)). hotkey 를 눌러서 정하면 (새 instance 다이얼로그 · hotkey 캡처) [`config.capturedHotkeyText`](src/config.zig) 가 그 키를 글자로 바꿔 config 에 적는다. 같은 함수가 메뉴의 hotkey 표시 (`hotkeyDisplay`) 에도 쓰인다. 위 표는 **받는** 이름이고, 아래는 **적는** 이름이다 (2026-10-13 소스 기준). 파서가 별칭을 다 받고 대소문자를 구분하지 않아 서로 읽히지만, 같은 키가 OS 마다 다른 글자로 남는다.
+
+| 키 | Linux (`linuxKeysymName`) | Windows (`windowsVkeyName`) | macOS (`macKeycodeName`) |
+|---|---|---|---|
+| F 키 | `F1` ~ `F12` | `F1` ~ `F12` | `F1` ~ `F12` |
+| 글자 | **소문자** `a` ~ `z` | 대문자 `A` ~ `Z` | 대문자 `A` ~ `Z` |
+| 숫자 | `0` ~ `9` | `0` ~ `9` | `0` ~ `9` |
+| Space · Tab · Return · Escape | `space` `Tab` `Return` `Escape` | 같음 | 같음 |
+| Backtick | `grave` | `grave` | `grave` |
+| Page | **`Page_Up` · `Page_Down`** | `pageup` · `pagedown` | `pageup` · `pagedown` |
+| 방향 | **`Left` `Right` `Up` `Down`** | `left` `right` `up` `down` | `left` `right` `up` `down` |
+| Bracket | **`bracketleft` · `bracketright`** | `[` · `]` | `[` · `]` |
+| 수식키 (적는 순서) | `Ctrl+` `Shift+` `Alt+` `Super+` | `Ctrl+` `Shift+` `Alt+` `Super+` | **`Control+` `Option+` `Shift+` `Command+`** |
+
+- **Linux 가 갈리는 이유** — `linuxKeysymName` 은 원래 데스크톱에 등록할 때 쓰는 XKB 이름표인데 (sway · Hyprland · COSMIC 설정, `shortcut_sync/linux.zig`), 캡처도 이 표에서 이름을 가져온다. Windows · macOS 는 캡처용 표가 따로 있다.
+- 캡처 표에 있는 키는 전역 `hotkey` 가 받는 키뿐이다 (위 표의 ✅). `Backspace` · `/` · `=` · `-` · `Plus` 는 `[keys]` 전용이라 캡처가 적지 않는다.
+- **기본 바인딩은 또 다른 모양이다** — 전부 소문자 (`ctrl+shift+t` · `ctrl+pageup` · `cmd+t`, `config.zig` 의 기본값 목록).
+- 세 OS 가 같은 이름을 적게 맞추는 일은 #760 이다.
+
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
 1. instance별 action ID `[tildaz.instanceN, toggle-N, TildaZ_N, Toggle TildaZ N]`을

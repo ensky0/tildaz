@@ -546,7 +546,10 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
   뒤집혀서, 그대로 두면 메시지가 사실과 어긋난 채 남는 때예요.
 - **새 커밋** — 그 밖의 전부. 기존 커밋이 그대로 유효하고 그 위에 작업이 쌓이는 경우예요.
 
-amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝난 뒤에** 해요 — 빌드 /
+amend 와 force push 는 작업 브랜치에서 자유롭게 해요. **main 은 안 돼요** — GitHub 보호 규칙이 main 의
+force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계정 (`ensky0`) 으로도
+`GH006 … Cannot force-push to this branch` 로 거부됐어요. 그래서 main 에 이미 올린 커밋은 amend 하지
+말고 새 커밋을 쌓아요. 작업 브랜치에서도 단 **검증이 끝난 뒤에** 해요 — 빌드 /
 테스트 통과만으로 "완료" 로 적지 않는 규칙과 같은 이유예요. 실기 검증을 남에게 부탁하기
 위해 **검증용 브랜치**에 올려 두는 커밋은 예외지만, 그 커밋 메시지에는 무엇이 아직
 미검증인지 명시해요.
