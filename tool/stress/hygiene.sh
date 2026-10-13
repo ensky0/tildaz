@@ -218,13 +218,17 @@ hygiene_minimize_macos() {
 # 잡히는 것을 확인했고 (macOS, 2026-08-10), 나머지 넷은 각 앱의 표준 이름이라 **미검증**이다.
 # 틀리면 검사가 조용히 통과하므로, 대상을 늘릴 때는 실기에서 한 번 찍어 본다.
 #
+# **`gnome-terminal-` 는 잘린 이름이 맞다** — `pgrep -x` 는 커널의 `comm` (15 자) 과 견주는데
+# `gnome-terminal-server` 는 21 자라 통째로 주면 아무것도 못 찾는다 (procps-ng 4.0.7 이 그렇게
+# 경고한다). Konsole 은 이 기기에서 `pgrep -x konsole` 로 잡히는 것을 확인했다 (2026-10-13).
+#
 # **conhost 는 목록에 없다** — Windows 에서 이 스크립트를 돌리는 Git Bash 자신이 conhost
 # 안에서 돌아 **항상 걸린다.** conhost 측정은 회차마다 새 콘솔을 띄우므로 기존 창과 프로세스가
 # 갈린다.
 hygiene_running_terminals() {
     case "$HYG_PLATFORM" in
         macos)   _hyg_terms="Terminal iTerm2 kitty alacritty wezterm-gui ghostty" ;;
-        linux)   _hyg_terms="alacritty kitty wezterm-gui ghostty foot" ;;
+        linux)   _hyg_terms="alacritty kitty wezterm-gui ghostty foot konsole gnome-terminal- cosmic-term" ;;
         windows) _hyg_terms="alacritty wezterm-gui WindowsTerminal" ;;
         *)       return 0 ;;
     esac
