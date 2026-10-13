@@ -602,7 +602,51 @@ terminals_find_tildaz() {
 #   iTerm2 는 기본 설정이면 *"OK to run …?"* 경고로 멈춘다 — 측정 기기에서 한 번 끈다 (README).
 # - `-n` 은 새 인스턴스다. 한 프로세스에 창을 붙이는 Terminal.app · iTerm2 에는 쓰지 않는다 — 회차마다
 #   앱을 종료하므로 어차피 새로 뜬다.
+# Linux 대상을 **데스크톱 런처**로 띄운다 — 시작 시간 (`compare-startup.sh`, #756).
+#
+# 사용자가 메뉴 · 런처로 여는 길이다 (2026-10-13 사용자 결정 — macOS 의 `open` 과 같은 자리). 앱의 설치된
+# `.desktop` 을 복사해 **`Exec` 에만** 측정 프로그램을 더하고, 그 파일을 그 DE 의 런처로 연다. 나머지 키
+# (`StartupNotify` · `StartupWMClass` 등) 는 그대로라 런처가 하는 일이 같다.
+#
+#   linux_desktop_launch <대상 이름> <설치된 .desktop> <새 Exec>
+#
+# - KDE Plasma 는 `kioclient exec <파일>` 이다 (`kioclient --commands` 의 `emacs.desktop` 예). 실행 권한을
+#   준다 — 표준 위치 밖의 실행 권한 없는 `.desktop` 은 KIO 가 신뢰하지 않는다.
+# - `[Desktop Entry]` 절만 남긴다. 뒤의 `[Desktop Action …]` 절에도 `Exec` 가 있어서 함께 바꾸면 안 된다.
+linux_desktop_launch() {
+    _ld_name="$1"; _ld_src="$2"; _ld_exec="$3"
+    _ld_file="$WORK_DIR/$_ld_name.desktop"
+    awk -v ex="$_ld_exec" '
+        /^\[/ { main = ($0 == "[Desktop Entry]") }
+        !main { next }
+        /^Exec=/ { print "Exec=" ex; next }
+        /^TryExec=/ || /^Actions=/ { next }
+        { print }' "$_ld_src" > "$_ld_file"
+    chmod +x "$_ld_file"
+    run_terminal "$_ld_name" kioclient exec "file:$_ld_file"
+}
+
 terminals_open_all() {
+    if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ]; then
+        # 지금은 KDE Plasma 표의 대상 셋 (#756 — TildaZ · Konsole · Alacritty) 이다.
+        if [ -f /usr/share/applications/Alacritty.desktop ] && ! terminal_skip alacritty; then
+            linux_desktop_launch alacritty /usr/share/applications/Alacritty.desktop "alacritty -e $PRODUCER"
+        fi
+        if [ -f /usr/share/applications/org.kde.konsole.desktop ] && ! terminal_skip konsole; then
+            linux_desktop_launch konsole /usr/share/applications/org.kde.konsole.desktop "konsole -e $PRODUCER"
+        fi
+        terminals_find_tildaz
+        _ld_tz="${XDG_DATA_HOME:-$HOME/.local/share}/applications/tildaz-dev.desktop"
+        if [ -z "$TILDAZ_BIN" ]; then
+            echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+        elif [ ! -f "$_ld_tz" ]; then
+            echo "tildaz         $_ld_tz 가 없어요 — dist/linux/install.sh 로 dev 판을 한 번 설치해 주세요"
+        elif ! terminal_skip tildaz; then
+            # 설치본 대신 저장소 빌드본을 띄운다 (`terminals_find_tildaz` 주석과 같은 이유).
+            linux_desktop_launch tildaz "$_ld_tz" "$TILDAZ_BIN -e $PRODUCER"
+        fi
+        return 0
+    fi
     [ "$IS_MACOS" = 1 ] || return 0
     if [ -d /Applications/kitty.app ] && ! terminal_skip kitty; then
         run_terminal kitty open -na /Applications/kitty.app --args "$PRODUCER"
