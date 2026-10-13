@@ -542,6 +542,22 @@ mac_window_of() {
         sort -n | tail -1
 }
 
+# macOS 에서 그 대상의 **본체 프로세스** 실행 파일 경로에 든 문자열 (`tool/proc-usage_macos.c` 의 `find`).
+# 경로는 `proc_pidpath` 가 주는 실제 경로다 — Homebrew 의 `alacritty` · `wezterm-gui` 는 앱 번들 안으로
+# 가는 링크라 번들 경로로 찾는다 (확인 필요 — 못 찾으면 `compare-memory.sh` 가 그 회차를 `?` 로 남긴다).
+mac_proc_path_of() {
+    case "$1" in
+        kitty) printf '/kitty.app/Contents/MacOS/kitty' ;;
+        alacritty) printf '/Contents/MacOS/alacritty' ;;
+        wezterm) printf '/wezterm-gui' ;;
+        ghostty) printf '/Ghostty.app/Contents/MacOS/ghostty' ;;
+        iterm2) printf '/iTerm.app/Contents/MacOS/iTerm2' ;;
+        terminal) printf '/Terminal.app/Contents/MacOS/Terminal' ;;
+        tildaz) printf '%s' "$TILDAZ_BIN" ;;
+        *) printf '' ;;
+    esac
+}
+
 # `FindWindowW(<클래스>, <제목>)` 로 찾을 대상의 창 클래스 / 제목. 둘 다 있어야 쓴다.
 win_window_class() {
     case "$1" in
