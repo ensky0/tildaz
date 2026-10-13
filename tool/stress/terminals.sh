@@ -612,6 +612,7 @@ terminals_find_tildaz() {
 #
 # - KDE Plasma 는 `kioclient exec <파일>` 이다 (`kioclient --commands` 의 `emacs.desktop` 예). 실행 권한을
 #   준다 — 표준 위치 밖의 실행 권한 없는 `.desktop` 은 KIO 가 신뢰하지 않는다.
+# - GNOME 은 `gio launch <파일>` 이다 (GLib 의 `GDesktopAppInfo` — 셸의 앱 실행과 같은 라이브러리).
 # - `[Desktop Entry]` 절만 남긴다. 뒤의 `[Desktop Action …]` 절에도 `Exec` 가 있어서 함께 바꾸면 안 된다.
 linux_desktop_launch() {
     _ld_name="$1"; _ld_src="$2"; _ld_exec="$3"
@@ -623,18 +624,33 @@ linux_desktop_launch() {
         /^TryExec=/ || /^Actions=/ { next }
         { print }' "$_ld_src" > "$_ld_file"
     chmod +x "$_ld_file"
-    run_terminal "$_ld_name" kioclient exec "file:$_ld_file"
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*) run_terminal "$_ld_name" gio launch "$_ld_file" ;;
+        *) run_terminal "$_ld_name" kioclient exec "file:$_ld_file" ;;
+    esac
 }
 
 terminals_open_all() {
     if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ]; then
-        # 지금은 KDE Plasma 표의 대상 셋 (#756 — TildaZ · Konsole · Alacritty) 이다.
+        # DE 마다 표의 대상 셋이다 (#756 — 그 DE 의 터미널 · TildaZ · Alacritty).
         if [ -f /usr/share/applications/Alacritty.desktop ] && ! terminal_skip alacritty; then
             linux_desktop_launch alacritty /usr/share/applications/Alacritty.desktop "alacritty -e $PRODUCER"
         fi
-        if [ -f /usr/share/applications/org.kde.konsole.desktop ] && ! terminal_skip konsole; then
-            linux_desktop_launch konsole /usr/share/applications/org.kde.konsole.desktop "konsole -e $PRODUCER"
-        fi
+        case "${XDG_CURRENT_DESKTOP:-}" in
+            *GNOME*)
+                # `org.gnome.Terminal.desktop` 은 D-Bus 활성화가 아니라 `Exec=gnome-terminal` 이다 (3.60.0) — 그래서
+                # 다른 대상처럼 `Exec` 만 바꾸면 런처가 같은 일을 한다.
+                if [ -f /usr/share/applications/org.gnome.Terminal.desktop ] && ! terminal_skip gnome-terminal; then
+                    linux_desktop_launch gnome-terminal /usr/share/applications/org.gnome.Terminal.desktop \
+                        "gnome-terminal -- $PRODUCER"
+                fi
+                ;;
+            *)
+                if [ -f /usr/share/applications/org.kde.konsole.desktop ] && ! terminal_skip konsole; then
+                    linux_desktop_launch konsole /usr/share/applications/org.kde.konsole.desktop "konsole -e $PRODUCER"
+                fi
+                ;;
+        esac
         terminals_find_tildaz
         _ld_tz="${XDG_DATA_HOME:-$HOME/.local/share}/applications/tildaz-dev.desktop"
         if [ -z "$TILDAZ_BIN" ]; then
@@ -952,9 +968,14 @@ elif ! terminal_skip tildaz; then
     while IFS= read -r _kv; do set -- "$@" "$_kv"; done << EOF
 $(producer_env_lines "$T")
 EOF
-    run_terminal tildaz env "$@" \
-        "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" \
-        -scrollback "$SCROLLBACK"
+    # GNOME 에서는 `-size` 를 주지 않는다 — layer-shell 이 없어 창 크기를 compositor 가 정하고, 앱이 그 옵션을
+    # 받으면 시작을 거부한다 (AGENTS.md 의 `-size` 절 · #506). 격자는 표의 grid 열에 그대로 드러난다 (#756 본문의
+    # "GNOME 에서는 TildaZ `-size` 를 못 쓴다").
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*) set -- "$@" "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -scrollback "$SCROLLBACK" ;;
+        *) set -- "$@" "$TILDAZ_BIN" -e "$(native_path "$PRODUCER")" -size "${COLS}x${ROWS}" -scrollback "$SCROLLBACK" ;;
+    esac
+    run_terminal tildaz env "$@"
 fi
 
 # Windows Terminal 은 Windows 전용이다.

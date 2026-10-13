@@ -77,6 +77,7 @@
 | [`screencast-portal_linux.py`](screencast-portal_linux.py) | Linux | xdg-desktop-portal ScreenCast 를 열고 (화면 하나 · 커서 숨김 · 권한 토큰 재사용) PipeWire fd 를 넘겨 명령을 실행 | 〃 |
 | [`startup-to-screen_linux.c`](startup-to-screen_linux.c) | Linux | 명령을 스스로 띄우고 portal 화면 스트림에 마젠타 표식이 처음 보인 프레임이 도착할 때까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
 | [`proc-usage_linux.py`](proc-usage_linux.py) | Linux | 터미널 하나의 프로세스 집합 (창 주인 · 자손, 셸 쪽 제외) 의 PSS · CPU 시간 — `stress/compare-memory.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`gnome-screen_linux.py`](gnome-screen_linux.py) | Linux | GNOME 의 지금 화면 물리 크기 (`Mutter.DisplayConfig`) — GNOME 은 창 위치를 안 알려 줘서 측정기가 표식으로 창을 찾을 때 씀 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
 | [`kwin-window_linux.py`](kwin-window_linux.py) | Linux | KWin 스크립트로 프로세스의 창 위치를 찾고 (조상 pid) 활성화 · 클릭 — KDE Plasma 전용 | 〃 |
 | [`startup-to-screen_macos.m`](startup-to-screen_macos.m) | macOS | 명령을 스스로 띄우고 화면에 마젠타 표식이 처음 보인 프레임까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |

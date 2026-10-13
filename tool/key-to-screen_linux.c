@@ -27,6 +27,11 @@
 //
 // `--rect` · `--output` 은 KWin 의 논리 좌표다 (`tool/kwin-window_linux.py`). 물리 배율은 받은 스트림
 // 크기 ÷ `OW` 로 정한다 — 화면이 하나라고 본다.
+//
+// **`--find-marker`** 는 `--rect` 대신 창 영역을 캡처에서 찾는다 — 창 위치를 알려 주지 않는 데스크톱 (GNOME ·
+// COSMIC) 용이다. 터미널 안 프로그램이 화면을 마젠타 (R>200 · G<80 · B>200) 로 칠해 두면, 그 픽셀들의 경계
+// 상자를 영역으로 쓴다. 찾은 뒤 `--go-file` 을 만들어 알리면 프로그램이 화면을 지우고 키를 받기 시작한다.
+// 이때 `--output` 은 물리 px 와 `--dpr 1` 이다 (`tool/gnome-screen_linux.py`).
 
 #include <errno.h>
 #include <fcntl.h>
@@ -63,8 +68,11 @@ struct data {
     struct spa_video_info_raw info;
     atomic_int ready; // 포맷이 정해져 크기를 안다
     atomic_int bad;   // 받은 스트림이 화면 전체가 아니다
-    // 해시할 영역 (물리 px). 포맷이 정해진 뒤 채운다.
+    // 해시할 영역 (물리 px). 포맷이 정해진 뒤 (또는 표식을 찾은 뒤) 채운다.
     int rx, ry, rw, rh;
+    // `--find-marker` — 1 인 동안 프레임마다 마젠타의 경계 상자를 아래 넷에 적는다. 영역을 정한 쪽이 0 으로 내린다.
+    atomic_int marker;
+    atomic_int mk_x0, mk_y0, mk_x1, mk_y1, mk_n;
     double lrect[4];
     double out_w, out_h, dpr;
 };
@@ -87,7 +95,33 @@ static void on_process(void *userdata) {
     uint64_t arrive = now_ns();
     struct spa_buffer *buf = b->buffer;
     const uint8_t *base = buf->datas[0].data;
-    if (base != NULL && atomic_load(&d->ready)) {
+    if (base != NULL && atomic_load(&d->ready) && atomic_load(&d->marker)) {
+        // 마젠타의 경계 상자 — 두 칸마다 하나씩 본다. 조건이 R · B 대칭이라 BGRx · RGBx 를 가리지 않는다.
+        int W = (int)d->info.size.width, H = (int)d->info.size.height;
+        int stride = buf->datas[0].chunk->stride;
+        if (stride == 0) stride = W * 4;
+        int x0 = W, y0 = H, x1 = -1, y1 = -1, n = 0;
+        for (int y = 0; y < H; y += 2) {
+            const uint8_t *row = base + (size_t)y * (size_t)stride;
+            for (int x = 0; x < W; x += 2) {
+                const uint8_t *p = row + (size_t)x * 4;
+                if (p[0] > 200 && p[1] < 80 && p[2] > 200) {
+                    n++;
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                }
+            }
+        }
+        atomic_store(&d->mk_x0, x0); atomic_store(&d->mk_y0, y0);
+        atomic_store(&d->mk_x1, x1); atomic_store(&d->mk_y1, y1);
+        atomic_store(&d->mk_n, n * 4);
+        // 프레임이 오고 있다는 것만 알린다 (해시는 영역을 정한 뒤부터).
+        uint64_t k = atomic_load(&g_count);
+        g_ring[k % RING] = (Frame){.arrive_ns = arrive, .hash = 0};
+        atomic_store(&g_count, k + 1);
+    } else if (base != NULL && atomic_load(&d->ready)) {
         int stride = buf->datas[0].chunk->stride;
         if (stride == 0) stride = (int)d->info.size.width * 4;
         uint64_t x = 1469598103934665603ull; // FNV-1a
@@ -127,15 +161,21 @@ static void on_param_changed(void *userdata, uint32_t id, const struct spa_pod *
         atomic_store(&d->bad, 1);
         return;
     }
-    // 테두리 반올림에 걸리지 않게 안쪽으로 2 px 줄인다.
-    int x0 = clampi((int)(d->lrect[0] * s) + 2, 0, W - 1);
-    int y0 = clampi((int)(d->lrect[1] * s) + 2, 0, H - 1);
-    int x1 = clampi((int)((d->lrect[0] + d->lrect[2]) * s) - 2, x0 + 1, W);
-    int y1 = clampi((int)((d->lrect[1] + d->lrect[3]) * s) - 2, y0 + 1, H);
-    d->rx = x0; d->ry = y0; d->rw = x1 - x0; d->rh = y1 - y0;
-    fprintf(stderr, "format %s %dx%d @ %u/%u · scale %.3f · rect %d,%d %dx%d\n",
-            spa_debug_type_find_short_name(spa_type_video_format, info.format), W, H,
-            info.framerate.num, info.framerate.denom, s, d->rx, d->ry, d->rw, d->rh);
+    if (atomic_load(&d->marker)) {
+        fprintf(stderr, "format %s %dx%d @ %u/%u · 영역은 표식으로 찾아요\n",
+                spa_debug_type_find_short_name(spa_type_video_format, info.format), W, H,
+                info.framerate.num, info.framerate.denom);
+    } else {
+        // 테두리 반올림에 걸리지 않게 안쪽으로 2 px 줄인다.
+        int x0 = clampi((int)(d->lrect[0] * s) + 2, 0, W - 1);
+        int y0 = clampi((int)(d->lrect[1] * s) + 2, 0, H - 1);
+        int x1 = clampi((int)((d->lrect[0] + d->lrect[2]) * s) - 2, x0 + 1, W);
+        int y1 = clampi((int)((d->lrect[1] + d->lrect[3]) * s) - 2, y0 + 1, H);
+        d->rx = x0; d->ry = y0; d->rw = x1 - x0; d->rh = y1 - y0;
+        fprintf(stderr, "format %s %dx%d @ %u/%u · scale %.3f · rect %d,%d %dx%d\n",
+                spa_debug_type_find_short_name(spa_type_video_format, info.format), W, H,
+                info.framerate.num, info.framerate.denom, s, d->rx, d->ry, d->rw, d->rh);
+    }
 
     // 공유 메모리로 받는다 — DmaBuf 를 받으면 GPU 에서 읽어 와야 해서 도구가 커진다. 수정자 (modifier)
     // 를 안 주면 KWin 은 메모리 버퍼를 쓴다 (OBS `pipewire.c` 의 `buffer_types` 와 같은 갈림).
@@ -217,7 +257,8 @@ static int cmp_double(const void *a, const void *b) {
 }
 
 int main(int argc, char *argv[]) {
-    int pw_fd = -1, presses = 30, gap_ms = 250, click = 0;
+    int pw_fd = -1, presses = 30, gap_ms = 250, click = 0, find_marker = 0;
+    const char *go_file = NULL;
     uint32_t node = 0;
     struct data d = {0};
     for (int i = 1; i < argc; i++) {
@@ -230,9 +271,11 @@ int main(int argc, char *argv[]) {
         else if (!strcmp(argv[i], "--presses") && i + 1 < argc) presses = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--gap-ms") && i + 1 < argc) gap_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--click")) click = 1;
+        else if (!strcmp(argv[i], "--find-marker")) find_marker = 1;
+        else if (!strcmp(argv[i], "--go-file") && i + 1 < argc) go_file = argv[++i];
     }
-    if (pw_fd < 0 || node == 0 || d.lrect[2] <= 0 || d.out_w <= 0 || d.dpr <= 0) {
-        fprintf(stderr, "쓰는 법: key-to-screen --pw-fd N --node ID --rect X,Y,W,H --output OW,OH --dpr S [--click] [--presses N] [--gap-ms MS]\n");
+    if (pw_fd < 0 || node == 0 || (d.lrect[2] <= 0 && !find_marker) || d.out_w <= 0 || d.dpr <= 0) {
+        fprintf(stderr, "쓰는 법: key-to-screen --pw-fd N --node ID {--rect X,Y,W,H | --find-marker [--go-file F]} --output OW,OH --dpr S [--click] [--presses N] [--gap-ms MS]\n");
         return 2;
     }
 
@@ -245,6 +288,7 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
+    atomic_store(&d.marker, find_marker);
     pw_init(&argc, &argv);
     d.loop = pw_thread_loop_new("key-to-screen", NULL);
     struct pw_context *ctx = pw_context_new(pw_thread_loop_get_loop(d.loop), NULL, 0);
@@ -283,11 +327,33 @@ int main(int argc, char *argv[]) {
     if (atomic_load(&d.bad)) return 3;
     if (atomic_load(&g_count) == 0) { fprintf(stderr, "프레임이 안 와요 — 포털 스트림을 확인하세요\n"); return 2; }
 
+    if (find_marker) {
+        // 표식 (창 넓이의 대부분) 이 보일 때까지 최대 5 초. 문턱은 화면의 1 % — 작은 마젠타 조각 (아이콘 등) 을
+        // 창으로 잡지 않게.
+        int W = (int)d.info.size.width, H = (int)d.info.size.height, found = 0;
+        for (int i = 0; i < 500 && !found; i++) {
+            sleep_ms(10);
+            found = atomic_load(&d.mk_n) >= W * H / 100;
+        }
+        if (!found) { fprintf(stderr, "마젠타 표식을 못 찾았어요 — 창이 가려졌는지 봐요\n"); return 2; }
+        sleep_ms(200); // 창이 자리를 잡고 다 칠해질 때까지
+        // 두 칸마다 본 경계라 안쪽으로 4 px 줄인다.
+        int x0 = atomic_load(&d.mk_x0) + 4, y0 = atomic_load(&d.mk_y0) + 4;
+        int x1 = atomic_load(&d.mk_x1) - 4, y1 = atomic_load(&d.mk_y1) - 4;
+        if (x1 <= x0 || y1 <= y0) { fprintf(stderr, "표식 영역이 비었어요\n"); return 2; }
+        d.rx = x0; d.ry = y0; d.rw = x1 - x0; d.rh = y1 - y0;
+        atomic_store(&d.marker, 0); // 영역을 다 적은 뒤에 내린다 — 프레임 쪽이 이것을 보고 해시로 넘어간다
+        fprintf(stderr, "표식 영역 %d,%d %dx%d\n", d.rx, d.ry, d.rw, d.rh);
+        if (go_file) {
+            FILE *g = fopen(go_file, "w");
+            if (g) fclose(g);
+        }
+    }
+
     if (click) {
         // 창 가운데 (물리 px) → 절대좌표 0..32767. libinput 이 그 범위를 출력 전체에 선형으로 펼친다.
         int W = (int)d.info.size.width, H = (int)d.info.size.height;
-        double s = (double)W / d.out_w;
-        double cx = (d.lrect[0] + d.lrect[2] / 2) * s, cy = (d.lrect[1] + d.lrect[3] / 2) * s;
+        double cx = d.rx + d.rw / 2.0, cy = d.ry + d.rh / 2.0;
         emit(ptr, EV_ABS, ABS_X, (int)(cx * 32767.0 / (W - 1)));
         emit(ptr, EV_ABS, ABS_Y, (int)(cy * 32767.0 / (H - 1)));
         emit(ptr, EV_SYN, SYN_REPORT, 0);

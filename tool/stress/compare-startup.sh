@@ -4,14 +4,14 @@
 #   tool/stress/compare-startup.sh --repeat 5
 #
 # - 앱은 **사용자가 여는 길**로 띄운다 (`terminals.sh` 의 `terminals_open_all`). macOS 는 LaunchServices
-#   (`open`, Dock · Spotlight 와 같은 길), Linux 는 앱의 `.desktop` 을 그 DE 의 런처로 (KDE `kioclient exec`,
-#   메뉴 · 런처와 같은 길 — 2026-10-13 사용자 결정). 각 앱의 기본 설정으로 연다.
+#   (`open`, Dock · Spotlight 와 같은 길), Linux 는 앱의 `.desktop` 을 그 DE 의 런처로 (KDE `kioclient exec` ·
+#   GNOME `gio launch`, 메뉴 · 런처와 같은 길 — 2026-10-13 사용자 결정). 각 앱의 기본 설정으로 연다.
 # - 터미널 안 프로그램은 화면을 마젠타 (256 색 201 번) 로 칠한다. `tool/startup-to-screen_macos.m` 이 명령을
 #   스스로 띄우고, 화면 전체 캡처에서 마젠타가 처음 보인 프레임까지를 잰다. 그 도구 머리 주석 참고.
 # - **warm** 이다 — 회차마다 앱을 완전히 종료하고 다시 띄운다. 디스크 캐시는 데워진 상태다 (cold 는
 #   `sudo purge` 가 필요하고 값이 크게 흔들려서 재지 않는다 — 2026-10-13 사용자 결정).
 # - TildaZ 의 "단축키 → 창 표시" 는 이것과 별도다 (TildaZ 는 보통 떠 있다가 내려온다).
-# - **macOS 와 Linux 의 KDE Plasma 만** 된다. Linux 는 화면 캡처가 portal ScreenCast 라 프레임의 **도착** 시각을
+# - **macOS 와 Linux 의 KDE Plasma · GNOME** 에서 된다. Linux 는 화면 캡처가 portal ScreenCast 라 프레임의 **도착** 시각을
 #   쓴다 (`tool/startup-to-screen_linux.c` 머리 주석) — OS 사이에 절대값을 견주지 않는다.
 
 set -eu
@@ -45,9 +45,10 @@ case "$REPEAT" in ''|*[!0-9]*|0) echo "--repeat 은 1 이상의 정수여야 해
 . "$REPO_ROOT/tool/stress/terminals.sh"
 
 IS_KDE=0
-case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || [ "$IS_KDE" != 1 ]; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+IS_GNOME=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; esac
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ]; }; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
@@ -55,7 +56,11 @@ if [ "$IS_MACOS" = 1 ]; then
 else
     pkg-config --exists libpipewire-0.3 || { echo "libpipewire-0.3 개발 헤더가 없어요." >&2; exit 1; }
     python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
-    command -v kioclient >/dev/null 2>&1 || { echo "kioclient 가 없어요 (KDE 런처)." >&2; exit 1; }
+    if [ "$IS_KDE" = 1 ]; then
+        command -v kioclient >/dev/null 2>&1 || { echo "kioclient 가 없어요 (KDE 런처)." >&2; exit 1; }
+    else
+        command -v gio >/dev/null 2>&1 || { echo "gio 가 없어요 (GLib 런처)." >&2; exit 1; }
+    fi
 fi
 
 terminals_init
@@ -70,7 +75,11 @@ if [ "$IS_MACOS" != 1 ]; then
     cc -O2 -o "$S2S" "$REPO_ROOT/tool/startup-to-screen_linux.c" $(pkg-config --cflags --libs libpipewire-0.3) ||
         { echo "startup-to-screen 컴파일 실패." >&2; exit 1; }
     # 화면의 논리 크기 · 배율 — 측정기가 받은 스트림이 화면 전체인지 본다. 이 셸의 조상 창 (VS Code 등) 의 화면이다.
-    _geo=$(python3 "$REPO_ROOT/tool/kwin-window_linux.py" --child-pid $$ 2>/dev/null || true)
+    if [ "$IS_KDE" = 1 ]; then
+        _geo=$(python3 "$REPO_ROOT/tool/kwin-window_linux.py" --child-pid $$ 2>/dev/null || true)
+    else
+        _geo=$(python3 "$REPO_ROOT/tool/gnome-screen_linux.py" 2>/dev/null || true)
+    fi
     SCREEN_OUT=$(printf '%s' "$_geo" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
     SCREEN_DPR=$(printf '%s' "$_geo" | sed -n 's/.*dpr=\([^ ]*\).*/\1/p')
     [ -n "$SCREEN_OUT" ] && [ -n "$SCREEN_DPR" ] || { echo "화면 크기를 KWin 에 못 물었어요 — 창 안의 셸에서 돌려 주세요." >&2; exit 1; }
@@ -130,8 +139,13 @@ stop_target() {
             # Linux 는 위 `cleanup_terminals` 가 명령줄의 `WORK_DIR` 로 터미널과 측정 프로그램을 끝낸다
             # (런처용 `.desktop` 의 `Exec` 에 측정 프로그램 경로가 든다). 다 내려갈 때까지 기다린다 — warm 이다.
             if [ "$IS_MACOS" != 1 ]; then
+                # GNOME Terminal 은 창이 닫혀도 `gnome-terminal-server` 가 남는다 — 다음 회차가 떠 있는 서버를
+                # 쓰면 warm (앱 종료 후 다시) 이 아니다. 위생 검사가 시작 때 사용자 창이 없음을 보장한다.
+                # `comm` 은 15 자로 잘린다 (`hygiene.sh` 의 같은 이름).
+                [ "$_st_name" = gnome-terminal ] && { pkill -x gnome-terminal- || true; }
                 _q=0
-                while ps -eo args= | grep -F "$WORK_DIR/startup-child.sh" | grep -v grep >/dev/null && [ "$_q" -lt 20 ]; do
+                while { ps -eo args= | grep -F "$WORK_DIR/startup-child.sh" | grep -v grep >/dev/null ||
+                        { [ "$_st_name" = gnome-terminal ] && pgrep -x gnome-terminal- >/dev/null; }; } && [ "$_q" -lt 20 ]; do
                     sleep 0.25; _q=$((_q + 1))
                 done
                 return 0
@@ -184,7 +198,11 @@ echo "=== 터미널 시작 시간 비교 (#756) ==="
 if [ "$IS_MACOS" = 1 ]; then
     echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 LaunchServices (open)"
 else
-    echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 KDE 런처 (kioclient exec)"
+    if [ "$IS_KDE" = 1 ]; then
+        echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 KDE 런처 (kioclient exec)"
+    else
+        echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 GLib 런처 (gio launch)"
+    fi
 fi
 echo ""
 hygiene_check || {
@@ -221,6 +239,6 @@ echo ""
 if [ "$IS_MACOS" = 1 ]; then
     echo "단위 ms. 실행 (open) → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임의 표시 시각."
 else
-    echo "단위 ms. 실행 (kioclient exec) → 터미널 안 프로그램이 칠한 마젠타가 보인 첫 프레임이 측정기에 도착한 시각."
+    echo "단위 ms. 실행 (런처) → 터미널 안 프로그램이 칠한 마젠타가 보인 첫 프레임이 측정기에 도착한 시각."
     echo "표시 시각이 아니라서 macOS 표와 절대값을 견주지 않아요."
 fi
