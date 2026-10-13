@@ -575,6 +575,64 @@ win_window_title() {
     esac
 }
 
+# 저장소 빌드본을 찾아 `TILDAZ_BIN` 에 둔다 — 설치본은 버전이 다를 수 있다. `terminals_launch_all` ·
+# `terminals_open_all` 이 같이 쓴다.
+terminals_find_tildaz() {
+    TILDAZ_BIN=""
+    for candidate in \
+        "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
+        "$REPO_ROOT/zig-out/bin/tildaz" \
+        "$REPO_ROOT/zig-out/bin/tildaz.exe"
+    do
+        if [ -x "$candidate" ]; then TILDAZ_BIN="$candidate"; break; fi
+    done
+    return 0
+}
+
+# macOS 대상을 **LaunchServices (`open`)** 로 띄운다 — 시작 시간 (`compare-startup.sh`, #756).
+#
+# 사용자가 Dock · Spotlight 로 앱을 여는 길과 같다 (2026-10-13 사용자 결정). `terminals_launch_all` 은 대상마다
+# CLI · `open` · AppleScript 가 섞여 있어서, 띄운 **뒤**를 재는 처리량 · 지연에는 상관없지만 시작 시간에는
+# AppleScript 대상 (Terminal.app · iTerm2) 에만 `osascript` 비용이 섞인다.
+#
+# - 실행할 것은 `$PRODUCER` (실행 권한이 있는 스크립트) 하나다. `open` 은 환경변수를 넘기지 않으니
+#   (`--env` 는 있지만 대상마다 앱 안에서 다시 넘어가는지 갈린다) 스크립트가 스스로 다 알아야 한다.
+# - **격자 · scrollback 은 맞추지 않는다.** 각 앱의 기본 설정으로 연다 — 사용자가 여는 그대로다.
+# - Terminal.app · iTerm2 는 인자로 명령을 못 받아서 **스크립트 파일을 연다** (`open -a <앱> <파일>`).
+#   iTerm2 는 기본 설정이면 *"OK to run …?"* 경고로 멈춘다 — 측정 기기에서 한 번 끈다 (README).
+# - `-n` 은 새 인스턴스다. 한 프로세스에 창을 붙이는 Terminal.app · iTerm2 에는 쓰지 않는다 — 회차마다
+#   앱을 종료하므로 어차피 새로 뜬다.
+terminals_open_all() {
+    [ "$IS_MACOS" = 1 ] || return 0
+    if [ -d /Applications/kitty.app ] && ! terminal_skip kitty; then
+        run_terminal kitty open -na /Applications/kitty.app --args "$PRODUCER"
+    fi
+    if [ -d /Applications/Alacritty.app ] && ! terminal_skip alacritty; then
+        run_terminal alacritty open -na /Applications/Alacritty.app --args -e "$PRODUCER"
+    fi
+    if [ -d /Applications/WezTerm.app ] && ! terminal_skip wezterm; then
+        run_terminal wezterm open -na /Applications/WezTerm.app --args start --always-new-process -- "$PRODUCER"
+    fi
+    if [ -d /Applications/Ghostty.app ] && ! terminal_skip ghostty; then
+        run_terminal ghostty open -na /Applications/Ghostty.app --args -e "$PRODUCER"
+    fi
+    if [ -d /Applications/iTerm.app ] && ! terminal_skip iterm2; then
+        pgrep -x iTerm2 >/dev/null 2>&1 || ITERM_APP_WOKE=1
+        run_terminal iterm2 open -a /Applications/iTerm.app "$PRODUCER"
+    fi
+    if ! terminal_skip terminal; then
+        pgrep -x Terminal >/dev/null 2>&1 || TERMINAL_APP_WOKE=1
+        run_terminal terminal open -a Terminal "$PRODUCER"
+    fi
+    terminals_find_tildaz
+    if [ -z "$TILDAZ_BIN" ]; then
+        echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+    elif ! terminal_skip tildaz; then
+        run_terminal tildaz open -na "${TILDAZ_BIN%%.app/*}.app" --args -e "$PRODUCER"
+    fi
+    return 0
+}
+
 # 건너뛸 대상이 없으면 모두 띄운다. 부르는 쪽이 다시 정의한다 (위 머리 주석).
 terminal_skip() { return 1; }
 
@@ -837,14 +895,7 @@ fi
 # Windows 실기 검증에서 빠진 것이 드러나 #382 에서 추가했다. 명령이 끝나면 스스로 종료한다.
 #
 # 저장소 빌드본을 쓴다 — 설치본은 버전이 다를 수 있다.
-TILDAZ_BIN=""
-for candidate in \
-    "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
-    "$REPO_ROOT/zig-out/bin/tildaz" \
-    "$REPO_ROOT/zig-out/bin/tildaz.exe"
-do
-    [ -x "$candidate" ] && TILDAZ_BIN="$candidate" && break
-done
+terminals_find_tildaz
 
 if [ -z "$TILDAZ_BIN" ]; then
     echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
