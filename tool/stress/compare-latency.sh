@@ -1,16 +1,22 @@
 #!/bin/sh
 # 여러 터미널의 **키 → 화면 지연**을 같은 잣대로 견준다 (#756).
 #
-# 대상마다 창을 띄우고, 합성 키 (`a`) 를 보낸 순간부터 그 창의 그림이 처음 바뀐 프레임이 화면에
-# 표시된 순간까지를 **앱 밖에서** 잰다 (`tool/key-to-screen_macos.m`). 앱 내부 계측과 무관해서
-# 어느 터미널이든 같은 잣대다. 관례로는 Typometer 와 같은 방식 (캡처로 화면 변화를 본다) 이다.
+# 대상마다 창을 띄우고, 합성 키 (`a`) 를 보낸 순간부터 그 창의 그림이 처음 바뀐 프레임까지를 **앱 밖에서**
+# 잰다. 앱 내부 계측과 무관해서 어느 터미널이든 같은 잣대다. 관례로는 Typometer 와 같은 방식 (캡처로 화면
+# 변화를 본다) 이다.
+#
+#   - macOS: 그 프레임이 화면에 **표시된** 시각 (`tool/key-to-screen_macos.m` · ScreenCaptureKit).
+#   - Linux (KDE Plasma): 그 프레임이 측정기에 **도착한** 시각 (`tool/key-to-screen_linux.c` · portal
+#     ScreenCast). KWin 의 스크린캐스트에는 표시 시각이 없다 — 그 파일 머리 주석. 그래서 **OS 사이에
+#     절대값을 견주지 않는다** (2026-10-13 사용자 결정).
 #
 #   tool/stress/compare-latency.sh --repeat 5 --presses 30
 #
 # - **유휴 지연**이다 — 키를 기다리는 터미널에 키 하나를 보낸다. 출력이 쏟아지는 동안의 지연은
 #   재지 않는다.
 # - 대상을 띄우고 닫는 코드는 처리량 비교와 같다 (`terminals.sh`). 격자 · scrollback 도 같다.
-# - **지금은 macOS 만** 된다. Linux · Windows 의 측정기는 아직 없다 (#756 의 순서 ⑤).
+# - **macOS 와 Linux 의 KDE Plasma 만** 된다. GNOME · COSMIC 은 portal 경로가 같지만 실기 전이고,
+#   창 위치를 묻는 도구가 KWin 전용이다 (`tool/kwin-window_linux.py`). Windows 측정기는 아직 없다.
 #
 # 터미널 안에서 도는 프로그램은 아래 `latency-child.sh` 하나다. 모든 대상에서 같다.
 #   1. 커서를 숨긴다 (`CSI ?25l`). **커서가 깜빡이면 그 변화를 키의 결과로 잘못 잰다** — 깜빡임
@@ -23,7 +29,9 @@
 #
 # 판정 함정:
 #   - **입력 소스가 한글이면 `a` 가 IME 로 간다.** 터미널마다 IME 처리가 달라 같은 잣대가 깨진다.
-#     ABC 로 잠깐 바꾸고 끝나면 되돌린다 (`measure-input-latency.sh` 와 같은 처리).
+#     macOS 는 ABC 로 잠깐 바꾸고 끝나면 되돌린다 (`measure-input-latency.sh` 와 같은 처리). Linux 는 fcitx5 를
+#     잠깐 내리고 끝나면 되살린다 — 영문 모드여도 text-input-v3 로 키를 가로채기 때문이다 (AGENTS.md 의 fcitx5
+#     함정). 되살린 fcitx5 가 KDE 배열 목록을 자기 `Default Layout` 으로 덮어쓰므로 배열이 둘 이상이면 멈춘다.
 #   - 키가 그 창에 안 닿으면 화면이 안 바뀌어 `miss` 로 드러난다. 회차의 절반 넘게 miss 면 그
 #     회차를 버린다.
 #   - ScreenCaptureKit 자체의 지연이 섞인다. 절대값보다 **같은 실행 안의 대상끼리** 견준다.
@@ -73,11 +81,18 @@ done
 
 . "$REPO_ROOT/tool/stress/terminals.sh"
 
-if [ "$IS_MACOS" != 1 ]; then
-    echo "지금은 macOS 만 돼요 — Linux · Windows 의 키 → 화면 측정기는 아직 없어요 (#756)." >&2
+IS_KDE=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; esac
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || [ "$IS_KDE" != 1 ]; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
-command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
+if [ "$IS_MACOS" = 1 ]; then
+    command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
+else
+    pkg-config --exists libpipewire-0.3 || { echo "libpipewire-0.3 개발 헤더가 없어요." >&2; exit 1; }
+    python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
+fi
 
 terminals_init
 RESULTS="$WORK_DIR/results"
@@ -87,6 +102,11 @@ RESULTS="$WORK_DIR/results"
 K2S="$WORK_DIR/key-to-screen"
 LISTER="$WORK_DIR/color-capture"
 MAC_INPUT="$WORK_DIR/mac-input"
+if [ "$IS_MACOS" != 1 ]; then
+    # shellcheck disable=SC2046 # pkg-config 출력은 낱말로 갈라야 한다
+    cc -O2 -o "$K2S" "$REPO_ROOT/tool/key-to-screen_linux.c" $(pkg-config --cflags --libs libpipewire-0.3) ||
+        { echo "key-to-screen 컴파일 실패." >&2; exit 1; }
+else
 clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMedia \
       -framework CoreVideo -o "$K2S" "$REPO_ROOT/tool/key-to-screen_macos.m" ||
     { echo "key-to-screen 컴파일 실패." >&2; exit 1; }
@@ -96,18 +116,29 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework ImageIO
 clang -O2 -Wno-deprecated-declarations -framework ApplicationServices -framework Carbon \
       -o "$MAC_INPUT" "$REPO_ROOT/tool/input_macos.m" ||
     { echo "mac-input 컴파일 실패." >&2; exit 1; }
+fi
 
 IME_RESTORE_ID=""
+FCITX_RESTORE=0
 cleanup() {
     terminals_cleanup_all || true
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1 || true
+    if [ "$FCITX_RESTORE" = 1 ] && ! pgrep -x fcitx5 >/dev/null 2>&1; then
+        (setsid nohup fcitx5 -d >/dev/null 2>&1 &) || true
+        echo "fcitx5 를 되살렸어요."
+    fi
     hygiene_end || true
     rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
 # CGEvent 는 권한이 없어도 성공을 반환한다 — 키를 보내는 쪽에서 미리 본다 (`input_macos.m` 머리 주석).
-"$MAC_INPUT" check || exit 1
+if [ "$IS_MACOS" = 1 ]; then
+    "$MAC_INPUT" check || exit 1
+else
+    python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK))" 2>/dev/null ||
+        { echo "/dev/uinput 을 못 열어요 (권한 · 모듈)." >&2; exit 1; }
+fi
 
 # --- 터미널 안에서 도는 프로그램 (머리 주석 참고) ---
 PRODUCER="$WORK_DIR/latency-child.sh"
@@ -121,7 +152,8 @@ while [ "$_i" -lt 50 ]; do
     [ "${2:-0}x${1:-0}" = "$TILDAZ_STRESS_GRID" ] && break
     sleep 0.1; _i=$((_i + 1))
 done
-printf 'cols=%s\nrows=%s\n' "${2:-0}" "${1:-0}" > "$TILDAZ_STRESS_TIMING_FILE"
+# `pid` 는 Linux 가 창을 찾는 데 쓴다 — 창 주인은 이 셸의 조상 사슬에 있다 (`tool/kwin-window_linux.py`).
+printf 'cols=%s\nrows=%s\npid=%s\n' "${2:-0}" "${1:-0}" "$$" > "$TILDAZ_STRESS_TIMING_FILE"
 while IFS= read -r _line; do :; done
 EOF
 chmod +x "$PRODUCER"
@@ -144,6 +176,37 @@ wait_ready() {
     return 0
 }
 
+# Linux 회차 하나 — 창 위치를 KWin 에 묻고, portal 스트림을 열어 측정기를 돌린다. 표시 하나 (`.` · `!` ·
+# `?`) 를 stdout 에 내고, 그 회차의 miss 수를 `round.miss` 에 둔다. 표본은 대상의 `.samples` 에 붙인다.
+#
+#   measure_round_linux <터미널 안 프로그램의 pid> <대상 이름> <회차>
+measure_round_linux() {
+    echo "$PRESSES" > "$WORK_DIR/round.miss"
+    # 창이 KWin 목록에 올라올 때까지 (최대 5 초). `--activate` 로 앞에 올린다 — 클릭이 그 창으로 가게.
+    _geo=""
+    _t=0
+    while [ -z "$_geo" ] && [ "$_t" -lt 20 ]; do
+        _geo=$(python3 "$REPO_ROOT/tool/kwin-window_linux.py" --child-pid "$1" --activate 2>/dev/null || true)
+        [ -n "$_geo" ] || { sleep 0.25; _t=$((_t + 1)); }
+    done
+    [ "$VERBOSE" = 1 ] && echo "  [$2] 창: ${_geo:-(없음)}" >&2
+    if [ -z "$_geo" ]; then printf '?'; return 0; fi
+    _rect=$(printf '%s' "$_geo" | sed -n 's/.*rect=\([^ ]*\).*/\1/p')
+    _outp=$(printf '%s' "$_geo" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
+    _dpr=$(printf '%s' "$_geo" | sed -n 's/.*dpr=\([^ ]*\).*/\1/p')
+    # 셸이 뜬 직후의 첫 그림 (프롬프트 · 격자 조정) 이 가라앉을 때까지 (macOS 판과 같은 대기).
+    sleep 1
+    _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
+        --rect "$_rect" --output "$_outp" --dpr "$_dpr" --click --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
+    [ "$VERBOSE" = 1 ] && sed 's/^/    /' "$WORK_DIR/round.err" >&2
+    _m=$(printf '%s\n' "$_out" | sed -n 's/.* miss=\([0-9]*\).*/\1/p' | tail -1)
+    [ -n "$_m" ] || { sed 's/^/  ⚠ /' "$WORK_DIR/round.err" >&2; printf '!'; return 0; }
+    echo "$_m" > "$WORK_DIR/round.miss"
+    if [ "$_m" -gt $((PRESSES / 2)) ]; then printf '!'; return 0; fi
+    printf '%s\n' "$_out" | sed -n 's/^press *[0-9]* *\([0-9.]*\) ms$/\1/p' >> "$WORK_DIR/$2.samples"
+    printf '.'
+}
+
 # 대상 하나를 `REPEAT` 번 띄워 잰다. 회차마다 창을 새로 띄운다 — 처리량 비교와 같은 구조다.
 run_terminal() {
     _name="$1"
@@ -156,11 +219,22 @@ run_terminal() {
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
         rm -f "$_timing"
-        "$LISTER" --list 2>/dev/null | awk 'NR > 1 { print $1 }' > "$WORK_DIR/before"
+        [ "$IS_MACOS" = 1 ] && "$LISTER" --list 2>/dev/null | awk 'NR > 1 { print $1 }' > "$WORK_DIR/before"
         "$@" >/dev/null 2>&1 &
         _pid=$!
         _mark=x
-        if wait_ready "$_timing"; then
+        _ready=0
+        wait_ready "$_timing" && _ready=1
+        if [ "$_ready" = 1 ] && [ "$IS_MACOS" != 1 ]; then
+            _cols=$(sed -n 's/^cols=//p' "$_timing")
+            _rows=$(sed -n 's/^rows=//p' "$_timing")
+            _mark=$(measure_round_linux "$(sed -n 's/^pid=//p' "$_timing")" "$_name" "$_run")
+            case "$_mark" in
+                .) ;;
+                !) _bad=$((_bad + 1)) ;;
+            esac
+            _miss=$((_miss + $(cat "$WORK_DIR/round.miss" 2>/dev/null || echo "$PRESSES")))
+        elif [ "$_ready" = 1 ]; then
             _cols=$(sed -n 's/^cols=//p' "$_timing")
             _rows=$(sed -n 's/^rows=//p' "$_timing")
             # 깨운 앱의 기본 창이 측정 창을 가리지 않게 닫는다 (Terminal.app · iTerm2).
@@ -226,18 +300,32 @@ hygiene_check || {
     }
 }
 hygiene_begin
-HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
+[ "$IS_MACOS" = 1 ] && HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
 echo "위생   $(hygiene_status)"
 
-_ime_before=$("$MAC_INPUT" ime-get 2>/dev/null || echo "")
-if "$MAC_INPUT" ime-ascii; then
-    _ime_after=$("$MAC_INPUT" ime-get 2>/dev/null || echo "")
-    if [ -n "$_ime_before" ] && [ "$_ime_before" != "$_ime_after" ]; then
-        IME_RESTORE_ID="$_ime_before"
-        echo "입력기를 영문으로 바꿨어요: $_ime_before → $_ime_after (끝나면 되돌려요)."
+if [ "$IS_MACOS" = 1 ]; then
+    _ime_before=$("$MAC_INPUT" ime-get 2>/dev/null || echo "")
+    if "$MAC_INPUT" ime-ascii; then
+        _ime_after=$("$MAC_INPUT" ime-get 2>/dev/null || echo "")
+        if [ -n "$_ime_before" ] && [ "$_ime_before" != "$_ime_after" ]; then
+            IME_RESTORE_ID="$_ime_before"
+            echo "입력기를 영문으로 바꿨어요: $_ime_before → $_ime_after (끝나면 되돌려요)."
+        fi
+    else
+        echo "⚠ 영문 입력 소스로 못 바꿨어요 — 한글이면 재는 경로가 달라져요." >&2
     fi
-else
-    echo "⚠ 영문 입력 소스로 못 바꿨어요 — 한글이면 재는 경로가 달라져요." >&2
+elif pgrep -x fcitx5 >/dev/null 2>&1; then
+    # 되살린 fcitx5 는 KDE 의 배열 목록을 자기 `Default Layout` 하나로 덮어쓴다 (AGENTS.md). 배열이
+    # 하나면 잃을 것이 없고, 둘 이상이면 사용자가 다시 추가해야 하니 멈춘다.
+    case "$(sed -n 's/^LayoutList=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kxkbrc" 2>/dev/null)" in
+        *,*)
+            echo "KDE 배열이 둘 이상이에요 — fcitx5 를 되살리면 목록이 지워져서 멈춰요. fcitx5 를 직접 끄고 다시 돌려요." >&2
+            exit 1
+            ;;
+    esac
+    pkill -x fcitx5 || true
+    FCITX_RESTORE=1
+    echo "fcitx5 를 잠깐 내렸어요 (끝나면 되살려요)."
 fi
 echo ""
 
@@ -269,4 +357,9 @@ while IFS="$(printf '\t')" read -r name cols rows miss bad; do
         }'
 done < "$RESULTS"
 echo ""
-echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 표시 시각 (ScreenCaptureKit)."
+if [ "$IS_MACOS" = 1 ]; then
+    echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 표시 시각 (ScreenCaptureKit)."
+else
+    echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임이 측정기에 도착한 시각 (portal ScreenCast)."
+    echo "표시 시각이 아니라서 macOS 표와 절대값을 견주지 않아요."
+fi
