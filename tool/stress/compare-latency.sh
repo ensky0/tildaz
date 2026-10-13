@@ -61,6 +61,8 @@ while [ $# -gt 0 ]; do
         --only) ONLY="$2"; shift 2 ;;
         --verbose) VERBOSE=1; shift ;;
         --shots) SHOT_DIR="$2"; mkdir -p "$SHOT_DIR"; shift 2 ;;
+        # Terminal.app 측정 탭의 프로필 — 비우면 사용자 기본 (`terminals.sh` 의 `TERMINAL_APP_SETTINGS`).
+        --terminal-settings) TERMINAL_APP_SETTINGS="$2"; export TERMINAL_APP_SETTINGS; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done

@@ -89,6 +89,10 @@ terminals_init() {
 # **비어 있으면 이 실행에서 Terminal.app 을 안 띄웠다는 뜻**이라 창을 닫으러 가지 않는다 —
 # 떠 있지도 않은 Terminal.app 을 osascript 가 깨우면 측정 도중에 앱 하나가 새로 뜬다.
 TERMINAL_APP_TAG=""
+# Terminal.app 측정 탭에 줄 프로필 (settings set) 이름. **비우면 사용자 기본 프로필**이다 (지금까지와
+# 같다). 프로필은 색 · 투명도까지 담아서, 기본 프로필이 반투명이면 이 대상만 합성 비용이 다른 조건이
+# 된다 (2026-10-13 · 이 기기의 기본은 `Clear Dark`). 대조할 때 `Basic` (불투명) 을 준다 (#756).
+TERMINAL_APP_SETTINGS="${TERMINAL_APP_SETTINGS:-}"
 
 # 우리가 태그를 붙인 Terminal.app 창만 닫는다.
 #
@@ -786,12 +790,26 @@ EOF
     # `do script` 가 돌려주는 **tab** 에 태그를 단다. `front window` 로 잡으면 그 찰나에
     # 사용자가 다른 창을 앞으로 가져왔을 때 **사용자 창에 태그가 붙어 나중에 닫히므로**
     # 그렇게 하지 않는다.
-    run_terminal terminal osascript \
-        -e 'tell application "Terminal"' \
-        -e "set t to do script \"exec sh '$TERMINAL_WRAPPER'\"" \
-        -e "set custom title of t to \"$TERMINAL_APP_TAG\"" \
-        -e 'end tell' \
-        -e 'tell application "System Events" to set visible of process "Terminal" to true'
+    if [ -z "$TERMINAL_APP_SETTINGS" ]; then
+        run_terminal terminal osascript \
+            -e 'tell application "Terminal"' \
+            -e "set t to do script \"exec sh '$TERMINAL_WRAPPER'\"" \
+            -e "set custom title of t to \"$TERMINAL_APP_TAG\"" \
+            -e 'end tell' \
+            -e 'tell application "System Events" to set visible of process "Terminal" to true'
+    else
+        # 프로필을 줄 때는 **빈 탭 → 프로필 → wrapper** 순서다. 프로필 (settings set) 이 창 크기도
+        # 담을 수 있어서, wrapper 가 격자를 맞춘 뒤에 바꾸면 되돌아갈 수 있다 (확인 필요). 빈 탭의
+        # 로그인 셸은 `exec` 로 wrapper 에 대체되니 남지 않는다.
+        run_terminal terminal osascript \
+            -e 'tell application "Terminal"' \
+            -e 'set t to do script ""' \
+            -e "set current settings of t to settings set \"$TERMINAL_APP_SETTINGS\"" \
+            -e "set custom title of t to \"$TERMINAL_APP_TAG\"" \
+            -e "do script \"exec sh '$TERMINAL_WRAPPER'\" in t" \
+            -e 'end tell' \
+            -e 'tell application "System Events" to set visible of process "Terminal" to true'
+    fi
 fi
 
 # TildaZ — `-e` · `-size` 로 자동 측정한다 (#382). 그 두 옵션은 **측정 내부용**이라
