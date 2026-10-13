@@ -250,7 +250,7 @@ Uninstall:
 License: LICENSE (AGPL-3.0-or-later)
          THIRD-PARTY-NOTICES.md (bundled component notices)
 
-Config: \$XDG_CONFIG_HOME/tildaz/config_0.json (fallback: ~/.config/tildaz)
+Config: \$XDG_CONFIG_HOME/tildaz/config_0.toml (fallback: ~/.config/tildaz)
 Log:    \$XDG_STATE_HOME/tildaz/tildaz_0.log (fallback: ~/.local/state/tildaz)
 
 GitHub: https://github.com/ensky0/tildaz

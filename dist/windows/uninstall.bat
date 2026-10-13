@@ -101,7 +101,4 @@ if defined HAD_CONFIG_DEV echo Removed: %CONFIG_DEV% [config + log, dev build]
 
 :after_purge
 
-echo.
-echo Note: if you manually created an admin Task Scheduler "TildaZ" task (see README),
-echo       remove it separately with:  schtasks /delete /tn TildaZ /f
 endlocal
