@@ -1005,7 +1005,53 @@ fi
 # foot 은 Wayland 전용이라 Linux 에서만 있다.
 if command -v foot >/dev/null 2>&1 && ! terminal_skip foot; then
     T="$WORK_DIR/foot.timing"
+    # `scrollback.lines` 를 꼭 준다 — 기본값이 1,000 이라 빠뜨리면 foot 만 scrollback 이 작은 조건으로
+    # 돈다 (#756 에서 발견 — 그 전의 Linux 측정은 그 조건이었다). foot 은 이 값에 보이는 줄 수를 더해
+    # 2 의 거듭제곱으로 올려 잡는다 (`foot.ini(5)` 의 `scrollback.lines`).
     run_terminal foot foot --window-size-chars="${COLS}x${ROWS}" \
+        -o "scrollback.lines=$SCROLLBACK" \
         sh -c "$(producer_cmd "$T")"
+fi
+
+# --- Linux 데스크톱 기본 터미널 셋 (#756) ---
+#
+# KDE Plasma · GNOME · COSMIC 사용자가 실제로 쓰는 터미널이다. macOS 의 Terminal.app · iTerm2,
+# Windows 의 wt · conhost 와 같은 자리다.
+
+if command -v konsole >/dev/null 2>&1 && ! terminal_skip konsole; then
+    T="$WORK_DIR/konsole.timing"
+    # `--separate` (= `--nofork`) 가 필수다 — 없으면 이미 떠 있는 Konsole 에 창을 붙여 사용자 창과 같은
+    # 프로세스에서 그린다 (wezterm 의 `--always-new-process` 와 같은 함정). `-p` 는 이 세션의 프로필 값만
+    # 바꾸고 저장하지 않는다. `HistoryMode=1` 은 고정 크기 (`Enumeration.h` 의 `FixedSizeHistory`, 26.08.2).
+    #
+    # **`XDG_STATE_HOME` 을 빈 폴더로 준다.** "창 크기 기억" (`RememberWindowSize`, 기본 켜짐) 이 켜져 있고
+    # `konsolestaterc` 에 저장된 크기가 있으면 Konsole 은 프로필의 격자를 무시한다 (`MainWindow::showEvent`
+    # 의 `wasWindowGeometrySaved`). 이 기기에서 `110x28` 로 떴다 (2026-10-13). 빈 폴더면 저장된 크기가 없어
+    # 프로필 격자로 뜨고, 끝날 때 측정 창 크기가 사용자 상태 파일에 저장되지도 않는다.
+    mkdir -p "$WORK_DIR/konsole-state"
+    run_terminal konsole env XDG_STATE_HOME="$WORK_DIR/konsole-state" konsole --separate \
+        -p "TerminalColumns=$COLS" -p "TerminalRows=$ROWS" \
+        -p HistoryMode=1 -p "HistorySize=$SCROLLBACK" \
+        -e sh -c "$(producer_cmd "$T")"
+fi
+
+if command -v gnome-terminal >/dev/null 2>&1 && ! terminal_skip gnome-terminal; then
+    T="$WORK_DIR/gnome-terminal.timing"
+    # 창은 D-Bus 로 뜨는 `gnome-terminal-server` 가 그린다 — 띄운 프로세스의 자손이 아니다.
+    # `--wait` 는 명령이 끝날 때까지 이 클라이언트를 붙잡아 두는 것뿐이다. 정리는 서버의 자식인
+    # producer 셸 (명령줄에 `WORK_DIR` 이 든다) 을 `cleanup_terminals` 가 끝내서 된다.
+    # **scrollback 은 못 맞춘다** — 프로필 (dconf) 설정이라 CLI 로 줄 수 없다. 사용자 프로필 값이
+    # 쓰인다 (Terminal.app · conhost 와 같은 "조건이 다른 대상").
+    run_terminal gnome-terminal gnome-terminal --wait --geometry="${COLS}x${ROWS}" \
+        -- sh -c "$(producer_cmd "$T")"
+fi
+
+if command -v cosmic-term >/dev/null 2>&1 && ! terminal_skip cosmic-term; then
+    T="$WORK_DIR/cosmic-term.timing"
+    # `--no-daemon` 이 없으면 스스로 fork 해 부모가 바로 끝난다 (`main.rs` 의 `fork::daemon`).
+    # **격자도 scrollback 도 못 맞춘다** (cosmic-term 1.9.0 `main.rs`) — 창 크기 옵션이 없고,
+    # scrollback 은 `scrolling_history: 100_000` 으로 고정이다. 격자는 표의 grid 열에 그대로 드러난다.
+    run_terminal cosmic-term cosmic-term --no-daemon \
+        -e sh -c "$(producer_cmd "$T")"
 fi
 }

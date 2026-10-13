@@ -233,6 +233,18 @@ if [ "$IS_MACOS" = 1 ]; then
     echo "⚠ terminal (Terminal.app) 은 scrollback 을 못 맞춰요 — 사용자 프로파일 값이 쓰여요."
     echo "  AppleScript 에 크기 속성이 없어서 통로가 없어요 (격자는 escape sequence 로 줘요)."
 fi
+if [ "$IS_WINDOWS" != 1 ] && [ "$IS_MACOS" != 1 ]; then
+    # #756 — 위 두 OS 와 같은 이유로 매 실행에서 알린다. 띄우는 법은 `terminals.sh` 의 각 절.
+    if command -v gnome-terminal >/dev/null 2>&1; then
+        echo ""
+        echo "⚠ gnome-terminal 은 scrollback 을 못 맞춰요 — 사용자 프로필 값이 쓰여요 (CLI 통로가 없어요)."
+    fi
+    if command -v cosmic-term >/dev/null 2>&1; then
+        echo ""
+        echo "⚠ cosmic-term 은 격자도 scrollback 도 못 맞춰요 — scrollback 은 100,000 고정이고 창 크기 옵션이 없어요."
+        echo "  격자가 ${COLS}x${ROWS} 와 다르면 그 줄은 비교에 쓰지 않아요."
+    fi
+fi
 echo ""
 # #381 — **배경에서 그리는 앱이 우리 수치만 누른다.** 같은 조건에서 VS Code · Edge 를 최소화하는
 # 것만으로 tildaz 가 17.1 → 28.1 MiB/s (+64 %) 였고, 다른 넷은 +0.7~9 % 였다 (`emoji_vs16` ·
