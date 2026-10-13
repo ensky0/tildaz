@@ -670,10 +670,7 @@ capture_screen() {
             # 번들 안 바이너리를 직접 띄우는 tildaz 가 그럴 수 있다. 둘 중 하나만 맞아도 고른다.
             _wid=""
             if [ -n "$MAC_CAPTURE" ]; then
-                _wid=$("$MAC_CAPTURE" --list 2>/dev/null |
-                    awk -v b="$(mac_bundle_id "$_ctarget")" -v t="$_ctarget" \
-                        '(b != "" && ($2 == b || $2 == b ".dev")) || index(tolower($3), t) == 1 { print $1 }' |
-                    sort -n | tail -1)
+                _wid=$(mac_window_of "$_ctarget" "$MAC_CAPTURE")
             fi
             # 창을 못 찾았거나 창 단위 캡처가 실패하면 전체 화면으로 물러선다 — 가려져 있으면
             # 안 보이지만 없는 것보다 낫다. **어느 쪽이었는지 표시를 남긴다** — 예전에는 macOS 가

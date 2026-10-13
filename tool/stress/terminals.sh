@@ -114,19 +114,64 @@ terminal_app_close() {
 # 프로파일의 `Close Sessions On End` 는 **세션만** 닫아서 **빈 창이 남는다.** 회차마다 쌓이고,
 # 다음 실행의 위생 검사 (`hygiene_running_terminals`) 에도 계속 걸린다.
 #
-# 창 이름이 곧 프로파일 이름이라 그것으로 우리 창만 고른다 — 사용자가 열어 둔 창은 이름이
-# 달라서 후보에 안 들어간다 (실측: `[tildaz-stress]` 와 `[-bash]` 가 이름으로 갈렸다).
+# 우리 창은 **세션의 프로필 이름**으로 고른다 (`iterm2_windows`). #414 때는 창 이름이 곧 프로파일
+# 이름이라 이름으로 골랐는데 (`[tildaz-stress]` 와 `[-bash]` 가 갈렸다), iTerm2 3.7.4 에서는 창 이름이
+# 실행 중인 명령이라 그 방식이 창을 하나도 못 닫았다 (#756, 2026-10-13 실측).
 #
 # **AppleScript 의 `windows` 목록에는 닫은 뒤에도 항목이 남을 수 있다.** 실제로 닫혔는지는
 # ScreenCaptureKit 의 창 목록으로 확인했다 (화면에서 사라진다). Terminal.app 도 같다.
 ITERM_WINDOW_OPENED=0
-# 프로파일 이름이자 **창 이름**이다 (iTerm2 가 프로파일 이름을 창 제목으로 쓴다). wt 의
-# `WT_PROFILE_NAME` 과 같은 자리이고, 아래 프로파일 JSON · 창 생성 · 창 정리가 모두 이 값을 쓴다.
+# 측정용 프로파일 이름. wt 의 `WT_PROFILE_NAME` 과 같은 자리이고, 아래 프로파일 JSON · 창 생성 ·
+# 창 정리가 모두 이 값을 쓴다.
 ITERM_PROFILE_NAME="tildaz-stress"
 iterm2_window_close() {
     [ "$ITERM_WINDOW_OPENED" = 1 ] || return 0
-    osascript -e "tell application \"iTerm\" to close (every window whose name is \"$ITERM_PROFILE_NAME\")" \
-        >/dev/null 2>&1 || true
+    iterm2_windows close-ours >/dev/null || true
+}
+
+# iTerm2 의 창을 **세션의 프로필 이름**으로 가른다 (#756).
+#
+#   iterm2_windows ids            우리 창 (프로필이 `ITERM_PROFILE_NAME`) 의 id — 한 줄에 하나
+#   iterm2_windows close-ours     우리 창과, 세션이 끝나 탭이 없는 빈 창을 닫는다
+#   iterm2_windows close-others   우리 창도 빈 창도 아닌 창을 닫는다 (`mac_close_woken_extras`)
+#
+# **창 이름으로는 못 가른다.** #414 때는 창 이름이 프로필 이름이었는데, iTerm2 3.7.4 에서는 실행 중인
+# 명령이다 (측정 창 `sh` · 기본 창 `-bash` — 2026-10-13 실측). 그래서 이름으로 고르던 예전 정리는 창을
+# 하나도 못 닫았다. AppleScript 의 창 `id` 는 화면 창 id (`CGWindowID`) 와 같다 (같은 날 실측 —
+# `create window` 가 돌려준 id 와 `color-capture --list` 의 id 가 같았다).
+#
+# 빈 창 — `Close Sessions On End` 는 세션만 닫아서 탭이 없는 창이 남는다 (#414). 깨운 앱에는 사용자
+# 창이 없고, 사용자 창은 늘 세션이 있으니 빈 창은 우리 것으로 본다.
+#
+# 앱이 안 떠 있을 때 부르면 AppleScript 가 앱을 **띄운다** — 부르는 쪽이 조건을 본다.
+iterm2_windows() {
+    osascript - "$1" "$ITERM_PROFILE_NAME" 2>/dev/null << 'APPLESCRIPT'
+on run argv
+    set mode to item 1 of argv
+    set prof to item 2 of argv
+    set out to ""
+    tell application "iTerm"
+        repeat with w in (get every window)
+            set mine to false
+            set empty to false
+            try
+                if (count of tabs of w) is 0 then set empty to true
+            end try
+            try
+                if (profile name of current session of w) is prof then set mine to true
+            end try
+            if mode is "ids" then
+                if mine then set out to out & (id of w) & linefeed
+            else if mode is "close-ours" then
+                if mine or empty then close w
+            else if mode is "close-others" then
+                if not mine and not empty then close w
+            end if
+        end repeat
+    end tell
+    return out
+end run
+APPLESCRIPT
 }
 
 # 측정 창을 만든 **뒤** 그 앱의 hide 를 푼다 (#414). macOS 전용이다.
@@ -179,6 +224,30 @@ mac_app_quit() {
         echo "⚠ 측정이 깨운 $1 이 5 초 안에 안 끝났어요 — 확인 창이 떠 있는지 봐요 (README 의 iTerm2 절)." >&2
     fi
 }
+# 측정이 깨운 앱이 **스스로 연 기본 창을 닫는다** (#756). 측정 창이 뜬 뒤에 부른다.
+#
+# 기본 창이 측정 창 위에 겹치면, 측정 창을 누르려던 클릭이 기본 창으로 가서 키가 측정 창에 안
+# 닿는다 (2026-10-13 macOS 실측 — Terminal.app 의 측정 창 가운데가 기본 창 안에 있어 키 10 개 중 9 개를
+# 놓쳤다). 깨운 앱만이라 사용자 창은 없고, 기본 창은 빈 로그인 셸이라 확인 없이 닫힌다 (실측).
+#
+# Terminal.app 은 AppleScript 의 창 이름에 든 태그로, iTerm2 는 세션의 프로필 이름으로 가른다
+# (`iterm2_windows`). 처음에 iTerm2 도 창 이름으로 갈랐다가 측정 창까지 닫았다 — 3.7.4 의 창 이름은
+# 실행 중인 명령 (`sh`) 이라 프로필 이름이 없다 (2026-10-13 실측).
+mac_close_woken_extras() {
+    case "$1" in
+        terminal)
+            [ "$TERMINAL_APP_WOKE" = 1 ] || return 0
+            osascript -e "tell application \"Terminal\" to close (every window whose name does not contain \"$TERMINAL_APP_TAG\")" \
+                >/dev/null 2>&1 || true
+            ;;
+        iterm2)
+            [ "$ITERM_APP_WOKE" = 1 ] || return 0
+            iterm2_windows close-others >/dev/null || true
+            ;;
+    esac
+    return 0
+}
+
 mac_app_quit_woken() {
     [ "$TERMINAL_APP_WOKE" = 1 ] && mac_app_quit Terminal Terminal
     [ "$ITERM_APP_WOKE" = 1 ] && mac_app_quit iTerm iTerm2
@@ -434,6 +503,39 @@ mac_bundle_id() {
         tildaz) printf 'me.ensky0.tildaz' ;;
         *) printf '' ;;
     esac
+}
+
+# macOS 에서 대상의 창 id 를 찾는다 (#756 에서 `compare-terminals.sh` 의 캡처에서 옮겼다).
+#
+#   mac_window_of <대상 이름> <color-capture 경로> [측정 전 창 id 목록 파일] [태그로 좁힘 (1)]
+#
+# bundle id 가 같거나 (dev 빌드는 `.dev` 가 붙는다), **앱 이름이 대상 이름으로 시작하는** 창이다.
+# 앱 이름을 함께 보는 이유는 CLI 로 띄운 alacritty 가 LaunchServices 를 안 거쳐 bundle id 가 비어서다
+# (`color-capture_macos.m` 의 `--list` 주석). 여러 개면 id 가 가장 큰 것 (가장 새 창).
+#
+# - 셋째 인자를 주면 **그 파일에 적힌 창은 뺀다** — 측정 전부터 있던 같은 앱의 창을 고르지 않게.
+# - 넷째 인자가 1 이면 **우리 창만** 고른다. 꺼져 있던 앱을 깨우면 앱이 스스로 기본 창을 하나 더
+#   열기 때문이다 (`mac_app_quit_woken` 주석). Terminal.app 은 제목에 든 태그로, iTerm2 는 세션의 프로필
+#   이름으로 가른다 (`iterm2_windows` — 3.7.4 에서는 제목에 프로필 이름이 안 든다).
+mac_window_of() {
+    _mw_tag=""
+    if [ "${4:-0}" = 1 ]; then
+        case "$1" in
+            terminal) _mw_tag="$TERMINAL_APP_TAG" ;;
+            iterm2)
+                iterm2_windows ids | awk 'NF' | sort -n | tail -1
+                return 0
+                ;;
+        esac
+    fi
+    "$2" --list 2>/dev/null |
+        awk -v b="$(mac_bundle_id "$1")" -v t="$1" -v tag="$_mw_tag" -v ex="${3:-}" '
+            BEGIN { if (ex != "") while ((getline l < ex) > 0) skip[l] = 1 }
+            NR == 1 || ($1 in skip) { next }
+            (b != "" && ($2 == b || $2 == b ".dev")) || index(tolower($3), t) == 1 {
+                if (tag == "" || index($0, tag) > 0) print $1
+            }' |
+        sort -n | tail -1
 }
 
 # `FindWindowW(<클래스>, <제목>)` 로 찾을 대상의 창 클래스 / 제목. 둘 다 있어야 쓴다.
