@@ -93,7 +93,14 @@ trap cleanup EXIT
 PRODUCER="$WORK_DIR/memory-child.sh"
 cat > "$PRODUCER" << EOF
 #!/bin/sh
-set -- \$(stty size 2>/dev/null)
+# 목표 격자가 될 때까지 (최대 5 초) 기다린다 — Terminal.app 은 wrapper 의 escape sequence 로 창을
+# 키우는데, 그것이 적용되기 전에 읽으면 120x30 을 본다 (2026-10-13 실측). producer 의 grid wait 와 같다.
+_i=0
+while [ "\$_i" -lt 50 ]; do
+    set -- \$(stty size 2>/dev/null)
+    [ "\${2:-0}x\${1:-0}" = "\$TILDAZ_STRESS_GRID" ] && break
+    sleep 0.1; _i=\$((_i + 1))
+done
 printf 'cols=%s\nrows=%s\n' "\${2:-0}" "\${1:-0}" > "\$TILDAZ_STRESS_TIMING_FILE"
 while [ ! -e "\$TILDAZ_STRESS_TIMING_FILE.go" ]; do sleep 0.2; done
 awk 'BEGIN { s = sprintf("%93s", ""); gsub(/ /, "x", s); for (i = 0; i < $FILL_LINES; i++) printf "%06d %s\n", i, s }'
@@ -159,7 +166,7 @@ run_terminal() {
                     _m2=$(measure_field "$_main" 3); _c0=$(measure_field "$_main" 4)
                     sleep "$IDLE_SEC"
                     _c1=$(measure_field "$_main" 4)
-                    printf '%s\t%s\t%s\t%s\t%s\n' "$_m1" "$_m2" "$_c0" "$_c1" "$_procs" >> "$WORK_DIR/$_name.samples"
+                    printf '%s\t%s\t%s\t%s\t%s\t%sx%s\n' "$_m1" "$_m2" "$_c0" "$_c1" "$_procs" "$_cols" "$_rows" >> "$WORK_DIR/$_name.samples"
                     _mark='.'
                 else
                     _mark='!'
@@ -170,6 +177,10 @@ run_terminal() {
         kill "$_pid" 2>/dev/null || true
         wait "$_pid" 2>/dev/null || true
         cleanup_terminals "$_name"
+        # 깨운 Terminal.app · iTerm2 는 **회차마다 종료한다.** 창만 닫으면 앱이 떠 있어서, 다음 회차는
+        # 본체가 "측정 전부터 있던 프로세스" 로 걸러져 못 찾고 (2026-10-13 실측 — 2 · 3 회차 `?`),
+        # 찾는다 해도 앞 회차의 흔적이 남은 앱을 잰다. 다른 대상은 회차마다 새 프로세스다.
+        mac_app_quit_woken || true
         sleep 1
         _run=$((_run + 1))
     done
@@ -206,6 +217,9 @@ while IFS="$(printf '\t')" read -r name cols rows; do
         printf '%-14s %12s %12s %10s %8s %10s  %s\n' "$name" - - - 0 "${cols}x${rows}" "측정 실패${_note:+ · $_note}"
         continue
     fi
+    # 회차 하나라도 격자가 어긋났으면 적는다 — 마지막 회차만 보면 중간 회차를 놓친다.
+    _bad=$(awk -F '\t' -v g="${COLS}x${ROWS}" '$6 != g' "$_s" | wc -l | tr -d ' ')
+    [ "$_bad" -gt 0 ] && _note="${_note:+$_note · }격자가 어긋난 회차 $_bad"
     awk -F '\t' -v name="$name" -v grid="${cols}x${rows}" -v note="$_note" -v idle="$IDLE_SEC" '
         function med(a, n,   i, j, t) {
             for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) if (a[j] < a[i]) { t = a[i]; a[i] = a[j]; a[j] = t }
