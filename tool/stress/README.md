@@ -49,7 +49,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`measure-idle-latency.sh`](measure-idle-latency.sh) | **유휴 깨우기 지연** — 입력 없이 PTY 출력이 화면에 닿기까지 | Linux · macOS · Windows (Git Bash) |
 | [`measure-idle-cstates_linux.sh`](measure-idle-cstates_linux.sh) · [`measure-idle-power_linux.sh`](measure-idle-power_linux.sh) | **유휴 절전 대가** — core-idle 잔류율 · 패키지 전력 | Linux |
 | [`hygiene.sh`](hygiene.sh) | 위 셸 스크립트들이 **공유하는 측정 위생** — 검사 · 준비 · 복원 (유휴 절전 도구 둘은 worker 종료만 써요) | 실행 파일이 아니라 `.` 로 읽어요 |
-| [`compare-latency.sh`](compare-latency.sh) · [`compare-memory.sh`](compare-memory.sh) · [`compare-startup.sh`](compare-startup.sh) | 다른 터미널과 **키 → 화면 지연 · 메모리 · 유휴 CPU · 시작 시간** 을 같은 대상으로 견줌 ([#756](https://github.com/ensky0/tildaz/issues/756), 아래 절) | 지연 · 메모리는 macOS · Linux (KDE Plasma), 시작 시간은 **macOS 만** |
+| [`compare-latency.sh`](compare-latency.sh) · [`compare-memory.sh`](compare-memory.sh) · [`compare-startup.sh`](compare-startup.sh) | 다른 터미널과 **키 → 화면 지연 · 메모리 · 유휴 CPU · 시작 시간** 을 같은 대상으로 견줌 ([#756](https://github.com/ensky0/tildaz/issues/756), 아래 절) | macOS · Linux (KDE Plasma) |
 | [`terminals.sh`](terminals.sh) | 비교 대상 터미널을 **띄우고 닫는 코드** — 대상 목록 · 격자 · scrollback 맞추기 · 정리 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
@@ -2231,8 +2231,7 @@ JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본
 
 ## 다른 터미널과 견주기 — 지연 · 메모리 · 시작 시간 ([#756](https://github.com/ensky0/tildaz/issues/756))
 
-처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **지연 · 메모리는 macOS 와 Linux 의 KDE Plasma**, 시작
-시간은 **macOS 만** 돼요. Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
+처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **macOS 와 Linux 의 KDE Plasma** 에서 돼요. Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
 [`terminals.sh`](terminals.sh) 예요.
 
 ```sh
@@ -2251,7 +2250,8 @@ tool/stress/compare-startup.sh --repeat 5                 # 시작 시간 (3 분
 | 메모리 (macOS) | `phys_footprint` 합 (Activity Monitor 의 "메모리" 열) — 빈 화면 · scrollback 을 40,000 줄로 채운 뒤 | [`proc-usage_macos.c`](../proc-usage_macos.c) |
 | 메모리 (Linux) | **PSS** 합 (`/proc/<pid>/smaps_rollup` — 공유 페이지를 나눠 센다). 본체는 KWin 이 알려 준 창 주인이에요. macOS 와 재는 것이 달라 OS 사이에 견주지 않아요 | [`proc-usage_linux.py`](../proc-usage_linux.py) |
 | 유휴 CPU | 채운 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 (한 코어 = 100 %) | 〃 |
-| 시작 시간 | `open` 으로 실행한 순간 → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임 | [`startup-to-screen_macos.m`](../startup-to-screen_macos.m) |
+| 시작 시간 (macOS) | `open` 으로 실행한 순간 → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임 | [`startup-to-screen_macos.m`](../startup-to-screen_macos.m) |
+| 시작 시간 (Linux · KDE) | 앱의 `.desktop` 을 `kioclient exec` 로 연 순간 → 마젠타가 보인 첫 프레임이 측정기에 **도착한** 시각 | [`startup-to-screen_linux.c`](../startup-to-screen_linux.c) |
 
 **"그 터미널의 프로세스"** 는 본체 · 본체의 자손 · 같은 앱 번들 안의 프로세스예요. 셸 쪽
 (`/bin` · `/usr/bin` · `/usr/sbin`, 이름이 셸 · `login`) 은 빼요. 정의와 근거는 `proc-usage_macos.c`
@@ -2308,6 +2308,11 @@ kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 �
   안 빠져서 처음 판이 그것을 터미널 몫으로 셌어요. `.sh` 로 끝나는 이름도 빼요 (`proc-usage_linux.py`).
 - **GNOME Terminal 의 scrollback 은 사용자 프로필 값이에요** (기본 10,000 줄). 채운 뒤 메모리가 다른 대상보다
   훨씬 작게 나와도 조건이 달라서예요 — 표에 그렇게 적어요.
+- **시작 시간은 앱의 `.desktop` 을 복사해 `Exec` 만 바꾸고 KDE 런처로 열어요** (2026-10-13 사용자 결정 —
+  메뉴 · 런처로 여는 길). 나머지 키 (`StartupNotify` 등) 는 그대로예요. `[Desktop Action]` 절과 그것을 가리키는
+  `Actions=` 는 빼요. 실행 권한을 줘요 — 표준 위치 밖의 실행 권한 없는 `.desktop` 을 KIO 가 신뢰하지 않아요.
+- **시작 시간의 Konsole 은 사용자 기본 설정으로 떠서 끝날 때 상태 파일에 줄을 더해요**
+  (`RestorePositionForNextInstance=false`). `compare-startup.sh` 가 시작 전에 백업하고 끝나면 되돌려요.
 - KWin 의 `loadScript` 는 `(s)` · `(ss)` 두 판이 있어서 python-dbus 가 introspection 으로 앞의 것을 골라요.
   시그니처를 직접 줘요.
 - **WezTerm 은 stable 20240203 으로 재요** (#756 결정). 배포판 패키지가 git 판이면 GitHub 릴리즈의 AppImage 를
