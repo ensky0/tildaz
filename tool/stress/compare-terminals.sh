@@ -172,7 +172,7 @@ terminals_init
 # ⚠️ 각 단계를 `|| true` 로 끊어 준다. `set -e` 아래에서는 앞 단계가 non-zero 를 돌려주면
 # **거기서 trap 이 끊겨** 뒤가 통째로 안 돈다 — 실제로 `hygiene_end` 가 실행되지 않아 창이
 # 내려간 채로 남았다 (실측). 복원은 하나라도 빠지면 사용자 환경이 바뀐 채 끝난다.
-trap 'cleanup_terminals || true; wt_fragment_remove || true; wt_stub_remove || true; iterm2_profile_remove || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
+trap 'terminals_cleanup_all || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
