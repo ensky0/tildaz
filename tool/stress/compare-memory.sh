@@ -11,10 +11,12 @@
 #      (32,767) 을 넘겨 모든 대상이 꽉 찬 상태가 된다. 3 초 뒤 **채운 뒤 메모리**.
 #   4. 그 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 → **유휴 CPU %** (한 코어 = 100 %).
 #
-# - 메모리 · CPU 시간을 읽는 쪽과 "그 터미널의 프로세스" 의 정의는 `tool/proc-usage_macos.c` 머리
-#   주석에 있다 — 본체 · 자손 · 같은 앱 번들 안의 프로세스, 셸 쪽은 뺀다.
+# - 메모리 · CPU 시간을 읽는 쪽과 "그 터미널의 프로세스" 의 정의는 `tool/proc-usage_macos.c` ·
+#   `tool/proc-usage_linux.py` 머리 주석에 있다 — 본체 · 자손 (macOS 는 같은 앱 번들 안도), 셸 쪽은 뺀다.
+# - 메모리는 macOS 가 `phys_footprint`, Linux 가 **PSS** 다. 재는 것이 달라 OS 사이에 견주지 않는다.
 # - **커서는 숨기지 않는다.** 각 터미널의 기본 동작 (깜빡임 등) 이 사용자가 보는 유휴 상태다.
-# - **지금은 macOS 만** 된다. Linux (`/proc/<pid>/smaps_rollup`) · Windows 는 아직 없다 (#756).
+# - **macOS 와 Linux 의 KDE Plasma 만** 된다. Linux 는 본체 (창 주인) 와 포커스 클릭을 KWin 에 묻는다
+#   (`tool/kwin-window_linux.py`). Windows 는 아직 없다 (#756).
 # - 대상을 띄우고 닫는 코드는 처리량 · 지연과 같다 (`terminals.sh`).
 
 set -eu
@@ -58,11 +60,17 @@ done
 
 . "$REPO_ROOT/tool/stress/terminals.sh"
 
-if [ "$IS_MACOS" != 1 ]; then
-    echo "지금은 macOS 만 돼요 — Linux · Windows 의 메모리 · CPU 측정은 아직 없어요 (#756)." >&2
+IS_KDE=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; esac
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || [ "$IS_KDE" != 1 ]; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
-command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
+if [ "$IS_MACOS" = 1 ]; then
+    command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
+else
+    python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
+fi
 
 terminals_init
 RESULTS="$WORK_DIR/results"
@@ -70,11 +78,17 @@ RESULTS="$WORK_DIR/results"
 
 PROC_USAGE="$WORK_DIR/proc-usage"
 MAC_INPUT="$WORK_DIR/mac-input"
+if [ "$IS_MACOS" = 1 ]; then
 clang -O2 -o "$PROC_USAGE" "$REPO_ROOT/tool/proc-usage_macos.c" ||
     { echo "proc-usage 컴파일 실패." >&2; exit 1; }
 clang -O2 -Wno-deprecated-declarations -framework ApplicationServices -framework Carbon \
       -o "$MAC_INPUT" "$REPO_ROOT/tool/input_macos.m" ||
     { echo "mac-input 컴파일 실패." >&2; exit 1; }
+else
+    # 출력 형식이 macOS 판과 같다 (`measure` 의 `total <개수> <byte> <ns>`). 아래 `measure_field` 가 그대로 쓴다.
+    printf '#!/bin/sh\nexec python3 "%s" "$@"\n' "$REPO_ROOT/tool/proc-usage_linux.py" > "$PROC_USAGE"
+    chmod +x "$PROC_USAGE"
+fi
 
 cleanup() {
     terminals_cleanup_all || true
@@ -83,8 +97,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 포커스 클릭에 손쉬운 사용 권한이 필요하다 (`input_macos.m` 머리 주석).
-"$MAC_INPUT" check || exit 1
+# 포커스 클릭에 손쉬운 사용 권한이 필요하다 (`input_macos.m` 머리 주석). Linux 는 /dev/uinput 이다.
+if [ "$IS_MACOS" = 1 ]; then
+    "$MAC_INPUT" check || exit 1
+else
+    python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK))" 2>/dev/null ||
+        { echo "/dev/uinput 을 못 열어요 (권한 · 모듈)." >&2; exit 1; }
+fi
 
 # --- 터미널 안에서 도는 프로그램 ---
 #
@@ -101,7 +120,8 @@ while [ "\$_i" -lt 50 ]; do
     [ "\${2:-0}x\${1:-0}" = "\$TILDAZ_STRESS_GRID" ] && break
     sleep 0.1; _i=\$((_i + 1))
 done
-printf 'cols=%s\nrows=%s\n' "\${2:-0}" "\${1:-0}" > "\$TILDAZ_STRESS_TIMING_FILE"
+# \`pid\` 는 Linux 가 창 주인을 찾는 데 쓴다 (\`tool/kwin-window_linux.py\`).
+printf 'cols=%s\nrows=%s\npid=%s\n' "\${2:-0}" "\${1:-0}" "\$\$" > "\$TILDAZ_STRESS_TIMING_FILE"
 while [ ! -e "\$TILDAZ_STRESS_TIMING_FILE.go" ]; do sleep 0.2; done
 awk 'BEGIN { s = sprintf("%93s", ""); gsub(/ /, "x", s); for (i = 0; i < $FILL_LINES; i++) printf "%06d %s\n", i, s }'
 echo filled=1 >> "\$TILDAZ_STRESS_TIMING_FILE"
@@ -147,8 +167,21 @@ run_terminal() {
             _cols=$(sed -n 's/^cols=//p' "$_timing")
             _rows=$(sed -n 's/^rows=//p' "$_timing")
             mac_close_woken_extras "$_name"
-            _main=$("$PROC_USAGE" find "$(mac_proc_path_of "$_name")" "$WORK_DIR/before" 2>/dev/null || true)
-            if [ "$VERBOSE" = 1 ]; then
+            if [ "$IS_MACOS" = 1 ]; then
+                _main=$("$PROC_USAGE" find "$(mac_proc_path_of "$_name")" "$WORK_DIR/before" 2>/dev/null || true)
+            else
+                # 창 주인이 본체다 — 활성화하고 가운데를 한 번 누른다 (포커스는 아래 macOS 의 `focus` 와 같은 자리).
+                _geo=""
+                _t=0
+                while [ -z "$_geo" ] && [ "$_t" -lt 20 ]; do
+                    _geo=$(python3 "$REPO_ROOT/tool/kwin-window_linux.py" --child-pid "$(sed -n 's/^pid=//p' "$_timing")" \
+                        --activate --click 2>/dev/null || true)
+                    [ -n "$_geo" ] || { sleep 0.25; _t=$((_t + 1)); }
+                done
+                _main=$(printf '%s' "$_geo" | sed -n 's/.* pid=\([0-9]*\).*/\1/p')
+                [ "$VERBOSE" = 1 ] && echo "  [$_name] 창: ${_geo:-(없음)}" >&2
+            fi
+            if [ "$VERBOSE" = 1 ] && [ "$IS_MACOS" = 1 ]; then
                 echo "" >&2
                 echo "  [$_name] 본체 pid: ${_main:-(없음)} · 같은 이름의 프로세스:" >&2
                 ps -axo pid=,ppid=,lstart=,comm= | grep -F "$(mac_proc_path_of "$_name")" | grep -v grep | sed 's/^/    /' >&2 || true
@@ -157,7 +190,8 @@ run_terminal() {
             if [ -z "$_main" ]; then
                 _mark='?'
             else
-                "$MAC_INPUT" focus "$_main" >/dev/null 2>&1 || true
+                [ "$IS_MACOS" = 1 ] && { "$MAC_INPUT" focus "$_main" >/dev/null 2>&1 || true; }
+                [ "$VERBOSE" = 1 ] && [ "$IS_MACOS" != 1 ] && "$PROC_USAGE" measure "$_main" 2>&1 | sed 's/^/    measure: /' >&2
                 sleep 3
                 _procs=$(measure_field "$_main" 2); _m1=$(measure_field "$_main" 3)
                 touch "$_timing.go"
@@ -199,7 +233,7 @@ hygiene_check || {
     }
 }
 hygiene_begin
-HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
+[ "$IS_MACOS" = 1 ] && HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
 echo "위생   $(hygiene_status)"
 echo ""
 
@@ -230,4 +264,9 @@ while IFS="$(printf '\t')" read -r name cols rows; do
     ' "$_s"
 done < "$RESULTS"
 echo ""
-echo "메모리 = phys_footprint 합 (Activity Monitor 의 \"메모리\" 열과 같은 값). 셸 쪽 프로세스는 뺐다."
+if [ "$IS_MACOS" = 1 ]; then
+    echo "메모리 = phys_footprint 합 (Activity Monitor 의 \"메모리\" 열과 같은 값). 셸 쪽 프로세스는 뺐다."
+else
+    echo "메모리 = PSS 합 (/proc/<pid>/smaps_rollup — 공유 페이지를 나눠 센다). 셸 쪽 프로세스는 뺐다."
+    echo "재는 것이 macOS 와 달라 OS 사이에 견주지 않아요."
+fi
