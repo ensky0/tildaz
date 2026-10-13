@@ -114,7 +114,13 @@ PRODUCER="$WORK_DIR/latency-child.sh"
 cat > "$PRODUCER" << 'EOF'
 #!/bin/sh
 printf '\033[?25l'
-set -- $(stty size 2>/dev/null)
+# 목표 격자가 될 때까지 (최대 5 초) 기다린다 — `compare-memory.sh` 의 같은 자리 주석 참고.
+_i=0
+while [ "$_i" -lt 50 ]; do
+    set -- $(stty size 2>/dev/null)
+    [ "${2:-0}x${1:-0}" = "$TILDAZ_STRESS_GRID" ] && break
+    sleep 0.1; _i=$((_i + 1))
+done
 printf 'cols=%s\nrows=%s\n' "${2:-0}" "${1:-0}" > "$TILDAZ_STRESS_TIMING_FILE"
 while IFS= read -r _line; do :; done
 EOF
