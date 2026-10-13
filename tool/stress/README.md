@@ -49,7 +49,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`measure-idle-latency.sh`](measure-idle-latency.sh) | **유휴 깨우기 지연** — 입력 없이 PTY 출력이 화면에 닿기까지 | Linux · macOS · Windows (Git Bash) |
 | [`measure-idle-cstates_linux.sh`](measure-idle-cstates_linux.sh) · [`measure-idle-power_linux.sh`](measure-idle-power_linux.sh) | **유휴 절전 대가** — core-idle 잔류율 · 패키지 전력 | Linux |
 | [`hygiene.sh`](hygiene.sh) | 위 셸 스크립트들이 **공유하는 측정 위생** — 검사 · 준비 · 복원 (유휴 절전 도구 둘은 worker 종료만 써요) | 실행 파일이 아니라 `.` 로 읽어요 |
-| [`compare-latency.sh`](compare-latency.sh) · [`compare-memory.sh`](compare-memory.sh) · [`compare-startup.sh`](compare-startup.sh) | 다른 터미널과 **키 → 화면 지연 · 메모리 · 유휴 CPU · 시작 시간** 을 같은 대상으로 견줌 ([#756](https://github.com/ensky0/tildaz/issues/756), 아래 절) | **지금은 macOS 만** |
+| [`compare-latency.sh`](compare-latency.sh) · [`compare-memory.sh`](compare-memory.sh) · [`compare-startup.sh`](compare-startup.sh) | 다른 터미널과 **키 → 화면 지연 · 메모리 · 유휴 CPU · 시작 시간** 을 같은 대상으로 견줌 ([#756](https://github.com/ensky0/tildaz/issues/756), 아래 절) | 지연은 macOS · Linux (KDE Plasma), 나머지는 **macOS 만** |
 | [`terminals.sh`](terminals.sh) | 비교 대상 터미널을 **띄우고 닫는 코드** — 대상 목록 · 격자 · scrollback 맞추기 · 정리 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
@@ -1595,7 +1595,7 @@ tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 
 | platform | 자동으로 도는 대상 |
 |---|---|
-| Linux | TildaZ · alacritty · kitty · wezterm · ghostty · **foot** |
+| Linux | TildaZ · alacritty · kitty · wezterm · ghostty · **foot** · **Konsole** · **GNOME Terminal** · **COSMIC Terminal** |
 | macOS | TildaZ · alacritty · kitty · wezterm · ghostty · **iTerm2** · **Terminal.app** |
 | Windows | TildaZ · alacritty · wezterm · **Windows Terminal (`wt`)** · **conhost** |
 
@@ -2183,6 +2183,10 @@ macOS · Linux 는 `wezterm` 을 그대로 쓰되 `--always-new-process` 는 똑
 | wezterm | `--config scrollback_lines=N` |
 | kitty | `-o scrollback_lines=N` |
 | ghostty | 임시 config 의 `scrollback-limit = N` |
+| foot | `-o scrollback.lines=N` — **빠뜨리면 기본 1,000 줄**이에요. #756 전의 Linux 측정은 그 조건이었어요 |
+| Konsole | `-p HistoryMode=1 -p HistorySize=N` (`1` = 고정 크기). 격자는 `-p TerminalColumns` · `TerminalRows` 인데 **"창 크기 기억" 이 켜져 있으면 무시돼요** — 아래 Konsole 항목 |
+| **GNOME Terminal** | **불가** — 프로필 (dconf) 설정이라 CLI 통로가 없어요. **사용자 프로필 값이 쓰여요** (스크립트가 매 실행에 경고해요). 격자는 `--geometry` 로 맞아요 |
+| **COSMIC Terminal** | **불가** — 1.9.0 은 `scrolling_history: 100_000` 고정이고 창 크기 옵션도 없어요 (`main.rs`). **격자도 안 맞아서** 처리량 표에서는 `그리드 불일치` 로 빠져요 (2026-10-13 이 기기 `118x35`) |
 | **wt** | **CLI 로 못 줘요** — profile 설정이에요. 스크립트가 **JSON fragment** 로 측정용 프로필을 더해서 거기에 담아요 (아래) |
 | **conhost** | **불가** — `mode con: lines` 가 창=버퍼예요. **이 대상만 조건이 달라요** (스크립트가 매 실행에 경고해요) |
 | **Terminal.app** | **불가** — AppleScript 에 크기 속성이 없어요 (`history` 는 내용 읽기 전용). **사용자 프로파일 값이 쓰여요** — conhost 와 달리 머신마다 값이 달라서 재현성도 떨어져요 (스크립트가 매 실행에 경고해요) |
@@ -2227,8 +2231,8 @@ JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본
 
 ## 다른 터미널과 견주기 — 지연 · 메모리 · 시작 시간 ([#756](https://github.com/ensky0/tildaz/issues/756))
 
-처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **지금은 macOS 만** 돼요 — Linux · Windows 는
-측정기 (화면 캡처 · 메모리 읽기) 가 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
+처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **지연은 macOS 와 Linux 의 KDE Plasma**, 메모리 · 시작
+시간은 **macOS 만** 돼요. Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
 [`terminals.sh`](terminals.sh) 예요.
 
 ```sh
@@ -2242,7 +2246,8 @@ tool/stress/compare-startup.sh --repeat 5                 # 시작 시간 (3 분
 
 | 지표 | 무엇을 재나 | 측정기 |
 |---|---|---|
-| 키 → 화면 | 합성 키 `a` 를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 **표시 시각**. 유휴 상태 | [`key-to-screen_macos.m`](../key-to-screen_macos.m) `--focus` |
+| 키 → 화면 (macOS) | 합성 키 `a` 를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 **표시 시각**. 유휴 상태 | [`key-to-screen_macos.m`](../key-to-screen_macos.m) `--focus` |
+| 키 → 화면 (Linux · KDE) | 합성 키 `a` (uinput) 를 보낸 순간 → 그 창 영역이 처음 바뀐 프레임이 측정기에 **도착한 시각** (portal ScreenCast). 유휴 상태 | [`key-to-screen_linux.c`](../key-to-screen_linux.c) · [`screencast-portal_linux.py`](../screencast-portal_linux.py) · [`kwin-window_linux.py`](../kwin-window_linux.py) |
 | 메모리 | `phys_footprint` 합 (Activity Monitor 의 "메모리" 열) — 빈 화면 · scrollback 을 40,000 줄로 채운 뒤 | [`proc-usage_macos.c`](../proc-usage_macos.c) |
 | 유휴 CPU | 채운 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 (한 코어 = 100 %) | 〃 |
 | 시작 시간 | `open` 으로 실행한 순간 → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임 | [`startup-to-screen_macos.m`](../startup-to-screen_macos.m) |
@@ -2264,6 +2269,44 @@ Dock · Spotlight 로 여는 길이에요. 처리량 · 지연의 AppleScript �
 |---|---|---|
 | Settings → General → Closing 의 **Confirm "Quit iTerm2" Command 끄기** | 측정이 깨운 iTerm2 를 끝날 때 종료해요 | *"Quit iTerm2?"* 에서 멈추고, 다음 실행이 위생 검사에 걸려요 |
 | 스크립트 파일을 열 때의 **"OK to run …?" 경고에서 *Suppress this message permanently*** | 시작 시간은 `open -a iTerm <스크립트>` 로 띄워요 | 경고 창에서 멈춰 `timeout` 이 나요 |
+
+### Linux 키 → 화면 — 재는 끝점이 macOS 와 달라요
+
+**macOS 표와 절대값을 견주지 않아요** (2026-10-13 사용자 결정). KWin 6.7.5 의 스크린캐스트에는 "화면에 표시된
+시각" 이 없어요. 화면 스트림은 KWin 이 자기 장면을 따로 그려 보내고, 붙는 `pts` 는 출력의 **지난** 표시
+시각이에요 (`outputscreencastsource.cpp` 의 `renderLoop()->lastPresentationTimestamp()`). 그래서 프레임이 측정기에
+도착한 시각을 써요 — "앱이 그림을 넘기기까지 + KWin 이 캡처를 그려 보내는 비용" 이에요. 같은 DE 표 안에서
+대상끼리 견주는 데는 공정해요.
+
+**처음 한 번 화면 공유 권한 창이 떠요. 미리 알리고 시작해요.** 고를 것은 하나예요.
+
+- **화면 전체 하나** (노트북이면 내장 화면). 영역 · 창은 고르지 않아요 — 측정기는 화면 전체를 받아 창
+  영역만 잘라 봐요. 다른 것을 고르면 측정기가 `스트림이 …x… 예요 — 화면 전체가 아니에요` 로 멈춰요.
+- "기억" 같은 체크가 있으면 켜요. 받은 토큰을 `$XDG_STATE_HOME/tildaz-bench/screencast.token` 에 두고 다음
+  실행에 써서 창이 다시 안 떠요. **잘못 골랐으면 그 파일을 지워요** — 지우지 않으면 다음 실행도 같은 선택을
+  조용히 써요.
+
+창 영역은 KWin 스크립트가 알려 줘요 (`kwin-window_linux.py`). 터미널 안 프로그램의 **조상 pid** 로 창을 찾아서
+kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 주인이 다른 대상도 같은 규칙으로 잡혀요.
+포커스는 창 가운데를 절대좌표 uinput 포인터로 한 번 눌러 잡아요 — layer-shell 창 (TildaZ) 은 띄우기만 해서는
+키보드 포커스를 안 받아요.
+
+### 함정 — Linux 에서 밟은 것 (2026-10-13 · 노트북 AMD Ryzen AI 7 350 · KDE Plasma 6.7.5)
+
+- **Konsole 은 "창 크기 기억" 이 켜져 있으면 프로필의 격자를 무시해요.** `RememberWindowSize` 기본값이 켜짐이고
+  `~/.local/state/konsolestaterc` 에 저장된 크기가 있으면 `-p TerminalColumns` 가 안 먹어요 (26.08.2
+  `MainWindow::showEvent`). 처음 회차가 `110x28` 이었어요. 측정용 Konsole 에만 빈 `XDG_STATE_HOME` 을 줘서
+  고쳤어요 — 끝날 때 측정 창 크기가 사용자 상태 파일에 저장되지도 않아요 (전후 파일이 바이트 단위로 같았어요).
+- **`gnome-terminal-server` 는 `pgrep -x` 로 못 찾아요.** 이름이 15 자를 넘어 커널 `comm` 이 `gnome-terminal-`
+  로 잘려요. 위생 검사가 잘린 이름으로 봐요.
+- **스트림 크기의 기본값을 아무렇게나 주면 KWin 이 그 크기로 늘려 보내요.** 처음 판이 기본 1920x1080 을 줘서
+  2880x1800 화면이 16:9 로 찌그러진 채 왔어요. 지금은 기본값이 화면의 물리 크기이고, 비율이 다르면 멈춰요.
+- **fcitx5 는 영문 모드여도 키를 가로채요** (AGENTS.md 의 입력기 함정). 측정 동안 내렸다가 끝나면 되살려요.
+  되살린 fcitx5 가 KDE 배열 목록을 자기 `Default Layout` 하나로 덮어써서, **배열이 둘 이상이면 시작을 거부해요.**
+- KWin 의 `loadScript` 는 `(s)` · `(ss)` 두 판이 있어서 python-dbus 가 introspection 으로 앞의 것을 골라요.
+  시그니처를 직접 줘요.
+- **WezTerm 은 stable 20240203 으로 재요** (#756 결정). 배포판 패키지가 git 판이면 GitHub 릴리즈의 AppImage 를
+  `--appimage-extract` 로 풀고 `PATH` 앞에 두어요 (`wezterm` · `wezterm-gui` 둘 다).
 
 ### 함정 — 이번에 실제로 밟은 것 (2026-10-13 macOS)
 
