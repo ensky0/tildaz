@@ -1700,6 +1700,25 @@ conhost 와 같은 처지이긴 한데 **성격이 조금 달라요** — conhos
 적어도 재현은 되는데, Terminal.app 은 **머신마다 값이 달라요.** 조건이 다를 뿐 아니라 재현성도
 떨어진다는 뜻이라, 이 대상의 숫자는 그 점을 알고 읽어야 해요.
 
+#### 측정이 깨운 Terminal.app · iTerm2 는 끝날 때 종료해요 — iTerm2 는 종료 확인을 꺼 둬요
+
+두 앱은 이미 떠 있는 프로세스에 창을 붙이는 방식이라, 꺼져 있던 앱은 측정이 깨워요. 그때 앱이
+**스스로 기본 창 (로그인 셸) 을 하나 열어요.** 우리 태그가 없는 창이라 위의 창 정리가 닫지 않아요.
+앱이 그 창과 함께 남으면 **다음 실행의 위생 검사가 "대상 터미널이 떠 있다" 로 멈춰요.** 워크로드를
+이어서 재면 두 번째부터 멈췄어요 (2026-10-13 macOS 실기 — 두 앱에 `-bash` 창이 하나씩 남았어요,
+[#756](https://github.com/ensky0/tildaz/issues/756)).
+
+그래서 스크립트가 끝날 때 **측정이 깨운 앱만** 종료해요 (`terminals.sh` 의 `mac_app_quit_woken`).
+띄우기 직전에 떠 있지 않았던 앱만 대상이라, `--ignore-hygiene` 로 돌릴 때 사용자가 쓰던 앱은
+건드리지 않아요.
+
+**⚠ iTerm2 는 측정 기기에서 종료 확인을 꺼 둬요.** 기본 설정이면 종료할 때 *"Quit iTerm2?"*
+확인 창이 떠서 스스로 안 닫혀요. **Settings → General → Closing** 의 **Confirm "Quit iTerm2"
+Command** 를 꺼요 ([iTerm2 문서](https://iterm2.com/documentation-preferences-general.html)).
+스크립트가 사용자 설정을 바꾸지 않는 원칙이라 (위 Dynamic Profiles 와 같은 이유) 손으로 한 번 꺼
+둬요. 5 초 안에 안 끝나면 스크립트가 경고를 찍어요. Terminal.app 은 로그인 셸만 있는 창이면 묻지
+않았어요 (실측).
+
 **전부 자동이에요.** TildaZ 도 스크립트가 직접 띄워요 — 측정용 실행 옵션 `-e <실행파일>` ·
 `-size <COLS>x<ROWS>` 를 [#382](https://github.com/ensky0/tildaz/issues/382) 에서 만들었어요.
 그 전에는 TildaZ 만 손으로 재야 했어요 (로그의 셀 크기로 퍼센트를 역산 → config 수정 →

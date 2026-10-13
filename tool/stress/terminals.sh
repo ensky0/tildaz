@@ -148,6 +148,43 @@ mac_app_unhide() {
         >/dev/null 2>&1 || true
 }
 
+# 측정이 **깨운** 앱은 끝날 때 종료한다 (#756). macOS 전용이다.
+#
+# Terminal.app · iTerm2 는 이미 떠 있는 프로세스에 창을 붙이는 방식이라, 꺼져 있던 앱은 측정이
+# 깨운다. 그때 앱이 **스스로 기본 창 (로그인 셸) 을 하나 연다** — 우리가 단 태그가 없어서
+# `terminal_app_close` · `iterm2_window_close` 가 닫지 않는다. 앱이 그 창과 함께 남으면 **다음
+# 실행의 위생 검사가 "대상 터미널이 떠 있다" 로 멈춘다** (`hygiene.sh`). 워크로드를 이어서 재면
+# 두 번째에서 멈추던 원인이다 (2026-10-13 macOS 실기 — 두 앱에 `-bash` 창이 하나씩 남았다).
+#
+# **띄우기 직전에 떠 있지 않았던 앱만** 종료한다 (`*_APP_WOKE`). 위생 검사가 시작 때 두 앱이
+# 꺼져 있음을 보장하지만, `--ignore-hygiene` 실행에서는 사용자가 쓰던 앱일 수 있다.
+#
+# **iTerm2 는 기본 설정이면 `quit` 에 "Quit iTerm2?" 확인 창을 띄워 멈춘다.** 측정 기기에서는
+# Settings → General → Closing 의 *Confirm "Quit iTerm2" Command* 를 꺼 둔다 (`README.md` 의
+# iTerm2 절). Terminal.app 은 로그인 셸만 있는 창이면 묻지 않는다 (실측).
+#
+# 종료가 끝날 때까지 기다린다 — 바로 이어지는 실행의 위생 검사가 아직 지워지는 중인 프로세스를
+# 볼 수 있다.
+TERMINAL_APP_WOKE=0
+ITERM_APP_WOKE=0
+mac_app_quit() {
+    # $1 = AppleScript 의 앱 이름, $2 = 프로세스 이름 (iTerm2 는 둘이 다르다)
+    osascript -e "tell application \"$1\" to quit" >/dev/null 2>&1 || true
+    _q=0
+    while pgrep -x "$2" >/dev/null 2>&1 && [ "$_q" -lt 20 ]; do
+        sleep 0.25
+        _q=$((_q + 1))
+    done
+    if pgrep -x "$2" >/dev/null 2>&1; then
+        echo "⚠ 측정이 깨운 $1 이 5 초 안에 안 끝났어요 — 확인 창이 떠 있는지 봐요 (README 의 iTerm2 절)." >&2
+    fi
+}
+mac_app_quit_woken() {
+    [ "$TERMINAL_APP_WOKE" = 1 ] && mac_app_quit Terminal Terminal
+    [ "$ITERM_APP_WOKE" = 1 ] && mac_app_quit iTerm iTerm2
+    return 0
+}
+
 cleanup_terminals() {
     # 회차 정리는 그 대상 이름을 준다. EXIT trap 은 안 준다 (아래 참고).
     _ct_name="${1:-}"
@@ -308,6 +345,8 @@ iterm2_profile_remove() {
 # ⚠️ 각 단계를 `|| true` 로 끊는다 — 이유는 `compare-terminals.sh` 의 trap 주석에 있다.
 terminals_cleanup_all() {
     cleanup_terminals || true
+    # 창을 닫은 **뒤에** 앱을 끝낸다 — 측정 창이 남아 있으면 그 셸 때문에 종료를 물을 수 있다.
+    mac_app_quit_woken || true
     wt_fragment_remove || true
     wt_stub_remove || true
     iterm2_profile_remove || true
@@ -597,6 +636,8 @@ EOF
     sleep 2
     # 회차 정리가 이 실행의 창을 닫도록 표시한다 (`iterm2_window_close`).
     ITERM_WINDOW_OPENED=1
+    # 꺼져 있던 앱을 깨우는지 적어 둔다 — 끝날 때 종료한다 (`mac_app_quit_woken`).
+    pgrep -x iTerm2 >/dev/null 2>&1 || ITERM_APP_WOKE=1
     # 창을 만든 **뒤** hide 를 푼다 — 이유는 `mac_app_unhide` 주석에 있다. 순서가 중요하다:
     # 창이 생기기 전에 풀면 그 뒤에 만들어진 창이 다시 안 보이는 상태로 남을 수 있다.
     run_terminal iterm2 osascript \
@@ -629,6 +670,8 @@ if [ "$IS_MACOS" = 1 ] && ! terminal_skip terminal; then
     T="$WORK_DIR/terminal.timing"
     # 태그에 pid 를 넣어 **이 실행이 만든 창만** 고른다. 앞선 실행이 남긴 창이 있어도 안 건드린다.
     TERMINAL_APP_TAG="TildaZ-stress-$$"
+    # 꺼져 있던 앱을 깨우는지 적어 둔다 — 끝날 때 종료한다 (`mac_app_quit_woken`).
+    pgrep -x Terminal >/dev/null 2>&1 || TERMINAL_APP_WOKE=1
     TERMINAL_WRAPPER="$WORK_DIR/terminal-app.sh"
     # heredoc 이 `\033` 은 리터럴로 두고 `${ROWS}` 만 확장한다 (unquoted heredoc 의 백슬래시는
     # `$` · 백틱 · `\` · 개행 앞에서만 특수하다).
