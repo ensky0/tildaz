@@ -1,0 +1,219 @@
+#!/bin/sh
+# 여러 터미널의 **메모리 · 유휴 CPU** 를 같은 잣대로 견준다 (#756).
+#
+#   tool/stress/compare-memory.sh --repeat 3 --idle-sec 30
+#
+# 회차 하나:
+#   1. 대상 창을 띄우고 (깨운 Terminal.app · iTerm2 의 기본 창은 닫는다) **창을 한 번 눌러 포커스를
+#      준다.** 포커스가 있는지에 따라 커서 깜빡임 같은 유휴 동작이 달라져서 모든 대상을 같게 둔다.
+#   2. 3 초 뒤 **빈 화면 메모리**.
+#   3. 터미널 안 프로그램이 100 자 줄을 `--fill-lines` 줄 (기본 40,000) 낸다. scrollback 상한
+#      (32,767) 을 넘겨 모든 대상이 꽉 찬 상태가 된다. 3 초 뒤 **채운 뒤 메모리**.
+#   4. 그 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 → **유휴 CPU %** (한 코어 = 100 %).
+#
+# - 메모리 · CPU 시간을 읽는 쪽과 "그 터미널의 프로세스" 의 정의는 `tool/proc-usage_macos.c` 머리
+#   주석에 있다 — 본체 · 자손 · 같은 앱 번들 안의 프로세스, 셸 쪽은 뺀다.
+# - **커서는 숨기지 않는다.** 각 터미널의 기본 동작 (깜빡임 등) 이 사용자가 보는 유휴 상태다.
+# - **지금은 macOS 만** 된다. Linux (`/proc/<pid>/smaps_rollup`) · Windows 는 아직 없다 (#756).
+# - 대상을 띄우고 닫는 코드는 처리량 · 지연과 같다 (`terminals.sh`).
+
+set -eu
+
+REPEAT=3
+IDLE_SEC=30
+FILL_LINES=40000
+COLS=120
+ROWS=40
+SCROLLBACK=32767
+TIMEOUT=60
+IGNORE_HYGIENE=0
+ONLY=""
+# `--verbose` — 고른 본체 pid 와 `proc-usage measure` 의 프로세스 목록을 찍는다 (진단용).
+VERBOSE=0
+
+REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+. "$REPO_ROOT/tool/stress/hygiene.sh"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --repeat) REPEAT="$2"; shift 2 ;;
+        --idle-sec) IDLE_SEC="$2"; shift 2 ;;
+        --fill-lines) FILL_LINES="$2"; shift 2 ;;
+        --cols) COLS="$2"; shift 2 ;;
+        --rows) ROWS="$2"; shift 2 ;;
+        --scrollback) SCROLLBACK="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
+        # `--only kitty,terminal` — 일부 대상만 돈다 (진단용).
+        --only) ONLY="$2"; shift 2 ;;
+        --verbose) VERBOSE=1; shift ;;
+        --terminal-settings) TERMINAL_APP_SETTINGS="$2"; export TERMINAL_APP_SETTINGS; shift 2 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+for _n in "$REPEAT" "$IDLE_SEC" "$FILL_LINES"; do
+    case "$_n" in ''|*[!0-9]*|0) echo "--repeat · --idle-sec · --fill-lines 는 1 이상의 정수여야 해요: $_n" >&2; exit 2 ;; esac
+done
+
+. "$REPO_ROOT/tool/stress/terminals.sh"
+
+if [ "$IS_MACOS" != 1 ]; then
+    echo "지금은 macOS 만 돼요 — Linux · Windows 의 메모리 · CPU 측정은 아직 없어요 (#756)." >&2
+    exit 2
+fi
+command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
+
+terminals_init
+RESULTS="$WORK_DIR/results"
+: > "$RESULTS"
+
+PROC_USAGE="$WORK_DIR/proc-usage"
+MAC_INPUT="$WORK_DIR/mac-input"
+clang -O2 -o "$PROC_USAGE" "$REPO_ROOT/tool/proc-usage_macos.c" ||
+    { echo "proc-usage 컴파일 실패." >&2; exit 1; }
+clang -O2 -Wno-deprecated-declarations -framework ApplicationServices -framework Carbon \
+      -o "$MAC_INPUT" "$REPO_ROOT/tool/input_macos.m" ||
+    { echo "mac-input 컴파일 실패." >&2; exit 1; }
+
+cleanup() {
+    terminals_cleanup_all || true
+    hygiene_end || true
+    rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
+# 포커스 클릭에 손쉬운 사용 권한이 필요하다 (`input_macos.m` 머리 주석).
+"$MAC_INPUT" check || exit 1
+
+# --- 터미널 안에서 도는 프로그램 ---
+#
+# 준비를 알리고 → `<timing>.go` 가 생길 때까지 기다렸다가 → 줄을 내고 → `filled=1` 을 알리고 →
+# 가만히 있는다. 줄 내기는 `awk` 다 (세 OS 에 다 있다). 100 자라 120 열에서 줄바꿈이 안 일어난다.
+PRODUCER="$WORK_DIR/memory-child.sh"
+cat > "$PRODUCER" << EOF
+#!/bin/sh
+set -- \$(stty size 2>/dev/null)
+printf 'cols=%s\nrows=%s\n' "\${2:-0}" "\${1:-0}" > "\$TILDAZ_STRESS_TIMING_FILE"
+while [ ! -e "\$TILDAZ_STRESS_TIMING_FILE.go" ]; do sleep 0.2; done
+awk 'BEGIN { s = sprintf("%93s", ""); gsub(/ /, "x", s); for (i = 0; i < $FILL_LINES; i++) printf "%06d %s\n", i, s }'
+echo filled=1 >> "\$TILDAZ_STRESS_TIMING_FILE"
+while :; do sleep 60; done
+EOF
+chmod +x "$PRODUCER"
+PRODUCER_ENV=""
+
+terminal_skip() {
+    [ -n "$ONLY" ] || return 1
+    case ",$ONLY," in *",$1,"*) return 1 ;; esac
+    return 0
+}
+
+wait_line() {   # $1 = 파일, $2 = 줄 앞부분
+    _w=0
+    while ! grep -q "^$2" "$1" 2>/dev/null; do
+        sleep 1
+        _w=$((_w + 1))
+        [ "$_w" -ge "$TIMEOUT" ] && return 1
+    done
+    return 0
+}
+
+# `proc-usage measure` 의 마지막 줄 (`total <개수> <메모리 byte> <CPU ns>`) 에서 $2 번째 칸.
+# `set --` 로 나누지 않는다 — `run_terminal` 의 `"$@"` (대상을 띄우는 명령) 을 덮어쓴다.
+measure_field() { "$PROC_USAGE" measure "$1" 2>/dev/null | awk -v f="$2" '$1 == "total" { print $f }'; }
+
+run_terminal() {
+    _name="$1"
+    shift
+    _timing="$WORK_DIR/$_name.timing"
+    printf '%-14s ' "$_name"
+    _cols=0; _rows=0; _procs=0
+    _run=1
+    while [ "$_run" -le "$REPEAT" ]; do
+        rm -f "$_timing" "$_timing.go"
+        ps -axo pid= > "$WORK_DIR/before"
+        "$@" >/dev/null 2>&1 &
+        _pid=$!
+        _mark=x
+        if wait_line "$_timing" rows=; then
+            _cols=$(sed -n 's/^cols=//p' "$_timing")
+            _rows=$(sed -n 's/^rows=//p' "$_timing")
+            mac_close_woken_extras "$_name"
+            _main=$("$PROC_USAGE" find "$(mac_proc_path_of "$_name")" "$WORK_DIR/before" 2>/dev/null || true)
+            if [ "$VERBOSE" = 1 ]; then
+                echo "" >&2
+                echo "  [$_name] 본체 pid: ${_main:-(없음)} · 같은 이름의 프로세스:" >&2
+                ps -axo pid=,ppid=,lstart=,comm= | grep -F "$(mac_proc_path_of "$_name")" | grep -v grep | sed 's/^/    /' >&2 || true
+                [ -n "$_main" ] && "$PROC_USAGE" measure "$_main" 2>&1 | sed 's/^/    measure: /' >&2
+            fi
+            if [ -z "$_main" ]; then
+                _mark='?'
+            else
+                "$MAC_INPUT" focus "$_main" >/dev/null 2>&1 || true
+                sleep 3
+                _procs=$(measure_field "$_main" 2); _m1=$(measure_field "$_main" 3)
+                touch "$_timing.go"
+                if wait_line "$_timing" filled=; then
+                    sleep 3
+                    _m2=$(measure_field "$_main" 3); _c0=$(measure_field "$_main" 4)
+                    sleep "$IDLE_SEC"
+                    _c1=$(measure_field "$_main" 4)
+                    printf '%s\t%s\t%s\t%s\t%s\n' "$_m1" "$_m2" "$_c0" "$_c1" "$_procs" >> "$WORK_DIR/$_name.samples"
+                    _mark='.'
+                else
+                    _mark='!'
+                fi
+            fi
+        fi
+        printf '%s' "$_mark"
+        kill "$_pid" 2>/dev/null || true
+        wait "$_pid" 2>/dev/null || true
+        cleanup_terminals "$_name"
+        sleep 1
+        _run=$((_run + 1))
+    done
+    printf '  %sx%s  프로세스 %s\n' "$_cols" "$_rows" "$_procs"
+    printf '%s\t%s\t%s\n' "$_name" "$_cols" "$_rows" >> "$RESULTS"
+}
+
+echo "=== 터미널 메모리 · 유휴 CPU 비교 (#756) ==="
+echo "회차       ${REPEAT} 회 · 채우는 줄 ${FILL_LINES} · 유휴 ${IDLE_SEC} 초"
+echo "목표 그리드 ${COLS}x${ROWS} · scrollback ${SCROLLBACK}"
+echo ""
+hygiene_check || {
+    [ "$IGNORE_HYGIENE" = 1 ] || {
+        echo "측정 위생 점검에 걸렸어요. 고치거나 --ignore-hygiene 로 강행해요." >&2
+        exit 1
+    }
+}
+hygiene_begin
+HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
+echo "위생   $(hygiene_status)"
+echo ""
+
+terminals_launch_all
+
+# --- 표 --- 회차 값의 중앙값. MiB 는 1024², CPU % 는 한 코어 기준이다.
+echo ""
+printf '%-14s %12s %12s %10s %8s %10s  %s\n' terminal "빈 화면 MiB" "채운 뒤 MiB" "유휴 CPU%" 회차 grid 비고
+printf '%s\n' "------------------------------------------------------------------------------------"
+while IFS="$(printf '\t')" read -r name cols rows; do
+    _s="$WORK_DIR/$name.samples"
+    _note=""
+    [ "$cols" = "$COLS" ] && [ "$rows" = "$ROWS" ] || _note="그리드 불일치"
+    if [ ! -s "$_s" ]; then
+        printf '%-14s %12s %12s %10s %8s %10s  %s\n' "$name" - - - 0 "${cols}x${rows}" "측정 실패${_note:+ · $_note}"
+        continue
+    fi
+    awk -F '\t' -v name="$name" -v grid="${cols}x${rows}" -v note="$_note" -v idle="$IDLE_SEC" '
+        function med(a, n,   i, j, t) {
+            for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) if (a[j] < a[i]) { t = a[i]; a[i] = a[j]; a[j] = t }
+            return (n % 2) ? a[(n + 1) / 2] : (a[n / 2] + a[n / 2 + 1]) / 2
+        }
+        { n++; m1[n] = $1 / 1048576; m2[n] = $2 / 1048576; cpu[n] = ($4 - $3) / (idle * 1e9) * 100 }
+        END { printf "%-14s %12.1f %12.1f %10.2f %8d %10s  %s\n", name, med(m1, n), med(m2, n), med(cpu, n), n, grid, note }
+    ' "$_s"
+done < "$RESULTS"
+echo ""
+echo "메모리 = phys_footprint 합 (Activity Monitor 의 \"메모리\" 열과 같은 값). 셸 쪽 프로세스는 뺐다."
