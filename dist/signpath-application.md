@@ -22,9 +22,9 @@ TildaZ is a native Quake-style drop-down terminal emulator for Linux, macOS,
 and Windows, written in Zig and built on the libghostty-vt terminal engine. It
 brings the one-hotkey workflow of the Linux
 [Tilda](https://github.com/lanoxx/tilda) terminal to every supported desktop
-while using a native host on each platform: direct Wayland on Linux, AppKit and
-Metal on macOS, and OpenConsole / ConPTY with DirectWrite and Direct3D 11 on
-Windows.
+while using a native host on each platform: direct Wayland with OpenGL ES on
+Linux, AppKit and Metal on macOS, and OpenConsole / ConPTY with DirectWrite
+and Direct3D 11 on Windows.
 
 A single global hotkey (F1) drops the terminal in from the top of the current
 monitor; pressing F1 again hides it. The app supports tabs, drag-to-reorder,
@@ -51,9 +51,10 @@ Design decisions of note for a security-review audience:
   pattern used by Windows Terminal, WezTerm, Alacritty on Windows.
 - **Lock-free I/O**: PTY output is piped into a single-producer / single-consumer
   ring buffer (256 KiB), drained on the UI thread through the ghostty VT parser.
-- **Native rendering**: Linux uses a direct Wayland software surface, macOS uses
-  Metal with CoreText glyphs, and Windows uses DirectWrite glyph atlases with a
-  Direct3D 11 dual-source ClearType pipeline.
+- **Native rendering**: Linux uses a direct Wayland client with an OpenGL ES
+  renderer (GBM / dma-buf) and keeps a software `wl_shm` renderer as a
+  fallback. macOS uses Metal with CoreText glyphs. Windows uses DirectWrite
+  glyph atlases with a Direct3D 11 dual-source ClearType pipeline.
 
 ## License
 
@@ -102,8 +103,9 @@ EDR, would let a single cert-level approval cover all future releases.
 Builds are produced entirely on GitHub-hosted runners via GitHub Actions. The
 release workflow is committed at `.github/workflows/release.yml` on the default
 branch. It builds Linux x86_64/aarch64 packages on Ubuntu runners, a universal
-Apple Silicon/Intel DMG on `macos-15`, and Windows AMD64/ARM64 packages on
-`windows-2022`. For each platform it:
+Apple Silicon/Intel DMG on `macos-26`, and Windows AMD64/ARM64 packages on
+`windows-2025-vs2026`. Runner labels are pinned, not `-latest`. For each
+platform it:
 
 1. Validates the complete tag version matches `.version` in `build.zig.zon`.
 2. Validates `build.zig.zon` dependencies are pinned to 40-hex-digit commit
@@ -113,12 +115,16 @@ Apple Silicon/Intel DMG on `macos-15`, and Windows AMD64/ARM64 packages on
 4. Builds ReleaseFast artifacts with SIMD enabled, resolving selected nested
    lazy dependencies as needed, and packages them in the platform's supported
    formats.
-5. Creates or appends to the GitHub Release with each artifact and its SHA256
-   sidecar. Stable releases use `dist/release-notes/v<ver>.md` as the release
-   body; prerelease validation tags may omit it.
+5. Uploads each artifact and its SHA256 sidecar as a workflow artifact.
 
-The trigger is a `v*` tag push on `main`. There is no local/manual release
-path for the authoritative binary — all shipped artifacts come from CI.
+A single `publish` job then downloads every artifact, checks that the full set
+is present, and creates the GitHub Release in one step. If any build job fails,
+nothing is published. Stable releases use `dist/release-notes/v<ver>.md` as the
+release body; prerelease validation tags may omit it.
+
+The trigger is a `v*` tag push (a manual run of the same workflow for an
+existing tag is also possible). There is no local release path for the
+authoritative binary — all shipped artifacts come from CI.
 
 ## Expected signing integration
 
@@ -131,8 +137,9 @@ outside the Authenticode signing scope.
 ## Release cadence and project activity
 
 - **Public commit history**: active since March 2026 on a public repository.
-- **Recent releases**: the v0.5 series added full Linux Wayland support and
-  continued cross-platform rendering, input, and tab-bar improvements. See
+- **Recent releases**: the v0.5 series added full Linux Wayland support. Later
+  releases (v0.10.4 is the latest at the time of this draft) continued
+  cross-platform rendering, input, and tab-bar improvements. See
   https://github.com/ensky0/tildaz/releases for the current list.
 - **Expected cadence**: maintenance releases ship when a tested set of fixes and
   improvements is ready. There are no enterprise SLAs.
@@ -148,6 +155,10 @@ is used as the disclosure channel.
 
 - **libghostty-vt** — MIT, pinned by commit SHA in `build.zig.zon`. Source:
   https://github.com/ghostty-org/ghostty
+- **zig-toml** — MIT, pinned by commit SHA in `build.zig.zon`. Source:
+  https://github.com/sam701/zig-toml
+- **uucode** (MIT), **Highway** (Apache-2.0) and **simdutf** (MIT) — reached
+  through Ghostty. Notices and license texts are in `THIRD-PARTY-NOTICES.md`.
 - **OpenConsole.exe** / **conpty.dll** — MIT, Microsoft.Windows.Console.ConPTY
   NuGet 1.24.260303001. Source: https://github.com/microsoft/terminal
 - **Zig** — MIT (compiler / build system).

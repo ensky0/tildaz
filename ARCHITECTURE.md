@@ -3,11 +3,11 @@
 TildaZ is a native host on each operating system with a shared terminal,
 configuration, tab, dialog, theme, and interaction core.
 
-The project deliberately does not wrap an existing terminal app. Windows uses
-ConPTY and Direct3D 11 directly; macOS uses POSIX PTY and Metal directly;
-Linux uses a direct Wayland client + GBM/dma-buf + OpenGL ES renderer, with the
-software `wl_shm` renderer kept as a permanent fallback (no GTK / Qt toolkit
-dependency, no X11). The shared code owns terminal state and UI
+The project deliberately does not wrap an existing terminal app. Linux uses a
+direct Wayland client + GBM/dma-buf + OpenGL ES renderer, with the software
+`wl_shm` renderer kept as a permanent fallback (no GTK / Qt toolkit dependency,
+no X11); macOS uses POSIX PTY and Metal directly; Windows uses ConPTY and
+Direct3D 11 directly. The shared code owns terminal state and UI
 policy, while each host owns the OS event loop and native APIs.
 
 ## Layers
@@ -21,7 +21,7 @@ policy, while each host owns the OS event loop and native APIs.
 | Tab behavior | Yes | `src/tab_actions.zig`, `src/tab_interaction.zig`, `src/tab_layout.zig`, `src/pane_layout.zig` | Tab switching, close paths, drag, hit testing. `pane_layout.zig` holds the split-pane tree and per-pane grid geometry (hit test, neighbor search) as pure functions — [#483](https://github.com/ensky0/tildaz/issues/483); wired into all three hosts (Linux at step 4b, macOS and Windows at step 5); `focusEdges` decides which edges of the active pane carry the amber mark |
 | User actions | Yes | `src/app_actions.zig` | Shortcut and command-menu actions run here once for all three hosts (`run` · `runMenuCommand`). Each host passes a small adapter with only the OS-specific hooks (grid sync, redraw, font rebuild, fullscreen, clipboard, composition cleanup). Hosts still apply the IME commit policy before dispatch — [#692](https://github.com/ensky0/tildaz/issues/692) |
 | Selection | Yes | `src/terminal_interaction.zig` | Drag selection, word selection, wide-cell handling |
-| Config | Yes | `src/config.zig`, `src/paths.zig` | Strict schema, defaults, TOML parse via `sam701/zig-toml`, current `config_N.toml` / `tildaz_N.log` paths |
+| Config | Yes | `src/config.zig`, `src/paths.zig` | Schema and defaults (a missing or bad value falls back and is listed in a startup notice — [#655](https://github.com/ensky0/tildaz/issues/655)), TOML parse via `sam701/zig-toml`, current `config_N.toml` / `tildaz_N.log` paths |
 | Dialog/messages | Yes wrapper | `src/dialog.zig`, `src/messages.zig` | Single entry point for user-visible text and dialogs |
 | PTY | Wrapper | `src/terminal.zig`, `src/terminal/windows/pty.zig`, `src/terminal/posix/pty.zig` (Linux · macOS shared) | ConPTY or POSIX PTY behind the same external API |
 | Renderer (GPU wrapper) | Wrapper (Windows/macOS only) | `src/renderer.zig`, `src/renderer/windows.zig`, `src/renderer/macos.zig` | Tab bar + terminal drawing with a shared call shape — `renderTabBar` → `drawPane(PaneDraw)` per visible pane → `endFrame`. `src/renderer/pane_draw.zig` is the per-pane input all three renderers share ([#483](https://github.com/ensky0/tildaz/issues/483) step 2). Linux deliberately has no wrapper implementation (see `src/renderer.zig` comment) |
@@ -74,7 +74,14 @@ On Linux, the visible `tildaz.desktop` entry identifies only the launcher. Each
 xdg-shell worker uses `tildaz.instanceN` as its Wayland app ID and has a matching
 `NoDisplay=true` desktop entry. This keeps GNOME's normal icon click connected to
 the launcher `Exec` while giving every worker an identity consistent with its
-config, process lock, systemd scope, and KDE Plasma shortcut component.
+config, process lock, and KDE Plasma shortcut component. The entry's
+`StartupWMClass` equals the app ID, so the desktop and portals can match the
+window to its entry.
+
+A development build uses `tildaz-dev` in place of `tildaz` in these names, and
+in config, log, lock, and socket paths, so it never touches an installed
+release. Only a build with `-Drelease=true` uses the release names. The names
+come from one place, `src/app_id.zig` ([#654](https://github.com/ensky0/tildaz/issues/654)).
 
 ## Windows Pipeline
 
@@ -90,7 +97,8 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    `_internal\conpty.dll` / `OpenConsole.exe`, which are required (startup
    hard-fails with an error dialog if either is missing; no system fallback).
 7. `renderer/windows.zig` draws with DirectWrite glyph rasterization and a
-   Direct3D 11 / HLSL atlas pipeline.
+   Direct3D 11 / HLSL atlas pipeline. Color emoji glyphs are drawn into the same
+   atlas with Direct2D.
 
 ## macOS Pipeline
 
@@ -117,8 +125,15 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
 ## Linux Pipeline
 
 1. The coordinator starts one locked worker per numbered config and synchronizes
-   compositor shortcuts. `host/linux_wayland.zig` resolves that worker's config
-   and shell, then connects to `host/linux/wayland_minimal.zig`.
+   compositor shortcuts (`shortcut_sync/linux.zig`). On a manual launch it also
+   adds sway or Hyprland autostart for the current session, since neither reads
+   XDG autostart. All code that edits the user's desktop files lives in
+   `desktop_setup/`; `tildaz --desktop add | remove | cleanup` runs it by hand,
+   and `uninstall.sh` calls `remove`
+   ([#700](https://github.com/ensky0/tildaz/issues/700),
+   [#701](https://github.com/ensky0/tildaz/issues/701)).
+   `host/linux_wayland.zig` resolves that worker's config and shell, then
+   connects to `host/linux/wayland_minimal.zig`.
 2. `host/linux/wayland_minimal.zig` is a direct Wayland wire-protocol client (no
    GTK / Qt). It owns the registry, `xdg-shell` / `wlr-layer-shell` surfaces,
    `wl_shm` / `zwp_linux_dmabuf_v1` buffers, keyboard / pointer / data-device,
@@ -141,8 +156,9 @@ config, process lock, systemd scope, and KDE Plasma shortcut component.
    terminal, but fixed 15-point body/button and 18-point title contexts.
    `host/linux/dialog_layout.zig` measures the actual message, wraps it within
    the basis output viewport, and returns one content-sized surface layout to
-   both the Wayland host and software renderer. The decorative icon is omitted
-   only when the full message and buttons otherwise need the vertical space.
+   both the Wayland host and software renderer. The icon is always shown. When
+   the message does not fit, only the message body scrolls; the title, icon,
+   and buttons stay in place.
 
 The host checks compositor capabilities at startup: `xdg_wm_base` (baseline
 window — fatal if missing), `zwlr_layer_shell_v1` (true drop-down),
@@ -157,18 +173,22 @@ manually.
 ## Design Choices
 
 **Native PTY backends.** ConPTY is the supported Windows pseudoconsole API for
-terminal emulators. POSIX PTY is the equivalent primitive on macOS. Both are
+terminal emulators. POSIX PTY is the equivalent primitive on Linux and macOS. Both are
 wrapped behind `terminal.zig` so session code does not care which host it is on.
 
-**Native text engines.** DirectWrite and CoreText are used for glyph shaping and
-rasterization because they already understand each platform's font fallback,
-emoji, CJK, and antialiasing behavior. TildaZ caches glyphs in GPU atlases.
+**Native text engines.** Each platform's own font stack does glyph shaping and
+rasterization, because it already understands that platform's font fallback,
+emoji, CJK, and antialiasing behavior. Linux uses fontconfig for lookup and
+fallback, FreeType for rasterization, and HarfBuzz for shaping, all loaded with
+`dlopen`. macOS uses CoreText, and Windows uses DirectWrite. TildaZ caches glyphs
+in GPU atlases; the Linux software path keeps its own CPU glyph cache.
 
 **Shared policy, native interaction.** User-visible policy is shared where it
 matters: tab lifecycle, IME pre-edit display,
 selection behavior, config schema, dialogs, and child shell environment. OS
-conventions remain native: Windows uses Ctrl/Alt patterns; macOS uses Cmd/Shift
-Cmd patterns and AppKit input callbacks.
+conventions remain native: Linux and Windows use Ctrl+Shift and Alt patterns;
+macOS uses Cmd/Shift Cmd patterns and AppKit input callbacks. Linux reads keys
+through `libxkbcommon` and IME text through `zwp_text_input_v3`.
 
 **Config that always boots.** `src/config.zig` is the source of truth for the TOML
 schema and defaults. A config problem the user can fix never stops the app from
@@ -201,21 +221,6 @@ desktop-layer placement, and each toolkit carries a runtime bias (GTK toward
 GNOME, Qt toward KDE). A direct Wayland client can probe each desktop's
 capabilities at runtime instead. Toolkit integration is only reconsidered as a
 fallback if direct Wayland text-input or clipboard becomes unworkable.
-
-## Current Open Work
-
-| Area | Issue | State |
-|---|---:|---|
-| macOS Developer ID signing / notarization | [#109](https://github.com/ensky0/tildaz/issues/109) | Blocked by current signing environment; releases use a stable self-signed TildaZ identity |
-| Config hot reload | [#170](https://github.com/ensky0/tildaz/issues/170) | Not started |
-| Elevated Windows autostart helper | [#151](https://github.com/ensky0/tildaz/issues/151) | Not started |
-| Linux partial redraw | [#362](https://github.com/ensky0/tildaz/issues/362) | Every frame redraws every cell and damages the whole surface. The GPU renderer ([#277](https://github.com/ensky0/tildaz/issues/277)) cut the cost of drawing; drawing *less* is the complementary win, and matters most for interactive typing. |
-| Split panes | [#483](https://github.com/ensky0/tildaz/issues/483) | Slow track. Steps 1–3 of 6 landed with zero visible change (pixel A/B identical on all three platforms): `src/pane_layout.zig` (pure split tree + per-pane grid, hit testing, neighbor search), the three renderers split into `drawPane(PaneDraw)` / `endFrame`, `SessionCore` tabs became `TabGroup`s over that tree. Step 4a added the `[keys]` pane actions and `SessionCore` operations on every platform; steps 4b–4c wired the Linux host (split / focus / resize / equalize / zoom, gray separators + amber focus line, click-to-focus, separator drag, `…` menu items, `+` Alt-click) and step 5 did the same for macOS and Windows. Step 6 added per-pane IME, a shared drain budget, and per-pane scrollbars, then — after hands-on feedback — trimmed the actions to `split_right` / `split_down` (new pane right / below; macOS `alt+cmd`), made separator drag clamp at the minimum size and move only the panes touching the line, and gave the active pane a bracket-shaped mark (three edges when only one edge is shared, all four while zoomed). Hands-on verification is done on all three platforms; the Windows pass also made the quit confirmation name the pane count and made the separator-drag log record where the line landed rather than the raw pointer |
-| **VT parser throughput** | [#389](https://github.com/ensky0/tildaz/issues/389) (tools in [`tool/stress/`](tool/stress/README.md), built under [#381](https://github.com/ensky0/tildaz/issues/381)) | **Root cause located, fix not started.** We lead on ASCII and sit just under Windows Terminal on wide cells, then fall to **a tenth of it** once a grapheme cluster lands in every cell — reproduced on two Windows machines and macOS. A second workload joined it: **SGR-heavy output (`ansi`) costs our parser 5~6x plain ASCII**, which stays hidden while the PTY is the bottleneck and surfaces on a slower CPU — 19 % of the fastest terminal on the Intel laptop under Linux, with **94 % of the time in `parse`**. See [Performance Notes](#what-decides-where-we-lose-our-parser-ceiling-versus-the-pty-ceiling-389). Next, in order: **(1)** the parser, which the app's own counters put at 68-83 % of the time on cluster-heavy output — that is inside ghostty-vt, so profile first and take it upstream; **(2)** cut the number of native shaping calls (run batching, then a cluster cache on top) — the paired workloads showed batching is the necessary part, and the win is per-frame cost (4.35 ms/frame on `zwj`) rather than throughput. The `hangul` wide-cell gap is consistent across both machines once payload size is right (80 % and 94 % of wt), so it is a smaller sibling of the same story rather than its own item. Linux is now measured (all eleven workloads, six terminals, 330 runs); the attribution pairs there agree with Windows within -1~-6 %, so run batching stays ahead of a cluster cache. Still unmeasured: the same tables on macOS |
-
-Completed cross-platform unification work is tracked in
-[#171](https://github.com/ensky0/tildaz/issues/171),
-[#176](https://github.com/ensky0/tildaz/issues/176), and the release notes.
 
 ## Distribution
 
@@ -250,7 +255,7 @@ while adapting it to each platform's native constraints:
 
 | Platform | Artifact | Signing |
 |---|---|---|
-| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.{tar.gz,deb,rpm,AppImage}`, the AppImage as `TildaZ-...`, plus an Arch package `tildaz-<ver>-1-x86_64.pkg.tar.zst` (x86_64 only) | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb` / `.rpm` packages declare the core libraries (xkbcommon, freetype, fontconfig) as dependencies so a fresh install pulls them in. |
+| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.tar.gz`, `tildaz_<ver>_<amd64\|arm64>.deb`, `tildaz-<ver>-1.<arch>.rpm`, `TildaZ-<ver>-<arch>.AppImage`, plus an Arch package `tildaz-<ver>-1-x86_64.pkg.tar.zst` (x86_64 only). The `.deb`, `.rpm`, and Arch names carry each format's version spelling below | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb` / `.rpm` packages declare the core libraries (xkbcommon, freetype, fontconfig) as dependencies so a fresh install pulls them in. |
 | macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), stable self-signed TildaZ identity; not Apple-notarized |
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
@@ -261,7 +266,10 @@ The release workflow checks that:
 - `dist/release-notes/v<ver>.md` exists for a stable tag (optional for a
   prerelease validation tag);
 - dependencies in `build.zig.zon` are pinned to 40-character commit SHA tarball
-  URLs rather than rolling branch references.
+  URLs rather than rolling branch references;
+- all 24 assets (12 builds, each with a `.sha256` file) are present. Build jobs
+  only upload artifacts; one `publish` job checks the count and then creates
+  the GitHub Release ([#668](https://github.com/ensky0/tildaz/issues/668)).
 
 ## Performance Notes
 
@@ -305,6 +313,9 @@ spends **94 % in `parse`**, and its per-frame `render` is *cheaper* than `plain`
 (0.44 vs 0.67 ms) because it has no clusters to shape. SGR parsing costs 5~6x plain
 ASCII for us on both platforms, while foot pays nothing for it (120.2 → 120.1
 MiB/s). That cost is inside ghostty-vt, the same place as (1) below.
+[#403](https://github.com/ensky0/tildaz/issues/403) later traced it: the time is not
+spent decoding escapes. With many styles, ghostty-vt regrows each new page's style
+capacity from its initial size and copies the page every time (`PageList.grow`).
 
 The cluster story below is measured on Windows; the `ansi` finding above is from
 Linux. Both are the same parser, so neither is host-specific.
@@ -434,7 +445,7 @@ shaping call and the glyph-to-cell mapping are per platform. The cache is the op
 |---|---|---|---|---|
 | **macOS** | CoreText `CTLine` | `CTRunGetStringIndices` | **CoreText picks** | `GlyphResult` / `CFRelease` |
 | **Windows** | DirectWrite `GetGlyphs` | `cluster_map` | we walk the chain | `ClusterResult` / COM `Release` |
-| **Linux** | HarfBuzz `shapeRunOnFace` | `hb_glyph_info_t.cluster` | we walk the chain | `LigatureGlyph` / **none** (index) |
+| **Linux** | HarfBuzz `shapeRunOnFace` | `hb_glyph_info_t.cluster` | we walk the chain | `ClusterGlyph` / **none** (index) |
 
 Two consequences worth knowing before touching this code:
 
@@ -492,7 +503,8 @@ render 1345.5 → 1225.6 before the cache landed.
 With rendering fixed, `parse` is now essentially the whole frame budget on
 cluster-heavy output (`zwj` parse share 93 % → **98.6 %** on macOS, **98.5 %** on
 Windows). The remaining work is the parser, which is upstream — see
-[#389](https://github.com/ensky0/tildaz/issues/389).
+[#389](https://github.com/ensky0/tildaz/issues/389) and
+[#403](https://github.com/ensky0/tildaz/issues/403).
 
 One more caveat the same run exposed: `hangul_varied` swings 17.2-88.0 MiB/s between
 repeats of one measurement. It walks all 11,172 precomposed syllables, so the pressure

@@ -4,8 +4,9 @@
 //! 필요하다 — 같은 방법론을 Windows 에서 재현하는 지침은
 //! `tool/osc-title-probe/osc-title-probe-prompt_windows.md` 에 있다.
 //!
-//! 왜 필요한가: `src/session_core.zig` 의 `INITIAL_TITLE_GRACE_NS` (1 초) 를 줄여도
-//! 되는지는 **셸이 실제로 언제 OSC 를 보내는지**에 달려 있다. 이 도구는 tildaz 가
+//! 왜 만들었나: `src/session_core.zig` 에 있던 첫 제목 유예 `INITIAL_TITLE_GRACE_NS` (1 초) 를
+//! 줄여도 되는지는 **셸이 실제로 언제 OSC 를 보내는지**에 달려 있었다. 그 유예는 이 측정 뒤
+//! `9737a5a` (PR #372) 에서 지워졌고, 지금은 `TITLE_DEBOUNCE_NS` 만 남았다. 이 도구는 tildaz 가
 //! 자식 셸을 띄우는 조건을 그대로 복제해서 그 시점을 µs 해상도로 측정한다.
 //!
 //! tildaz 와 같게 맞춘 것 (`src/terminal/posix/pty.zig` 의 Linux 경로):

@@ -3,6 +3,8 @@
 # zip 레이아웃:
 #   tildaz.exe                  (최상위 — 사용자가 실행할 단 하나의 exe)
 #   README.txt
+#   LICENSE
+#   THIRD-PARTY-NOTICES.md
 #   _internal\conpty.dll
 #   _internal\OpenConsole.exe
 # Microsoft 런타임 2개는 _internal\ 하위로 숨겨 사용자가 tildaz.exe 만 실행하도록
@@ -77,8 +79,8 @@ if (-not $ReleaseRootFull.StartsWith($RepoPrefix, [System.StringComparison]::Ord
 }
 
 # LICENSE + THIRD-PARTY-NOTICES.md 는 배포 zip 에 반드시 들어가야 해요 (#486).
-# 배포 바이너리는 정적 링크라 uucode (MIT) 와 Google Highway (Apache-2.0) 의
-# 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시 저작권 고지 포함을 Apache-2.0
+# 배포 바이너리는 정적 링크라 uucode, zig-toml, simdutf (MIT) 와 Google Highway
+# (Apache-2.0) 의 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시 저작권 고지 포함을 Apache-2.0
 # §4(a) 는 라이선스 사본 제공을 요구해요. 조용히 건너뛰지 않고 세워요.
 foreach ($LegalPath in @($SourceLicense, $SourceNotices)) {
     if (-not (Test-Path -LiteralPath $LegalPath -PathType Leaf)) {

@@ -20,7 +20,7 @@ zig build -Doptimize=ReleaseFast -Dsimd=true
 
 `codesign --sign -` (ad-hoc) 으로 서명. 매 빌드마다 hash 변경 → macOS 가 새
 앱으로 인식 → Input Monitoring + 기기 제어 및 데이터 접근 (macOS 26 이하 Accessibility) 권한 다시 요구. 권한 부여
-방법은 README 또는 앱 첫 실행 시 stderr 안내 참고.
+방법은 README 또는 앱 첫 실행 때 뜨는 안내 다이얼로그 참고.
 
 ## 옵션 B: GUI 로 self-signed cert 만들기 (권장)
 
@@ -72,10 +72,12 @@ zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true
 ### 4. 권한 부여 한 번
 
 ```bash
-open zig-out/TildaZ.app
+open zig-out/TildaZ-dev.app
 ```
 
-F1 첫 누름에 macOS 권한 요구:
+`zig build` 는 기본이 dev 라 번들이 `TildaZ-dev.app` 이에요 (`-Drelease=true` 면 `TildaZ.app`).
+
+권한이 없으면 앱이 시작할 때 안내 다이얼로그를 띄우고, 닫으면 종료해요. 두 권한을 켜고 다시 실행해요:
 - System Settings → Privacy & Security → Input Monitoring → tildaz ON
 - System Settings → Privacy & Security → **Device Control and Data Access** → tildaz ON
   - **macOS 27 에서 이름이 바뀌었어요** — 그 전에는 `Accessibility` (손쉬운 사용) 였어요
@@ -90,9 +92,9 @@ F1 첫 누름에 macOS 권한 요구:
 ### 검증
 
 ```bash
-codesign -dv zig-out/TildaZ.app 2>&1 | grep -i 'authority\|identifier'
+codesign -dv zig-out/TildaZ-dev.app 2>&1 | grep -i 'authority\|identifier'
 # Authority=TildazLocal
-# Identifier=me.ensky0.tildaz
+# Identifier=me.ensky0.tildaz.dev     (릴리즈 TildaZ.app 은 me.ensky0.tildaz)
 ```
 
 ## 옵션 C: CLI 자동화 (`setup-cert.sh`) — 권장
@@ -149,7 +151,7 @@ Accessibility 권한도, GitHub secrets 도, CI 의 `MACOS_CERTIFICATE_SHA1` 도
 
 백업이 없으면 `setup-cert.sh` 로 새로 만들어야 하고, 그때는 아래도 함께 갱신해요.
 
-- 시스템 설정 → 개인정보 보호 및 보안 → **입력 모니터링 · 손쉬운 사용** 재허용 (F1 용)
+- 시스템 설정 → 개인정보 보호 및 보안 → **입력 모니터링 · 기기 제어 및 데이터 접근** (macOS 26 이하 손쉬운 사용) 재허용 (전역 hotkey 용)
 - GitHub secrets `MACOS_CERTIFICATE_P12_BASE64` · `MACOS_CERTIFICATE_PASSWORD`
 - `.github/workflows/{macos-signing-check,release}.yml` 의 `MACOS_CERTIFICATE_SHA1`
 
@@ -181,10 +183,10 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 
 ## ReleaseFast 빌드 + Applications 설치
 
-`TildazLocal` identity가 이미 유효하면 아래 스크립트가 ReleaseFast 빌드와
-`/Applications/TildaZ-dev.app` 설치를 한 번에 수행해요. identity가 없으면
-`setup-cert.sh`를 먼저 실행하고, 출력된 system trust 명령까지 완료되지 않은
-경우에는 안전하게 중단해요.
+아래 스크립트가 ReleaseFast 빌드와 `/Applications/TildaZ-dev.app` 설치를 한 번에
+수행해요. `TildazLocal` identity가 없으면 스크립트가 `setup-cert.sh`를 먼저 부르고,
+그래도 유효한 identity가 없으면 (system trust 명령이 끝나지 않은 경우) 안전하게
+중단해요. SIMD 빌드가 실패하면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 (#665).
 
 ```bash
 ./dist/macos/build_and_install.sh
@@ -271,13 +273,14 @@ fingerprint 상수도 함께 바꿔야 해요.
 
 ### runner 동작
 
-GitHub Actions `macos-15` runner에서 `dist/macos/ci-signing.sh install`이 secret을
+GitHub Actions `macos-26` runner에서 `dist/macos/ci-signing.sh install`이 secret을
 `RUNNER_TEMP`에 복원하고, 임시 Keychain에 import하고, self-signed certificate를
 passwordless `sudo`로 runner System Keychain의 code-signing trust에 임시 등록하고,
 공개 fingerprint를 검증해요. GitHub는 Linux/macOS hosted VM이 passwordless `sudo`로
 실행됨을 [공식 문서](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)에 명시해요. 로컬 실행에서는 기존 system trust만 읽고
 trust 설정을 바꾸지 않아요. 이어서
-`zig build package -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true`를 실행하면
+`zig build package -Drelease=true -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true`를 실행하면
+(`-Drelease=true` 가 없으면 package 는 실패해요 — #654)
 `dist/macos/package.sh`가:
 
 1. `aarch64-macos` 빌드 (Apple Silicon)

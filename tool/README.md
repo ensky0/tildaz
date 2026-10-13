@@ -22,10 +22,11 @@
 
 | 도구 | 판 | 무엇 | 자세한 곳 (AGENTS.md) |
 |---|---|---|---|
-| [`deadkey-check/`](deadkey-check) | linux · macos · windows | dead key 조합이 실제로 들어오는지 합성 입력으로 판정 | `# Linux — headless sway …` · `# macOS — 합성 입력으로 …` · `# Windows — 합성 입력으로 …` |
+| [`deadkey-check/`](deadkey-check) | linux · macos · windows | dead key 조합이 실제로 들어오는지 합성 입력으로 판정 | `# 전역 hotkey 의 위치 표기 검증` (fcitx5 함정) · `# macOS — 합성 입력으로 …` · `# Windows — 합성 입력으로 …` |
 | [`layout-probe/`](layout-probe) | macos · windows | 활성 keyboard layout 이 어느 키에 어느 글자를 두는지 | `# macOS — 키보드 layout 조회 실측 방법` · `# Windows — 키보드 layout 조회 실측 방법` |
-| [`osc-title-probe/`](osc-title-probe) | linux · windows | 자식 셸의 OSC 제목이 언제 도착하는지 (독립 zig 도구 · `zig build probe-check`) | — (도구 머리 주석) |
-| [`selection-check/`](selection-check) | linux · macos · windows | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 무엇을 남기는지 자동 판정 (#656 · #657). Windows 판은 같은 칸을 Windows Terminal 에서도 돌린다 | `# macOS — 합성 입력으로 …` · `# Linux — headless sway …` · `# Windows — 합성 입력으로 …` |
+| [`osc-title-probe/`](osc-title-probe) | linux · windows | 자식 셸의 OSC 제목이 언제 도착하는지 (독립 zig 도구 · `zig build probe-check`). `osc-title-probe-prompt_windows.md` 는 #364 Windows 실측 지시문 기록 | — (도구 머리 주석) |
+| [`selection-check/`](selection-check) | linux · macos · windows | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 무엇을 남기는지 자동 판정 (#656 · #657). Windows 판은 같은 칸을 Windows Terminal 에서도 돌린다 | `# Linux — headless sway …` · `# macOS — 합성 입력으로 …` · `# Windows — 합성 입력으로 …` |
+| [`config-notice-check_linux_macos.sh`](config-notice-check_linux_macos.sh) · [`config-notice-check_windows.ps1`](config-notice-check_windows.ps1) | linux · macos (`.sh`) · windows | config 가 망가져도 앱이 뜨는지, 무엇을 고쳤다고 알리는지 자동 판정 ([#655](https://github.com/ensky0/tildaz/issues/655)). 두 판의 회차 이름과 판정이 같다 | `# 실행 환경` (`SESSION_GUARD`) · `# Windows — 합성 입력으로 …` |
 | [`render-ab-shot/`](render-ab-shot) | linux · macos · windows | 두 앱 판을 같은 화면으로 찍어 최종 그림을 픽셀 수로 견줌 | `# macOS — 렌더 결과와 …` · `# Windows — 렌더 결과를 …` · `# Linux — 글리프 · cluster …` |
 
 ## 여러 파일로 된 도구
@@ -50,8 +51,8 @@
 | [`clusters.py`](clusters.py) | 무관 | atlas · cluster 검증 화면 생성기 (`many` · `stack2` · `overflow` · `mini` · `bands`) | `# macOS — 렌더 결과와 …` |
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
-| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) · 공통 액션 (`actions` · #692) 을 자동 검증 | `# Linux — headless sway …` |
-| [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`send return` · `keycode` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
+| [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) · 공통 액션 (`actions` · #692) · seat 착탈 (`seat-replug`) · compositor 종료 (`compositor-exit`) · launcher 실패 (`launcher-fatal`) 를 자동 검증 | `# Linux — headless sway …` |
+| [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`check` · `focus` · `send return` · `keycode` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
 | [`key-bytes.py`](key-bytes.py) | 무관 | 키 하나가 PTY 로 보낸 **바이트를 그대로** 찍음. `legacy` · `kitty` · `mok2` 세 모드 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)) | — (도구 머리 주석) |
 | [`key-bytes-cases.tsv`](key-bytes-cases.tsv) | 무관 | `Ctrl` + 기호 · 숫자 · Space 의 기대 바이트 표 — 아래 세 판정 도구가 함께 읽는다 ([#684](https://github.com/ensky0/tildaz/issues/684)) | — (표 머리 주석) |
 | [`key-bytes-check_macos.sh`](key-bytes-check_macos.sh) | macOS | `key-bytes.py` 를 띄우고 `input_macos` 로 키를 쳐 위 표의 바이트를 자동 판정 (legacy · mok2). 켜진 시스템 단축키는 건너뜀 | `# macOS — 합성 입력으로 …` |
@@ -61,7 +62,7 @@
 | [`link-click-check_linux.sh`](link-click-check_linux.sh) | Linux | headless sway 안에서 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Linux — headless sway …` |
 | [`link-click-check_windows.ps1`](link-click-check_windows.ps1) | Windows | 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Windows — 합성 입력으로 …` |
 | [`link-shot_linux.py`](link-shot_linux.py) | Linux | 링크 회차의 캡처 판정 — 격자 찾기 · 밑줄 픽셀 · XCursor 테마와 맞댄 커서 모양 | `# Linux — headless sway …` |
-| [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 (실제 GNOME · Cinnamon 세션용) | `# Linux — headless sway …` |
+| [`portal-screenshot_linux.py`](portal-screenshot_linux.py) | Linux | xdg-desktop-portal 로 화면 캡처 — Cinnamon (XApp 포털) 에서 돼요. 권한 창이 함께 찍혀요. GNOME 은 `response=2` 로 끝나 못 찍어요 | `# Linux — headless sway …` |
 | [`position-hotkey-check_linux.sh`](position-hotkey-check_linux.sh) | Linux | 전역 hotkey 의 위치 표기가 이 데스크톱에 실제로 등록되는지 | `# 전역 hotkey 의 위치 표기 검증` |
 | [`real-session-check_linux.sh`](real-session-check_linux.sh) | Linux | 실제 Hyprland · GNOME · Cinnamon 세션에 붙어 배율 · layer-shell 부재를 봄 | `# Linux — headless sway …` |
 | [`search-bar-check_windows.ps1`](search-bar-check_windows.ps1) | Windows | 버퍼 검색바의 배치 · 키보드 · IME · 마우스 · 메뉴 · pane 분할을 합성 입력과 캡처로 자동 판정 ([#646](https://github.com/ensky0/tildaz/issues/646) · [#675](https://github.com/ensky0/tildaz/issues/675)) | `# Windows — 합성 입력으로 …` |
@@ -69,9 +70,9 @@
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`present-latency-probe_macos.patch`](present-latency-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — `nextDrawable` 대기 · present → 화면 표시 지연 · 대조 실험 스위치 ([#476](https://github.com/ensky0/tildaz/issues/476)). **#732 이전 판에만 들어가요** | `# macOS — 표시 대기열을 재는 법` |
 | [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)) | `# macOS — 표시 대기열을 재는 법` |
-| [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 (다른 Windows 도구 셋이 같이 씀) | `# Windows — 합성 입력으로 …` |
+| [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
-| [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` · `-Drelease` 절 |
+| [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` |
 | [`vkbd_linux.py`](vkbd_linux.py) | Linux | headless sway 안의 가상 키보드 데몬 (`zwp_virtual_keyboard_v1`) | `# Linux — headless sway …` |
 | [`vptr_linux.py`](vptr_linux.py) | Linux | headless sway 안의 가상 포인터 데몬 (`zwlr_virtual_pointer_v1`) — 절대좌표 hover · 클릭 · 드래그 | `# Linux — headless sway …` |
 | [`zig-floath-patch_macos.sh`](zig-floath-patch_macos.sh) | macOS | zig 번들 `float.h` 에 SDK 27 의 `__need_infinity_nan` 규약을 넣어 `-Dsimd=true` 를 살림 (`--check` · `--revert`) | `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` |

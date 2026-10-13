@@ -2,9 +2,9 @@
 # #655 — config 가 망가져도 **뜨는지**, 그리고 무엇을 고쳤다고 알리는지를 자동 검증한다.
 # Linux · macOS 공통 (Windows 는 `tool/config-notice-check_windows.ps1`).
 #
-#   tool/config-notice-check.sh              # 전체
-#   tool/config-notice-check.sh order clamp  # 고른 회차만
-#   tool/config-notice-check.sh list         # 회차 목록
+#   tool/config-notice-check_linux_macos.sh              # 전체
+#   tool/config-notice-check_linux_macos.sh order clamp  # 고른 회차만
+#   tool/config-notice-check_linux_macos.sh list         # 회차 목록
 #
 # 환경변수: TILDAZ (기본 zig-out 의 바이너리) · TZCN_WORK (작업 디렉터리).
 # 판정 줄은 `RESULT <회차>: PASS|FAIL …` 로 시작한다. 하나라도 FAIL 이면 exit 1.
@@ -24,7 +24,7 @@
 # 예외는 `quiet` 회차 하나로, `-e` 가 **다이얼로그를 띄우지 않는다**는 것 자체를 잰다.
 #
 # 다이얼로그의 *생김새* (여백 · 스크롤 · 버튼 동작) 는 로그로 못 재니 아래 "눈으로 볼 것"
-# 을 따로 둔다 — `tool/config-notice-check.sh list`.
+# 을 따로 둔다 — `tool/config-notice-check_linux_macos.sh list`.
 set -u
 set +m   # `kill` 이 남기는 "Terminated" 잡음을 죽인다
 
@@ -381,7 +381,7 @@ done
 
 echo
 if [ "$fail_count" = 0 ]; then
-  echo "모든 회차 PASS. 위 '눈으로 볼 것' 은 따로 확인한다 (tool/config-notice-check.sh list)."
+  echo "모든 회차 PASS. 위 '눈으로 볼 것' 은 따로 확인한다 (tool/config-notice-check_linux_macos.sh list)."
 else
   echo "FAIL $fail_count 건."
 fi

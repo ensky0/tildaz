@@ -1,5 +1,5 @@
 ﻿# #655 — config 가 망가져도 **뜨는지**, 그리고 무엇을 고쳤다고 알리는지를 자동 검증한다.
-# Windows 몫 (Linux · macOS 는 `tool/config-notice-check.sh` — 회차 이름과 판정이 같다).
+# Windows 몫 (Linux · macOS 는 `tool/config-notice-check_linux_macos.sh` — 회차 이름과 판정이 같다).
 #
 # ```powershell
 # tool\config-notice-check_windows.ps1                    # 전체

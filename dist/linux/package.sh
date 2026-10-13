@@ -172,8 +172,8 @@ validate_extension_resources() {
 
 # LICENSE + THIRD-PARTY-NOTICES.md 를 배포물에 싣는다 (#486).
 #
-# 조용한 skip 을 두지 않는다. 배포 바이너리는 정적 링크라 uucode (MIT) 와
-# Google Highway (Apache-2.0) 의 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시
+# 조용한 skip 을 두지 않는다. 배포 바이너리는 정적 링크라 uucode · zig-toml ·
+# simdutf (MIT) 와 Google Highway (Apache-2.0) 의 컴파일된 코드를 담고 있고, MIT 는 사본 배포 시
 # 저작권 고지 포함을 Apache-2.0 §4(a) 는 라이선스 사본 제공을 요구한다. 고지가
 # 빠진 아티팩트는 준수 결함이므로 소스가 없으면 빌드를 세운다 — 이전에 deb 이
 # `if [[ -f LICENSE ]]` 로 감싸 조용히 넘어가던 게 이 상태가 방치된 이유다.
@@ -236,8 +236,10 @@ tildaz v${VERSION} (linux-${ARCH})
 Install (user-level, no sudo):
   ./install.sh --release
 
-  → ~/.local/share/applications/tildaz.desktop  (sed-substituted)
+  → ~/.local/share/applications/tildaz.desktop
   → ~/.local/share/icons/hicolor/scalable/apps/tildaz.svg
+  → ~/.local/bin/tildaz  (link to the binary)
+  → GNOME and Cinnamon Shell extensions under ~/.local/share
 
 The tildaz binary stays in this directory by default. Move it
 to a PATH location (e.g. /usr/local/bin/) if you prefer, then

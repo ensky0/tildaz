@@ -28,6 +28,12 @@ instances never open with the same hotkey, which is what the operating system
 needs — on Windows the second one cannot register its hotkey at all.
 `--instance 10` and above are rejected with a message naming the range.
 
+A development build reads the same table in reverse — instance 0 gets `F10`,
+instance 1 gets `F9`, and so on — so a development build and an installed release
+running side by side do not start on the same key
+([#654](https://github.com/ensky0/tildaz/issues/654)). A config created from the
+new-instance dialog gets the key you press there instead.
+
 The table stops at `F10` rather than `F12` because Windows does not hand out a
 bare `F12` as a global hotkey — it is reserved for the kernel debugger, and
 `RegisterHotKey` reports it as already registered. An instance whose default
@@ -40,7 +46,7 @@ instance you create.
 Only files TildaZ generates carry these defaults. An existing `config_N.toml` is
 read exactly as written, and nothing rewrites its `hotkey`.
 
-> **TildaZ always starts.** A config problem you can fix is never a reason for the app not to open. Whatever TildaZ cannot use, it replaces with the default, and it tells you what it replaced so you can fix the file yourself. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and as the schema your file is checked against). Linux, macOS, and Windows apply the same policy.
+> **TildaZ starts despite most config problems.** Whatever TildaZ cannot use, it replaces with the default, and it tells you what it replaced so you can fix the file yourself. The `defaultConfigToml` function in [`src/config.zig`](src/config.zig) is the single source of truth (used both for first-run file creation and as the schema your file is checked against). Linux, macOS, and Windows apply the same policy.
 >
 > | What is wrong | What TildaZ does |
 > |---|---|
@@ -49,13 +55,15 @@ read exactly as written, and nothing rewrites its `hotkey`.
 > | A value it cannot read | Uses the default. |
 > | A number out of range | Clamps it to the nearest limit — it does not fall back to the default. |
 > | One entry in a `[keys]` list is unusable | Drops that entry only; the other keys for that action still work. |
-> | Two actions share a combination | The one written first keeps it. |
+> | Two actions share a combination | One of them keeps it, decided by TildaZ's internal order — not by the order in the file. Change one of them. |
+>
+> A few problems still stop startup, each with a message that names it: a file that is not valid TOML, a `shell` that cannot be run, a font that is not installed, and a global hotkey that cannot be registered.
 >
 > On startup you get one dialog listing everything it changed, split into "add or fix these" and "delete these", with a button that opens the file. It appears once per launch, not every time you open the window.
 >
 > **TildaZ never edits your file for you.** The defaults live in memory only — rewriting the file would throw away your comments, and fixing it is your call.
 >
-> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version now starts fine. The new keys run on their defaults and the dialog lists them so you can add them at your leisure. Before v0.9.6 the same file refused to load.
+> **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version now starts fine. The new keys run on their defaults and the dialog lists them so you can add them at your leisure. Before v0.10.0 the same file refused to load.
 >
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
 >
@@ -195,11 +203,11 @@ dialog names the field.
 | `input.copy_on_select` | bool | true / false | false | false | false | Copy to the clipboard as soon as you finish a mouse selection. `false` keeps what you copied with `Ctrl+Shift+C` (`Cmd+C` on macOS): copy a selection with that key or a **right-click** — right-click with nothing selected pastes, as in Windows Terminal. `true` makes every selection replace the clipboard, and right-click always pastes. **On Linux the selection also goes to the primary selection either way** — middle-click pastes it (when the app has turned on mouse reporting, middle-click goes to the app; `Shift`+middle-click still pastes) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"` — so the first space ends the executable path; a path that itself contains spaces has to be quoted inside the value, as in `shell = "\"C:\\Program Files\\Git\\bin\\bash.exe\""`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
-| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
+| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. Development builds read the table in reverse (`F10` for instance 0). `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux). Development builds default to `false` |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
-| `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 38 of them. An action you leave out runs on its default binding; an empty list `[]` unbinds it, and the two are different |
+| `keys.<action>` | string[] | see [Keyboard shortcuts](#keyboard-shortcuts) | per OS | per OS | per OS | One table entry per action — 43 of them. An action you leave out runs on its default binding; an empty list `[]` unbinds it, and the two are different |
 
 ### Font names
 
@@ -303,9 +311,9 @@ quit      = []
 - **An empty list unbinds the action.** That is the only way to express "no
   key"; the entry itself always stays in the file.
 - **Every key may trigger only one action.** If you bind the same combination
-  twice, the action written **first** keeps it and the later one loses that key;
-  the startup dialog names both. Reading the file top to bottom tells you which
-  one won.
+  to two actions, one keeps it and the other loses that key. Which one keeps it
+  depends on TildaZ's internal order, not on where you wrote them in the file, so
+  you cannot tell in advance. The startup dialog names both — change one of them.
 - **The defaults are not the same on every OS.** macOS follows Apple's
   convention (`Cmd+T`, `Shift+Cmd+[`), Linux and Windows use `Ctrl+Shift+T`.
   A modifier swap is not enough to express that, so the two default tables are
@@ -411,6 +419,9 @@ and these symbols:
 | `-` | `-` or `Minus` |
 | `+` | `Plus` only — `+` already separates the keys |
 
+`Page_Up` and `Page_Down` also work. They are the same keys, spelled the way
+TildaZ writes them when you capture a hotkey on Linux.
+
 Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
 that one entry goes; the other keys you gave the action still work, and an action
@@ -451,7 +462,7 @@ Windows.
 
 #### Modifiers
 
-`Ctrl`, `Alt` (also `Option` / `Opt`), `Shift`, and the platform key written as
+`Ctrl` (also `Control`), `Alt` (also `Option` / `Opt`), `Shift`, and the platform key written as
 `Cmd` (also `Command` / `Super` / `Win` / `Meta` / `Logo`).
 
 **A key that types text needs `Ctrl`, `Alt`, or `Cmd`** — binding it with no
@@ -509,7 +520,7 @@ invalid value falls back to the default hotkey and is named in the dialog):
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
 - **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
-  `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`),
+  `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`, `Page_Up`), `PageDown` (`PgDn`, `Page_Down`),
   `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
   (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
   matter. This is the label set `[keys]` accepts, minus `Backspace` and the
@@ -564,11 +575,10 @@ How each desktop registers a hotkey written by position (`ctrl+[Backquote]`):
 
 | Desktop | Registered by |
 |---|---|
-| sway, Hyprland, GNOME, Cinnamon, macOS | key position |
+| sway, Hyprland, GNOME, Cinnamon, macOS, Windows | key position |
 | COSMIC, KDE | the character that position types on your current layout |
-| Windows | the virtual key that position holds on your current layout |
 
-The layout-following rows re-register when you switch layouts while TildaZ runs. On
+The COSMIC and KDE row re-registers when you switch layouts while TildaZ runs. On
 German, `[Backquote]` is a dead accent that COSMIC and KDE cannot express, so TildaZ logs
 it instead of registering the wrong key. On macOS the global hotkey always matches by
 position, while `[keys]` matches the printed letter

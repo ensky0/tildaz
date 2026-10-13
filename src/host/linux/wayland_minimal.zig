@@ -7218,7 +7218,7 @@ const Client = struct {
     fn processKeyEvent(self: *Client, serial: u32, key: u32, action: key_encode.Action) !void {
         self.last_serial = serial;
 
-        // #494 — compose 를 거치지 않고 끝난 키 (다이얼로그 · 메뉴 · 단축키 · nav 키 · Ctrl/Alt
+        // #494 — compose 를 거치지 않고 끝난 키 (다이얼로그 · 메뉴 · 단축키 · Ctrl/Alt
         // 조합 · IME preedit 중) 가 끼면 조합 중이던 dead key 를 버린다. `^` 를 누른 뒤 Enter 나
         // Ctrl+C 를 쳤으면 조합 의도는 끝난 것이고, 그 뒤 `e` 에서 `ê` 가 튀어나오면 더 놀랍다.
         // modifier 키 자체 (Shift 를 누르는 것) 는 `composeFeed` 가 IGNORED 로 받아 상태를 지키므로
@@ -7374,8 +7374,10 @@ const Client = struct {
         // 스페인어 자판은 backtick 을 아예 낼 수 없었다. 여기서 keysym 을 Compose 상태 기계에 먹여
         // `^`+`e` → `ê`, `^`+space → `^`, `^`+`^` → `^` 를 만든다.
         //
-        // **글자가 될 키만 지나간다.** 단축키 · 다이얼로그 · 메뉴 · scrollback · nav 키는 위에서 이미
-        // 돌아갔다. 남은 둘은 여기서 가른다:
+        // **단축키 · 다이얼로그 · 메뉴 · 검색바 편집키 · scrollback 은 위에서 이미 돌아갔다.** nav 키
+        // (화살표 · Home · End 등) 와 Enter 는 여기를 지나 compose 를 거친 뒤 아래 `sendEncodedKey` 로
+        // 간다 — 조합 중이 아니면 `NOTHING` 이라 그대로 나가고, `^` 다음이면 `CANCELLED` 라 함께
+        // 버려진다 (#626). 남은 둘은 여기서 가른다:
         //   - **IME 가 preedit 을 들고 있으면 IME 가 주인이다.** compose 를 건너뛴다 (위 defer 가
         //     상태를 비운다). IME 가 키를 가로채는 세션에서는 이 함수까지 키가 오지 않으므로 둘이
         //     동시에 조합할 일은 원래 없고, 이 조건은 preedit 이 있는 채로 키가 온 경계를 막는다.

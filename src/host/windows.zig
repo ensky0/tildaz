@@ -252,7 +252,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         app.window.registerGlobalHotkey(config.hotkey.vkey, config.hotkey.modifiers, config.hotkey.code);
     } else {
         // 건너뛴 사실을 로그에 남긴다 — 측정 실행이 사용자의 핫키를 건드리지 않았는지
-        // 확인하는 근거다 (세 host 의 `(stress run)` 로그와 같은 어휘).
+        // 확인하는 근거다. 이 줄은 Windows 에만 있다 — Linux · macOS 는 등록을 건너뛰기만
+        // 하고 로그를 남기지 않는다. `(stress run)` 어휘는 Linux 의 `hidden_start ignored
+        // (stress run)` 과 같다.
         log.appendLine("hotkey", "global hotkey not registered (stress run)", .{});
     }
     log.appendLine("startup", "window initialized: dpi={d} cell={}x{}", .{

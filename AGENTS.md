@@ -556,7 +556,7 @@ amend 와 force push 는 (main 포함) 자유롭게 해요. 단 **검증이 끝�
 앱이 사용자에게 보여주는 모든 텍스트와 다이얼로그는 두 모듈을 반드시 거쳐요.
 
 - **`src/messages.zig`**: 사용자에게 노출되는 모든 텍스트 상수 / format string 의 단일 진입점. 새 메시지가 필요하면 여기 먼저 추가하고 호출처는 이 상수만 import 해요. 같은 의미의 메시지를 platform 별로 두 번 작성하지 않아요.
-- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/linux.zig` (host 의 layer-shell overlay — #203, Wayland 연결 전 config fatal은 stderr + log fallback), `dialog/macos.zig` (짧은 본문은 `NSAlert`, overflow 본문은 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/windows.zig` (짧은 본문은 `MessageBoxW`/key capture window, overflow 본문은 read-only `EDIT`)가 선택돼요.
+- **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/linux.zig` (host 의 layer-shell overlay — #203, Wayland 연결 전 config fatal은 stderr + log fallback), `dialog/macos.zig` (짧은 본문은 `NSAlert`, overflow 본문은 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/windows.zig` (본문 길이와 관계없이 자체 창 `TildaZScrollableDialogWindow` + read-only `EDIT` 본문, hotkey 입력은 key capture window. 자체 창을 못 만들 때만 `MessageBoxW` fallback)가 선택돼요.
 
 **Dialog overflow 정책은 Linux · macOS · Windows 공통**이에요. 먼저 실제 텍스트를 측정해 화면 안에 들어오도록 창을 키우고, 그래도 화면을 넘을 때만 본문에 세로 scroll을 둬요. 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
 
@@ -796,8 +796,8 @@ tool/repeat-render-check_macos.sh 24 6 /path/show.sh    # 다른 화면으로
 python3 tool/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
 git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=ReleaseFast -Dsimd=true)   # 기준판
 zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true                             # 수정판
-tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ.app zig-out/TildaZ.app      # 정적 → 0 px
-tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
+tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ-dev.app zig-out/TildaZ-dev.app      # 정적 → 0 px
+tool/render-process-check_macos.sh zig-out/TildaZ-dev.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
 ```
 
 - **기준판은 별도 worktree 에서 빌드해요.** `.zig-cache` 를 나누지 않으면 두 판의 바이너리가 같아져
@@ -820,7 +820,7 @@ tool/render-process-check_macos.sh zig-out/TildaZ.app /tmp/many.sh 88x33 30 0.03
   덤프가 없어요). 출력이 크면 여러 프레임에 걸쳐 도착해 ±2 노이즈가 나니 작은 화면으로 **3 회 반복**하고,
   구조로 확실한 것과 수치로 보인 것을 갈라 적어요 (#591 2 단계는 기대한 −1 프레임이 수치로 안 보였어요).
 - **사용자에게 보여 줄 창은 서명 빌드를 `open` 으로 띄워요** — `zig build -Dmacos-sign-identity=TildazLocal …`
-  뒤 `open -n -a zig-out/TildaZ.app --args --instance 9`. 바이너리를 직접 실행하면 TCC 권한이 안 맞아
+  뒤 `open -n -a zig-out/TildaZ-dev.app --args --instance 9`. 바이너리를 직접 실행하면 TCC 권한이 안 맞아
   안내 다이얼로그가 뜨고 키 입력이 막혀요 (아래 `# 실행 환경` 의 같은 규칙 — 2026-09-02 에 또 걸렸어요).
   캡처만 하는 무입력 회차는 직접 실행도 동작해요.
 - **화면이 잠겨 있으면 캡처가 전부 실패해요** (`Display 1 Shield`). 사용자가 자리를 비우면 30 분
@@ -923,14 +923,14 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMed
 | [`tool/mouse-probe/mouse-auto-check_macos.sh`](tool/mouse-probe/mouse-auto-check_macos.sh) | `mouse-probe.sh --log` 를 띄우고 셀을 눌러 `?1005` · `?1015` · `?1016` 같은 형식의 바이트 형태를 판정 |
 | [`tool/deadkey-check/deadkey-check_macos.sh`](tool/deadkey-check/deadkey-check_macos.sh) | 입력 소스 ABC 에서 Option+e · e → `é` (c3 a9) 가 들어오는지 |
 | [`tool/selection-check/selection-check_macos.sh`](tool/selection-check/selection-check_macos.sh) | 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). 좌표는 앱 로그의 `renderer init: … scale= cell= pad=` 에서 읽는다. **클립보드를 잠깐 바꾸므로 순수 글자 말고 다른 형식 (HTML · RTF · 이미지 · 파일) 이 함께 있으면 멈춘다** — `pbpaste` 는 글자 형식만 읽어 나머지를 되돌릴 수 없다 (2026-10-10 에 빈 글자로 한 번, HTML 서식을 한 번 잃었다) |
-| [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos` 로 keyCode + flags 를 보낸다 |
+| [`tool/key-bytes-check_macos.sh`](tool/key-bytes-check_macos.sh) | `Ctrl` + 기호 · 숫자 · Space 의 PTY 바이트를 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 와 견줌 (legacy · mok2). 키는 `tool/input_macos.m` 로 keyCode + flags 를 보낸다 |
 
 - **`key-bytes-check_macos.sh` 는 켜진 시스템 단축키를 보내지 않고 SKIP 해요.** `⌃Space` 를 보내면 사용자의 입력 소스가
   바뀌어요. `com.apple.symbolichotkeys` 를 읽는데, **항목이 없으면 macOS 기본값이 적용돼요** — 60 번 (`⌃Space`) 은
   기본으로 켜져 있어서 항목이 없는 기기에서는 SKIP 이 맞아요. MacBook Pro (M5 Pro) 는 60 번이 다른 키로 바뀌어 있어 `⌃Space` 가 SKIP 되지 않아요 (2026-10-01 설정 확인).
 - 판정은 **키마다 그 뒤에 새로 생긴 줄만** 읽어요. 순서로 맞추면 한 키가 0 바이트일 때 뒤가 전부 밀려요.
 
-- **창 위치는 `tool/color-capture_macos --list` 의 위치 열**에서 읽어요 — Accessory 앱은 AX 의
+- **창 위치는 `tool/color-capture_macos.m` 의 `--list` 위치 열**에서 읽어요 — Accessory 앱은 AX 의
   `position of window` 가 창을 못 찾고 (`유효하지 않은 인덱스`), JXA 의 `CGWindowListCopyWindowInfo`
   는 CFArray 를 풀지 못했어요. 그래서 우리 도구에 열을 더했어요 (크기 뒤 · 제목 앞 — 앞 열로 읽는
   스크립트가 그대로 맞아요).
@@ -940,7 +940,7 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMed
   합성 입력 전달 (`cliclick m:` 뒤 `p` 로 위치 확인) 을 먼저 봐요. 회차 동안 `caffeinate -disu` 를 켜요.
 - 비활성 창의 **첫 클릭은 창을 깨우는 데 쓰일 수 있어** (`acceptsFirstMouse`) 두 번 눌러요 — 두 번째가
   판정 대상이에요. 키는 창을 클릭해 key window 로 만든 뒤, 무해한 `arrow-right` 하나를 먼저 보내요.
-- **`cliclick kp:return` · `kp:enter` 는 앱에 개행이 안 닿아요 — Return 은 `tool/input_macos` 으로 보내요**
+- **`cliclick kp:return` · `kp:enter` 는 앱에 개행이 안 닿아요 — Return 은 `tool/input_macos.m` 으로 보내요**
   (`/tmp/mac-input send return`, 2026-09-05 실측 · #583 B20). 앱은 Return 을 인코더가 아니라 IME 경로
   (`interpretKeyEvents:` → `insertNewline:`) 로 받는데 (`isNavOrFunction(.enter)` 가 의도적으로 false — 한글 조합의
   Return 확정이 그 경로다), AppKit 은 그 selector 를 이벤트의 `characters` 로 고르므로 `characters` 가 빈 합성
@@ -2042,7 +2042,7 @@ Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`I
 
 ```sh
 python3 tool/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
-git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 2048/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/linux/gl_atlas.zig
+git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 2048/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/glyph_atlas_common.zig
 (cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
 tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
 ```
@@ -2284,7 +2284,7 @@ Git Bash · KDE 가 필요한 건 여러 터미널을 띄워 비교하는 그 �
 
   셋째는 **`XDG_CURRENT_DESKTOP` 과 `DBUS_SESSION_BUS_ADDRESS` 를 함께 빼면** 막혀요 (`de=(unset)`
   이면 등록 경로를 아예 안 타요 — 위 `# 전역 hotkey` 절의 첫 함정과 같은 성질을 이번엔 *이용*하는
-  거예요). [`tool/config-notice-check.sh`](tool/config-notice-check.sh) 의 `SESSION_GUARD` 가 그
+  거예요). [`tool/config-notice-check_linux_macos.sh`](tool/config-notice-check_linux_macos.sh) 의 `SESSION_GUARD` 가 그
   모양이에요. 이미 남았으면 파일을 손으로 고치지 말고 D-Bus 로 지워요 — kglobalaccel 이 메모리
   상태로 파일을 다시 써요.
 
@@ -2574,7 +2574,7 @@ Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
 `preserveResolvedWindowsAbi`가 이미 resolve된 ABI를 dependency query에도 명시해요.
 명시적으로 요청한 ABI는 건드리지 않아요.
 
-**캐시 두 종류 — 헷갈리지 않기.** zig 는 캐시가 둘이에요. (1) **로컬 캐시** = 빌드 산출물·중간물, `--cache-dir` 로 지정 (위 명령의 `C:/ziglang/tildaz-cache`). (2) **글로벌 캐시** = 받아온 의존성 패키지 (`ghostty` / `vaxis` / `uucode` 등, `p/` 디렉토리), `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고 기본은 `%LocalAppData%\zig`. 둘은 **별개라** `--cache-dir` 만 바꿔도 의존성은 글로벌 캐시에서 따로 관리돼요. 의존성 fetch 문제(아래 libxml2)는 *글로벌* 캐시에서 일어나요.
+**캐시 두 종류와 `zig-pkg/` — 헷갈리지 않기.** Zig 0.16 은 빌드에 쓰는 것을 세 곳에 둬요. (1) **로컬 캐시** = 빌드 산출물 · 중간물. `--cache-dir` 로 지정하고 (위 명령의 `C:/ziglang/tildaz-cache`), 기본은 build root 의 `.zig-cache/` 예요. (2) **`zig-pkg/`** = 받아온 의존성을 **푼 트리**. build root (`build.zig` 옆) 에 생기고, `.gitignore` 가 막아요 (#451). 직접 의존성은 `ghostty` · `toml` 이고, ghostty 가 끌어오는 패키지도 여기 풀려요. (3) **글로벌 캐시** = 받은 패키지를 다시 압축한 `p/<hash>.tar.gz`. 다음에 네트워크 없이 다시 풀려고 둬요. `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고, 기본은 Windows `%LocalAppData%\zig` · Linux `~/.cache/zig` 예요. **0.15 까지는 의존성을 (3) 의 `p/<hash>/` 에 바로 풀었어요** — [Zig 0.16 릴리즈 노트](https://ziglang.org/download/0.16.0/release-notes.html)의 "Fetch Packages Into Project-Local Directory": *"Instead of being fetched into $GLOBAL_ZIG_CACHE/p/$HASH, package dependencies are now fetched into a "zig-pkg" directory relative to the build root"*. 그래서 의존성 tarball 을 푸는 문제 (아래 심볼릭 링크 · libxml2) 는 이제 `zig-pkg/` 에서 일어나요. 셋은 **별개라** `--cache-dir` 만 바꿔도 `zig-pkg/` 와 글로벌 캐시는 그대로예요.
 
 **새 컴퓨터 첫 빌드 — Windows 는 개발자 모드 필수.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.16.0**) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, **Windows 에서는 먼저 개발자 모드 (Developer Mode) 를 켜야 해요**:
 

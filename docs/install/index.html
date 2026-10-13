@@ -58,7 +58,7 @@
         <article class="info-card">
           <span class="feature-kicker">Linux</span>
           <h2>Choose your package</h2>
-          <p>Use a portable tarball, deb, rpm, AppImage, or Arch pkg. Linux builds target common distribution families and include x86_64 / aarch64 where the release provides them.</p>
+          <p>Use a portable tarball, deb, rpm, AppImage, or Arch pkg. Linux builds target common distribution families and include x86_64 / aarch64 where the release provides them. From the tarball, run <code>./install.sh --release</code>. On GNOME, the bundled Shell extension loads only after you log out and back in once. Cinnamon loads it right away.</p>
           <ul>
             <li>tar.gz for portable installs</li>
             <li>deb for Debian / Ubuntu</li>
@@ -70,7 +70,7 @@
         <article class="info-card">
           <span class="feature-kicker">macOS</span>
           <h2>Drag the app in</h2>
-          <p>Download the universal DMG and drag <code>TildaZ.app</code> into Applications. Releases use a stable self-signed TildaZ identity rather than Apple notarization, so use macOS's Open action if Gatekeeper blocks the first launch. Then grant Input Monitoring and Accessibility for global hotkey and window control shortcuts.</p>
+          <p>Download the universal DMG and drag <code>TildaZ.app</code> into Applications. Releases use a stable self-signed TildaZ identity rather than Apple notarization, so use macOS's Open action if Gatekeeper blocks the first launch. Then grant Input Monitoring and Device Control and Data Access (called Accessibility before macOS 27) for the global hotkey and window control shortcuts.</p>
           <ul>
             <li>macOS 14+</li>
             <li>Apple Silicon + Intel</li>
@@ -82,7 +82,7 @@
           <h2>Unzip and run</h2>
           <p>Download the x64 or ARM64 zip, keep the <code>_internal</code> folder next to <code>tildaz.exe</code>, and run <code>tildaz.exe</code>.</p>
           <ul>
-            <li>Windows 10 1903+ x64</li>
+            <li>Windows 10 1809+ x64 (the bundled ConPTY's minimum; tested on Windows 11)</li>
             <li>Windows 11 ARM64</li>
             <li>Bundled Microsoft OpenConsole runtime</li>
           </ul>

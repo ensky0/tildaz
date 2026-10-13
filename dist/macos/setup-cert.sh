@@ -8,7 +8,7 @@
 #   - `~/.tildaz/` 에 p12 + crt 백업 — keychain 이 밀려도 되살릴 수 있게 (#444)
 #
 # 안정 signing identity + 고정 bundle id (me.ensky0.tildaz) → 코드 바꿔도 같은 앱
-# 으로 인식 → Input Monitoring / Accessibility(TCC) 권한 한 번 부여 후 유지.
+# 으로 인식 → Input Monitoring / Accessibility (macOS 27: Device Control and Data Access) 권한 한 번 부여 후 유지.
 # ad-hoc 서명은 매 빌드 hash 가 바뀌어 TCC 가 매번 재요구 — 그걸 없애는 게 목적.
 #
 # **identity 가 사라졌을 때 이 스크립트를 먼저 쓰지 않아요.** 새로 만들면 서명 해시가
@@ -18,7 +18,7 @@
 # 이후 빌드:
 #   ./dist/macos/build_and_install.sh
 #   # 또는 설치 없이 dev 루프:
-#   zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseSafe && open zig-out/TildaZ.app
+#   zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ trap "rm -rf $TMPDIR" EXIT
 # 이미 유효(trusted) codesigning identity 가 있으면 아무것도 안 함 (idempotent).
 if has_valid_identity; then
     echo "'$CERT_NAME' codesigning identity 가 이미 유효합니다 — 할 일 없음."
-    echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ.app"
+    echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app"
     exit 0
 fi
 
@@ -41,7 +41,7 @@ fi
 if [[ -f "$P12_BACKUP" ]]; then
     echo "백업된 인증서가 있습니다: $P12_BACKUP" >&2
     echo "" >&2
-    echo "새로 만들면 서명 해시가 바뀌어 Input Monitoring / Accessibility 권한을 다시" >&2
+    echo "새로 만들면 서명 해시가 바뀌어 Input Monitoring / Accessibility (macOS 27: 기기 제어 및 데이터 접근) 권한을 다시" >&2
     echo "부여해야 하고, GitHub secrets 와 CI 의 MACOS_CERTIFICATE_SHA1 도 갱신해야 합니다." >&2
     echo "먼저 같은 인증서로 되살려 보세요:" >&2
     echo "" >&2
@@ -101,8 +101,8 @@ fi
 
 report_identity || true
 echo ""
-echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ.app"
-echo "       (codesign dialog 뜨면 '항상 허용'. 첫 실행 후 손쉬운 사용/입력 모니터링 권한 한 번.)"
+echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app"
+echo "       (codesign dialog 뜨면 '항상 허용'. 첫 실행 후 손쉬운 사용 (macOS 27: 기기 제어 및 데이터 접근) / 입력 모니터링 권한 한 번.)"
 echo ""
 echo "새 인증서라면 아래도 갱신해야 해요 (#444):"
 echo "  - GitHub secrets: MACOS_CERTIFICATE_P12_BASE64 / MACOS_CERTIFICATE_PASSWORD"

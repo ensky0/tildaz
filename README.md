@@ -16,11 +16,6 @@ you do not.
 **Website**: https://ensky0.github.io/tildaz/ ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
-> **v0.9.4 — Heavy output lands about twice as fast.**
-> Emoji, ZWJ sequences and CJK text parse roughly twice as fast, and ANSI-heavy
-> output about 1.5x. Powerline separators now draw without a Nerd Font, and on
-> Linux text stays sharp at fractional display scales.
-
 ## Who is TildaZ for?
 
 - **You want a Tilda alternative that follows you across OSes.** TildaZ keeps
@@ -64,14 +59,20 @@ Download the latest artifact from
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then `./install.sh --release` installs the `.desktop` and icon under `~/.local/share`. The binary stays in the extracted directory by default. |
+| Linux (any distro) — portable | `tildaz-vX.Y.Z-linux-{x86_64,aarch64}.tar.gz` | Extract, then run `./install.sh --release`. It adds the `.desktop` file, the icon, and the GNOME and Cinnamon Shell extensions under `~/.local/share`, plus a `~/.local/bin/tildaz` link. The binary stays in the extracted directory. |
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z-1_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
 | Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). |
 | macOS 14+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
-| Windows 10 1903+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere, keep the `_internal` folder next to `tildaz.exe`, and run `tildaz.exe`. |
+| Windows 10 1809+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere, keep the `_internal` folder next to `tildaz.exe`, and run `tildaz.exe`. 1809 (build 17763) is the minimum of the bundled ConPTY runtime; tested on Windows 11. |
 | Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
+
+On GNOME and Cinnamon, TildaZ runs through its own Shell extension. TildaZ
+installs and turns it on the first time it starts. GNOME loads a newly
+installed extension only after you log out and back in, so the first start may
+stop with **TildaZ Shell Extension Required**. Log in again and start TildaZ.
+Cinnamon loads the extension right away.
 
 First launch creates the default config:
 
@@ -134,6 +135,7 @@ TildaZ needs no arguments to start. These options are available:
 ```bash
 tildaz --instance 1     # run instance 1, with its own window, config, and log
 tildaz --toggle         # show or hide the instance, starting it if needed (Linux only)
+tildaz --desktop add    # add (or remove, cleanup) TildaZ's desktop shortcut and startup entries (Linux only)
 tildaz --autostart      # start the way the desktop session starts TildaZ
 tildaz --version        # print the version, then exit
 tildaz --help           # print the option list, then exit
@@ -177,19 +179,29 @@ Requirements:
 - [Zig 0.16.0](https://ziglang.org/download/)
 - macOS: Xcode Command Line Tools (`xcode-select --install`)
 - Windows: no extra C/C++ toolchain; Zig provides clang + LLD for the MSVC ABI
+- Windows: turn on **Developer Mode** before the first build. The Ghostty source
+  archive contains a symlink, and unpacking it fails without that permission
+- Windows: `zig build` cannot run while **Smart App Control** is on. It blocks
+  the unsigned build runner that Zig creates. You can only turn it off, and
+  once off it cannot be turned back on without reinstalling Windows
 
 ```bash
 zig build
 zig build test
-zig build package
+zig build package -Drelease=true
 ```
+
+`zig build` makes a dev build. It uses its own names (`tildaz-dev`,
+`TildaZ-dev.app`), config, logs, and default hotkey (`F10`), so it does not touch
+an installed release. Add `-Drelease=true` for a release build; `zig build
+package` refuses to run without it.
 
 Outputs:
 
 | Platform | Local build output | Package output |
 |---|---|---|
 | Linux | `zig-out/bin/tildaz` (with `-Dtarget={x86_64,aarch64}-linux-gnu.2.28`) | `zig-out/release/{tildaz-v<ver>-linux-<arch>.tar.gz,tildaz_<ver>-1_<debarch>.deb,tildaz-<ver>-1.<arch>.rpm,TildaZ-<ver>-<arch>.AppImage}` (`-Dformat=tar.gz\|deb\|rpm\|AppImage`) |
-| macOS | `zig-out/TildaZ.app` | `zig-out/release/tildaz-v<ver>-macos.dmg` |
+| macOS | `zig-out/TildaZ-dev.app` (`zig-out/TildaZ.app` with `-Drelease=true`) | `zig-out/release/tildaz-v<ver>-macos.dmg` |
 | Windows x64 | `zig-out/bin/tildaz.exe` | `zig-out/release/tildaz-v<ver>-win-x64.zip` |
 | Windows ARM64 | `zig-out/bin/tildaz.exe` (with `-Dtarget=aarch64-windows`) | `zig-out/release/tildaz-v<ver>-win-arm64.zip` |
 
@@ -211,8 +223,8 @@ packages are useful for testing, but release artifacts are not uploaded by hand.
 ## Known Limitations
 
 - Linux is Wayland-only (no X11) and shipped in v0.5.0. It is verified on real
-  hardware across KDE Plasma 6, GNOME (via a Shell extension), Cinnamon,
-  COSMIC, Hyprland, and sway. Z-order yield on focus loss is not implemented on Linux
+  hardware across KDE Plasma 6, GNOME and Cinnamon (both through a bundled
+  Shell extension), COSMIC, Hyprland, and sway. Z-order yield on focus loss is not implemented on Linux
   (`zwlr_layer_shell_v1` categorical layers have no normal-window slot). Hanja
   conversion of already-committed Hangul (selecting committed Korean text and
   pressing the Hanja key) is not supported on Linux — `zwp_text_input_v3` has no
@@ -258,7 +270,8 @@ Bundled / linked components:
 | `libghostty-vt` | MIT | https://github.com/ghostty-org/ghostty |
 | `OpenConsole.exe` / `conpty.dll` | MIT | https://github.com/microsoft/terminal |
 
-The binary is statically linked and also contains `uucode` (MIT) and Highway
-(Apache-2.0) by way of `libghostty-vt`. Full copyright notices, license texts,
+The binary is statically linked and also contains `zig-toml` (MIT), plus
+`uucode` (MIT), Highway (Apache-2.0), and simdutf (MIT) by way of
+`libghostty-vt`. Full copyright notices, license texts,
 and color theme attribution are in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

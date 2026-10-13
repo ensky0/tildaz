@@ -5,8 +5,9 @@ TildaZ is distributed under **AGPL-3.0-or-later** (see [LICENSE](LICENSE)).
 The TildaZ binary is statically linked and therefore contains compiled code
 from the third-party components listed below. This file carries the copyright
 notices and license texts that must accompany that distribution. It is not a
-statement of TildaZ's dependency graph — TildaZ declares exactly one direct
-dependency, `ghostty`; the rest arrive transitively through it.
+statement of TildaZ's dependency graph — TildaZ declares two direct
+dependencies, `ghostty` and `zig-toml`; the rest arrive transitively through
+Ghostty.
 
 ## Components in the distributed binary
 
@@ -16,6 +17,7 @@ dependency, `ghostty`; the rest arrive transitively through it.
 | `uucode` | MIT | Always — Ghostty's VT module uses it for grapheme break support |
 | `zig-toml` | MIT | Always — parses the TOML config file |
 | Highway | Apache-2.0 (also available under BSD-3-Clause) | Builds with `-Dsimd=true`, which official releases use |
+| simdutf | MIT (also available under Apache-2.0) | Builds with `-Dsimd=true` — Ghostty's VT module uses it to decode UTF-8 |
 | `OpenConsole.exe` / `conpty.dll` (ConPTY) | MIT | Windows builds only — shipped as separate files, not linked |
 
 Components fetched during the build but **not** compiled into the binary are
@@ -49,6 +51,17 @@ Copyright 2019 Google LLC
 Copyright 2024 Arm Limited and/or its affiliates <open-source-office@arm.com>
 Copyright (c) The Highway Project Authors. All rights reserved.
 ```
+
+**simdutf** — https://github.com/simdutf/simdutf
+
+```
+Copyright 2021 The simdutf authors
+```
+
+Ghostty vendors simdutf 9.0.0 in `pkg/simdutf`. simdutf is offered under both
+the Apache License 2.0 and the MIT License, and its README says: "As a user,
+you can pick the license you prefer." TildaZ uses it under the MIT License.
+The notice above is from simdutf's `LICENSE-MIT` at the `v9.0.0` tag.
 
 **ConPTY** — https://github.com/microsoft/terminal
 
@@ -96,7 +109,7 @@ their names or trademarks.
 
 ## MIT License
 
-Applies to `libghostty-vt`, `uucode`, `zig-toml`, ConPTY,
+Applies to `libghostty-vt`, `uucode`, `zig-toml`, simdutf, ConPTY,
 iTerm2-Color-Schemes, and the Campbell palette from `microsoft/terminal`, under
 the respective copyright notices above.
 

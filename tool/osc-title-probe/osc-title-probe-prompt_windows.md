@@ -1,5 +1,12 @@
 # Windows 실측 프롬프트 — 셸이 첫 OSC 제목을 보내는 시점 (#364)
 
+> **지금 상태 — 끝난 작업의 기록이다. 그대로 붙여 넣지 않는다.** 이 프롬프트로 만든
+> `osc-title-probe_windows.zig` 는 이미 main 에 있고, #364 는 닫혔다. 1 초 유예
+> (`INITIAL_TITLE_GRACE_NS`) 는 [`9737a5a`](https://github.com/ensky0/tildaz/commit/9737a5a)
+> ([PR #372](https://github.com/ensky0/tildaz/pull/372)) 에서 지워졌다 — 새 탭은 처음부터 `Tab N` 이고,
+> 첫 OSC 제목은 debounce 없이 바로 바뀐다 ([#364 마무리 댓글](https://github.com/ensky0/tildaz/issues/364)).
+> 아래의 브랜치 · 상수 인용은 그때 기준이다. 다른 셸을 다시 재려면 도구 머리 주석의 빌드 · 실행 명령을 쓴다.
+
 > 이 파일 전체가 **Windows 머신의 Claude Code 세션에 그대로 붙여 넣는 프롬프트**다.
 > Linux 쪽 실측은 이미 끝났고 (`tool/osc-title-probe/osc-title-probe_linux.zig` +
 > [#364 댓글](https://github.com/ensky0/tildaz/issues/364#issuecomment-5151754093)),

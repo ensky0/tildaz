@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""xdg-desktop-portal 로 화면을 찍는다 — **GNOME 에서 유일하게 남는 자동 캡처 경로**.
+"""xdg-desktop-portal 로 화면을 찍는다 — **Cinnamon (XApp 포털) 에서 쓰는 캡처 경로**.
 
-GNOME (mutter) 은 다른 길을 전부 막아 둔다 (2026-09-03 · GNOME Shell 50.4 실측).
+데스크톱마다 결과가 갈린다 (2026-09-03 실측 · AGENTS.md 의 `# Linux — headless sway …` 절).
 
-- `zwlr_screencopy_manager_v1` · `ext_image_copy_capture_manager_v1` 를 **client 에 노출하지 않는다** → `grim` 불가.
-- `org.gnome.Shell.Screenshot` · `org.gnome.Shell.Introspect` 는 allowlist 밖 호출자에게 `AccessDenied` 다.
-- `import` (ImageMagick) 는 X11 이라 Xwayland 창만 잡는다 — 네이티브 Wayland surface 는 못 찍는다.
+- **Cinnamon** (`cinnamon-wayland.desktop` 세션) — XApp 포털 (`xdg-desktop-portal-xapp`) 이 캡처를 허용한다.
+  다만 권한 창이 화면에 함께 찍히니, 볼 영역을 따로 찾아 crop 한다.
+- **GNOME** (GNOME Shell 50.4) — 권한 창 뒤에 `response=2` 로 끝난다. 이 스크립트로도 못 찍는다.
+  GNOME 은 다른 길도 다 막혀 있다.
+  - `zwlr_screencopy_manager_v1` · `ext_image_copy_capture_manager_v1` 를 **client 에 노출하지 않는다** → `grim` 불가.
+  - `org.gnome.Shell.Screenshot` · `org.gnome.Shell.Introspect` 는 allowlist 밖 호출자에게 `AccessDenied` 다.
+  - `import` (ImageMagick) 는 X11 이라 Xwayland 창만 잡는다 — 네이티브 Wayland surface 는 못 찍는다.
+  그래서 GNOME 의 픽셀 확인은 사용자가 `PrtSc` 로 찍어 주는 수밖에 없다.
 
-포털은 **처음 한 번 사용자 확인 창**을 띄우고 (GNOME 은 "스크린샷을 찍도록 허용하시겠습니까"), 허용하면 permission
-store 에 남아 다음부터는 조용히 찍힌다. 그래서 무인 회차에는 못 쓰고, 사용자가 자리에 있을 때 한 번 허용받아 두면
-그 뒤로는 자동으로 돈다.
+포털이 권한 창을 띄우므로 사람이 없는 회차에는 못 쓴다.
 
     python3 tool/portal-screenshot_linux.py out.png [--timeout 60] [--interactive]
 

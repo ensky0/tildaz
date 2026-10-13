@@ -95,7 +95,8 @@ Tab titles follow the shell (OSC 0/2). A new tab is `Tab N` until the shell send
 
 ## Search
 
-Searches the **active pane's** scrollback, case-insensitive, plain text (no regex).
+Searches the **active pane's** scrollback as plain text (no regex). Case is
+ignored only for ASCII letters (A–Z).
 `Enter` goes down and `Shift+Enter` goes up, starting from what is on screen, and wrap
 around at the end. Each pane keeps its own search.
 
@@ -112,11 +113,16 @@ around at the end. Each pane keeps its own search.
 
 | Action | Result |
 |--------|--------|
-| Drag | Select and copy on release |
-| Double-click | Select a word and copy |
+| Drag | Select. Copy it with `Ctrl+Shift+C` (`Cmd+C`) or a right-click |
+| Double-click | Select a word |
 | Wheel | Scroll the pane under the pointer |
-| Right-click | Paste |
+| Right-click | Copy the selection. With nothing selected, paste |
+| Middle-click *(Linux)* | Paste the last selection (primary selection) |
+| Click an underlined link | Open it in your browser. Hold `Ctrl` (`Cmd`) while a program uses the mouse |
 | Click a pane | Focus it |
 | Drag the line between panes | Resize the panes |
 | Click `…` | Open the command menu |
 | Click / drag the scrollbar | Jump / scroll |
+
+Set `[input] copy_on_select = true` to copy every selection as you make it. Then right-click
+always pastes ([CONFIG.md](CONFIG.md)).

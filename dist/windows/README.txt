@@ -46,9 +46,10 @@ Launch TildaZ again while every configured instance is running to add
 another one. Press its global hotkey and choose Create. Each numbered
 config owns one process and a matching numbered log.
 
-New shells start in the Windows home directory. WSL commands start
-in the Linux home unless the configured command already supplies
-an explicit --cd option.
+The first shell starts in your Windows home directory. A new tab
+starts in the active tab's current directory, or in the home
+directory when that cannot be found. WSL tabs use Linux paths:
+TildaZ passes --cd to wsl.exe unless your command already has it.
 
 Configuration reference:
 
@@ -65,15 +66,18 @@ LICENSES
     TildaZ                         AGPL-3.0-or-later
     libghostty-vt                  MIT
     uucode                         MIT
+    zig-toml                       MIT
     Highway                        Apache-2.0
+    simdutf                        MIT
     OpenConsole.exe / conpty.dll   MIT
 
 The TildaZ license text is in LICENSE, next to this file.
 
 tildaz.exe is statically linked and contains compiled code from
-libghostty-vt, uucode, and Highway. Their copyright notices and
-full license texts are in THIRD-PARTY-NOTICES.md, next to this
-file, along with attribution for the built-in color themes.
+libghostty-vt, uucode, zig-toml, Highway, and simdutf. Their
+copyright notices and full license texts are in
+THIRD-PARTY-NOTICES.md, next to this file, along with attribution
+for the built-in color themes.
 
 The bundled Microsoft binaries come from
 Microsoft.Windows.Console.ConPTY and are redistributed under MIT.

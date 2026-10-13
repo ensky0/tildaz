@@ -4,8 +4,9 @@
 //! `tool/osc-title-probe/osc-title-probe_linux.zig`. 출력 형식은 두 platform 결과를 같은 표로
 //! 합칠 수 있게 Linux 판과 맞춰 두었다.
 //!
-//! 왜 필요한가: `src/session_core.zig` 의 `INITIAL_TITLE_GRACE_NS` (1 초) 를 줄여도
-//! 되는지는 **셸이 실제로 언제 OSC 를 보내는지**에 달려 있다. 이 도구는 tildaz 가
+//! 왜 만들었나: `src/session_core.zig` 에 있던 첫 제목 유예 `INITIAL_TITLE_GRACE_NS` (1 초) 를
+//! 줄여도 되는지는 **셸이 실제로 언제 OSC 를 보내는지**에 달려 있었다. 그 유예는 이 측정 뒤
+//! `9737a5a` (PR #372) 에서 지워졌고, 지금은 `TITLE_DEBOUNCE_NS` 만 남았다. 이 도구는 tildaz 가
 //! 자식 셸을 띄우는 조건을 그대로 복제해서 그 시점을 µs 해상도로 측정한다.
 //!
 //! tildaz 와 같게 맞춘 것 (`src/terminal/windows/pty.zig` 의 `ConPty.init`):

@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TildaZ Config - One JSON Config Shape Across OSes</title>
-  <meta name="description" content="Configure TildaZ with one familiar JSON schema across Linux, macOS, and Windows. Tune shell, hotkey, theme, font, opacity, geometry, tabs, and scrollback.">
+  <title>TildaZ Config - One TOML Config Shape Across OSes</title>
+  <meta name="description" content="Configure TildaZ with one familiar TOML file across Linux, macOS, and Windows. Tune shell, hotkey, theme, font, opacity, geometry, tabs, and scrollback.">
   <link rel="canonical" href="https://ensky0.github.io/tildaz/config/">
   <meta property="og:title" content="TildaZ Config">
-  <meta property="og:description" content="One familiar JSON config shape for TildaZ across Linux, macOS, and Windows.">
+  <meta property="og:description" content="One familiar TOML config shape for TildaZ across Linux, macOS, and Windows.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/config/">
   <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
@@ -45,7 +45,7 @@
   <main>
     <section class="page-hero">
       <p class="eyebrow">TildaZ Config</p>
-      <h1>One JSON config shape, one muscle memory.</h1>
+      <h1>One TOML config shape, one muscle memory.</h1>
       <p>Config paths differ by platform, but the schema stays familiar. Move between Linux, macOS, and Windows with the same mental model for shell, hotkey, font, theme, opacity, and geometry.</p>
       <div class="hero-actions">
         <a class="button primary" href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md" target="_blank" rel="noopener">Read CONFIG.md</a>
@@ -68,29 +68,29 @@
         </article>
         <article class="info-card code-card">
           <span class="feature-kicker">Example (Linux)</span>
-          <pre><code>{
-  "window": {
-    "dock_position": "top",
-    "width_percent": 100.0,
-    "height_percent": 45.0,
-    "offset_percent": 0.0,
-    "opacity_percent": 96.0
-  },
-  "font": {
-    "family": "JetBrains Mono",
-    "glyph_fallback": ["Noto Sans CJK KR", "Noto Color Emoji"],
-    "size_point": 15,
-    "cell_width_ratio": 1.0,
-    "line_height_ratio": 1.1
-  },
-  "theme": "Tokyo Night",
-  "shell": "/bin/bash",
-  "hotkey": "F1",
-  "auto_start": true,
-  "hidden_start": false,
-  "max_scroll_lines": 10000
-}</code></pre>
-          <p class="code-note">Every key is required (strict schema). <code>shell</code>, <code>font.family</code>, and the fallback fonts must exist on the system; on macOS/Windows use that platform's shell (e.g. <code>cmd.exe</code>) and installed fonts. See <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md">CONFIG.md</a> for every field and the built-in theme names.</p>
+          <pre><code>hotkey           = "F1"
+shell            = "/bin/bash"
+auto_start       = true
+hidden_start     = false
+theme            = "Tilda"
+max_scroll_lines = 10000
+
+[window]
+dock_position   = "top"
+width_percent   = 50.0
+height_percent  = 100.0
+offset_percent  = 100.0
+opacity_percent = 100.0
+
+[font]
+family            = "DejaVu Sans Mono"
+glyph_fallback    = ["Noto Sans CJK KR", "Noto Color Emoji"]
+size_point        = 15
+cell_width_ratio  = 1.0
+line_height_ratio = 1.1
+
+# plus [input] and [keys] -- see CONFIG.md</code></pre>
+          <p class="code-note">These are the Linux defaults. A key you leave out uses its default, and TildaZ lists it in a startup notice. <code>shell</code> and the fonts you name must exist on the system. The first launch writes your <code>$SHELL</code>; on macOS and Windows the default fonts differ, and Windows uses <code>cmd.exe</code>. See <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md">CONFIG.md</a> for every field and the built-in theme names.</p>
         </article>
       </div>
     </section>

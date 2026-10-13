@@ -17,16 +17,19 @@ git fetch origin && git checkout <브랜치>
 **항상 `--instance 1` 로 띄워요** — daily 인스턴스 (`--instance 0`) 를 안 건드려요.
 
 **핫키를 손으로 바꿀 필요는 없어요.** [#510](https://github.com/ensky0/tildaz/issues/510)
-이후 `config_1.toml` 은 자기 index 에서 파생한 `F2` 로 생성돼요 (daily 는 `F1`). 그래서
-그냥 띄우면 돼요 — 예전 판이 안내하던 "`config_1` 의 `hotkey` 를 `ctrl+alt+f9` 로 바꾼
-뒤 다시 띄워요" 우회는 더 필요 없어요.
+이후 `config_1.toml` 은 자기 index 에서 파생한 키로 생성돼요. 아래 표의 빌드는 개발
+빌드라 `F9` 예요 — 개발 빌드는 표를 거꾸로 읽어 index 0 이 `F10` 이에요
+([#654](https://github.com/ensky0/tildaz/issues/654)). 릴리즈 판이면 `F2` 예요 (daily 는
+`F1`). 그래서 그냥 띄우면 돼요 — 예전 판이 안내하던 "`config_1` 의 `hotkey` 를
+`ctrl+alt+f9` 로 바꾼 뒤 다시 띄워요" 우회는 더 필요 없어요.
 
-`F2` 를 이미 다른 앱이 쥐고 있는 기계라면 그때만 `config_1.toml` 의 `hotkey` 를 비어
+그 키를 이미 다른 앱이 쥐고 있는 기계라면 그때만 `config_1.toml` 의 `hotkey` 를 비어
 있는 조합으로 바꿔요. 세 platform 모두 전역 핫키를 못 잡으면 안내창을 띄우고 **종료**
 해요 (#510) — 어느 platform 에서든 조용히 넘어가지 않아요.
 
 **검증이 끝나면 `config_1.toml` 을 지워요** — 남겨 두면 사용자가 평소 TildaZ 를 띄울 때
-그 인스턴스가 같이 떠요.
+그 인스턴스가 같이 떠요. 개발 빌드의 파일은 `tildaz-dev` 폴더에 있어요 (Linux · macOS
+`~/.config/tildaz-dev/`, Windows `%APPDATA%\tildaz-dev\`).
 
 | platform | 빌드 | 실행 |
 |---|---|---|

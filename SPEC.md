@@ -86,16 +86,16 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 | Storage | — | `App.dpi_scale` + `applyDpiScale(new_dpi)` 가 모든 derived 값 재계산 | `Renderer.scale` + 매 render 시 재읽음 | `Renderer.scale` + `rebuildFonts(spec, scale_num, scale_den)` |
 | Font pixel height | `font.size_point` | `font_size_point × dpi/96` | `font_size_point × scale_pt` | `font_size_point × preferred_scale / 120` |
 | `TERMINAL_PADDING_PT` | 6 | `App.TERMINAL_PADDING` | `pad_px` | `Renderer.paddingPx()` |
-| `SCROLLBAR_W_PT` | 10 | `App.SCROLLBAR_W` | `scrollbar_w_px` | `Renderer.scrollbarWPx()` |
-| `SCROLLBAR_MIN_THUMB_H_PT` | 32 | `App.SCROLLBAR_MIN_THUMB_H` | `scrollbar_min_thumb_h_px` | `Renderer.scrollbarMinThumbHPx()` |
+| `SCROLLBAR_W_PT` | 10 | `App.SCROLLBAR_W` | `ui_metrics.scaledPx` / `scaledPxF` 를 호출처에서 직접 (`Renderer.scale`) | `Renderer.scrollbarWPx()` |
+| `SCROLLBAR_MIN_THUMB_H_PT` | 32 | `App.SCROLLBAR_MIN_THUMB_H` | `drawPane` 입력에서 `scaledPxF` (`Renderer.scale`) | `Renderer.scrollbarMinThumbHPx()` |
 | `TAB_BAR_HEIGHT_PT` | 28 | `ui_metrics.tabBarHeightPx(scale)` | 동일 | 동일 |
 | `TAB_LABEL_FONT_PT` | 13 | tab 전용 DWrite context + atlas | tab 전용 CoreText context + atlas/texture | tab 전용 FreeType context + glyph cache |
 | `TAB_WIDTH_PT` | 150 | `App.TAB_WIDTH` | `tab_w_px = TAB_WIDTH_PT × scale` | `Renderer.tabWidthPx()` |
 | `TAB_PADDING_PT` | 6 | `App.TAB_PADDING` | `tab_pad_px` | `Renderer.tabPaddingPx()` |
 | `TAB_GAP_PT` | 2 | `tabGapPx(App.dpi_scale)` | `tabGapPx(Renderer.scale)` | `tabGapPx(scale)` 후 정수 px 반올림 |
 | `TAB_CLOSE_W_PT` | 24 | `App.TAB_CLOSE_W` | `tabBarLayoutInputs` | `Renderer.tabCloseWPx()` |
-| `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `arrow_w_px` | `Renderer.tabArrowWPx()` |
-| `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `plus_w_px` | `Renderer.tabPlusWPx()` |
+| `TAB_ARROW_W_PT` | 24 | `App.TAB_ARROW_W` | `tabBarLayoutInputs` | `Renderer.tabArrowWPx()` |
+| `TAB_PLUS_W_PT` | 24 | `App.TAB_PLUS_W` | `tabBarLayoutInputs` | `Renderer.tabPlusWPx()` |
 
 **`pt → px` 변환은 반올림이고 공통 함수만 쓴다** ([#350](https://github.com/ensky0/tildaz/issues/350) 2026-07-30 확정). 위 표의 각 `*_PT` 를 physical pixel 로 바꿀 때 세 platform 이 **같은 규칙**을 쓰고, 계산은 [`src/ui_metrics.zig`](src/ui_metrics.zig) 의 세 함수에만 있다. host / renderer 가 `@round(@as(f32, @floatFromInt(X_PT)) * scale)` 을 직접 적지 않는다.
 
@@ -230,7 +230,7 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   그 키를 이미 다른 component가 쓰고 있으면 사용자 확인 뒤 그 key sequence만
   회수(takeover)하고 다른 binding은 보존한다. config가 source of truth다.
   launcher는 KGlobalAccel component 목록에서 정확히
-  `tildaz.instanceN`인 항목만 비교해 config 에 없는 번호의 `toggle-N` action 을
+  `tildaz.instanceN`인 항목만 비교해 (개발 빌드는 `tildaz-dev.instanceN` — §11.1) config 에 없는 번호의 `toggle-N` action 을
   증분 해제한다. drop-down 재표시는 KWin 만 `#205` unmap/remap 워크어라운드(아래
   부록 B 참조).
 - **sway (wlroots).** drop-down 은 **layer-shell 이 아니라 xdg_toplevel + i3 IPC**
@@ -330,7 +330,7 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
     COSMIC 설정 폴더 안에 두지 않는 이유는 COSMIC 이 그 폴더의 파일을 하나하나 키로 읽기
     때문이다.
   - **"TildaZ 전용 항목" 의 판정 근거는 우리가 쓰는 description 표식
-    (`description: Some("TildaZ_<index>")`) 하나다** — 명령 문자열이 아니다
+    (`description: Some("TildaZ_<index>")`, 개발 빌드는 `TildaZ-dev_<index>` — [#654](https://github.com/ensky0/tildaz/issues/654)) 하나다** — 명령 문자열이 아니다
     ([#484](https://github.com/ensky0/tildaz/issues/484)). 이 파일에는 사용자가 만든
     단축키가 함께 들어 있어서, 판정을 틀리면 양방향으로 깨진다: 자기 항목을 못
     알아보면 같은 `modifiers + key` 가 둘 쌓여 뒤의 것만 쓰이고 (중복 키로 파일을 버리지는
@@ -340,12 +340,16 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
     번호가 정수인지도 확인한다.
   - **예외는 하나뿐이다 — 예전 `install.sh` 가 표식 없이 쓴 줄을 흡수한다**
     ([#514](https://github.com/ensky0/tildaz/issues/514)). 그 시절엔 writer 가 둘이었고
-    스크립트 쪽이 표식을 안 붙여, 같은 hotkey 가 RON 에 두 번 남았다. 흡수 조건은 **완전
-    일치**다: `description` 이 아예 없고, `Spawn` 명령이 *지금 실행 파일 경로* +
-    `--toggle <index>` 와 바이트까지 같으며, 그 index 를 우리가 실제로 관리할 때. 셋 중
-    하나라도 어긋나면 사용자 항목으로 보고 남긴다.
+    스크립트 쪽이 표식을 안 붙여, 같은 hotkey 가 RON 에 두 번 남았다. 흡수 조건은 **명령의
+    모양**이다: `description` 이 아예 없고, `Spawn` 명령이 **공백 없는 실행 파일 경로 +
+    `--toggle [N]`** 뿐이며, 그 경로의 basename 이 정확히 `tildaz` 이고, 그 index 를 우리가
+    실제로 관리할 때. 하나라도 어긋나면 사용자 항목으로 보고 남긴다. 경로는 보지 않는다 —
+    예전에는 *지금 실행 파일 경로* 와 바이트까지 같아야 했는데, 새 버전을 다른 곳에 두면 그
+    줄이 영원히 남았다 ([#583](https://github.com/ensky0/tildaz/issues/583) B18). 개발 빌드는
+    흡수하지 않는다 — 옛 줄의 basename 이 dev 도 `tildaz` 라 릴리즈가 남긴 것과 구별할 수
+    없다 ([#654](https://github.com/ensky0/tildaz/issues/654)).
 - **GNOME / Cinnamon (mutter / muffin).** layer-shell 미지원이라 TildaZ 본체는 평범한
-  xdg-shell client (`app_id="tildaz.instanceN"`) 로 두고, **Shell extension** 이 창을 잡아
+  xdg-shell client (`app_id="tildaz.instanceN"`, 개발 빌드는 `tildaz-dev.instanceN`) 로 두고, **Shell extension** 이 창을 잡아
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
   담당한다. 이 확장은 **필수**다. 첫 설치 때만 앱이 활성 목록에 넣고, 사용자가 끈 상태와
   GNOME의 전체 사용자 확장 비활성 설정은 바꾸지 않는다. 비활성이면 일반 창으로
@@ -404,7 +408,7 @@ minimize/restore.
 | 등록 상대 | 판정 방법 | 근거 |
 |---|---|---|
 | Windows | `RegisterHotKey` 반환값 / 위치 표기는 `WH_KEYBOARD_LL` 훅 설치 여부 | API 가 실패를 돌려준다 |
-| macOS | Input Monitoring · Accessibility preflight + `CGEventTapCreate` | 권한이 없어도 멈춘다 — 그 상태로는 hotkey 가 영영 안 온다 |
+| macOS | Input Monitoring · Accessibility preflight + `CGEventTapCreate` (Accessibility 의 설정 화면 이름은 macOS 27 부터 *Device Control and Data Access* — API 는 그대로, [#674](https://github.com/ensky0/tildaz/issues/674)) | 권한이 없어도 멈춘다 — 그 상태로는 hotkey 가 영영 안 온다 |
 | KDE Plasma | KGlobalAccel 의 사전 소유자 조회 → 사용자 확인 → 인수 → 사후 검증 | Linux 에서 유일하게 *남이 쥐고 있다* 를 직접 안다 |
 | GNOME | Shell extension 이 `grab_accelerator` 결과를 `instanceN.hotkey` 에 남기고 worker 가 부팅 때 읽는다 | 셸 **안에서만** 답이 나오고, 그 답이 worker 탄생보다 먼저 확정된다 (실측: GNOME Shell 50.4 에서 grab 실패 → 파일 기록 → worker 종료까지 연쇄 확인) |
 | Cinnamon | 같은 배선 + **extension 이 등록 전에 Cinnamon 의 단축키 목록을 직접 본다** ([#616](https://github.com/ensky0/tildaz/issues/616)) | `addHotKey` 는 accel 충돌에 **실패하지 않는다** (실측: Cinnamon 6.6.9). 그런데 겹치면 **먼저 등록된 쪽만 발화하고 나중 것은 조용히 죽는다** — 새 이름 두 쌍으로 등록 순서를 뒤집어 두 번 확인했고, Cinnamon 자체 바인딩은 extension 보다 먼저 등록된다 (같은 세션에서 자체 id 97~173 · 우리 것 168 = 71 개가 앞선다). 그래서 반환값이 아니라 `Main.keybindingManager.bindings` 를 훑어 같은 accel 을 쓰는 남의 항목을 찾고, 있으면 등록하지 않고 `instanceN.hotkey` 에 `failed` 를 남긴다. **목록이 바뀌면 다시 판정한다** — `org.cinnamon.desktop.keybindings{,.wm,.media-keys}` 의 `changed` 로 재등록하므로 사용자가 충돌을 없애면 그때 `ok` 로 바뀐다 |
@@ -899,13 +903,13 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 
 ### 2.10 글자 크기 ([#679](https://github.com/ensky0/tildaz/issues/679) · [#693](https://github.com/ensky0/tildaz/issues/693))
 
-터미널 글자 크기를 실행 중에 1pt 씩 바꾼다. **창 전체에 한 번 적용**된다 — 모든 탭 · pane 이 같은 크기다. 탭바 · 다이얼로그 글자는 그대로다 (탭바 글자는 원래 터미널 글자와 따로다, [#272](https://github.com/ensky0/tildaz/issues/272)). 창 크기도 그대로고 칸 수가 바뀐다. 아래 표의 platform 열은 실기 확인 뒤 ✅ 로 바꾼다 — macOS 는 2026-10-02 MacBook Pro (M5 Pro) · 외장 60 Hz 에서 확인했다 (단축키 여섯 · 탭 둘 · pane 둘 · `-size` 무시). **재시작하면 `font.size_point` 로 돌아간다** — config 에 쓰지 않는다.
+터미널 글자 크기를 실행 중에 1pt 씩 바꾼다. **창 전체에 한 번 적용**된다 — 모든 탭 · pane 이 같은 크기다. 탭바 · 다이얼로그 글자는 그대로다 (탭바 글자는 원래 터미널 글자와 따로다, [#272](https://github.com/ensky0/tildaz/issues/272)). 창 크기도 그대로고 칸 수가 바뀐다. 세 platform 모두 실기로 확인했다 — macOS 는 2026-10-02 MacBook Pro (M5 Pro) · 외장 60 Hz (단축키 여섯 · 탭 둘 · pane 둘 · `-size` 무시), Linux 는 노트북 Ryzen AI 7 350 의 headless sway · KDE Plasma ([댓글](https://github.com/ensky0/tildaz/issues/693#issuecomment-5947710383)), Windows 는 데스크탑 Ryzen 7 5700G (2026-10-08 · 크게 · 작게 · 되돌리기 · 탭 둘 · pane 둘 · `-size` 무시). **재시작하면 `font.size_point` 로 돌아간다** — config 에 쓰지 않는다.
 
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
-| 크게 | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | `⌘=` · `⇧⌘=` · `⌘plus` | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | 확인 필요 | ✅ | 확인 필요 |
-| 작게 | `Ctrl+Shift+-` | `⌘-` | `Ctrl+Shift+-` | 확인 필요 | ✅ | 확인 필요 |
-| 설정 크기로 | `Ctrl+Shift+Backspace` | `⌘0` · `⇧⌘⌫` | `Ctrl+Shift+Backspace` | 확인 필요 | ✅ | 확인 필요 |
+| 크게 | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | `⌘=` · `⇧⌘=` · `⌘plus` | `Ctrl+Shift+=` · `Ctrl+Shift+plus` | ✅ | ✅ | ✅ |
+| 작게 | `Ctrl+Shift+-` | `⌘-` | `Ctrl+Shift+-` | ✅ | ✅ | ✅ |
+| 설정 크기로 | `Ctrl+Shift+Backspace` | `⌘0` · `⇧⌘⌫` | `Ctrl+Shift+Backspace` | ✅ | ✅ | ✅ |
 
 - **범위는 `font.size_point` 와 같은 8–72pt** 다. 한 상수 (`terminal_size.MIN_SIZE_POINT` · `MAX_SIZE_POINT`) 를 config 검사와 함께 쓴다. 끝에서 더 누르거나 이미 설정 크기인데 되돌리면 아무 일도 없다 (폰트를 다시 만들지 않는다).
 - **글자 크기 상태는 [`src/font/terminal_size.zig`](src/font/terminal_size.zig) 한 곳**이고, 세 platform 의 renderer 는 그 값의 `spec()` 을 `rebuildFonts(spec, scale)` 로 받는다. 배율 변경 (Windows DPI · macOS `backingScaleFactor` · Linux `preferred_scale`) 과 **같은 함수**다 — 다른 것은 배율 타입뿐이다 (Linux `n/120` · Windows DPI · macOS float).
@@ -924,18 +928,18 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 | 더블클릭 후 복사 | cell 영역. CLIPBOARD 는 `copy_on_select` 일 때만, Linux PRIMARY 는 늘 ([#656](https://github.com/ensky0/tildaz/issues/656) · [#657](https://github.com/ensky0/tildaz/issues/657)) | `selectWordAt` → `tab_actions.selectionFinished` | 동일 — `selectWord` 후 `handleSelectionFinished` | 동일 (`Client.selectionFinished`) | ✅ | ✅ | ✅ |
 | selection finish 후 복사 | cell 영역. 위와 같은 규칙 | `selection.finish()` → `tab_actions.selectionFinished` | 동일 (`tildazMouseUp` 분기) | 동일 ([e4d42d4](https://github.com/ensky0/tildaz/commit/e4d42d4)) | ✅ | ✅ | ✅ |
 | 선택 시작 문턱 ([#483](https://github.com/ensky0/tildaz/issues/483) 6단계, 2026-08-28 실기) | 누른 뒤 **문턱보다 많이 움직였거나 다른 칸으로 넘어가야** 선택이 시작된다 (`terminal_interaction.SelectionState.arm` — 세 platform 공통). 문턱은 `ui_metrics.SELECTION_DRAG_SLOP_PT` **4 pt** 을 배율로 옮긴 물리 px 이되 **반 칸을 넘지 않는다** (`selectionDragSlopPx`) — 그래야 아주 작은 폰트에서도 칸 안에서 글자 하나를 끌어 선택할 수 있다. 4 pt 은 Windows 의 드래그 판정 기본값 (`SM_CXDRAG` 4 px @96 dpi) 과 같은 수준. 한 번 넘으면 유지되어 (`armed`) 이웃 칸으로 갔다 돌아오는 한 칸 선택도 된다. **단 누른 자리가 링크면 *다른 칸으로 넘어감* 조건을 쓰지 않고 문턱만 본다** ([#647](https://github.com/ensky0/tildaz/issues/647) — 칸이 좁아 (150 % 에서 14 px) 경계 근처를 누르면 1 px 미끄러짐에도 칸이 바뀌어 선택이 시작되고 링크가 안 열렸다. 칸 경계는 선택의 단위지 클릭과 드래그를 가르는 기준이 아니다. 문턱을 넘으면 그때부터는 평소와 같아 URL 글자를 끌어 고르는 것도 그대로 된다). `on_link` 는 세 host 가 누름 처리에서 이미 계산해 `begin` 에 넘긴다. 그 전에는 트랙패드 클릭의 1~3 px 떨림이 매번 한 칸 선택 + 자동 복사를 만들어, pane 을 클릭해 포커스만 옮겨도 흰 자국이 남고 클립보드가 한 글자로 덮였다 (사용자 캡처 — pane 셋 클릭에 자국 셋) | `App.startTerminalSelection` / `updateTerminalSelection` 이 마우스 px 를 넘긴다 | `tildazMouseDown` / `Dragged` (auto-scroll 은 `g_last_drag_*`) | `pointerPx()` · `selectionSlop()` | ✅ | ✅ | ✅ |
-| word selection 동작 사양 | cell 영역 | cross-platform 단일 모듈 ([terminal_interaction.zig:95](src/terminal_interaction.zig#L95)) | 동일 모듈 | 동일 모듈 (cross-platform `terminal_interaction`) | ✅ | ✅ | ✅ |
+| word selection 동작 사양 | cell 영역 | cross-platform 단일 모듈 ([terminal_interaction.zig:269](src/terminal_interaction.zig#L269)) | 동일 모듈 | 동일 모듈 (cross-platform `terminal_interaction`) | ✅ | ✅ | ✅ |
 | 우클릭 paste | 어디든. **mouse tracking 이 켜져 있어도 paste 를 유지하고 앱에 보내지 않는다** ([#502](https://github.com/ensky0/tildaz/issues/502) 2026-08-24 결정 — 매일 쓰는 동작이라 앱이 켰다고 빼앗지 않는다. 앱에 우클릭이 필요하면 별도 논의). `copy_on_select = false` 이고 선택이 있으면 붙여넣지 않고 복사 + 선택 해제 ([#656](https://github.com/ensky0/tildaz/issues/656)) | `WM_RBUTTONDOWN` → `pasteClipboard` | `tildazRightMouseDown` → `handlePaste` | `wl_pointer.button` BTN_RIGHT → `wl_data_offer.receive` ([40af18b](https://github.com/ensky0/tildaz/commit/40af18b)) | ✅ | ✅ | ✅ |
 | 휠 / 트랙패드 scroll | 셀 영역 | `WM_MOUSEWHEEL` → `scrollViewport` | `tildazScrollWheel` → 동일 | `wl_pointer.axis` → 동일 ([a8f2461](https://github.com/ensky0/tildaz/commit/a8f2461)) | ✅ | ✅ | ✅ |
 | 스크롤바 클릭 + 드래그 | 우측 가장자리. **track** = `top = tab_bar_h + pad`, `h = viewport_h − tab_bar_h − 2·pad` (`pad` = `TERMINAL_PADDING_PT`) — thumb 을 맨 위로 올렸을 때 위 여백과 맨 아래로 내렸을 때 아래 여백이 **같아야 한다**. **thumb 의 정수 픽셀 스냅은 공통 `scrollbar.thumbPx()` 하나만 사용**하고, 위치와 크기를 따로 정수화하지 않는다 — 양 끝을 각각 반올림한 뒤 크기를 빼야 track 아랫변(정수)이 보존된다. 따로 절단하면 `⌊T−h⌋+⌊h⌋ = T−1` 로 아래 여백만 1pt 커진다 ([#344](https://github.com/ensky0/tildaz/issues/344), Linux 실기 발견). hit-test 는 계속 f64 연속값을 써서 드래그가 스냅에 끌리지 않는다. 같은 규칙을 dialog 본문 scrollbar 에도 적용 | `mouse.x >= client_w - SCROLLBAR_W` → `scrollToY` | 동일 (`scrollbarScrollToY`, Windows 패턴 그대로) | 동일 ([b53e4ab](https://github.com/ensky0/tildaz/commit/b53e4ab), L6.6 — Windows 패턴 그대로) | ✅ | ✅ | ✅ |
 | 스크롤바 thumb 색 — **터미널 현재 배경 명도로 섞는 색을 뒤집음** ([#346](https://github.com/ensky0/tildaz/issues/346) 2026-07-29 확정) | 알파의 세기는 30% 그대로 두고 (`SCROLLBAR_ALPHA` 0.3) **섞는 색만** 배경 명도로 바꾼다 — 어두우면 흰색, 밝으면 검정. 판정은 `themes.isDarkRgb` 에 **terminal 의 현재 배경** (`RenderState.Colors.background` — OSC 11 과 `reverse_colors` 가 반영된 실효 배경) 을 넣는다. 탭바 chrome 이 **config theme** 배경을 쓰는 것과 기준이 다른데, thumb 은 chrome 이 아니라 **terminal 표면 위에** 얹히므로 그 면을 따른다 — config 기준이면 셸이 OSC 11 로 명도를 뒤집는 순간 thumb 이 소멸한다. [#266](https://github.com/ensky0/tildaz/issues/266) 의 color scheme DSR 도 같은 기준. 이전 흰색 고정은 밝은 테마 4종에서 대비가 **1.02~1.04** 로 소멸했고, 이제 18종 전부 **2.09 이상** (어두운 14종 2.465~2.713 / 밝은 4종 2.087~2.102). 합성을 공유 코드로 옮긴 뒤 (#353) 세 platform 이 **같은 값**을 낸다 — Tilda 는 `#4D4D4D` (정확값 `76.50000304` 의 최근접). 그 전에는 Linux · Windows 가 `#4C4C4C`, macOS 만 `#4D4D4D` 였다. `track`(홈)은 그리지 않는다 — thumb 만 (고정된 외관이 필요하면 track 도입이 수단이지만 시각 디자인 변경이라 비범위). 알려진 귀결 — 배경이 **중간 명도**면 어느 쪽을 섞어도 대비가 낮다 (`#808080` 에서 1.62 / 1.76). 내장 18종엔 그런 배경이 없고 OSC 11 로만 가능하다 | 우측 가장자리 thumb | 공통 [`ui_metrics.scrollbarColor(bg, dark)`](src/ui_metrics.zig) 가 **합성까지 끝낸 solid** 를 준다 — 세 platform 이 알파 1.0 으로 그린다 ([#353](https://github.com/ensky0/tildaz/issues/353), §알파 합성) | 동일 | 동일 | ✅ | ✅ | ✅ |
 | viewport 이동 시 selection 유지 | 어디든 | ghostty `Selection` 이 `Pin` (page list 절대 위치) 기반 — viewport 는 보는 창문 | 동일 (같은 ghostty 모듈) | 동일 (같은 ghostty 모듈) | ✅ | ✅ | ✅ |
-| 탭바 — 탭 클릭 | 상단 탭 영역 | `handleTabClick` → `setActiveTab` | 동일 (`tabBarHitTest`) | 동일 (L12-β, cross-platform `tab_interaction`) | ✅ | ✅ | ✅ |
+| 탭바 — 탭 클릭 | 상단 탭 영역 | `handleTabClick` → `setActiveTab` | 동일 (`tabBarHitArea` → 공통 `tab_layout.hitArea`) | 동일 (L12-β, cross-platform `tab_interaction`) | ✅ | ✅ | ✅ |
 | 탭바 — × 클릭 (**활성 탭 닫기**) | 우측 control cluster의 `×` ([#268](https://github.com/ensky0/tildaz/issues/268)). 단일 탭 `[+][×][…]`, 멀티탭 `[탭들][+][×][…]`, overflow `[<][탭들][>][+][×][…]`. per-tab close는 두지 않아 탭 전환 misclick을 막는다. 탭 본체 클릭은 어디든 전환만 | `handleTabClick` `.close` → `closeTab(activeIndex)` | `.close` → `app_actions.closeTab` (Cmd+W 와 동일 helper) | `.close` → `closeIndex(activeIndex)` + `ensureSessionGrid` | ✅ | ✅ | ✅ |
 | 탭바 — 활성 탭 표시·시각 대비 ([#334](https://github.com/ensky0/tildaz/issues/334) 2026-07-22 확정, [#342](https://github.com/ensky0/tildaz/issues/342) 2026-07-27 개정, [#335](https://github.com/ensky0/tildaz/issues/335) 2026-07-28 테마 파생) | **모든 탭 배경(활성 포함) = 탭바 배경**(`TAB_BAR_BG` — Tilda 에서 33/35/38, 사용자가 실측한 살짝 파란 끼의 회색. 순수 중성 회색은 갈색 끼로 보임. **다른 테마에서는 그 배경에서 파생** — 아래 별도 행) — 탭바 전체가 하나의 회색 띠 (Tilda 문법). **탭바-터미널 가로 경계선은 없다** (#342 — 탭바와 terminal 의 경계는 배경색 차이만으로). 활성 탭은 **탭바 맨 아래 모서리, 슬롯 폭 전체의 amber(`#F7A41D`) 2pt 밑줄로만** 구분 (drag 중이면 따라감). 탭 슬롯 경계는 **세로 구분선**(`TAB_SEPARATOR_W_PT` 1pt, `TAB_SEPARATOR_COLOR` — Tilda 에서 79/79/84) — y=0 부터 **탭바 전체 높이**, **모두 중심 정렬**(모든 탭 폭 동일) + 컨트롤 fill **뒤**에 그려 화살표 옆에서도 온전한 두께. 화살표 옆에는 끝 탭이 완전히 보일 때만 선. **amber 밑줄은 세로 구분선과 지오메트리상 겹치지 않는다** — 덮어서 가리는 게 아니라 밑줄 자체가 물러난다 (#342): 세로선이 중심 정렬로 슬롯 안에 들어오는 만큼 밑줄 양 끝을 줄이되, **선이 실제로 그려지는 경계에서만** (화살표 없을 때의 bi=0, tab_area 밖으로 잘린 경계에서는 물러나지 않아야 틈이 안 생김). 판정은 세로선 루프와 공유하는 `tab_layout.hasSeparator` 단일 정의. 물러나는 **양**은 renderer 수 체계마다 달라 각자 계산 — f32(macOS·Windows)는 좌우 `w/2` 대칭, 정수(Linux)는 `w − divTrunc(w,2)` / `divTrunc(w,2)` 로 홀수 두께에서 비대칭. drag 중인 탭은 슬롯 경계에 정렬되지 않아 물러나지 않는다. renderer 통합과 이 정수/실수 갈래 해소는 [#343](https://github.com/ensky0/tildaz/issues/343). hover 박스는 탭바 상하 기준 2pt 대칭 (경계선이 없어져 하단 보정 제거). world(슬롯) 기준 고정이라 drag 재배열 중 빈 원위치 슬롯도 구분선+제목 부재로 인지. **hover 강조가 붙는 것은 컨트롤 (`+` · `×` · `⋯` · 화살표) 뿐이다** — 탭 본체는 `updateTabHover` 가 `.none` 으로 접는다. **포인터가 창을 떠나면 그 강조를 푼다** (`App.tab_hover = .none`) — 안 하면 창 밖으로 나가도 강조 박스가 남는다 ([#647](https://github.com/ensky0/tildaz/issues/647) Windows 실기에서 480 px 이 남았다. 훅은 링크 밑줄과 같은 자리다 — 위 §3 링크 행). 이 결정은 비활성 탭이 terminal 배경을 따르던 [#282](https://github.com/ensky0/tildaz/issues/282) 정책을 대체 | 공통 [`ui_metrics.zig`](src/ui_metrics.zig) 상수 + D3D11 | 동일 상수 + Metal | 동일 상수 + software | ✅ | ✅ | ✅ |
 | 탭바 · command menu chrome 색 — **터미널 테마 배경에서 파생** ([#335](https://github.com/ensky0/tildaz/issues/335) 2026-07-28 확정) | `ui_metrics.zig` 의 chrome 색 9개는 **anchor** (= Tilda 순수 검정 배경에서의 값, #334/#342 시연 확정) 이고, 실제 색은 **config theme 의 배경**에서 파생한다 (OSC 11 런타임 배경이 아니라 config 값 — 2026-07-28 결정). 채널별 linear-light 에서 `C = k·bg + A` (dark) / `C = (bg − A)/k` (light, dark 의 **역함수**), `k = 1 + Y(A)/0.05`. 따라서 (1) Tilda 는 anchor 그대로 (2) `Y(C)+0.05 = k·(Y(bg)+0.05)` 항등이라 **요소 쌍의 대비비가 테마와 무관하게 상수** (탭바 1.33 / 구분선 1.93 / 제목 7.58 / hint 6.44 / hover 1.45·1.52) (3) `k·bg` 항이 테마 배경의 색상을 운반. 밝은 테마는 역함수라 탭바·구분선·제목이 모두 **어두워지는 방향**. `ctrl_active`(k=18.8) · `menu_label`(k=17.7) 은 chrome 이 밝아지면 목표 대비를 만들 흰색이 없어 **chrome→목표 방향 전체를 스케일백**한다 (채널별 클리핑은 hue 를 틀어서 쓰지 않음; 캡 후 대비는 최악 7.75). 출력 RGB 는 **8-bit 로 양자화**해 세 platform 이 정의상 같은 값을 받는다. **amber accent 는 파생하지 않는다** (브랜드 색 — 밝은 테마에서 밑줄 대비 1.35~1.46 은 알려진 귀결). `TAB_CTRL_HOVER_BG` 는 알파(흰색 12%)가 아니라 **합성 결과 solid** — 세 platform 블렌드가 모두 gamma space 라 값이 같다 | 공통 [`chrome_palette.zig`](src/chrome_palette.zig) → `D3d11Renderer.chrome` | 동일 → `MetalRenderer.chrome` | 동일 → `Renderer.chrome` (자유 함수엔 인자 전달) | ✅ | ✅ | ✅ |
 | 탭바 — drag reorder | 탭 본체 drag | `DragState` (5px 임계) → `reorderTabs` | 동일 (`g_drag`) | 동일 (L12-γ-3, [5730137](https://github.com/ensky0/tildaz/commit/5730137)) | ✅ | ✅ | ✅ |
-| 탭바 — drag follow 시각 | drag 중 탭 마우스 따라 이동 ([#297](https://github.com/ensky0/tildaz/issues/297) B3 결정. source 슬롯엔 탭바 배경이 남아 원위치 표시. z-order 최상위는 macOS 만 — Windows/Linux 는 그리기 순서대로) | `dragged_tab + drag_x` 인자 | 동일 (`TabDragView`, drag 탭 bg 마지막에 그려 z-top) | 동일 (#297 B3 — 이전의 source dim + drop indicator 방식 폐기) + 가장자리 auto-scroll | ✅ | ✅ | ✅ |
+| 탭바 — drag follow 시각 | drag 중 탭 마우스 따라 이동 ([#297](https://github.com/ensky0/tildaz/issues/297) B3 결정. source 슬롯엔 탭바 배경이 남아 원위치 표시. z-order 최상위는 macOS 만 — Windows/Linux 는 그리기 순서대로) | `dragged_tab + drag_x` 인자 | 동일 (`tab_interaction.DragView`, drag 탭 bg 마지막에 그려 z-top) | 동일 (#297 B3 — 이전의 source dim + drop indicator 방식 폐기) + 가장자리 auto-scroll | ✅ | ✅ | ✅ |
 | 탭바 — 셸 OSC 0/2 자동 제목 ([#269](https://github.com/ensky0/tildaz/issues/269), [#364](https://github.com/ensky0/tildaz/issues/364) 2026-08-02 개정) | 탭 제목. **새 탭은 생성 시점부터 `Tab N` 을 표시**하고, 셸이 OSC 0/2 로 제목을 보내면 교체한다 — 제목 자리가 비는 구간이 없다. **분할한 pane 은 자기 탭의 N 을 물려받고, N 은 새 탭에서만 올라간다** ([#696](https://github.com/ensky0/tildaz/issues/696)) — 탭바는 활성 pane 의 제목을 보여 주므로, pane 마다 번호를 새로 받으면 분할 · pane 포커스 이동에 탭 이름이 바뀌고 다음 탭이 번호를 건너뛴다. **첫 제목은 debounce 없이 즉시 반영**하고 (화면에 `Tab N` 만 있어 밀어낼 중간 제목이 없다), 두 번째 제목부터 셸이 보낸 raw window title 이 150ms 동안 동일하게 유지되면 반영 (짧은 명령의 순간 왕복 억제). 빈 title 은 최초 `Tab N` 으로 복귀. **이전 사양의 "1초 유예 후 fallback" 은 폐기** — OSC 를 안 보내는 셸이 흔해서 (실측: Windows `cmd`·PowerShell 5.1·pwsh 7 은 10/10 미전송, Linux POSIX `sh`·rc 없는 zsh 도 미전송) 기본 사용자가 1초 빈 제목을 봤고, 유예를 200~300ms 로 줄이는 안은 제목을 늦게 보내는 셸 (Linux zsh+p10k 328~410ms, Windows Git Bash 200~241ms, WSL cold 2.2초) 때문에 실측으로 기각됐다. 활성 탭과 비활성 탭 출력을 공통 드레인 예산 (§13) 안에서 번갈아 파싱하므로 탭 전환 없이 제목 갱신 | readonly VT parse 뒤 `Terminal.getTitle()` 동기화 (#266 의 ConPTY query-response 차단 유지) | `Effects.title_changed` → 공통 pending 제목 상태 | `Effects.title_changed` → 공통 pending 제목 상태 | ✅ | ✅ | ✅ |
 | 탭바 — 긴 확정 제목 truncate ([#271](https://github.com/ensky0/tildaz/issues/271)) | text 영역을 넘으면 glyph 경계에서 자르고 마지막에 U+2026 `…` 한 글자(1 cell) 표시. CJK wide glyph를 반으로 자르지 않으므로 최대 1 cell이 남을 수 있음 | 공통 `tab_layout.iterTabText` → 일반 Unicode glyph path | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 탭바 — `<` / `>` 화살표 클릭 | 탭바 양 끝 화살표 (#117) | `scrollTabsByArrow` — viewport 만 1 탭 너비씩 이동, **활성 탭 안 바뀜** + `tab_scroll_user_override=true` | 동일 (`scrollTabsByArrow`) | 동일 (L12-γ-1, [2522e9a](https://github.com/ensky0/tildaz/commit/2522e9a) — cross-platform `tab_layout`) | ✅ | ✅ | ✅ |
@@ -993,7 +997,7 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 > 3. `<` / `>` 누르는 순간 `tab_scroll_user_override = true` set → 매 frame `ensureActiveTabVisible` skip → 활성 탭이 viewport 밖이어도 그대로. 활성 변경 / 새 탭 / drag reorder 끝나는 시점에 false 로 reset 되어 ensure 재가동.
 > 4. 활성 변경 시 viewport 동작: 활성 탭이 이미 보이면 그대로 (색깔만 변경), 안 보이면 보이는 가장 가까운 위치로 *minimum* 이동 (Chrome / Firefox 동등).
 >
-> **word selection 동작 사양 (cross-platform 단일 구현):** [`terminal_interaction.zig:95`](src/terminal_interaction.zig#L95)
+> **word selection 동작 사양 (cross-platform 단일 구현):** [`terminal_interaction.zig:269`](src/terminal_interaction.zig#L269)
 >
 > 1. **boundary 문자 목록**: space / tab / 따옴표 / 백틱 / 파이프 / `: ; ( ) [ ] { } < >`
 > 2. **시작 cell 이 boundary** (공백 / 따옴표 / 구두점) → 선택 안 함 (false 반환). iTerm2 / Terminal.app 동등 — 터미널에서 공백 더블클릭은 의도가 아님. ghostty default 는 boundary 끼리도 묶지만 우리는 reject.
@@ -1002,7 +1006,7 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 >    - `spacer_tail` cell (글자의 right-half) 위 클릭 → main cell (left-half) 로 정규화 후 진행.
 >    - 확장 중 `spacer_tail` 만나면 boundary 검사 *skip* 하고 다음 cell 로 진행 — wide char 가 word body 의 continuation 이므로 음절 사이에서 끊기지 않음.
 >
-> 우리가 ghostty `screen.selectWord` 를 그대로 쓰지 않고 [`terminal_interaction.selectWord`](src/terminal_interaction.zig#L95) 로 직접 구현한 이유: ghostty 가 spacer_tail 을 boundary 처럼 취급해 한글 단어가 음절마다 끊기는 문제 (#122 시연 중 발견).
+> 우리가 ghostty `screen.selectWord` 를 그대로 쓰지 않고 [`terminal_interaction.selectWord`](src/terminal_interaction.zig#L269) 로 직접 구현한 이유: ghostty 가 spacer_tail 을 boundary 처럼 취급해 한글 단어가 음절마다 끊기는 문제 (#122 시연 중 발견).
 
 ---
 
@@ -1016,7 +1020,7 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 | 격자 **행 수** — 탭바와 위아래 padding 을 뺀다 ([#352](https://github.com/ensky0/tildaz/issues/352)) | `rows = ⌊(viewport_h − tab_bar_h − 2·TERMINAL_PADDING) / cell_h⌋` (최소 1, 상한 `u16`). `tab_bar_h` 는 탭이 1개면 0 이다 (#127) — 그 판정은 host 가 하고 식은 받은 값만 뺀다. 열 수가 `SCROLLBAR_W` 를 빼는 자리에 행 수는 `tab_bar_h` 를 뺀다 (**대칭**). [#350](https://github.com/ensky0/tildaz/issues/350) 이 열 수만 모았을 때 행 수는 같은 다섯 곳에 남아 **한 함수 안에서 `cols` 는 방어되고 다음 줄 `rows` 는 안 되는** 비대칭이 생겼고, 세 platform 이 같은 위험을 각자 다른 방식으로 막고 있었다 (Linux 는 분자 clamp + `u16` 상한, Windows 는 분자 clamp + `cell_h == 0` guard, macOS 는 `u32` 언더플로용 명시 guard 에 상한 없음). 산술 결과는 도달 가능한 입력 전부에서 같았고 이 통합으로 방어까지 한 곳이 됐다 | 공통 [`ui_metrics.terminalRows`](src/ui_metrics.zig) ← `getTerminalGridSize` | 동일 ← 지역 `terminalGrid` (3곳 공용) | 동일 ← `Client.gridSize` | ✅ | ✅ | ✅ |
 | 단일↔멀티 전환 시 cell 영역 동기화 | 단일 탭은 full 탭바 자리 없이 control strip만 overlay → 멀티탭 전환 시 full 탭바가 cell 영역을 줄이므로 모든 탭 cols/rows 재계산 (#127, #329). | `effectiveTabBarHeight()` + 공통 `app_actions.newTab` · `closeTab` 이 부르는 `syncGeometryAfterTabCountChange` | `syncTerminalGeometry` 호출 | `app_actions.newTab` · `app_actions.closeTab` · `drainExitedTabs` · `handleTabBarClick` 직후 `Client.ensureSessionGrid()` 호출 | ✅ | ✅ | ✅ |
 | 활성 인덱스 자동 조정 (close) | 닫힌 탭이 활성 앞이면 -1, 활성 자체였으면 새 마지막으로 | `nextActiveIndexAfterClose` | `closeTab` 안 동일 정책 | 동일 (SessionCore 공통) | ✅ | ✅ | ✅ |
-| PTY exit → 그 탭만 정리 | read thread → main thread 안전 | `WM_TAB_CLOSED` post + `closeTabByPtr` | `Tab.exit_flag` atomic + `drainExitedTabs` | 동일 (Linux PTY `Tab.exit_flag` atomic) | ✅ | ✅ | ✅ |
+| PTY exit → 그 탭만 정리 | read thread → main thread 안전 | `WM_TAB_CLOSED` post → `handleTabClosed` → `tab_actions.closeByPtr` | 종료 콜백이 mutex 큐 (`g_pending_close_buf`) 에 넣고 main thread 의 `drainExitedTabs` → `tab_actions.closeByPtr` | 동일 (`Client.pending_close_buf` + `drainExitedTabs`) | ✅ | ✅ | ✅ |
 | 마지막 탭 종료 → 앱 종료 | count == 0 시 | `closeAfterShellExit` | `NSApp.terminate:` | wayland event loop break + `exit(0)` | ✅ | ✅ | ✅ |
 | Drag reorder 5px 임계 | drag 가 5px 미만 = click | `DragState.move` | 동일 (cross-platform `tab_interaction.zig`) | 동일 모듈 (L12-γ-3) | ✅ | ✅ | ✅ |
 | 탭 — MAX_TABS 32 한도 + dialog | `+` 는 자리 유지 + 비활성 색 + 클릭 noop ([#329](https://github.com/ensky0/tildaz/issues/329)), 단축키 시 dialog | `tab_actions.checkAtLimitAndDialog` (#159 v0.4.0) | 동일 (양쪽 같은 helper) | 동일 helper — dialog UI 는 §6 step 3 후 layer-shell overlay (#203) | ✅ | ✅ | ✅ |
@@ -1051,7 +1055,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 분할 | 네 방향 **`split_left` · `split_right` · `split_up` · `split_down`** — 화살표가 곧 새 pane 이 놓이는 자리다. 왼쪽 · 위는 오른쪽 · 아래와 격자가 **완전히 같고** 새 pane 이 분할 노드의 first 냐 second 냐만 다르다 (`Direction.towardSecond()`). 2026-08-27 에는 오른쪽 · 아래 둘뿐이었고 이름도 `split_vertical` / `split_horizontal` 이었는데, 2026-08-29 에 네 방향으로 넓히면서 방향 이름으로 바꿨다 — `vertical` / `horizontal` 은 tmux 와 iTerm2 가 **정반대 뜻**으로 쓰는 낱말이라 어느 쪽을 따르든 절반은 헷갈리고, 방향 이름은 `focus_pane_*` · `resize_pane_*` 와 낱말이 같아진다. 활성 pane 을 반씩 가르고 새 pane (새 셸, cwd 상속 규칙은 새 탭과 같다) 이 **활성** 이 된다 (tmux · iTerm2 · WT · Ghostty · vim 모두 새 pane 으로). 왼쪽 · 위를 4a 에서 뺐던 근거 ("어느 터미널에도 기본에 없다") 는 지금도 사실이지만, `[keys]` 가 양방향 strict 라 액션 추가가 곧 기존 config 의 부팅을 막으므로 **이미 스키마가 깨지는 v0.9.3 에 함께 넣는 것이 사용자 비용 0** 이고, `Ctrl+Shift+←` 가 비어 있어 "수식키가 동사, 방향키가 방향" 규칙이 절반만 적용돼 있었다. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | `ctrl+shift+{right,down,left,up}` → `config.ActionInput` (`.split` + `direction`) → 공통 `app_actions.split` ([#692](https://github.com/ensky0/tildaz/issues/692)) | `alt+cmd+{right,down,left,up}` → `app_actions.split` — 4a 의 `ctrl+cmd+방향키` 는 `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 바꿨고, Apple Terminal · iTerm2 의 `⌘D` 는 글자에 뜻이 없어 안 쓴다 | `ctrl+shift+{right,down,left,up}` → `app_actions.split` → `SessionCore.splitActive` | ✅ | ✅ | ✅ |
+| 분할 | 네 방향 **`split_left` · `split_right` · `split_up` · `split_down`** — 화살표가 곧 새 pane 이 놓이는 자리다. 왼쪽 · 위는 오른쪽 · 아래와 격자가 **완전히 같고** 새 pane 이 분할 노드의 first 냐 second 냐만 다르다 (`Direction.towardSecond()`). 2026-08-27 에는 오른쪽 · 아래 둘뿐이었고 이름도 `split_vertical` / `split_horizontal` 이었는데, 2026-08-29 에 네 방향으로 넓히면서 방향 이름으로 바꿨다 — `vertical` / `horizontal` 은 tmux 와 iTerm2 가 **정반대 뜻**으로 쓰는 낱말이라 어느 쪽을 따르든 절반은 헷갈리고, 방향 이름은 `focus_pane_*` · `resize_pane_*` 와 낱말이 같아진다. 활성 pane 을 반씩 가르고 새 pane (새 셸, cwd 상속 규칙은 새 탭과 같다) 이 **활성** 이 된다 (tmux · iTerm2 · WT · Ghostty · vim 모두 새 pane 으로). 왼쪽 · 위를 4a 에서 뺐던 근거 ("어느 터미널에도 기본에 없다") 는 지금도 사실이지만, 그때는 `[keys]` 가 양방향 strict 라 액션 추가가 곧 기존 config 의 부팅을 막았으므로 (#655 이후로는 빠진 액션이 기본값으로 돌고 시작 안내에 한 줄이 뜬다 — 이 이유는 더 이상 성립하지 않는다) **이미 스키마가 깨지는 v0.9.3 에 함께 넣는 것이 사용자 비용 0** 이고, `Ctrl+Shift+←` 가 비어 있어 "수식키가 동사, 방향키가 방향" 규칙이 절반만 적용돼 있었다. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | `ctrl+shift+{right,down,left,up}` → `config.ActionInput` (`.split` + `direction`) → 공통 `app_actions.split` ([#692](https://github.com/ensky0/tildaz/issues/692)) | `alt+cmd+{right,down,left,up}` → `app_actions.split` — 4a 의 `ctrl+cmd+방향키` 는 `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 바꿨고, Apple Terminal · iTerm2 의 `⌘D` 는 글자에 뜻이 없어 안 쓴다 | `ctrl+shift+{right,down,left,up}` → `app_actions.split` → `SessionCore.splitActive` | ✅ | ✅ | ✅ |
 | 상한 · 최소 크기 | 탭당 pane **16** (`MAX_PANES_PER_TAB`, 탭 32 와 독립 — 1단계 결정 1) · pane 최소 **20×5** 셀 (`MIN_PANE_COLS/ROWS`). 넘으면 트리를 바꾸지 않고 거부 + dialog (`messages.pane_limit_*` / `pane_too_small_*`) — 단축키에는 시각 피드백이 없어 탭 한도와 같은 방식 | 공통 `app_actions.split` (같은 dialog) | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 포커스 이동 | **기하 기반** 이웃 (`pane_layout.neighbor`) — 활성 pane 의 커서 행/열에서 그 방향으로 쏴 처음 만나는 pane (3 분할 이상에서 트리 형제가 아닌 화면상 이웃으로 간다). 창 가장자리면 무시. 떠나는 pane 의 진행 중 선택 · 드래그는 탭 전환과 같이 정리 | `alt+방향키` → `app_actions.focusPane` | `cmd+방향키` → `app_actions.focusPane` | `alt+방향키` → `app_actions.focusPane` → `SessionCore.focusPane` | ✅ | ✅ | ✅ |
 | 크기 조절 · 균등 | 활성 pane 에 닿은 분할선을 한 셀 옮김 (`Tree.resize` — 그쪽 변이 창 가장자리면 반대쪽 분할선). 드래그와 **같은 경로** (`Tree.setSeparatorPx`) 라 규칙도 같다 — 최소 크기에 닿으면 **거부하지 않고 거기서 멈추고** (clamp), **선에 붙은 칸만** 변한다 (아래 분할선 드래그 행, 2026-08-27 결정). 균등은 **같은 축으로 이어진 분할선을 한 줄로 보고 그 줄을 행 · 열 수로 고르게 나눈다** (`Tree.equalize(rect, m)` · `cellsAlong` — 칸 = pane 하나 또는 다른 축으로 갈린 묶음 하나). 비율이 아니라 **셀 수** 로 나누는 이유: 비율만 정하면 픽셀 위치를 `splitGeometry` 가 그때그때 반올림하는데 그 반올림이 트리 중첩을 따라 일어나 같은 4 칸이라도 만든 순서가 다르면 결과가 달랐다 (2026-08-28 실기 — 두 열의 가로선이 26 px 어긋나고 한 열 안 높이가 466 · 505 로 벌어짐). 같은 이유로 `splitGeometry` 의 셀 격자도 앞 자식이 품은 **칸 수** 를 센다 (결정 2 개정 — 중첩된 두 칸이 38 · 37 열 + 남는 11 px 대신 38 · 38 열로 떨어진다). A \| B \| C 는 ⅓ 씩, A \| (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩 — tmux · iTerm2 처럼 한 줄에 칸이 여럿인 (n-ary) 분할의 "고르게 펴기" 와 같은 결과 (tmux `even-*` 는 배치를 한 줄로 바꾸는 다른 것). 2026-08-28 결정 ① — 거쳐 온 둘: vim `Ctrl+W =` 식 leaf 수 가중은 A \| (B/C) 에서 A 가 ⅓ 로 줄어 어색했고, 층별 반씩은 A \| B \| C 가 A ½ · B ¼ · C ¼ 라 "셋인데 균등이 아니다" 였다. 메뉴에는 없다 (2026-08-27 — 쓰임이 드물어 단축키만) | `shift+alt+방향키` · `shift+alt+0` | `shift+cmd+방향키` · `shift+cmd+0` | `shift+alt+방향키` · `shift+alt+0` | ✅ | ✅ | ✅ |
@@ -1064,7 +1068,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 | 최대화 (zoom) | `zoom_pane` 토글 — 켜면 활성 pane 하나가 탭 영역 전체 (`TabGroup.zoomed`, `layout` 이 `leafRect` 하나를 돌려준다), 다른 pane 은 그리지 않되 셸은 계속 돈다. 분할 · 포커스 이동 · 크기 조절 · 균등은 먼저 푼다 (tmux zoom 규칙), 그 pane 이 닫히거나 pane 이 하나가 되면 풀린다. 표시는 활성 pane **네 변** amber (2026-08-27 결정 A — 분할선 · amber 가 사라지는 것만으로는 분할 없는 탭과 구분이 안 됐다; 일반 pane 은 최대 3 면이라 4 면 틀은 최대화 하나뿐, 위 표시 행) | `ctrl+shift+z` → `app_actions.zoomPane` | `shift+cmd+z` → `app_actions.zoomPane` | `ctrl+shift+z` → `app_actions.zoomPane` → `SessionCore.toggleZoomActive` | ✅ | ✅ | ✅ |
 | 분할선 드래그 | 회색 선 ±4 pt (`PANE_SEPARATOR_HIT_SLOP_PT`) 누름 → 드래그. 드래그 중엔 셀 경계에 스냅된 amber 고스트만 그리고 (`Tree.setSeparatorPx` 를 트리 복사본에 적용해 자리를 얻는다) **놓을 때 한 번만** 트리 갱신 + PTY resize (확정 설계 축 2 — Konsole 방식, SIGWINCH 폭풍 방지). 최소 크기 (20×5 셀) 에 닿으면 **거기서 멈춘다** (clamp, 2026-08-27 결정 — 고스트가 한계에 서고 놓으면 거기까지만; 예전엔 드래그 전체를 거부해 "끌다가 취소됨" 으로 보였다). **선에 붙은 칸만 변한다** — 선 너머가 같은 축으로 또 갈려 있어도 먼 칸은 px 그대로 (`Tree.keepFarFixed` 가 안쪽 같은-축 분할의 비율을 다시 놓는다; 예전엔 비율이 그대로라 안쪽 분할선까지 비례해 밀렸다). 위아래로 쌓인 칸은 둘 다 선의 이웃이라 같이 변한다. 한계도 먼 칸을 고정한 채 잰다 (`Tree.minExtentKeepFar`). 커서는 분할선 위에서 `col_resize` / `row_resize` | `App.sep_drag` · `finishSeparatorDrag`, 커서는 `WM_SETCURSOR` 의 `IDC_SIZEWE` / `IDC_SIZENS` (`CursorRegion.separator_*`) | `g_sep_drag` · `finishSeparatorDrag`, 커서는 `resetCursorRects` 의 `resizeLeftRight/UpDownCursor` | `sep_drag` · `finishSeparatorDrag` | ✅ | ✅ | ✅ |
 | 최소 크기 20 열 × 5 행 | `MIN_PANE_COLS` / `MIN_PANE_ROWS` (열 × 행 — 터미널 `80x24` 표기 순서). **분할은 갈라지는 두 조각을, 가르는 축만** 검사한다 (2026-08-28 결정 — 좌우 분할은 `cols`, 위아래 분할은 `rows`. 반대 축은 이 분할이 건드리지 않는다: 창이 줄어 19 열이 된 pane 을 위아래로 가르는 것이 "20 열 미만" 으로 거부되던 것이 실기에서 걸렸다). 거부는 `TooSmall` → 대화상자 "Each pane needs at least 20 columns × 5 rows". 창이 줄면 (drop-down 은 커서가 있는 모니터 크기를 따르고 pane 은 비율 유지) pane 이 최소 아래로 **갈 수 있다** — 막지 않는다 (tmux 도 같다). 그 뒤 크기 조절 · 드래그는 그 pane 을 **더 줄이지만 않고** (한계 = 지금 크기, `minExtentKeepFar`), 뒤 검사는 "새로 최소 아래로 떨어지는 pane 이 없다" (`noPaneNewlyBelowMin`) 다. 2026-08-27 macOS 실기: 큰 모니터에서 가른 뒤 작은 모니터로 돌아오니 B · C 가 17 열이 됐고, 예전의 탭 전체 검사 (`allPanesAtLeastMin`, 삭제) 가 A 의 위아래 분할과 B 키우기까지 막았다 | 공통 `pane_layout` | 동일 | 동일 | ✅ | ✅ | ✅ |
-| 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_right/horizontal`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | ✅ | ✅ | ✅ |
+| 마우스 경로 | `…` 메뉴 *Split Right* / *Split Down* (`command_menu.Command.split_right/split_down`, 순수 모듈이라 세 host 에 같이 뜬다 — 실행은 배선된 host 만) · `+` **Alt+클릭** = 활성 pane 분할 (Windows Terminal 선례; 방향은 pane 이 넓으면 오른쪽, 높으면 아래 — WT `auto`) | `executeCommandMenu` · `handlePlusClick` (Alt+클릭, `Window.isAltDown`) | `executeCommandMenu` · `handlePlusClick` (Option+클릭) | `executeCommandMenu` · `handlePlusClick` | ✅ | ✅ | ✅ |
 | 출력 드레인 | 예산 4 ms 하나를 활성 `TabGroup`의 pane 이 나눠 쓴다. 호출 경계를 넘는 **논리 라운드**마다 active pane 을 먼저, 나머지 존재 pane 을 안정된 `PaneId` 순서로 각각 한 번, 마지막에 숨은 탭 한 슬롯을 처리한다 (§13.3.1). 예산이 끝나면 다음 호출이 중단 지점부터 이어서, 매 호출 처음 pane 으로 돌아가던 starvation 을 막는다 ([#574](https://github.com/ensky0/tildaz/issues/574)) | 공통 `SessionCore.drainFrame` | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 비활성 pane 스크롤바 | 클릭 = 그 pane 포커스 뒤 그 pane 의 scrollbar 로 (좌클릭 경로가 포커스를 먼저 옮긴다) | 동일 | 동일 | 동일 | ✅ | ✅ | ✅ |
 
@@ -1076,7 +1080,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 
 | 항목 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 조합 중 (preedit) inline 표시 | cursor 위치에 보라색 배경 + 글자 | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW(GCS_COMPSTR)` → preedit_buf → cell overlay (#164 v0.4.0) | `g_preedit_buf` + cell `renderFrame` 의 preedit 영역 | `zwp_text_input_v3.preedit_string` event → `preedit_buf` → cell overlay ([7971cfb](https://github.com/ensky0/tildaz/commit/7971cfb), L10-β) | ✅ | ✅ | ✅ |
+| 조합 중 (preedit) inline 표시 | cursor 위치에 보라색 배경 + 글자 | `WM_IME_*` 가로채기 + `ImmGetCompositionStringW(GCS_COMPSTR)` → preedit_buf → cell overlay (#164 v0.4.0) | `g_preedit_buf` → `renderFrameTick` 이 활성 pane 의 `drawPane` 에 `preedit_utf8` 로 넘김 | `zwp_text_input_v3.preedit_string` event → `preedit_buf` → cell overlay ([7971cfb](https://github.com/ensky0/tildaz/commit/7971cfb), L10-β) | ✅ | ✅ | ✅ |
 | 음절 단위 backspace | 자모 / 음절 단위 되돌리기 | (OS IME 자체) | 동일 | (fcitx5 / ibus 자체) | ✅ | ✅ | ✅ |
 | 화살표 / 영문 / space → 음절 commit | IME 가 모르는 키 = 음절 자동 확정 | (OS IME 자체) | `interpretKeyEvents` → IME → callback | text-input-v3 의 commit_string + preedit_string done-apply batch ([9215807](https://github.com/ensky0/tildaz/commit/9215807), L10-γ) | ✅ | ✅ | ✅ |
 | commit 트리거 | 음절 더 확장 안 되면 자동 | (OS IME 자체) | 동일 | (fcitx5 / ibus 자체) — commit_string event | ✅ | ✅ | ✅ |
@@ -1140,11 +1144,11 @@ Quit Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져
 
 | 위치 | 키 | preedit 처리 | 후속 동작 | Mac | Win | Linux |
 |---|---|---|---|---|---|---|
-| terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
+| terminal cell | Home / End | preedit → PTY commit | escape sequence 발신 (`\x1b[H` / `\x1b[F`) | ✅ | ✅ | ✅ (`sendEncodedKey` — 공통 인코더, §2.6 · IME commit trigger) |
 | terminal cell | Ctrl+A / Ctrl+E | preedit → PTY commit | Ctrl char 발신 (0x01 / 0x05, shell readline 처리) | ✅ | ✅ | ✅ — `processKeyEvent` 가 Ctrl+letter (Ctrl+C 제외) + preedit 시 `commitPendingInput` → PTY 자모 송신 + IME session reset. 그 다음 utf8 path 가 Ctrl byte 송신 |
 | terminal cell | Ctrl+C | line abort — 자모 discard *시도* 후 SIGINT (IME 의존) | SIGINT (`\x03`) | ✅ (`discardMarkedText` 로 완전 discard) | ✅ | 🟨 fcitx5 가 Ctrl+C 에서 자모 먼저 확정 → `가^C` (취소된 줄에 남아 무해); 완전 discard 아님 |
 | terminal cell | Ctrl+L / Ctrl+D 등 | preedit → PTY commit | Ctrl char 발신 | ✅ | ✅ | ✅ |
-| terminal cell | Left / Right / Up / Down | (IME 자체 commit 트리거) | escape sequence 발신 | ✅ | ✅ | ✅ (`terminalSequenceForKeysym` + IME commit trigger) |
+| terminal cell | Left / Right / Up / Down | (IME 자체 commit 트리거) | escape sequence 발신 | ✅ | ✅ | ✅ (`sendEncodedKey` — 공통 인코더, §2.6 · IME commit trigger) |
 | terminal cell | action 단축키 / F1 / fullscreen / quit | preedit → 원래 PTY commit | commit 처리 뒤 action | ✅ | ✅ | ✅ |
 | terminal cell | paste (`X`) | preedit → 원래 PTY commit | paste payload 전달 (`하X`) | ✅ | ✅ | ✅ |
 
@@ -1152,7 +1156,7 @@ Quit Cancel 뒤 재시도는 첫 호출에서 이미 pending 상태가 비워져
 
 | 결정 | 이유 |
 |---|---|
-| **Cmd+Left/Right 미매핑** | mac Terminal.app 도 동일 — terminal-style 앱은 Ctrl+A/E 만 받음. Cmd+Left/Right 는 일반 mac textbox 표준 (NSTextField line begin/end) 이지만 우리 앱은 terminal context 우선. Cmd+Left/Right 누르면 cmd 분기에서 commitPendingInput 후 mainMenu dispatch (key match 없으면 그대로 commit 됨). |
+| **Cmd+Left/Right 미매핑** | mac Terminal.app 도 동일 — terminal-style 앱은 Ctrl+A/E 만 받음. Cmd+Left/Right 는 일반 mac textbox 표준 (NSTextField line begin/end) 이지만 우리 앱은 terminal context 우선. Cmd 조합은 `performKeyEquivalent:` 가 `[keys]` 를 조회하고, binding 이 없으면 `keyDown:` 의 cmd 분기가 PTY 로 아무것도 보내지 않고 끝낸다 ([#682](https://github.com/ensky0/tildaz/issues/682). 예전의 mainMenu dispatch 는 [#713](https://github.com/ensky0/tildaz/issues/713) 으로 지웠다). |
 | **nav 키 + preedit = commit (Ctrl+C 외)** | iTerm2 / native textbox 동등. 사용자가 입력 중인 자모 잃지 않음. terminal preedit 은 PTY 로 직송 (셸 readline 이 받음). |
 | **Ctrl+C = line abort** | shell 의 SIGINT 가 "현재 입력 라인 버리기". macOS 는 조합 자모까지 discard(`discardMarkedText`). Linux/fcitx5 는 Ctrl+C 에서 자모를 먼저 확정해 `가^C`(자모가 취소된 줄에 남음) — gnome-terminal 등 표준 터미널과 동일하고 줄이 취소되어 무해. 완전 discard 는 IME 가 preedit 을 남겨두는 경우에만(best-effort). |
 
@@ -1183,7 +1187,7 @@ Apple `StandardKeyBinding.dict` (시스템 표준 키바인딩 정의) 에 따�
 
 #### 구현 디테일
 
-**터미널 Ctrl 분기 ([host/macos.zig:661-697](src/host/macos.zig))**
+**터미널 Ctrl 분기 ([host/macos.zig](src/host/macos.zig) `tildazKeyDown` 의 `if (ctrl and !cmd_too)`)**
 
 ```zig
 if (ctrl and !cmd_too) {
@@ -1202,19 +1206,24 @@ if (ctrl and !cmd_too) {
 }
 ```
 
-**터미널 nav key + preedit 직접 처리 ([host/macos.zig:769-783](src/host/macos.zig))**
+**터미널 nav key + preedit 직접 처리 ([host/macos.zig](src/host/macos.zig) `tildazKeyDown` 의 `if (g_marked_len > 0)`)**
 
 `interpretKeyEvents` 가 Home/End selector dispatch 안 하는 케이스 대비 — 시연 중 발견. preedit 활성 상태에서 Home/End 누르면 IME 가 finalize 만 하고 selector callback 안 옴 → escape sequence 안 발신 → cursor 안 움직임.
 
 ```zig
 if (g_marked_len > 0) {
-    if (keyCodeToEscape(keycode2)) |esc| {
-        commitPreeditPreserving(self_view);
-        tab.queueWrite(esc);
-        return;
+    if (physical_key.fromMacKeyCode(keycode2)) |code| {
+        if (key_encode.isNavOrFunction(code)) {
+            // 한자 후보창이 떠 있으면 IME 에 넘긴다 (생략)
+            commitPreeditToSink(self_view);
+            _ = sendEncodedKeyMac(tab, event, "", macKeyAction(event));
+            return;
+        }
     }
 }
 ```
+
+(#533 전에는 고정 표 `keyCodeToEscape` 로 바이트를 냈다. 지금은 공통 인코더를 지난다 — §2.6.)
 
 ### 5.2 Emoji 입력 (OS emoji picker)
 
@@ -1238,7 +1247,7 @@ dead key (`^` `¨` `´` `` ` `` `~` — 프랑스어 · 독일어 · 스페인�
 
 Linux 만 앱이 keysym → 글자 변환을 스스로 하기 때문이다 (#496 과 같은 뿌리). 규칙:
 
-- **글자가 될 키만 compose 를 거친다.** 단축키 · 다이얼로그 · 메뉴 · scrollback · nav 키 (`terminalSequenceForKeysym`) 는 그 앞에서 끝난다.
+- **단축키 · 다이얼로그 · 메뉴 · 검색바 편집키 · scrollback 은 compose 앞에서 끝난다.** nav 키 (화살표 · Home · End 등) 와 Enter 는 그렇지 않다. Ctrl · Alt 없이 누르면 compose 를 **거친 뒤** 공통 인코더 `sendEncodedKey` 로 간다 (`processKeyEvent` 가 `composeFeed` 다음에 `sendEncodedKey` 를 부른다). 조합 중이 아니면 `NOTHING` 이라 그대로 나가고, `^` 다음이면 `CANCELLED` 라 아래 규칙대로 함께 버려진다. #533 전에는 `terminalSequenceForKeysym` 이 nav 키를 따로 보냈는데, 지금은 그 함수가 없다.
 - **Ctrl / Alt 가 눌린 키는 거치지 않는다** (GTK 와 같다). `^` 다음 `Ctrl+C` 는 `\x03` 이 그대로 나간다. AltGr (`Mod5`) 은 해당 없음 — AltGr 로 내는 dead key 도 조합된다.
 - **IME preedit 이 있으면 IME 가 주인** — compose 를 건너뛴다.
 - **활성 pane · 탭이 바뀌면 조합을 버린다** ([#536](https://github.com/ensky0/tildaz/issues/536), 2026-08-29). 조합을 시작한 셸이 아닌 곳에서 확정되면 안 된다 (KDE 실기: `^` 를 띄운 채 옆 pane 을 클릭하니 표시가 따라가 그 셸에 `ê` 가 들어갔다). 규칙은 #530 이 창 포커스 이탈에 정한 것과 같다 — IME 는 commit, dead key 는 버림.
@@ -1278,17 +1287,17 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
-| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (`MessageBoxW` + key capture window + overflow read-only EDIT window) | `dialog/macos.zig` (NSAlert + overflow NSScrollView + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
-| 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정. **본문은 화면 높이의 절반을 넘지 않는다** (`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT` = 50, [#655](https://github.com/ensky0/tildaz/issues/655)) — 넘치면 스크롤하므로 목록은 하나도 잃지 않는다. **모달 경고창은 화면을 덮는 물건이 아니다**: config 안내는 업그레이드 한 번에 45 줄이 뜨는데, 창이 화면을 다 먹으면 뒤에 있는 config 와 대조할 수가 없다. 상한이 **본문** 기준인 것이 중요하다 — 창 전체를 자르면 제목·버튼·아이콘 같은 고정 chrome 이 본문을 더 밀어내 짧은 목록에서도 스크롤이 생긴다. 세 host 가 같은 상수를 쓴다 (실측: Linux 안내 39 줄이 955 → **755** / 화면 1000) | 짧은 info/error/confirm은 `MessageBoxW`, prompt 본문은 `STATIC`; overflow 때 read-only multiline `EDIT` + OS scrollbar로 전환 | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
+| 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (자체 창 `TildaZScrollableDialogWindow` — 본문 read-only EDIT, 만들 수 없을 때만 `MessageBoxW` + key capture window) | `dialog/macos.zig` (NSAlert + overflow NSScrollView + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
+| 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정. **본문은 화면 높이의 절반을 넘지 않는다** (`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT` = 50, [#655](https://github.com/ensky0/tildaz/issues/655)) — 넘치면 스크롤하므로 목록은 하나도 잃지 않는다. **모달 경고창은 화면을 덮는 물건이 아니다**: config 안내는 업그레이드 한 번에 45 줄이 뜨는데, 창이 화면을 다 먹으면 뒤에 있는 config 와 대조할 수가 없다. 상한이 **본문** 기준인 것이 중요하다 — 창 전체를 자르면 제목·버튼·아이콘 같은 고정 chrome 이 본문을 더 밀어내 짧은 목록에서도 스크롤이 생긴다. 세 host 가 같은 상수를 쓴다 (실측: Linux 안내 39 줄이 955 → **755** / 화면 1000) | info/error/confirm은 길이와 무관하게 자체 창의 read-only multiline `EDIT` (overflow 때만 OS scrollbar), prompt 본문은 `STATIC`. 자체 창을 만들 수 없을 때만 `MessageBoxW` (§11.5) | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
 | 새 인스턴스 창의 상태 문구 ([#721](https://github.com/ensky0/tildaz/issues/721)) | 핫키를 누르면 아래에 뜨는 빨간 문구. **나올 수 있는 문구를 모두 재서 자리를 미리 잡는다** — 가장 긴 것이 본문 기본 폭 (`ui_metrics.DIALOG_PREFERRED_WIDTH_PT`) 안에 들면 창을 그만큼 넓혀 한 줄로 두고, 넘으면 그 폭에서 줄바꿈한다. 높이는 후보 중 최대라 키를 눌러도 창 크기가 그대로다. 줄마다 가운데 정렬. 후보 목록과 규칙은 `hotkey_status.zig` 한 곳이고, OS 마다 다른 것은 글자를 재는 방법뿐이다 | 상태 칸 `STATIC` (`SS_CENTER`) 을 `DrawTextW` 로 잰다. prompt 창은 이미 기본 폭이라 높이만 는다 | 상태 칸 `NSTextField` 의 셀 (`cellSizeForBounds:`) 로 잰다. 여러 줄을 허용한다 | `dialog_layout` 이 본문과 같은 측정 · 줄바꿈으로 잰다 | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid / config / log 경로를 잘림 없이 표시. 실제 입력 길이만큼 본문을 할당하고 화면 높이를 넘을 때만 세로 scroll ([#314](https://github.com/ensky0/tildaz/issues/314)) | read-only multiline EDIT 전용 modal window. wheel·scrollbar drag·selection·Ctrl+C는 OS control 동작 | NSAlert accessoryView의 NSScrollView + selectable NSTextView. scrollbar 자동 숨김 | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → layer-shell overlay. 아이콘 + Title + separator + body + OK 버튼. overflow 때 아이콘을 생략하고 wheel/touchpad·scrollbar drag 지원 | ✅ | ✅ | ✅ |
-| Config 에러 (**남은 fatal** — TOML 구문 오류 · 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이 폴백 + 안내로 돌려 여기 오지 않는다) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 짧으면 `MessageBoxW`, 화면 또는 4096 UTF-16 변환 상한을 넘으면 read-only multiline EDIT 전용 window | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전이라 동적 본문 전체를 stderr + log에 남기고 exit(1). 연결 후 startup 검증(예: shell)은 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback). **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ (연결 후 overlay) / 🟨 (연결 전 stderr) |
+| Config 에러 (**남은 fatal** — TOML 구문 오류 · 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이 폴백 + 안내로 돌려 여기 오지 않는다) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 자체 창의 read-only multiline EDIT (화면을 넘을 때만 scroll). 자체 창을 만들 수 없을 때만 `MessageBoxW` | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전에 돌므로 문구를 담아 두고 (stderr + log 에는 즉시) Wayland globals + keyboard 준비 뒤 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback)로 띄운 뒤 exit(1) (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577)). startup 검증(예: shell)도 같은 overlay. Wayland 연결 자체가 실패하면 stderr + log 뿐이다. **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit(1) | 동일 | **dialog 호출 안 함** — `showPanic` 이 log(`panic`) + `std.debug.defaultPanic` (stderr 에 file:line + backtrace 후 abort). panic 은 renderer/wayland state 가 이미 불안정할 수 있어 overlay 대신 표준 abort 경로 (의도된 차이). | ✅ | ✅ | 🟨 (dialog 없이 log+abort) |
-| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 짧으면 `MessageBoxW MB_OKCANCEL`, overflow면 고정 OK/Cancel + scroll 본문 — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
+| 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 자체 창의 고정 OK/Cancel + 본문 (overflow 때만 scroll), 만들 수 없을 때만 `MessageBoxW MB_OKCANCEL` — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | native dialog 또는 소유자 window를 disable한 overflow modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. overflow scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
 | Dialog 위치 | 현재 monitor 중앙 | overflow window와 prompt는 같은 TildaZ process의 foreground window를 owner로 삼고 그 monitor work area 중앙. 다른 process window는 owner로 사용하지 않음 | NSAlert의 OS modal 배치 | layer-shell 경로(KDE Plasma, COSMIC, Hyprland)는 `anchor=0`으로 현재 output 중앙에 두며 main 창의 dock/width margin과 분리 ([#314](https://github.com/ensky0/tildaz/issues/314), KDE Plasma 1.7x 실기). xdg-toplevel fallback(GNOME, Cinnamon, sway [#454](https://github.com/ensky0/tildaz/issues/454))은 Wayland에 절대 위치 지정 API가 없어 compositor의 transient 배치를 따름 (sway 1.12 실기: floating 중앙 배치·Esc dismiss·focus 복귀 확인) | ✅ | ✅ | ✅ (layer-shell) / 🟨 (xdg compositor 배치) |
-| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기. **떠 있는 동안 배율이 바뀌어도 따라간다** | overflow window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt. 배율이 바뀌면 `WM_DPICHANGED` 에서 폰트 3벌·아이콘을 새 DPI로 다시 만들고 창과 자식을 재배치한다 — 배치 계산이 순수 함수 하나라 생성 경로와 같은 코드를 쓴다 ([#540](https://github.com/ensky0/tildaz/issues/540)) | NSAlert native, overflow accessory 폭은 최대 580pt. AppKit 좌표가 logical point라 backing scale 변환은 OS가 하고 재배치가 필요 없다 | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 떠 있는 동안 `preferred_scale`이 바뀌면 `applyScaleChange`가 dialog 폰트를 새 scale로 다시 만들고 `sendDialogSurfaceLayout`이 물리 viewport 기준으로 배치를 다시 계산해 surface 크기를 재요청한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 일반 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 scroll 없이 표시하고, 더 긴 본문은 종류와 무관하게 overflow viewport를 사용한다 ([#306](https://github.com/ensky0/tildaz/issues/306), [#318](https://github.com/ensky0/tildaz/issues/318)). About은 최대 폭 960 logical pt다 ([#314](https://github.com/ensky0/tildaz/issues/314)). config parse fatal은 Wayland 연결 전 stderr + log fallback이라 overlay 저장/화면 상한을 거치지 않는다 ([#316](https://github.com/ensky0/tildaz/issues/316)). | ✅ | ✅ | ✅ |
+| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기. **떠 있는 동안 배율이 바뀌어도 따라간다** | overflow window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt. 배율이 바뀌면 `WM_DPICHANGED` 에서 폰트 3벌·아이콘을 새 DPI로 다시 만들고 창과 자식을 재배치한다 — 배치 계산이 순수 함수 하나라 생성 경로와 같은 코드를 쓴다 ([#540](https://github.com/ensky0/tildaz/issues/540)) | NSAlert native, overflow accessory 폭은 최대 580pt. AppKit 좌표가 logical point라 backing scale 변환은 OS가 하고 재배치가 필요 없다 | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 떠 있는 동안 `preferred_scale`이 바뀌면 `applyScaleChange`가 dialog 폰트를 새 scale로 다시 만들고 `sendDialogSurfaceLayout`이 물리 viewport 기준으로 배치를 다시 계산해 surface 크기를 재요청한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 일반 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 scroll 없이 표시하고, 더 긴 본문은 종류와 무관하게 overflow viewport를 사용한다 ([#306](https://github.com/ensky0/tildaz/issues/306), [#318](https://github.com/ensky0/tildaz/issues/318)). About은 최대 폭 960 logical pt다 ([#314](https://github.com/ensky0/tildaz/issues/314)). config parse fatal도 연결 뒤 같은 overlay 로 띄운다 (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577) — #316 당시에는 Wayland 연결 전 stderr + log fallback 이었다). | ✅ | ✅ | ✅ |
 
 ---
 
@@ -1296,7 +1305,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
-1. **`defaultConfigToml(allocator, shell_resolved)`** 이 runtime `allocPrint` 로 default TOML 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.toml`에 저장 + parse() 의 `validateStructure` 검증 ground truth.
+1. **`defaultConfigToml(allocator, shell_resolved, hotkey)`** 이 runtime `allocPrint` 로 default TOML 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.toml`에 저장. 그 결과가 parse() 의 ground truth 이고, 이제는 거부가 아니라 빠진 키 · 틀린 값을 가려 기본값으로 바꾸는 기준이다 (§7.3 · [#655](https://github.com/ensky0/tildaz/issues/655) — 예전의 `validateStructure` 는 없어졌다).
 2. **`Config` struct field initializer** 가 참조하는 `default_*` const 모두 같은 `Defaults` 에서 derive — 디스크 default 와 메모리 fallback 자동 sync.
 
 이전엔 default 값이 6+ 곳 (config literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
@@ -1310,9 +1319,10 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   하나를 소유한다. worker는 `--instance N`으로 시작하며 번호별 advisory file lock으로
   중복 실행을 막는다.
 - **N 은 0 … 9 (인스턴스 10 개) 이다** (#510). TildaZ 가 **생성하는** config 의 `hotkey`
-  기본값은 `F(N+1)` 이라 index 0 → `F1`, 9 → `F10` 이고, 그 표가 `0 … 9` 를 빠짐없이
+  기본값은 `F(N+1)` 이라 index 0 → `F1`, 9 → `F10` 이고 (개발 빌드는 표를 거꾸로 읽어 0 → `F10`, 9 → `F1` —
+  [#654](https://github.com/ensky0/tildaz/issues/654)), 그 표가 `0 … 9` 를 빠짐없이
   덮으므로 "hotkey 없는 instance" 예외가 생기지 않는다. 상한을 넘는 `--instance N` 은 범위를
-  안내하고 거절한다. 같은 상한을 `config_N.toml` · `tildaz.instanceN.desktop` 의 이름
+  안내하고 거절한다. 같은 상한을 `config_N.toml` · `tildaz.instanceN.desktop` (개발 빌드는 `tildaz-dev.instanceN.desktop`) 의 이름
   인식에도 적용한다.
 - **표가 `F12` 까지 가지 않는 이유는 Windows 다.** modifier 없는 `F12` 는 커널 디버거
   예약이라 `RegisterHotKey` 가 `ERROR_HOTKEY_ALREADY_REGISTERED` 로 거절한다 (실측:
@@ -1327,7 +1337,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   가 아니라 *동시 인스턴스 수* 에 걸린다.
 - 일반 실행은 config index별 실행 상태를 확인하고 빠진 TildaZ worker를 한 번에 모두
   복구한 뒤 launcher가 종료한다. `config_0.toml`이 없으면 다른 번호의 config 존재
-  여부와 무관하게 default/F1으로 먼저 생성한다. 단순 process 수가 아니라
+  여부와 무관하게 default/F1 (개발 빌드는 F10) 으로 먼저 생성한다. 단순 process 수가 아니라
   `config_<N>.toml` ↔ worker N 대응으로 판정한다.
 - 모든 configured TildaZ worker가 이미 실행 중일 때만 총 실행 개수와 hotkey capture 영역을
   한 다이얼로그에 표시한다. prompt 전에 worker 0을 show/restore/activate하며, 표시가
@@ -1348,10 +1358,11 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   대상이 아니다.
 - 각 TildaZ worker는 자기 config, process lock, hotkey, toggle endpoint를 독립 소유한다.
   KDE Plasma에서는 portal/KGlobalAccel identity도 `tildaz.instanceN` (내부 app/component ID),
-  `TildaZ_N` (표시명), `toggle-N` (action ID)으로 분리해 다른 worker의 shortcut을
+  `TildaZ_N` (표시명), `toggle-N` (action ID)으로 분리해 (개발 빌드는 `tildaz-dev.instanceN` ·
+  `TildaZ-dev_N` — [#654](https://github.com/ensky0/tildaz/issues/654)) 다른 worker의 shortcut을
   덮어쓰지 않는다. Linux xdg-shell worker 창도 같은 `tildaz.instanceN` app ID를
   사용하며 GNOME/Cinnamon extension은 창 title의 번호까지 일치할 때만 해당 worker로
-  식별한다. 사용자에게 보이는 `tildaz.desktop`은 launcher 전용 identity라 GNOME에서
+  식별한다 (창 title 은 `TildaZ-N`, 개발 빌드는 `TildaZ-dev-N` — `app_id.window_title_prefix`). 사용자에게 보이는 `tildaz.desktop` (개발 빌드는 `tildaz-dev.desktop`) 은 launcher 전용 identity라 GNOME에서
   worker가 실행 중이어도 아이콘 클릭은 기존 창 activate가 아니라 launcher `Exec`를
   다시 호출한다. 번호별 desktop entry는 worker 식별용이며 `NoDisplay=true`다.
 - worker N은 `instanceN.lock`의 exclusive advisory lock을 process 수명 동안 소유한다.
@@ -1423,7 +1434,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
   기다리는 순환 대기는 허용하지 않는다.
 
-> 방향은 **Zig `Defaults` struct → TOML** 이고 그 반대가 아니다. shell 이 runtime 결정값(`resolveShell`)이라 comptime 생성이 불가능하므로 `comptimePrint` 대신 `defaultConfigToml` 의 runtime `allocPrint` 로 만든다. 파싱은 `sam701/zig-toml` 의 value tree (`toml.Table` / `toml.Value`) 를 쓰고 struct 매핑은 쓰지 않는다 — `validateStructure` 가 default 문서와 user 문서를 같은 표현으로 비교해야 하기 때문이다.
+> 방향은 **Zig `Defaults` struct → TOML** 이고 그 반대가 아니다. shell 이 runtime 결정값(`resolveShell`)이라 comptime 생성이 불가능하므로 `comptimePrint` 대신 `defaultConfigToml` 의 runtime `allocPrint` 로 만든다. 파싱은 `sam701/zig-toml` 의 value tree (`toml.Table` / `toml.Value`) 를 쓰고 struct 매핑은 쓰지 않는다 — `repairStructure` 가 default 문서와 user 문서를 같은 표현으로 비교해야 하기 때문이다 (#655 전 이름은 `validateStructure`).
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
@@ -1443,13 +1454,13 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α. 데스크톱 설정 화면에서 끈 것은 되살리지 않는다 — KDE Plasma `Hidden=true` · Cinnamon `X-GNOME-Autostart-enabled=false` 면 파일을 건드리지 않고, COSMIC 처럼 파일을 지웠으면 다시 만들지 않는다 (만든 사실을 상태 폴더의 `autostart-created` 로 기억한다. `auto_start` 를 모두 끄면 둘 다 지운다, #700) | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
-| `hotkey` | 상세 spec 은 §7.1 (테이블 아래) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
+| `hotkey` | 상세 spec 은 §7.1 (테이블 아래). 기본값은 `config_0` 기준이고 번호마다 다르다 (개발 빌드는 반대 순서 — §7.1) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
 >
 > **명시 font chain 길이 제한** (#185): `font.family` 1개 + `font.glyph_fallback` 최대 7개 = 총 8개가 hard limit 이다. 코드 source of truth 는 `src/font/constants.zig` 의 `MAX_CHAIN = 8` 이며, config parser / Windows DirectWrite backend / macOS CoreText backend 는 이 상수를 공유한다. 이 값은 "primary + common fallback 한글 / 이모지 / 심볼 + 사용자 추가 여유" 를 주면서 font face lifetime / atlas key 안정성을 단순하게 유지하기 위한 고정 상한이다. 상한을 바꾸면 SPEC / CONFIG.md / README 의 chain limit 설명도 같이 갱신한다.
 >
-> 모든 명시 폰트 (primary + fallback) 가 system 에 register 되어 있어야 함 — 하나라도 없으면 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로). macOS substitute font 회피 위해 `CTFontCopyFamilyName` 으로 *실제 family name* 검증, Windows 는 `DWriteFontCtx.isFontAvailable` 로 검증한다. Linux 는 boot 시 `font_linux.familyInstalledDetail` 로 검증한다 (검증 시점·overlay 는 §7 startup shell 검증과 동일 C2 패턴; [#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)). **검증과 실제 로드가 같은 해석 함수를 쓴다** (Linux `resolveRequested` · Windows `resolveFamily`) — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다 ([#409](https://github.com/ensky0/tildaz/issues/409)). Windows 는 cell 측정 (`measureCell`) 도 같은 함수를 쓴다 — 거기만 따로 판정하면 chain 은 열리는데 측정만 실패해 GDI fallback (이름을 못 찾으면 **조용히 대체하는** 경로) 으로 떨어진다.
+> 모든 명시 폰트 (primary + fallback) 가 system 에 register 되어 있어야 함 — 하나라도 없으면 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로). macOS substitute font 회피 위해 `CTFontCopyFamilyName` 으로 *실제 family name* 검증, Windows 는 `DWriteFontContext.isFontAvailable` 로 검증한다. Linux 는 boot 시 `font_linux.familyInstalledDetail` 로 검증한다 (검증 시점·overlay 는 §7 startup shell 검증과 동일 C2 패턴; [#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)). **검증과 실제 로드가 같은 해석 함수를 쓴다** (Linux `resolveRequested` · Windows `resolveFamily`) — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다 ([#409](https://github.com/ensky0/tildaz/issues/409)). Windows 는 cell 측정 (`measureCell`) 도 같은 함수를 쓴다 — 거기만 따로 판정하면 chain 은 열리는데 측정만 실패해 GDI fallback (이름을 못 찾으면 **조용히 대체하는** 경로) 으로 떨어진다.
 >
 > 이름 하나를 face 하나로 해석하는 **순서는 세 platform 이 같다.** 이름 비교는 모두 정규화 (소문자 + 공백 · `-` · `_` 제거) 후 exact match 다.
 >
@@ -1483,9 +1494,9 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 
 ### 7.1 hotkey 상세
 
-**Schema**: `string`. `config_0.toml` 기본값: `"F1"`. 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 필수 Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
+**Schema**: `string`. `config_0.toml` 기본값: `"F1"` (개발 빌드는 `"F10"` — §7.1 위 항목 · [#654](https://github.com/ensky0/tildaz/issues/654)). 각 config = 해당 worker hotkey의 source of truth (cross-platform parity). Windows는 `RegisterHotKey`, macOS는 `CGEventTap`, Linux는 desktop별 native backend를 쓴다. KDE Plasma는 direct KGlobalAccel D-Bus, GNOME/Cinnamon은 필수 Shell extension, COSMIC/Hyprland/sway는 compositor binding→`tildaz --toggle N` Unix socket IPC(#198)다. 미인식 desktop은 자동 fallback을 만들지 않으며 사용자가 `tildaz --toggle N`을 수동 binding할 수 있다.
 
-**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 후 process exit ([src/config.zig:962-974](src/config.zig#L962-L974), mac/win/linux 동일). 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux native backend 변환 가능 여부는 아래 *Key 토큰 표*를 따른다.
+**잘못된 hotkey 처리**: `Hotkey.fromString` 이 *null* 이면 거부 이유 (`hotkeyFailure` — 모르는 키 · modifier 필요 · macOS 에 없는 위치) 를 로그에 남기고 **기본 hotkey 로 돌며 시작 안내에 담는다** (`noticeBadValue` — §7.3 · [#655](https://github.com/ensky0/tildaz/issues/655), mac/win/linux 동일). #655 전에는 `dialog.showFatal` 후 종료했다. 즉 *parse-pass = 등록 가능 보장* 이 아니라 *parse-pass = format 문법 합격*. Linux native backend 변환 가능 여부는 아래 *Key 토큰 표*를 따른다.
 
 **일반 입력 보호**: modifier 없이 허용하는 global hotkey는 `F1`~`F12`뿐이다. 문자, 숫자, `Space`, `Tab`, `grave` 등은 `Ctrl` / `Alt` / `Super` (`Cmd`) 중 하나 이상이 있어야 한다. `Shift` 단독 조합도 대문자·기호·`Shift+Tab` 같은 일상 입력을 가로채므로 거부한다. 이 검증은 dialog capture와 config parser 양쪽에 공통 적용된다.
 
@@ -1552,7 +1563,7 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 - **⚠️ Windows 의 기호 키는 라벨도 위치도 아니다.** `VK_OEM_*` 는 layout DLL 이 배정하는 슬롯이라 배열마다 다른 물리 키로 옮겨 다닌다 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27` — AGENTS.md `# Windows — 키보드 layout 조회 실측 방법`). 대부분의 배열에서는 그 기호가 인쇄된 키지만 보장은 없다. 그런 배열에서는 위치 표기를 쓴다 (CONFIG.md 의 *Symbol keys on Windows*). 프랑스어 AZERTY 의 `VK_OEM_MINUS` · `VK_OEM_PLUS` 자리는 **확인 필요**.
 - **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다** (`lookupAction` 의 `try_unshifted`). 그래서 US 의 `ctrl+shift+=` (키가 낸 글자 `+`) 가 `=` binding 에 맞는다. Windows 는 VK 가 Shift 와 무관해 이 규칙이 필요 없다.
 - **전역 `hotkey` 가 받는 키는 모든 표에 이름이 있어야 한다** — Linux 등록 이름 (`linuxKeysymName`) · KDE (`kglobalaccel.qtKey`) · GNOME · Cinnamon 확장 (`_toAccel`) · 세 OS 의 캡처 표. 하나라도 빠지면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon · sway — `hotkey_format.gtkName`) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다. #693 이전에는 방향키가 Linux 의 모든 표에, `PageUp` · `PageDown` 이 KDE 와 확장 표에, 괄호가 확장 표에 없었다 (확장은 `<Control>pageup` 처럼 GTK 가 모르는 이름을 냈다). `config.zig` 의 #693 테스트가 이 표들을 맞춘다. 채운 뒤의 Linux 데스크톱 실기는 **확인 필요**.
-- **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), caller 가 `dialog.showFatal(config_error_title, config_hotkey_invalid_format)` 로 알린다.
+- **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), config 로드가 그 값을 기본 hotkey 로 바꾸고 시작 안내에 담는다 (위 *잘못된 hotkey 처리* · §7.3). #655 전에는 `dialog.showFatal` 로 알리고 종료했다.
 
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
@@ -1691,7 +1702,7 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 | 값 오류 | 그 값만 기본값 | "읽을 수 없어 기본값 `X` 를 씁니다" |
 | 범위 밖 숫자 | **clamp** | "100 으로 제한했습니다" — 기본값으로 되돌리지 않는다. 사용자 의도 ("아주 크게") 에 더 가깝다 |
 | `[keys]` 리스트의 한 항목 | **나쁜 항목만** 버린다 | 나머지는 그대로 쓴다. 다 빠지면 그 액션은 기본 바인딩 |
-| `[keys]` 충돌 (두 액션이 같은 조합) | **먼저 나온 것을 살린다** | 파일을 위에서 아래로 읽는 순서와 같아 설명하기 쉽다 |
+| `[keys]` 충돌 (두 액션이 같은 조합) | **하나만 살리고 진 쪽을 안내에 적는다.** 어느 쪽이 사는지는 내부 순서 (`KeyAction` 의 순서) 로 정해져 사용자는 미리 알 수 없다 — 파일 순서가 아니다 (TOML 표는 순서를 남기지 않는다) | 규칙을 "기본값에서 바꾼 쪽이 이긴다" 로 바꾸는 일은 [#758](https://github.com/ensky0/tildaz/issues/758) |
 | `[keys]` 같은 액션 안의 중복 | **조용히 하나로 합친다** | 안내하지 않는다. 원한 동작은 이미 걸려 있다. 같은 글자가 platform 마다 다르게 풀리므로 판정은 풀린 값으로 한다 — Windows 는 `=` · `plus` 가 같은 키 (`VK_OEM_PLUS`) 라 기본값의 `ctrl+shift+=` · `ctrl+shift+plus` 가 한 조합이 된다 ([#693](https://github.com/ensky0/tildaz/issues/693)) |
 | `[keys]` 개수 초과 | 상한까지만 | 나머지는 버렸다고 안내 |
 | 이름이 바뀐 키 | 위 둘로 저절로 처리된다 | 옛 이름은 "지우세요", 새 이름은 "기본값을 씁니다" 가 함께 뜬다 |
@@ -1750,7 +1761,7 @@ config 를 `parse` 밖에서 읽는 곳도 같은 규칙이다 ([#719](https://g
 - **`-e` 측정 모드는 로그만.** blocking 다이얼로그가 뜨면 세 OS 자동 검증 하네스가 거기서 멈춘다.
   `-e` 는 이미 전역 핫키 · worker lock 을 건너뛰는 측정 전용 모드라 같은 자리에 둔다.
 
-TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **전부 기본값 + 안내** 다 — #501 의 기존 경로와 같다.
+TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **남은 fatal** 이다 — 값 트리를 만들 수 없어 고칠 자리를 짚어 줄 기준이 없다. 파서가 준 줄 · 열과 "파일을 지우면 새로 만든다" 는 안내를 띄우고 종료한다 (§11.4 · `config.showFatalNoticeIfAny`). 이슈의 처음 계획 (*"전부 기본값 + 안내"*) 과 다르다. **파일을 아예 못 읽는** 경우는 §11.5 대로 기본값 + 안내다.
 
 
 ## 8. PTY 자식 종료
@@ -1921,7 +1932,7 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 |---|---|---|---|---|---|---|
 | Config 열기 | Ctrl+Shift+P | Shift+Cmd+P | Ctrl+Shift+P — 현재 worker의 `paths.configPath` + `system_open.openInDefaultApp` (xdg-open) | ✅ | ✅ | ✅ |
 | Log 열기 | Ctrl+Shift+L | Shift+Cmd+L | Ctrl+Shift+L — 현재 worker의 `log.filePath` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
-| 단축키 문서 열기 ([#682](https://github.com/ensky0/tildaz/issues/682)) | Ctrl+Shift+/ | Shift+Cmd+/ | Ctrl+Shift+/ — `messages.keyboard_shortcuts_url` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
+| 단축키 문서 열기 ([#682](https://github.com/ensky0/tildaz/issues/682)) | Ctrl+Shift+/ | Shift+Cmd+/ | Ctrl+Shift+/ — `version.keyboard_shortcuts_url` + `system_open.openInDefaultApp` | ✅ | ✅ | ✅ |
 
 > Windows 의 `dump_perf` (스냅샷) 단축키는 Ctrl+Shift+P 와 충돌해 Ctrl+Shift+F12 로 이동 (개발자 dev 도구 컨벤션, F12).
 
@@ -1948,7 +1959,7 @@ lock owner PID와 advisory lock 생존이 함께 확인될 때만 유효하다.
 **Linux 만 내려가는 깊이가 다르다.** layer-shell 에는 "보통 창과 같은 높이" 가 없고 normal
 xdg_toplevel 은 `bottom` 과 `top` **사이**에 있어서, 위로 보내려면 `bottom` 까지 내려가야 한다
 — 그동안 우리 창은 *다른 모든 일반 창 아래*다 (mac · Windows 는 일반 창과 같은 높이). 이것이
-아래 §3 의 *z-order 양보 (#195)* 가 Linux 미적용인 이유와 같은 한계인데, **쓰는 자리가 달라서
+위 §3 의 *z-order 양보 (#195)* 가 Linux 미적용인 이유와 같은 한계인데, **쓰는 자리가 달라서
 여기서는 받아들인다** — #195 는 *focus 를 잃을 때마다* 상시로 걸리는 것이라 그 깊이가 문제지만,
 여기서는 *우리가 방금 띄운 앱을 보라고* 한 번 내려갔다 다음 show 에 돌아온다.
 
@@ -1960,7 +1971,7 @@ elapsed time을 사용한다. Linux는 `CLOCK_MONOTONIC`, macOS는 `CLOCK_UPTIME
 Windows는 `QueryUnbiasedInterruptTimePrecise`를 사용하고 `src/perf.zig`에서 모두
 nanosecond로 수렴한다. 이 정책은 PTY read·ring push/drain·parse·render·present·
 onrender 진단 수치에만 적용한다. instance timeout이나 Linux startup/show처럼 기능
-동작의 실제 경과 시간을 재는 `std.time.Timer`는 기존 의미를 유지한다
+동작의 실제 경과 시간을 재는 `runtime.Timer` (`src/runtime.zig` — Zig 0.16 이 없앤 `std.time.Timer` 자리, `.awake` 시계) 는 기존 의미를 유지한다
 ([Linux clock_gettime](https://www.man7.org/linux/man-pages/man2/clock_gettime.2.html),
 [Apple uptime clock](https://developer.apple.com/documentation/driverkit/kiotimerclockuptimeraw),
 [Windows unbiased interrupt time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryunbiasedinterrupttimeprecise)).
@@ -2032,7 +2043,7 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 | platform | 표시 지점 | 방법 |
 |---|---|---|
 | Linux | Wayland globals + keyboard 준비 후, 전역 hotkey 판정 · shell · 폰트 검증 **앞** | `runFatalDialog` (blocking pump) → `exit(1)` |
-| Windows | `Config.load` 직후, shell 검증 앞 | `showFatalNoticeIfAny` → `MessageBoxW` (OS modal) |
+| Windows | `Config.load` 직후, shell 검증 앞 | `showFatalNoticeIfAny` → `dialog.showFatal` (자체 modal 창, 만들 수 없을 때만 `MessageBoxW`) |
 | macOS | 같음 | `showFatalNoticeIfAny` → `NSAlert` (OS modal) |
 
 Linux 가 공통 함수를 쓰지 않는 이유는 그쪽 `dialog.showFatal` 이 overlay 요청만 걸고 바로 돌아오는 fire-and-forget 이라 뒤이은 `exit(1)` 이 paint 전에 프로세스를 죽이기 때문이다 (#282 F9). §11.5 의 `showLoadNotice` / `showLoadNoticeText` 가 갈리는 것과 같은 이유·같은 모양이다.
@@ -2085,7 +2096,7 @@ Error: UnexpectedToken
 경우에 **더 크게** 적용된다: 키 하나를 잘못 적은 사용자가 그 키를 고칠 터미널을 잃었다
 (v0.9.2 · v0.9.3 에서 실제로 두 번). 지금은 두 경우가 같은 정책이고, 그 일관성이 원칙 5 다.
 
-**안내는 창이 뜬 뒤에 한 번 나온다.** config 로드 시점에 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어 다이얼로그가 stderr · log 로만 가고 (`dialog/linux.zig`), 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다. Windows (`MessageBoxW`) 와 macOS (`osascript display dialog`) 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세 platform 의 시점이 갈리고 안내가 두 번 뜰 수 있어 한 곳으로 모았다.
+**안내는 창이 뜬 뒤에 한 번 나온다.** config 로드 시점에 띄우지 않는 이유는 Linux 다 — 그때는 Wayland backend 가 없어 다이얼로그가 stderr · log 로만 가고 (`dialog/linux.zig`), 데스크톱 아이콘이나 autostart 로 띄운 사용자에게는 보이지 않는다. Windows (자체 다이얼로그 창) 와 macOS 는 그 시점에도 보이지만, 그쪽만 즉시로 두면 세 platform 의 시점이 갈리고 안내가 두 번 뜰 수 있어 한 곳으로 모았다.
 
 | host | 호출 지점 |
 |---|---|
@@ -2097,7 +2108,7 @@ Error: UnexpectedToken
 
 측정 인스턴스는 예외다 ([#382](https://github.com/ensky0/tildaz/issues/382)) — **일부러** 사용자 config 를 만들지 않으므로 안내도 없다.
 
-Windows는 짧은 본문도 overflow 본문도 자체 다이얼로그 창 (`dialog/windows.zig` 의 `TildaZScrollableDialogWindow` — 아이콘 · 제목 · 구분선 · read-only EDIT 본문 · 버튼) 으로 표시하고, 본문이 화면을 넘을 때만 그 EDIT 에 세로 scroll 을 붙인다 (#540). 그 창을 만들 수 없을 때만 `MessageBoxW` 로 물러선다 (`showNative`). (#316 당시에는 짧은 본문이 `MessageBoxW` 였다 — 2026-09-03 #577 Windows 실기에서 launcher 실패 다이얼로그가 자체 창으로 뜨는 것을 보고 서술을 고쳤다.) macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 전체 동적 본문을 stderr + log fallback으로 출력한다. **현재 상태: 구현·자동 검증 완료, Linux · macOS · Windows 묶음 실기 대기 (#316).**
+Windows는 짧은 본문도 overflow 본문도 자체 다이얼로그 창 (`dialog/windows.zig` 의 `TildaZScrollableDialogWindow` — 아이콘 · 제목 · 구분선 · read-only EDIT 본문 · 버튼) 으로 표시하고, 본문이 화면을 넘을 때만 그 EDIT 에 세로 scroll 을 붙인다 (#540). 그 창을 만들 수 없을 때만 `MessageBoxW` 로 물러선다 (`showNative`). (#316 당시에는 짧은 본문이 `MessageBoxW` 였다 — 2026-09-03 #577 Windows 실기에서 launcher 실패 다이얼로그가 자체 창으로 뜨는 것을 보고 서술을 고쳤다.) macOS는 NSApplication을 config load 전에 준비해 짧은 본문은 기존 NSAlert, overflow 본문은 NSScrollView/NSTextView로 표시한다. Linux config parse는 Wayland 연결 전에 실행되므로 문구를 담아 두고 (stderr + log 에는 즉시) 연결 뒤 overlay 로 띄운다 (§11.4 · #577). #316 은 닫혔다.
 
 ---
 
@@ -2130,7 +2141,7 @@ cross-platform 공유 detection helper: `src/font/ligature.zig` 의 `classify` (
 **Paint loop 순서** (셋 다 동일):
 1. block element (§ 별도 — `src/renderer/block_element.zig`)
 2. grapheme cluster (§ 12.1)
-3. **N-char ligature lookahead** — 4-char → 3-char → 2-char 우선 시도 (긴 ligature 가 짧은 것으로 분해되지 않게)
+3. **N-char ligature lookahead** — 3-char → 2-char 순서로 시도 (긴 ligature 가 짧은 것으로 분해되지 않게. 4-char 는 아직 없다 — 아래)
 4. single-char chain lookup
 
 **조건** (lookahead 시도):
@@ -2168,7 +2179,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | `4:4` / `4:5` | `dotted` / `dashed` | ✅ 세 platform ([#374](https://github.com/ensky0/tildaz/issues/374)) |
 | `4:3` | `curly` | ✅ 세 platform ([#374](https://github.com/ensky0/tildaz/issues/374)) |
 | `3` / `1` | `italic` / `bold` 굵기 | ✅ 세 platform (§12.5) |
-| `5` / `25` | `blink` | ⛔ [#376](https://github.com/ensky0/tildaz/issues/376) — 지원 여부 미결정 |
+| `5` / `25` | `blink` | ✅ 세 platform (§12.4 · [#376](https://github.com/ensky0/tildaz/issues/376)) |
 
 **그리는 순서 = 글리프 *아래*.** 선을 글리프보다 먼저 그린다. `underline_color` 로 밑줄이 글자와 다른 색일 때 descender (`g` `y` `p` `j` `q`) 를 가로지르지 않게 하기 위해서다 (ghostty 와 같은 선택). 구현 위치가 platform 마다 다르지만 결과 순서는 같다 — Linux 는 `FrameLayer.cell_bg` (목록 2번, `glyphs` 3번보다 앞), macOS · Windows 는 **bg pass** 다. text pass 의 `bg_buf` 에 넣으면 글리프 *위*로 올라가 정반대가 되므로 주의.
 
@@ -2250,13 +2261,13 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ### 12.5 SGR 1 · 3 — bold 굵기 · italic ([#375](https://github.com/ensky0/tildaz/issues/375))
 
-`\e[1m` 은 실제 굵은 face, `\e[3m` 은 실제 기울어진 face 로 그린다. 세 platform 동일.
+`\e[1m` 은 굵은 face, `\e[3m` 은 기울어진 face 로 그린다. 그 family 에 해당 face 가 없으면 **합성한다** (굵게 · 비스듬히). 지금은 Windows 만 합성하고 macOS · Linux 는 regular 로 그린다 — 아래 표.
 
 | 항목 | 사양 |
 |---|---|
 | face 선택 | **같은 family 에서 자동 style-match** — 각 OS 폰트 매칭 API 에 위임 |
 | config 키 | **없다.** `font.family_bold` 류를 두지 않는다 |
-| face 가 없는 family | **regular 로 떨어뜨린다.** synthetic (offset 두 번 그리기 · shear) 은 만들지 않는다 |
+| face 가 없는 family | **합성한다** — 굵게 · 비스듬히. Ghostty 의 `font-synthetic-style` 기본값 (*"By default, synthetic styles are enabled."*) 과 같다. Windows 는 DirectWrite 의 합성을 그대로 쓴다 ([#749](https://github.com/ensky0/tildaz/issues/749)). **macOS · Linux 는 미구현이라 아직 regular 로 그린다** ([#759](https://github.com/ensky0/tildaz/issues/759)) |
 | 적용 범위 | **셀 본문 글리프만.** grapheme cluster (emoji) · ligature · IME preedit · 탭 제목 · system fallback 은 regular |
 | `bold_is_bright` | 그대로 유지 — 굵기와 색 승격은 독립이다 |
 
@@ -2265,12 +2276,12 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 | platform | face 획득 | 없는 family 처리 |
 |---|---|---|
 | macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. regular 를 `CFRetain` 해 소유권을 통일 |
-| Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 **가장 근접한 face** 를 준다 (실패하지 않는다) → 자연히 regular |
+| Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 실패하지 않는다. 변종 파일이 없으면 regular 를 굵게 · 비스듬히 **합성한 font** 를 준다 (`GetSimulations` ≠ 0) → 그대로 쓴다 ([#749](https://github.com/ensky0/tildaz/issues/749)) |
 | Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 (파일, index) 가 같으면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 ([#428](https://github.com/ensky0/tildaz/issues/428) — `.ttc` 는 한 파일에 face 가 여러 벌이라 path 만 보면 다른 face 를 같은 것으로 오인한다) |
 
 **Linux · Windows 는 변종 조회에 *해석된 정식 family* 를 쓴다** — 사용자가 적은 원문이 아니다 ([#409](https://github.com/ensky0/tildaz/issues/409)). `font.family` 에 PostScript 이름이나 다른 표기를 적었을 때 원문으로 조회하면 **엉뚱한 폰트의 변종**이 온다: Linux 실측에서 `DejaVuSansMono-Bold` 의 bold 조회가 `NotoSansCJK-Bold.ttc` 로 갔고, `NotoSerifKannada-Light` 는 `NotoSerifCJK-Bold.ttc` 로 갔다. 그래서 Linux 는 `Face.family` 에 §7 의 이름 해석 결과 (정식 family) 를 담고 변종 조회는 그 이름으로 한다.
 
-**Windows 는 그 family 를 face 에서 되찾는다.** PostScript 이름으로 잡은 face 에는 `IDWriteFontFamily` 가 딸려 오지 않아서, `IDWriteFontCollection.GetFontFromFontFace` → `IDWriteFont.GetFontFamily` 로 얻은 family 로 `GetFirstMatchingFont` 을 부른다. 실측에서 `CascadiaCodeRoman-Bold` 를 적으면 regular 자리에 Bold face 가 오면서도 변종은 `Cascadia Code` 안에서 맞게 나온다 (bold `CascadiaCodeRoman-Bold` · italic `Cascadia-Code-Italic`). face 가 시스템 컬렉션에 없어 family 를 못 얻으면 변종을 만들지 않고 regular 로 떨어뜨린다 — 위 표의 "없는 family 처리" 와 같은 결과다.
+**Windows 는 그 family 를 face 에서 되찾는다.** PostScript 이름으로 잡은 face 에는 `IDWriteFontFamily` 가 딸려 오지 않아서, `IDWriteFontCollection.GetFontFromFontFace` → `IDWriteFont.GetFontFamily` 로 얻은 family 로 `GetFirstMatchingFont` 을 부른다. 실측에서 `CascadiaCodeRoman-Bold` 를 적으면 regular 자리에 Bold face 가 오면서도 변종은 `Cascadia Code` 안에서 맞게 나온다 (bold `CascadiaCodeRoman-Bold` · italic `Cascadia-Code-Italic`). face 가 시스템 컬렉션에 없어 family 를 못 얻으면 변종을 만들지 않고 regular 로 떨어뜨린다.
 
 Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴다. 그 인자는 *family 이름* 을 받는 자리라, 원문이 `CascadiaCode` 나 `CascadiaCodeRoman` 이면 DirectWrite 가 알아보지 못해 system fallback 선택이 어긋난다.
 
@@ -2360,7 +2371,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 
 **macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
 
-그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). drawable 에 그린 것은 Store 로 남고 present 는 프레임 끝의 마지막 cmd_buf 가 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다. [#591](https://github.com/ensky0/tildaz/issues/591) 이후 **draw 는 atlas 를 올린 뒤 한 곳에서만 일어나므로** (아래 "업로드 시점") "비운 뒤 담은 글리프를 따로 올리는" 규칙이 필요 없다 — 2-frame 구조이던 때는 그것이 깨져 아랫부분이 5.5 % 어긋났고 (#585) `atlas_reset_this_frame` 플래그로 막았는데, 그 플래그는 #591 에서 구조와 함께 사라졌다.
+그래서 구간 경계에서 **앞 cmd_buf 를 present 없이 `commit` 하고 `waitUntilCompleted` 로 GPU 가 끝나기를 기다린 뒤** 텍스처를 갱신한다 — Apple 문서가 요구하는 그대로다 (*"ensure these operations complete before calling replaceRegion"*). 렌더 대상 ([#732](https://github.com/ensky0/tildaz/issues/732) 이후 drawable 이 아니라 IOSurface 텍스처) 에 그린 것은 Store 로 남고, 화면에 넘기는 일 (`CALayer.contents`) 은 프레임 끝의 마지막 cmd_buf 뒤에 한다. **계약은 같고 순서를 만드는 주체만 다르다** — Windows · Linux 는 드라이버, macOS 는 우리. 비용은 구간마다 GPU 대기 한 번이고, 이 경로는 `grow` 가 `MAX_ATLAS_SIZE` 에 닿았을 때만 돈다. [#591](https://github.com/ensky0/tildaz/issues/591) 이후 **draw 는 atlas 를 올린 뒤 한 곳에서만 일어나므로** (아래 "업로드 시점") "비운 뒤 담은 글리프를 따로 올리는" 규칙이 필요 없다 — 2-frame 구조이던 때는 그것이 깨져 아랫부분이 5.5 % 어긋났고 (#585) `atlas_reset_this_frame` 플래그로 막았는데, 그 플래그는 #591 에서 구조와 함께 사라졌다.
 
 **macOS 실측** (MacBook Pro M5 Pro · macOS 26.6.2 · 내장 3024×1964 · Menlo 15pt · `cell 19x39`). `MAX_ATLAS_SIZE = INITIAL_ATLAS_SIZE` 로 두어 `grow` 를 막고 ① 만 돌게 했다. 화면은 mark 를 둘 쌓은 cluster **6,000 종** (150 칸 × 40 줄).
 
@@ -2453,7 +2464,7 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 
 #### ② 용량 — 실측 기준선
 
-`ATLAS_SIZE` 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
+atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow` 이전의 고정 크기 상수다) 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
 
 | 환경 | atlas | 담긴 양 |
 |---|---|---|
@@ -2570,7 +2581,7 @@ Linux 도 밀린 출력이 없으면 timeout 이 `frame_poll_ms` 로 돌아가 �
 세 host 모두 프레임 타이머뿐이어서 **깨우기 주기가 그대로 응답 지연**이 됐다 (실측 평균 Linux
 8.71 · macOS 5.83 · Windows 8.40 ms — 상한은 `주기 + render + present`).
 
-이제 `SessionCore.pushOutput` 이 ring 에 넣은 자리에서 host 를 깨운다 (`output_wake_fn`).
+이제 PTY read thread 의 출력 콜백 (`session_core` 의 `Tab.onPtyOutput`) 이 ring 에 넣은 자리에서 host 를 깨운다 (`output_wake_fn`).
 
 | platform | 깨우는 법 | 깨어난 뒤 |
 |---|---|---|
@@ -2845,7 +2856,7 @@ frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이�
 
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
 
-원칙은 *Windows 가 reference, macOS 동등* 이지만 *macOS 만 있는 기능* 도 동일 룰로 *Windows 에 추가* 해야 cross-platform 동등 (사용자 명시 룰).
+원칙은 세 platform 동등 (§0 #1 — 과거의 *"Windows 가 reference"* 는 [#297](https://github.com/ensky0/tildaz/issues/297) 로 폐기) 이라 *macOS 만 있는 기능* 도 같은 룰로 *Windows 에 추가* 해야 한다 (사용자 명시 룰).
 
 ### A.1 macOS 미구현 (Windows 기능 → macOS 추가)
 
@@ -2902,7 +2913,7 @@ frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이�
 
 > **ZWJ family / wide cluster emoji 다중 paste 줄바꿈 안 됨 상세 ([#141](https://github.com/ensky0/tildaz/issues/141)):**
 >
-> ghostty 가 Mode 2027 (grapheme cluster, [`session_core.zig:285`](src/session_core.zig#L285)) ON 으로 ZWJ cluster (man + ZWJ + woman + ZWJ + girl) 를 받으면 첫 base char (man) 만 cell 차지 (wide = 2 cells), 나머지 codepoint 들은 모두 *같은 cell 의 grapheme extras* 로 append 되고 cursor 안 advance — cluster 1 개 = grid 의 2 cells. 시각적으로는 우리 metal renderer 가 cluster 의 base + extras 를 모아 CTLine 으로 single shape → family ligature 정상 표시 ([`renderer/macos.zig:777-800`](src/renderer/macos.zig#L777-L800)).
+> ghostty 가 Mode 2027 (grapheme cluster, [`session_core.zig:858`](src/session_core.zig#L858)) ON 으로 ZWJ cluster (man + ZWJ + woman + ZWJ + girl) 를 받으면 첫 base char (man) 만 cell 차지 (wide = 2 cells), 나머지 codepoint 들은 모두 *같은 cell 의 grapheme extras* 로 append 되고 cursor 안 advance — cluster 1 개 = grid 의 2 cells. 시각적으로는 우리 metal renderer 가 cluster 의 base + extras 를 모아 CTLine 으로 single shape → family ligature 정상 표시 ([`renderer/macos.zig:1334-1403`](src/renderer/macos.zig#L1334-L1403) — #399 이후 연속 grapheme 셀을 모아 `resolveGraphemeRun` 으로 한 번에 shape).
 >
 > 그러나 bash 3.2 (macOS default) 의 readline 은 cluster-unaware POSIX `wcwidth(3)` 로 cell width 계산: codepoint 마다 width 합산 → ZWJ family = man(2) + ZWJ(0) + woman(2) + ZWJ(0) + girl(2) = **6 cells** 로 봄. 매 family 마다 ghostty grid 와 *4 cells mismatch*.
 >
@@ -2942,7 +2953,7 @@ frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이�
 
 | 이슈 | 내용 |
 |---|---|
-| #118 | config schema 통합 (이 문서 §7 의 ❌ 항목 정리) |
+| #118 | config schema 통합 — 완료 (닫힘, §7) |
 
 ---
 

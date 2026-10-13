@@ -36,7 +36,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame 
 zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 ```
 
-## 세 가지 도구 — 무엇을 재느냐가 달라요
+## 도구 — 무엇을 재느냐가 달라요
 
 | 도구 | 재는 것 | 셸 |
 |---|---|---|
@@ -46,7 +46,9 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`check-input-loss_linux_macos.sh`](check-input-loss_linux_macos.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
 | [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · macOS · Windows (Git Bash) |
 | [`send-keys_windows.ps1`](../send-keys_windows.ps1) | 위 도구의 **Windows 합성 입력** (`SendInput`) — Linux 의 `ydotool` 자리 | 〃 |
-| [`hygiene.sh`](hygiene.sh) | 위 다섯이 **공유하는 측정 위생** — 검사 · 준비 · 복원 | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`measure-idle-latency.sh`](measure-idle-latency.sh) | **유휴 깨우기 지연** — 입력 없이 PTY 출력이 화면에 닿기까지 | Linux · macOS · Windows (Git Bash) |
+| [`measure-idle-cstates_linux.sh`](measure-idle-cstates_linux.sh) · [`measure-idle-power_linux.sh`](measure-idle-power_linux.sh) | **유휴 절전 대가** — core-idle 잔류율 · 패키지 전력 | Linux |
+| [`hygiene.sh`](hygiene.sh) | 위 셸 스크립트들이 **공유하는 측정 위생** — 검사 · 준비 · 복원 (유휴 절전 도구 둘은 worker 종료만 써요) | 실행 파일이 아니라 `.` 로 읽어요 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -1723,7 +1725,7 @@ conhost 와 같은 처지이긴 한데 **성격이 조금 달라요** — conhos
 > `for_window` 규칙이 정해요.
 
 **두 옵션은 측정 내부용이에요** — 사용자 문서 (`README` · `CONFIG.md` · `KEYBINDINGS.md`) 에
-넣지 않고 쓰는 곳은 이 스크립트 하나예요.
+넣지 않고 쓰는 곳은 `tool/` 의 측정 · 검증 도구뿐이에요.
 
 측정용 인스턴스는 **평소 쓰는 TildaZ 와 겹치지 않도록 두 가지를 나눠요** — *하지 않는 것*과
 *worker 와 다른 이름을 쓰는 것*이에요.
@@ -1735,7 +1737,7 @@ conhost 와 같은 처지이긴 한데 **성격이 조금 달라요** — conhos
 | 새 instance 요청 처리 | 하지 않아요 (macOS 는 broadcast 라 observer 자체를 등록하지 않아요) |
 | instance 요청 endpoint 상태 | 기록하지 않아요 |
 | config 파일 | **읽기만** 해요 — 같은 폰트 · 테마로 재야 비교가 성립하니 공유하지만, 파일이 없어도 만들지 않아요 |
-| 창 타이틀 · Wayland app_id | worker 와 다른 이름 (`TildaZ-stress` · `tildaz.stress`) — worker 창을 찾는 쪽이 (Windows 의 `FindWindowW`, GNOME · Cinnamon extension) 측정 창을 집지 않게요 |
+| 창 타이틀 · Wayland app_id | worker 와 다른 이름 (개발 빌드 `TildaZ-dev-stress` · `tildaz-dev.stress`, 릴리즈 판 `TildaZ-stress` · `tildaz.stress` — [#654](https://github.com/ensky0/tildaz/issues/654)) — worker 창을 찾는 쪽이 (Windows 의 `FindWindowW`, GNOME · Cinnamon extension) 측정 창을 집지 않게요 |
 | 로그 파일 | `tildaz_stress.log` — 사용자 세션 로그 (`tildaz_N.log`) 와 섞이면 진단이 어려워요 |
 
 `hidden_start` 는 무시하고 창을 표시한 채 시작하고 (숨겨져 있으면 렌더가 일어나지 않아 측정이
@@ -1746,10 +1748,10 @@ conhost 와 같은 처지이긴 한데 **성격이 조금 달라요** — conhos
 endpoint 상태와 창 타이틀이, [macOS 실기](https://github.com/ensky0/tildaz/issues/382#issuecomment-5173008405)와
 그 뒤의 코드 점검에서 나머지가 나왔어요.
 
-**로그로 확인할 때는 host 별 문구가 달라요.** `global hotkey not registered (stress run)` 은
-Windows 문구예요. Linux 는 다른 문장을 쓰고, macOS 는 이 항목에 로그를 남기지 않아요 — 그러니
-"그 줄이 없다" 를 결함으로 읽지 말고, macOS 에서는 측정 로그 파일이 따로 생기는지와 timing
-파일의 격자로 판정하세요.
+**핫키를 건너뛴 로그는 Windows 에만 있어요.** `global hotkey not registered (stress run)` 은
+Windows 문구예요. Linux · macOS 는 등록을 건너뛰기만 하고 로그를 남기지 않아요 — 그러니
+"그 줄이 없다" 를 결함으로 읽지 말고, Linux · macOS 에서는 측정 로그 파일이 따로 생기는지와
+timing 파일의 격자로 판정하세요.
 
 macOS 의 ghostty 는 조건이 까다로워서 스크립트가 **임시 config 파일**을 만들어 넘겨요.
 CLI 로 터미널을 띄울 수 없고 (`ghostty --help`: *"On macOS, launching the terminal emulator
