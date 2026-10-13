@@ -41,7 +41,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | 도구 | 재는 것 | 셸 |
 |---|---|---|
 | `zig build stress` (아래) | **층별 상한** — 파서 / PTY / 프레임 각각의 처리량 | 아무거나 |
-| [`compare-terminals.sh`](compare-terminals.sh) | **다섯 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
+| [`compare-terminals.sh`](compare-terminals.sh) | **설치된 터미널 나란히** 처리량 비교 + 창 캡처 | Windows 는 **Git Bash 필수** |
 | [`measure-repeat.sh`](measure-repeat.sh) | **우리 앱 안의 배분** — `parse` · `render` · `shape` 몫 | 〃 |
 | [`check-input-loss_linux_macos.sh`](check-input-loss_linux_macos.sh) | **응답성 ①** — 폭포 중 입력이 먹히는지 | Linux · macOS |
 | [`measure-input-latency.sh`](measure-input-latency.sh) | **응답성 ②** — 키가 화면에 닿기까지 얼마나 걸리는지 | Linux · macOS · Windows (Git Bash) |
@@ -49,6 +49,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`measure-idle-latency.sh`](measure-idle-latency.sh) | **유휴 깨우기 지연** — 입력 없이 PTY 출력이 화면에 닿기까지 | Linux · macOS · Windows (Git Bash) |
 | [`measure-idle-cstates_linux.sh`](measure-idle-cstates_linux.sh) · [`measure-idle-power_linux.sh`](measure-idle-power_linux.sh) | **유휴 절전 대가** — core-idle 잔류율 · 패키지 전력 | Linux |
 | [`hygiene.sh`](hygiene.sh) | 위 셸 스크립트들이 **공유하는 측정 위생** — 검사 · 준비 · 복원 (유휴 절전 도구 둘은 worker 종료만 써요) | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`terminals.sh`](terminals.sh) | 비교 대상 터미널을 **띄우고 닫는 코드** — 대상 목록 · 격자 · scrollback 맞추기 · 정리 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
 로 남는 perf 스냅숏을 모으고, **5 회 절사평균 + min~max** 로 표를 내요. 시작 전에 위생을
@@ -1587,6 +1588,9 @@ tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 못하면 그때는 예전처럼 `측정 중 resize` 가 떠서 그 회차가 걸러져요.
 
 **대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
+대상 목록과 대상마다 띄우는 방법은 [`terminals.sh`](terminals.sh) 에 있어요 — 처리량 말고 다른
+지표도 같은 코드로 띄우려고 떼어 냈어요 ([#756](https://github.com/ensky0/tildaz/issues/756)).
+대상을 더하거나 띄우는 방법을 고칠 때는 그 파일 하나만 고쳐요.
 
 | platform | 자동으로 도는 대상 |
 |---|---|

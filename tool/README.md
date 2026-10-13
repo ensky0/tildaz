@@ -39,7 +39,7 @@
 `stress/` 안쪽도 같은 규칙이에요 — `check-input-loss_linux_macos.sh` (Windows 는 `-e` 에 러너를
 넘길 수 없어요) · `measure-idle-cstates_linux.sh` (cpuidle sysfs) · `measure-idle-power_linux.sh`
 (turbostat · RAPL) · `pane-runner_windows.ps1` · `split-panes_windows.ps1` 만 OS 에 매여 있고,
-나머지 (`hygiene.sh` · `compare-terminals.sh` · `measure-repeat.sh` · `measure-input-latency.sh` ·
+나머지 (`hygiene.sh` · `terminals.sh` · `compare-terminals.sh` · `measure-repeat.sh` · `measure-input-latency.sh` ·
 `measure-idle-latency.sh`) 는 세 platform 다 돌아요.
 
 ## 파일 하나짜리 도구
