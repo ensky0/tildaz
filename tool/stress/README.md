@@ -49,6 +49,7 @@ zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
 | [`measure-idle-latency.sh`](measure-idle-latency.sh) | **유휴 깨우기 지연** — 입력 없이 PTY 출력이 화면에 닿기까지 | Linux · macOS · Windows (Git Bash) |
 | [`measure-idle-cstates_linux.sh`](measure-idle-cstates_linux.sh) · [`measure-idle-power_linux.sh`](measure-idle-power_linux.sh) | **유휴 절전 대가** — core-idle 잔류율 · 패키지 전력 | Linux |
 | [`hygiene.sh`](hygiene.sh) | 위 셸 스크립트들이 **공유하는 측정 위생** — 검사 · 준비 · 복원 (유휴 절전 도구 둘은 worker 종료만 써요) | 실행 파일이 아니라 `.` 로 읽어요 |
+| [`compare-latency.sh`](compare-latency.sh) · [`compare-memory.sh`](compare-memory.sh) · [`compare-startup.sh`](compare-startup.sh) | 다른 터미널과 **키 → 화면 지연 · 메모리 · 유휴 CPU · 시작 시간** 을 같은 대상으로 견줌 ([#756](https://github.com/ensky0/tildaz/issues/756), 아래 절) | **지금은 macOS 만** |
 | [`terminals.sh`](terminals.sh) | 비교 대상 터미널을 **띄우고 닫는 코드** — 대상 목록 · 격자 · scrollback 맞추기 · 정리 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 
 `measure-repeat` 는 앱을 반복해 띄워 종료 시 자동 덤프 ([#396](https://github.com/ensky0/tildaz/issues/396))
@@ -2223,3 +2224,71 @@ JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본
 모두 ConPTY 를 쓰고 그 안에 headless conhost 가 있어요. 같은 producer 를 conhost 에 직접 돌린
 값과 비교하면 그 몫이 보여요 ([#371](https://github.com/ensky0/tildaz/issues/371) 의 `cjk`
 초과분 +25.6 % 가 그 후보예요).
+
+## 다른 터미널과 견주기 — 지연 · 메모리 · 시작 시간 ([#756](https://github.com/ensky0/tildaz/issues/756))
+
+처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **지금은 macOS 만** 돼요 — Linux · Windows 는
+측정기 (화면 캡처 · 메모리 읽기) 가 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
+[`terminals.sh`](terminals.sh) 예요.
+
+```sh
+tool/stress/compare-latency.sh --repeat 5 --presses 30    # 키 → 화면 지연 (8 분쯤)
+tool/stress/compare-memory.sh  --repeat 3 --idle-sec 30   # 메모리 · 유휴 CPU (12 분쯤)
+tool/stress/compare-startup.sh --repeat 5                 # 시작 시간 (3 분쯤)
+```
+
+세 스크립트 다 `--only kitty,terminal` 로 일부 대상만 돌릴 수 있어요. 위생 절차 (`hygiene.sh`) 는
+처리량과 같아요 — 끝나면 측정을 시킨 창 (VS Code 등) 하나를 앞으로 올려요.
+
+| 지표 | 무엇을 재나 | 측정기 |
+|---|---|---|
+| 키 → 화면 | 합성 키 `a` 를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 **표시 시각**. 유휴 상태 | [`key-to-screen_macos.m`](../key-to-screen_macos.m) `--focus` |
+| 메모리 | `phys_footprint` 합 (Activity Monitor 의 "메모리" 열) — 빈 화면 · scrollback 을 40,000 줄로 채운 뒤 | [`proc-usage_macos.c`](../proc-usage_macos.c) |
+| 유휴 CPU | 채운 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 (한 코어 = 100 %) | 〃 |
+| 시작 시간 | `open` 으로 실행한 순간 → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임 | [`startup-to-screen_macos.m`](../startup-to-screen_macos.m) |
+
+**"그 터미널의 프로세스"** 는 본체 · 본체의 자손 · 같은 앱 번들 안의 프로세스예요. 셸 쪽
+(`/bin` · `/usr/bin` · `/usr/sbin`, 이름이 셸 · `login`) 은 빼요. 정의와 근거는 `proc-usage_macos.c`
+머리 주석에 있어요.
+
+**시작 시간은 대상마다 띄우는 길을 하나로 맞춰요** — 모두 LaunchServices (`open`) 예요. 사용자가
+Dock · Spotlight 로 여는 길이에요. 처리량 · 지연의 AppleScript 경로 (Terminal.app · iTerm2) 는
+`osascript` 비용이 섞여서 시작 시간에는 쓰지 않아요 (`terminals.sh` 의 `terminals_open_all`). 각 앱의
+기본 설정으로 열고 **warm** (회차마다 앱 종료 후 다시 띄움) 이에요.
+
+### 측정 기기 준비 — iTerm2 설정 둘
+
+스크립트는 사용자 설정을 바꾸지 않아서 손으로 한 번 해 둬요.
+
+| 설정 | 왜 | 안 하면 |
+|---|---|---|
+| Settings → General → Closing 의 **Confirm "Quit iTerm2" Command 끄기** | 측정이 깨운 iTerm2 를 끝날 때 종료해요 | *"Quit iTerm2?"* 에서 멈추고, 다음 실행이 위생 검사에 걸려요 |
+| 스크립트 파일을 열 때의 **"OK to run …?" 경고에서 *Suppress this message permanently*** | 시작 시간은 `open -a iTerm <스크립트>` 로 띄워요 | 경고 창에서 멈춰 `timeout` 이 나요 |
+
+### 함정 — 이번에 실제로 밟은 것 (2026-10-13 macOS)
+
+- **커서 깜빡임이 거짓 신호가 돼요.** 키 → 화면은 "그림이 처음 바뀐 프레임" 을 잡아서, 커서가
+  깜빡이면 키와 무관한 변화를 잡아요. 측정 프로그램이 커서를 숨겨요. 메모리 · 유휴 CPU 는
+  반대로 숨기지 않아요 — 각 터미널의 기본 유휴 동작이 재는 대상이라서요.
+- **입력 소스가 한글이면 `a` 가 IME 로 가요.** 터미널마다 IME 경로가 달라서 같은 잣대가 깨져요.
+  ABC 로 잠깐 바꾸고 끝나면 되돌려요.
+- **Terminal.app · iTerm2 를 깨우면 앱이 기본 창을 하나 더 열어요.** 그 창이 측정 창을 가리면 클릭이
+  그쪽으로 가요 — Terminal.app 이 키 10 개 중 9 개를 놓쳤어요. 깨운 앱이면 측정 창이 뜬 뒤 기본
+  창을 닫아요 (`mac_close_woken_extras`). 처리량 도구에는 아직 안 넣었어요.
+- **iTerm2 3.7.4 의 창 이름은 실행 중인 명령이에요** (`sh` · `-bash`). 프로필 이름으로 창을 고르면
+  아무 창도 안 잡혀요. 세션의 프로필 이름으로 갈라요 (`iterm2_windows`). AppleScript 의 창 id 는
+  화면 창 id 와 같아요.
+- **이 기기의 로그인 셸은 Homebrew bash 예요.** 경로로만 셸을 거르면 로그인 셸을 띄우는 iTerm2 ·
+  Terminal.app 에만 셸 몫이 더해져요. 이름으로도 걸러요.
+- **kitty 는 같은 실행 파일의 프로세스가 둘이에요** (창 프로세스와 곧 끝나는 자식). 부모가 후보가
+  아닌 것을 본체로 골라요.
+- **메모리는 회차마다 Terminal.app · iTerm2 를 종료해요.** 창만 닫으면 앱이 떠 있어서 다음 회차의 본체를
+  못 찾고, 찾아도 앞 회차의 흔적이 남은 앱을 재요.
+- **Terminal.app 은 escape sequence 로 창을 키워요.** 그 전에 격자를 읽으면 `120x30` 을 봐요. 측정
+  프로그램이 목표 격자를 최대 5 초 기다려요 (처리량 producer 의 grid wait 와 같아요).
+- **Terminal.app 의 프로필은 사용자 기본값이에요** (이 기기는 반투명 `Clear Dark`). 불투명 `Basic` 과
+  번갈아 재 보니 지연 차이는 흔들림 안이었어요. `--terminal-settings Basic` 으로 고를 수 있어요.
+- **`nohup … &` 로 띄우면 측정의 부모 사슬이 끊겨요.** 끝날 때 올릴 창을 부모 사슬로 못 찾아서, 숨기기
+  직전에 맨 앞이던 앱을 대신 올려요 (`hygiene.sh`).
+- **측정과 무관한 시스템 서비스가 그 사이 우연히 떠요** (`mdworker_shared` · `SetStoreUpdateService` 등).
+  "새로 생긴 프로세스 전부" 를 터미널 몫으로 세면 안 돼요.

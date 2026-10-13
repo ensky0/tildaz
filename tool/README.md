@@ -40,7 +40,9 @@
 넘길 수 없어요) · `measure-idle-cstates_linux.sh` (cpuidle sysfs) · `measure-idle-power_linux.sh`
 (turbostat · RAPL) · `pane-runner_windows.ps1` · `split-panes_windows.ps1` 만 OS 에 매여 있고,
 나머지 (`hygiene.sh` · `terminals.sh` · `compare-terminals.sh` · `measure-repeat.sh` · `measure-input-latency.sh` ·
-`measure-idle-latency.sh`) 는 세 platform 다 돌아요.
+`measure-idle-latency.sh`) 는 세 platform 다 돌아요. `compare-latency.sh` · `compare-memory.sh` ·
+`compare-startup.sh` 는 세 platform 용으로 만들었지만 **지금은 macOS 만** 돼요 — Linux · Windows 의
+측정기가 아직 없어요 ([#756](https://github.com/ensky0/tildaz/issues/756)).
 
 ## 파일 하나짜리 도구
 
@@ -69,7 +71,9 @@
 | [`render-process-check_macos.sh`](render-process-check_macos.sh) | macOS | 기동 직후부터 촘촘히 찍어 **그리는 과정**을 봄 | `# macOS — 렌더 결과와 …` |
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`present-latency-probe_macos.patch`](present-latency-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — `nextDrawable` 대기 · present → 화면 표시 지연 · 대조 실험 스위치 ([#476](https://github.com/ensky0/tildaz/issues/476)). **#732 이전 판에만 들어가요** | `# macOS — 표시 대기열을 재는 법` |
-| [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)) | `# macOS — 표시 대기열을 재는 법` |
+| [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)). `--focus` 로 창 가운데를 눌러 포커스를 줌 — `stress/compare-latency.sh` 가 부름 | `# macOS — 표시 대기열을 재는 법` |
+| [`proc-usage_macos.c`](proc-usage_macos.c) | macOS | 터미널 하나의 프로세스 집합 (본체 · 자손 · 같은 번들, 셸 쪽 제외) 의 `phys_footprint` · CPU 시간 — `stress/compare-memory.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`startup-to-screen_macos.m`](startup-to-screen_macos.m) | macOS | 명령을 스스로 띄우고 화면에 마젠타 표식이 처음 보인 프레임까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
 | [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` |
