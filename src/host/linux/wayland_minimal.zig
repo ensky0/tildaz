@@ -665,8 +665,8 @@ fn pxOffset(remaining: i32, off_pct: f32) i32 {
 /// (id / 크기 / stride / released) 타입을 쪼개지 않고 항목별로 분기한다
 /// (AGENTS.md `# 크로스 플랫폼 코드 스타일 — single definition 우선`).
 ///
-/// 구분은 `bo` 의 유무다. `bo != null` 이면 GPU 경로 (memory 는 매 frame
-/// `gbm_bo_map` 으로 잠깐 얻는다), null 이면 software 경로 (memfd + 상주 mmap).
+/// 구분은 `bo` 의 유무다. `bo != null` 이면 GPU 경로 (GL 이 `gl_target` 에 그린다),
+/// null 이면 software 경로 (memfd + 상주 mmap).
 const SurfaceBuffer = struct {
     id: u32,
     /// software 경로의 memfd. GPU 경로에선 -1 (dma-buf fd 는 송신 즉시 닫는다 —
@@ -1239,10 +1239,6 @@ const Client = struct {
     shm_id: u32 = 0,
     // #277 — `zwp_linux_dmabuf_v1`. 0 이면 compositor 가 노출하지 않은 것.
     linux_dmabuf_id: u32 = 0,
-    // #277 — dmabuf v3 `modifier` event 로 확인한 "ARGB8888 + LINEAR" 지원 여부.
-    // 현재 그리기는 CPU 가 하므로 (`gbm_bo_map` 필요) LINEAR 가 없으면 GPU 경로를
-    // 쓰지 않는다. GLES 렌더러가 오면 이 제약이 사라진다.
-    dmabuf_linear_supported: bool = false,
     // #277 — compositor 가 공표한 ARGB8888 modifier 후보. GLES 렌더러가 쓸 수 있는
     // modifier 를 고르는 데 쓴다 (LINEAR 를 공표하지 않는 환경 — NVIDIA 실측 — 대응).
     dmabuf_mods: [max_dmabuf_mods]u64 = undefined,
@@ -1275,41 +1271,31 @@ const Client = struct {
     dmabuf_tranche_count: usize = 0,
     dmabuf_tranche_index: u32 = 0,
     // #277 — 위 후보 중 "할당 → EGLImage import → FBO complete" 까지 통과한 첫
-    // modifier. null 이면 이 환경에서는 GLES 렌더러를 쓸 수 없다는 뜻이다.
-    // 지금은 판정과 로그만 하고 실제 그리기에는 아직 쓰지 않는다.
+    // modifier. null 이면 이 환경에서는 GLES 렌더러를 쓸 수 없고 software 로 그린다.
     gl_modifier: ?u64 = null,
     // #277 — GPU 경로 자원. null 이면 처음부터 software `wl_shm` 으로 그린다.
     // 한 번 만들면 `Client.deinit` 까지 유지한다 — 아직 살아 있는 buffer 의 bo 를
     // 파괴하려면 device 가 필요하므로, 중간에 없애면 파괴 순서가 위험해진다.
     gpu: ?Gpu = null,
-    // #277 — 새 buffer 를 GPU 로 할당할지. GPU 경로에서 한 번이라도 실패하면
-    // false 로 내리고 (`disableGpu`) 다시 시도하지 않는다. 이미 할당된 GPU
+    // #277 — 새 buffer 를 GPU 로 할당해 GL 로 그릴지. GPU 경로에서 한 번이라도
+    // 실패하면 false 로 내리고 (`disableGpu`) 다시 시도하지 않는다. 이미 할당된 GPU
     // buffer 는 평소 경로로 자연스럽게 회수된다.
+    //
+    // #764 — GPU buffer 에 CPU 로 그리는 중간 경로를 없앴다. 그래서 GPU 를 쓰면 늘
+    // GL 로 그리고, 따로 있던 `gl_render_enabled` 를 이 값 하나로 합쳤다.
     gpu_enabled: bool = false,
     // #277 — dmabuf buffer 생성 왕복 중인 params 객체와 그 결과. 생성은 동기
     // (`sendDmabufCreate` 가 결과까지 기다림) 라 한 번에 하나만 뜬다.
     pending_dmabuf_params: u32 = 0,
     pending_dmabuf_result: ?DmabufResult = null,
-    // #277 S2 — GL 렌더용 EGL context. `gl_modifier` 가 정해지고 opt-in 이 켜진
-    // 경우에만 유지한다. 있으면 buffer 를 GL 로 그리고, 없으면 CPU 가 그린다.
+    // #277 S2 — GL 렌더용 EGL context. `gl_modifier` 가 정해지고 셰이더 준비까지
+    // 끝난 경우에만 유지한다. 없으면 software `wl_shm` 으로 그린다.
     gl_context: ?egl.Context = null,
-    // #277 S2-6 — GL 로 그린다. 기본값이고 `TILDAZ_GL_RENDER=0` 으로 끈다.
-    gl_render_enabled: bool = false,
     // #277 S2-3 — 단색 사각형 정점 배치. GL context 와 함께 만들고 매 frame 재사용한다.
     gl_batch: ?gl_rects.Batch = null,
     // #277 S2-4 — 글리프 atlas 와 텍스트 정점 배치. 역시 context 수명과 같이 간다.
     gl_atlas_store: ?gl_atlas.Atlas = null,
     gl_text_batch: ?gl_text.Batch = null,
-    // #277 — GPU 경로 전용 scratch (일반 RAM).
-    //
-    // dma-buf 매핑은 write-combined (비캐시) 메모리라 **읽기가 매우 느린데**,
-    // 우리 그리기는 알파 블렌딩에서 프레임버퍼를 읽는다 (`blendPixel`). 매핑에
-    // 직접 그렸더니 같은 워크로드에서 CPU 점유가 shm 5.0% 대비 14.8% 로 3 배였다.
-    // 그래서 일반 RAM 에 그린 뒤 dma-buf 로 한 번에 복사한다 — WC 는 순차 쓰기는
-    // 빠르므로 읽기를 전부 캐시 메모리에서 끝내는 것이 이득이다.
-    //
-    // 크기가 바뀌면 재할당한다. software 경로에서는 쓰지 않는다.
-    gpu_scratch: ?[]align(std.heap.page_size_min) u8 = null,
     wm_base_id: u32 = 0,
     surface_id: u32 = 0,
     xdg_surface_id: u32 = 0,
@@ -1868,10 +1854,6 @@ const Client = struct {
         }
         for (self.dialog.retired_buffers.items) |*buffer| buffer.deinit();
         self.dialog.retired_buffers.deinit(self.allocator);
-        if (self.gpu_scratch) |scratch| {
-            self.allocator.free(scratch);
-            self.gpu_scratch = null;
-        }
         // #277 S2 — GL context 도 buffer 정리 뒤에 없앤다 (target 파괴가 context 를
         // 필요로 한다).
         if (self.gl_context) |*ctx| {
@@ -1895,7 +1877,6 @@ const Client = struct {
             }
             ctx.deinit();
             self.gl_context = null;
-            self.gl_render_enabled = false;
         }
         // #277 — GPU 자원은 **모든 buffer 를 정리한 뒤에** 없앤다. bo 파괴에
         // device 가 필요하므로 순서가 뒤바뀌면 안 된다.
@@ -4177,10 +4158,10 @@ const Client = struct {
             if (buffer.width == self.window_width and buffer.height == self.window_height) {
                 if (buffer.released) {
                     // #277 — 그리지 못했으면 attach 하지 않는다. GPU 경로에서
-                    // 매핑이 실패한 경우인데, `disableGpu` 가 이미 걸려 있어
-                    // 다음 frame 은 software buffer 를 새로 만들어 정상 복귀한다.
+                    // GL 그리기가 실패한 경우인데, 아래 `disableGpu` 로 다음
+                    // frame 은 software buffer 를 새로 만들어 정상 복귀한다.
                     if (!self.paintIntoBuffer(buffer)) {
-                        self.disableGpu("dma-buf 재매핑 실패");
+                        self.disableGpu("GL paint failed (active buffer)");
                         return false;
                     }
                     self.logShowElapsed("paint done (reuse)");
@@ -4207,7 +4188,7 @@ const Client = struct {
         if (!self.paintIntoBuffer(&buffer)) {
             self.destroyBufferObject(buffer.id);
             buffer.deinit();
-            self.disableGpu("dma-buf 매핑 실패");
+            self.disableGpu("GL paint failed (pooled buffer)");
             return false;
         }
         self.logShowElapsed("paint done (new buf)");
@@ -4274,7 +4255,9 @@ const Client = struct {
     /// 결과가 같으므로 사용자에게 보이는 차이는 없고, 어느 쪽인지는 로그에 남는다.
     /// 대상 환경: NVIDIA proprietary · llvmpipe · VM · render node 없는 시스템.
     fn initGpuIfAvailable(self: *Client) void {
-        // 진단용 탈출구. GPU 경로를 강제로 끈다 (`TILDAZ_DISABLE_GPU=1`).
+        // 진단용 탈출구. GPU 경로를 강제로 끈다 (`TILDAZ_DISABLE_GPU=1`). GL 이 기본이
+        // 된 뒤 (#277 S2-6) 되돌리는 길은 이 하나다 — `TILDAZ_GL_RENDER=0` (GPU buffer 에
+        // CPU 로 그리기) 은 #764 에서 그 경로와 함께 없앴다.
         // 두 가지 용도가 있다 — (1) 사용자 문제 보고에서 렌더 경로를 원인
         // 후보에서 배제하고 재현, (2) #277 의 "픽셀 동일" 검증에서 **같은
         // 바이너리로** software / GPU 두 경로를 각각 찍어 비교.
@@ -4305,19 +4288,15 @@ const Client = struct {
         };
         self.gpu = .{ .api = api, .device = device, .drm_fd = drm_fd };
 
-        // GLES 렌더러가 이 환경에서 가능한지 먼저 판정한다 (로그용 — S2 준비).
-        // LINEAR 여부와 무관하게 돌린다: NVIDIA 처럼 **지금 경로는 불가한데 GLES
-        // 는 가능한** 환경이 실재하고, 그 사실이 로그에 남아야 실기 없이도 데이터가
-        // 쌓인다.
-        // 창 크기를 아직 모르므로 작은 크기로 판정한다 — 이 단계의 목적은 "이
-        // 환경에서 GLES 렌더가 가능한가" 를 로그에 남기는 것이다. 실제로 쓸
-        // modifier 는 첫 buffer 를 만들 때 그 크기로 다시 고른다 (#367).
+        // GLES 렌더러가 이 환경에서 가능한지 판정한다. 창 크기를 아직 모르므로 작은
+        // 크기로 판정하고, 실제 크기에서 할당이 안 되면 그때 그 크기로 다시 고른다
+        // (#367 — `createDmabufBuffer`).
         self.negotiateGlModifier(256, 256);
 
-        // #277 S2 — GL 로 그린다 (기본). 켜지면 CPU 매핑이 필요 없으므로 LINEAR
-        // 제약이 사라진다 — NVIDIA 처럼 LINEAR 를 공표하지 않는 환경이 이 경로로만
-        // 열린다. 실패하면 아래 LINEAR 검사로 내려가 S1 또는 software 로 떨어진다.
-        if (self.gl_modifier != null and glRenderRequested(self.rt)) {
+        // #277 S2 — GL 로 그린다. CPU 매핑이 필요 없으므로 LINEAR 가 아니어도 된다 —
+        // NVIDIA 처럼 LINEAR 를 공표하지 않는 환경도 이 경로로 열린다. 실패하면
+        // software 로 떨어진다 (#764 — GPU buffer 에 CPU 로 그리는 중간 경로는 없앴다).
+        if (self.gl_modifier != null) {
             // context 는 협상이 이미 열어 뒀다 (`negotiateGlModifier`).
             if (self.gl_context) |*ctx| {
                 // 셰이더 / 정점 버퍼 / atlas 는 context 와 수명을 같이 한다. 하나라도
@@ -4336,7 +4315,6 @@ const Client = struct {
                                 if (self.gpu_timer != null) @as([]const u8, "on") else "unavailable — no GL_EXT_disjoint_timer_query",
                             });
                         }
-                        self.gl_render_enabled = true;
                         self.gpu_enabled = true;
                         log.appendLine("gpu", "GL render enabled — modifier=0x{x:0>16}", .{self.gl_modifier.?});
                         return;
@@ -4347,20 +4325,14 @@ const Client = struct {
                 log.appendLine("gpu", "shader setup failed — continuing without GL", .{});
             }
         }
-        // 여기까지 왔으면 GL 을 쓰지 않는다 — 협상용 context 를 놓는다.
+        // 여기까지 왔으면 GL 을 쓰지 않는다 — 협상용 context 와 GPU 자원을 놓고
+        // software 로 돈다. 아직 만든 GPU buffer 가 없으므로 지금 놓아도 안전하다.
         self.releaseNegotiationContext();
-
-        // 현재 그리기는 CPU 가 하므로 `gbm_bo_map` 이 되는 LINEAR 가 필요하다.
-        // 없으면 GPU 자원을 놓고 software 로 돈다 (아직 쓸 데가 없으므로).
-        if (!self.dmabuf_linear_supported) {
-            log.appendLineVerbose("gpu", "software path — ARGB8888 + LINEAR modifier unsupported (CPU must draw into the dma-buf)", .{});
-            if (self.gpu) |*gpu| {
-                gpu.deinit();
-                self.gpu = null;
-            }
-            return;
+        log.appendLineVerbose("gpu", "software path — no usable GL renderer", .{});
+        if (self.gpu) |*gpu| {
+            gpu.deinit();
+            self.gpu = null;
         }
-        self.gpu_enabled = true;
     }
 
     /// #277 — GLES 렌더러가 쓸 수 있는 modifier 를 고른다.
@@ -4377,17 +4349,6 @@ const Client = struct {
     /// 두 제약이 정반대라 "LINEAR 를 쓴다" 도 "GBM 이 고르게 둔다" 도 한쪽에서
     /// 깨진다. 실제로 시도해 보는 것만이 양쪽을 덮는다.
     ///
-    /// 지금은 **판정과 로그만** 한다 — 그리기는 아직 CPU 라 이 값이 실제 할당에
-    /// 쓰이지 않는다. 그래도 켜 두는 이유는, 사용자 로그에 "이 환경에서 GLES
-    /// 렌더러가 가능한가" 가 남아 실기 없이도 데이터가 쌓이기 때문이다.
-    /// #277 S2-6 — GL 렌더가 **기본**이다 (2026-08-02 사용자 결정). 되돌리는 길을
-    /// 두 단계로 남긴다:
-    ///
-    ///   `TILDAZ_GL_RENDER=0`   GPU buffer 는 쓰되 CPU 가 그린다 (S1)
-    ///   `TILDAZ_DISABLE_GPU=1` GPU 를 아예 안 쓴다 (software `wl_shm`)
-    ///
-    /// 둘을 나눠 둔 이유는 진단 축이 다르기 때문이다 — 전자는 "GL 래스터가 문제인가",
-    /// 후자는 "dma-buf 배관이 문제인가" 를 가른다. 어느 쪽이든 화면은 나온다.
     /// #369 — `TILDAZ_GPU_TIMING=1` 이면 프레임 GPU 시간을 잰다.
     fn gpuTimingRequested(rt: Runtime) bool {
         const value = rt.environ.getPosix("TILDAZ_GPU_TIMING") orelse return false;
@@ -4401,11 +4362,6 @@ const Client = struct {
         const value = rt.environ.getPosix("TILDAZ_GL_MODIFIER") orelse return null;
         const trimmed = if (std.mem.startsWith(u8, value, "0x")) value[2..] else value;
         return std.fmt.parseInt(u64, trimmed, 16) catch null;
-    }
-
-    fn glRenderRequested(rt: Runtime) bool {
-        const value = rt.environ.getPosix("TILDAZ_GL_RENDER") orelse return true;
-        return !std.mem.eql(u8, value, "0");
     }
 
     /// wayland array 인자에서 `dev_t` (8 byte) 를 읽는다. 앞 4 byte 는 배열 크기다.
@@ -4461,7 +4417,6 @@ const Client = struct {
             return;
         }
         for (self.dmabuf_tranche_mods[0..self.dmabuf_tranche_count]) |modifier| {
-            if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
             if (self.dmabuf_mod_count >= max_dmabuf_mods) break;
             self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
             self.dmabuf_mod_count += 1;
@@ -4621,7 +4576,7 @@ const Client = struct {
 
     /// 협상용으로 열어 둔 context 를 쓰지 않기로 했을 때 정리한다.
     fn releaseNegotiationContext(self: *Client) void {
-        if (self.gl_render_enabled) return; // 렌더에 쓰는 중이면 건드리지 않는다.
+        if (self.gpu_enabled) return; // 렌더에 쓰는 중이면 건드리지 않는다.
         if (self.gl_context) |*ctx| {
             ctx.deinit();
             self.gl_context = null;
@@ -4635,14 +4590,7 @@ const Client = struct {
     fn disableGpu(self: *Client, reason: []const u8) void {
         if (!self.gpu_enabled) return;
         self.gpu_enabled = false;
-        // GL 렌더도 함께 끈다 — dma-buf 없이는 렌더 타깃이 없다. 남겨 두면 상태가
-        // 사실과 어긋나고 `render_path` 로그가 거짓을 말한다.
-        const was_gl = self.gl_render_enabled;
-        self.gl_render_enabled = false;
-        log.appendLine("gpu", "{s} path aborted — {s}. falling back to software wl_shm", .{
-            if (was_gl) @as([]const u8, "GL render") else "dmabuf",
-            reason,
-        });
+        log.appendLine("gpu", "GL render path aborted — {s}. falling back to software wl_shm", .{reason});
     }
 
     /// #277 — GPU 경로 buffer 하나. 실패하면 null 을 돌려주고 호출처가 shm 으로
@@ -4654,33 +4602,28 @@ const Client = struct {
     /// compositor / 드라이버 조합에서 앱이 죽지 않게 하는 것이 이 선택의 목적이다.
     fn createDmabufBuffer(self: *Client, width: i32, height: i32) ?SurfaceBuffer {
         const gpu = if (self.gpu) |*g| g else return null;
-        // GL 로 그릴 때는 협상된 modifier 를 쓴다 (CPU 매핑이 필요 없으므로 LINEAR
-        // 가 아니어도 된다). CPU 로 그릴 때는 매핑이 되는 LINEAR 여야 한다.
-        const want_modifier = if (self.gl_render_enabled) self.gl_modifier.? else gbm.MOD_LINEAR;
+        // 협상된 modifier 를 쓴다. GL 이 그리므로 CPU 매핑이 필요 없어 LINEAR 가 아니어도 된다.
+        const want_modifier = self.gl_modifier.?;
         const bo = gpu.api.createWithModifier(gpu.device, want_modifier, @intCast(width), @intCast(height)) orelse blk: {
             // #367 — 시험 크기에서 되던 modifier 가 실제 크기에서 실패할 수 있다
             // (압축은 표면 크기·정렬 제약이 있다). GPU 를 통째로 포기하기 전에
             // **이 크기로 다시 고른다** — 협상 루프가 할당까지 검증하므로, 이 크기에
             // 안 되는 후보는 자연히 걸러진다.
-            if (!self.gl_render_enabled) {
-                self.disableGpu("gbm 할당 실패");
-                return null;
-            }
             log.appendLine("gpu", "modifier 0x{x:0>16} allocation failed at {d}x{d} — renegotiating for this size", .{ want_modifier, width, height });
             self.negotiateGlModifier(@intCast(width), @intCast(height));
             const retry_modifier = self.gl_modifier orelse {
-                self.disableGpu("이 크기에 쓸 수 있는 modifier 가 없다");
+                self.disableGpu("no modifier works at this size");
                 return null;
             };
             break :blk gpu.api.createWithModifier(gpu.device, retry_modifier, @intCast(width), @intCast(height)) orelse {
-                self.disableGpu("재협상 후에도 gbm 할당 실패");
+                self.disableGpu("gbm allocation failed after renegotiation");
                 return null;
             };
         };
         var planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
         const plane_count = gpu.api.exportPlanes(bo, &planes) orelse {
             gpu.api.destroyBo(bo);
-            self.disableGpu("dma-buf fd export 실패");
+            self.disableGpu("dma-buf fd export failed");
             return null;
         };
         defer gbm.Api.closePlanes(planes[0..plane_count]);
@@ -4688,11 +4631,11 @@ const Client = struct {
         const params_id = self.allocId();
         const buffer_id = self.sendDmabufCreate(params_id, planes[0..plane_count], bo) catch {
             gpu.api.destroyBo(bo);
-            self.disableGpu("dmabuf 프로토콜 송신 실패");
+            self.disableGpu("dmabuf protocol send failed");
             return null;
         } orelse {
             gpu.api.destroyBo(bo);
-            self.disableGpu("compositor 가 dma-buf 를 거부 (params.failed)");
+            self.disableGpu("compositor rejected the dma-buf (params.failed)");
             return null;
         };
 
@@ -4708,23 +4651,23 @@ const Client = struct {
             .bo = bo,
         };
 
-        // #277 S2 — GL 로 그릴 buffer 면 렌더 타깃까지 붙여 둔다. 매 frame 만들지
-        // 않고 buffer 수명과 함께 간다 (buffer 는 재사용되므로).
-        if (self.gl_render_enabled) {
+        // #277 S2 — 렌더 타깃까지 붙여 둔다. 매 frame 만들지 않고 buffer 수명과 함께
+        // 간다 (buffer 는 재사용되므로). 블록은 import 용 fd 를 `defer` 로 바로 닫으려고 둔다.
+        {
             const ctx = self.gl_context.?;
             // import 용 fd 를 다시 얻는다 — 위에서 프로토콜에 넘긴 fd 는 곧 닫힌다.
             var gl_planes: [gbm.MAX_PLANES]gbm.Plane = undefined;
             const gl_plane_count = gpu.api.exportPlanes(bo, &gl_planes) orelse {
                 self.destroyBufferObject(buffer.id);
                 buffer.deinit();
-                self.disableGpu("GL import 용 dma-buf fd export 실패");
+                self.disableGpu("dma-buf fd export for GL import failed");
                 return null;
             };
             defer gbm.Api.closePlanes(gl_planes[0..gl_plane_count]);
             buffer.gl_target = ctx.importAsTarget(gl_planes[0..gl_plane_count], bo) orelse {
                 self.destroyBufferObject(buffer.id);
                 buffer.deinit();
-                self.disableGpu("dma-buf 를 GL 렌더 타깃으로 만들지 못함");
+                self.disableGpu("could not make the dma-buf a GL render target");
                 return null;
             };
             buffer.gl_ctx = ctx;
@@ -4772,15 +4715,6 @@ const Client = struct {
         };
     }
 
-    /// buffer 의 픽셀을 채운다. software 경로는 상주 mapping 에 바로 그리고,
-    /// GPU 경로는 `gbm_bo_map` / `unmap` 으로 감싼다 — unmap 이 있어야 compositor
-    /// 가 읽기 전에 우리 쓰기가 보이는 것이 보장된다.
-    ///
-    /// **그리기 자체(`paintBuffer`)는 두 경로가 완전히 같은 코드다.** #277 S1 의
-    /// 판정 기준이 "픽셀 동일" 인 근거가 이것이다 — 바뀐 것은 픽셀을 담는 그릇뿐이다.
-    ///
-    /// false = 이번 frame 을 그리지 못했다. 호출처는 attach 하지 않는다 (덜 그린
-    /// buffer 를 붙이면 깨진 화면이 보인다).
     /// u8 색 채널 → GL 의 0..1. 한 방향 변환만 한다 (왕복하면 1 비트가 깎인다 —
     /// `software_terminal.SolidRect` 주석 참고).
     fn colorF(v: u8) f32 {
@@ -5010,6 +4944,12 @@ const Client = struct {
         });
     }
 
+    /// buffer 의 픽셀을 채운다. GPU buffer 는 GL 이 렌더 타깃 (`gl_target`) 에 그리고,
+    /// software buffer 는 CPU 가 상주 mapping 에 바로 그린다 (`paintBuffer`). 두 경로는
+    /// 같은 그리기 목록을 쓴다 (아래 주석).
+    ///
+    /// false = 이번 frame 을 그리지 못했다. 호출처는 attach 하지 않는다 (덜 그린
+    /// buffer 를 붙이면 깨진 화면이 보인다).
     fn paintIntoBuffer(self: *Client, buffer: *SurfaceBuffer) bool {
         // #277 S2-4 — GL 경로. **그리기 목록은 CPU 경로와 같은 수집기가 만든다**
         // (`buildGlFrame` → `collectTerminalLayer`). 여기서 하는 일은 그 목록을
@@ -5128,40 +5068,11 @@ const Client = struct {
             }
             return true;
         }
-        if (buffer.bo) |bo| {
-            const api = buffer.gbm_api orelse return false;
-            const len: usize = @as(usize, @intCast(buffer.height)) * bo.stride;
-            const scratch = self.ensureGpuScratch(len) orelse return false;
-
-            // 그리기는 **일반 RAM 에서** 끝낸다 (위 `gpu_scratch` 주석 참고 —
-            // WC 메모리에 직접 그리면 블렌딩의 읽기 때문에 CPU 가 3 배 든다).
-            self.paintBuffer(scratch, buffer.width, buffer.height, @intCast(bo.stride));
-
-            const mapping = api.map(bo) orelse return false;
-            defer api.unmap(bo, mapping);
-            // compositor 는 `params.add` 로 알려준 `bo.stride` 로 읽는다. CPU
-            // mapping 의 stride 가 그와 다르면 서로 다른 배치를 보게 되므로
-            // 그리지 않는다 (실측 환경에선 항상 같았지만 계약상 보장은 없다).
-            if (mapping.stride != bo.stride) return false;
-            @memcpy(mapping.data[0..len], scratch[0..len]);
-            return true;
-        }
+        // GPU buffer 는 모두 GL 렌더 타깃을 갖는다 (#764 — CPU 로 그리는 중간 경로를 없앴다).
+        // 여기 오는 것은 software buffer 뿐이고, 상주 mapping 이 없으면 그리지 않는다.
         const memory = buffer.memory orelse return false;
         self.paintBuffer(memory, buffer.width, buffer.height, buffer.stride);
         return true;
-    }
-
-    /// GPU 경로 scratch 확보. 크기가 모자라면 재할당한다. 실패하면 null —
-    /// 호출처가 이번 frame 을 건너뛰고 software 로 되돌린다.
-    fn ensureGpuScratch(self: *Client, len: usize) ?[]align(std.heap.page_size_min) u8 {
-        if (self.gpu_scratch) |existing| {
-            if (existing.len >= len) return existing;
-            self.allocator.free(existing);
-            self.gpu_scratch = null;
-        }
-        const fresh = self.allocator.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), len) catch return null;
-        self.gpu_scratch = fresh;
-        return fresh;
     }
 
     fn createBuffer(self: *Client, width: i32, height: i32) !SurfaceBuffer {
@@ -5173,7 +5084,7 @@ const Client = struct {
                 if (self.paintIntoBuffer(&owned)) return owned;
                 self.destroyBufferObject(owned.id);
                 owned.deinit();
-                self.disableGpu("dma-buf CPU 매핑 실패");
+                self.disableGpu("GL paint failed (new buffer)");
             }
         }
 
@@ -5678,13 +5589,12 @@ const Client = struct {
         }
         // #277 — zwp_linux_dmabuf_v1.modifier (opcode 1, since v3):
         // (format, modifier_hi, modifier_lo). v1~v2 의 `format` event (opcode 0)
-        // 는 modifier 를 알려주지 않아 무시한다 — LINEAR 를 명시로 확인할 수 없으면
-        // GPU 경로를 켜지 않는다.
+        // 는 modifier 를 알려주지 않아 무시한다 — 명시 modifier 후보가 없으면 GL 협상이
+        // 고를 것이 없어 software 로 돈다.
         if (self.linux_dmabuf_id != 0 and id == self.linux_dmabuf_id and opcode == 1 and payload.len >= 12) {
             const format = readU32(payload[0..4]);
             const modifier = (@as(u64, readU32(payload[4..8])) << 32) | @as(u64, readU32(payload[8..12]));
             if (format == gbm.FORMAT_ARGB8888) {
-                if (modifier == gbm.MOD_LINEAR) self.dmabuf_linear_supported = true;
                 // INVALID 는 후보가 아니다 — 명시 modifier 를 넘길 수 없다.
                 if (modifier != gbm.MOD_INVALID and self.dmabuf_mod_count < max_dmabuf_mods) {
                     self.dmabuf_mods[self.dmabuf_mod_count] = modifier;
@@ -10979,7 +10889,7 @@ const Client = struct {
         // #197 — production capabilities 요약 (once per boot). lifecycle 성격이라 [startup].
         log.appendLine(
             "startup",
-            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} primary_selection={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_linear={} dmabuf_modifiers={} gles_capable={} render_path={s}",
+            "wayland capabilities: compositor={} shm={} xdg_wm_base={} layer_shell={} text_input_v3={} data_device_manager={} primary_selection={} shortcuts_inhibit={} shm_xrgb8888={} shm_argb8888={} dmabuf={} dmabuf_modifiers={} gles_capable={} render_path={s}",
             .{
                 self.caps.compositor.name != 0,
                 self.caps.shm.name != 0,
@@ -10992,22 +10902,14 @@ const Client = struct {
                 self.saw_xrgb8888,
                 self.saw_argb8888,
                 self.caps.linux_dmabuf.name != 0,
-                self.dmabuf_linear_supported,
                 self.dmabuf_mod_count,
                 // #277 — GLES 렌더러(S2)가 이 환경에서 가능한가. 사용자 보고에서
                 // "이 머신은 GPU 로 갈 수 있는가" 를 한 줄로 판정하는 값이다.
                 self.gl_modifier != null,
                 // #277 — 어느 경로로 그리는지. 사용자 보고를 진단할 때 첫 번째로
-                // 볼 값이라 capability 줄에 같이 남긴다. **래스터화 주체까지
-                // 구분한다** — `gpu-dmabuf` 는 GPU buffer 에 CPU 가 그리는 S1 이고
-                // `gpu-gl` 은 GPU 가 그리는 S2 다. 둘을 뭉치면 사용자 로그만 보고
-                // 어느 쪽 문제인지 가릴 수 없다.
-                if (!self.gpu_enabled)
-                    @as([]const u8, "software-shm")
-                else if (self.gl_render_enabled)
-                    "gpu-gl"
-                else
-                    "gpu-dmabuf",
+                // 볼 값이라 capability 줄에 같이 남긴다. 예전에는 GPU buffer 에 CPU 가
+                // 그리는 `gpu-dmabuf` 도 있었다 (#764 에서 없앴다).
+                if (self.gpu_enabled) @as([]const u8, "gpu-gl") else "software-shm",
             },
         );
     }
