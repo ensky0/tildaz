@@ -2312,6 +2312,22 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 외장 모니터(60 Hz)에서 프레임 주기가 갈리므로, 이 줄과 platform별 화면 정보
 (`window initialized: dpi=..` 등)를 근거로 남겨요.
 
+**테스트가 끝나면 측정을 시킨 창 (보통 VS Code) 을 다시 앞으로 올려요** (2026-10-14 사용자 지시:
+*"모든 테스트에는 끝나고 vscode 다시 띄우는 코드 넣으라고"*). 측정 위생이 배경 창을 전부 내리고, 측정
+창이 포커스를 가져가요. 그대로 끝나면 화면이 비어서 측정이 끝났는지 알 수 없어요. 같은 날
+[#763](https://github.com/ensky0/tildaz/issues/763) 측정 뒤에 VS Code 가 최소화된 채 남았어요.
+
+- **새 테스트 도구를 만들면 끝나는 자리에 이 코드를 넣어요.** 창을 내리지 않는 도구도 측정 창이
+  포커스를 가져가니 같아요.
+- 구현은 [`tool/stress/hygiene.sh`](tool/stress/hygiene.sh) 의 `hygiene_raise_launcher` 예요. `hygiene_end`
+  가 불러요. 부모 프로세스를 거슬러 올라가 측정을 시킨 창을 찾고 (VS Code 터미널도 에이전트도 VS Code 로
+  이어져요), 못 찾으면 창을 내리기 직전의 맨 앞 창을 올려요.
+- **⚠️ 지금은 `feat/756-terminal-bench` 브랜치에만 있어요** ([`431f45a`](https://github.com/ensky0/tildaz/commit/431f45a) ·
+  [`4539b6e`](https://github.com/ensky0/tildaz/commit/4539b6e)). 그 브랜치가 머지되기 전에는 main 의 도구가 창을
+  올리지 않아요.
+- 올리는 것은 그 창 하나예요. 다른 배경 창은 되살리지 않고, 평소 쓰는 TildaZ worker 도 다시 띄우지
+  않아요 (바로 아래).
+
 **측정 때 종료한 평소 쓰는 TildaZ worker 는 다시 띄우지 않아요** (2026-08-05 사용자 지시:
 *"측정 위생 때문에 종료한 TildaZ를 다시 띄울 필요는 없어. 다시 묻지 마"*). 처리량 측정은
 [`tool/stress/README.md`](tool/stress/README.md) 의 "측정 위생" 대로 worker 를 내려야 하는데,
