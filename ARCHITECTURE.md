@@ -147,8 +147,10 @@ come from one place, `src/app_id.zig` ([#654](https://github.com/ensky0/tildaz/i
    the CPU into an ARGB8888 buffer. The GL path (`renderer/linux/gl_rects.zig` / `gl_text.zig`
    / `gl_atlas.zig`, via `host/linux/egl.zig` + `gbm.zig`) consumes the *same* lists and
    draws into a dma-buf, so the two paths cannot silently diverge. GL is the
-   default; `TILDAZ_GL_RENDER=0` falls back to CPU rasterizing into the dma-buf
-   and `TILDAZ_DISABLE_GPU=1` to `wl_shm`. Dialog surfaces are always `wl_shm`.
+   default; when GL is unavailable the host falls back to CPU rasterizing into
+   `wl_shm`, and `TILDAZ_DISABLE_GPU=1` forces that path. There is no
+   CPU-into-dma-buf path ([#764](https://github.com/ensky0/tildaz/issues/764)).
+   Dialog surfaces are always `wl_shm`.
    `xkb.zig`
    (runtime `libxkbcommon`) decodes keys; fonts come from fontconfig + FreeType
    + HarfBuzz via `src/font/linux/*`, all `dlopen`-loaded.

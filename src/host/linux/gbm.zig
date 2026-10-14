@@ -29,17 +29,14 @@ fn fourcc(a: u8, b: u8, c: u8, d: u8) u32 {
 //
 // `GBM_BO_USE_WRITE` 는 쓰지 않는다. 헤더 계약이 *"`gbm_bo_write` 용이고
 // `GBM_BO_USE_CURSOR` 와의 조합만 보장, 다른 조합은 동작하지 않을 수 있다"* 이고,
-// 실측에서도 render node 할당이 NULL 로 실패했다 (#277). CPU 접근은 `map` 으로 한다.
+// 실측에서도 render node 할당이 NULL 로 실패했다 (#277). CPU 로는 buffer 에 접근하지
+// 않는다 — GL 이 그린다 (#764 에서 `gbm_bo_map` 으로 CPU 가 그리던 경로를 없앴다).
 const USE_RENDERING: u32 = 1 << 2;
-const USE_LINEAR: u32 = 1 << 4;
-const TRANSFER_WRITE: u32 = 1 << 1;
 
 const GbmCreateDevice = *const fn (fd: c_int) callconv(.c) ?*anyopaque;
 const GbmDeviceDestroy = *const fn (dev: ?*anyopaque) callconv(.c) void;
 const GbmBoCreateWithModifiers = *const fn (dev: ?*anyopaque, w: u32, h: u32, format: u32, mods: [*]const u64, count: c_uint) callconv(.c) ?*anyopaque;
 const GbmBoDestroy = *const fn (bo: ?*anyopaque) callconv(.c) void;
-const GbmBoMap = *const fn (bo: ?*anyopaque, x: u32, y: u32, w: u32, h: u32, flags: u32, stride: *u32, map_data: *?*anyopaque) callconv(.c) ?*anyopaque;
-const GbmBoUnmap = *const fn (bo: ?*anyopaque, map_data: ?*anyopaque) callconv(.c) void;
 const GbmBoGetFd = *const fn (bo: ?*anyopaque) callconv(.c) c_int;
 const GbmBoGetStride = *const fn (bo: ?*anyopaque) callconv(.c) u32;
 const GbmBoGetOffset = *const fn (bo: ?*anyopaque, plane: c_int) callconv(.c) u32;
@@ -76,22 +73,12 @@ pub const Bo = struct {
     plane_count: usize = 1,
 };
 
-/// `map` 결과. `data` 에 그리고 반드시 `unmap` 해야 compositor 가 읽기 전에
-/// 쓰기가 보이는 것이 보장된다.
-pub const Mapping = struct {
-    data: [*]u8,
-    stride: u32,
-    opaque_handle: ?*anyopaque,
-};
-
 pub const Api = struct {
     handle: *anyopaque,
     create_device: GbmCreateDevice,
     device_destroy: GbmDeviceDestroy,
     bo_create_with_modifiers: GbmBoCreateWithModifiers,
     bo_destroy: GbmBoDestroy,
-    bo_map: GbmBoMap,
-    bo_unmap: GbmBoUnmap,
     bo_get_fd: GbmBoGetFd,
     bo_get_stride: GbmBoGetStride,
     bo_get_offset: GbmBoGetOffset,
@@ -111,8 +98,6 @@ pub const Api = struct {
             .device_destroy = lookup(handle, GbmDeviceDestroy, "gbm_device_destroy") orelse return error.GbmSymbolMissing,
             .bo_create_with_modifiers = lookup(handle, GbmBoCreateWithModifiers, "gbm_bo_create_with_modifiers") orelse return error.GbmSymbolMissing,
             .bo_destroy = lookup(handle, GbmBoDestroy, "gbm_bo_destroy") orelse return error.GbmSymbolMissing,
-            .bo_map = lookup(handle, GbmBoMap, "gbm_bo_map") orelse return error.GbmSymbolMissing,
-            .bo_unmap = lookup(handle, GbmBoUnmap, "gbm_bo_unmap") orelse return error.GbmSymbolMissing,
             .bo_get_fd = lookup(handle, GbmBoGetFd, "gbm_bo_get_fd") orelse return error.GbmSymbolMissing,
             .bo_get_stride = lookup(handle, GbmBoGetStride, "gbm_bo_get_stride") orelse return error.GbmSymbolMissing,
             .bo_get_offset = lookup(handle, GbmBoGetOffset, "gbm_bo_get_offset") orelse return error.GbmSymbolMissing,
@@ -135,19 +120,6 @@ pub const Api = struct {
 
     pub fn destroyDevice(self: *const Api, dev: ?*anyopaque) void {
         self.device_destroy(dev);
-    }
-
-    /// LINEAR modifier 로 ARGB8888 buffer 를 할당한다.
-    ///
-    /// `gbm_bo_create` 가 아니라 `gbm_bo_create_with_modifiers` 를 쓰는 이유:
-    /// 전자는 `LINEAR` 플래그로 만들어도 `gbm_bo_get_modifier` 가
-    /// `DRM_FORMAT_MOD_INVALID` 를 돌려주는데, 그 값을 프로토콜에 넘길 수 없다
-    /// (#277 실측). 후자는 요청한 modifier 를 정확히 돌려준다.
-    ///
-    /// 다중 plane buffer 는 지원하지 않는다 — 우리 포맷은 항상 1 plane 이고,
-    /// 그렇지 않게 나오면 이 경로를 쓰지 않는 편이 안전하다.
-    pub fn createLinear(self: *const Api, dev: ?*anyopaque, width: u32, height: u32) ?Bo {
-        return self.createWithModifier(dev, MOD_LINEAR, width, height);
     }
 
     /// 후보 목록을 넘기고 **드라이버가 고르게 한다** ([#367](https://github.com/ensky0/tildaz/issues/367)).
@@ -188,6 +160,10 @@ pub const Api = struct {
     }
 
     /// 지정한 modifier 하나로 할당한다 (협상이 끝난 뒤의 실제 buffer 용).
+    ///
+    /// `gbm_bo_create` + 플래그가 아니라 modifier 를 명시하는 이유: 그렇게 만든 buffer 는
+    /// `gbm_bo_get_modifier` 가 `DRM_FORMAT_MOD_INVALID` 를 돌려주는데, 그 값은 프로토콜에
+    /// 넘길 수 없다 (#277 실측).
     pub fn createWithModifier(self: *const Api, dev: ?*anyopaque, modifier: u64, width: u32, height: u32) ?Bo {
         const mods = [_]u64{modifier};
         return self.createWithModifiers(dev, &mods, width, height);
@@ -229,17 +205,6 @@ pub const Api = struct {
             // #451 — `posix.close` 가 없어졌다 (릴리즈 노트 *posix and os.windows removals*).
             if (p.fd >= 0) unix_socket.closeFd(p.fd);
         }
-    }
-
-    pub fn map(self: *const Api, bo: Bo) ?Mapping {
-        var stride: u32 = 0;
-        var handle: ?*anyopaque = null;
-        const data = self.bo_map(bo.ptr, 0, 0, bo.width, bo.height, TRANSFER_WRITE, &stride, &handle) orelse return null;
-        return .{ .data = @ptrCast(data), .stride = stride, .opaque_handle = handle };
-    }
-
-    pub fn unmap(self: *const Api, bo: Bo, mapping: Mapping) void {
-        self.bo_unmap(bo.ptr, mapping.opaque_handle);
     }
 };
 
