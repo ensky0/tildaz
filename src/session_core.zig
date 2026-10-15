@@ -2482,7 +2482,7 @@ test "#574 — 출력이 없는 완전한 라운드는 유휴로 끝난다" {
 /// ghostty 의 `scrollViewport(.bottom)` 은 `PageList.viewport` 를 `.active` 로 바꾼다. 그래서 바꾸기
 /// 전에 `.active` 였으면 화면이 그대로다. 이 판정은 안전한 쪽으로만 틀린다 — 맨 아래인데 표기가
 /// `.pin` 인 드문 경우에 한 프레임을 더 그릴 뿐, 필요한 그리기를 빠뜨리지 않는다.
-fn scrollToBottomMoved(term: *ghostty.Terminal) bool {
+pub fn scrollToBottomMoved(term: *ghostty.Terminal) bool {
     const was_bottom = term.screens.active.pages.viewport == .active;
     term.scrollViewport(.{ .bottom = {} });
     return !was_bottom;

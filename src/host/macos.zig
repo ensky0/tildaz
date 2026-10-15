@@ -616,7 +616,10 @@ var g_host: tab_actions.Host = .{
 };
 
 fn macHostInvalidate(_: *tab_actions.Host) void {
-    // mac 은 renderFrameTick 이 vsync 마다 자동 호출 — 즉시 redraw 트리거 불필요.
+    // #763 — 탭 전환 · reset 같은 탭 동작이 화면을 바꾼다. displayLink 는 vsync 마다 불리지만
+    // 그리기 게이트 (`g_needs_render`) 가 닫혀 있으면 그리지 않는다. 예전에는 단축키가 지나는
+    // `commitPendingInput` 의 요청에 우연히 기대고 있었다.
+    requestRender();
 }
 
 /// NSPasteboard.general → clearContents → setString:forType:NSPasteboardTypeString.
@@ -1123,7 +1126,8 @@ fn sendEncodedKeyMac(tab: anytype, event: objc.id, utf8: []const u8, action: key
     if (bytes.len == 1 and bytes[0] == 0x03) {
         tab.interruptWrite(bytes);
         // #242 — Ctrl+C 도 사용자 입력이라 맨 아래로 (^C 와 새 prompt 가 보이게).
-        tab.terminal.scrollViewport(.{ .bottom = {} });
+        // #763 — 움직였을 때만 그린다 (`writeUserInput` 과 같다).
+        if (session_core.scrollToBottomMoved(&tab.terminal)) requestRender();
     } else {
         writeUserInput(tab, bytes);
     }
@@ -1642,7 +1646,9 @@ fn tildazFlagsChanged(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
-    requestRender(); // #255 Phase2 — 키 입력 → 렌더 (스크롤백/탭조작 등 출력 없는 변화 포함).
+    // #763 — 여기서 무조건 그리지 않는다. 키가 화면을 바꾸는 자리 (맨 아래로 스크롤 · 조합 표시가
+    // 사라짐 · Shift+PgUp/PgDn · 메뉴 · 검색바) 가 각자 요청한다. 무조건 그리면 바뀐 것 없는 빈 프레임이
+    // 나가 곧 온 에코의 출력 통보를 막고, 그 키는 한 프레임 늦는다 (#763 ⑥).
     const tab = g_session.activeTab() orelse return;
     if (event == null) return;
 
@@ -1820,6 +1826,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     g_marked_len = 0;
                     g_preedit_len = 0;
                     clearHanjaState();
+                    requestRender(); // #763 — 조합 표시가 사라진다
                 }
                 // Ctrl+C (SIGINT) 만 큐 우회 + 큐 reset — paste 등으로 가득찬
                 // write_queue 뒤에 enqueue 되면 셸이 SIGINT 늦게 받아 "Ctrl+C
@@ -1833,7 +1840,7 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
                     if (ctrl_c) {
                         tab.interruptWrite(cstr[0..len]);
                         // #242 — Ctrl+C 도 사용자 입력 → 맨 아래로(^C/새 prompt 보이게).
-                        tab.terminal.scrollViewport(.{ .bottom = {} });
+                        if (session_core.scrollToBottomMoved(&tab.terminal)) requestRender(); // #763
                     } else {
                         writeUserInput(tab, cstr[0..len]);
                     }
@@ -1866,10 +1873,12 @@ fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
             const rows: isize = @intCast(tab.terminal.rows);
             if (keycode == 116) { // kVK_PageUp — 위쪽 (older).
                 tab.terminal.scrollViewport(.{ .delta = -rows });
+                requestRender(); // #763 — 키가 그리기를 무조건 열지 않으니 직접 요청한다
                 return;
             }
             if (keycode == 121) { // kVK_PageDown — 아래쪽 (newer).
                 tab.terminal.scrollViewport(.{ .delta = rows });
+                requestRender(); // #763
                 return;
             }
         }
@@ -2502,6 +2511,9 @@ fn markedRangeStart() usize {
 }
 
 fn clearImeMarkedState() void {
+    // #763 — 조합 표시가 있었으면 사라지니 그린다. 키 · IME 콜백이 무조건 그리지 않게 된 뒤로는
+    // `unmarkText` · 한자 후보 취소 · 빈 확정이 이 자리에서만 화면을 바꾼다.
+    if (g_preedit_len > 0 or g_marked_len > 0) requestRender();
     g_marked_len = 0;
     g_marked_selected_range = .{ .location = 0, .length = 0 };
     g_preedit_len = 0;
@@ -2542,11 +2554,14 @@ fn queueBackspaces(tab: anytype, count: usize) void {
 /// #242 — 사용자 키 입력을 PTY 로 보내고 viewport 를 맨 아래로 (scroll-on-keystroke).
 /// Linux/Windows 의 `session_core.queueInputToActive` 와 동등 — macOS parity
 /// (SPEC §0). scroll-on-output(program 출력) / terminal 자동응답 write 와 구분해
-/// *사용자 키 입력* 경로에서만 호출한다. macOS 60fps render timer 가 viewport
-/// 변화를 다음 프레임에 반영하므로 별도 redraw 트리거 불필요(휠 스크롤과 동일).
+/// *사용자 키 입력* 경로에서만 호출한다.
+///
+/// #763 — viewport 가 실제로 움직였을 때만 그리기를 요청한다 (판정은 세 host 공통의
+/// `session_core.scrollToBottomMoved`). 이미 맨 아래면 바뀌는 것이 없고, 에코는 PTY 출력이라
+/// 출력 통보가 그린다. 예전에는 `keyDown:` 이 무조건 그리기를 요청해 이 함수는 요청하지 않았다.
 fn writeUserInput(tab: anytype, bytes: []const u8) void {
     tab.queueWrite(bytes);
-    tab.terminal.scrollViewport(.{ .bottom = {} });
+    if (session_core.scrollToBottomMoved(&tab.terminal)) requestRender();
 }
 
 /// NSAttributedString 이거나 NSString 인 input → NSString 추출.
@@ -2564,7 +2579,9 @@ fn imeStringFromInput(text: objc.id) objc.id {
 /// IME 가 글자 commit 시 호출 (한글 음절 완성, 일본어 conversion 확정 등).
 /// PTY 로 write + preedit buffer clear.
 fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) callconv(.c) void {
-    requestRender(); // #255 Phase2
+    // #763 — 무조건 그리지 않는다. 조합 표시가 사라지면 `clearImeMarkedState` 가, 확정 글자로
+    // 화면이 내려가면 `writeUserInput` 이, 검색어가 바뀌면 `searchSpliceText` 가 요청한다. 확정 글자
+    // 자체는 에코로 온다.
     const tab = g_session.activeTab() orelse return;
     const str = imeStringFromInput(text);
     if (str == null) {
@@ -2649,7 +2666,8 @@ fn imeInsertTextSimple(self_view: objc.id, sel_: objc.SEL, text: objc.id) callco
 /// IME 조합 중 텍스트 — preedit buffer 에 저장. PTY 에는 안 보냄. metal
 /// renderer 가 cursor 위치 위에 overlay (M6.2).
 fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRange, replacement_range: NSRange) callconv(.c) void {
-    requestRender(); // #255 Phase2 — preedit 변경 → 렌더.
+    // #763 — 조합 표시가 실제로 바뀔 때만 그린다 (아래 `preedit_changed`). 빈 조합은
+    // `clearImeMarkedState` 가 맡는다.
     const reconversion_delete_count = g_hanja_reconversion_delete_count;
     clearHanjaReconversionTarget();
     const str = imeStringFromInput(text);
@@ -2698,6 +2716,7 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     const get_utf8 = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) [*:0]const u8);
     const cstr = get_utf8(str, objc.sel("UTF8String"));
     const copy_len = @min(len, g_preedit_buf.len);
+    const preedit_changed = copy_len != g_preedit_len or !std.mem.eql(u8, g_preedit_buf[0..copy_len], cstr[0..copy_len]);
     @memcpy(g_preedit_buf[0..copy_len], cstr[0..copy_len]);
     g_preedit_len = copy_len;
     // #242 — preedit(조합 중)도 사용자 입력 → 맨 아래로(scroll-on-keystroke).
@@ -2707,7 +2726,9 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     //
     // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 스크롤할 이유가
     // 없다. 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
-    if (!searchFocused()) _ = g_session.scrollActiveToBottom(); // #763 2 단계 — 이 콜백은 아직 첫 줄에서 무조건 그린다
+    const moved = !searchFocused() and g_session.scrollActiveToBottom();
+    // 한자 후보가 열리면 셀 위의 조합 표시를 숨긴다 (`renderFrameTick` 의 `cell_preedit`).
+    if (preedit_changed or moved or isReplacingRange(replacement_range)) requestRender();
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;
@@ -2831,7 +2852,8 @@ fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NS
 /// IME 가 모르는 special key (Return, Backspace, Tab, 화살표 등) 을
 /// interpretKeyEvents 가 selector 형태로 보냄. escape sequence 매핑.
 fn imeDoCommand(_: objc.id, _: objc.SEL, cmd_sel: objc.SEL) callconv(.c) void {
-    requestRender(); // #255 Phase2
+    // #763 — 무조건 그리지 않는다. 아래 길은 모두 `sendEncodedKeyMac` · `writeUserInput` 을 지나고
+    // 그 둘이 화면이 바뀔 때만 요청한다. 한자 후보 취소는 `clearImeMarkedState` 가 맡는다.
     const tab = g_session.activeTab() orelse return;
 
     if (g_hanja_candidate_active and cmd_sel == objc.sel("cancelOperation:")) {
@@ -3502,8 +3524,8 @@ fn tabBarTabHitTest(px: f32, layout: TabBarLayout) ?usize {
 }
 
 /// IME preedit (g_preedit_buf) 을 **지금의 sink** 로 commit + IME 상태 클리어.
-/// 호출 후 typing 계속 가능. render 요청은 하지 않는다 — 호출자가 뒤이어
-/// 화면을 바꾸는 경우(escape 송신 등)가 있어 `commitPendingInput` 이 그걸 맡는다.
+/// 호출 후 typing 계속 가능. #763 — 조합 표시가 사라지니 여기서 그리기를 요청한다 (예전에는
+/// `keyDown:` 이 무조건 요청해서 맡기지 않았다). `commitPendingInput` 의 요청은 그대로 둔다 (#317).
 ///
 /// #646 — sink 는 검색바가 포커스를 가지면 검색어, 아니면 PTY 다. `input_policy` 의
 /// `Pending.commit` 이 뜻하는 것이 바로 이 "지금의 sink 로 flush" 이고, 그래서 단축키 ·
@@ -3513,8 +3535,9 @@ fn commitPreeditToSink(self_view: objc.id) void {
     if (searchFocused())
         searchInsertText(g_preedit_buf[0..g_preedit_len])
     else
-        _ = g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]); // #763 2 단계
+        _ = g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]); // 아래에서 어차피 그린다
     g_preedit_len = 0;
+    requestRender();
     g_marked_len = 0;
     clearHanjaState();
     const get_ic = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
