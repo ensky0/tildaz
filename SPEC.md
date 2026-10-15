@@ -2483,7 +2483,7 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 
 #### ② 용량 — 실측 기준선
 
-atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow` 이전의 고정 크기 상수다) 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
+atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow` 이전의 고정 크기 상수다) 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 자리 잡기가 빈틈을 남기므로 (그때는 줄 단위 `packRow` — 지금은 skyline, 아래 ②), **위 로그가 유일한 근거**다.
 
 | 환경 | atlas | 담긴 양 |
 |---|---|---|
@@ -2509,7 +2509,8 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 |---|---|
 | 시작 크기 | `INITIAL_ATLAS_SIZE` = **512** ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 2048. 알파벳만 쓰면 512 로 버티고, 커지는 데 약 1 ms 다) |
 | 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
-| 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
+| 옛 내용 | **같은 (x, y) 로 옮긴다.** 놓은 자리는 그대로 유효하다 |
+| 자리 잡기 | **skyline (bottom-left)** — ghostty `font/Atlas.zig` 와 같은 방식 (Jylänki 의 bin packing · freetype-gl). 새 그림은 바닥이 가장 낮아지는 자리에 놓고, 키우면 새로 생긴 오른쪽을 빈 자리로 더한다 (`Packer.grow`). 세 platform 공통 `atlas_common.Packer` 하나다 ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 줄 단위라 키운 뒤 이미 채운 줄의 오른쪽을 버려서, macOS 2 배 화면에서 512 에서 키워 온 1024 가 약 1,100 자 · 처음부터 1024 가 약 1,440 자에서 찼다) |
 | UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고, Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 surface 마다 **CPU shadow** 를 두고 (GLES2 에는 텍스처 간 복사가 없다 — `glCopyImageSubData` 는 3.2, `GL_ALPHA` 는 FBO 첨부 불가) 옛 내용을 새 shadow 에 옮겨 그것으로 새 텍스처를 만든다. Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
 
 **탭바 글자는 본문 atlas 에 산다** ([#762](https://github.com/ensky0/tildaz/issues/762)). 세 platform 이 같은 구조다 — 키의 `GlyphSource` (`terminal` · `tab`) 가 크기가 다른 두 폰트를 가르고, 탭바 글자 · 아이콘도 본문과 같이 차면 키운다. 전에는 macOS · Windows 가 탭 atlas 를 따로 뒀는데 (키에 폰트 크기 축이 없었다) 그쪽은 커지지 않으면서 본문과 같은 크기를 차지했고, **uniform 을 atlas 마다 따로** 둬야 했다 — 본문만 커지면 크기가 갈려 하나로는 둘 다 맞출 수 없었다 (실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다). Linux 는 처음부터 한 atlas 였다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).

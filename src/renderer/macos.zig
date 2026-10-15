@@ -2165,7 +2165,9 @@ pub const MetalRenderer = struct {
         const cmd_buf = self.current_cmd_buf;
         if (cmd_buf == null) return;
 
-        // dirty 구간만 — 줄 단위다 (`packRow` 가 줄로 채우므로 x 는 늘 전폭이 맞다).
+        // dirty 구간만 — 줄 단위로 전폭을 올린다. 글리프가 놓인 줄은 빠짐없이 덮으므로 결과는 맞다. #762 로
+        // 자리 잡기가 skyline 이 되어 새 글리프가 여러 높이에 흩어지면 올리는 줄이 늘 수 있다 (3 단계에서 업로드를
+        // 글리프 단위로 바꾼다).
         const y0 = @min(atlas.dirty_min_y, atlas.pack.size);
         const y1 = @min(atlas.dirty_max_y, atlas.pack.size);
         if (y1 <= y0) return;

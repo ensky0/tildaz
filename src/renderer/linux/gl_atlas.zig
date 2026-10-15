@@ -21,9 +21,8 @@
 //! (그래서 업로드 시 R/B 를 바꿔 넣는다).
 //!
 //! 패킹은 공통 [`glyph_atlas_common`](../../renderer/glyph_atlas_common.zig) 의
-//! row-based `packRow` 를 쓴다 — macOS · Windows 와 같은 규칙이다. ghostty 의
-//! bin-packer 보다 낭비가 크지만 이 규모에서는 문제가 아니고, 세 platform 이 같은
-//! 배치 규칙을 쓰는 값이 더 크다.
+//! `Packer` 를 쓴다 — macOS · Windows 와 같은 규칙이다. #762 부터 ghostty 와 같은
+//! skyline 이다 (전에는 줄 단위라 키운 뒤의 오른쪽과 낮은 그림 위의 빈틈을 버렸다).
 
 const std = @import("std");
 const egl = @import("../../host/linux/egl.zig");
@@ -126,6 +125,7 @@ const Surface = struct {
         api.deleteTextures(1, @ptrCast(&tex));
         if (self.shadow.len > 0) allocator.free(self.shadow);
         self.shadow = &.{};
+        self.pack.deinit(allocator);
     }
 
     /// `size` 크기의 텍스처를 만들고 `shadow` 가 있으면 그 내용으로 채운다 (없으면 미초기화).
@@ -136,7 +136,7 @@ const Surface = struct {
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MIN_FILTER, self.filter);
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MAG_FILTER, self.filter);
         // 글리프 경계 밖을 샘플링하지 않게 clamp — 인접 글리프가 새어 들어오는
-        // 것을 막는다 (`packRow` 가 1px padding 을 주지만 clamp 가 2 차 방어다).
+        // 것을 막는다 (`Packer` 가 1px padding 을 주지만 clamp 가 2 차 방어다).
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_WRAP_S, egl.GL_CLAMP_TO_EDGE);
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_WRAP_T, egl.GL_CLAMP_TO_EDGE);
         api.texImage2D(
@@ -154,8 +154,9 @@ const Surface = struct {
     }
 
     /// #586 — **두 배로 키운다** (macOS · Windows `grow` 와 같은 정책). 새 shadow 에 옛 내용을 **같은 (x, y)**
-    /// 로 옮기고 (row stride 만 달라진다) 그것으로 새 텍스처를 만든다 — row-based packing 이라 좌표와 커서가
-    /// 그대로 유효하고, 정점의 UV 는 픽셀 좌표라 (`gl_text.Batch.add`) 이미 쌓인 것도 그대로 맞는다.
+    /// 로 옮기고 (row stride 만 달라진다) 그것으로 새 텍스처를 만든다 — 놓은 자리는 그대로 유효하고 새 오른쪽 ·
+    /// 아래는 `Packer.grow` 가 빈 자리로 더한다 (#762). 정점의 UV 는 픽셀 좌표라 (`gl_text.Batch.add`) 이미 쌓인
+    /// 것도 그대로 맞는다.
     /// 옛 텍스처는 `glDeleteTextures` — 이미 발행한 draw 와의 순서는 GL command stream 이 지킨다.
     /// 상한 (`max_size`) · shadow 없음 · 할당 실패면 `false`.
     fn grow(self: *Surface, api: *const egl.Api, allocator: std.mem.Allocator, max_size: u32) bool {
@@ -163,14 +164,19 @@ const Surface = struct {
         const new_size = self.pack.grownSize(max_size) orelse return false;
         const new_shadow = allocator.alloc(u8, @as(usize, new_size) * new_size * self.bpp) catch return false;
         @memset(new_shadow, 0);
-        const old_row = @as(usize, self.pack.size) * self.bpp;
+        // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 판은 그대로 두고 키우기를 포기한다.
+        const old_size = self.pack.size;
+        self.pack.grow(allocator, new_size) catch {
+            allocator.free(new_shadow);
+            return false;
+        };
+        const old_row = @as(usize, old_size) * self.bpp;
         const new_row = @as(usize, new_size) * self.bpp;
-        for (0..self.pack.size) |y| {
+        for (0..old_size) |y| {
             @memcpy(new_shadow[y * new_row ..][0..old_row], self.shadow[y * old_row ..][0..old_row]);
         }
         allocator.free(self.shadow);
         self.shadow = new_shadow;
-        self.pack.size = new_size;
         var old_tex = self.texture;
         self.texture = self.makeTexture(api);
         api.deleteTextures(1, @ptrCast(&old_tex));
@@ -208,7 +214,7 @@ pub const Atlas = struct {
     color: Surface,
     /// **캐시를 surface 별로 나눈다** ([#584](https://github.com/ensky0/tildaz/issues/584) ①).
     /// 한쪽이 가득 차 rewind 되면 무효가 되는 것은 **그 surface 의 항목뿐이다** — 다른
-    /// surface 는 커서가 그대로여서 이미 내준 좌표가 살아 있다. 한 맵에 섞어 두면 gray 를
+    /// surface 는 패킹 상태가 그대로여서 이미 내준 좌표가 살아 있다. 한 맵에 섞어 두면 gray 를
     /// 비울 때 color 항목까지 버려서, 같은 emoji 가 color 텍스처에 다시 올라가 자리를 두 번
     /// 먹고 color 가 필요 이상으로 빨리 찬다.
     gray_cache: std.AutoHashMap(Key, AtlasEntry),
@@ -390,17 +396,17 @@ pub const Atlas = struct {
         }
 
         const surface = self.surfaceFor(is_color);
-        // #604 — "빈 surface 였나" 는 호출 **전** 값으로 판정한다 (`Packer.pack` 은 실패할 때도 커서를 움직인다).
+        // #604 — "빈 surface 였나" 는 호출 **전** 값으로 판정한다 (실패해도 판은 그대로지만, 키운 뒤에는 비지 않는다).
         const was_empty = surface.pack.isEmpty();
 
-        const placed = surface.pack.pack(bmp.w, bmp.h) orelse blk: {
+        const placed = surface.pack.pack(allocator, bmp.w, bmp.h) orelse blk: {
             // #586 — **먼저 키운다** (macOS #584 ② · Windows 와 같다). 키우면 프레임 중간에 비우는 상황이
             // 없어 이미 쌓인 정점의 UV 가 무효화되지 않는다 — UV 는 픽셀 좌표고 셰이더가 `u_atlas_size`
-            // 로 정규화한다 (`gl_text`). `pack` 이 실패하며 옮긴 커서는 그대로 두고 (더 큰 atlas 안에서
-            // 여전히 유효한 자리다) 이어서 담는다. 상한이면 아래 ① 로.
+            // 로 정규화한다 (`gl_text`). 키운 판에는 새 오른쪽 · 아래가 빈 자리로 더해져 (`Packer.grow`)
+            // 거기에 이어서 담는다. 상한이면 아래 ① 로.
             while (surface.grow(api, allocator, self.max_size)) {
                 log.logAtlasGrew(if (is_color) "color" else "gray", surface.pack.size, surface.grows, cache.count(), 0);
-                if (surface.pack.pack(bmp.w, bmp.h)) |p| break :blk p;
+                if (surface.pack.pack(allocator, bmp.w, bmp.h)) |p| break :blk p;
             }
             // #584 ① — 가득 찼다. **그 자리에서 비우지 않는다.**
             //

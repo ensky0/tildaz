@@ -112,6 +112,7 @@ pub const GlyphAtlas = struct {
     pub fn deinit(self: *GlyphAtlas) void {
         self.alloc.free(self.temp_buf);
         self.alloc.free(self.pixels);
+        self.pack.deinit(self.alloc);
         self.cache.deinit();
         self.cluster_cache.deinit();
     }
@@ -605,7 +606,7 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    /// #282 G5 — 공통 row-based packing 에 위임.
+    /// #282 G5 — 자리 잡기는 공통 `Packer` (#762 부터 skyline) 에 위임.
     /// #584 ② — atlas 를 **두 배로 키운다.** ghostty 가 쓰는 방식이다 (`font.Atlas.grow`).
     ///
     /// **비우고 재사용하는 것보다 나은 이유.** 비우면 이미 emit 한 인스턴스의 UV 가 무효가
@@ -614,8 +615,8 @@ pub const GlyphAtlas = struct {
     /// pass 가 최종 텍스처를 읽는다 (Apple 문서: *"immediately copies … does not synchronize
     /// against GPU accesses"*). 키우면 그 상황 자체가 없다.
     ///
-    /// 옛 내용을 **같은 (x, y) 로** 옮긴다 — row-based packing 이라 좌표가 그대로 유효하고,
-    /// 커서도 이어서 쓸 수 있다. 다만 UV 는 크기로 정규화되므로 renderer 가 uniform 과 Metal
+    /// 옛 내용을 **같은 (x, y) 로** 옮긴다 — 놓은 자리는 그대로 유효하고, 새로 생긴 오른쪽 · 아래는
+    /// `Packer.grow` 가 빈 자리로 더한다 (#762). 다만 UV 는 크기로 정규화되므로 renderer 가 uniform 과 Metal
     /// 텍스처를 함께 갱신해야 한다 (`syncAtlasTexture`).
     ///
     /// 상한 (`MAX_ATLAS_SIZE`) 에 닿으면 `false` 를 돌려준다 — 호출자는 ① 안전망으로 물러선다.
@@ -623,17 +624,22 @@ pub const GlyphAtlas = struct {
         const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
         const new_pixels = self.alloc.alloc(u8, @as(usize, new_size) * new_size * 4) catch return false;
         @memset(new_pixels, 0);
+        // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 판은 그대로 두고 키우기를 포기한다.
+        const old_size = self.pack.size;
+        self.pack.grow(self.alloc, new_size) catch {
+            self.alloc.free(new_pixels);
+            return false;
+        };
 
         // 옛 내용을 같은 좌표로 복사한다 — row stride 만 달라진다.
-        const old_row = @as(usize, self.pack.size) * 4;
+        const old_row = @as(usize, old_size) * 4;
         const new_row = @as(usize, new_size) * 4;
-        for (0..self.pack.size) |y| {
+        for (0..old_size) |y| {
             @memcpy(new_pixels[y * new_row ..][0..old_row], self.pixels[y * old_row ..][0..old_row]);
         }
 
         self.alloc.free(self.pixels);
         self.pixels = new_pixels;
-        self.pack.size = new_size;
         self.grows += 1;
         // 전체를 다시 올려야 한다 — 텍스처가 새로 만들어진다.
         self.dirty = true;
@@ -646,7 +652,7 @@ pub const GlyphAtlas = struct {
     /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통
     /// `Packer.tryPack` 에 있다 (#604 — 세 platform 이 같은 규칙).
     fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
-        switch (self.pack.tryPack(w, h)) {
+        switch (self.pack.tryPack(self.alloc, w, h)) {
             .placed => |pos| return pos,
             .full => {
                 self.is_full = true;

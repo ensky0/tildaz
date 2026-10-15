@@ -346,7 +346,8 @@ pub const GlyphAtlas = struct {
     }
 
     /// #586 — 차면 **두 배로 키운다** (macOS `grow` 와 같은 정책 · ghostty 방식). 새 텍스처를 만들고 옛 내용을
-    /// **같은 (x, y) 로** 복사한다 — row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다. 이미
+    /// **같은 (x, y) 로** 복사한다 — 놓은 자리는 그대로 유효하고, 새 오른쪽 · 아래는 `Packer.grow` 가 빈 자리로
+    /// 더한다 (#762). 이미
     /// emit 된 인스턴스의 UV 는 픽셀 좌표고 셰이더가 `atlas_w/h` 로 정규화하므로 그대로 맞는다
     /// (`drawTextInstancesWithAtlas` 가 draw 마다 그 atlas 크기를 상수 버퍼에 쓴다).
     ///
@@ -358,8 +359,14 @@ pub const GlyphAtlas = struct {
     pub fn grow(self: *GlyphAtlas) bool {
         const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
         const gpu = createGpu(self.d3d_device, new_size, self.d2d_factory, self.rendering_params, self.pixels_per_dip) catch return false;
+        // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 새 텍스처를 버리고 키우기를 포기한다.
+        const old_size = self.pack.size;
+        self.pack.grow(self.alloc, new_size) catch {
+            gpu.release();
+            return false;
+        };
 
-        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = self.pack.size, .bottom = self.pack.size };
+        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = old_size, .bottom = old_size };
         self.d3d_ctx.CopySubresourceRegion(@ptrCast(gpu.texture), 0, 0, 0, 0, @ptrCast(self.texture), 0, &box);
 
         // 옛 객체는 command list 가 참조를 들고 있어 지연 파괴는 드라이버가 처리한다.
@@ -371,7 +378,6 @@ pub const GlyphAtlas = struct {
         self.atlas_dc = gpu.dc;
         self.atlas_dc4 = gpu.dc4;
         self.atlas_brush = gpu.brush;
-        self.pack.size = new_size;
         self.grows += 1;
         self.is_full = false;
         log.logAtlasGrew("main", new_size, self.grows, self.cache.count(), self.cluster_cache.count());
@@ -384,6 +390,7 @@ pub const GlyphAtlas = struct {
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
+        self.pack.deinit(self.alloc);
         self.cache.deinit();
         self.cluster_cache.deinit();
         _ = self.rendering_params.Release();
@@ -1093,7 +1100,7 @@ pub const GlyphAtlas = struct {
     /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통
     /// `Packer.tryPack` 에 있다 (#604 — 세 platform 이 같은 규칙. #586 전에는 Windows 만 빈 atlas 가드가 없었다).
     fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
-        switch (self.pack.tryPack(w, h)) {
+        switch (self.pack.tryPack(self.alloc, w, h)) {
             .placed => |pos| return pos,
             .full => {
                 self.is_full = true;
