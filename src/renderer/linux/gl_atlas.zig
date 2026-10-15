@@ -277,7 +277,8 @@ pub const Atlas = struct {
     max_size: u32 = INITIAL_ATLAS_SIZE,
 
     /// 어느 텍스처인지. 로그의 `kind` 자리에 그대로 쓴다 (`@tagName`).
-    pub const Kind = enum { gray, color };
+    /// 판 종류 — 정의는 공통 모듈 하나다 (#762, macOS 도 같은 두 판을 쓴다).
+    pub const Kind = atlas_common.SurfaceKind;
 
     fn cacheFor(self: *Atlas, is_color: bool) *std.AutoHashMap(Key, AtlasEntry) {
         return if (is_color) &self.color_cache else &self.gray_cache;

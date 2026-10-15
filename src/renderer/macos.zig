@@ -25,6 +25,7 @@ const scrollbar = @import("../scrollbar.zig");
 const GlyphAtlas = macos_glyph_atlas.GlyphAtlas;
 const atlas_common = @import("glyph_atlas_common.zig");
 const INITIAL_ATLAS_SIZE = macos_glyph_atlas.INITIAL_ATLAS_SIZE;
+const SurfaceKind = macos_glyph_atlas.SurfaceKind;
 const ghostty = @import("ghostty-vt");
 const display_width = @import("../font/display_width.zig");
 const block_element = @import("block_element.zig");
@@ -137,7 +138,8 @@ const TextInstance = extern struct {
 // 으로 회피 가능할 수 있으나 미검증. follow-up 으로 추적.
 //
 // === Shader ===
-// Atlas 가 BGRA8 premultiplied 라 fragment 출력도 모두 premultiplied 로 통일.
+// color 판이 BGRA8 premultiplied 라 fragment 출력도 모두 premultiplied 로 통일 (gray 판은 커버리지
+// 한 채널이라 fg 에 곱하면 그대로 premultiplied 다 — #762).
 // blend mode 도 (One, OneMinusSourceAlpha) — `createPipeline` 참조.
 //
 // - bg_fs: input color 는 plain (r,g,b,a). premultiply 해서 출력.
@@ -189,16 +191,16 @@ const shader_source =
     \\    float2 c = float2(vid & 1, vid >> 1);
     \\    float2 px = (inst[iid].pos + c * inst[iid].size) / sa.xy * 2.0 - 1.0;
     \\    TxOut o; o.position = float4(px.x, -px.y, 0, 1);
-    \\    o.uv = (inst[iid].uvp + c * inst[iid].uvs) / sa.zw;
+    \\    o.uv = (inst[iid].uvp + c * inst[iid].uvs) / (inst[iid].color_flag > 0.5 ? sa.w : sa.z);
     \\    o.fg = inst[iid].fg;
     \\    o.color_flag = inst[iid].color_flag;
     \\    return o;
     \\}
-    \\fragment float4 text_fs(TxOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+    \\fragment float4 text_fs(TxOut in [[stage_in]], texture2d<float> gray [[texture(0)]],
+    \\    texture2d<float> color [[texture(1)]]) {
     \\    constexpr sampler smp(mag_filter::nearest, min_filter::nearest);
-    \\    float4 s = atlas.sample(smp, in.uv);
-    \\    if (in.color_flag > 0.5) return s;
-    \\    return s * in.fg;
+    \\    if (in.color_flag > 0.5) return color.sample(smp, in.uv);
+    \\    return gray.sample(smp, in.uv).r * in.fg;
     \\}
 ;
 
@@ -241,12 +243,14 @@ pub const MetalRenderer = struct {
     text_pipeline: objc.id,
     bg_buffer: objc.id,
     text_buffer: objc.id,
-    atlas_texture: objc.id,
-    /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.pack.size` 가 이보다 커지면
-    /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
-    atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
-    /// float4 (screen_w, screen_h, atlas_w, atlas_h). #762 — atlas 가 하나라 constants 도 하나다
-    /// (탭 atlas 가 따로이던 때는 크기가 갈려 버퍼를 나눠야 했다 — #584 ②).
+    /// #762 — atlas 판마다 텍스처 하나 (`gray` = `R8Unorm` · `color` = `BGRA8Unorm`). 셰이더가 둘을 함께 묶고
+    /// 인스턴스의 `color_flag` 로 고른다.
+    atlas_textures: std.EnumArray(SurfaceKind, objc.id),
+    /// #584 ② — 텍스처를 만들 때의 한 변. 판 크기 (`atlas.surfaceSize(kind)`) 가 이보다 커지면 (`grow`) 텍스처를
+    /// 새로 만들어야 한다 (`syncAtlasTexture`).
+    atlas_texture_sizes: std.EnumArray(SurfaceKind, u32) = .initFill(INITIAL_ATLAS_SIZE),
+    /// float4 (screen_w, screen_h, gray 판 한 변, color 판 한 변). #762 — 판이 둘이라 z · w 가 각 판의 크기다
+    /// (UV 는 정사각형 판이라 한 값으로 정규화한다).
     constants_buffer: objc.id,
 
     // frame 내 누적된 instance 수. 매 `pushBg` / `pushText` 가
@@ -428,9 +432,10 @@ pub const MetalRenderer = struct {
         const bg_buf = createBuffer(device, MAX_INSTANCES * @sizeOf(BgInstance));
         const text_buf = createBuffer(device, MAX_INSTANCES * @sizeOf(TextInstance));
 
-        // constants buffer = float4 (screen_w, screen_h, atlas_w, atlas_h).
+        // constants buffer = float4 (screen_w, screen_h, gray 판 한 변, color 판 한 변).
         const const_buf = createBuffer(device, 16);
-        const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
+        var atlas_textures: std.EnumArray(SurfaceKind, objc.id) = .initFill(null);
+        for (std.enums.values(SurfaceKind)) |k| atlas_textures.set(k, createAtlasTexture(device, k, INITIAL_ATLAS_SIZE));
 
         // #349 — 표시 대상에 붙일 색공간. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고 (#334 / #342
         // anchor, #335 파생식) window server 는 이 꼬리표를 보고 디스플레이 색공간으로 변환한다.
@@ -459,7 +464,7 @@ pub const MetalRenderer = struct {
             .text_pipeline = text_pipeline,
             .bg_buffer = bg_buf,
             .text_buffer = text_buf,
-            .atlas_texture = atlas_tex,
+            .atlas_textures = atlas_textures,
             .constants_buffer = const_buf,
             .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
@@ -508,7 +513,7 @@ pub const MetalRenderer = struct {
 
         // 2. atlas 를 새 scale 로 재구성 — cache/packing/pixels clear + scale 갱신.
         //    다음 render 에서 글리프가 새 scale 로 재라스터되고 dirty 로 재업로드됨.
-        //    (atlas_texture 는 `syncAtlasTexture` 가 크기를 맞춘다 — #584 ②.)
+        //    (atlas 텍스처는 `syncAtlasTexture` 가 크기를 맞춘다 — #584 ②.)
         self.atlas.scale = new_scale;
         self.atlas.ascent_pt = self.font.ascent_px / self.font.retina_scale;
         self.atlas.reset(); // #762 — 탭바 글리프 · 아이콘도 여기 산다 (함께 비워진다).
@@ -939,9 +944,9 @@ pub const MetalRenderer = struct {
         const target = self.current_target orelse return null;
         if (cmd_buf == null) return null;
 
-        self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
+        for (std.enums.values(SurfaceKind)) |k| self.syncAtlasTexture(k);
         self.updateConstants();
-        self.uploadAtlas(&self.atlas, self.atlas_texture);
+        self.uploadAtlas(&self.atlas);
 
         const texture = target.texture;
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -1026,7 +1031,8 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid1(encoder, objc.sel("setRenderPipelineState:"), self.text_pipeline);
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.text_buffer, offset_bytes, @as(objc.NSUInteger, 0));
         objc.msgSendVoid3(encoder, objc.sel("setVertexBuffer:offset:atIndex:"), self.constants_buffer, @as(objc.NSUInteger, 0), @as(objc.NSUInteger, 1));
-        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_texture, @as(objc.NSUInteger, 0));
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_textures.get(.gray), @as(objc.NSUInteger, 0));
+        objc.msgSendVoid2(encoder, objc.sel("setFragmentTexture:atIndex:"), self.atlas_textures.get(.color), @as(objc.NSUInteger, 1));
         objc.msgSendVoid4(
             encoder,
             objc.sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"),
@@ -2101,8 +2107,8 @@ pub const MetalRenderer = struct {
             data.* = .{
                 @floatFromInt(self.vp_width),
                 @floatFromInt(self.vp_height),
-                @floatFromInt(self.atlas.pack.size),
-                @floatFromInt(self.atlas.pack.size),
+                @floatFromInt(self.atlas.surfaceSize(.gray)),
+                @floatFromInt(self.atlas.surfaceSize(.color)),
             };
         }
     }
@@ -2115,11 +2121,14 @@ pub const MetalRenderer = struct {
     /// `CopySubresourceRegion` 과 같은 방식이다. 전에는 CPU 사본 (atlas 크기 그대로) 을 들고 있다가 새 텍스처에
     /// 통째로 다시 올렸다. 복사는 이 pass 의 command buffer 안이라 앞서 올린 글리프 · 뒤의 그리기와 순서가
     /// 지켜진다. 옛 텍스처는 바로 release 해도 된다 — command buffer 가 참조를 쥐고 끝날 때 놓는다.
-    fn syncAtlasTexture(self: *MetalRenderer, atlas: *GlyphAtlas, texture: *objc.id, texture_size: *u32) void {
-        if (atlas.pack.size <= texture_size.*) return;
+    fn syncAtlasTexture(self: *MetalRenderer, kind: SurfaceKind) void {
+        const want = self.atlas.surfaceSize(kind);
+        const texture = self.atlas_textures.getPtr(kind);
+        const texture_size = self.atlas_texture_sizes.getPtr(kind);
+        if (want <= texture_size.*) return;
         const cmd_buf = self.current_cmd_buf;
         if (cmd_buf == null) return;
-        const new_tex = createAtlasTexture(self.device, atlas.pack.size);
+        const new_tex = createAtlasTexture(self.device, kind, want);
         if (new_tex == null) return; // 못 만들면 옛 텍스처를 그대로 쓴다 (그림이 잘릴 수 있다)
         const blit = objc.msgSend(cmd_buf, objc.sel("blitCommandEncoder"));
         if (blit == null) {
@@ -2158,7 +2167,7 @@ pub const MetalRenderer = struct {
         objc.msgSendVoid(blit, objc.sel("endEncoding"));
         objc.msgSendVoid(texture.*, objc.sel("release"));
         texture.* = new_tex;
-        texture_size.* = atlas.pack.size;
+        texture_size.* = want;
     }
 
     /// #585 — 새로 그린 글리프를 텍스처로 올린다. **blit encoder 를 쓴다.**
@@ -2177,7 +2186,7 @@ pub const MetalRenderer = struct {
     ///
     /// 실패하면 조용히 지나간다 (그 프레임은 그 글리프가 비어 보인다) — 목록은 비우지 않아 다음 pass 가 다시
     /// 올린다.
-    fn uploadAtlas(self: *MetalRenderer, atlas: *GlyphAtlas, texture: objc.id) void {
+    fn uploadAtlas(self: *MetalRenderer, atlas: *GlyphAtlas) void {
         if (atlas.uploads.items.len == 0) return;
         const cmd_buf = self.current_cmd_buf;
         if (cmd_buf == null) return;
@@ -2213,7 +2222,7 @@ pub const MetalRenderer = struct {
             MTLOrigin, // destinationOrigin
         ) callconv(.c) void = @ptrCast(objc.msgSend_raw);
         for (atlas.uploads.items) |u| {
-            const row_bytes = @as(usize, u.w) * 4;
+            const row_bytes = @as(usize, u.w) * GlyphAtlas.bpp(u.kind);
             f(
                 blit,
                 objc.sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
@@ -2222,7 +2231,7 @@ pub const MetalRenderer = struct {
                 row_bytes,
                 row_bytes * u.h,
                 MTLSize{ .w = u.w, .h = u.h, .d = 1 },
-                texture,
+                self.atlas_textures.get(u.kind),
                 0,
                 0,
                 MTLOrigin{ .x = u.x, .y = u.y, .z = 0 },
@@ -2247,7 +2256,7 @@ pub const MetalRenderer = struct {
 
         // 텍스트 + 배경 둘 다 alpha 블렌딩 (커서 / 셀 투명도 + 컬러 emoji 용).
         // Premultiplied output → blend factor (One, OneMinusSourceAlpha).
-        // Atlas 가 BGRA premult 라 셰이더 출력도 premult 로 통일 (#132).
+        // color 판이 BGRA premult 라 셰이더 출력도 premult 로 통일 (#132).
         objc.msgSendVoid1(att0, objc.sel("setBlendingEnabled:"), objc.YES);
         objc.msgSendVoid1(att0, objc.sel("setSourceRGBBlendFactor:"), @as(objc.NSUInteger, 1)); // One
         objc.msgSendVoid1(att0, objc.sel("setDestinationRGBBlendFactor:"), @as(objc.NSUInteger, 5)); // OneMinusSourceAlpha
@@ -2304,13 +2313,17 @@ pub const MetalRenderer = struct {
         }
     }
 
-    fn createAtlasTexture(device: objc.id, size: u32) objc.id {
+    fn createAtlasTexture(device: objc.id, kind: SurfaceKind, size: u32) objc.id {
         const desc_class = objc.getClass("MTLTextureDescriptor");
         const desc = objc.msgSend(objc.msgSend(desc_class, objc.sel("alloc")), objc.sel("init"));
 
-        // BGRA8Unorm — atlas 가 premultiplied BGRA. 일반 글리프엔 (a,a,a,a) 가
-        // 들어가고 컬러 글리프엔 본래 색이 들어감 (#132).
-        objc.msgSendVoid1(desc, objc.sel("setPixelFormat:"), @as(objc.NSUInteger, 80)); // BGRA8Unorm
+        // #762 — `gray` 판은 커버리지 한 채널 (`R8Unorm`), `color` 판은 premultiplied BGRA (`BGRA8Unorm`, #132).
+        // 전에는 한 판이 BGRA 라 보통 글자도 (a, a, a, a) 로 4 바이트를 썼다.
+        const pixel_format: objc.NSUInteger = switch (kind) {
+            .gray => 10, // MTLPixelFormatR8Unorm
+            .color => 80, // MTLPixelFormatBGRA8Unorm
+        };
+        objc.msgSendVoid1(desc, objc.sel("setPixelFormat:"), pixel_format);
         objc.msgSendVoid1(desc, objc.sel("setWidth:"), @as(objc.NSUInteger, size));
         objc.msgSendVoid1(desc, objc.sel("setHeight:"), @as(objc.NSUInteger, size));
         objc.msgSendVoid1(desc, objc.sel("setUsage:"), @as(objc.NSUInteger, 1)); // ShaderRead

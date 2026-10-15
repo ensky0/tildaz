@@ -34,6 +34,11 @@ pub const GlyphSource = enum(u8) {
     tab,
 };
 
+/// #762 — atlas 판 종류. 보통 글자는 커버리지 하나면 되므로 1 바이트 판 (`gray`) 에, 컬러 emoji 는
+/// 4 바이트 판 (`color`) 에 담는다 — ghostty 가 포맷마다 atlas 를 나누는 것과 같은 이유다. Linux 와 macOS 가
+/// 이 두 판을 쓴다. Windows 는 ClearType 이 서브픽셀마다 값이 따로라 4 채널 판 하나다.
+pub const SurfaceKind = enum { gray, color };
+
 /// glyph cache key — 폰트 **id** + glyph index + 어느 폰트 (`source`).
 ///
 /// **주소를 쓰면 안 된다** ([#584](https://github.com/ensky0/tildaz/issues/584)). 예전 주석은

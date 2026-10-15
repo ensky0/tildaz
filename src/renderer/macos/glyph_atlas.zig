@@ -1,14 +1,16 @@
-// 글리프 텍스처 아틀라스 — CoreText 로 글리프 라스터 + 2D atlas (BGRA8) 에 캐시.
+// 글리프 텍스처 아틀라스 — CoreText 로 글리프 라스터 + 2D atlas 에 캐시.
 // macOS Mojave 이후 subpixel/ClearType 미지원이라 일반 텍스트는 grayscale alpha
 // 로 충분하지만, Apple Color Emoji (SBIX) 같은 컬러 글리프는 BGRA premultiplied
-// 비트맵이 필요해 atlas 자체를 BGRA8 로 통일 (#132). Metal 텍스처는 BGRA8Unorm.
+// 비트맵이 필요하다 (#132). #762 — 그래서 **판이 둘**이다: 보통 글자 · 아이콘은
+// 커버리지 한 채널 (`gray`, Metal `R8Unorm`), 컬러 글리프는 `color` (`BGRA8Unorm`).
+// Linux 와 같은 구조이고 판 종류는 공통 모듈의 `SurfaceKind` 다.
 //
 // 라스터 path 단일화: 모든 글리프를 RGBA premultiplied + 흰색 fill 로 그림.
-// - 일반 글리프: antialiased 흰색 → atlas 픽셀 = (a, a, a, a). 셰이더가 fg 와 곱해 tint.
+// - 일반 글리프: antialiased 흰색 → 픽셀 = (a, a, a, a). `gray` 판에는 a 만 담고 셰이더가 fg 와 곱해 tint.
 // - 컬러 글리프 (CTFontGetSymbolicTraits & kCTFontTraitColorGlyphs): SBIX bitmap
 //   이 fill 색깔 무시하고 그대로 합성 → atlas 픽셀 = 본래 색 premultiplied. 셰이더
 //   는 fg 무시하고 atlas 그대로 출력.
-// AtlasEntry.is_color 가 셰이더 path 결정 — TextInstance 의 color_flag 로 전달.
+// AtlasEntry.is_color 가 판과 셰이더 path 를 정한다 — TextInstance 의 color_flag 로 전달.
 //
 // #75 (claude/infallible-swartz) 패턴 + #132 컬러 emoji 확장.
 
@@ -21,8 +23,8 @@ const log = @import("../../log.zig");
 /// atlas 텍스처의 **처음** 한 변 (px). 차면 `grow` 가 두 배로 키운다 (#584 ②).
 pub const INITIAL_ATLAS_SIZE: u32 = atlas_common.INITIAL_ATLAS_SIZE;
 
-/// 키울 수 있는 상한. Metal 의 텍스처 상한은 기종에 따라 16384 이지만, 8192² 는 이미
-/// **256 MB** (BGRA8) 라 그 위로 가면 메모리가 화면 이득을 넘는다. 여기 닿으면 더 키우지
+/// 키울 수 있는 상한 (판마다). Metal 의 텍스처 상한은 기종에 따라 16384 이지만, 8192² 는 이미
+/// `gray` 64 MB · `color` 256 MB 라 그 위로 가면 메모리가 화면 이득을 넘는다. 여기 닿으면 더 키우지
 /// 않고 ① 안전망 (찬 것을 표시하고 호출자가 flush → 비우기 → 재시도) 으로 물러선다.
 pub const MAX_ATLAS_SIZE: u32 = atlas_common.MAX_ATLAS_SIZE;
 
@@ -31,6 +33,8 @@ pub const AtlasEntry = atlas_common.AtlasEntry;
 const GlyphKey = atlas_common.GlyphKey;
 /// #529 — cluster 는 **일반 글리프와 다른 맵**에 산다. 근거는 공용 파일의 정의에 있다.
 const ClusterKey = atlas_common.ClusterKey;
+/// #762 — 판 종류 (`gray` · `color`). 정의는 공통 모듈 하나다 (Linux 와 같다).
+pub const SurfaceKind = atlas_common.SurfaceKind;
 
 pub const GlyphAtlas = struct {
     alloc: std.mem.Allocator,
@@ -47,7 +51,11 @@ pub const GlyphAtlas = struct {
     /// 무효화될 일이 없다.
     ///
     /// #604 — 패킹 상태 + 지금 크기 (`size`). 세 platform 공통 (`atlas_common.Packer`).
-    pack: atlas_common.Packer = .{},
+    ///
+    /// #762 — **판이 둘이다** (Linux 와 같은 구조). 보통 글자는 커버리지 하나면 되므로 1 바이트 판 (`gray`,
+    /// Metal `R8Unorm`) 에, 컬러 emoji 는 4 바이트 판 (`color`, `BGRA8Unorm`) 에 담는다. 판마다 따로 키우고 따로
+    /// 비운다. 전에는 BGRA 판 하나에 보통 글자도 (a, a, a, a) 로 담아 4 배를 썼다.
+    packs: std.EnumArray(SurfaceKind, atlas_common.Packer) = .initFill(.{}),
 
     // 라스터 시 사용할 폰트 메트릭. 글자 크기는 들고 있지 않는다 — 라스터는 renderer 의
     // 폰트 컨텍스트가 하고, 크기가 바뀌면 renderer 가 `reset` 한다 (#693).
@@ -61,8 +69,8 @@ pub const GlyphAtlas = struct {
     /// 비운다 (`MetalRenderer.uploadAtlas` → `clearUploads`). 키울 때 옛 내용은 GPU 안에서 새 텍스처로
     /// 복사한다 (`MetalRenderer.syncAtlasTexture`) — 그래서 다시 올릴 사본이 필요 없다.
     ///
-    /// 글리프 바이트는 BGRA8 premultiplied 다. 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는
-    /// (B*a, G*a, R*a, a). 자리마다 `w * 4` 바이트 줄이 `h` 개 이어진다.
+    /// 글리프 바이트는 판 형식 그대로다. `gray` 는 커버리지 1 바이트, `color` 는 BGRA8 premultiplied
+    /// (B*a, G*a, R*a, a). 자리마다 `w * bpp` 바이트 줄이 `h` 개 이어진다.
     uploads: std.ArrayListUnmanaged(Upload) = .empty,
     upload_bytes: std.ArrayListUnmanaged(u8) = .empty,
 
@@ -70,17 +78,16 @@ pub const GlyphAtlas = struct {
     /// 이미 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6). 예전에는
     /// 여기서 바로 `reset` 을 불러 **앞서 emit 한 인스턴스의 UV 가 빈 자리를 가리켰다.**
     is_full: bool = false,
-    /// #584 — 어느 라스터 경로에서 찼는지 (`icon` · `cluster` · `glyph`). 호출자가 비울 때
-    /// 로그에 실어 어느 쪽이 용량을 먹는지 가른다.
-    full_kind: []const u8 = "unknown",
+    /// #762 — 어느 판이 찼는지. `grow` · `resetFull` 이 그 판만 다룬다.
+    full_surface: SurfaceKind = .gray,
 
-    /// #584 ② — 두 배로 키운 횟수. 이 값이 늘면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
-    grows: u32 = 0,
+    /// #584 ② — 판마다 두 배로 키운 횟수. 이 값이 늘면 `INITIAL_ATLAS_SIZE` 를 올릴 근거다.
+    grows: std.EnumArray(SurfaceKind, u32) = .initFill(0),
 
-    /// 가득 차서 통째로 비운 횟수. **scale 변경으로 부르는 `reset` 은 세지 않는다** —
+    /// 판마다 가득 차서 비운 횟수. **scale 변경으로 부르는 `reset` 은 세지 않는다** —
     /// 그쪽은 정상 동작이다. 이 값이 프레임마다 늘면 한 화면이 요구하는 글리프가 용량을
     /// 넘었다는 뜻이다 ([#584](https://github.com/ensky0/tildaz/issues/584)).
-    resets: u32 = 0,
+    resets: std.EnumArray(SurfaceKind, u32) = .initFill(0),
 
     // 글리프 라스터 임시 버퍼 (RGBA premultiplied, max 256x256).
     temp_buf: []u8,
@@ -90,8 +97,21 @@ pub const GlyphAtlas = struct {
     /// 이미 그린 글리프는 캐시에 남으므로 도중에 바꾸지 않는다.
     smooth_fonts: bool = false,
 
-    /// 올릴 글리프 하나 — atlas 자리와 `upload_bytes` 안의 시작 위치.
-    pub const Upload = struct { x: u32, y: u32, w: u32, h: u32, offset: usize };
+    /// 올릴 글리프 하나 — 어느 판의 어느 자리인지와 `upload_bytes` 안의 시작 위치.
+    pub const Upload = struct { kind: SurfaceKind, x: u32, y: u32, w: u32, h: u32, offset: usize };
+
+    /// 판 한 변 (px).
+    pub fn surfaceSize(self: *const GlyphAtlas, kind: SurfaceKind) u32 {
+        return self.packs.getPtrConst(kind).size;
+    }
+
+    /// 텍셀 한 개의 byte 수 — `gray` 1 · `color` 4.
+    pub fn bpp(kind: SurfaceKind) u32 {
+        return switch (kind) {
+            .gray => 1,
+            .color => 4,
+        };
+    }
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -112,7 +132,7 @@ pub const GlyphAtlas = struct {
         self.alloc.free(self.temp_buf);
         self.uploads.deinit(self.alloc);
         self.upload_bytes.deinit(self.alloc);
-        self.pack.deinit(self.alloc);
+        for (std.enums.values(SurfaceKind)) |k| self.packs.getPtr(k).deinit(self.alloc);
         self.cache.deinit();
         self.cluster_cache.deinit();
     }
@@ -188,8 +208,8 @@ pub const GlyphAtlas = struct {
     /// 탭바 컨트롤 아이콘 (`< > × +`) 을 `tab_icons` 로 rasterize 해 atlas 에
     /// 캐시 (#268). 폰트 글리프가 아니라 우리가 만든 알파 커버리지라 codepoint
     /// 대신 아이콘 enum 을 key 로 씀 (font=0 은 유효한 CTFontRef 아님). 커버리지
-    /// `a` 를 흰색 premultiplied (a,a,a,a) 로 써서 일반 글리프와 같은 셰이더
-    /// tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
+    /// `a` 를 흰색 premultiplied (a,a,a,a) 로 써서 일반 글리프와 같은 `gray` 판 ·
+    /// 셰이더 tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
         const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
@@ -214,10 +234,10 @@ pub const GlyphAtlas = struct {
 
         // #584 ① — 자리가 없으면 **여기서 비우지 않고** 호출자에게 알린다. 호출자가 이미
         // 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6).
-        const pos = self.packOrMarkFull(size, size, "icon") orelse return null;
+        const pos = self.packOrMarkFull(.gray, size, size) orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        if (!self.queueUpload(atlas_x, atlas_y, size, size)) return null;
+        if (!self.queueUpload(.gray, atlas_x, atlas_y, size, size)) return null;
 
         const entry = AtlasEntry{
             .x = @intCast(atlas_x),
@@ -237,7 +257,7 @@ pub const GlyphAtlas = struct {
         self.cache.clearRetainingCapacity();
         // cluster 맵도 함께 비운다 — 빠뜨리면 폰트 · scale 이 바뀐 뒤 죽은 좌표가 남는다.
         self.cluster_cache.clearRetainingCapacity();
-        self.pack.rewind();
+        for (std.enums.values(SurfaceKind)) |k| self.packs.getPtr(k).rewind();
         self.is_full = false;
         // #584 — **텍스처를 0 으로 밀지 않는다.** 자리만 되돌리면 다음에 담기는 글리프가 그 위를 덮어쓴다 —
         // 아무도 참조하지 않는 옛 픽셀이 남는 것은 무해하다 (샘플러가 `nearest` 라 글리프 칸 밖을 섞어 읽지도
@@ -275,12 +295,45 @@ pub const GlyphAtlas = struct {
     /// **가득 차서** 비운다 — `reset` 에 횟수 세기와 로그를 얹은 것이다. scale 변경 경로와
     /// 갈라 두어야 로그가 "용량이 모자란다" 는 뜻으로만 읽힌다
     /// ([#584](https://github.com/ensky0/tildaz/issues/584)).
+    ///
+    /// #762 — **찬 판만** 비운다 (Linux 와 같다). 다른 판의 글리프는 자리가 그대로라 캐시도 남긴다. 한꺼번에
+    /// 비우면 emoji 가 color 판에 다시 올라가 자리를 두 번 먹는다.
     pub fn resetFull(self: *GlyphAtlas) void {
-        self.resets += 1;
-        const kind = self.full_kind;
-        // `reset` 전에 읽는다 — 그 값이 이 atlas 가 실제로 담을 수 있었던 양이다.
-        log.logAtlasFull(kind, self.resets, self.cache.count(), self.cluster_cache.count(), self.distinctClusterFonts(), self.pack.filledY());
-        self.reset();
+        const kind = self.full_surface;
+        self.resets.getPtr(kind).* += 1;
+        // 비우기 전에 읽는다 — 그 값이 이 판이 실제로 담을 수 있었던 양이다.
+        log.logAtlasFull(@tagName(kind), self.resets.get(kind), self.cache.count(), self.cluster_cache.count(), self.distinctClusterFonts(), self.packs.getPtrConst(kind).filledY());
+        const want_color = kind == .color;
+        removeEntriesOf(GlyphKey, &self.cache, want_color);
+        removeEntriesOf(ClusterKey, &self.cluster_cache, want_color);
+        self.packs.getPtr(kind).rewind();
+        self.dropUploadsOf(kind);
+        self.is_full = false;
+    }
+
+    /// 한 판의 항목만 캐시에서 지운다 (`is_color` 가 그 판을 가리킨다). `removeByPtr` 는 칸을 tombstone 으로만
+    /// 표시하고 옮기지 않으므로 훑는 도중에 지워도 된다 (std `hash_map.zig` 의 `removeByIndex`).
+    fn removeEntriesOf(comptime K: type, map: *std.AutoHashMap(K, AtlasEntry), want_color: bool) void {
+        var it = map.iterator();
+        while (it.next()) |e| {
+            if (e.value_ptr.is_color == want_color) map.removeByPtr(e.key_ptr);
+        }
+    }
+
+    /// 아직 안 올린 글리프 중 한 판의 것만 버린다 (그 판을 비웠으니 자리가 무효다).
+    fn dropUploadsOf(self: *GlyphAtlas, kind: SurfaceKind) void {
+        var keep: usize = 0;
+        var bytes_end: usize = 0;
+        for (self.uploads.items) |u| {
+            if (u.kind == kind) continue;
+            const len = @as(usize, u.w) * u.h * bpp(u.kind);
+            std.mem.copyForwards(u8, self.upload_bytes.items[bytes_end..][0..len], self.upload_bytes.items[u.offset..][0..len]);
+            self.uploads.items[keep] = .{ .kind = u.kind, .x = u.x, .y = u.y, .w = u.w, .h = u.h, .offset = bytes_end };
+            keep += 1;
+            bytes_end += len;
+        }
+        self.uploads.shrinkRetainingCapacity(keep);
+        self.upload_bytes.shrinkRetainingCapacity(bytes_end);
     }
 
     /// #401 — 여러 글리프를 `positions` 대로 한 비트맵에 그린다. `rasterize` 의 multi-glyph 판이라
@@ -429,10 +482,11 @@ pub const GlyphAtlas = struct {
             i = j;
         }
 
-        const pos = self.packOrMarkFull(gw, gh, "cluster") orelse return null;
+        const kind: SurfaceKind = if (is_color) .color else .gray;
+        const pos = self.packOrMarkFull(kind, gw, gh) orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        if (!self.queueUpload(atlas_x, atlas_y, gw, gh)) return null;
+        if (!self.queueUpload(kind, atlas_x, atlas_y, gw, gh)) return null;
 
         return AtlasEntry{
             .x = @intCast(atlas_x),
@@ -557,11 +611,12 @@ pub const GlyphAtlas = struct {
         ct.CTFontDrawGlyphs(font, &glyphs, &positions, 1, ctx);
 
         // 아틀라스에 packing.
-        const pos = self.packOrMarkFull(gw, gh, "glyph") orelse return null;
+        const kind: SurfaceKind = if (is_color) .color else .gray;
+        const pos = self.packOrMarkFull(kind, gw, gh) orelse return null;
 
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        if (!self.queueUpload(atlas_x, atlas_y, gw, gh)) return null;
+        if (!self.queueUpload(kind, atlas_x, atlas_y, gw, gh)) return null;
 
         return AtlasEntry{
             .x = @intCast(atlas_x),
@@ -590,23 +645,32 @@ pub const GlyphAtlas = struct {
     ///
     /// 상한 (`MAX_ATLAS_SIZE`) 에 닿으면 `false` 를 돌려준다 — 호출자는 ① 안전망으로 물러선다.
     pub fn grow(self: *GlyphAtlas) bool {
-        const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
+        const kind = self.full_surface;
+        const pack = self.packs.getPtr(kind);
+        const new_size = pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
         // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 판은 그대로 두고 키우기를 포기한다.
         // 픽셀은 여기서 옮기지 않는다 — renderer 가 새 텍스처를 만들 때 GPU 안에서 옛 텍스처를 같은 자리로
         // 복사한다 (`syncAtlasTexture`).
-        self.pack.grow(self.alloc, new_size) catch return false;
-        self.grows += 1;
-        log.logAtlasGrew("main", new_size, self.grows, self.cache.count(), self.cluster_cache.count());
+        pack.grow(self.alloc, new_size) catch return false;
+        self.grows.getPtr(kind).* += 1;
+        log.logAtlasGrew(@tagName(kind), new_size, self.grows.get(kind), self.cache.count(), self.cluster_cache.count());
         return true;
     }
 
-    /// #762 — 방금 `temp_buf` 에 그린 글리프 (`w * 4` 바이트 줄 `h` 개) 를 올릴 목록에 넣는다. 메모리를 못
-    /// 잡으면 false — 호출자는 그 글리프를 캐시하지 않는다 (자리만 비어 있고, 다음에 다시 그린다).
-    fn queueUpload(self: *GlyphAtlas, x: u32, y: u32, w: u32, h: u32) bool {
-        const len = @as(usize, w) * h * 4;
+    /// #762 — 방금 `temp_buf` 에 그린 글리프 (BGRA `w * 4` 바이트 줄 `h` 개) 를 올릴 목록에 넣는다. `gray` 판에는
+    /// 알파 한 채널만 담는다 — 보통 글자는 흰색으로 그려 픽셀이 (a, a, a, a) 라서다 (`rasterize` 주석). 메모리를
+    /// 못 잡으면 false — 호출자는 그 글리프를 캐시하지 않는다 (자리만 비어 있고, 다음에 다시 그린다).
+    fn queueUpload(self: *GlyphAtlas, kind: SurfaceKind, x: u32, y: u32, w: u32, h: u32) bool {
+        const n = @as(usize, w) * h;
         const offset = self.upload_bytes.items.len;
-        self.upload_bytes.appendSlice(self.alloc, self.temp_buf[0..len]) catch return false;
-        self.uploads.append(self.alloc, .{ .x = x, .y = y, .w = w, .h = h, .offset = offset }) catch {
+        switch (kind) {
+            .color => self.upload_bytes.appendSlice(self.alloc, self.temp_buf[0 .. n * 4]) catch return false,
+            .gray => {
+                const dst = self.upload_bytes.addManyAsSlice(self.alloc, n) catch return false;
+                for (dst, 0..) |*d, i| d.* = self.temp_buf[i * 4 + 3];
+            },
+        }
+        self.uploads.append(self.alloc, .{ .kind = kind, .x = x, .y = y, .w = w, .h = h, .offset = offset }) catch {
             self.upload_bytes.shrinkRetainingCapacity(offset);
             return false;
         };
@@ -627,12 +691,12 @@ pub const GlyphAtlas = struct {
 
     /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통
     /// `Packer.tryPack` 에 있다 (#604 — 세 platform 이 같은 규칙).
-    fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
-        switch (self.pack.tryPack(self.alloc, w, h)) {
+    fn packOrMarkFull(self: *GlyphAtlas, kind: SurfaceKind, w: u32, h: u32) ?[2]u32 {
+        switch (self.packs.getPtr(kind).tryPack(self.alloc, w, h)) {
             .placed => |pos| return pos,
             .full => {
                 self.is_full = true;
-                self.full_kind = kind;
+                self.full_surface = kind;
                 return null;
             },
             .too_big => return null,

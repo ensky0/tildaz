@@ -2386,7 +2386,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | **Linux** | `upload` 가 **먼저 surface 를 키우고** ([#586](https://github.com/ensky0/tildaz/issues/586) · `Surface.grow`), 상한이면 `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** ① · `grow` 모두 실기 확인 (2026-09-03 KDE · 아래 "Linux `grow` 실측" 표) |
 | **macOS** | `is_full` 을 세우고 호출자가 처리한다 (`insertGlyphOrRecover` · `insertClusterOrRecover` → `recoverFromAtlasFull`) — **먼저 ② 의 `grow`**, 상한이면 **지금까지 담은 구간을 pass 로 제출하고 GPU 가 끝나기를 기다린 뒤** (`submitPassEarly`) 비우고 재시도. cluster · 단일 · ligature **모든 삽입 경로가 같은 함수를 지난다** ([#591](https://github.com/ensky0/tildaz/issues/591) — 전에는 ligature 경로만 복구가 없어 조용히 버렸다) | **사양대로.** 실기 확인 |
 
-**Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
+**Linux · macOS 는 판이 둘이다.** 텍스처가 `gray` (커버리지 한 채널 — Linux `GL_R8` · macOS `R8Unorm`) · `color` (컬러 emoji — RGBA · BGRA) 둘이라 **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 Linux 는 캐시도 surface 별로 나눠 두고, macOS 는 캐시 하나에서 찬 판의 항목만 지운다 (`is_color` 가 판을 가리킨다). 판 종류는 공통 `atlas_common.SurfaceKind` 하나다. macOS 는 [#762](https://github.com/ensky0/tildaz/issues/762) 전까지 BGRA 판 하나에 보통 글자도 (a, a, a, a) 로 담아 4 배를 썼다. Windows 는 ClearType 이 서브픽셀마다 값이 따로라 4 채널 판 하나다. 그리고 Linux 의 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
 
 **macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
 
@@ -2499,7 +2499,7 @@ atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 
-**컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
+**컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux · macOS 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
 
 #### ② 계속 — 차면 키운다 (세 platform)
 
@@ -2508,7 +2508,7 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 | | |
 |---|---|
 | 시작 크기 | `INITIAL_ATLAS_SIZE` = **512** ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 2048. 알파벳만 쓰면 512 로 버티고, 커지는 데 약 1 ms 다) |
-| 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
+| 상한 | `MAX_ATLAS_SIZE` = **8192** (판마다) — 8192² 는 이미 256 MB (4 채널) · 64 MB (`gray` 한 채널) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
 | 옛 내용 | **같은 (x, y) 로 옮긴다.** 놓은 자리는 그대로 유효하다 |
 | 자리 잡기 | **skyline (bottom-left)** — ghostty `font/Atlas.zig` 와 같은 방식 (Jylänki 의 bin packing · freetype-gl). 새 그림은 바닥이 가장 낮아지는 자리에 놓고, 키우면 새로 생긴 오른쪽을 빈 자리로 더한다 (`Packer.grow`). 세 platform 공통 `atlas_common.Packer` 하나다 ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 줄 단위라 키운 뒤 이미 채운 줄의 오른쪽을 버려서, macOS 2 배 화면에서 512 에서 키워 온 1024 가 약 1,100 자 · 처음부터 1024 가 약 1,440 자에서 찼다) |
 | UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고 옛 내용을 blit `copyFromTexture` 로 같은 자리에 복사하고 (#762 부터 — CPU 사본이 없다), Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 새 텍스처를 만들고 옛 내용을 FBO 복사 (`glBlitFramebuffer`) 로 같은 자리에 옮긴다 ([#762](https://github.com/ensky0/tildaz/issues/762) — CPU 사본이 없다. 이를 위해 GL 경로가 GLES **3** 을 요구하고 gray 판이 `GL_R8` 이다. 전에는 GLES2 라 `GL_ALPHA` 를 FBO 에 못 붙여 surface 마다 CPU shadow 를 들고 거기서 다시 올렸다. GLES3 이 없는 GPU 는 software 경로로 그린다). Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
