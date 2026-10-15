@@ -2618,6 +2618,21 @@ iteration 마다라 *자리*가 바뀌지 않아 이 위험이 없다 — **Linu
 (2026-08-16 · KDE Plasma 60 Hz): 회귀의 지문인 `onrender` 회당 시간이 0.147 → 0.142 ms 로 늘지 않았고
 `drain` · `render` 총 시간과 처리량도 그대로다. 같은 회차에서 유휴 지연은 8.80 → 0.64 ms 다.
 
+**키 입력은 화면이 바뀔 때만 그린다 ([#763](https://github.com/ensky0/tildaz/issues/763)).** 키를 받는 순간에는
+에코가 아직 없다 — PTY 쓰기는 별도 스레드이고 셸이 돌려주는 데 0.2~0.3 ms 가 걸린다. 그때 그리면 바뀐 것
+없는 빈 프레임이 나가고, 그 프레임이 위의 유휴 표시를 꺼서 곧 온 에코가 통보 대신 다음 프레임을 기다린다.
+Linux 는 그 빈 commit 의 frame callback 을 기다려서 **키마다** 한 프레임 (KDE Plasma 평균 14 ms), Windows ·
+macOS 는 키와 에코 사이에 프레임 차례가 낄 때만 한 프레임이 늦었다 (#763 ② · ⑤ · ⑥).
+
+- 키가 화면을 바꾸는 대표 경우는 scroll-on-keystroke 다 ([#242](https://github.com/ensky0/tildaz/issues/242)).
+  판정은 공통 코드 한 곳 (`session_core.scrollToBottomMoved` — 스크롤 전의 viewport 가 이미 맨 아래였나) 이고,
+  세 host 는 그 결과로만 그리기를 요청한다. 키 입력 함수 (`queueInputToActive` · `interruptActive` ·
+  `pasteToActive` · `scrollActiveToBottom`) 가 그 답을 돌려준다.
+- 그 밖에 키가 바꾸는 것 (조합 · dead key 표시, Shift+PgUp/PgDn, 메뉴, 검색바, 탭 동작) 은 바뀌는 자리가 각자
+  요청한다. Windows 는 키 메시지가 그리기 게이트를 열지 않고, 대신 `wndProc` 이 처리 전후의 조합 · dead key
+  표시를 견준다.
+- 관례도 같다 — Alacritty 는 키 입력이 실제로 스크롤했을 때만 다시 그리게 표시한다 ([`event.rs`](https://github.com/alacritty/alacritty/blob/94e7c88/alacritty/src/event.rs#L738-L740)).
+
 **예외 — ring 이 차면 깨운다 ([#728](https://github.com/ensky0/tildaz/issues/728)).** 폭포 중에
 통보하지 않으면 빈틈이 하나 생긴다. 프레임 밖 드레인이 ring 을 다 비우면 UI 는 다음 프레임까지 자고,
 그동안 ring 이 차면 read thread 는 기다리기만 한다. 한 프레임에 들어오는 양보다 ring 이 작으면 처리량이

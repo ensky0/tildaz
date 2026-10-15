@@ -332,8 +332,19 @@ extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
 ///   **자기 자신을 먹여 살리는 루프**가 된다 (실측: 유휴에 초당 120 회 = 프레임당 2 회).
 ///   IME 후보 창은 **OS 가** 그리므로 이 알림은 우리 렌더와 무관하다. 조합 내용 자체는
 ///   `WM_IME_COMPOSITION` (0x010F) 으로 오고 그건 게이트를 연다.
+///
+/// - **키 메시지** (`WM_KEYDOWN` … `WM_SYSDEADCHAR`, #763): 키가 화면을 바꿀 때만 그린다. 이미 맨
+///   아래에서 타이핑하면 바뀌는 것이 없고, 그때 그린 빈 프레임이 유휴 표시 (`frame_idle`) 를 꺼서
+///   곧 온 에코의 출력 통보를 막았다 — 그 키는 한 프레임 늦었다 (#763 ④ · ⑤). 화면을 바꾸는 키는
+///   각자 요청한다: 맨 아래로 스크롤 · Shift+PgUp/PgDn · 메뉴 · 탭 동작 (`app_controller`), 조합 ·
+///   dead key 표시 (`wndProc` 이 처리 전후를 견준다 — `keyVisualState`).
 fn isFrameGateExempt(msg: UINT) bool {
-    return msg == WM_FRAME_TICK or msg == WM_TIMER or msg == WM_IME_NOTIFY;
+    return msg == WM_FRAME_TICK or msg == WM_TIMER or msg == WM_IME_NOTIFY or isKeyMessage(msg);
+}
+
+/// `WM_KEYDOWN` (0x0100) 부터 `WM_SYSDEADCHAR` (0x0107) 까지 — 키보드 입력 메시지 여덟.
+fn isKeyMessage(msg: UINT) bool {
+    return msg >= WM_KEYDOWN and msg <= WM_SYSDEADCHAR;
 }
 
 const WM_IME_NOTIFY: UINT = 0x0282;
@@ -1551,6 +1562,12 @@ pub const Window = struct {
         self.needs_render = true;
     }
 
+    /// #763 — 키 메시지가 바꿀 수 있는, 이 창이 직접 그리는 표시. `wndProc` 이 처리 전후로 견준다.
+    const KeyVisualState = struct { preedit_len: usize, compose_preview_len: usize };
+    fn keyVisualState(self: *const Window) KeyVisualState {
+        return .{ .preedit_len = self.preedit_len, .compose_preview_len = self.compose_preview_len };
+    }
+
     /// #386 — 렌더 전에 **우리 창의 입력을 먼저 비운다.**
     ///
     /// Windows 메시지 우선순위는 `sent → posted → 입력(하드웨어) → paint → timer` 다.
@@ -1973,6 +1990,13 @@ pub const Window = struct {
         // 이 정책으로도 유휴 렌더는 사라진다. (`WM_TIMER` 의 auto-scroll 분기는 화면을
         // 바꾸므로 그 안에서 따로 연다.)
         if (!isFrameGateExempt(msg)) self.requestRender();
+        // #763 — 키 메시지는 게이트를 열지 않는다. 대신 이 창이 가진 표시 (조합 · dead key) 가 처리
+        // 중에 바뀌면 그린다. 그 표시를 바꾸는 자리 (dead key 켜고 끄기 · 보류된 IME 결과 확정 ·
+        // 단축키 전의 `CPS_COMPLETE`) 가 여럿이라, 하나씩 요청하지 않고 여기서 한 번에 견준다.
+        const key_visual_before = if (isKeyMessage(msg)) self.keyVisualState() else null;
+        defer if (key_visual_before) |before| {
+            if (!std.meta.eql(before, self.keyVisualState())) self.requestRender();
+        };
 
         switch (msg) {
             WM_NEW_INSTANCE_REQUEST => {

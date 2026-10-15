@@ -223,10 +223,9 @@ pub fn rightClickCopiesSelection(host: *Host, alloc: std.mem.Allocator, copy_on_
 /// paste 텍스트 라우팅 — session.pasteToActive. bracketed paste mode 검사 +
 /// wrap 은 거기서 처리.
 pub fn routePaste(host: *Host, bytes: []const u8) void {
-    // #763 — 붙여넣기의 그리기는 host 가 정한다. Linux 는 `routePasteToSink` 가, macOS 는
-    // `commitPendingInput` 이 요청하고, Windows 는 키 메시지가 여는 그리기 게이트에 기댄다 —
-    // Windows 에서 키 메시지를 게이트에서 빼면 (3 단계) 이 결과로 요청해야 한다.
-    _ = host.session.pasteToActive(bytes);
+    // #763 — 맨 아래로 움직였으면 그린다. 붙인 글자 자체는 에코로 온다. Windows 는 붙여넣기 단축키가
+    // 키 메시지라 그리기 게이트를 열지 않는다.
+    if (host.session.pasteToActive(bytes)) host.invalidate(host);
 }
 
 // ── 테스트 ──────────────────────────────────────────────────────────────────
