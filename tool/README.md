@@ -70,6 +70,7 @@
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`present-latency-probe_macos.patch`](present-latency-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — `nextDrawable` 대기 · present → 화면 표시 지연 · 대조 실험 스위치 ([#476](https://github.com/ensky0/tildaz/issues/476)). **#732 이전 판에만 들어가요** | `# macOS — 표시 대기열을 재는 법` |
 | [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)) | `# macOS — 표시 대기열을 재는 법` |
+| [`present-check_macos.sh`](present-check_macos.sh) | macOS | 여러 앱 판을 번갈아 띄워 표시 경로를 견줌 — 키 → 화면 (`latency` · `--flood`) · Metal HUD 의 Direct / Composited 와 전체화면 전환 영상 (`mode`) · 찢김 눈 시험 (`tearing`) ([#766](https://github.com/ensky0/tildaz/issues/766)) | `# macOS — 표시 대기열을 재는 법` |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
 | [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` |

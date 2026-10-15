@@ -104,6 +104,17 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 멈춰요. 그리고 세션이 하나뿐이어도 **커밋 직전에 `git diff --cached` 로 검증한 내용과 담는 내용이
 같은지** 봐요 — 검증과 커밋 사이에 파일이 바뀌면 검증은 무효예요.
 
+**실기 측정을 시작하기 직전에도 다른 세션에 알리고, 끝나면 다시 알려요** (2026-10-15 사용자 지시).
+세션 시작 때의 확인만으로는 부족해요 — 다른 세션이 중간에 측정을 시작할 수 있어요. 그날
+[#766](https://github.com/ensky0/tildaz/issues/766) 측정과 #762 의 `render-ab-shot` 이 같은 시각에 TildaZ 창을
+띄워, #766 쪽 도구가 그쪽 창을 골라 합성 키를 보냈어요. 측정 회차 하나를 버렸고, 그쪽도 회차를 다시 돌렸어요.
+
+- 시작 전에 `SendMessage` 로 **얼마 동안 · 무엇을** (창 몇 번 · 합성 키 · 화면 녹화) 하는지 알리고, 무거운
+  빌드도 미뤄 달라고 해요 — CPU 를 쓰면 지연 측정이 흔들려요.
+- 끝나면 바로 알려요. 상대가 측정 중이면 그쪽이 끝났다고 알릴 때까지 기다려요.
+- 도구는 **자기가 띄운 창만** 골라요. 띄우기 전의 창 목록과 견줘 새 창을 찾아요. 그리고 시작할 때 다른
+  TildaZ 가 떠 있으면 멈춰요 (`pgrep -x tildaz` — `pgrep -f` 는 그 글자가 든 셸 명령까지 잡아요).
+
 **지금 이 기기의 OS 에서는 실기로 먼저 확인하고 나서 커밋 · push · 댓글을 해요** (2026-10-02 사용자 지시:
 *"이 머신이 mac인데 적어도 mac에서는 테스트 하고 올려. 댓글이든 커밋 푸시든"*). 빌드 · 단위 테스트
 통과만으로 커밋해 push 하고 실기 확인을 뒤로 미루지 않아요 — 그날 #693 2단계를 macOS 기기에서
@@ -916,6 +927,37 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMed
   보지 않았어요.
 - 도구는 `[NSApplication sharedApplication]` 으로 창 서버에 먼저 연결해요. 없으면 `SCStream` 이
   `CGS_REQUIRE_INIT` 단언으로 멈춰요 (한 장만 찍는 `color-capture` 는 필요 없었어요).
+
+**여러 판을 번갈아 견줄 때는 [`tool/present-check_macos.sh`](tool/present-check_macos.sh) 를 써요**
+([#766](https://github.com/ensky0/tildaz/issues/766)). 위 절차 (`key-to-screen` · pane 분할 · 입력기 · 새 창 고르기) 를
+하위 명령 셋으로 묶었어요. 판은 `이름=경로[@환경변수=값...]` 으로 주고, 경로는 `.app` 이나 그 안의 실행 파일이에요.
+
+```sh
+tool/present-check_macos.sh latency          main=zig-out/TildaZ-dev.app old=/tmp/wt-old/zig-out/TildaZ-dev.app
+tool/present-check_macos.sh latency --flood  main=… old-nosync=/tmp/wt-old/zig-out/TildaZ-dev.app@TILDAZ_TEMP476=nosync
+tool/present-check_macos.sh mode             old=… old-nosync=…@TILDAZ_TEMP476=nosync     # HUD · 전체화면 전환 영상
+tool/present-check_macos.sh tearing --seconds 5  old-nosync=…@TILDAZ_TEMP476=nosync old=…   # 눈 시험
+```
+
+| 하위 명령 | 무엇 | 판정 |
+|---|---|---|
+| `latency` | 판을 번갈아 띄워 라운드마다 키 → 화면을 재고, 판별로 median · min · p90 · 회차별 median 을 내요. `--flood` 는 pane 을 나눠 폭포 중에 재요 | 같은 실행 안의 판끼리 견줘요 |
+| `mode` | `MTL_HUD_ENABLED=1` 로 띄워 창 모드 · 전체화면 HUD 를 찍고, `⌘↵` 를 오가는 화면을 녹화해 (`screencapture -v`) 전환 앞뒤 프레임을 한 장으로 붙여요 | HUD 둘째 줄 (Direct / Composited) · 전환 프레임을 눈으로 |
+| `tearing` | 굵은 세로 막대가 가로로 지나가는 창을 판마다 차례로 띄워요 | 막대가 가로로 끊겨 옆으로 밀린 조각 — 사람 눈이나 슬로 모션 |
+
+#766 에서 확인한 것 (MacBook Pro M5 Pro · macOS 27.0.1 · 120 Hz):
+
+- **`displaySyncEnabled = NO` 인 `CAMetalLayer` 는 창 모드에서 Direct (합성기를 건너뜀) 였어요.** 키 → 화면이 한
+  프레임 빨라졌지만 (median 17.7 → 8.9 ms) **찢겼어요.** 전체화면 (`⌘↵`) 에서는 Composited 였어요. Apple 문서는 직접
+  표시 조건을 전체화면으로 적었는데 실기는 반대였어요 — 문서보다 HUD 를 믿어요.
+- **찢김은 화면 캡처로 원리상 못 봐요.** 모니터가 그림을 읽는 도중에 생기는 일이라 ScreenCaptureKit · `screencapture`
+  에는 안 찍혀요. 판정은 `mode` 의 HUD (Direct 면 찢길 수 있다) 와 `tearing` 의 눈 시험으로 해요.
+- **IOSurface + `CALayer.contents` (지금 경로) 에는 HUD 가 안 붙어요** — `CAMetalLayer` 가 아니라서예요. 이 경로에는
+  vsync 를 끄는 스위치가 없어요.
+- **`CAMetalLayer` 경로는 창 크기가 바뀌는 첫 프레임에 옛 크기의 그림을 보여요** (vsync 와 무관). 지금 경로는 첫
+  프레임부터 맞아요. `mode` 의 전환 사진으로 갈려요.
+- `mode` 의 전환 찾기는 녹화를 작은 회색 프레임으로 줄여 프레임끼리의 차이가 튀는 곳을 봐요. 화면 스크립트가 같은
+  줄만 쏟아서 스크롤로는 거의 안 바뀌기 때문에 되는 방법이에요. 화면을 바꾸면 이 판정도 다시 봐요.
 
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
