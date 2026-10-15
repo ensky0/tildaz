@@ -73,12 +73,15 @@ pub const GL_QUERY_RESULT_EXT: u32 = 0x8866;
 pub const GL_QUERY_RESULT_AVAILABLE_EXT: u32 = 0x8867;
 pub const GL_GPU_DISJOINT_EXT: u32 = 0x8FBB;
 
-// 텍스처 — GLES2 코어 포맷만 쓴다. `GL_R8` 은 GLES3 이상이라 쓰지 않는다:
-// grayscale 글리프는 `GL_ALPHA` (1 byte, 셰이더에서 `.a` 로 읽는다), 컬러 emoji 는
-// `GL_RGBA` (FreeType 의 BGRA premultiplied 를 업로드 시 R/B 만 바꿔 넣는다 —
-// GLES2 에는 `GL_BGRA` 가 없다).
-pub const GL_ALPHA: i32 = 0x1906;
+// 텍스처 — #762 부터 GLES3 이다. grayscale 글리프는 `GL_R8` (1 byte, 셰이더에서 `.r` 로 읽는다),
+// 컬러 emoji 는 `GL_RGBA8` (FreeType 의 BGRA premultiplied 를 업로드 시 R/B 만 바꿔 넣는다 — GLES 에는
+// `GL_BGRA` 가 없다). 전에는 GLES2 라 grayscale 이 `GL_ALPHA` 였는데, 그 형식은 FBO 에 붙일 수 없어서
+// atlas 를 키울 때 GPU 안에서 옮기지 못하고 CPU 사본을 들어야 했다. `GL_R8` · `GL_RGBA8` 은 GLES3 에서
+// color-renderable 이라 `glBlitFramebuffer` 로 옮긴다.
+pub const GL_RED: i32 = 0x1903;
+pub const GL_R8: i32 = 0x8229;
 pub const GL_RGBA: i32 = 0x1908;
+pub const GL_RGBA8: i32 = 0x8058;
 pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
 pub const GL_TEXTURE0: u32 = 0x84C0;
 pub const GL_UNPACK_ALIGNMENT: u32 = 0x0CF5;
@@ -93,6 +96,12 @@ pub const GL_TEXTURE_WRAP_T: u32 = 0x2803;
 // `blendPixel` (역시 gamma space 직선 블렌드) 과 같은 결과를 준다.
 pub const GL_ONE: u32 = 1;
 pub const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
+
+// #762 — atlas 를 키울 때 옛 텍스처를 새 텍스처로 옮기는 FBO 복사 (GLES3 `glBlitFramebuffer`).
+pub const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
+pub const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
+pub const GL_DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
+pub const GL_READ_FRAMEBUFFER_BINDING: u32 = 0x8CAA;
 
 const EglGetProcAddress = *const fn (name: [*:0]const u8) callconv(.c) ?*anyopaque;
 const EglGetPlatformDisplay = *const fn (platform: u32, native: ?*anyopaque, attrs: ?[*]const isize) callconv(.c) ?*anyopaque;
@@ -165,6 +174,7 @@ const GlPixelStorei = *const fn (pname: u32, param: i32) callconv(.c) void;
 const GlActiveTexture = *const fn (unit: u32) callconv(.c) void;
 const GlUniform1i = *const fn (location: i32, value: i32) callconv(.c) void;
 const GlBlendFunc = *const fn (src: u32, dst: u32) callconv(.c) void;
+const GlBlitFramebuffer = *const fn (sx0: i32, sy0: i32, sx1: i32, sy1: i32, dx0: i32, dy0: i32, dx1: i32, dy1: i32, mask: u32, filter: u32) callconv(.c) void;
 
 pub const Api = struct {
     egl_handle: *anyopaque,
@@ -242,6 +252,8 @@ pub const Api = struct {
     activeTexture: GlActiveTexture,
     uniform1i: GlUniform1i,
     blendFunc: GlBlendFunc,
+    /// #762 — GLES3. atlas 를 키울 때 옛 내용을 GPU 안에서 옮긴다 (`gl_atlas.Surface.grow`).
+    blitFramebuffer: GlBlitFramebuffer,
 
     pub fn load() !Api {
         const egl_handle = std.c.dlopen("libEGL.so.1", .{ .LAZY = true }) orelse return error.EglLibraryMissing;
@@ -333,6 +345,7 @@ pub const Api = struct {
             .activeTexture = lookup(gles_handle, GlActiveTexture, "glActiveTexture") orelse return error.GlSymbolMissing,
             .uniform1i = lookup(gles_handle, GlUniform1i, "glUniform1i") orelse return error.GlSymbolMissing,
             .blendFunc = lookup(gles_handle, GlBlendFunc, "glBlendFunc") orelse return error.GlSymbolMissing,
+            .blitFramebuffer = lookup(gles_handle, GlBlitFramebuffer, "glBlitFramebuffer") orelse return error.GlSymbolMissing,
         };
     }
 
@@ -449,8 +462,12 @@ pub const Context = struct {
     display: *anyopaque,
     context: *anyopaque,
 
-    /// GBM device 위에 surfaceless GLES2 context 를 만든다. 실패는 전부 null —
+    /// GBM device 위에 surfaceless GLES3 context 를 만든다. 실패는 전부 null —
     /// 호출처가 software 경로로 떨어진다.
+    ///
+    /// #762 — GLES **3** 을 요구한다 (전에는 2). atlas 를 키울 때 GPU 안에서 옮기려면 `GL_R8` 과
+    /// `glBlitFramebuffer` 가 필요해서다. GLES3 이 없는 GPU (Mesa 기능표의 `GL 3.0` 줄 밖 — 2010 년
+    /// 이전 Intel 내장 · r300 · nv30 · Raspberry Pi 3 이하의 vc4 · Mali-400 의 lima) 는 software 로 그린다.
     pub fn create(device: *anyopaque) ?Context {
         var api = Api.load() catch return null;
         errdefer api.deinit();
@@ -472,7 +489,7 @@ pub const Context = struct {
         }
         // config 없이 만든다 (`EGL_KHR_no_config_context`) — FBO 에만 그리므로
         // window surface 용 config 가 의미 없다.
-        const attrs = [_]i32{ CONTEXT_MAJOR_VERSION, 2, EGL_NONE };
+        const attrs = [_]i32{ CONTEXT_MAJOR_VERSION, 3, EGL_NONE };
         const context = api.createContext(display, null, null, &attrs) orelse {
             _ = api.terminate(display);
             api.deinit();
