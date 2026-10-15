@@ -2707,7 +2707,7 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
     //
     // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 스크롤할 이유가
     // 없다. 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
-    if (!searchFocused()) g_session.scrollActiveToBottom();
+    if (!searchFocused()) _ = g_session.scrollActiveToBottom(); // #763 2 단계 — 이 콜백은 아직 첫 줄에서 무조건 그린다
     if (isReplacingRange(replacement_range)) {
         g_hanja_candidate_active = true;
         g_hanja_candidate_range = replacement_range;
@@ -3513,7 +3513,7 @@ fn commitPreeditToSink(self_view: objc.id) void {
     if (searchFocused())
         searchInsertText(g_preedit_buf[0..g_preedit_len])
     else
-        g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]);
+        _ = g_session.queueInputToActive(g_preedit_buf[0..g_preedit_len]); // #763 2 단계
     g_preedit_len = 0;
     g_marked_len = 0;
     clearHanjaState();

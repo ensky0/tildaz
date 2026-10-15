@@ -6832,6 +6832,9 @@ const Client = struct {
     /// commit 은 PTY 로, preedit 는 화면 overlay 로 갱신. 매 batch 마다 preedit
     /// 은 새 값 (= empty 도 정상, "조합 끝" 의미) 으로 reset 된다.
     fn applyTextInputBatch(self: *Client) !void {
+        // #763 — preedit 이 이 batch 에서 실제로 바뀌는지는 덮어쓰기 **전에** 견준다.
+        const preedit_changed = !std.mem.eql(u8, self.preedit_text.items, self.pending_preedit.items);
+        var moved = false;
         if (self.pending_commit.items.len > 0) {
             log.appendLineVerbose("wayland", "text_input commit text_len={}", .{self.pending_commit.items.len});
             // #646 — 검색 중이면 확정 글자는 PTY 가 아니라 검색어로 간다.
@@ -6865,14 +6868,18 @@ const Client = struct {
         // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 내릴 이유가 없다.
         // 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
         if (self.preedit_text.items.len > 0 and !self.searchFocused()) {
-            if (self.session) |*session| session.scrollActiveToBottom();
+            if (self.session) |*session| moved = session.scrollActiveToBottom();
         }
         // IME 활성 시 wl_keyboard.key event 는 IME 로 raised 되어 우리한테 안
         // 온다. text_input event 만 들어오는 동안 다른 갱신 트리거가 없어
         // `needs_redraw` 가 자동으로 안 켜진다. preedit 변화가 화면에 보이려면
         // 명시 트리거 필수 — commit batch 면 PTY echo 가 다음 frame 을 어차피
         // 끌고 오지만 preedit 만 변하는 경우는 이 줄이 유일 트리거.
-        self.needs_redraw = true;
+        //
+        // #763 — 다만 **바뀐 것이 있을 때만** 켠다. fcitx5 는 키마다 preedit 이 빈 채로 batch 를
+        // 보내는데, 그때마다 그리면 그 빈 프레임이 에코 commit 을 대신해 8.5 ms 늦춘다 (#763 ②).
+        // 확정 글자의 화면 변화는 위 `queueInput` 과 에코가 맡는다.
+        if (preedit_changed or moved) self.needs_redraw = true;
     }
 
     /// #530 — 조합 중 표시에 dead key 문자를 덧붙인다 (`^` 다음 `´` 면 `^´`). 표시할 문자가
@@ -6886,7 +6893,8 @@ const Client = struct {
         self.compose_preview_len += n;
         self.renderer.compose_preview = self.compose_preview_buf[0..self.compose_preview_len];
         // #242 — IME preedit 과 같은 규칙: 조합 중 표시도 사용자 입력이라 맨 아래로.
-        if (self.session) |*session| session.scrollActiveToBottom();
+        // 표시가 늘었으니 viewport 와 무관하게 그린다.
+        if (self.session) |*session| _ = session.scrollActiveToBottom();
         self.needs_redraw = true;
     }
 
@@ -8649,12 +8657,14 @@ const Client = struct {
             // #282 A8 — Ctrl+C(ETX 0x03) 는 write_queue 우회 즉시 송신(SIGINT). 대량
             // paste 로 큐가 가득 차면 SIGINT 가 뒤에 밀려 늦게 도착하는 것을 막는다
             // (macOS/Windows 동등). 단독 0x03 = Ctrl+C (nav 키는 multi-byte escape).
-            if (bytes.len == 1 and bytes[0] == 0x03) {
-                session.interruptActive(bytes);
-            } else {
+            const moved = if (bytes.len == 1 and bytes[0] == 0x03)
+                session.interruptActive(bytes)
+            else
                 session.queueInputToActive(bytes);
-            }
-            self.requestRedraw();
+            // #763 — 화면이 바뀔 때만 그린다. 이미 맨 아래면 바뀐 것이 없고, 지금 commit 한 빈 프레임의
+            // frame callback 을 기다리느라 곧 도착한 에코가 한 프레임 늦는다 (KDE Plasma 평균 14 ms, #763 ②).
+            // 에코는 PTY 출력으로 오니 출력 경로가 그린다.
+            if (moved) self.requestRedraw();
         }
     }
 

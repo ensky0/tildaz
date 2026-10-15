@@ -668,7 +668,7 @@ pub const App = struct {
         // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 내릴 이유가 없다.
         // 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
         if (self.searchFocused()) return;
-        self.session.scrollActiveToBottom();
+        _ = self.session.scrollActiveToBottom(); // #763 3 단계에서 결과를 쓴다 — 지금은 키 메시지가 그리기 게이트를 연다
     }
 
     // --- Window callbacks (userdata = *App) ---
@@ -688,10 +688,10 @@ pub const App = struct {
         // 로 큐가 가득 차면 SIGINT 가 그 뒤에 밀려 "Ctrl+C 안 먹힘" 이 되므로(macOS 동등).
         // 이 경로는 키보드 write 전용이라 단독 0x03 = Ctrl+C (arrow 등은 multi-byte escape).
         if (data.len == 1 and data[0] == 0x03) {
-            self.session.interruptActive(data);
+            _ = self.session.interruptActive(data); // #763 3 단계
             return;
         }
-        self.session.queueInputToActive(data);
+        _ = self.session.queueInputToActive(data); // #763 3 단계
     }
 
     /// #352 — `resize_fn` 은 "창 크기가 바뀌었다" 는 알림만 준다. 이전 시그니처는
@@ -1758,7 +1758,7 @@ pub const App = struct {
                 // #646 — 검색 중에는 정책이 `drop` 이라 아래 분기를 안 탄다. 삼키지 않으면
                 // 검색어를 치다가 셸이 SIGINT 를 받는다.
                 const disposition = self.resolveWindowsInput(.interrupt) orelse return true;
-                if (disposition.target == .pty) self.session.interruptActive("\x03");
+                if (disposition.target == .pty) _ = self.session.interruptActive("\x03"); // #763 3 단계
                 return true;
             },
             .mouse_right_down => |mouse| {
