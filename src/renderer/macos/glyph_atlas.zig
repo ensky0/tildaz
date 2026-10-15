@@ -56,9 +56,15 @@ pub const GlyphAtlas = struct {
     /// renderer 가 폰트 컨텍스트를 만든 뒤 채운다. 0 이면 그 보정을 건너뛴다.
     ascent_pt: f32 = 0,
 
-    // 아틀라스 픽셀 데이터 (BGRA8 — 4 bytes per pixel, premultiplied alpha).
-    // 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는 (B*a, G*a, R*a, a).
-    pixels: []u8,
+    /// #762 — **CPU 사본을 들지 않는다.** atlas 의 그림은 GPU 텍스처 한 장에만 있다 (Windows 와 같다).
+    /// 새로 그린 글리프는 이 대기 목록에 쌓고, renderer 가 그리기 직전에 그 글리프 자리만 텍스처로 올린 뒤
+    /// 비운다 (`MetalRenderer.uploadAtlas` → `clearUploads`). 키울 때 옛 내용은 GPU 안에서 새 텍스처로
+    /// 복사한다 (`MetalRenderer.syncAtlasTexture`) — 그래서 다시 올릴 사본이 필요 없다.
+    ///
+    /// 글리프 바이트는 BGRA8 premultiplied 다. 일반 글리프는 (a, a, a, a) (흰색 premult), 컬러 글리프는
+    /// (B*a, G*a, R*a, a). 자리마다 `w * 4` 바이트 줄이 `h` 개 이어진다.
+    uploads: std.ArrayListUnmanaged(Upload) = .empty,
+    upload_bytes: std.ArrayListUnmanaged(u8) = .empty,
 
     /// #584 ① — 프레임 중간에 자리를 못 잡았다. **그 자리에서 비우지 않는다** — 호출자가
     /// 이미 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6). 예전에는
@@ -76,11 +82,6 @@ pub const GlyphAtlas = struct {
     /// 넘었다는 뜻이다 ([#584](https://github.com/ensky0/tildaz/issues/584)).
     resets: u32 = 0,
 
-    // Metal 업로드를 위한 dirty 영역 트래킹.
-    dirty: bool = false,
-    dirty_min_y: u32 = INITIAL_ATLAS_SIZE,
-    dirty_max_y: u32 = 0,
-
     // 글리프 라스터 임시 버퍼 (RGBA premultiplied, max 256x256).
     temp_buf: []u8,
 
@@ -89,14 +90,13 @@ pub const GlyphAtlas = struct {
     /// 이미 그린 글리프는 캐시에 남으므로 도중에 바꾸지 않는다.
     smooth_fonts: bool = false,
 
+    /// 올릴 글리프 하나 — atlas 자리와 `upload_bytes` 안의 시작 위치.
+    pub const Upload = struct { x: u32, y: u32, w: u32, h: u32, offset: usize };
+
     pub fn init(
         alloc: std.mem.Allocator,
         scale: f32,
     ) !GlyphAtlas {
-        // BGRA8 = 4 bytes per pixel.
-        const pixels = try alloc.alloc(u8, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
-        @memset(pixels, 0);
-
         const temp_buf = try alloc.alloc(u8, 256 * 256 * 4);
 
         return .{
@@ -104,14 +104,14 @@ pub const GlyphAtlas = struct {
             .cache = std.AutoHashMap(GlyphKey, AtlasEntry).init(alloc),
             .cluster_cache = std.AutoHashMap(ClusterKey, AtlasEntry).init(alloc),
             .scale = scale,
-            .pixels = pixels,
             .temp_buf = temp_buf,
         };
     }
 
     pub fn deinit(self: *GlyphAtlas) void {
         self.alloc.free(self.temp_buf);
-        self.alloc.free(self.pixels);
+        self.uploads.deinit(self.alloc);
+        self.upload_bytes.deinit(self.alloc);
         self.pack.deinit(self.alloc);
         self.cache.deinit();
         self.cluster_cache.deinit();
@@ -217,16 +217,7 @@ pub const GlyphAtlas = struct {
         const pos = self.packOrMarkFull(size, size, "icon") orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = self.pack.size * 4;
-        for (0..size) |row| {
-            const src_off = row * bytes_per_row;
-            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
-            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
-        }
-
-        self.dirty = true;
-        if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
-        if (atlas_y + size > self.dirty_max_y) self.dirty_max_y = atlas_y + size;
+        if (!self.queueUpload(atlas_x, atlas_y, size, size)) return null;
 
         const entry = AtlasEntry{
             .x = @intCast(atlas_x),
@@ -248,13 +239,10 @@ pub const GlyphAtlas = struct {
         self.cluster_cache.clearRetainingCapacity();
         self.pack.rewind();
         self.is_full = false;
-        // #584 — **픽셀을 0 으로 밀지 않는다.** 예전에는 `@memset(self.pixels, 0)` 을 했는데,
-        // 이 atlas 는 프레임 시작에 한 번만 업로드되므로 (2-frame 정책) 비운 직후의 0 이 다음
-        // 프레임에 올라가 **화면이 통째로 비었다.** 자리만 되돌리면 다음에 담기는 글리프가
-        // 그 위를 덮어쓴다 — 아무도 참조하지 않는 옛 픽셀이 남는 것은 무해하다.
-        self.dirty = true;
-        self.dirty_min_y = 0;
-        self.dirty_max_y = self.pack.size;
+        // #584 — **텍스처를 0 으로 밀지 않는다.** 자리만 되돌리면 다음에 담기는 글리프가 그 위를 덮어쓴다 —
+        // 아무도 참조하지 않는 옛 픽셀이 남는 것은 무해하다 (샘플러가 `nearest` 라 글리프 칸 밖을 섞어 읽지도
+        // 않는다). 아직 안 올린 글리프는 비운 자리를 가리키므로 버린다.
+        self.clearUploads();
     }
 
     /// cluster 키에 실린 **서로 다른 폰트 id 수**. 진단 전용 (`resetFull` 에서만 부른다).
@@ -444,15 +432,7 @@ pub const GlyphAtlas = struct {
         const pos = self.packOrMarkFull(gw, gh, "cluster") orelse return null;
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = self.pack.size * 4;
-        for (0..gh) |row| {
-            const src_off = row * bytes_per_row;
-            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
-            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
-        }
-        self.dirty = true;
-        if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
-        if (atlas_y + gh > self.dirty_max_y) self.dirty_max_y = atlas_y + gh;
+        if (!self.queueUpload(atlas_x, atlas_y, gw, gh)) return null;
 
         return AtlasEntry{
             .x = @intCast(atlas_x),
@@ -579,20 +559,9 @@ pub const GlyphAtlas = struct {
         // 아틀라스에 packing.
         const pos = self.packOrMarkFull(gw, gh, "glyph") orelse return null;
 
-        // BGRA temp_buf (4 bytes per pixel) 를 atlas (BGRA8) 로 row 단위 복사.
         const atlas_x = pos[0];
         const atlas_y = pos[1];
-        const atlas_row_bytes = self.pack.size * 4;
-        for (0..gh) |row| {
-            const src_off = row * bytes_per_row;
-            const dst_off = (atlas_y + @as(u32, @intCast(row))) * atlas_row_bytes + atlas_x * 4;
-            @memcpy(self.pixels[dst_off..][0..bytes_per_row], self.temp_buf[src_off..][0..bytes_per_row]);
-        }
-
-        // dirty 영역 마킹.
-        self.dirty = true;
-        if (atlas_y < self.dirty_min_y) self.dirty_min_y = atlas_y;
-        if (atlas_y + gh > self.dirty_max_y) self.dirty_max_y = atlas_y + gh;
+        if (!self.queueUpload(atlas_x, atlas_y, gw, gh)) return null;
 
         return AtlasEntry{
             .x = @intCast(atlas_x),
@@ -615,38 +584,45 @@ pub const GlyphAtlas = struct {
     /// pass 가 최종 텍스처를 읽는다 (Apple 문서: *"immediately copies … does not synchronize
     /// against GPU accesses"*). 키우면 그 상황 자체가 없다.
     ///
-    /// 옛 내용을 **같은 (x, y) 로** 옮긴다 — 놓은 자리는 그대로 유효하고, 새로 생긴 오른쪽 · 아래는
-    /// `Packer.grow` 가 빈 자리로 더한다 (#762). 다만 UV 는 크기로 정규화되므로 renderer 가 uniform 과 Metal
-    /// 텍스처를 함께 갱신해야 한다 (`syncAtlasTexture`).
+    /// 옛 내용은 **같은 (x, y) 로** 남는다 — 놓은 자리는 그대로 유효하고, 새로 생긴 오른쪽 · 아래는
+    /// `Packer.grow` 가 빈 자리로 더한다 (#762). 텍스처는 renderer 가 새 크기로 만들고 옛 내용을 GPU 안에서
+    /// 복사한다. UV 는 크기로 정규화되므로 uniform 도 함께 갱신한다 (`syncAtlasTexture`).
     ///
     /// 상한 (`MAX_ATLAS_SIZE`) 에 닿으면 `false` 를 돌려준다 — 호출자는 ① 안전망으로 물러선다.
     pub fn grow(self: *GlyphAtlas) bool {
         const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
-        const new_pixels = self.alloc.alloc(u8, @as(usize, new_size) * new_size * 4) catch return false;
-        @memset(new_pixels, 0);
         // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 판은 그대로 두고 키우기를 포기한다.
-        const old_size = self.pack.size;
-        self.pack.grow(self.alloc, new_size) catch {
-            self.alloc.free(new_pixels);
-            return false;
-        };
-
-        // 옛 내용을 같은 좌표로 복사한다 — row stride 만 달라진다.
-        const old_row = @as(usize, old_size) * 4;
-        const new_row = @as(usize, new_size) * 4;
-        for (0..old_size) |y| {
-            @memcpy(new_pixels[y * new_row ..][0..old_row], self.pixels[y * old_row ..][0..old_row]);
-        }
-
-        self.alloc.free(self.pixels);
-        self.pixels = new_pixels;
+        // 픽셀은 여기서 옮기지 않는다 — renderer 가 새 텍스처를 만들 때 GPU 안에서 옛 텍스처를 같은 자리로
+        // 복사한다 (`syncAtlasTexture`).
+        self.pack.grow(self.alloc, new_size) catch return false;
         self.grows += 1;
-        // 전체를 다시 올려야 한다 — 텍스처가 새로 만들어진다.
-        self.dirty = true;
-        self.dirty_min_y = 0;
-        self.dirty_max_y = new_size;
         log.logAtlasGrew("main", new_size, self.grows, self.cache.count(), self.cluster_cache.count());
         return true;
+    }
+
+    /// #762 — 방금 `temp_buf` 에 그린 글리프 (`w * 4` 바이트 줄 `h` 개) 를 올릴 목록에 넣는다. 메모리를 못
+    /// 잡으면 false — 호출자는 그 글리프를 캐시하지 않는다 (자리만 비어 있고, 다음에 다시 그린다).
+    fn queueUpload(self: *GlyphAtlas, x: u32, y: u32, w: u32, h: u32) bool {
+        const len = @as(usize, w) * h * 4;
+        const offset = self.upload_bytes.items.len;
+        self.upload_bytes.appendSlice(self.alloc, self.temp_buf[0..len]) catch return false;
+        self.uploads.append(self.alloc, .{ .x = x, .y = y, .w = w, .h = h, .offset = offset }) catch {
+            self.upload_bytes.shrinkRetainingCapacity(offset);
+            return false;
+        };
+        return true;
+    }
+
+    /// 올릴 목록을 비운다 — renderer 가 GPU 에 올리는 명령을 넣은 뒤 부른다. 한 프레임에 글리프를 아주 많이
+    /// 그린 뒤에는 (화면 가득 새 글자) 큰 버퍼를 계속 쥐지 않게 놓는다.
+    pub fn clearUploads(self: *GlyphAtlas) void {
+        self.uploads.clearRetainingCapacity();
+        if (self.upload_bytes.capacity > 1 << 20) {
+            self.upload_bytes.deinit(self.alloc);
+            self.upload_bytes = .empty;
+        } else {
+            self.upload_bytes.clearRetainingCapacity();
+        }
     }
 
     /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통

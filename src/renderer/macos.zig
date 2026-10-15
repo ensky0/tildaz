@@ -242,19 +242,6 @@ pub const MetalRenderer = struct {
     bg_buffer: objc.id,
     text_buffer: objc.id,
     atlas_texture: objc.id,
-    /// #585 — atlas 업로드용 staging buffer. `replaceRegion` 이 **즉시 CPU 복사이고 GPU 작업과
-    /// 순서가 보장되지 않아서** (Apple 문서: *"does not synchronize against GPU accesses"*)
-    /// 그것을 쓰면 프레임 중간에 텍스처를 갈 수 없다. blit encoder 로 올리면 복사가 **command
-    /// buffer 안**에 들어가 순서가 지켜진다.
-    ///
-    /// Windows (`UpdateSubresource`) · Linux (`glTexSubImage2D`) 는 글리프 단위로 즉시 올리는데
-    /// macOS 만 프레임마다 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 올리고
-    /// 있었다. blit 은 영역 지정이 자연스러워 `dirty_min_y`~`dirty_max_y` 만 올린다.
-    /// ⚠️ atlas 가 둘이던 동안은 **atlas 마다 따로여야 했다.** blit 은 `replaceRegion` 과 달리
-    /// **GPU 가 나중에 실행할 때** buffer 를 읽어서, 하나를 나눠 쓰면 본문 blit 이 탭 데이터를
-    /// 읽었다 (실측으로 화면이 깨졌다). #762 로 atlas 가 하나가 됐다.
-    staging_buffer: objc.id,
-    staging_bytes: u32 = 0,
     /// #584 ② — `atlas_texture` 를 만들 때의 한 변. `atlas.pack.size` 가 이보다 커지면
     /// (`grow`) 텍스처를 새로 만들어야 한다 (`syncAtlasTexture`).
     atlas_texture_size: u32 = INITIAL_ATLAS_SIZE,
@@ -443,9 +430,6 @@ pub const MetalRenderer = struct {
 
         // constants buffer = float4 (screen_w, screen_h, atlas_w, atlas_h).
         const const_buf = createBuffer(device, 16);
-        // #585 — atlas 전체를 담을 수 있는 staging (grow 하면 재생성한다).
-        const staging = createBuffer(device, INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4);
-
         const atlas_tex = createAtlasTexture(device, INITIAL_ATLAS_SIZE);
 
         // #349 — 표시 대상에 붙일 색공간. 우리 색 상수는 sRGB 로 설계 · 튜닝됐고 (#334 / #342
@@ -476,8 +460,6 @@ pub const MetalRenderer = struct {
             .bg_buffer = bg_buf,
             .text_buffer = text_buf,
             .atlas_texture = atlas_tex,
-            .staging_buffer = staging,
-            .staging_bytes = INITIAL_ATLAS_SIZE * INITIAL_ATLAS_SIZE * 4,
             .constants_buffer = const_buf,
             .fallback_bg = .{ colorF(bg[0]), colorF(bg[1]), colorF(bg[2]) },
             .chrome = chrome_palette.derive(bg, themes.isDarkRgb(bg[0], bg[1], bg[2])),
@@ -959,10 +941,7 @@ pub const MetalRenderer = struct {
 
         self.syncAtlasTexture(&self.atlas, &self.atlas_texture, &self.atlas_texture_size);
         self.updateConstants();
-        if (self.atlas.dirty) {
-            self.uploadAtlas(&self.atlas, self.atlas_texture, &self.staging_buffer, &self.staging_bytes);
-            self.atlas.dirty = false;
-        }
+        self.uploadAtlas(&self.atlas, self.atlas_texture);
 
         const texture = target.texture;
         const rpd_class = objc.getClass("MTLRenderPassDescriptor");
@@ -998,8 +977,9 @@ pub const MetalRenderer = struct {
     /// #584 ① 안전망 — atlas 상한에서 **프레임 중간에** pass 를 제출한다: 지금까지 담은 것을
     /// 그리고, GPU 가 끝나기를 기다린 뒤, 새 command buffer 로 이어간다. 기다리는 이유 —
     /// Metal 은 CPU 쓰기와 GPU 읽기의 순서를 대신 지켜 주지 않는다. 비운 뒤 새 글리프를 담으면
-    /// staging 과 atlas 픽셀이 덮이는데, 앞 pass 가 텍스처를 다 읽기 전에 덮으면 앞 pass 가
-    /// 뒤 내용을 본다 (#585 실측 23~38 % 어긋남). Apple 문서가 요구하는 그대로다 — *"ensure
+    /// 그때는 staging 과 atlas 픽셀 (CPU 사본) 이 덮였는데, 앞 pass 가 텍스처를 다 읽기 전에 덮으면 앞 pass 가
+    /// 뒤 내용을 봤다 (#585 실측 23~38 % 어긋남). #762 부터는 CPU 가 덮어쓰는 공유 메모리가 없다 — 업로드마다
+    /// 새 버퍼를 만들고 복사는 command buffer 안이다. 그래서 이 기다림이 아직 필요한지는 확인 필요다 (그대로 둔다). Apple 문서가 요구하는 그대로다 — *"ensure
     /// these operations complete"*. Windows · Linux 는 드라이버가 이 순서를 만들고 (SPEC §12.6
     /// ①) macOS 는 우리가 만든다. 비용은 GPU 대기 한 번이고 상한에 닿은 프레임에만 있다.
     /// drawable 에 그린 것은 Store 로 남고 present 는 `endFrame` 의 마지막 pass 가 한다.
@@ -2130,63 +2110,89 @@ pub const MetalRenderer = struct {
     /// #584 ② — `grow` 로 atlas 가 커졌으면 Metal 텍스처를 **새로 만든다** (ghostty 의
     /// `syncAtlasTexture` 와 같은 자리다). 픽셀 좌표는 `grow` 가 보존하므로, 셰이더가 새
     /// 크기로 정규화하면 이미 emit 한 인스턴스의 UV 도 그대로 맞는다.
+    ///
+    /// #762 — **옛 내용은 GPU 안에서 복사한다** (blit `copyFromTexture`). Windows 의
+    /// `CopySubresourceRegion` 과 같은 방식이다. 전에는 CPU 사본 (atlas 크기 그대로) 을 들고 있다가 새 텍스처에
+    /// 통째로 다시 올렸다. 복사는 이 pass 의 command buffer 안이라 앞서 올린 글리프 · 뒤의 그리기와 순서가
+    /// 지켜진다. 옛 텍스처는 바로 release 해도 된다 — command buffer 가 참조를 쥐고 끝날 때 놓는다.
     fn syncAtlasTexture(self: *MetalRenderer, atlas: *GlyphAtlas, texture: *objc.id, texture_size: *u32) void {
         if (atlas.pack.size <= texture_size.*) return;
+        const cmd_buf = self.current_cmd_buf;
+        if (cmd_buf == null) return;
         const new_tex = createAtlasTexture(self.device, atlas.pack.size);
         if (new_tex == null) return; // 못 만들면 옛 텍스처를 그대로 쓴다 (그림이 잘릴 수 있다)
+        const blit = objc.msgSend(cmd_buf, objc.sel("blitCommandEncoder"));
+        if (blit == null) {
+            // 옛 내용을 못 옮기면 바꾸지 않는다 — 다음 pass 가 다시 시도한다.
+            objc.msgSendVoid(new_tex, objc.sel("release"));
+            return;
+        }
+        const MTLSize = extern struct { w: usize, h: usize, d: usize };
+        const MTLOrigin = extern struct { x: usize, y: usize, z: usize };
+        const f: *const fn (
+            objc.id,
+            objc.SEL,
+            objc.id, // sourceTexture
+            usize, // sourceSlice
+            usize, // sourceLevel
+            MTLOrigin, // sourceOrigin
+            MTLSize, // sourceSize
+            objc.id, // destinationTexture
+            usize, // destinationSlice
+            usize, // destinationLevel
+            MTLOrigin, // destinationOrigin
+        ) callconv(.c) void = @ptrCast(objc.msgSend_raw);
+        f(
+            blit,
+            objc.sel("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+            texture.*,
+            0,
+            0,
+            MTLOrigin{ .x = 0, .y = 0, .z = 0 },
+            MTLSize{ .w = texture_size.*, .h = texture_size.*, .d = 1 },
+            new_tex,
+            0,
+            0,
+            MTLOrigin{ .x = 0, .y = 0, .z = 0 },
+        );
+        objc.msgSendVoid(blit, objc.sel("endEncoding"));
         objc.msgSendVoid(texture.*, objc.sel("release"));
         texture.* = new_tex;
         texture_size.* = atlas.pack.size;
-        atlas.dirty = true; // 새 텍스처는 비어 있다 — 전체를 다시 올린다
-        atlas.dirty_min_y = 0;
-        atlas.dirty_max_y = atlas.pack.size;
     }
 
-    /// #585 — atlas 픽셀을 텍스처로 올린다. **blit encoder 를 쓴다.**
+    /// #585 — 새로 그린 글리프를 텍스처로 올린다. **blit encoder 를 쓴다.**
     ///
-    /// 예전에는 `MTLTexture.replaceRegion` 이었는데 그것은 **즉시 CPU 복사이고 GPU 작업과
-    /// 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize
-    /// against GPU accesses"*). 그래서 프레임 중간에 올려도 **모든 render pass 가 최종
-    /// 텍스처를 읽었다** — 안전망 (SPEC §12.6 ①) 이 macOS 에서 동작하지 못한 이유다.
+    /// `MTLTexture.replaceRegion` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서:
+    /// *"immediately copies … does not synchronize against GPU accesses"*). 그래서 프레임 중간에 올려도
+    /// **모든 render pass 가 최종 텍스처를 읽었다** — 안전망 (SPEC §12.6 ①) 이 macOS 에서 동작하지 못한
+    /// 이유였다. blit 은 복사를 **command buffer 안**에 넣으므로 앞뒤 pass 와 순서가 지켜진다. Windows
+    /// (`UpdateSubresource`) · Linux (`glTexSubImage2D`) 는 드라이버가 안에서 하는 일이고, Metal 은 그것을
+    /// 우리가 한다.
     ///
-    /// blit 은 복사를 **command buffer 안**에 넣으므로 앞뒤 pass 와 순서가 지켜진다. 그리고
-    /// 영역 지정이 자연스러워 **dirty 구간만** 올린다 — Windows (`UpdateSubresource`) ·
-    /// Linux (`glTexSubImage2D`) 가 글리프 단위로 올리는 것과 같은 방향이다.
+    /// #762 — **글리프 단위로 올린다.** 그 pass 에 새로 그린 글리프의 바이트만 담은 버퍼를 만들어 자리마다
+    /// 복사한다. 전에는 atlas 크기의 staging 버퍼 (2048² 에서 16 MB) 와 CPU 사본을 들고 바뀐 줄 구간을 통째로
+    /// 올렸다. 버퍼는 command buffer 가 쥐고 있다가 끝나면 놓으므로 바로 release 한다. 프레임마다 GPU 가 끝나기를
+    /// 기다리므로 (#732 · `endFrame`) 겹쳐 쓸 일도 없다.
     ///
-    /// 실패하면 조용히 지나간다 (그 프레임은 옛 텍스처를 쓴다) — 다음 프레임이 다시 올린다.
-    fn uploadAtlas(
-        self: *MetalRenderer,
-        atlas: *GlyphAtlas,
-        texture: objc.id,
-        /// ⚠️ **atlas 마다 따로** — 위 필드 주석의 이유다.
-        staging: *objc.id,
-        staging_bytes: *u32,
-    ) void {
+    /// 실패하면 조용히 지나간다 (그 프레임은 그 글리프가 비어 보인다) — 목록은 비우지 않아 다음 pass 가 다시
+    /// 올린다.
+    fn uploadAtlas(self: *MetalRenderer, atlas: *GlyphAtlas, texture: objc.id) void {
+        if (atlas.uploads.items.len == 0) return;
         const cmd_buf = self.current_cmd_buf;
         if (cmd_buf == null) return;
 
-        // dirty 구간만 — 줄 단위로 전폭을 올린다. 글리프가 놓인 줄은 빠짐없이 덮으므로 결과는 맞다. #762 로
-        // 자리 잡기가 skyline 이 되어 새 글리프가 여러 높이에 흩어지면 올리는 줄이 늘 수 있다 (3 단계에서 업로드를
-        // 글리프 단위로 바꾼다).
-        const y0 = @min(atlas.dirty_min_y, atlas.pack.size);
-        const y1 = @min(atlas.dirty_max_y, atlas.pack.size);
-        if (y1 <= y0) return;
-        const row_bytes: usize = @as(usize, atlas.pack.size) * 4;
-        const rows: usize = y1 - y0;
-        const bytes = rows * row_bytes;
-
-        // staging 이 작으면 키운다 (`grow` 뒤).
-        if (staging_bytes.* < atlas.pack.size * atlas.pack.size * 4) {
-            const new_buf = createBuffer(self.device, atlas.pack.size * atlas.pack.size * 4);
-            if (new_buf == null) return;
-            objc.msgSendVoid(staging.*, objc.sel("release"));
-            staging.* = new_buf;
-            staging_bytes.* = atlas.pack.size * atlas.pack.size * 4;
-        }
-
-        const dst = objc.msgSend(staging.*, objc.sel("contents")) orelse return;
-        const dst_ptr: [*]u8 = @ptrCast(dst);
-        @memcpy(dst_ptr[0..bytes], atlas.pixels[y0 * row_bytes ..][0..bytes]);
+        const bytes = atlas.upload_bytes.items;
+        // MTLResourceStorageModeShared = 0. 통합 메모리 GPU 는 그대로 읽고, Intel Mac 은 드라이버가 옮긴다.
+        const buf = objc.msgSend3(
+            self.device,
+            objc.sel("newBufferWithBytes:length:options:"),
+            @as(*const anyopaque, bytes.ptr),
+            @as(objc.NSUInteger, bytes.len),
+            @as(objc.NSUInteger, 0),
+        );
+        if (buf == null) return;
+        defer objc.msgSendVoid(buf, objc.sel("release"));
 
         const blit = objc.msgSend(cmd_buf, objc.sel("blitCommandEncoder"));
         if (blit == null) return;
@@ -2206,24 +2212,24 @@ pub const MetalRenderer = struct {
             usize, // destinationLevel
             MTLOrigin, // destinationOrigin
         ) callconv(.c) void = @ptrCast(objc.msgSend_raw);
-        f(
-            blit,
-            objc.sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
-            staging.*,
-            0,
-            row_bytes,
-            bytes,
-            MTLSize{ .w = atlas.pack.size, .h = rows, .d = 1 },
-            texture,
-            0,
-            0,
-            MTLOrigin{ .x = 0, .y = y0, .z = 0 },
-        );
+        for (atlas.uploads.items) |u| {
+            const row_bytes = @as(usize, u.w) * 4;
+            f(
+                blit,
+                objc.sel("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:"),
+                buf,
+                u.offset,
+                row_bytes,
+                row_bytes * u.h,
+                MTLSize{ .w = u.w, .h = u.h, .d = 1 },
+                texture,
+                0,
+                0,
+                MTLOrigin{ .x = u.x, .y = u.y, .z = 0 },
+            );
+        }
         objc.msgSendVoid(blit, objc.sel("endEncoding"));
-
-        // 올린 구간은 깨끗해졌다.
-        atlas.dirty_min_y = atlas.pack.size;
-        atlas.dirty_max_y = 0;
+        atlas.clearUploads();
     }
 
     // --- Helpers ---
