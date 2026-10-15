@@ -2318,7 +2318,7 @@ Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴�
 |---|---|
 | ⓿ **폰트 식별** | cluster 캐시 키는 폰트를 **주소가 아니라 안정된 id** 로 식별한다 |
 | ① **찼을 때** | **이미 그린 것을 먼저 flush 하고, 비우고, 재시도한다.** 그 프레임의 화면은 온전하다 |
-| ② **용량** | 세 platform 모두 `INITIAL_ATLAS_SIZE` **2048** 에서 시작해 차면 두 배로 키운다 (`MAX_ATLAS_SIZE` **8192** — Linux 는 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소). 산술이 아니라 ③ 의 실측으로 정한다 |
+| ② **용량** | 세 platform 모두 `INITIAL_ATLAS_SIZE` **512** 에서 시작해 차면 두 배로 키운다 (`MAX_ATLAS_SIZE` **8192** — Linux 는 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소). 시작 크기는 [#762 ④](https://github.com/ensky0/tildaz/issues/762#issuecomment-6181912863) 의 실측으로 정했다 (전에는 2048) |
 | ③ **로그** | [`log.logAtlasFull`](src/log.zig) 한 문구를 세 platform 이 그대로 쓴다 |
 
 #### ⓿ 폰트 식별 — 주소를 키에 싣지 않는다
@@ -2507,7 +2507,7 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 | | |
 |---|---|
-| 시작 크기 | `INITIAL_ATLAS_SIZE` = **2048** |
+| 시작 크기 | `INITIAL_ATLAS_SIZE` = **512** ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 2048. 알파벳만 쓰면 512 로 버티고, 커지는 데 약 1 ms 다) |
 | 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
 | 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
 | UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고, Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 surface 마다 **CPU shadow** 를 두고 (GLES2 에는 텍스처 간 복사가 없다 — `glCopyImageSubData` 는 3.2, `GL_ALPHA` 는 FBO 첨부 불가) 옛 내용을 새 shadow 에 옮겨 그것으로 새 텍스처를 만든다. Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
@@ -2519,7 +2519,7 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 | 판 | `grow` | `atlas full` | 4096 판과 다른 픽셀 (창 7,588,060 px) |
 |---|---|---|---|
 | 4096 (기준 · 안 넘침) | 0 회 | 0 회 | — |
-| **2048** (기본값) | 1 회 → 4096 | **0 회** | **0 px** |
+| **2048** (그때 기본값) | 1 회 → 4096 | **0 회** | **0 px** |
 | **512** | 3 회 → 1024 → 2048 → 4096 | **0 회** | **0 px** |
 | 일반 화면 (cluster 2,816 종) | **0 회** | 0 회 | 이웃 프레임 `0 px` |
 

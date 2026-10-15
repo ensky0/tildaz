@@ -118,7 +118,12 @@ pub const ClusterKey = struct {
 /// #586 — 시작 크기와 상한. 세 platform 이 같은 값 · 같은 정책이다 — **차면 두 배로 키운다** (`Packer.grownSize`),
 /// 상한에서만 ① 안전망 (비우기). 8192² 는 BGRA8 로 256 MB 다. 실제 상한은 platform 이 더 낮출 수 있다 (Linux 는
 /// 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소, Windows 는 텍스처 생성 실패).
-pub const INITIAL_ATLAS_SIZE: u32 = 2048;
+///
+/// #762 — 시작 크기 512 (전에는 2048). 알파벳만 쓰면 512 로 버티고 (macOS 2 배 화면 실측 — 영문 4 벌
+/// 380 자 + 탭바 글자에서 커지지 않았다), 서로 다른 글자가 약 1,100 자 아래면 1024 로 시작한 것과 결과가
+/// 같다 (둘 다 1024 에서 멈춘다). 512 → 1024 로 커지는 데 약 1 ms 다. 측정과 근거는
+/// [#762 ④](https://github.com/ensky0/tildaz/issues/762#issuecomment-6181912863). ghostty 도 512 로 시작한다.
+pub const INITIAL_ATLAS_SIZE: u32 = 512;
 pub const MAX_ATLAS_SIZE: u32 = 8192;
 
 /// #604 — row-based packing 상태 + 지금 크기. 세 platform 의 atlas (Linux 는 surface 마다) 가 이 struct 하나를
