@@ -10,12 +10,15 @@
 # **`undefined` 를 읽고 있었다.** macOS 회차 (2026-09-02) 는 worker 가 다이얼로그를 띄우는 경로여서 이 자리를 확정하지
 # 못했다 — worker 가 스스로 안내를 띄우면 launcher 는 조용히 물러나도록 설계돼 있기 때문이다.
 #
-# launcher 단독 실패를 만드는 법 — **TOML 문법이 깨진 `config_9.toml`** 을 두고 launcher (인자 없는 `tildaz.exe`) 를 띄운다.
-# `runLauncher` 는 spawn 전에 모든 index 의 config 를 `instances.configAutoStart` 로 읽고 (auto_start 집계), 그 파서
-# 오류는 **그대로 전파**된다 (#495 — `InvalidConfig` 로 뭉개면 원인이 안 보인다). 그래서 worker 는 뜨지도 않고 launcher 가
-# `main.zig` 의 `catch |err| host.showFatalRunError(rt, …, err)` 로 간다 — 기대 다이얼로그는 `TildaZ Error` /
-# `TildaZ failed to start.  Error: UnexpectedToken`. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의 자동 시작 설정도,
+# launcher 단독 실패를 만드는 법 — **읽기 권한을 막은 `config_9.toml`** 을 두고 launcher (인자 없는 `tildaz.exe`) 를 띄운다.
+# `runLauncher` 는 spawn 전에 모든 index 의 config 를 `instances.configAutoStart` 로 읽고 (auto_start 집계), 파일을 **열지
+# 못한** 오류는 그대로 전파된다. 그래서 worker 는 뜨지도 않고 launcher 가 `main.zig` 의
+# `catch |err| host.showFatalRunError(rt, …, err)` 로 간다 — 기대 다이얼로그는 `TildaZ Error` /
+# `TildaZ failed to start.  Error: AccessDenied`. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의 자동 시작 설정도,
 # 떠 있는 instance 0 도 건드리지 않는다 (launcher_lock · gate 는 defer 로 풀린다).
+#
+# 예전에는 **문법이 깨진** `config_9.toml` 로 실패시켰다. #758 부터 launcher 는 깨진 파일을 그 번호의 기본값으로 읽어
+# 실패하지 않는다 (worker 와 같은 규칙) — 그래서 열지 못하는 파일로 바꿨다. 차단은 읽기 (`R`) 만이라 지우기는 된다.
 #
 # 판정 — ① 그 프로세스의 `#32770` (MessageBox) 창이 뜬다 ② 제목 · 본문이 위 문구다 ③ 닫으면 (`WM_CLOSE`) 프로세스가
 # 끝난다 (다이얼로그 없이 사라졌으면 크래시 의심). 캡처는 PrintWindow 로 남긴다. 끝나면 `config_9.toml` 을 지운다 —
@@ -95,8 +98,11 @@ New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $log0 = Join-Path $env:APPDATA "tildaz-dev\tildaz_0.log"
 $logLinesBefore = if (Test-Path $log0) { (Get-Content $log0 -Encoding UTF8).Count } else { 0 }
 
-# TOML 문법 오류 — `= =` 는 UnexpectedToken.
-[IO.File]::WriteAllText($c9, "hotkey = = `"F9`"`n", (New-Object System.Text.UTF8Encoding $false))
+# 열 수 없는 config — 내용은 멀쩡하고 읽기 권한만 막는다. 문법이 깨진 파일은 #758 부터 기본값으로 읽혀 실패하지 않는다.
+[IO.File]::WriteAllText($c9, "auto_start = false`n", (New-Object System.Text.UTF8Encoding $false))
+$me = "$env:USERDOMAIN\$env:USERNAME"
+& icacls $c9 /deny "${me}:(R)" | Out-Null
+if ($LASTEXITCODE -ne 0) { Remove-Item $c9 -Force -ErrorAction SilentlyContinue; throw "icacls 로 읽기 권한을 막지 못했다 (exit=$LASTEXITCODE)" }
 $ok = $true
 try {
     $p = Start-Process -FilePath (Resolve-Path $Bin) -PassThru      # 인자 없음 = launcher
@@ -128,6 +134,7 @@ try {
         else { "❌ 다이얼로그를 닫았는데 프로세스가 남아 있다"; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; $ok = $false }
     }
 } finally {
+    & icacls $c9 /remove:d $me | Out-Null
     Remove-Item $c9 -Force -ErrorAction SilentlyContinue
     "config_9.toml 지움: $(-not (Test-Path $c9))"
 }

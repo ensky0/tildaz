@@ -410,6 +410,62 @@ pub fn shellExtensionHotkeyState(rt: Runtime, allocator: std.mem.Allocator, inde
     return .unavailable;
 }
 
+/// #758 — 이 worker 가 config 내용을 **무시하고 기본값으로 시작했는지**를 확장에게 남긴다.
+///
+/// GNOME · Cinnamon 확장은 config 를 자기 파서로 직접 읽어 hotkey 를 잡고 창을 놓는다. 로그인
+/// 때는 앱이 아직 없어서 확장이 먼저 읽어야 하기 때문이다. 그 파서는 줄 단위라, 문법이 깨진
+/// 파일에서도 읽히는 줄 (`hotkey = "F5"`) 은 읽는다. 반면 앱은 그 파일을 통째로 기본값으로 읽는다
+/// (`Config.load`). 그대로 두면 확장은 F5 를 잡고 앱은 F1 을 기대해, 위 `shellExtensionHotkeyState`
+/// 가 기록을 stale 로 보고 "확장이 필요하다" 로 시작을 멈춘다 (#676). 창 배치도 파일 값을 쓴다.
+///
+/// 깨졌는지 판정은 **앱 한 곳에서만** 한다. 확장이 같은 판정을 하려면 TOML 전체를 검사해야
+/// 하고, 그러면 두 판정이 언젠가 어긋난다. 그래서 앱이 그 파일 내용의 SHA-256 을 남기고, 확장은
+/// 해시가 지금 파일과 같으면 그 번호를 통째로 기본값으로 읽은 뒤 hotkey 를 다시 잡는다. 사용자가
+/// 파일을 고치면 해시가 달라져 확장은 평소대로 읽는다. 정상 파일을 읽은 worker 는 표시를 지운다.
+///
+/// 순서 — 이 표시는 hotkey 상태를 기다리기 (`waitForShellExtensionHotkeyState`) **전에** 써야
+/// 한다. 확장이 표시를 보고 기본 키로 다시 잡아 기록을 고칠 시간이 그 기다림 안에 든다.
+pub fn recordIgnoredConfig(rt: Runtime, allocator: std.mem.Allocator, index: u32, sha256: ?[32]u8) void {
+    const path = paths.instanceIgnoredConfigPath(rt, allocator, index) catch |err| {
+        log.appendLine("config", "ignored-config marker path unavailable: {s}", .{@errorName(err)});
+        return;
+    };
+    defer allocator.free(path);
+    const digest = sha256 orelse {
+        std.Io.Dir.deleteFileAbsolute(rt.io, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => log.appendLine("config", "could not remove the ignored-config marker: {s}", .{@errorName(err)}),
+        };
+        return;
+    };
+    const line = ignoredConfigLine(digest);
+    _ = paths.writeFileIfChanged(rt, allocator, path, &line) catch |err| {
+        log.appendLine("config", "could not write the ignored-config marker: {s}", .{@errorName(err)});
+        return;
+    };
+    log.appendLine("config", "told the Shell extension to read config {d} as defaults", .{index});
+}
+
+/// 표시 파일의 한 줄 — `v1 <SHA-256 소문자 16진수>\n`. 확장은 `GLib.compute_checksum_for_data`
+/// (소문자 16진수) 로 같은 줄을 만들어 견준다.
+fn ignoredConfigLine(digest: [32]u8) [3 + 64 + 1]u8 {
+    var line: [3 + 64 + 1]u8 = undefined;
+    @memcpy(line[0..3], "v1 ");
+    line[3..67].* = std.fmt.bytesToHex(digest, .lower);
+    line[67] = '\n';
+    return line;
+}
+
+test "#758 무시 표시의 줄은 GLib 의 SHA-256 소문자 16진수와 같은 모양이다" {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("abc", &digest, .{});
+    // FIPS 180-2 의 "abc" 시험값. GLib 도 같은 소문자 표기를 낸다.
+    try std.testing.expectEqualStrings(
+        "v1 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+        &ignoredConfigLine(digest),
+    );
+}
+
 /// 상태 파일 내용. 새 자리에 없으면 옛 확장의 자리를 본다 — 업그레이드 뒤 첫 실행에는 셸에
 /// 아직 옛 확장 코드가 올라가 있다 (#708, `paths.legacyHotkeyStatePath`). 내용 검사는
 /// 두 자리가 같다 — 형식이 같고 (`v1 …`), hotkey 가 지금 config 와 같아야 한다.

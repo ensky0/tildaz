@@ -253,7 +253,7 @@ fn sharedFamilySet(api: *const Api) !*FcFontSet {
 /// 가를 수 없는데, 우리는 갈라야 한다.
 ///
 ///   - `Noto Color Emoji` -> `Twemoji`  : 설치돼 있는데 별칭 규칙이 가로챈 것 -> 띄운다
-///   - `NoSuchFont12345`  -> `Noto Sans`: 아예 없는 것 -> fatal
+///   - `NoSuchFont12345`  -> `Noto Sans`: 아예 없는 것 -> 미설치 (`Config.resolveFonts` 가 바꾸거나 뺀다, #758)
 ///
 /// **bool 이 아니라 이름을 돌려주는 이유** (#409) — fontconfig 의 family 매칭은 공백과 대소문자만
 /// 무시하고 `-` 는 유효 문자로 본다. 그래서 `NotoSerifKannada-Light` 처럼 적으면 `Noto Serif

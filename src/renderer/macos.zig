@@ -229,8 +229,8 @@ const PendingTabs = struct {
 };
 
 pub const MetalRenderer = struct {
-    /// #451 — `rebuildFonts` 가 나중에 폰트를 다시 만들 때도 폰트 미설치 fatal 경로를
-    /// 타므로, `alloc` · `font_families` 와 같은 자리에 함께 보관한다.
+    /// #451 — `rebuildFonts` 가 나중에 폰트를 다시 만들 때도 폰트 미설치 fatal 경로 (#758 부터는
+    /// 판정 뒤 폰트가 지워진 경우의 안전망) 를 타므로, `alloc` · `font_families` 와 같은 자리에 함께 보관한다.
     rt: Runtime,
     alloc: std.mem.Allocator,
     font: CoreTextFontContext,

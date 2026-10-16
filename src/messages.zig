@@ -310,9 +310,10 @@ pub fn runFailureMessage(buf: []u8, err: anyerror, config_notice: ?[]const u8) [
 
 test "#583 B7 config 파싱 오류는 담긴 상세 문구를 그대로 보여 준다" {
     var buf: [256]u8 = undefined;
-    // launcher 가 config 를 읽다 죽은 경우 — `recordTomlParseFatal` 이 담아 둔 문구다.
+    // config 가 시작을 막은 경우 — `recordConfigFatalMsg` 가 담아 둔 문구다. #758 뒤로 그 경우는
+    // 전역 hotkey 중복 하나다 (TOML 구문 오류는 기본값으로 시작하고 알린다).
     const notice = "Config: /home/user/.config/tildaz/config_0.toml\n\n" ++
-        "Failed to parse config file.\n\nLine 12, column 3\nError: UnexpectedToken";
+        "The hotkey \"F1\" is already used by TildaZ 0.";
     try std.testing.expectEqualStrings(notice, runFailureMessage(&buf, error.InvalidConfig, notice));
     // 담긴 것이 없으면 일반 문구 (파싱이 아닌 의미 오류로 `InvalidConfig` 가 오는 경로).
     try std.testing.expectEqualStrings(
@@ -418,8 +419,11 @@ pub const font_substituted_format =
 /// #577 — 경로가 빠졌다. 이제 `notFoundMessageForPath` 가 본문 **앞에**
 /// `config_error_path_prefix_format` 으로 붙인다 (#495 의 "경로는 첫 줄").
 /// 형식 인자가 없어져 `_format` 이 아니라 `_msg` 다.
+/// #758 — 이 안내가 뜨는 것은 **OS 의 고정폭 폰트마저 못 쓸 때**뿐이다. 적은 폰트가 없는 것만으로는
+/// 종료하지 않고 그 폰트로 띄운다 (`Config.resolveFonts`).
 pub const font_chain_footer_msg =
-    "\nAll families listed in font.family must be installed on the system.\n";
+    "\nTildaZ could not use the system's monospace font either, so it cannot start.\n" ++
+    "Install a monospace font, then start TildaZ again.\n";
 
 /// glyph fallback chain 의 모든 명시 폰트 lookup 실패 — chain 비어있는 케이스
 /// (사용자가 모두 잘못된 이름 명시) 등 edge. strict 검증 path 는 한 개 이름을
@@ -476,23 +480,34 @@ pub const config_default_write_failed_format =
 /// 중요한 것은 원인이 아니라 **지금 기본값으로 돌고 있다**는 사실이다.
 pub const config_not_loaded_title = "TildaZ — Using Default Settings";
 
-/// #495 — **경로를 담지 않는다.** `showConfigFatalMsg` 가 모든 config 오류 앞에 한
-/// 번 붙인다. 예전엔 파싱 오류만 본문 셋째 줄에 `Path:` 를 넣고 의미 오류는 맨 끝에
-/// 넣어, 같은 다이얼로그에서 경로 위치가 오류 종류에 따라 달랐다.
+/// #758 — TOML 문법이 깨진 파일. 예전에는 이 안내 뒤 **종료**했는데, 이제 #501 의 "못 읽음" 과
+/// 같이 기본값으로 시작하고 알린다 (제목도 `config_not_loaded_title`). 앱은 기존 config 를 다시
+/// 쓰지 않으므로 "파일은 그대로" 는 사실이다 — 사용자가 고친 내용을 잃지 않는다는 것을 알린다.
+///
+/// #495 — **경로를 담지 않는다.** `configErrorMessageAlloc` 이 첫 줄로 붙인다.
 pub const config_parse_failed_format =
-    \\Failed to parse config file.
+    \\Failed to parse the config file.
     \\
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
 ;
 /// #493 — TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
 /// 어디를 고쳐야 하는지 알 수 있어야 사용자가 스스로 해결한다.
 pub const config_parse_failed_at_format =
-    \\Failed to parse config file.
+    \\Failed to parse the config file.
     \\
     \\Line {d}, column {d}
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
 ;
-pub const config_parse_failed_fallback_msg = "Failed to parse config file.";
+pub const config_parse_failed_fallback_msg = "Failed to parse the config file. TildaZ started with default settings.";
+/// #758 — launcher 가 다른 instance 의 깨진 config 를 기본값으로 읽을 때 남기는 로그 줄.
+/// 사용자에게 보이는 안내는 그 instance 의 worker 가 띄운다.
+pub const config_parse_failed_log_format = "{s} is not valid TOML ({s}) -- reading it as defaults";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
 /// #495 — **경로가 첫 줄이다.** 사용자가 오류 내용을 읽기 *전에* 눈에 들어와야 한다.
@@ -593,9 +608,17 @@ pub const config_notice_hotkey_taken_format = "  hotkey -- already used by insta
 /// `[keys]` 의 한 항목만 버렸을 때. 액션은 남은 키로, 다 버렸으면 기본 바인딩으로 돈다.
 pub const config_notice_key_dropped_format = "  keys.{s} -- dropped \"{s}\" ({s})";
 pub const config_notice_key_dropped_fallback_msg = "  keys -- dropped a key that could not be read";
-/// 두 액션이 같은 조합을 쓸 때. 먼저 나온 쪽이 이긴다 (SPEC 7.3).
+/// 두 액션이 같은 조합을 쓸 때 진 쪽에 적는다. 바꾼 키가 기본 키를 이기므로 (#758 · SPEC 7.3) 여기 오는
+/// 것은 다른 액션의 바꾼 키에 자리를 뺏긴 기본 키다.
 pub const config_notice_key_conflict_format = "  keys.{s} -- \"{s}\" is already used by {s}, dropped";
+/// #758 — 두 액션에 같은 조합을 직접 적었다. 어느 쪽 뜻인지 고를 근거가 없어 둘 다 쓰지 않는다.
+/// 액션마다 한 줄씩 나온다.
+pub const config_notice_key_contested_format = "  keys.{s} -- \"{s}\" is also set for {s}, so neither uses it";
 pub const config_notice_key_conflict_fallback_msg = "  keys -- dropped a key that was already used";
+/// #758 — 사용자가 적은 주 폰트가 이 시스템에 없어 OS 의 고정폭 폰트로 띄웠다.
+pub const config_notice_font_replaced_format = "  font.family -- \"{s}\" is not installed, using {s}";
+/// #758 — 사용자가 적은 대체 폰트가 이 시스템에 없어 뺐다. 그 글자는 OS 가 다른 폰트로 그린다.
+pub const config_notice_font_dropped_format = "  font.glyph_fallback -- \"{s}\" is not installed, dropped";
 pub const config_notice_key_reason_unknown = "unknown key";
 pub const config_notice_key_reason_needs_modifier = "needs a modifier";
 pub const config_notice_key_reason_position_aliased = "left/right is not distinguished on macOS";

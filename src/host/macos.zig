@@ -4535,6 +4535,11 @@ fn registerTildazViewClass() !objc.Class {
     return cls;
 }
 
+/// #758 — `Config.resolveFonts` 에 넘기는 macOS 판정. 렌더러가 쓰는 판정 (`isFamilyUsable`) 그대로다.
+fn macosFontAvailability(_: void, name: []const u8) config.FontAvailability {
+    return if (@import("../font/macos/font.zig").isFamilyUsable(name)) .installed else .missing;
+}
+
 /// 첫 실행 시점에 disk config 에 명시할 shell path 결정.
 ///   - `$SHELL` env 가 있으면 그 값 (사용자 환경 그대로 보존).
 ///   - 없으면 `config.Defaults.shell` (= `/bin/bash`).
@@ -4601,6 +4606,18 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
     @import("../shell_validate.zig").validateOrFatal(g_rt, g_gpa.allocator(), g_config.shell);
+
+    // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 Menlo 로 바꾸고 대체 폰트는 뺀다
+    // (`Config.resolveFonts` — 세 OS 공통 규칙). Menlo 마저 못 쓸 때만 안내 후 종료한다.
+    // 아래 `showLoadNotice` · `showConfigNotice` 보다 **먼저** 불러야 바꾼 내용이 시작 안내에 담긴다.
+    g_config.resolveFonts(g_gpa.allocator(), {}, macosFontAvailability);
+    if (g_config.font_unusable) {
+        @import("../font/validate.zig").showNotFoundFatal(
+            g_rt,
+            g_config.font_families[0],
+            g_config.font_families[0..g_config.font_family_count],
+        );
+    }
 
     // macOS "Press and Hold" 기능 끔 — 영어 키 길게 눌러도 accent picker
     // (à á â) 안 뜨고 정상 key repeat 발생. 한글 자모는 IME 경로라 영향

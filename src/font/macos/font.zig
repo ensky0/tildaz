@@ -94,6 +94,33 @@ pub const LigatureGlyph = ligature.LigatureGlyph;
 pub const LigatureSpacer = ligature.LigatureSpacer;
 pub const LigatureMatch = ligature.LigatureMatch;
 
+/// #758 — 렌더러 (`CoreTextFontContext.init`) 가 이 이름을 쓸 수 있는가. `Config.resolveFonts` 가
+/// 없는 폰트를 바꾸거나 빼는 데 쓴다. **판정 순서가 init 과 같다** — CoreText 가 같은 family 를
+/// 돌려주면 있음, 아니면 설치 목록 (`resolveInstalledName`) 에서 찾는다. 첫 단계를 빼면 설치 목록에
+/// 없는 숨은 시스템 폰트 (`.SF NS Mono` 처럼 점으로 시작하는 이름) 를 적은 사용자가 렌더러는 쓸 수
+/// 있는데도 바뀐다.
+///
+/// 설치 목록을 못 읽으면 `resolveInstalledName` 이 원래 이름을 돌려주므로 (fail-open) 있음으로
+/// 답한다 — 판정하지 못한 것을 없음으로 몰지 않는다.
+pub fn isFamilyUsable(family: []const u8) bool {
+    const family_str = ct.CFStringCreateWithBytes(
+        null,
+        family.ptr,
+        @intCast(family.len),
+        ct.kCFStringEncodingUTF8,
+        0,
+    ) orelse return false;
+    defer ct.CFRelease(family_str);
+    // 크기는 판정과 무관하다 — family 이름만 본다.
+    const candidate = ct.CTFontCreateWithName(family_str, 12.0, null) orelse return false;
+    defer ct.CFRelease(candidate);
+    const actual_family = ct.CTFontCopyFamilyName(candidate);
+    defer ct.CFRelease(actual_family);
+    if (ct.CFStringCompare(actual_family, family_str, 0) == 0) return true;
+    var canon_buf: [256]u8 = undefined;
+    return resolveInstalledName(family, &canon_buf) != null;
+}
+
 /// #406 — 사용자가 적은 `family` 에 맞는 **설치된 이름의 정식 표기**를 찾아 `out` 에 담아
 /// 돌려준다. Linux 의 `FontconfigNoMatch` 판정에 해당한다.
 ///
@@ -107,7 +134,8 @@ pub const LigatureMatch = ligature.LigatureMatch;
 /// (`Menlo-Regular`) 으로 **폰트를 다시 만들어야** 의도한 폰트가 나온다. 통과만 시키고 원래
 /// 문자열을 쓰면 엉뚱한 폰트로 조용히 그려진다.
 ///
-/// `null` 이면 그런 이름이 없다 — 오타 · 미설치이고 호출부가 fatal 로 간다.
+/// `null` 이면 그런 이름이 없다 — 오타 · 미설치다. host 는 그 폰트를 바꾸거나 빼고 (`isFamilyUsable`
+/// → `Config.resolveFonts`, #758), `init` 은 그 뒤에도 남은 경우 안전망으로 fatal 이다.
 ///
 /// ⚠️ **판정하지 못하면 원래 이름을 그대로 돌려준다** (fail-open). 목록 조회가 실패했을 때
 /// `null` 을 주면 정상 폰트까지 전부 미설치로 몰려 **앱이 아예 안 뜬다.** Linux 의
@@ -272,20 +300,21 @@ pub const CoreTextFontContext = struct {
     }
 
     pub fn init(
-        /// #451 — 폰트 미설치 fatal 다이얼로그가 이 안에서 뜬다 (Linux · Windows 는 host
-        /// 에서 미리 검증한다). 0.16 은 dialog 경로가 `Io` 를 요구하므로 여기까지 내려온다.
+        /// #451 — 폰트 미설치 fatal 다이얼로그가 이 안에서 뜰 수 있다 (안전망 — 없는 폰트는 host 가
+        /// `Config.resolveFonts` 로 미리 바꾸거나 뺐다, #758). 0.16 은 dialog 경로가 `Io` 를 요구하므로
+        /// 여기까지 내려온다.
         rt: Runtime,
         allocator: std.mem.Allocator,
         font_families: []const []const u8,
         spec: font_spec.Spec,
         retina_scale: f32,
     ) !CoreTextFontContext {
-        // Font *glyph fallback chain* — config.font.family 의 모든 폰트가
-        // system 에 있어야 한다 (Windows DWriteFontContext 와 동등 strict 정책).
+        // Font *glyph fallback chain*. 없는 폰트는 host 가 이미 바꾸거나 뺐다
+        // (`Config.resolveFonts` + `isFamilyUsable`, #758) — 여기 오는 이름은 판정을
+        // 통과한 것이다. 아래 fatal 은 그 사이 폰트가 지워진 경우 등을 막는 안전망이다.
         // `CTFontCreateWithName` 은 lookup 실패 시 system substitute (대개
         // `.SF NS Mono`) 를 반환하니 `CTFontCopyFamilyName` 으로 *실제 family
-        // name* 검증 → 우리 요청과 다르면 사용자가 명시한 폰트가 시스템에 없는
-        // 것 → fatal `Font not found: "Foo"` (Windows messages 와 동일).
+        // name* 검증 → 우리 요청과 다르면 설치 목록에서 정식 표기를 찾는다.
         //
         // 모든 chain 폰트를 fallback_fonts 에 저장 → resolveGlyph 가 codepoint
         // 별로 순회 (primary → secondary → ... → system auto fallback).
@@ -480,7 +509,8 @@ pub const CoreTextFontContext = struct {
 
     // chain 의 한 폰트가 system 에 없을 때 — `font_validate.showNotFoundFatal`
     // (cross-platform) 가 chain dump + 미설치 표시 + config 경로 안내 + fatal.
-    // Windows / macOS 같은 메시지 형식 사용.
+    // Windows / macOS 같은 메시지 형식 사용. #758 부터 host 가 `Config.resolveFonts` 로 미리 걸러서
+    // 여기 닿는 것은 판정 뒤 폰트가 지워진 경우뿐이다.
 
     pub fn deinit(self: *CoreTextFontContext) void {
         self.ligature_cache.deinit();

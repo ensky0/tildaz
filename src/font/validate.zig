@@ -1,17 +1,16 @@
-//! `config.font.family` chain 의 entry 가 시스템에 없을 때 부르는 fatal helper.
-//! 세 OS 동일 메시지 — chain 전체 dump + 미설치 entry 표시 + config 경로 안내.
-//! 다른 config 에러들 (`shell_validate`, hotkey 등록 실패) 와 같은 풍부한
-//! 형식으로 일관성 유지.
+//! 폰트를 **하나도 쓸 수 없을 때** 부르는 fatal helper. 세 OS 동일 메시지 — chain 전체 dump +
+//! 미설치 entry 표시 + config 경로 안내.
+//!
+//! #758 — 적은 폰트가 없는 것만으로는 여기 오지 않는다. `Config.resolveFonts` 가 주 폰트를 그 OS 의
+//! 고정폭 폰트 (`config.system_monospace_font`) 로 바꾸고 없는 대체 폰트를 빼서 시작한다. 그 OS
+//! 폰트마저 없을 때 (`font_unusable`) 만 온다.
 //!
 //! 호출처:
-//! - Windows: `windows_host.zig` 의 chain validation loop — `isFontAvailable`
-//!   실패 시.
-//! - macOS: `macos_font.zig` 의 `CTFontCreateWithName` / `CTFontCopyFamilyName`
-//!   검증 실패 시.
-//! - Linux: `wayland_minimal.zig` 의 boot 검증 (#289 B6) — fontconfig lookup
-//!   substitution 판정 실패 시. dialog 는 host 자체 blocking overlay
-//!   (`runFatalDialog`) 라 `notFoundMessage` 만 사용 (C2 패턴 — boot 단계
-//!   fire-and-forget `showFatal` 은 paint 전에 죽음).
+//! - Windows · macOS: host 의 `resolveFonts` 바로 뒤. macOS 는 `CoreTextFontContext.init` 의
+//!   안전망도 있다 (판정 뒤 폰트가 지워진 경우).
+//! - Linux: `wayland_minimal.zig` 의 boot 검증 (#289 B6). dialog 는 host 자체 blocking overlay
+//!   (`runFatalDialog`) 라 `notFoundMessage` 만 사용 (C2 패턴 — boot 단계 fire-and-forget
+//!   `showFatal` 은 paint 전에 죽음).
 
 const std = @import("std");
 const Runtime = @import("../runtime.zig").Runtime;
@@ -109,7 +108,8 @@ test "font validation messages preserve runtime values and final newline" {
             "  - \"DejaVu Sans Mono\"\n" ++
             "  - \"Missing Font\" ← not installed\n" ++
             "  - \"Noto Color Emoji\"\n" ++
-            "\nAll families listed in font.family must be installed on the system.\n",
+            "\nTildaZ could not use the system's monospace font either, so it cannot start.\n" ++
+            "Install a monospace font, then start TildaZ again.\n",
         notFoundMessageForPath(&missing_buf, "Missing Font", &chain, "/tmp/config_3.json", null),
     );
     // 경로는 정확히 한 번만 나온다 — 접두로 옮기면서 footer 에서 뺐다.
@@ -125,15 +125,17 @@ test "#577 남은 config fatal 도 다른 config 오류와 같은 첫 줄을 쓴
     // #655 — 본보기가 폰트 schema 오류였는데, 그 갈래는 이제 fatal 이 아니라
     // 폴백이다 (`font.family` 가 문자열이 아니면 지우고 기본 폰트로 뜬다). 봉투는
     // 남은 fatal 이 그대로 쓰므로, 본보기만 그중 하나로 바꾼다.
+    //
+    // #758 — TOML 구문 오류도 기본값 안내가 되어, 남은 fatal 은 전역 hotkey 중복 하나다.
     var buf: [512]u8 = undefined;
     const message = try std.fmt.bufPrint(
         &buf,
         messages.config_error_with_path_format,
-        .{ "/tmp/config_3.toml", messages.config_parse_failed_fallback_msg },
+        .{ "/tmp/config_3.toml", messages.config_hotkey_duplicate_fallback_msg },
     );
     try std.testing.expectEqualStrings(
         "Config: /tmp/config_3.toml\n\n" ++
-            "Failed to parse config file.",
+            messages.config_hotkey_duplicate_fallback_msg,
         message,
     );
 }

@@ -3,6 +3,7 @@ const toml = @import("toml");
 const app_id = @import("app_id.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
+const log = @import("log.zig");
 const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 
@@ -639,18 +640,36 @@ pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !bool {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
+    const content = (try readConfigContent(rt, allocator, path)) orelse return config.Defaults.auto_start;
+    defer allocator.free(content);
+    return autoStartFromContent(allocator, content, path);
+}
+
+/// #758 — launcher 가 config 하나를 읽는다. **열었는데 못 읽은 파일은 `null`** 이고 호출부가 그 번호의
+/// 기본값을 쓴다. worker (`Config.load`) 가 같은 파일을 기본값으로 띄우므로 (#501), 여기서 오류를
+/// 올리면 launcher 가 멈추거나 worker 와 다른 값을 본다. 열지 못한 것은 지금까지처럼 오류다.
+fn readConfigContent(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
     const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
     defer file.close(rt.io);
     // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
     var file_reader = file.reader(rt.io, &.{});
-    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
-    defer allocator.free(content);
+    return file_reader.interface.allocRemaining(allocator, .limited(config.max_config_bytes)) catch |err| {
+        log.appendLine("config", "{s} could not be read ({s}) -- reading it as defaults", .{ path, @errorName(err) });
+        return null;
+    };
+}
+
+/// #758 — 파일 내용에서 `auto_start` 를 읽는다. **문법이 깨진 파일은 기본값이다** (worker 의
+/// `Config.load` 와 같은 규칙 — 그 instance 는 기본값으로 뜬다). 예전에는 오류를 그대로 올려
+/// launcher 가 실패했고, instance 하나의 config 가 깨지면 다른 instance 까지 못 떴다.
+fn autoStartFromContent(allocator: std.mem.Allocator, content: []const u8, path: []const u8) bool {
     // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
     var parser: toml.Parser(toml.Table) = .init(allocator);
     defer parser.deinit();
-    // 파싱 오류는 **그대로 전파**한다. `error.InvalidConfig` 로 뭉개면 런처가
-    // 보여 주는 문구가 "InvalidConfig" 하나로 줄어 원인을 못 알린다 (#495).
-    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
+    var parsed = parser.parseString(content) catch |err| {
+        config.logTomlParseFallback(path, &parser, err);
+        return config.Defaults.auto_start;
+    };
     defer parsed.deinit();
     // #719 — 빠진 줄 · 틀린 형은 config 가 없을 때와 같은 값이다. 예전에는 `error.InvalidConfig`
     // 였고 launcher 가 `try` 로 받아 실행이 통째로 실패했다.
@@ -660,16 +679,22 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
 pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
-    defer file.close(rt.io);
-    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
-    var file_reader = file.reader(rt.io, &.{});
-    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    const content = (try readConfigContent(rt, allocator, path)) orelse
+        return allocator.dupe(u8, config.Defaults.hotkeyFor(index));
     defer allocator.free(content);
+    return hotkeyTextFromContent(allocator, content, path, index);
+}
+
+/// #758 — 파일 내용에서 그 번호의 `hotkey` 글자를 읽는다. **문법이 깨진 파일은 그 번호의 기본 키다**
+/// (`autoStartFromContent` 와 같은 규칙). 돌려주는 글자는 호출부가 해제한다.
+fn hotkeyTextFromContent(allocator: std.mem.Allocator, content: []const u8, path: []const u8, index: u32) ![]u8 {
     // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
     var parser: toml.Parser(toml.Table) = .init(allocator);
     defer parser.deinit();
-    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
+    var parsed = parser.parseString(content) catch |err| {
+        config.logTomlParseFallback(path, &parser, err);
+        return allocator.dupe(u8, config.Defaults.hotkeyFor(index));
+    };
     defer parsed.deinit();
     // #719 — 빠진 줄 · 읽을 수 없는 값은 그 번호의 기본 키다 (앱 본체 `parse` 와 같은 규칙).
     return allocator.dupe(u8, config.hotkeyTextOrDefault(&parsed.value, index));
@@ -677,20 +702,11 @@ pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) !
 
 pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
     for (indices) |index| {
-        const path = try paths.configPathFor(rt, allocator, index);
-        defer allocator.free(path);
-        const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
-        defer file.close(rt.io);
-        var file_reader = file.reader(rt.io, &.{});
-        const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
-        defer allocator.free(content);
-        // #493 — TOML. 최상위는 문법상 항상 테이블이다.
-        var parser: toml.Parser(toml.Table) = .init(allocator);
-        defer parser.deinit();
-        var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
-        defer parsed.deinit();
-        // #719 — `configHotkeyText` 와 같은 규칙. 그 인스턴스가 실제로 쓰는 키와 견준다.
-        const existing = config.Hotkey.fromString(config.hotkeyTextOrDefault(&parsed.value, index)) orelse continue;
+        // #719 · #758 — 그 인스턴스가 실제로 쓰는 키와 견준다. 못 읽거나 문법이 깨진 파일은 그 번호의
+        // 기본 키다 (`configHotkeyText`).
+        const text = try configHotkeyText(rt, allocator, index);
+        defer allocator.free(text);
+        const existing = config.Hotkey.fromString(text) orelse continue;
         if (std.meta.eql(existing, candidate)) return index;
     }
     return null;
@@ -743,6 +759,28 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
         entries[i] = .{ .index = index, .hotkey = parsed };
     }
     return conflictingLowerIndex(entries, self_index, candidate);
+}
+
+test "#758 launcher 는 문법이 깨진 config 를 그 번호의 기본값으로 읽는다" {
+    const a = std.testing.allocator;
+    const path = "/home/user/.config/tildaz/config_3.toml";
+    // 대조군이 기본값과 갈리도록 기본값의 반대를 적는다 (dev · 릴리즈 판의 기본값이 다르다).
+    const flipped = if (config.Defaults.auto_start) "false" else "true";
+
+    const ok = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n", .{flipped});
+    defer a.free(ok);
+    try std.testing.expectEqual(!config.Defaults.auto_start, autoStartFromContent(a, ok, path));
+    const ok_key = try hotkeyTextFromContent(a, ok, path, 3);
+    defer a.free(ok_key);
+    try std.testing.expectEqualStrings("F7", ok_key);
+
+    // 같은 줄 뒤에 섹션 머리의 `]` 를 빠뜨렸다 — 적힌 값이 아니라 **그 번호의 기본값**이어야 한다.
+    const broken = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n[window\n", .{flipped});
+    defer a.free(broken);
+    try std.testing.expectEqual(config.Defaults.auto_start, autoStartFromContent(a, broken, path));
+    const broken_key = try hotkeyTextFromContent(a, broken, path, 3);
+    defer a.free(broken_key);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(3), broken_key);
 }
 
 test "핫키 중복은 뒤에 있는 인스턴스가 양보한다 (#431)" {

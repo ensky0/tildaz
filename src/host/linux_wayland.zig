@@ -9,10 +9,23 @@ const terminal = @import("../terminal.zig");
 const config_mod = @import("../config.zig");
 const gsettings_hotkey = @import("linux/gsettings_hotkey.zig");
 const wayland = @import("linux/wayland_minimal.zig");
+const font_linux = @import("../font/linux/font.zig");
+const instance_context = @import("../instance_context.zig");
 
 /// L13-α — 사용자 설정. macOS `g_config` 패턴 동등. `run()` 안에서 한 번
 /// load 되고 wayland client 가 module 경계로 가져다 쓴다.
 var g_config: ?config_mod.Config = null;
+
+/// #758 — `Config.resolveFonts` 에 넘기는 Linux 판정. 렌더러가 쓰는 해석 (`familyInstalledDetail`
+/// → `resolveRequested`) 그대로다. fontconfig 가 별칭 규칙으로 다른 폰트를 준 것 (`substituted`) 은
+/// 폰트가 실재하므로 있음이다 (#406). `monospace` 도 이 갈래로 풀린다.
+fn linuxFontAvailability(allocator: std.mem.Allocator, name: []const u8) config_mod.FontAvailability {
+    return switch (font_linux.familyInstalled(allocator, name)) {
+        .installed, .substituted => .installed,
+        .missing => .missing,
+        .unknown => .unknown,
+    };
+}
 
 /// `$SHELL` env 우선, 없으면 `Defaults.shell` (= "/bin/bash"). POSIX 패턴 —
 /// macOS host 의 `resolveShell` 과 동등.
@@ -115,11 +128,23 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     defer if (g_config) |*c| c.deinit(gpa.allocator());
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
+    // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 fontconfig 의 `monospace` 로 바꾸고 대체
+    // 폰트는 뺀다 (`Config.resolveFonts` — 세 OS 공통 규칙). **렌더러가 폰트를 만들기 전**
+    // (`Client.init`) 이어야 해서 여기서 부른다. `monospace` 마저 못 쓰면 표시만 해 두고, 안내는
+    // Wayland 가 준비된 뒤 `run` 의 boot 검증이 띄운다.
+    cfg.resolveFonts(gpa.allocator(), gpa.allocator(), linuxFontAvailability);
 
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
     // GNOME · Cinnamon은 Shell extension이 drop-down lifecycle과 hotkey를 함께
     // 맡는다 (#676). 처음 준비한 확장만 활성화하고, 사용자가 꺼 둔 상태는 보존한다.
     const shell_extension_status = gsettings_hotkey.prepareShellExtension(rt, gpa.allocator());
+    // #758 — 확장이 config 를 직접 읽는 데스크톱이면, 이 worker 가 그 내용을 무시했는지를 남긴다
+    // (`recordIgnoredConfig` 주석). hotkey 상태를 기다리기 전이어야 한다.
+    if (shell_extension_status != .not_applicable) {
+        if (instance_context.workerIndex()) |index| {
+            gsettings_hotkey.recordIgnoredConfig(rt, gpa.allocator(), index, cfg.ignored_content_sha256);
+        }
+    }
 
     // GNOME/Cinnamon + tildaz extension: show/hide lifecycle 을 extension 이 담당한다.
     // hidden_start(surface 보류)는 extension 이 잡을 *창 자체* 를 없애 무한 재launch

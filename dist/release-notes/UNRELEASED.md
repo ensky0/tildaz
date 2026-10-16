@@ -20,6 +20,7 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 - Linux: GPU rendering now needs OpenGL ES 3.0. Older GPUs without it (for example Raspberry Pi 3 and earlier) use software rendering instead. ([#762](https://github.com/ensky0/tildaz/issues/762))
+- If you bound the same key to two actions in `[keys]` yourself, neither action gets it now (one of them used to keep it). The startup dialog names both. ([#758](https://github.com/ensky0/tildaz/issues/758))
 
 ## Body candidates
 
@@ -27,3 +28,4 @@ Internal changes belong in neither.
 - Uses much less memory. ([#762](https://github.com/ensky0/tildaz/issues/762))
 - On Windows, the Japanese IME candidate list now opens next to the cursor instead of in a corner of the screen ([#772](https://github.com/ensky0/tildaz/issues/772)).
 - Emoji with a color request (like `❤️`) now always draw in color, and text requests draw as plain text — no longer depending on what was drawn before. ([#771](https://github.com/ensky0/tildaz/issues/771))
+- TildaZ now starts even when the config file is not valid TOML or names a font that is not installed. It uses defaults and tells you what it changed, and a key you set now wins over a default it clashes with. ([#758](https://github.com/ensky0/tildaz/issues/758))

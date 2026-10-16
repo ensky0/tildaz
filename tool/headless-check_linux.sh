@@ -297,7 +297,10 @@ cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devk
         *) die "launcher-fatal gnome|cinnamon" ;;
     esac
     OUT=$WORK/launcher-fatal-$de; rm -rf $OUT; mkdir -p $OUT $WORK/xdg-$de/config/$APP $WORK/xdg-$de/state
-    printf 'this is not toml [[[\n' > $WORK/xdg-$de/config/$APP/config_9.toml      # launcher 단독 실패 (#577)
+    # launcher 단독 실패 (#577) — 열 수 없는 config. #758 부터 문법이 깨진 파일은 그 번호의 기본값이라 실패하지 않는다.
+    rm -f $WORK/xdg-$de/config/$APP/config_9.toml      # 앞 회차가 남긴 000 파일에는 쓸 수 없다
+    printf 'auto_start = false\n' > $WORK/xdg-$de/config/$APP/config_9.toml
+    chmod 000 $WORK/xdg-$de/config/$APP/config_9.toml
     # spectacle 은 사용자 세션 버스로 KWin 과 말하므로 dbus-run-session 안에서는 실패 — 바깥에서 타이머로 찍는다.
     # (전체 화면이라 사용자의 다른 창이 담긴다 — 이슈에는 nested 창만 crop. mutter devkit 뷰어는 검게 나올 수 있다 — 2026-09-03 실측.)
     ( sleep 14; spectacle -b -n -f -o $OUT/full.png >/dev/null 2>&1 && echo "spectacle: $OUT/full.png" ) &
