@@ -215,12 +215,12 @@ pub const D3d11Renderer = struct {
     /// pane 이 `saw_blink_cell` 을 리셋하며 `render_t0` 를 찍는다.
     panes_drawn: u32 = 0,
     render_t0: @TypeOf(perf.now()) = undefined,
-    /// 마지막 그린 cursor 의 pixel 좌표 (Win client area 기준). 매 frame
-    /// drawPane 이 cell cursor 를 그리면서
-    /// 갱신. App 가 IME composition 활성 시 ImmSetCompositionWindow(CFS_POINT)
-    /// 로 IME 후보 popup 을 이 위치 근처에 띄움 (#164 1d).
+    /// 마지막 그린 cursor 칸의 왼쪽 위와 높이 (Win client area px). 매 frame
+    /// drawPane 이 cell cursor 를 그리면서 갱신. App 가 `Window.imeSetCaretArea` 로
+    /// IME 에 알려 후보 popup 이 이 칸 아래에 뜬다 (#164 1d · #772).
     last_cursor_px_x: c_int = 0,
     last_cursor_px_y: c_int = 0,
+    last_cursor_px_h: c_int = 0,
 
     // #399 — cluster shaping 을 런 단위로 묶는 데 쓰는 작업 버퍼다. 셀 루프의 지역 변수로
     // 두면 10 KB 가량이라 (`run_results` 만 7 KB) 프레임 스택에 부담이라 renderer 가 들고
@@ -1807,6 +1807,7 @@ pub const D3d11Renderer = struct {
                 if (pane.is_active) {
                     self.last_cursor_px_x = @trunc(cx0);
                     self.last_cursor_px_y = @trunc(cy0);
+                    self.last_cursor_px_h = @trunc(ch);
                 }
             }
         }

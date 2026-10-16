@@ -327,7 +327,7 @@ extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
 ///
 /// - 프레임 tick 두 개: 게이트를 여는 주체가 아니라 게이트를 *묻는* 주체다.
 /// - **`WM_IME_NOTIFY`**: 이게 없으면 게이트가 절대 닫히지 않는다. 우리는 렌더 끝에
-///   `imeSetCompositionPos` (`ImmSetCompositionWindow`) 를 부르는데, IMM 이 그 응답으로
+///   `imeSetCaretArea` (`ImmSetCompositionWindow` · `ImmSetCandidateWindow`) 를 부르는데, IMM 이 그 응답으로
 ///   `WM_IME_NOTIFY` 를 보낸다 → 게이트가 열려 다음 프레임을 그리고 → 또 부르고… 로
 ///   **자기 자신을 먹여 살리는 루프**가 된다 (실측: 유휴에 초당 120 회 = 프레임당 2 회).
 ///   IME 후보 창은 **OS 가** 그리므로 이 알림은 우리 렌더와 무관하다. 조합 내용 자체는
@@ -429,11 +429,18 @@ const NI_COMPOSITIONSTR: DWORD = 0x0015;
 const CPS_COMPLETE: DWORD = 0x1;
 const CPS_CANCEL: DWORD = 0x4;
 const SCS_SETSTR: DWORD = 0x0009;
+extern "imm32" fn ImmSetCandidateWindow(HIMC, *CANDIDATEFORM) callconv(.c) BOOL;
 const CFS_POINT: DWORD = 0x0002;
-/// IME composition / candidate window 위치 지정 (#164 1d). dwStyle = CFS_POINT
-/// 면 IME 가 ptCurrentPos 근처에 popup. 일본 / 중국 IME 의 한자 후보 list 가
-/// cursor 옆 자연스럽게 따라옴.
+const CFS_EXCLUDE: DWORD = 0x0080;
+/// IME composition window 위치 (#164 1d). dwStyle = CFS_POINT 면 ptCurrentPos 에 놓는다.
 const COMPOSITIONFORM = extern struct {
+    dwStyle: DWORD,
+    ptCurrentPos: POINT,
+    rcArea: RECT,
+};
+/// IME candidate window 위치 (#772). dwStyle = CFS_EXCLUDE 면 rcArea 를 피해 놓는다.
+const CANDIDATEFORM = extern struct {
+    dwIndex: DWORD,
     dwStyle: DWORD,
     ptCurrentPos: POINT,
     rcArea: RECT,
@@ -542,6 +549,8 @@ pub const Window = struct {
     frame_clock_sleep: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     /// #770 — 잠든 clock 스레드를 깨우는 이벤트 (auto-reset). clock 과 같은 수명이다.
     frame_clock_wake: ?*anyopaque = null,
+    /// #772 — 마지막으로 IME 에 알린 caret 사각형. 같으면 다시 알리지 않는다 (`imeSetCaretArea`).
+    ime_caret_area: ?RECT = null,
     /// #386 ② — 유휴 렌더 게이트. macOS `g_needs_render` · Linux `needs_redraw` 동등.
     ///
     /// **기본이 "그린다"** 이다 (`true` 로 시작하고 `wndProc` 이 프레임 tick 이 아닌 모든
@@ -3076,21 +3085,42 @@ pub const Window = struct {
         return if (ime.len > 0) ime else self.composePreviewSlice();
     }
 
-    /// IME composition / candidate window 위치 갱신 — IME 가 한자 후보 list 등
-    /// popup 을 (x_px, y_px) 근처에 띄움. 일본 / 중국 IME 의 한자 변환 후보가
-    /// cursor 옆 자연스럽게 따라옴. 한국어는 후보 popup 거의 X — 영향 미미.
-    /// (#164 1d) 매 frame onRender 끝에 호출 — cursor 이동 시 popup 도 따라감.
-    pub fn imeSetCompositionPos(self: *const Window, x_px: c_int, y_px: c_int) void {
+    /// IME 에 caret 사각형 (client px) 을 알린다 — 한자 후보창이 그 아래에 뜬다.
+    /// 매 frame onRender 끝에 호출해 caret 이 움직이면 후보창도 따라간다 (#164 1d).
+    ///
+    /// 두 가지를 알린다. 조합 창은 caret 아래 점 (`CFS_POINT`), 후보창은 caret 사각형을
+    /// 피한 자리 (`CFS_EXCLUDE`) 다. #772 — 조합 창만 알리면 일본어 MS-IME 의 후보창이
+    /// 화면 구석에 떴다. 한국어 한자 후보창은 두 경우 모두 caret 아래였다. winit 과
+    /// Chromium (Blender `GHOST_ImeWin32`) 도 후보창을 `CFS_EXCLUDE` 로 알린다.
+    ///
+    /// **사각형이 바뀌었을 때만 알린다.** 알릴 때마다 MS-IME 가 위치를 되묻는다
+    /// (`WM_IME_REQUEST` `IMR_QUERYCHARPOSITION` · 등록 메시지 `MSIMEQueryPosition`). 그 메시지가
+    /// 그리기 게이트를 열어 다시 그리고 다시 알리는 루프가 돌았다 — #770 의 유휴 절전 위에서
+    /// 유휴 스레드가 초당 1,100 번 깨어났다 (#772 실측). 위치는 입력 컨텍스트에 남으므로 같은
+    /// 값을 다시 알릴 필요가 없다.
+    pub fn imeSetCaretArea(self: *Window, x_px: c_int, top_px: c_int, w_px: c_int, h_px: c_int) void {
+        const area: RECT = .{ .left = x_px, .top = top_px, .right = x_px + w_px, .bottom = top_px + h_px };
+        if (self.ime_caret_area) |last| {
+            if (std.meta.eql(last, area)) return;
+        }
         const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
         if (himc == null) return;
         defer _ = ImmReleaseContext(hwnd, himc);
+        self.ime_caret_area = area;
         var form: COMPOSITIONFORM = .{
             .dwStyle = CFS_POINT,
-            .ptCurrentPos = .{ .x = x_px, .y = y_px },
-            .rcArea = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+            .ptCurrentPos = .{ .x = x_px, .y = area.bottom },
+            .rcArea = area,
         };
         _ = ImmSetCompositionWindow(himc, &form);
+        var cand: CANDIDATEFORM = .{
+            .dwIndex = 0,
+            .dwStyle = CFS_EXCLUDE,
+            .ptCurrentPos = .{ .x = x_px, .y = top_px },
+            .rcArea = area,
+        };
+        _ = ImmSetCandidateWindow(himc, &cand);
     }
 
     /// GCS_RESULTSTR를 UTF-16으로 읽고 소유 UTF-8 slice로 변환한다. caller가
