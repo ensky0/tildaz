@@ -1020,8 +1020,9 @@ perf 덤프에 두 줄이 붙어요. `v` 는 vsync tick 에서, `w` 는 출력 �
 - **블록을 골라 읽어요.** 앱 시작부터 누적해 세면 창이 뜬 직후와 포커스 클릭의 프레임이 섞여요. #769 본문의 "타이핑 9 %"
   가 그렇게 센 값이었고, 측정 구간만 다시 세니 200 번 중 0 번이었어요.
 - **2 벌식 조합 회차는 `mac-input` 으로 못 만들어요.** 이벤트 소스가 `Private` 이라 조합되지 않아요 (바로 아래 절).
-  `kCGEventSourceStateHIDSystemState` 소스로 보내요. 그리고 2026-10-16 판은 조합이 열려 있는 동안 vsync 마다 그려요
-  (`host/macos.zig` 의 `force_render` 에 `g_preedit_len > 0`). 그래서 한글 회차는 그리기 횟수가 크게 늘어요.
+  `kCGEventSourceStateHIDSystemState` 소스로 보내요. 그리고 #770 이전 판 (예: `a677eeb`) 은 조합이 열려 있는 동안
+  vsync 마다 그려요 (`host/macos.zig` 의 `force_render` 에 `g_preedit_len > 0`). 그 판끼리 견줄 때는 한글 회차의 그리기
+  횟수가 크게 늘어요 (#769 ① — 3,751 번 대 #770 뒤 268 번).
 - **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹어요. 패치가 만들어진 판은
   [`a677eeb`](https://github.com/ensky0/tildaz/commit/a677eeb) 이고, 측정 결과는 #769 에 있어요.
 
