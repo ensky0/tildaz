@@ -533,6 +533,8 @@ pub const config_parse_failed_fallback_msg = "Failed to parse the config file. T
 /// #758 — launcher 가 다른 instance 의 깨진 config 를 기본값으로 읽을 때 남기는 로그 줄.
 /// 사용자에게 보이는 안내는 그 instance 의 worker 가 띄운다.
 pub const config_parse_failed_log_format = "{s} is not valid TOML ({s}) -- reading it as defaults";
+/// #758 — launcher 가 다른 instance 의 config 를 열었지만 못 읽었을 때 (64 KiB 초과 등) 남기는 로그 줄.
+pub const config_read_failed_log_format = "{s} could not be read ({s}) -- reading it as defaults";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
 /// #495 — **경로가 첫 줄이다.** 사용자가 오류 내용을 읽기 *전에* 눈에 들어와야 한다.

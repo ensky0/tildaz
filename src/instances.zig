@@ -3,7 +3,6 @@ const toml = @import("toml");
 const app_id = @import("app_id.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
-const log = @import("log.zig");
 const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 
@@ -654,7 +653,8 @@ fn readConfigContent(rt: Runtime, allocator: std.mem.Allocator, path: []const u8
     // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
     var file_reader = file.reader(rt.io, &.{});
     return file_reader.interface.allocRemaining(allocator, .limited(config.max_config_bytes)) catch |err| {
-        log.appendLine("config", "{s} could not be read ({s}) -- reading it as defaults", .{ path, @errorName(err) });
+        // #758 — 같은 파일 · 같은 오류는 한 번만 적는다 (`config.logConfigReadFallback`).
+        config.logConfigReadFallback(path, err);
         return null;
     };
 }

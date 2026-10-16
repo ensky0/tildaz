@@ -4605,9 +4605,82 @@ fn tomlParseErrorBrief(buf: []u8, parser: *const toml.Parser(toml.Table), err: a
 /// instance 의 worker 가 띄우므로 여기서는 로그만 남긴다 — 둘 다 띄우면 같은 말이 두 번 뜬다.
 ///
 /// #583 B7 — 문구 조립은 worker 와 같은 함수 (`tomlParseErrorBrief`) 를 쓴다.
+///
+/// #758 — **같은 파일 · 같은 오류는 한 프로세스에서 한 번만 적는다** (`parse_fallback_seen`).
 pub fn logTomlParseFallback(config_path: []const u8, parser: *const toml.Parser(toml.Table), err: anyerror) void {
     var buf: [256]u8 = undefined;
-    log.appendLine("config", messages.config_parse_failed_log_format, .{ config_path, tomlParseErrorBrief(&buf, parser, err) });
+    const brief = tomlParseErrorBrief(&buf, parser, err);
+    if (!parse_fallback_seen.firstTime(.parse, config_path, brief)) return;
+    log.appendLine("config", messages.config_parse_failed_log_format, .{ config_path, brief });
+}
+
+/// #758 — launcher 의 `instances.readConfigContent` 가 열었지만 못 읽은 파일 (64 KiB 초과 등) 을 그 번호의
+/// 기본값으로 읽을 때. 같은 파일 · 같은 오류는 한 번만 적는다 — 위 `logTomlParseFallback` 과 같은 이유다.
+pub fn logConfigReadFallback(config_path: []const u8, err: anyerror) void {
+    if (!parse_fallback_seen.firstTime(.read, config_path, @errorName(err))) return;
+    log.appendLine("config", messages.config_read_failed_log_format, .{ config_path, @errorName(err) });
+}
+
+/// #758 — 한 프로세스가 같은 깨진 파일을 여러 자리에서 다시 읽는다. launcher 는 자동 시작을 볼 때와
+/// Hyprland · COSMIC 단축키를 맞출 때, GNOME · Cinnamon worker 는 확장의 hotkey 기록과 견줄 때 (1 초
+/// 동안 20 ms 마다) 다. 다시 읽는 것은 맞다 — 자리마다 그때의 파일이 필요하다. 로그가 알릴 것은
+/// *"이 파일이 깨져 기본값으로 읽는다"* 하나라, 같은 것을 다시 만나면 적지 않는다 (Linux 실기에서
+/// Hyprland · COSMIC launcher 가 같은 줄을 두 번 남겼다).
+///
+/// 지문은 경로와 오류 (위치 · 이름) 다. 사용자가 파일을 고치다 다른 곳이 틀리면 지문이 달라져 다시
+/// 적는다. 자리가 다 차면 그냥 적는다 — 덜 적는 쪽보다 낫다.
+const ParseFallbackSeen = struct {
+    keys: [16]u64 = undefined,
+    len: usize = 0,
+
+    /// 문법 오류와 못 읽음은 따로 센다 — 같은 파일이 둘 다 될 수 있다 (고치다 64 KiB 를 넘김).
+    const Kind = enum(u8) { parse, read };
+
+    fn firstTime(self: *ParseFallbackSeen, kind: Kind, config_path: []const u8, detail: []const u8) bool {
+        var h = std.hash.Wyhash.init(0x75_8F_A1_1B);
+        h.update(&[_]u8{@intFromEnum(kind)});
+        h.update(config_path);
+        h.update(&[_]u8{0});
+        h.update(detail);
+        const key = h.final();
+        for (self.keys[0..self.len]) |k| {
+            if (k == key) return false;
+        }
+        if (self.len < self.keys.len) {
+            self.keys[self.len] = key;
+            self.len += 1;
+        }
+        return true;
+    }
+};
+
+var parse_fallback_seen: ParseFallbackSeen = .{};
+
+test "#758 같은 파일 · 같은 오류의 기본값 로그는 한 번만 적는다" {
+    var seen: ParseFallbackSeen = .{};
+    try std.testing.expect(seen.firstTime(.parse, "/c/config_1.toml", "line 2, column 8: UnexpectedToken"));
+    try std.testing.expect(!seen.firstTime(.parse, "/c/config_1.toml", "line 2, column 8: UnexpectedToken"));
+    // 다른 파일 — 따로 적는다.
+    try std.testing.expect(seen.firstTime(.parse, "/c/config_2.toml", "line 2, column 8: UnexpectedToken"));
+    // 같은 파일을 고치다 다른 곳이 틀렸다 — 다시 적는다.
+    try std.testing.expect(seen.firstTime(.parse, "/c/config_1.toml", "line 5, column 1: UnexpectedToken"));
+    // 같은 파일이 이번엔 못 읽혔다 — 문법 오류와 따로 센다.
+    try std.testing.expect(seen.firstTime(.read, "/c/config_1.toml", "line 5, column 1: UnexpectedToken"));
+    try std.testing.expect(!seen.firstTime(.read, "/c/config_1.toml", "line 5, column 1: UnexpectedToken"));
+}
+
+test "#758 기본값 로그 지문 자리가 다 차면 그냥 적는다" {
+    var seen: ParseFallbackSeen = .{};
+    var path_buf: [32]u8 = undefined;
+    for (0..seen.keys.len) |i| {
+        const path = try std.fmt.bufPrint(&path_buf, "/c/config_{d}.toml", .{i});
+        try std.testing.expect(seen.firstTime(.parse, path, "E"));
+    }
+    // 자리를 넘긴 파일은 기억하지 못해 매번 적는다 — 적지 않는 것보다 낫다.
+    try std.testing.expect(seen.firstTime(.parse, "/c/overflow.toml", "E"));
+    try std.testing.expect(seen.firstTime(.parse, "/c/overflow.toml", "E"));
+    // 기억한 것은 여전히 한 번이다.
+    try std.testing.expect(!seen.firstTime(.parse, "/c/config_0.toml", "E"));
 }
 
 /// #758 — `parse` 가 만난 구문 오류의 본문. `Config.load` 가 읽어 기본값 안내 (`load_notice`) 를
@@ -5908,6 +5981,12 @@ test "#655 잘렸으면 본문이 그 사실을 말한다" {
     const cut = std.mem.indexOf(u8, body, messages.config_notice_truncated_msg).?;
     const hint = std.mem.indexOf(u8, body, messages.config_notice_reset_hint).?;
     try std.testing.expect(cut < hint);
+    // #758 — 잘림 문구는 목록 **바로 다음 줄**이다 (빈 줄로 떨어지면 목록과 따로 읽힌다).
+    try std.testing.expect(std.mem.endsWith(
+        u8,
+        body,
+        "  a\n" ++ messages.config_notice_truncated_msg ++ "\n\n" ++ messages.config_notice_reset_hint,
+    ));
 }
 
 test "#655 안내는 한 번만 뜬다 — 두 번째 호출은 담긴 것이 없다" {
@@ -5952,9 +6031,3 @@ test "#655 allocator 가 없으면 줄은 잃어도 잘렸다는 사실은 남�
     try std.testing.expect(n.truncated);
     try std.testing.expectEqual(@as(usize, 1), n.count);
 }
-    // #758 — 잘림 문구는 목록 **바로 다음 줄**이다 (빈 줄로 떨어지면 목록과 따로 읽힌다).
-    try std.testing.expect(std.mem.endsWith(
-        u8,
-        body,
-        "  a\n" ++ messages.config_notice_truncated_msg ++ "\n\n" ++ messages.config_notice_reset_hint,
-    ));
