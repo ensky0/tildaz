@@ -5457,6 +5457,9 @@ fn renderFrameTick() void {
             g_search_geom,
         ),
     );
+    // #769 — 표시 대상이 다 잡혀 있어 렌더러가 이 프레임을 미뤘다. 게이트는 위에서 이미 닫았으니
+    // 다시 열어야 다음 vsync 가 그린다 (display link 는 이 프레임에서 이미 켜져 있다).
+    if (g_renderer.?.takeFrameDeferred()) requestRender();
 
     // #255 · #591 — 예전에는 "이번 frame 에 처음 본 글리프는 다음 frame 에 올라간다" (2-frame)
     // 라 atlas 가 dirty 면 한 frame 을 더 요청했다. 이제 `endFrame` 이 본문 · 탭 atlas 를 모두
