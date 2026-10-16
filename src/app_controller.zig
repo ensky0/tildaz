@@ -996,20 +996,17 @@ pub const App = struct {
                         ),
                     );
                 }
-                // IME composition / candidate window 위치 갱신 — 일본 / 중국
-                // IME 의 한자 후보 popup 이 cursor 옆 자연스럽게 추적 (#164 1d).
-                // renderer 가 cursor 그릴 때 last_cursor_px_* 갱신.
-                //
-                // 개선 후보 (#386 §2.4, 우선순위 낮음): 그리는 **매 프레임** IMM 을 부른다.
-                // 조합 중이 아니거나 위치가 안 바뀐 프레임은 건너뛸 수 있다. 폭포 중 프레임당
-                // 비용은 측정하지 않았다 — 하려면 조합 여부 · 좌표 변화로 가드를 두면 된다.
+                // IME 에 caret 칸을 알린다 — 한자 후보 popup 이 caret 아래를 따라간다
+                // (#164 1d · #772). renderer 가 cursor 그릴 때 last_cursor_px_* 갱신.
+                // 매 프레임 부르지만 칸이 그대로면 IMM 을 부르지 않는다 (`imeSetCaretArea`
+                // 주석 — 매번 부르면 IME 의 위치 질문 메시지로 그리기 루프가 돌았다).
                 //
                 // #646 — 검색 중이면 후보창은 **검색바 caret** 아래에 떠야 한다. 그러지
                 // 않으면 화면 저 아래 터미널 커서 옆에 떠서 치는 자리와 후보가 따로 논다.
                 if (self.searchCaretPx()) |c| {
-                    self.window.imeSetCompositionPos(c.x, c.y);
+                    self.window.imeSetCaretArea(c.x, c.top, c.w, c.h);
                 } else {
-                    self.window.imeSetCompositionPos(r.last_cursor_px_x, r.last_cursor_px_y);
+                    self.window.imeSetCaretArea(r.last_cursor_px_x, r.last_cursor_px_y, self.window.cell_width_px, r.last_cursor_px_h);
                 }
             } else if (!want_render) {
                 // #386 ② 게이트가 닫힌 경우만 여기서 센다. swap chain 대기로 넘긴 tick 은
@@ -1186,12 +1183,12 @@ pub const App = struct {
         self.applySearchEffect(eff);
     }
 
-    /// #646 — 검색바 caret 의 좌상단 (physical px, 창 기준). IME 후보창을 그 아래에 띄우는
-    /// 데 쓴다. 바가 안 떠 있으면 `null`.
+    /// #646 — 검색바 caret 칸의 왼쪽 위 · 폭 · 높이 (physical px, 창 기준). IME 후보창을 그
+    /// 아래에 띄우는 데 쓴다 (#772 — 칸 사각형을 피해 놓는다). 바가 안 떠 있으면 `null`.
     ///
     /// 자리 계산은 renderer 가 caret 을 그릴 때와 **같은 helper** 를 탄다
     /// (`search_bar.caretOffsetPt`) — 둘이 갈리면 후보 목록이 caret 에서 떨어져 뜬다.
-    fn searchCaretPx(self: *App) ?struct { x: c_int, y: c_int } {
+    fn searchCaretPx(self: *App) ?struct { x: c_int, top: c_int, w: c_int, h: c_int } {
         const v = self.searchBarViewNow() orelse return null;
         const tab = self.session.activeTab() orelse return null;
         const r = if (self.renderer) |*rr| rr else return null;
@@ -1208,9 +1205,12 @@ pub const App = struct {
         // 입력칸을 벗어나면 가장자리에 붙인다 — 후보창이 화면 밖으로 나가는 것보다 낫다.
         const x_pt = std.math.clamp(v.field.x + offset, v.field.x, v.field.x + v.field.w);
         const top_pt = v.field.y + (v.field.h - ch) * 0.5;
+        const top_px: c_int = @intFromFloat(@round(top_pt * scale));
         return .{
             .x = @intFromFloat(@round(x_pt * scale)),
-            .y = @intFromFloat(@round((top_pt + ch) * scale)),
+            .top = top_px,
+            .w = @intCast(r.tab_font.cell_width_px),
+            .h = @as(c_int, @intFromFloat(@round((top_pt + ch) * scale))) - top_px,
         };
     }
 

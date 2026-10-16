@@ -248,7 +248,8 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
   `GCS_RESULTSTR`를 보내도 결과를 보류한 뒤, 유지 정책이면
   `ImmSetCompositionStringW(SCS_SETSTR)`로 실제 IMM composition을 복원해요.
   한자 / kanji / hanzi 변환 후보 목록은 OS IME popup 을 그대로 쓰고
-  `ImmSetCompositionWindow` 로 cursor 위치만 알려요.
+  cursor 칸을 `ImmSetCompositionWindow` (조합 창) 와 `ImmSetCandidateWindow` (`CFS_EXCLUDE`,
+  후보창) 로 알려요. 앞의 것만 알리면 일본어 MS-IME 후보창이 화면 구석에 떠요 ([#772](https://github.com/ensky0/tildaz/issues/772)).
 
 # 근본 해결 원칙
 
