@@ -183,6 +183,24 @@ pub const PaneSearch = struct {
         return now_ns >= deadline;
     }
 
+    /// #770 — 다음에 `step` 을 불러야 할 때까지 남은 시간 (ns). `null` 은 부를 이유가 없다는
+    /// 뜻이다 (닫힘 · 끝남 · 빈 needle). `0` 은 지금 할 일이 있다는 뜻이다.
+    ///
+    /// host 가 "그릴 것이 없으면 잔다" 로 돌 때, 짧은 needle 의 debounce 마감과 아직 안 끝난
+    /// 검색이 잠에 묻히지 않게 하려고 쓴다. 판정은 `step` 의 분기와 같다 — 크기 변경
+    /// (`rebuildIfResized`) 만 빠지는데, 그것은 창 이벤트가 따로 깨운다.
+    pub fn wakeInNs(self: *const PaneSearch, now_ns: u64) ?u64 {
+        if (!self.is_open) return null;
+        if (self.engine == null) {
+            if (self.needle.items.len == 0) return null;
+            const deadline = self.debounce_deadline_ns orelse return 0;
+            return deadline -| now_ns;
+        }
+        if (self.terminal_dirty) return 0;
+        if (self.complete) return null;
+        return 0;
+    }
+
     /// 진행을 한 걸음 나아간다. **예산은 부르는 쪽이 잰다** — 이 함수는 한 step 만
     /// 하고 돌아온다.
     ///
@@ -576,6 +594,34 @@ test "#646 짧은 needle 은 디바운스를 기다린다" {
     try std.testing.expect(!s.readyToStart(1_000 + DEBOUNCE_NS - 1));
     // 만료 뒤에는 시작한다.
     try std.testing.expect(s.readyToStart(1_000 + DEBOUNCE_NS));
+}
+
+test "#770 wakeInNs — 짧은 needle 은 debounce 마감까지 남은 시간을 돌려준다" {
+    const alloc = std.testing.allocator;
+    var s: PaneSearch = .{};
+    defer s.deinit(alloc);
+
+    // 닫혀 있으면 깨울 이유가 없다.
+    try std.testing.expectEqual(@as(?u64, null), s.wakeInNs(0));
+    s.open();
+    // 열었지만 needle 이 비었다.
+    try std.testing.expectEqual(@as(?u64, null), s.wakeInNs(0));
+    try s.setNeedle(alloc, "ab", 1_000);
+    try std.testing.expectEqual(@as(?u64, DEBOUNCE_NS), s.wakeInNs(1_000));
+    try std.testing.expectEqual(@as(?u64, 1), s.wakeInNs(1_000 + DEBOUNCE_NS - 1));
+    // 마감이 지나면 지금 할 일이 있다 (뺄셈이 넘치지 않는다).
+    try std.testing.expectEqual(@as(?u64, 0), s.wakeInNs(1_000 + DEBOUNCE_NS));
+    try std.testing.expectEqual(@as(?u64, 0), s.wakeInNs(1_000 + DEBOUNCE_NS + 5));
+}
+
+test "#770 wakeInNs — 긴 needle 은 기다리지 않는다" {
+    const alloc = std.testing.allocator;
+    var s: PaneSearch = .{};
+    defer s.deinit(alloc);
+
+    s.open();
+    try s.setNeedle(alloc, "abcd", 1_000);
+    try std.testing.expectEqual(@as(?u64, 0), s.wakeInNs(1_000));
 }
 
 test "#646 충분히 긴 needle 은 즉시 시작한다" {

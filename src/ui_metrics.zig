@@ -388,6 +388,12 @@ pub fn blinkFaintPhase(now_ms: i64) bool {
     return @mod(@divFloor(now_ms, BLINK_HALF_PERIOD_MS), 2) != 0;
 }
 
+/// #770 — `blinkFaintPhase` 가 다음에 뒤집힐 때까지 남은 시간 (ms, 1 ~ `BLINK_HALF_PERIOD_MS`).
+/// host 가 "그릴 것이 없으면 잔다" 로 돌 때, 화면에 blink 셀이 있으면 이 시각에 깨어난다.
+pub fn blinkNextFlipInMs(now_ms: i64) i64 {
+    return BLINK_HALF_PERIOD_MS - @mod(now_ms, BLINK_HALF_PERIOD_MS);
+}
+
 /// 터미널 커서 — 셀 좌측 세로 막대(bar)의 폭. #297 UX 결정 (2026-07-12):
 /// 세 platform 모두 bar 커서로 통일 (이전: Windows/macOS full-cell block
 /// alpha 0.7, Linux 하단 2px underline — 제각각).
@@ -1171,5 +1177,15 @@ test "#350 strokePx 는 최소 1px 을 보장하고 scaledPxF 는 소수를 유�
     inline for (.{ 1.0, 1.25, 1.5, 1.7, 2.0 }) |s| {
         const expect: u32 = @round(scaledPxF(SCROLLBAR_W_PT, s));
         try std.testing.expectEqual(expect, scaledPx(u32, SCROLLBAR_W_PT, s));
+    }
+}
+
+test "#770 blinkNextFlipInMs — 위상이 뒤집히는 바로 그 시각을 가리킨다" {
+    inline for (.{ 0, 1, 123, 499, 500, 777, 999, 1_760_000_000_123 }) |ms| {
+        const wait = blinkNextFlipInMs(ms);
+        try std.testing.expect(wait >= 1 and wait <= BLINK_HALF_PERIOD_MS);
+        // 그 직전까지는 같은 위상이고, 그 시각에 바뀐다.
+        try std.testing.expectEqual(blinkFaintPhase(ms), blinkFaintPhase(ms + wait - 1));
+        try std.testing.expect(blinkFaintPhase(ms) != blinkFaintPhase(ms + wait));
     }
 }
