@@ -411,6 +411,8 @@ fn presentationLine(o: *Out, label: []const u8, kind: []const u8, items: []const
 ///
 /// `이웃` 줄의 두 `❤️` 는 옆 글자만 다르다. 묶음 경로가 줄 전체를 한 글꼴로 맞추던 때는
 /// 앞 것만 컬러였다.
+///
+/// `tool/emoji-presentation-probe_macos.m` 의 `cases` 가 같은 글자를 쓴다. 여기를 바꾸면 그쪽도 바꾼다.
 fn sectionM(o: *Out) void {
     o.raw("(M) 이모지 모양 (#771) — 위 네 줄은 컬러, 아래 세 줄은 흰 글자가 정상\n");
     const vs16 = [_][]const u21{
