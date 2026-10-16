@@ -21,7 +21,7 @@ conpty.dll 의 `ConptyCreatePseudoConsole` export 가 자동으로 sibling (같�
 ## 출처 및 버전
 
 - 패키지: `Microsoft.Windows.Console.ConPTY`
-- 버전: `1.24.260303001` (stable)
+- 버전: `1.25.260930003` (stable)
 - 배포: https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/
 - 원본 저장소: https://github.com/microsoft/terminal
 - 라이선스: MIT (이 디렉터리의 `LICENSE.txt` 참조)
@@ -46,24 +46,34 @@ vendor/conpty/
 
 ## 업데이트 방법
 
-```sh
-# 새 버전 확인
-curl -s https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/index.json
+[`tool/conpty-update_windows.ps1`](../../tool/conpty-update_windows.ps1) 이 판 고르기부터 파일 교체까지 해요 ([#757](https://github.com/ensky0/tildaz/issues/757)).
 
-# 다운로드 + 추출
-VER=<버전>
-curl -sL -o conpty.nupkg \
-  "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$VER/microsoft.windows.console.conpty.$VER.nupkg"
-unzip -o conpty.nupkg -d /tmp/conpty_unpacked
-
-# x64
-cp /tmp/conpty_unpacked/build/native/runtimes/x64/OpenConsole.exe vendor/conpty/x64/
-cp /tmp/conpty_unpacked/runtimes/win-x64/native/conpty.dll        vendor/conpty/x64/
-
-# arm64
-cp /tmp/conpty_unpacked/build/native/runtimes/arm64/OpenConsole.exe vendor/conpty/arm64/
-cp /tmp/conpty_unpacked/runtimes/win-arm64/native/conpty.dll        vendor/conpty/arm64/
+```powershell
+powershell.exe -NoProfile -File tool\conpty-update_windows.ps1 -List                  # 지금보다 새 판 목록
+powershell.exe -NoProfile -File tool\conpty-update_windows.ps1 -Notes <판>            # 그 사이 ConPTY · 콘솔 변경만
+powershell.exe -NoProfile -File tool\conpty-update_windows.ps1 -Version <판>          # 네 파일 · 문서 두 곳 교체
 ```
 
-업그레이드 후에는 **회귀 테스트** (cat, vim, fzf, 선택·복사, 리사이즈) 를
-돌리고 `time cat` throughput 에 이상이 없는지 확인합니다.
+- **먼저 `-Notes` 로 변경량을 봐요.** Terminal 릴리즈 노트에서 ConPTY · conhost 항목만 뽑아요. 별로 없으면 다음 판까지 모아서 올려요.
+- `-Version` 은 바꿀 네 파일의 Authenticode 서명이 유효하고 서명자가 Microsoft 인지 확인한 뒤에만 복사해요.
+- 판 번호가 적힌 곳은 이 파일의 `- 버전:` 줄과 `dist/signpath-application.md` 두 곳이에요. 도구가 둘 다 고쳐요.
+  `- 버전:` 줄이 도구가 지금 판을 읽는 단일 출처라 모양을 바꾸지 않아요.
+
+## 업데이트 후 확인
+
+새 판과 지금 판을 **둘 다 빌드해** 견줘요. 판마다 `zig-out\bin` 을 (`_internal` 째로) 다른 폴더에 떠 두면 `-Bin` 으로 넘길 수 있어요.
+모두 Windows 실기라 AGENTS.md 대로 시작 전에 알리고 동의를 받아요.
+
+| 확인 | 명령 | 판정 |
+|---|---|---|
+| ConPTY 계약 — 첫 출력 지연 · 셸에 새는 입력 · 셸 종료 → 앱 종료 · WSL | `tool\conpty-check_windows.ps1 -Bin <판> -Wsl <배포판>` | 5 / 5. 1.25 부터 ConPTY 가 DA1 응답을 기다리지 않아 ([#20536](https://github.com/microsoft/terminal/pull/20536)), 우리가 미리 쓰는 DA1 응답 (`pty.zig`) 이 셸에 새는지 C2 가 본다 |
+| 탭 · pane · 크기 · worker · 메뉴 | `tool\actions-check_windows.ps1 -Bin <판>` | FAIL 0 |
+| 키 바이트 | `tool\key-bytes-check_windows.ps1 -Bin <판>` | 지금 판과 같은 결과 (공용 표의 목표와 어긋난 칸은 지금 판에도 있는지 먼저 본다) |
+| 한글 IME · 붙여넣기 · 탭 전환 | `powershell -STA -File tool\key-redraw-check_windows.ps1 -Bin <판>` | 실패 0 (붙여넣기 칸은 클립보드에 서식이 있으면 도구가 건너뛴다) |
+| 검색바 IME · 한자 후보창 | `tool\search-bar-check_windows.ps1 -Mode C -Bin <판>` | 6 / 6 |
+| dead key | `tool\deadkey-check\deadkey-check_windows.ps1 -Bin <판>` | 전부 OK |
+| 처리량 — **번들한 이유라 떨어지면 안 된다** | 두 판 worktree 에서 번갈아 `zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --mb 64` 5 회씩 | 지금 판과 같은 범위 |
+| 컴파일 · 단위 테스트 | `zig build check` · `zig build test` | 통과 |
+
+- arm64 는 작업 기기에 Windows arm64 가 없어 실기를 못 해요. 도구의 서명 확인과 `zig build check` 로 대신해요.
+- 처리량은 CPU 를 쓰니 다른 세션의 빌드 · 측정이 없을 때 재요.

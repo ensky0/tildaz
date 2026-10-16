@@ -160,7 +160,7 @@ is used as the disclosure channel.
 - **uucode** (MIT), **Highway** (Apache-2.0) and **simdutf** (MIT) — reached
   through Ghostty. Notices and license texts are in `THIRD-PARTY-NOTICES.md`.
 - **OpenConsole.exe** / **conpty.dll** — MIT, Microsoft.Windows.Console.ConPTY
-  NuGet 1.24.260303001. Source: https://github.com/microsoft/terminal
+  NuGet 1.25.260930003. Source: https://github.com/microsoft/terminal
 - **Zig** — MIT (compiler / build system).
 
 Linux package dependencies and optional runtime-loaded libraries are documented
