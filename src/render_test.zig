@@ -412,12 +412,23 @@ fn presentationLine(o: *Out, label: []const u8, kind: []const u8, items: []const
 /// `이웃` 줄의 두 `❤️` 는 옆 글자만 다르다. 고치기 전 Linux 에서는 둘 다 흰 글자였다 —
 /// 한 줄 묶음 경로가 다른 글꼴에서 나온 캐시 값을 섞어 썼다 (#771).
 ///
+/// `홀로` 줄은 **이 화면의 다른 줄에 없는 글자**만 쓴다. 고치기 전 Windows 는 한 줄 묶음 경로가
+/// cluster 캐시를 덮어써서, 같은 글자가 화면 어디서든 `❤️` 와 맞붙어 있으면 공백으로 띄운 것까지
+/// 컬러로 바뀌었다 (#771 Windows 실기). 그래서 `VS16` 연속 · 공백 줄은 결함이 있어도 컬러로
+/// 보인다 — 이 줄은 그것에 가려지지 않는다. 고른 글자는 Windows 기본 chain 의 Cascadia Code ·
+/// Malgun Gothic 이 흑백 글리프로 가진 것이다 (같은 실기의 판정 드라이버).
+///
 /// `tool/emoji-presentation-probe_macos.m` 의 `cases` 가 같은 글자를 쓴다. 여기를 바꾸면 그쪽도 바꾼다.
 fn sectionM(o: *Out) void {
-    o.raw("(M) 이모지 모양 (#771) — 위 네 줄은 컬러, 아래 세 줄은 흰 글자가 정상\n");
+    o.raw("(M) 이모지 모양 (#771) — 위 다섯 줄은 컬러, 아래 세 줄은 흰 글자가 정상\n");
     const vs16 = [_][]const u21{
         &.{ 0x2764, 0xFE0F }, &.{ 0x263A, 0xFE0F }, &.{ 0x270C, 0xFE0F }, &.{ 0x2600, 0xFE0F }, &.{ 0x26A0, 0xFE0F },
         &.{ 0x2714, 0xFE0F }, &.{ 0x203C, 0xFE0F }, &.{ 0x2122, 0xFE0F }, &.{ 0x00A9, 0xFE0F }, &.{ 0x2197, 0xFE0F },
+    };
+    // 이 화면의 다른 줄에 없는 글자 — 위 주석의 `홀로` 줄.
+    const vs16_alone = [_][]const u21{
+        &.{ 0x00AE, 0xFE0F }, &.{ 0x2665, 0xFE0F }, &.{ 0x2660, 0xFE0F },
+        &.{ 0x2663, 0xFE0F }, &.{ 0x2194, 0xFE0F }, &.{ 0x25B6, 0xFE0F },
     };
     // 선택자 없음 · 기본이 이모지 (Emoji_Presentation=Yes). cluster 가 아니라 단일 글자 경로다.
     const emoji_default = [_][]const u21{ &.{0x2614}, &.{0x2615}, &.{0x26A1}, &.{0x26BD}, &.{0x2648}, &.{0x1F18E} };
@@ -430,6 +441,7 @@ fn sectionM(o: *Out) void {
 
     presentationLine(o, "VS16", "연속", &vs16, "");
     presentationLine(o, "VS16", "공백", &vs16, " ");
+    presentationLine(o, "VS16", "홀로", &vs16_alone, " ");
     presentationLine(o, "이모지", "단일", &emoji_default, " ");
     presentationLine(o, "이웃", "연속", &.{ &.{ 0x2764, 0xFE0F, 0x1F44B, 0x1F3FB }, &.{ 0x2764, 0xFE0F, 0x263A, 0xFE0F } }, "] [");
     presentationLine(o, "VS15", "연속", &vs15, "");

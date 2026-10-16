@@ -207,6 +207,9 @@ static int RunCases(NSArray *chain, CTFontRef primary) {
     // src/render_test.zig 의 sectionM 과 같은 글자다. 그쪽을 바꾸면 여기도 바꾼다.
     UTF32Char vs16[][2] = {{0x2764, 0xFE0F}, {0x263A, 0xFE0F}, {0x270C, 0xFE0F}, {0x2600, 0xFE0F}, {0x26A0, 0xFE0F},
                            {0x2714, 0xFE0F}, {0x203C, 0xFE0F}, {0x2122, 0xFE0F}, {0x00A9, 0xFE0F}, {0x2197, 0xFE0F}};
+    // sectionM 의 `홀로` 줄 — 그 화면의 다른 줄에 없는 글자 (#771 Windows 실기).
+    UTF32Char vs16Alone[][2] = {{0x00AE, 0xFE0F}, {0x2665, 0xFE0F}, {0x2660, 0xFE0F},
+                                {0x2663, 0xFE0F}, {0x2194, 0xFE0F}, {0x25B6, 0xFE0F}};
     UTF32Char vs15[][2] = {{0x2614, 0xFE0E}, {0x2615, 0xFE0E}, {0x26A1, 0xFE0E}, {0x26BD, 0xFE0E},
                            {0x2648, 0xFE0E}, {0x2764, 0xFE0E}, {0x263A, 0xFE0E}};
     UTF32Char emojiDefault[] = {0x2614, 0x2615, 0x26A1, 0x26BD, 0x2648, 0x1F18E};
@@ -216,6 +219,7 @@ static int RunCases(NSArray *chain, CTFontRef primary) {
 
     printf("=== cluster 하나씩 (resolveGraphemeUncached) ===\n");
     for (size_t i = 0; i < sizeof vs16 / sizeof vs16[0]; i++) DumpLine(primary, @"VS16", Str(vs16[i], 2));
+    for (size_t i = 0; i < sizeof vs16Alone / sizeof vs16Alone[0]; i++) DumpLine(primary, @"VS16 홀로", Str(vs16Alone[i], 2));
     for (size_t i = 0; i < sizeof vs15 / sizeof vs15[0]; i++) DumpLine(primary, @"VS15", Str(vs15[i], 2));
 
     printf("\n=== 묶음 — CTLine 하나 (resolveGraphemeRunInner) ===\n");
