@@ -2032,6 +2032,8 @@ grim shot.png                                                          # sway �
   KWin 과 사용자 세션 버스로 말하니 바깥 셸에서 타이머로 찍어요. 다만 devkit 뷰어는 검게, Cinnamon nested 는 희게 찍혀서
   (2026-09-03) **다이얼로그의 픽셀 증거는 못 얻었어요** — 판정은 로그의 `[dialog] configured logical=… physical=…` (configure
   를 받고 buffer 를 만든 것) 과 `layer_shell=false` (= xdg_toplevel fallback 만 가능) 로 해요.
+  **GNOME 51 은 `--devkit` 이 없어서** `headless-check_linux.sh launcher-fatal gnome` 이 `--headless --virtual-monitor` 로
+  띄워요. 판정은 같은 로그 줄이고, 캡처에는 nested 화면이 없어요 (2026-10-16 · GNOME Shell 51.1 · [#758](https://github.com/ensky0/tildaz/issues/758)).
 - **Cinnamon nested (`cinnamon --nested --wayland`) 의 소켓은 `ss -xlp` 의 pid 로 찾아요.** 이름을 지정할 수 없고 로그에도
   안 남으며, 실제 runtime dir 의 **기존 `wayland-N` 파일을 재사용**하기도 해서 (`wayland-0.lock` 실패 뒤 `wayland-1` 을
   집었어요) "새로 생긴 소켓" 을 목록 비교로 찾는 방식은 빈손이에요. `ss -xlp | grep "pid=<cinnamon pid>,"` 로 봐요.

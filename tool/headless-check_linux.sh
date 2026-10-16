@@ -292,7 +292,14 @@ cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실�
 cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devkit 은 pipewire 가 필요해 격리 불가) · 자기 세션 버스
     local de=$1 XCD COMP WD=wayland-77
     case $de in
-        gnome)    XCD=GNOME;      COMP=(gnome-shell --devkit --wayland --wayland-display=$WD) ;;
+        gnome)    XCD=GNOME
+                  # GNOME 51 은 `--devkit` 이 없다 (`알 수 없는 옵션` — AGENTS.md). 그때는 화면 없이 띄운다.
+                  # 판정은 로그 (`[dialog] configured`) 라 화면이 없어도 되고, 캡처만 빈다 (#758 · 51.1 실측).
+                  if gnome-shell --help 2>&1 | grep -q -- '--devkit'; then
+                      COMP=(gnome-shell --devkit --wayland --wayland-display=$WD)
+                  else
+                      COMP=(gnome-shell --headless --wayland --no-x11 --virtual-monitor 1024x700 --wayland-display=$WD)
+                  fi ;;
         cinnamon) XCD=X-Cinnamon; COMP=(cinnamon --nested --wayland) ;;
         *) die "launcher-fatal gnome|cinnamon" ;;
     esac
