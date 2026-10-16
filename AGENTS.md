@@ -1360,6 +1360,11 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
   Direct3D 앱이 뜰 때 나오는 것으로 추정해요 (확인 필요). 화면 캡처 (`CopyFromScreen`) 에 찍히고, 클릭 자리를 덮을 수도 있어요 —
   2026-10-10 `selection-check_windows.ps1` 회차에서 창 아래쪽을 덮은 채 찍혔어요 (클릭은 창 위쪽이라 영향이 없었어요).
 
+# Windows — 번들 ConPTY 를 올리는 법
+
+올리는 도구와 올린 뒤 확인할 목록은 [`vendor/conpty/README.md`](vendor/conpty/README.md) 의 "업데이트 방법" · "업데이트 후 확인" 절에 있어요 ([#757](https://github.com/ensky0/tildaz/issues/757)).
+번들 부품 옆에 두는 것이 찾기 쉬워서 이 문서가 아니라 거기가 단일 출처예요. 먼저 `-Notes` 로 변경량을 보고, 적으면 다음 판까지 모아요.
+
 # Windows — 키보드 layout 조회 실측 방법
 
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`tool/layout-probe/layout-probe_windows.zig`](tool/layout-probe/layout-probe_windows.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).

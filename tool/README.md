@@ -50,6 +50,8 @@
 | [`bands-check.py`](bands-check.py) | 무관 | 띠 화면 캡처의 세로 단면에서 리샘플 서명을 읽음 | `# Linux — headless sway …` |
 | [`clusters.py`](clusters.py) | 무관 | atlas · cluster 검증 화면 생성기 (`many` · `stack2` · `overflow` · `mini` · `bands`) | `# macOS — 렌더 결과와 …` |
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |
+| [`conpty-check_windows.ps1`](conpty-check_windows.ps1) | Windows | 번들 ConPTY 를 바꾼 뒤 TildaZ 가 기대는 동작이 그대로인지 — 첫 출력 지연 · 셸에 새는 입력 · 셸 종료 → 앱 종료 · WSL ([#757](https://github.com/ensky0/tildaz/issues/757)) | [`vendor/conpty/README.md`](../vendor/conpty/README.md) 의 "업데이트 후 확인" |
+| [`conpty-update_windows.ps1`](conpty-update_windows.ps1) | Windows | 번들 ConPTY 새 판 목록 · 그 사이 ConPTY 변경 (Terminal 릴리즈 노트) · 바이너리와 판 번호 교체 ([#757](https://github.com/ensky0/tildaz/issues/757)) | [`vendor/conpty/README.md`](../vendor/conpty/README.md) 의 "업데이트 방법" |
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
 | [`headless-check_linux.sh`](headless-check_linux.sh) | Linux | headless sway + 가상 키보드로 탭 · 다이얼로그 · 배율 · 첫 실행 · 키 바이트 (`key-bytes` · #684) · 공통 액션 (`actions` · #692) · seat 착탈 (`seat-replug`) · compositor 종료 (`compositor-exit`) · launcher 실패 (`launcher-fatal`) 를 자동 검증 | `# Linux — headless sway …` |
 | [`input_macos.m`](input_macos.m) | macOS | 합성 키 입력 (`check` · `focus` · `send return` · `keycode` · `ime-get` · `ime-ascii` · `ime-set`) | `# macOS — 합성 입력으로 …` |
