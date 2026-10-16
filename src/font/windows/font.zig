@@ -10,6 +10,8 @@ const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
+const presentation = @import("../presentation.zig");
+const Presentation = presentation.Presentation;
 
 const BOOL = std.os.windows.BOOL;
 const WCHAR = u16;
@@ -344,6 +346,34 @@ test "withSimulations — 합성 변종은 regular 와 갈리고, 합성이 없�
     try std.testing.expectEqual(@as(u64, 0), withSimulations(0, 2));
 }
 
+test "#771 VS16 은 컬러 · VS15 는 흑백 글리프로, 기본이 이모지인 글자는 컬러를 먼저 고른다" {
+    // Windows 10 · 11 에 늘 있는 글꼴만 쓴다. 없거나 색 판정을 못 하면 건너뛴다.
+    const W = std.unicode.utf8ToUtf16LeStringLiteral;
+    const chain = [_][*:0]const WCHAR{ W("Consolas"), W("Segoe UI Emoji"), W("Segoe UI Symbol") };
+    const spec = font_spec.Spec{ .size_logical = 20, .cell_width_ratio = 1.0, .line_height_ratio = 1.0 };
+    var ctx = DWriteFontContext.init(std.testing.allocator, &chain, spec, 11, 23) catch return error.SkipZigTest;
+    defer ctx.deinit();
+    if (ctx.factory4 == null or ctx.chain_count != chain.len) return error.SkipZigTest;
+
+    // `☺` 는 chain 첫 글꼴 Consolas 가 흑백 글리프로 가진다. VS16 이면 그것을 건너뛰어야 한다.
+    const smile16 = ctx.resolveGrapheme(&.{ 0x263A, presentation.VS16 }) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Presentation.emoji, ctx.glyphPresentation(smile16.face, smile16.indices[0..smile16.count]).?);
+    // VS15 는 흑백 — Segoe UI Emoji 로 가던 글자 (`☔`) 도 흑백 글꼴을 찾는다.
+    for ([_]u21{ 0x263A, 0x2614 }) |cp| {
+        const r = ctx.resolveGrapheme(&.{ cp, presentation.VS15 }) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(Presentation.text, ctx.glyphPresentation(r.face, r.indices[0..r.count]).?);
+    }
+    // 선택자 없는 `☺` 는 요청이 없다 — 예전처럼 chain 첫 글꼴이다.
+    const plain = ctx.resolveGlyph(0x263A, .regular) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(plain.face == ctx.chain_faces[0].?);
+    // 기본이 이모지인 `☔` 는 컬러다. 두 번째는 `emoji_glyph` 캐시에서 같은 답이 나온다.
+    for (0..2) |_| {
+        const g = ctx.resolveGlyph(0x2614, .regular) orelse return error.TestUnexpectedResult;
+        const idx = [1]u16{g.index};
+        try std.testing.expectEqual(Presentation.emoji, ctx.glyphPresentation(g.face, &idx).?);
+    }
+}
+
 /// #584 — face 에서 `postscriptNameId` 를 얻는다. face 가 시스템 컬렉션에 없으면 0 이다.
 ///
 /// **chain face 에만 쓴다** (init 에서 한 번). system fallback 은 `IDWriteFont` 를 이미 손에
@@ -622,6 +652,11 @@ pub const DWriteFontContext = struct {
     alloc: std.mem.Allocator,
     factory: *dw.IDWriteFactory,
     factory2: ?*dw.IDWriteFactory2 = null,
+    /// [#771](https://github.com/ensky0/tildaz/issues/771) — 글리프가 컬러인지 판정한다
+    /// (`glyphPresentation`). 렌더러 (`glyph_atlas.zig`) 와 같은 `TranslateColorGlyphRun`
+    /// (모든 글리프 형식) 이라 "컬러로 골랐다" 와 "컬러로 그린다" 가 갈리지 않는다. 없으면
+    /// (Windows 10 1607 이전) 모양 판정을 건너뛰고 예전처럼 고른다.
+    factory4: ?*dw.IDWriteFactory4 = null,
     font_collection: *dw.IDWriteFontCollection,
     font_fallback: ?*dw.IDWriteFontFallback = null,
     /// Grapheme cluster shaping (#134) — VS-16 / skin tone modifier / ZWJ
@@ -666,6 +701,12 @@ pub const DWriteFontContext = struct {
     // Caches (codepoint → face/index). Keeps fallback faces alive so atlas
     // cache keys — which use the face pointer — remain stable.
     glyph_map: std.AutoHashMap(u21, CachedGlyph),
+    /// [#771](https://github.com/ensky0/tildaz/issues/771) — 기본이 이모지인 단일 글자의 **chain 안
+    /// 컬러 글리프**. `null` 은 "chain 에 컬러 글리프가 없다" 다 (그때는 예전 길로 간다).
+    /// `resolveGlyph` 가 매 프레임 · 셀마다 불리므로 판정 (`TranslateColorGlyphRun`) 을 글자당 한
+    /// 번으로 줄인다. 담는 face 는 chain face 라 **해제하지 않는다** — `glyph_map` 은 system
+    /// fallback face 를 담아 `deinit` 이 해제하므로 둘을 섞지 않는다.
+    emoji_glyph: std.AutoHashMap(u21, ?CachedGlyph),
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
@@ -789,6 +830,7 @@ pub const DWriteFontContext = struct {
             .cell_width_px = cell_w,
             .cell_height_px = cell_h,
             .glyph_map = std.AutoHashMap(u21, CachedGlyph).init(alloc),
+            .emoji_glyph = std.AutoHashMap(u21, ?CachedGlyph).init(alloc),
             .ligature_cache = ligature.Cache.init(alloc),
             .cluster_cache = cluster_cache.ClusterCache(ClusterResult, releaseCluster).init(alloc),
             .script_map = std.AutoHashMap(u21, dw.DWRITE_SCRIPT_ANALYSIS).init(alloc),
@@ -850,6 +892,13 @@ pub const DWriteFontContext = struct {
                 self.font_fallback = fallback;
             }
         }
+        // #771 — 글리프 색 판정용 (`glyphPresentation`). 렌더러 (`glyph_atlas.zig`) 와 같은 방법이다.
+        {
+            var f4_ptr: ?*anyopaque = null;
+            if (factory.?.QueryInterface(&dw.IID_IDWriteFactory4, &f4_ptr) >= 0 and f4_ptr != null) {
+                self.factory4 = @ptrCast(@alignCast(f4_ptr));
+            }
+        }
 
         // 6. Get system rendering params
         {
@@ -891,6 +940,8 @@ pub const DWriteFontContext = struct {
             _ = v.face.vtable.Release(v.face);
         }
         self.glyph_map.deinit();
+        // #771 — chain face 만 담으므로 face 는 놓지 않는다 (`emoji_glyph` 주석).
+        self.emoji_glyph.deinit();
         self.ligature_cache.deinit();
         self.script_map.deinit();
         // #399 — 담아 둔 `MapCharacters` face 들을 여기서 놓는다 (`releaseCluster`).
@@ -916,6 +967,7 @@ pub const DWriteFontContext = struct {
         }
         _ = self.font_collection.vtable.Release(self.font_collection);
         if (self.factory2) |f2| _ = f2.Release();
+        if (self.factory4) |f4| dw.factory4Release(f4);
         _ = self.factory.Release();
     }
 
@@ -945,6 +997,58 @@ pub const DWriteFontContext = struct {
         return self.chain_font_id[i];
     }
 
+    /// [#771](https://github.com/ensky0/tildaz/issues/771) — 글리프 (들) 의 모양. 하나라도 컬러
+    /// 레이어가 있으면 `.emoji` 다 — 렌더러가 컬러 경로로 그리는 조건과 같다 (`glyph_atlas.zig`
+    /// 의 `TranslateColorGlyphRun` · `DWRITE_GLYPH_IMAGE_FORMATS_ALL`). 흑백이면
+    /// `DWRITE_E_NOCOLOR` 가 돌아온다. `factory4` 가 없거나 다른 오류면 `null` 이고 caller 는
+    /// 모양 판정을 건너뛴다.
+    fn glyphPresentation(self: *const DWriteFontContext, face: *dw.IDWriteFontFace, indices: []const u16) ?Presentation {
+        const f4 = self.factory4 orelse return null;
+        if (indices.len == 0) return null;
+        const run = dw.DWRITE_GLYPH_RUN{
+            .fontFace = face,
+            .fontEmSize = @max(self.font_em_size, 1.0),
+            .glyphCount = @intCast(indices.len),
+            .glyphIndices = indices.ptr,
+            .glyphAdvances = null,
+            .glyphOffsets = null,
+            .isSideways = .FALSE,
+            .bidiLevel = 0,
+        };
+        var e: ?*dw.IDWriteColorGlyphRunEnumerator1 = null;
+        const hr = dw.factory4TranslateColorGlyphRun(f4, 0, 0, &run, null, dw.DWRITE_GLYPH_IMAGE_FORMATS_ALL, dw.DWRITE_MEASURING_MODE_NATURAL, null, 0, &e);
+        if (hr >= 0) {
+            const en = e orelse return null;
+            _ = en.Release();
+            return .emoji;
+        }
+        if (hr == dw.DWRITE_E_NOCOLOR) return .text;
+        return null;
+    }
+
+    /// #771 — 기본이 이모지인 글자의 chain 안 컬러 글리프. 결과 (없음 포함) 는 `emoji_glyph` 에
+    /// 담아 판정을 글자당 한 번으로 줄인다. regular chain 만 본다 — 컬러 emoji 에 굵기는 의미가
+    /// 없다 (`resolveGlyph` 주석과 같다).
+    fn chainEmojiGlyph(self: *DWriteFontContext, codepoint: u21) ?CachedGlyph {
+        if (self.emoji_glyph.get(codepoint)) |cached| return cached;
+        const found: ?CachedGlyph = blk: {
+            const cp32: dw.UINT32 = codepoint;
+            for (self.chain_faces[0..self.chain_count], 0..) |maybe_face, i| {
+                const face = maybe_face orelse continue;
+                var glyph_index: dw.UINT16 = 0;
+                _ = face.GetGlyphIndices(@ptrCast(&cp32), 1, @ptrCast(&glyph_index));
+                if (glyph_index == 0) continue;
+                const idx = [1]u16{glyph_index};
+                if (self.glyphPresentation(face, &idx) == .emoji) {
+                    break :blk .{ .face = face, .index = glyph_index, .font_id = self.chain_font_id[i] };
+                }
+            }
+            break :blk null;
+        };
+        self.emoji_glyph.put(codepoint, found) catch {};
+        return found;
+    }
+
     /// `style` (#375) 은 SGR `1` · `3` 이 요구하는 face 변종이다. chain 순회만 이
     /// 값을 따르고, system fallback (`MapCharacters`) 경로와 grapheme · ligature 는
     /// regular 를 쓴다 — 컬러 emoji 에 굵기는 의미가 없다.
@@ -953,6 +1057,20 @@ pub const DWriteFontContext = struct {
         // 바로 반환하고 캐시에 넣지 않는다) — 그래서 변종이 캐시와 충돌하지 않는다.
         if (self.glyph_map.get(codepoint)) |c| {
             return .{ .face = c.face, .index = c.index, .owned = false, .font_id = c.font_id };
+        }
+
+        // #771 — 기본 모양이 이모지인 글자 (`presentation.isEmojiPresentation`) 는 chain 에서
+        // **컬러 글리프를 먼저** 찾는다. 없으면 아래 예전 길 (모양과 무관하게 chain → system
+        // fallback) 이다. 요청이 없는 글자 (거의 전부) 는 이 비교 하나로 지나간다 — U+231A 아래는
+        // 첫 비교에서 끝난다. `◽ ◾ ⬛ ⬜` 는 chain 첫 글꼴 Cascadia Code 가 흑백 글리프를 가져서
+        // 예전에는 거기서 멈췄다 (#771 Windows 실기).
+        //
+        // system fallback (`MapCharacters`) 은 모양을 보지 않는다 — 그 API 가 선택자 · 색을 받지
+        // 않는다 (#771 Windows 측정 · 2026-10-17 결정). 다른 터미널도 Windows 에서 같다.
+        if (presentation.isEmojiPresentation(codepoint)) {
+            if (self.chainEmojiGlyph(codepoint)) |c| {
+                return .{ .face = c.face, .index = c.index, .owned = false, .font_id = c.font_id };
+            }
         }
 
         const cp32: dw.UINT32 = codepoint;
@@ -1170,13 +1288,31 @@ pub const DWriteFontContext = struct {
         const overlay = clusterOverlayOnly(cps);
 
         // 1. user chain 순회 — face 별로 cluster shape 시도.
+        //
+        // #771 — 순서는 셋이다. 모양 요청 (`presentation.forCluster`) 이 없으면 첫 단계에서 바로
+        // 답이 나와 예전과 같다.
+        //   1. chain 을 앞에서부터 — **모양이 맞는** 첫 face (VS16 = 컬러 · VS15 = 흑백 글리프)
+        //   2. chain 에서 모양과 무관하게 처음 맞은 face
+        //   3. system fallback (`MapCharacters`) — 모양을 보지 않는다. 그 API 가 선택자 · 색을
+        //      받지 않는다 (#771 Windows 측정 · 2026-10-17 결정). Linux · macOS 는 이 단계에서도
+        //      모양을 맞추는데, Windows 는 기본 chain 에 Segoe UI Emoji · Segoe UI Symbol 이 있어
+        //      VS16 359 / 371 · VS15 371 / 371 이 1 단계에서 맞는다 (같은 측정).
+        // 선택자는 원본 (`cps_in`) 의 둘째 글자로 본다 — 한글 합성은 선택자 자리를 바꾸지 않지만
+        // 판정 기준을 원본에 둔다.
+        const want = presentation.forCluster(cps_in);
+        var first: ?ClusterResult = null;
         for (self.chain_faces[0..self.chain_count], 0..) |maybe_face, ci| {
             const face = maybe_face orelse continue;
             const cnt = self.shapeOnFaceMulti(face, &u16_buf, u16_len, cps, sa, &indices_buf, &advances_buf, &offsets_buf);
-            if (cnt > 0) {
-                return .{ .face = face, .font_id = self.chain_font_id[ci], .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
-            }
+            if (cnt == 0) continue;
+            const r = ClusterResult{ .face = face, .font_id = self.chain_font_id[ci], .indices = indices_buf, .advances = advances_buf, .offsets = offsets_buf, .count = cnt, .owned = false, .overlay_marks = overlay };
+            const w = want orelse return r;
+            // 판정을 못 하면 (`factory4` 없음) 예전처럼 처음 맞은 face 다.
+            const got = self.glyphPresentation(face, indices_buf[0..cnt]) orelse return r;
+            if (got == w) return r;
+            if (first == null) first = r;
         }
+        if (first) |r| return r;
 
         // 2. system fallback — OS 폰트 매칭에 물어 face 를 얻고 그 face 로 cluster 를 shape.
         //
@@ -1267,257 +1403,6 @@ pub const DWriteFontContext = struct {
             return null;
         }
         return .{ .face = face, .font_id = fallback_font_id, .indices = indices_buf.*, .advances = advances_buf.*, .offsets = offsets_buf.*, .count = cnt, .owned = true };
-    }
-
-    /// 런 배칭 상한 ([#399](https://github.com/ensky0/tildaz/issues/399)). 넘으면 호출자가
-    /// 런을 끊고 다음 런이 이어받으므로 이득이 사라지지 않고 여기서 멈출 뿐이다. 120 열에
-    /// wide cluster 는 최대 60 개지만, 이 값이 아래 shaping 버퍼 크기를 정하고 (합쳐 약 8 KB)
-    /// 실제 줄은 그보다 훨씬 짧아서 32 로 잡았다.
-    pub const MAX_RUN_CLUSTERS: usize = 32;
-    /// cluster 당 UTF-16 은 보통 2~8 unit 이다 (ZWJ family 가 8). 넘으면 0 을 돌려 개별 경로로.
-    const MAX_RUN_U16: usize = 256;
-    /// DirectWrite 권장값 `3 * textLength / 2 + 16`.
-    const MAX_RUN_GLYPHS: usize = 3 * MAX_RUN_U16 / 2 + 16;
-
-    /// **여러 cluster 를 `GetGlyphs` 한 번으로 shape 한다** (#399). 지금까지는 cluster 마다
-    /// `resolveGrapheme` 을 불러 chain 을 처음부터 순회하고 `GetGlyphs` · `GetGlyphPlacements`
-    /// 를 매번 새로 호출했는데, 그 **고정 비용이 지배적**이라 한 줄을 묶으면 크게 싸다.
-    /// `render` 의 91.5 % 가 이 경로다 (#395 Linux 실측, macOS 는 92.0 %).
-    ///
-    /// 반환은 **채운 cluster 수**다. `out` 은 `clusters` 와 같은 순서로 채워지고, 0 이면
-    /// 호출자가 기존 개별 경로로 떨어진다 — 렌더가 틀리느니 느린 게 낫다.
-    ///
-    /// **macOS 판과 갈리는 곳이 둘이다.**
-    ///   - 결과가 **multi-glyph** 다 (`ClusterResult`). Segoe UI Emoji 의 ZWJ family 는 GSUB 가
-    ///     단일 글리프로 합성하지 않고 여러 글리프를 advance / offset 으로 쌓아 그리도록
-    ///     설계돼 있다 (#139). CoreText 는 cluster 당 글리프 하나였다.
-    ///   - **face 를 우리가 고른다.** chain 을 순서대로 돌며 *한 face 로 런 전체* 를 shape 하고,
-    ///     `.notdef` 이 하나라도 있으면 그 face 를 버린다 (개별 경로와 같은 판정). 기본 chain 에
-    ///     `Segoe UI Emoji` 가 있어서 (`config.zig` 의 `glyph_fallback`) emoji 런도 chain 안에서
-    ///     풀린다.
-    ///
-    /// **system fallback (`MapCharacters`) 은 런에서 쓰지 않는다.** 런의 어느 codepoint 를
-    /// 기준으로 face 를 찾을지 애매하고, chain 이 전부 실패하는 경우는 드물다. 그때는 0 을
-    /// 돌려 **개별 경로가 fallback 을 하게** 둔다 — 정확성은 그대로고 그 런만 느려진다.
-    pub fn resolveGraphemeRun(
-        self: *DWriteFontContext,
-        clusters: []const []const u21,
-        out: []ClusterResult,
-    ) usize {
-        const t0 = perf.now();
-        const n = self.resolveGraphemeRunInner(clusters, out);
-        perf.addTimed(&perf.shape, t0);
-        // **여기서 miss 를 세지 않는다.** 런이 실패하면 호출자가 그 셀들을 개별 경로로 다시
-        // 도는데, 거기서 `resolveGrapheme` 이 같은 실패를 또 센다 — 한 실패가 두 번 잡혀
-        // 카운터가 부풀었다 (Linux 에서 180 → 1,211 로 보였다, 12222ef). 런 실패는 정상적인
-        // fallback 이지 shaping 실패가 아니다.
-        return n;
-    }
-
-    fn resolveGraphemeRunInner(
-        self: *DWriteFontContext,
-        clusters: []const []const u21,
-        out: []ClusterResult,
-    ) usize {
-        if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
-        if (out.len < clusters.len) return 0;
-        if (self.text_analyzer == null) return 0;
-
-        // #399 (B) — shape 하기 전에 런의 cluster 를 **전부** 캐시에서 찾는다. 다 있으면
-        // `GetGlyphs` 없이 끝난다. `zwj` 처럼 한 줄이 같은 cluster 면 첫 런 이후 shape 가 0 이다.
-        //
-        // 하나라도 없으면 (또는 캐시된 결과가 실패면) 아래 기존 경로로 간다 — 부분만 쓰고
-        // 나머지를 shape 하는 식으로 섞지 않는다. 런은 **한 face 로 전체를 맞추는 것이 전제**라
-        // 섞으면 그 전제가 깨진다.
-        //
-        // 여기서 담기는 값은 전부 chain face (`owned = false`) 라 소유권 문제가 없다 — 런
-        // 경로는 `MapCharacters` 를 쓰지 않는다.
-        var all_hit = true;
-        for (clusters, 0..) |c, i| {
-            if (self.cluster_cache.get(c)) |cached| {
-                if (cached) |v| {
-                    out[i] = v;
-                    out[i].owned = false;
-                    continue;
-                }
-            }
-            all_hit = false;
-            break;
-        }
-        if (all_hit) return clusters.len;
-
-        var u16_buf: [MAX_RUN_U16]WCHAR = undefined;
-        // cluster `i` 의 UTF-16 시작 위치. 끝에 센티넬 (= 전체 길이) 을 넣어 범위를
-        // `[cl_start[i], cl_start[i+1])` 로 읽는다. 이어붙인 뒤에는 길이 정보가 사라진다.
-        var cl_start: [MAX_RUN_CLUSTERS + 1]u16 = undefined;
-        var u16_len: dw.UINT32 = 0;
-
-        for (clusters, 0..) |cps_in, ci| {
-            if (cps_in.len == 0) return 0;
-            // #423 — 개별 경로 (`resolveGraphemeUncached`) 와 같은 composition 을 여기도 한다.
-            // 안 하면 배칭된 줄에서만 조합형이 안 합쳐져 같은 글자가 경로에 따라 달라진다.
-            var composed: [MAX_CLUSTER_GLYPHS]u21 = undefined;
-            const cps = composeHangul(cps_in, &composed);
-            cl_start[ci] = @intCast(u16_len);
-            for (cps) |cp| {
-                if (cp <= 0xFFFF) {
-                    if (u16_len + 1 > MAX_RUN_U16) return 0;
-                    u16_buf[u16_len] = @intCast(cp);
-                    u16_len += 1;
-                } else {
-                    if (u16_len + 2 > MAX_RUN_U16) return 0;
-                    const off = cp - 0x10000;
-                    u16_buf[u16_len] = @intCast(0xD800 + (off >> 10));
-                    u16_buf[u16_len + 1] = @intCast(0xDC00 + (off & 0x3FF));
-                    u16_len += 2;
-                }
-            }
-        }
-        if (u16_len == 0) return 0;
-        cl_start[clusters.len] = @intCast(u16_len);
-
-        // #416 — 런 전체를 **하나의 script 로** shape 한다. 런은 원래 "한 face 로 전체를 맞추는
-        // 것" 이 전제인데 script 도 같은 성격이다 — `GetGlyphs` 가 script 를 런 단위로 받으므로
-        // 섞인 런에 하나를 골라 주면 나머지 cluster 가 틀린 feature 로 shape 된다. 그래서
-        // **다르면 0 을 돌려 개별 경로로 보낸다** (거기서는 cluster 마다 자기 script 를 쓴다).
-        // 한 줄에 Latin 과 Arabic 이 섞이는 것은 드물어서 배칭 이득이 실질적으로 줄지 않는다.
-        const sa = self.scriptFor(clusters[0][0]);
-        for (clusters[1..]) |cps| {
-            const s = self.scriptFor(cps[0]);
-            if (s.script != sa.script or s.shapes != sa.shapes) return 0;
-        }
-
-        for (self.chain_faces[0..self.chain_count], 0..) |maybe_face, ci| {
-            const face = maybe_face orelse continue;
-            if (self.shapeRunOnFace(face, self.chain_font_id[ci], &u16_buf, u16_len, cl_start[0 .. clusters.len + 1], sa, out)) {
-                // #418 — 관통 mark 여부는 codepoint 를 봐야 알 수 있고 `shapeRunOnFace` 는
-                // UTF-16 만 받으므로 여기서 채운다 (캐시에 담기 전이어야 한다).
-                for (0..clusters.len) |i| out[i].overlay_marks = clusterOverlayOnly(clusters[i]);
-                // 다음 런이 shape 를 건너뛸 수 있게 담는다. 전부 chain face 라 캐시가 해제할
-                // 것이 없고 (`owned = false`), 키에 안 들어가는 cluster 는 `put` 이 조용히
-                // 버린다 — 그때도 값에 소유권이 없어 안전하다.
-                for (0..clusters.len) |i| self.cluster_cache.put(clusters[i], out[i]);
-                return clusters.len;
-            }
-        }
-        return 0;
-    }
-
-    /// `face` 로 **런 전체**를 shape 하고 글리프를 cluster 별로 잘라 `out` 에 담는다.
-    /// 하나라도 어긋나면 false — 호출자가 다음 face 로 넘어간다.
-    ///
-    /// **글리프 → cluster 배분은 `cluster_map` 이 한다.** `GetGlyphs` 가 text index → glyph
-    /// index 표를 이미 돌려주는데 지금까지는 cluster 하나만 넘기느라 안 쓰고 있었다. cluster
-    /// `i` 의 글리프 범위는 `[cluster_map[s_i], cluster_map[s_{i+1}])` 이고 마지막은
-    /// `actual_count` 다.
-    fn shapeRunOnFace(
-        self: *DWriteFontContext,
-        face: *dw.IDWriteFontFace,
-        /// #584 — 이 face 의 `atlas_common.fontId`. 런 전체가 한 face 라 값 하나다.
-        font_id: u64,
-        text: [*]const WCHAR,
-        text_len: dw.UINT32,
-        /// 길이가 cluster 수 + 1 이다 (마지막이 센티넬).
-        cl_start: []const u16,
-        /// 런 전체의 script (#416). 호출자가 런 안에서 같은 것을 확인해 넘긴다.
-        sa: dw.DWRITE_SCRIPT_ANALYSIS,
-        out: []ClusterResult,
-    ) bool {
-        const analyzer = self.text_analyzer orelse return false;
-        const cluster_count = cl_start.len - 1;
-
-        var cluster_map: [MAX_RUN_U16]u16 = undefined;
-        var text_props: [MAX_RUN_U16]dw.DWRITE_SHAPING_TEXT_PROPERTIES = undefined;
-        var glyph_indices: [MAX_RUN_GLYPHS]u16 = undefined;
-        var glyph_props: [MAX_RUN_GLYPHS]dw.DWRITE_SHAPING_GLYPH_PROPERTIES = undefined;
-        var glyph_advances: [MAX_RUN_GLYPHS]dw.FLOAT = undefined;
-        var glyph_offsets: [MAX_RUN_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        var actual_count: dw.UINT32 = 0;
-
-        const locale_name = std.unicode.utf8ToUtf16LeStringLiteral("en-us");
-
-        const hr = analyzer.GetGlyphs(
-            text,
-            text_len,
-            face,
-            .FALSE, // is_sideways
-            .FALSE, // is_right_to_left
-            &sa,
-            locale_name,
-            null, // number_substitution
-            null, // features
-            null,
-            0,
-            glyph_indices.len,
-            &cluster_map,
-            &text_props,
-            &glyph_indices,
-            &glyph_props,
-            &actual_count,
-        );
-        if (hr < 0 or actual_count == 0 or actual_count > glyph_indices.len) return false;
-
-        // `.notdef` 이 하나라도 있으면 이 face 는 런의 어떤 cluster 를 못 그린다는 뜻이다 —
-        // 개별 경로 (`shapeOnFaceMulti`) 와 같은 판정이라 chain 순회 결과가 달라지지 않는다.
-        for (glyph_indices[0..actual_count]) |gi| {
-            if (gi == 0) return false;
-        }
-
-        // placement 도 **런 전체에 한 번**이다. 실패하면 개별 경로처럼 0 으로 채운다 (#139 의
-        // left-pulled stack 은 못 그리지만 글리프 자체는 나온다).
-        const placed = analyzer.GetGlyphPlacements(
-            text,
-            &cluster_map,
-            &text_props,
-            text_len,
-            &glyph_indices,
-            &glyph_props,
-            actual_count,
-            face,
-            self.font_em_size,
-            .FALSE, // is_sideways
-            .FALSE, // is_right_to_left
-            &sa,
-            locale_name,
-            null,
-            null,
-            0,
-            &glyph_advances,
-            &glyph_offsets,
-        ) >= 0;
-
-        for (0..cluster_count) |ci| {
-            const s = cl_start[ci];
-            const e = cl_start[ci + 1];
-            if (s >= text_len or e > text_len or e <= s) return false;
-
-            const g0: dw.UINT32 = cluster_map[s];
-            // 마지막 cluster 의 끝은 `cluster_map[text_len]` 이 아니라 (범위 밖이다) 글리프 총수다.
-            const g1: dw.UINT32 = if (ci + 1 == cluster_count) actual_count else cluster_map[e];
-            // **범위가 비면 실패다.** DirectWrite 가 우리 cluster 둘을 자기 cluster 하나로
-            // 합치면 (ligature) 이렇게 되는데, 그러면 어느 셀에 무엇을 그릴지 정할 수 없다.
-            if (g1 <= g0 or g1 > actual_count) return false;
-            const n = g1 - g0;
-            if (n > MAX_CLUSTER_GLYPHS) return false;
-
-            out[ci] = .{
-                .face = face,
-                .font_id = font_id,
-                .indices = undefined,
-                .advances = undefined,
-                .offsets = undefined,
-                .count = @intCast(n),
-                // chain face 는 context 가 소유한다 (deinit 까지 안 놓는다) — 개별 경로의
-                // chain 성공 케이스와 같다.
-                .owned = false,
-            };
-            for (0..n) |k| {
-                out[ci].indices[k] = glyph_indices[g0 + k];
-                out[ci].advances[k] = if (placed) glyph_advances[g0 + k] else 0;
-                out[ci].offsets[k] = if (placed) glyph_offsets[g0 + k] else .{ .advanceOffset = 0, .ascenderOffset = 0 };
-            }
-        }
-        return true;
     }
 
     /// 2-char ligature lookup (SPEC § 12.2). `cp0` + `cp1` 을 primary face 로
