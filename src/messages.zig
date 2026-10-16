@@ -4,6 +4,31 @@
 //! 은 여기서 정의하고 실제 표시는 호출처가 `dialog.zig` 로 위임.
 
 const std = @import("std");
+const display_width = @import("font/display_width.zig");
+
+/// #758 — 다이얼로그 제목의 최대 폭 (칸). 세 OS 모두 제목을 **한 줄로** 그린다 (macOS
+/// `setUsesSingleLineMode:` · Windows `DT_SINGLELINE` · Linux 한 줄 그리기). 그래서 길면 줄바꿈되지
+/// 않고 폭을 넘는다. 28 은 다이얼로그 **기본 폭** (`ui_metrics.DIALOG_PREFERRED_WIDTH_PT`) 에 넓은
+/// 글꼴로 들어가는 한도다 — 창은 본문이 화면을 넘칠 때만 그보다 넓어지고, 제목은 그 조건에 들지 않는다.
+/// 근거는 `host/linux/dialog_layout.zig` 의 테스트가 지킨다 (다이얼로그 치수가 바뀌어 28 칸이 안
+/// 들어가면 그 테스트가 실패한다).
+pub const dialog_title_max_width: usize = 28;
+
+// #758 — 이름이 `_title` 로 끝나는 상수는 모두 다이얼로그 제목이다. 하나라도 한도를 넘으면 **빌드가
+// 멈춘다** — 테스트를 돌리기 전, 어느 OS 든 처음 컴파일할 때부터. 예전에는 긴 제목 7 개가 레이아웃
+// 테스트에 케이스가 없어 아무도 몰랐다.
+comptime {
+    @setEvalBranchQuota(100_000);
+    for (@typeInfo(@This()).@"struct".decls) |decl| {
+        if (!std.mem.endsWith(u8, decl.name, "_title")) continue;
+        const title: []const u8 = @field(@This(), decl.name);
+        const width = display_width.stringWidth(title);
+        if (width > dialog_title_max_width) @compileError(std.fmt.comptimePrint(
+            "messages.{s} is {d} columns wide (\"{s}\"); dialog titles must be at most {d}",
+            .{ decl.name, width, title, dialog_title_max_width },
+        ));
+    }
+}
 
 /// #282 G9 — 자체 그리기 dialog 의 버튼 라벨 단일 소스 (macOS NSAlert · Windows
 /// 자체 hotkey 프롬프트 · Linux overlay 공용). Windows 표준 MessageBoxW 의
@@ -139,7 +164,7 @@ pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const run_failed_fallback_msg = "TildaZ failed to start.";
-pub const startup_layer_unmappable_title = "TildaZ could not open its window";
+pub const startup_layer_unmappable_title = "Cannot Open the Window";
 pub const startup_layer_unmappable_msg =
     "The drop-down window could not be placed at the configured size on this display. Try increasing \"window.height_percent\" in the config, then start TildaZ again. If this continues, check the TildaZ log.";
 pub const request_endpoint_unavailable_msg =
@@ -478,7 +503,7 @@ pub const config_default_write_failed_format =
 /// 세 경우 (못 읽음 · 못 만듦 · 못 씀) 를 한 제목으로 덮는다. 각각을 따로 두면
 /// "Not Loaded" 가 만들기 실패에 어색해지는데 (애초에 읽을 것이 없었다), 사용자에게
 /// 중요한 것은 원인이 아니라 **지금 기본값으로 돌고 있다**는 사실이다.
-pub const config_not_loaded_title = "TildaZ — Using Default Settings";
+pub const config_not_loaded_title = "Using Default Settings";
 
 /// #758 — TOML 문법이 깨진 파일. 예전에는 이 안내 뒤 **종료**했는데, 이제 #501 의 "못 읽음" 과
 /// 같이 기본값으로 시작하고 알린다 (제목도 `config_not_loaded_title`). 앱은 기존 config 를 다시
@@ -576,7 +601,7 @@ pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{
 /// 같은 글자다 — 같은 일을 하는 자리가 다르게 불리면 안 된다.
 pub const button_open_config = command_open_config;
 
-pub const config_notice_title = "TildaZ started with parts of your config replaced.";
+pub const config_notice_title = "Some Settings Replaced";
 pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
 pub const config_notice_removable_header = "These are not used any more -- delete them:";
 /// 키가 없어 기본값을 쓴 경우. `{s}` = 키 경로.
@@ -708,7 +733,7 @@ pub const renderer_init_failed_fallback_msg =
     \\Both the GPU (hardware) and CPU (software) rendering paths failed. This usually means the graphics driver is missing, outdated, or malfunctioning.
 ;
 
-pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const hotkey_registration_failed_title = "Hotkey Registration Failed";
 pub const hotkey_registration_failed_format =
     \\Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).
     \\
@@ -728,7 +753,7 @@ pub const hotkey_registration_failed_fallback_msg = "Failed to register the glob
 /// Hyprland · COSMIC). 그래서 어느 상대에게 무엇이 막혔는지를 본문이 직접 말한다.
 ///
 /// 인자: (1) hotkey 표기 (2) 상대 이름 (3) 그 상대가 준 구체적 사유 (4) config 경로.
-pub const linux_hotkey_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const linux_hotkey_failed_title = "Hotkey Registration Failed";
 pub const linux_hotkey_failed_format =
     \\TildaZ could not claim the global hotkey "{s}" from {s}.
     \\
@@ -745,7 +770,7 @@ pub const linux_hotkey_failed_fallback_msg =
 /// #676 — GNOME · Cinnamon은 Shell extension이 창 배치와 hotkey를 함께 맡는다.
 /// 일반 xdg-shell 창 + GSettings hotkey는 제대로 된 drop-down이 아니므로 더는
 /// fallback하지 않는다. desktop 이름만 인자로 받아 두 host에서 같은 문구를 쓴다.
-pub const linux_shell_extension_required_title = "TildaZ Shell Extension Required";
+pub const linux_shell_extension_required_title = "Shell Extension Required";
 pub const linux_shell_extension_required_format =
     \\TildaZ requires its {s} Shell extension to provide the drop-down window and global hotkey.
     \\

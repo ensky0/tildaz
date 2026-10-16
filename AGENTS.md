@@ -590,6 +590,15 @@ force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계
 
 **Dialog overflow 정책은 Linux · macOS · Windows 공통**이에요. 먼저 실제 텍스트를 측정해 화면 안에 들어오도록 창을 키우고, 그래도 화면을 넘을 때만 본문에 세로 scroll을 둬요. 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
 
+**다이얼로그 제목은 28 칸 이하예요 — 넘기면 빌드가 멈춰요** ([#758](https://github.com/ensky0/tildaz/issues/758)).
+세 OS 모두 제목을 한 줄로 그려서 (줄바꿈하지 않아요) 길면 폭을 넘어요. `messages.zig` 의 `comptime` 가드가
+이름이 `_title` 로 끝나는 상수를 모두 재고, 한도 (`dialog_title_max_width`) 를 넘으면 컴파일 오류를 내요.
+28 은 다이얼로그 기본 폭에 넓은 글꼴로 들어가는 한도이고, 근거는 `host/linux/dialog_layout.zig` 의 테스트가
+지켜요. 2026-10-16 사용자 지시 (*"30자 넘으면 처음부터 문제 생기게"*) 로 넣었어요 — 그때 긴 제목 7 개가
+레이아웃 테스트에 케이스가 없어 아무도 몰랐어요. 처음엔 30 칸이었는데, 근거 테스트가 기본 폭에서는 28 칸까지만
+들어간다고 알려 줘서 28 로 정했어요. 제목이 길면 `TildaZ` 접두를 빼요. 다이얼로그 아이콘이
+TildaZ 라 이름을 대신해요.
+
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 
 패치 실패 / config 검증 / About 등 사용자 안내 dialog 는 모두 같은 경로 (`dialog.zig`) 를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요. **단 panic 은 예외** — Windows / macOS 는 `dialog.showError` + exit(1) 이지만 Linux 는 `showPanic` 이 log + `std.debug.defaultPanic` (stderr backtrace + abort) 으로, dialog 를 호출하지 않아요 (panic 시점엔 renderer / wayland state 가 불안정할 수 있어 overlay 대신 표준 abort — 의도된 차이, SPEC §6).

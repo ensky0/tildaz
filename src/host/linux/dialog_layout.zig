@@ -447,10 +447,14 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         about_tip,
     });
 
-    // #495 — 경로는 이 본문에 없다. `showConfigFatalMsg` 가 모든 config 오류 앞에
-    // 한 번 붙이므로, 레이아웃 검사도 그 조립 결과를 흉내내야 실제와 같은 높이가 된다.
+    // #495 — 경로는 이 본문에 없다. `configErrorMessageAlloc` 이 첫 줄로 붙이므로,
+    // 레이아웃 검사도 그 조립 결과를 흉내내야 실제와 같은 높이가 된다.
+    //
+    // #758 — 문법이 깨진 config 는 fatal 이 아니라 기본값 안내다 (`showLoadNoticeText`). 제목이
+    // `config_not_loaded_title` 이고, 파서가 위치를 주는 흔한 경우는 줄 · 열이 든 판이라 한 줄
+    // 길다. 둘 중 긴 쪽으로 잰다.
     var parse_buf: [512]u8 = undefined;
-    const parse_body = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_format, .{"SyntaxError"});
+    const parse_body = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_at_format, .{ 12345, 678, "UnexpectedToken" });
     var parse_full_buf: [640]u8 = undefined;
     const parse_msg = try std.fmt.bufPrint(&parse_full_buf, messages.config_error_with_path_format, .{
         "/home/example/.config/tildaz/config_0.toml",
@@ -524,6 +528,25 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{"RequestEndpointReadyTimeout"},
     );
 
+    // #758 — 시작 안내 (`showConfigNotice`). 실제 조립 함수로 만든다 — 꼬리 · 빈 줄 규칙까지 실제와
+    // 같아야 높이가 맞는다. 목록은 Linux 실기 (L2) 에서 본 다섯 줄이다. 이 다이얼로그는 예전에 케이스가
+    // 없어서 제목 (50 칸) 이 640x480 을 넘는 것을 몰랐다.
+    const config_mod = @import("../../config.zig");
+    var notice_list_buf: [1024]u8 = undefined;
+    var notice_list: std.Io.Writer = .fixed(&notice_list_buf);
+    try notice_list.print(messages.config_notice_key_contested_format ++ "\n", .{ "split_right", "ctrl+shift+f11", "split_down" });
+    try notice_list.print(messages.config_notice_key_contested_format ++ "\n", .{ "split_down", "ctrl+shift+f11", "split_right" });
+    try notice_list.print(messages.config_notice_key_conflict_format ++ "\n", .{ "close_tab", "ctrl+shift+w", "new_tab" });
+    try notice_list.print(messages.config_notice_font_replaced_format ++ "\n", .{ "NoSuchMono758", "monospace" });
+    try notice_list.print(messages.config_notice_font_dropped_format ++ "\n", .{"NoSuchEmoji758"});
+    var notice_buf: [2048]u8 = undefined;
+    const notice_msg = config_mod.configNoticeMessage(&notice_buf, "/home/example/.config/tildaz/config_1.toml", .{
+        .repaired = notice_list.buffered(),
+        .removable = "",
+        .count = 5,
+        .truncated = false,
+    });
+
     const Case = struct {
         title: []const u8,
         message: []const u8,
@@ -534,7 +557,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.quit_confirm_title, .message = quit_msg, .kind = .confirm },
         .{ .title = messages.tab_limit_title, .message = tab_limit_msg, .kind = .info },
         .{ .title = messages.about_title, .message = about_msg, .kind = .about },
-        .{ .title = messages.config_error_title, .message = parse_msg, .kind = .info },
+        .{ .title = messages.config_not_loaded_title, .message = parse_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = hotkey_invalid_msg, .kind = .info },
         .{ .title = messages.config_error_title, .message = theme_msg, .kind = .info },
         // 여백을 폰트 비례로 넓히면서 (#407) 1.7x 에서만 행이 넘친다 — 고정 chrome
@@ -549,16 +572,32 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         //
         // #577 — 5/5/5 → 4/4/4. 위 shell 과 같은 이유다 — 경로가 맨 끝 3 줄 footer 에서
         // 첫 줄 2 줄 접두로 옮겨져 문구가 한 줄 짧아졌다. 세 배율이 함께 줄었다.
-        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 4, 4, 4 } },
+        //
+        // #758 — 4/4/4 → 5/5/5. 이 안내는 이제 OS 의 고정폭 폰트마저 못 쓸 때만 뜨고, 마지막
+        // 문장이 한 줄 (*"All families … must be installed"*) 에서 두 줄 (시작할 수 없다 · 고정폭
+        // 폰트를 깔라) 이 됐다. 세 배율이 함께 늘었다.
+        .{ .title = messages.config_error_title, .message = font_msg, .kind = .info, .standard_scroll_by_scale = .{ 5, 5, 5 } },
         .{ .title = messages.hotkey_takeover_title, .message = takeover_msg, .kind = .confirm },
         .{ .title = messages.new_instance_title, .message = prompt_msg, .kind = .prompt },
         .{ .title = messages.new_instance_title, .message = create_error_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.request_endpoint_unavailable_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.worker_exited_before_endpoint_ready_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.request_endpoint_ready_timeout_msg, .kind = .info },
+        // #758 — 시작 안내는 `Open Config` · `OK` 두 버튼이라 confirm 이다 (`dialogShowNoticeActionCb`).
+        // 목록이 길어 640x480 에서는 본문이 넘치고 스크롤로 들어간다 — 정상이다 (모든 다이얼로그 공통 규칙).
+        .{ .title = messages.config_notice_title, .message = notice_msg, .kind = .confirm, .standard_scroll_by_scale = .{ 4, 4, 4 } },
     };
 
     for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind, case.standard_scroll_by_scale);
+}
+
+test "#758 the title limit (messages.dialog_title_max_width) fits the 640x480 logical minimum" {
+    // `messages.zig` 의 컴파일 가드가 제목을 이 한도로 막는다. 이 테스트는 그 한도의 **근거**다 —
+    // 다이얼로그 치수 (여백 · 그림자 · 글꼴) 가 바뀌어 한도만큼의 제목이 더는 안 들어가면 여기서 실패한다.
+    // 측정기가 `칸 폭 × 글자 폭` 이라 어느 한 칸 글자로 채워도 같다. 버튼이 둘인 confirm 도 함께 본다.
+    const title = "W" ** messages.dialog_title_max_width;
+    try expectFitsLogicalMinimum(title, "x", .info, .{ 0, 0, 0 });
+    try expectFitsLogicalMinimum(title, "x", .confirm, .{ 0, 0, 0 });
 }
 
 test "#721 prompt status widens the box up to the preferred width and wraps beyond it" {
@@ -644,6 +683,12 @@ fn expectFitsLogicalMinimum(
             try std.testing.expect(layout.show_icon);
             // 표준 dialog font는 producer별 정확한 overflow 경계를 확인한다.
             // 보수적인 wide-cell 조건은 더 많은 wrap 행이 생길 수 있다.
+            if (metric_index == 0 and standard_scroll_by_scale[scale_index] != layout.message_scroll_max) {
+                // #758 — 어느 케이스 · 배율인지 적는다. 숫자만으로는 표의 어느 줄인지 몰라 찾아야 했다.
+                std.debug.print("standard scroll mismatch: title={s} scale={d}% expected={d} found={d}\n", .{
+                    title, scale_percent, standard_scroll_by_scale[scale_index], layout.message_scroll_max,
+                });
+            }
             if (metric_index == 0) try std.testing.expectEqual(standard_scroll_by_scale[scale_index], layout.message_scroll_max);
         }
     }
