@@ -772,6 +772,8 @@ Windows 실측).
 
 **mok2 의 `Ctrl+[` · `Ctrl+I` 는 `CSI 27;<mods>;<cp> ~` 다.** ghostty 가 `i` · `m` · `[` 를 fixterms 명세대로 `ctrlSeq` 에서 **일부러 빼** `CSI u` 로 보내고, mok2 는 그것을 앱이 요청한 인코딩으로 보아 C0 로 내리지 않는다 (legacy 는 위 규칙 ② 가 `09` · `1b` 로 내린다). 이것도 Linux · macOS 와 같아진 자리다 — 예전 Windows 가 `1b` · `09` 를 내던 것은 인코더를 안 탔기 때문이다.
 
+**mok2 에서는 C0 가 있는 `Ctrl`+글자도 `CSI 27;5;<cp> ~` 다** ([#779](https://github.com/ensky0/tildaz/issues/779), 2026-10-16). `Ctrl+A` → `ESC[27;5;97~` · `Ctrl+/` → `ESC[27;5;47~` · `Ctrl+Space` → `ESC[27;5;32~` · `Ctrl+6` → `ESC[27;5;54~` 이고, legacy 는 그대로 `01` · `1f` · `00` · `1e` 다. xterm 의 modifyOtherKeys 2 단계 정의 (*"Xterm ignores the special cases built into the X11 library. Any shifted (modified) ordinary key sends an escape sequence."* — [xterm(1)](https://invisible-island.net/xterm/manpage/xterm.html)) 와 같다. ghostty 가 [`4406cea`](https://github.com/ghostty-org/ghostty/commit/4406cea3e9) ("encode ctrl keys with modifyOtherKeys 2") 에서 mok2 를 `ctrlSeq` 보다 먼저 보게 바꿨고, 우리는 #723 의 판 올리기 (2026-10-10) 로 그것을 받았다. 위 #684 실측 (2026-10-01) 은 그 전 판이라 mok2 에서도 C0 였다.
+
 **비US 배열 실기** (2026-10-01 · 노트북 Ryzen AI 7 350 · 창 스레드만 프랑스어 레거시 AZERTY 로 전환). 기대값은 `VkKeyScanExW` 로 재기 전에 뽑았다. 자리가 US 와 뒤바뀐 두 키에서 **라벨 기준**이 지켜진다 — `Ctrl+a` (US 의 `Q` 자리 · sc `0x10`) → `01`, `Ctrl+q` (US 의 `A` 자리 · sc `0x1E`) → `11`. AltGr 은 `AltGr+e` → `€` (`e2 82 ac`) 로 보존된다.
 
 **macOS 도 같은 바이트를 낸다** ([#658](https://github.com/ensky0/tildaz/issues/658), 2026-10-10). 그 전에는 두 자리가 인코더를 지나지 않았다.
