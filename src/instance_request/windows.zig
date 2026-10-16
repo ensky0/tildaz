@@ -1,6 +1,13 @@
 const std = @import("std");
+const app_id = @import("../app_id.zig");
 const window = @import("../window.zig");
 const windows = std.os.windows;
+
+/// 새-instance 요청 gate mutex 이름. 판 (dev · 릴리즈) 마다 다르다 — 같으면 두 판의
+/// launcher 가 서로를 같은 burst 로 보고 한쪽이 아무것도 안 하고 끝났다 (#754).
+/// 릴리즈 판은 `window_base` 가 `TildaZ` 라 #654 이전 이름과 글자까지 같다. 그래서
+/// 업그레이드 때 옛 판과 새 판의 launcher 도 서로를 막는다.
+const gate_name = "Local\\" ++ app_id.window_base ++ "-NewInstanceRequest-v1";
 
 extern "user32" fn FindWindowW([*:0]const u16, [*:0]const u16) callconv(.c) ?*anyopaque;
 extern "user32" fn SendMessageW(?*anyopaque, c_uint, usize, isize) callconv(.c) isize;
@@ -37,7 +44,7 @@ pub fn tryAcquireGate() !?RequestGate {
     const handle = CreateMutexW(
         null,
         .FALSE,
-        std.unicode.utf8ToUtf16LeStringLiteral("Local\\TildaZ-NewInstanceRequest-v1"),
+        std.unicode.utf8ToUtf16LeStringLiteral(gate_name),
     ) orelse return error.RequestGateCreateFailed;
     errdefer windows.CloseHandle(handle);
 
@@ -68,4 +75,12 @@ test "request gate maps Windows wait results" {
     try std.testing.expectEqual(GateWait.acquired, classifyGateWait(WAIT_ABANDONED));
     try std.testing.expectEqual(GateWait.busy, classifyGateWait(WAIT_TIMEOUT));
     try std.testing.expectEqual(GateWait.failed, classifyGateWait(0xFFFFFFFF));
+}
+
+test "#754 request gate name differs by build kind and keeps the release name" {
+    const want = if (app_id.is_dev)
+        "Local\\TildaZ-dev-NewInstanceRequest-v1"
+    else
+        "Local\\TildaZ-NewInstanceRequest-v1";
+    try std.testing.expectEqualStrings(want, gate_name);
 }
