@@ -2004,11 +2004,15 @@ pub const SessionCore = struct {
         return true;
     }
 
-    pub fn queueInputToActive(self: *SessionCore, data: []const u8) void {
-        if (self.activeTab()) |tab| {
-            tab.queueWrite(data);
-            tab.terminal.scrollViewport(.{ .bottom = {} });
-        }
+    /// 키 입력을 활성 탭의 PTY 로 보내고 viewport 를 맨 아래로 내린다 (#242 scroll-on-keystroke).
+    ///
+    /// #763 — **화면이 바뀌었는지 (viewport 가 움직였는지)** 를 돌려준다. 호출자는 이것이 참일 때만
+    /// 그리기를 요청한다. 이미 맨 아래면 키 하나로 바뀌는 것이 없어서, 무조건 그리면 바뀐 것 없는 빈
+    /// 프레임이 나가고 그 프레임이 곧 도착한 에코를 한 프레임 막는다 (#763 ① · ② · ⑤ · ⑥).
+    pub fn queueInputToActive(self: *SessionCore, data: []const u8) bool {
+        const tab = self.activeTab() orelse return false;
+        tab.queueWrite(data);
+        return scrollToBottomMoved(&tab.terminal);
     }
 
     /// #282 A8 — Ctrl+C 등 interrupt char 즉시 송신. `write_queue` 의 pending
@@ -2016,21 +2020,22 @@ pub const SessionCore = struct {
     /// 늦게 도착("Ctrl+C 안 먹힘")하는 것을 막는다 + #242 로 viewport 를 맨 아래로.
     /// macOS host 가 쓰던 `Tab.interruptWrite` 경로를 세 platform 공통 진입점으로
     /// 캡슐화 — Windows / Linux 도 이 경로로 SIGINT 즉시성이 동등해진다.
-    pub fn interruptActive(self: *SessionCore, data: []const u8) void {
-        if (self.activeTab()) |tab| {
-            tab.interruptWrite(data);
-            tab.terminal.scrollViewport(.{ .bottom = {} });
-        }
+    /// #763 — viewport 가 움직였는지를 돌려준다 (`queueInputToActive` 와 같다).
+    pub fn interruptActive(self: *SessionCore, data: []const u8) bool {
+        const tab = self.activeTab() orelse return false;
+        tab.interruptWrite(data);
+        return scrollToBottomMoved(&tab.terminal);
     }
 
     /// #242 — 활성 탭 viewport 를 맨 아래로(scroll-on-keystroke). PTY write 없이
     /// scroll 만 필요한 입력 경로용 — IME preedit(조합 중)은 PTY 로 안 가고 화면에
     /// inline 표시만 되므로, 스크롤백 올린 상태에서 조합 시작 시 cursor(맨 아래)로
     /// 내려와야 자기 조합이 보인다. 타이핑 commit 은 queueInputToActive 가 겸함.
-    pub fn scrollActiveToBottom(self: *SessionCore) void {
-        if (self.activeTab()) |tab| {
-            tab.terminal.scrollViewport(.{ .bottom = {} });
-        }
+    ///
+    /// #763 — viewport 가 움직였는지를 돌려준다.
+    pub fn scrollActiveToBottom(self: *SessionCore) bool {
+        const tab = self.activeTab() orelse return false;
+        return scrollToBottomMoved(&tab.terminal);
     }
 
     /// Paste 전용 — 활성 탭의 ghostty Terminal mode `.bracketed_paste` (DEC
@@ -2038,8 +2043,10 @@ pub const SessionCore = struct {
     /// paste 를 한 묶음으로 받아 매 newline 단위 즉시 실행 / prompt redraw 안
     /// 함 — 큰 paste (수만 라인) 의 cooked-mode line discipline 부담 제거.
     /// 일반 typing (`queueInputToActive`) 과 분리 — typing 은 wrap 하면 안 됨.
-    pub fn pasteToActive(self: *SessionCore, data: []const u8) void {
-        const tab = self.activeTab() orelse return;
+    ///
+    /// #763 — viewport 가 움직였는지를 돌려준다.
+    pub fn pasteToActive(self: *SessionCore, data: []const u8) bool {
+        const tab = self.activeTab() orelse return false;
         // paste 줄바꿈 정규화 (#260). 붙여넣는 텍스트의 줄바꿈은 출처(다른 OS의
         // 클립보드 / 파일 / 웹)에 따라 CRLF·LF·CR 무엇이든 올 수 있으므로 전부
         // CR(\r) 하나로 통일한다 — CR 은 모든 OS 에서 터미널이 Enter 키로 보내는
@@ -2059,7 +2066,7 @@ pub const SessionCore = struct {
         } else {
             tab.queueWrite(out);
         }
-        tab.terminal.scrollViewport(.{ .bottom = {} });
+        return scrollToBottomMoved(&tab.terminal);
     }
 
     /// paste 데이터의 줄바꿈을 단일 `nl` 로 통일. CRLF·LF·CR 전부 `nl` 하나로
@@ -2468,6 +2475,41 @@ test "#574 — 출력이 없는 완전한 라운드는 유휴로 끝난다" {
     try takeVisibleDrainPane(&round, members, 0, 0, false);
     try takeVisibleDrainPane(&round, members, 0, 1, false);
     try std.testing.expect(!try finishVisibleDrainRound(&round, members, 0, false));
+}
+
+/// #763 — viewport 를 맨 아래로 내리고, **실제로 움직였는지**를 돌려준다.
+///
+/// ghostty 의 `scrollViewport(.bottom)` 은 `PageList.viewport` 를 `.active` 로 바꾼다. 그래서 바꾸기
+/// 전에 `.active` 였으면 화면이 그대로다. 이 판정은 안전한 쪽으로만 틀린다 — 맨 아래인데 표기가
+/// `.pin` 인 드문 경우에 한 프레임을 더 그릴 뿐, 필요한 그리기를 빠뜨리지 않는다.
+pub fn scrollToBottomMoved(term: *ghostty.Terminal) bool {
+    const was_bottom = term.screens.active.pages.viewport == .active;
+    term.scrollViewport(.{ .bottom = {} });
+    return !was_bottom;
+}
+
+test "#763 — 맨 아래에서는 움직이지 않았다고, 스크롤백을 올린 상태에서는 움직였다고 답한다" {
+    var term = try ghostty.Terminal.init(std.testing.io, std.testing.allocator, .{
+        .cols = 10,
+        .rows = 5,
+        .max_scrollback_lines = 100,
+        .max_scrollback_bytes = null,
+    });
+    defer term.deinit(std.testing.allocator);
+    var stream = term.vtStream();
+    defer stream.deinit();
+    for (0..20) |_| stream.nextSlice("line\r\n");
+
+    // 출력만 받은 상태 — 이미 맨 아래다.
+    try std.testing.expect(!scrollToBottomMoved(&term));
+
+    // 스크롤백을 올리면 키 입력이 화면을 바꾼다.
+    term.scrollViewport(.{ .delta = -3 });
+    try std.testing.expect(scrollToBottomMoved(&term));
+    try std.testing.expect(term.screens.active.pages.viewport == .active);
+
+    // 내려온 뒤의 다음 키는 다시 바꾸는 것이 없다.
+    try std.testing.expect(!scrollToBottomMoved(&term));
 }
 
 test "OSC 0 and 2 update automatic tab title and empty title restores default" {

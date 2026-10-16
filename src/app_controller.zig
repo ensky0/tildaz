@@ -159,10 +159,14 @@ pub const App = struct {
         self.menu_hints = hints;
     }
 
-    fn winHostInvalidate(_: *tab_actions.Host) void {
-        // #483 2단계 ① — 이전에는 렌더러의 공유 `render_state` 를 초기화했다. 스냅숏이
-        // 탭의 것이 되어 초기화할 것이 없고, 다음 프레임은 `wndProc` 이 메시지마다 여는
-        // `needs_render` 가 그린다 (macOS 와 같은 no-op).
+    fn winHostInvalidate(host: *tab_actions.Host) void {
+        // #483 2단계 ① — 이전에는 렌더러의 공유 `render_state` 를 초기화했다. 스냅숏이 탭의 것이
+        // 되어 초기화할 것이 없다.
+        //
+        // #763 — 탭 전환 · reset 같은 탭 동작이 화면을 바꾸니 그린다. 예전에는 `wndProc` 이 키 메시지
+        // 에서도 여는 그리기 게이트에 기대어 비워 두었다. 이제 키 메시지는 게이트를 열지 않는다.
+        const self: *App = @ptrCast(@alignCast(host.user_data.?));
+        self.window.requestRender();
     }
 
     fn winHostClipboardCopy(host: *tab_actions.Host, text: [:0]const u8) void {
@@ -668,7 +672,7 @@ pub const App = struct {
         // #646 — 검색 중에는 조합이 터미널이 아니라 검색바 안에 보이므로 내릴 이유가 없다.
         // 오히려 검색 결과를 보려고 올려 둔 화면을 맨 아래로 끌어내린다.
         if (self.searchFocused()) return;
-        self.session.scrollActiveToBottom();
+        if (self.session.scrollActiveToBottom()) self.window.requestRender(); // #763
     }
 
     // --- Window callbacks (userdata = *App) ---
@@ -687,11 +691,14 @@ pub const App = struct {
         // #282 A8 — Ctrl+C(ETX 0x03) 는 write_queue 우회 즉시 송신(SIGINT). 대량 paste
         // 로 큐가 가득 차면 SIGINT 가 그 뒤에 밀려 "Ctrl+C 안 먹힘" 이 되므로(macOS 동등).
         // 이 경로는 키보드 write 전용이라 단독 0x03 = Ctrl+C (arrow 등은 multi-byte escape).
-        if (data.len == 1 and data[0] == 0x03) {
-            self.session.interruptActive(data);
-            return;
-        }
-        self.session.queueInputToActive(data);
+        //
+        // #763 — 화면이 바뀔 때 (맨 아래로 움직였을 때) 만 그린다. 에코는 PTY 출력이라 출력 통보가
+        // 그린다. 이미 맨 아래면 바뀐 것이 없고, 그린 빈 프레임이 그 통보를 막는다.
+        const moved = if (data.len == 1 and data[0] == 0x03)
+            self.session.interruptActive(data)
+        else
+            self.session.queueInputToActive(data);
+        if (moved) self.window.requestRender();
     }
 
     /// #352 — `resize_fn` 은 "창 크기가 바뀌었다" 는 알림만 준다. 이전 시그니처는
@@ -1028,6 +1035,8 @@ pub const App = struct {
         };
         const target = under orelse self.session.activeTab() orelse return;
         session_core.SessionCore.scrollTab(target, event, @max(1, target.terminal.rows));
+        // #763 — 페이지 키 (Shift+PgUp/PgDn) 는 키 메시지라 그리기 게이트를 열지 않는다.
+        self.window.requestRender();
     }
 
     /// 현재 활성 탭의 scrollbar `Hit` (track geometry + thumb geometry). 스크롤백이
@@ -1101,6 +1110,8 @@ pub const App = struct {
     /// #329 — 메뉴 닫기 공통 지점. focus / scroll 까지 초기화해 다음 열기가
     /// 항상 처음 상태에서 시작한다.
     fn closeCommandMenu(self: *App) void {
+        // #763 — 키 (Esc · Ctrl 조합) 로도 닫힌다. 키 메시지는 그리기 게이트를 열지 않는다.
+        self.window.requestRender();
         self.command_menu_open = false;
         self.command_menu_hover = null;
         self.command_menu_focus = null;
@@ -1118,6 +1129,7 @@ pub const App = struct {
     fn handleCommandMenuKey(self: *App, menu_key: command_menu.MenuKey) void {
         switch (command_menu.onKey(menu_key, &self.command_menu_focus)) {
             .consumed => {
+                self.window.requestRender(); // #763 — 키로 고른 항목이 바뀐다
                 // #334 — 키보드를 쓰는 순간 pointer hover 강조를 지운다.
                 // 마우스가 항목 위에 머물러 있으면 hover 가 focus 를 덮어
                 // 키보드 이동이 화면에 안 보였다 (사용자 시연 발견). 마우스를
@@ -1758,7 +1770,7 @@ pub const App = struct {
                 // #646 — 검색 중에는 정책이 `drop` 이라 아래 분기를 안 탄다. 삼키지 않으면
                 // 검색어를 치다가 셸이 SIGINT 를 받는다.
                 const disposition = self.resolveWindowsInput(.interrupt) orelse return true;
-                if (disposition.target == .pty) self.session.interruptActive("\x03");
+                if (disposition.target == .pty and self.session.interruptActive("\x03")) self.window.requestRender(); // #763
                 return true;
             },
             .mouse_right_down => |mouse| {

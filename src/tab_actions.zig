@@ -223,7 +223,9 @@ pub fn rightClickCopiesSelection(host: *Host, alloc: std.mem.Allocator, copy_on_
 /// paste 텍스트 라우팅 — session.pasteToActive. bracketed paste mode 검사 +
 /// wrap 은 거기서 처리.
 pub fn routePaste(host: *Host, bytes: []const u8) void {
-    host.session.pasteToActive(bytes);
+    // #763 — 맨 아래로 움직였으면 그린다. 붙인 글자 자체는 에코로 온다. Windows 는 붙여넣기 단축키가
+    // 키 메시지라 그리기 게이트를 열지 않는다.
+    if (host.session.pasteToActive(bytes)) host.invalidate(host);
 }
 
 // ── 테스트 ──────────────────────────────────────────────────────────────────
