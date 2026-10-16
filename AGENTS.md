@@ -1110,6 +1110,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | [`tool/search-bar-check_windows.ps1`](tool/search-bar-check_windows.ps1) | 버퍼 검색바 ([#646](https://github.com/ensky0/tildaz/issues/646)) 를 모드별로 판정 — `A` (배치 · 강조) · `B` (키보드 · 삼킴 · wrap) · `C` (MS-IME 조합 · 한자 후보창) · `D` (마우스 · 커서 · 마우스 리포팅) · `E` (메뉴) · `F` (pane 분할 · 최대화 — 바가 활성 pane 을 따라가는지, 최대화 뒤 강조가 남는지, [#675](https://github.com/ensky0/tildaz/issues/675)). `probe` 는 바 자리만 재고 끝난다 |
 | [`tool/actions-check_windows.ps1`](tool/actions-check_windows.ps1) | 공통 처리부 (`app_actions.zig`, [#692](https://github.com/ensky0/tildaz/issues/692)) 의 액션을 모드별로 판정 — `actions` (단축키 · Linux `headless-check_linux.sh actions` 의 짝) · `mouse` (`⋯` 메뉴 · `+` · Alt+`+`) · `cursor` (배치가 바뀐 직후 커서 · 남의 창 위 `Ctrl`) · `ime` (MS-IME 조합 중 메뉴 · 단축키) · `worker` (`-e` 없이 — 전역 hotkey · `Alt+F4` · config · log 열기). 판정은 로그 줄 · **자식 PowerShell 이 PID 파일에 적는 `WindowSize`** (어느 pane · 탭이 받았는지와 격자) · 창 사각형 · 커서 |
 | [`tool/selection-check/selection-check_windows.ps1`](tool/selection-check/selection-check_windows.ps1) | macOS 판의 여섯 칸 — 마우스 선택 · 오른쪽 클릭 · 더블 클릭이 클립보드와 앱에 남기는 것 (`[input] copy_on_select` 의 두 값 · [#656](https://github.com/ensky0/tildaz/issues/656)). **같은 칸을 Windows Terminal 에서도 돌려 견줘요** (`-Target wt`, `-WtCopyOnSelect` 면 WT 의 `copyOnSelect` 를 잠깐 `true` 로). tildaz 는 Windows 전용 칸 ⑦~⑪ 도 봐요 — 메뉴가 열린 채 오른쪽 클릭 · `Ctrl+Shift+C` · 메뉴 *Copy* · 비활성 pane 오른쪽 클릭 (pane 판정은 로그의 `focus by click` 과 pane 마다의 수신 파일). 좌표는 tildaz 는 로그의 `window initialized: dpi= cell=` 와 여백 `round(6 × dpi/96)`, WT 는 캡처에서 찾은 0 행 글자 범위예요. 수신자는 python 이 아닌 PowerShell 자식이에요 (`ENABLE_VIRTUAL_TERMINAL_INPUT` + `ReadFile`). 클립보드에 순수 글자 말고 다른 형식 (`HTML Format` 등) 이 있으면 멈춰요 |
+| [`tool/key-redraw-check_windows.ps1`](tool/key-redraw-check_windows.ps1) | 키가 화면을 바꾸는 장면이 **키 뒤 150 ms 에 이미 그려졌는지** 판정 ([#763](https://github.com/ensky0/tildaz/issues/763)) — 스크롤백을 올린 채 글자 · 에코 없는 글자 · `Ctrl+C` · 붙여넣기, MS-IME 조합 → 방향키 · Enter, 탭 전환, 메뉴 `↓` · `Esc`. 키 메시지는 그리기 게이트를 열지 않아서, 그리기 요청이 빠진 자리는 화면이 아예 안 바뀌어요. 150 ms 와 800 ms 사진을 견줘요. `-STA` 로 불러요 (클립보드) |
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
@@ -1122,6 +1123,7 @@ tool\search-bar-check_windows.ps1 -Mode D -Mouse                    # 마우스 
 tool\actions-check_windows.ps1                                      # 다섯 모드 전부 (창 5 회 · 8 분 남짓)
 tool\actions-check_windows.ps1 -Mode cursor -Bin <수정 전 판>\tildaz.exe   # 대조군 — _internal 도 그 옆에 있어야 한다
 tool\selection-check\selection-check_windows.ps1 -WtCopyOnSelect   # tildaz 창 2 회 + WT 창 2 회 · 클립보드 · WT 설정 잠깐
+powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1 회 · 1 분 · 합성 키 · 한국어 IME · 클립보드 잠깐
 ```
 
 - **layout 은 활성화하지 않고 (`LoadKeyboardLayoutW(klid, 0)`) 창 하나만 전환해요** — `WM_INPUTLANGCHANGEREQUEST` 를 tildaz 창에

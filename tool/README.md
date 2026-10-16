@@ -57,6 +57,7 @@
 | [`key-bytes-cases.tsv`](key-bytes-cases.tsv) | 무관 | `Ctrl` + 기호 · 숫자 · Space 의 기대 바이트 표 — 아래 세 판정 도구가 함께 읽는다 ([#684](https://github.com/ensky0/tildaz/issues/684)) | — (표 머리 주석) |
 | [`key-bytes-check_macos.sh`](key-bytes-check_macos.sh) | macOS | `key-bytes.py` 를 띄우고 `input_macos` 로 키를 쳐 위 표의 바이트를 자동 판정 (legacy · mok2). 켜진 시스템 단축키는 건너뜀 | `# macOS — 합성 입력으로 …` |
 | [`key-bytes-check_windows.ps1`](key-bytes-check_windows.ps1) | Windows | 위 도구를 합성 입력으로 돌려 `Ctrl+[` · `Ctrl+Shift+<글자>` 등과 위 표의 바이트를 기대값과 자동 판정 (legacy · kitty · mok2) | `# Windows — 합성 입력으로 …` |
+| [`key-redraw-check_windows.ps1`](key-redraw-check_windows.ps1) | Windows | 키가 화면을 바꾸는 장면 (스크롤백 · 붙여넣기 · IME 조합 · 탭 전환 · 메뉴) 이 키 뒤 150 ms 에 이미 그려졌는지 판정 ([#763](https://github.com/ensky0/tildaz/issues/763)) | `# Windows — 합성 입력으로 …` |
 | [`kitty-text-check_windows.ps1`](kitty-text-check_windows.ps1) | Windows | kitty keyboard protocol 의 글자 키 바이트 판정 | `# Windows — 합성 입력으로 …` |
 | [`launcher-fatal-check_windows.ps1`](launcher-fatal-check_windows.ps1) | Windows | launcher 기동 실패가 화면에 뜨는지 | `# Windows — 합성 입력으로 …` |
 | [`link-click-check_linux.sh`](link-click-check_linux.sh) | Linux | headless sway 안에서 터미널 링크의 밑줄 · 손 커서 · 클릭으로 열림을 합성 마우스 · 키로 자동 판정 ([#647](https://github.com/ensky0/tildaz/issues/647)) | `# Linux — headless sway …` |
