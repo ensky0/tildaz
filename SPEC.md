@@ -2147,7 +2147,38 @@ VS-16 / 스킨톤 modifier / ZWJ family (`👨‍👩‍👧` 등) / combining m
 |---|---|---|
 | Windows | `IDWriteTextAnalyzer.GetGlyphs` + `GetGlyphPlacements` | `src/font/windows/font.zig` `resolveGrapheme` |
 | macOS | `CTLineCreateWithAttributedString` 후 첫 CTRun | `src/font/macos/font.zig` `resolveGrapheme` |
-| Linux | HarfBuzz `hb_shape` on chain face | `src/font/linux/font.zig` `resolveCluster` (chain 의 모든 face 순회 — primary 미매치 시 NotoColorEmoji 등 fallback face 에서 GSUB 합성 잡음) |
+| Linux | HarfBuzz `hb_shape` on chain face | `src/font/linux/font.zig` `resolveCluster` (chain 의 face 를 앞에서부터 순회 — primary 미매치 시 NotoColorEmoji 등 fallback face 에서 GSUB 합성 잡음. cluster 는 하나씩 해석한다 — §12.1.1) |
+
+#### 12.1.1 이모지 모양 — 컬러 이모지인가 흑백 글자인가 ([#771](https://github.com/ensky0/tildaz/issues/771))
+
+같은 글자도 컬러 이모지 (`❤️`) 와 흑백 글자 (`❤`) 두 모양이 있다. **VS16** (U+FE0F) · **VS15** (U+FE0E) 는 바로 앞 글자의 모양을 정하는 보이지 않는 글자다. 모양 요청은 [`src/font/presentation.zig`](src/font/presentation.zig) 가 정한다 (세 OS 공용).
+
+| cluster | 요청 |
+|---|---|
+| 둘째 글자가 VS16 | 이모지 |
+| 둘째 글자가 VS15 | 텍스트 |
+| 선택자 없음 · 첫 글자의 기본 모양이 이모지 (Unicode `Emoji_Presentation`) | 이모지 |
+| 그 밖 | 없음 — chain 순서 그대로 |
+
+- **기본 모양이 텍스트인 글자는 요청하지 않는다** (2026-10-16 결정). 요청하면 chain 의 텍스트 글꼴에 없는 글자 (`ℹ` `▶` 등) 가 컬러에서 흑백으로 바뀌고, macOS 단일 글자 경로까지 다시 짜야 세 OS 가 맞는다.
+- `Emoji_Presentation` 표는 ghostty 가 셀 폭을 정할 때 쓰는 uucode 판에서 만든다 (`src/font/emoji_presentation_table.zig` · `tool/emoji-presentation-table.py`). 판이 같아야 두 칸 글자와 이모지 모양이 맞는다.
+
+요청이 있으면 글꼴을 이 순서로 고른다.
+
+1. chain 앞에서부터 **모양이 맞는** 글꼴
+2. 시스템 글꼴 중 **모양이 맞는** 글꼴
+3. chain 에서 모양과 무관하게 처음 맞은 글꼴
+4. 시스템 글꼴 (모양 무관)
+
+- **모양은 글리프를 그려 본 결과로 판정한다** — 컬러 비트맵이면 이모지다. 글꼴 단위 (컬러 표 유무 · 이모지 언어 태그) 로 정하지 않는다. 흑백 글꼴이 이모지 태그를 달고 있는 경우가 있다 (#771 실측 — `Segoe UI Symbol`). 시스템 글꼴 *후보*는 글꼴 단위로 고르고 (fontconfig 는 글꼴 단위로만 물을 수 있다) 최종 판정은 글리프로 한다.
+- **chain 안에서는 결과가 cluster 만으로 정해진다.** 그리는 순서 · 같은 줄의 옆 cluster 와 무관하다. 시스템 글꼴 단계는 Linux 에서 아직 먼저 불러온 글꼴에 따라 갈린다 ([#780](https://github.com/ensky0/tildaz/issues/780)).
+- 근거: [UTS #51 §4](https://www.unicode.org/reports/tr51/tr51-31.html#Presentation_Style) (선택자가 있으면 어느 환경이든 VS16 = 이모지 · VS15 = 텍스트), ghostty [`CodepointResolver.getIndex`](https://github.com/ghostty-org/ghostty/blob/246f702876b924a1cb7cade1e99274d1470302fc/src/font/CodepointResolver.zig#L159-L226) (같은 순서 · 글리프 단위 판정).
+
+| platform | 구현 |
+|---|---|
+| Linux | `font/linux/font.zig` 의 `resolveClusterInner` · `resolveGlyph` 가 위 순서 그대로. 시스템 글꼴은 fontconfig 에 `color` 조건을 넘겨 후보를 고른다 |
+| macOS | cluster 는 CoreText 가 같은 순서로 고른다 (#771 실측 — VS16 371 개 모두 컬러 · VS15 는 흑백 글꼴이 있으면 흑백 · 한 줄 묶음과 하나씩의 결과가 갈린 cluster 0). 선택자 없는 단일 글자는 #771 에서 진행 중 |
+| Windows | #771 에서 진행 중 |
 
 ### 12.2 Ligature (인접 cell sequence)
 

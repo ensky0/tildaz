@@ -417,8 +417,9 @@ back `.notdef`, so each cluster walks the chain until one accepts). Non-grapheme
 cells never pay this — they hit the single-codepoint `glyph_map` — which is why the
 same renderer ranks first on ASCII.
 
-Two fixes, not mutually exclusive — **both are now in on all three platforms**
-([#399](https://github.com/ensky0/tildaz/issues/399)):
+Two fixes, not mutually exclusive ([#399](https://github.com/ensky0/tildaz/issues/399)). The
+cache is in on all three platforms. Run batching is in on macOS and Windows — **Linux dropped
+it in [#771](https://github.com/ensky0/tildaz/issues/771)** (see below):
 
 - **(A) run batching** — helps always, including clusters seen for the first time.
   The cell loop collects a run of consecutive grapheme cells, shapes it with **one**
@@ -450,7 +451,8 @@ unit, which is why (A) came first and (B) sits on top of it.
 
 ### What each platform actually does
 
-The cell loop lives in three places, so **only the run-boundary rule is shared**; the
+The cell loop lives in three places, so **only the run-boundary rule is shared** (macOS and
+Windows — Linux has no runs since #771); the
 shaping call and the glyph-to-cell mapping are per platform. The cache is the opposite
 — one shared skeleton, and only the value type and its release differ.
 
@@ -458,15 +460,20 @@ shaping call and the glyph-to-cell mapping are per platform. The cache is the op
 |---|---|---|---|---|
 | **macOS** | CoreText `CTLine` | `CTRunGetStringIndices` | **CoreText picks** | `GlyphResult` / `CFRelease` |
 | **Windows** | DirectWrite `GetGlyphs` | `cluster_map` | we walk the chain | `ClusterResult` / COM `Release` |
-| **Linux** | HarfBuzz `shapeRunOnFace` | `hb_glyph_info_t.cluster` | we walk the chain | `ClusterGlyph` / **none** (index) |
+| **Linux** | HarfBuzz `shapeRunOnFace`, one cluster at a time | `hb_glyph_info_t.cluster` (mark detection only) | we walk the chain, matching presentation first (#771) | `ClusterGlyph` / **none** (index) |
 
-Two consequences worth knowing before touching this code:
+Three things worth knowing before touching this code:
 
-- **Windows and Linux need a per-face retry that macOS does not.** They pick the font
-  themselves, so shaping a whole run on one face can succeed for some clusters and
-  fail for others. macOS hands that job to CoreText. All three currently take the
-  simple policy: if any cluster in the run fails, the whole run falls back to the
-  per-cluster path.
+- **Linux shapes one cluster at a time ([#771](https://github.com/ensky0/tildaz/issues/771)).**
+  Fitting a whole run to one face made a cluster's font depend on its neighbours — `❤️` came
+  out as the white text heart next to `☺️` but in colour next to `👋🏻`. The "try the face that
+  matched last" hint had the same flaw across frames. On top of the cache the two together
+  saved 0.7 µs per first-seen cluster and 34 ns per cache hit (mini PC, Ryzen 7 8845HS), so
+  both went. The rule for choosing a face is in [`SPEC.md`](SPEC.md) §12.1.1.
+- **Windows needs a per-face retry that macOS does not.** It picks the font itself, so
+  shaping a whole run on one face can succeed for some clusters and fail for others.
+  macOS hands that job to CoreText. Both take the simple policy: if any cluster in the
+  run fails, the whole run falls back to the per-cluster path.
 - **Ownership is the trap.** Where the cached value owns a font handle (macOS, Windows),
   the cache and the caller each hold their **own** reference: on insert the cache
   retains its share, and the caller keeps whatever `owned` it already had, releasing

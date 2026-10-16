@@ -42,3 +42,4 @@ fi
 
 echo ""
 echo "완료. 'zig build' 로 검증 후 커밋하세요."
+echo "이모지 모양 표도 확인하세요 — 'zig build' 뒤 'python3 tool/emoji-presentation-table.py --check' (#771)."

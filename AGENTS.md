@@ -2885,3 +2885,17 @@ upstream이 움직이면 CI의 `zig build -Dsimd=true --fetch`가 캐시 불일�
 `.github/workflows/release.yml`에는 rolling URL을 막는 sanity check가 있으니, 실수로 되돌리면 바로 빌드가 깨질 수 있어요.
 
 ghostty 의존성을 갱신하려면 `dist/update-ghostty.sh`를 실행해서 upstream `main` HEAD sha 기준으로 URL과 hash를 함께 업데이트해요.
+
+**ghostty 를 올렸으면 이모지 모양 표가 맞는지 봐요** ([#771](https://github.com/ensky0/tildaz/issues/771)). 선택자 없는 글자를
+컬러 이모지로 그릴지 정하는 표 (`src/font/emoji_presentation_table.zig`) 는 ghostty 가 셀 폭을 정할 때 쓰는 uucode 판에서
+만들어요. 판이 어긋나면 두 칸으로 잡힌 글자가 흑백으로 그려지거나 그 반대가 돼요.
+
+```sh
+zig build                                          # zig-pkg 에 새 ghostty · uucode 를 받는다
+python3 tool/emoji-presentation-table.py --check   # 다르면 종료 코드 1
+python3 tool/emoji-presentation-table.py           # 다르면 다시 만든다
+```
+
+- 다시 만들면 `src/font/presentation.zig` 의 글자 수 테스트 (Unicode 18.0 의 1,228 개) 도 새 판의 수로 고쳐요.
+- 생성기는 우리 `build.zig.zon` 이 가리키는 ghostty 부터 따라가요. `zig-pkg` 에는 옛 pin 의 ghostty · uucode 가 남아 있어서
+  디렉터리 이름으로 고르면 둘이 잡혀요.
