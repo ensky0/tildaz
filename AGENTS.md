@@ -1698,6 +1698,7 @@ A5 · A7 · A8 · A2, 2026-09-03 미니PC Firebat ZY-A8). 핵심은 **사용자 
 | [`tool/link-shot_linux.py`](tool/link-shot_linux.py) | 그 회차의 캡처 판정 — 격자 찾기 (`grid`) · 밑줄 (`diff`) · 커서 모양 (`cursor`, XCursor 테마의 불투명 픽셀과 맞대요) |
 | [`tool/headless-check_linux.sh`](tool/headless-check_linux.sh) | 위를 엮은 회차 — `tabs` (Alt+1~9) · `confirm` · `prompt` (SIGTERM 펌프) · `scale` (배율) · `seat-replug` (#347 착탈) · `compositor-exit` (#613) · `launcher-fatal gnome\|cinnamon` · `actions` (#692 — 공통 처리부로 옮긴 액션을 단축키로 눌러 로그 줄 · `stty size` 로 판정) · `key-bytes` (#684 — 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv)) |
 | [`tool/selection-check/selection-check_linux.sh`](tool/selection-check/selection-check_linux.sh) | 마우스 선택 · 오른쪽 · 가운데 클릭이 CLIPBOARD · PRIMARY · 앱에 남기는 것 ([#656](https://github.com/ensky0/tildaz/issues/656) · [#657](https://github.com/ensky0/tildaz/issues/657)). 판정은 같은 sway 에 붙은 `wl-paste` · `wl-paste --primary` 와 수신자 바이트. headless sway 를 격리 경로에 띄우므로 **이 Mac 의 lima VM 에서도** 같은 명령으로 돈다 (`--bin` 으로 크로스빌드 바이너리를 준다) |
+| [`tool/key-redraw-check_linux.sh`](tool/key-redraw-check_linux.sh) | 키가 화면을 바꾸는 장면을 **두 앱 판에 똑같이 보내 캡처를 견줘요** ([#763](https://github.com/ensky0/tildaz/issues/763) — Windows `key-redraw-check_windows.ps1` 의 짝). 스크롤백을 올린 채 글자 · 에코 없는 글자 · `Ctrl+C` · 붙여넣기 · dead key · 탭 · 명령 메뉴 · 한글 조합. 판정은 장면마다 기준판과 0 px 인지와, **앞 장면과 달라졌는지** (거짓 통과 검사) 예요 |
 | [`tool/real-session-check_linux.sh`](tool/real-session-check_linux.sh) | **실제 세션**에서만 갈리는 것 — `hypr-scale 1.25 …` (다른 TTY 에 뜬 실제 Hyprland 에 붙어 배율별 띠 + foot 대조) · `hypr-height 1.25 60 50 40` (**한 배율 안에서** 논리 높이만 바꿔 원인이 우리 산술인지 가려요 — #619 를 이걸로 확정했어요) · `gnome` (GNOME 세션 안에서 fractional-scale 지원 통보 · 앱의 scale 소스 · #577 다이얼로그 캡처) |
 
 ```sh
@@ -1712,6 +1713,13 @@ echo "type touch /tmp/probe" > $R/vkbd.fifo; echo "key Return" > $R/vkbd.fifo   
 grim shot.png                                                          # sway 는 screencopy 를 내줘요
 ```
 
+- **사용자 config 를 복사하면 `hidden_start` 도 따라와요.** 그러면 창이 핫키를 기다리며 숨어 있어서 가상 키보드가 아무 데도
+  안 닿아요. 로그 끝이 `hidden_start — surface deferred until first hotkey toggle` 이면 이거예요. `auto_start` 와 함께 꺼요.
+- **한글 조합은 headless sway 에 격리한 fcitx5 를 붙여 재요** (2026-10-16 · #763). D-Bus 는 `dbus-daemon --session --fork` 로
+  따로 띄우고, config 는 `~/.config/fcitx5` 사본을 `XDG_CONFIG_HOME` 으로 줘요 (fcitx5 는 끝날 때 profile 을 덮어써요).
+  `WAYLAND_DISPLAY` 를 headless sway 로 주면 sway 의 input-method 에 붙고, 가상 키보드의 키가 그 입력기를 거쳐요. 사용자
+  세션의 fcitx5 와는 안 닿아요. 켜고 끄기는 `fcitx5-remote -o` · `-c` (같은 D-Bus) 예요. 입력기를 거쳤는지는 앱 로그의
+  `text_input preedit` · `commit` 줄 수로 봐요. `tool/key-redraw-check_linux.sh up` 이 이 모양이에요.
 - **격리 `XDG_RUNTIME_DIR` 은 짧아야 해요.** scratchpad 경로 (90 자 남짓) 를 주면 sway 가 `Socket path won't fit into
   ipc_sockaddr->sun_path` 로 **세그폴트**해요 (`sun_path` 108 바이트). `/run/user/<uid>/tz583` 처럼 실제 runtime dir 아래
   짧은 디렉터리를 만들어요 — tmpfs 이고 사용자 소유라 lock · 소켓 격리도 그대로예요. tildaz 의 lock · toggle 소켓 · 앱이

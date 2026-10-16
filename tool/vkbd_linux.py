@@ -176,13 +176,13 @@ class Wayland:
 
 
 class VirtualKeyboard:
-    def __init__(self, wl, layout):
+    def __init__(self, wl, layout, variant=""):
         self.wl = wl
         self.seat, _ = wl.bind("wl_seat", 7)
         self.manager, _ = wl.bind("zwp_virtual_keyboard_manager_v1", 1)
         self.vk = wl.alloc()
         wl.send(self.manager, 0, struct.pack("<II", self.seat, self.vk))   # create_virtual_keyboard(seat, id)
-        keymap = subprocess.run(["xkbcli", "compile-keymap", "--layout", layout], capture_output=True, check=True).stdout
+        keymap = subprocess.run(["xkbcli", "compile-keymap", "--layout", layout] + (["--variant", variant] if variant else []), capture_output=True, check=True).stdout
         keymap += b"\0"
         fd = os.memfd_create("vkbd-keymap")
         os.write(fd, keymap)
@@ -281,14 +281,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fifo", required=True, help="명령을 읽을 FIFO 경로 (없으면 만든다)")
     ap.add_argument("--layout", default="us", help="올릴 xkb layout (기본 us — CHARS 표가 us 기준이다)")
+    ap.add_argument("--variant", default="", help="xkb variant (예 intl — dead key 회차. 글자 자리는 us 와 같다)")
     ap.add_argument("--delay", type=int, default=12, help="type 의 글자 사이 ms (기본 12)")
     args = ap.parse_args()
 
     wl = Wayland()
-    vk = VirtualKeyboard(wl, args.layout)
+    vk = VirtualKeyboard(wl, args.layout, args.variant)
     if not os.path.exists(args.fifo):
         os.mkfifo(args.fifo, 0o600)
-    print(f"vkbd: attached to {wl.path} · seat={vk.seat} · keymap={args.layout} · fifo={args.fifo}", flush=True)
+    print(f"vkbd: attached to {wl.path} · seat={vk.seat} · keymap={args.layout}{'(' + args.variant + ')' if args.variant else ''} · fifo={args.fifo}", flush=True)
 
     while True:
         with open(args.fifo, "r") as f:
