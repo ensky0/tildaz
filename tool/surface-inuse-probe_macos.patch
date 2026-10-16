@@ -1,0 +1,172 @@
+macOS 표시 버퍼 진단 패치 (#769) — 커밋하지 않고 측정할 때만 잠깐 얹는다.
+
+쓰는 법과 읽는 법은 AGENTS.md 의 "# macOS — 그릴 표시 버퍼가 창 서버에 잡혀 있는지 재는 법" 절이
+단일 출처예요.
+
+  git apply tool/surface-inuse-probe_macos.patch     # 얹기
+  git apply -R tool/surface-inuse-probe_macos.patch  # 걷기 (또는 git checkout -- src/)
+
+perf 덤프에 두 줄이 더해진다.
+  T769    그릴 장을 고른 횟수 · 그때 가장 오래된 장 (old) · 직전 장 (mid) · 화면에 건 장 (shown) 이
+          창 서버에 잡혀 있던 횟수 (IOSurfaceIsInUse). v = vsync tick, w = 출력 통보
+  T769dt  가장 오래된 장이 화면에서 내려온 뒤 지난 시간의 분포 — 잡혀 있었을 때 / 비어 있었을 때
+
+만든 판: a677eeb.
+
+diff --git a/src/host/macos.zig b/src/host/macos.zig
+index f7f0428..0244552 100644
+--- a/src/host/macos.zig
++++ b/src/host/macos.zig
+@@ -5077,7 +5077,9 @@ fn outputWakePerform(_: ?*anyopaque) callconv(.c) void {
+     // coalescing 해제는 **렌더 전** 에 한다 (Windows `WM_PTY_OUTPUT` 핸들러와 같은 이유) —
+     // 그리는 동안 도착한 출력이 다음 통보를 만들 수 있어야 한다.
+     g_output_wake_pending.store(false, .release);
++    mac_renderer.temp769_from_wake = true; // TEMP #769
+     renderFrameTick();
++    mac_renderer.temp769_from_wake = false; // TEMP #769
+ }
+ 
+ /// #439 — PTY 출력이 ring 에 들어갔다는 통보. **PTY read thread 에서 불린다.**
+diff --git a/src/perf.zig b/src/perf.zig
+index b120e2d..a09e964 100644
+--- a/src/perf.zig
++++ b/src/perf.zig
+@@ -630,7 +630,62 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
+         },
+     ) catch return;
+ 
+-    log.appendBlock(buf[0 .. text.len + tail.len]);
++    // TEMP #769 — 세 번째 조각. v = vsync tick, w = 출력 통보. 커밋하지 않는다.
++    const t7 = &temp769;
++    const t769 = std.fmt.bufPrint(
++        buf[text.len + tail.len ..],
++        "T769     acq v={d} w={d} old_held v={d} w={d} mid_held v={d} w={d} shown_held v={d} w={d} old_held_mid_free={d} new_slot={d}\n" ++
++            "T769dt   held={any} free={any}\n",
++        .{
++            t7.acq[0].swap(0, .monotonic),
++            t7.acq[1].swap(0, .monotonic),
++            t7.old_held[0].swap(0, .monotonic),
++            t7.old_held[1].swap(0, .monotonic),
++            t7.mid_held[0].swap(0, .monotonic),
++            t7.mid_held[1].swap(0, .monotonic),
++            t7.shown_held[0].swap(0, .monotonic),
++            t7.shown_held[1].swap(0, .monotonic),
++            t7.old_held_mid_free.swap(0, .monotonic),
++            t7.new_slot.swap(0, .monotonic),
++            t7.dt_held.take(),
++            t7.dt_free.take(),
++        },
++    ) catch return;
++
++    log.appendBlock(buf[0 .. text.len + tail.len + t769.len]);
++}
++
++// TEMP #769 진단 — 그릴 장을 고를 때 세 장이 창 서버에 잡혀 있는가. 커밋하지 않는다.
++// 배열 인덱스 0 = vsync tick (`displayLinkFire`), 1 = 출력 통보 (`outputWakePerform`).
++const Temp769 = struct {
++    acq: [2]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
++    old_held: [2]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
++    mid_held: [2]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
++    shown_held: [2]std.atomic.Value(u64) = @splat(std.atomic.Value(u64).init(0)),
++    old_held_mid_free: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
++    new_slot: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
++    /// 가장 오래된 장이 화면에서 내려온 뒤 지난 시간 — 잡혀 있었을 때 / 비어 있었을 때.
++    dt_held: Histogram = .{},
++    dt_free: Histogram = .{},
++};
++var temp769: Temp769 = .{};
++
++pub fn temp769Record(from_wake: bool, old_held: ?bool, mid_held: bool, shown_held: bool, dt_old_ns: ?u64) void {
++    const s: usize = @intFromBool(from_wake);
++    _ = temp769.acq[s].fetchAdd(1, .monotonic);
++    if (mid_held) _ = temp769.mid_held[s].fetchAdd(1, .monotonic);
++    if (shown_held) _ = temp769.shown_held[s].fetchAdd(1, .monotonic);
++    const o = old_held orelse {
++        _ = temp769.new_slot.fetchAdd(1, .monotonic);
++        return;
++    };
++    if (o) {
++        _ = temp769.old_held[s].fetchAdd(1, .monotonic);
++        if (!mid_held) _ = temp769.old_held_mid_free.fetchAdd(1, .monotonic);
++    }
++    if (dt_old_ns) |dt| {
++        if (o) temp769.dt_held.add(dt) else temp769.dt_free.add(dt);
++    }
+ }
+ 
+ /// #396 — 측정 인스턴스는 종료 직전에 스냅숏을 **자동으로 한 번** 남긴다. 손으로
+diff --git a/src/renderer/macos.zig b/src/renderer/macos.zig
+index c14deb2..08e59a1 100644
+--- a/src/renderer/macos.zig
++++ b/src/renderer/macos.zig
+@@ -64,6 +64,11 @@ const DrawRange = struct { kind: DrawKind, offset: u32, count: u32 };
+ // 다른 자리와 같은 규칙으로 atomic 을 둔다.
+ var g_frame_presented = std.atomic.Value(bool).init(false);
+ 
++// TEMP #769 진단 — 커밋하지 않는다. host 의 출력 통보가 그리는 동안 참이다.
++pub var temp769_from_wake: bool = false;
++var temp769_last_present_ns: u64 = 0;
++var temp769_prev_present_ns: u64 = 0;
++
+ /// 마지막 show 이후 그림을 화면 쪽 (`CALayer.contents`) 에 넣은 적 있나 (host 의 pause 게이트).
+ pub fn frameWasPresented() bool {
+     return g_frame_presented.load(.seq_cst);
+@@ -577,6 +582,7 @@ pub const MetalRenderer = struct {
+     fn acquireTarget(self: *MetalRenderer) ?*surface_target.Target {
+         if (self.vp_width == 0 or self.vp_height == 0) return null;
+         const idx = (self.shown_target + 1) % self.targets.len;
++        self.temp769Sample(idx);
+         const slot = &self.targets[idx];
+         if (slot.*) |*t| {
+             if (t.width == self.vp_width and t.height == self.vp_height) return t;
+@@ -590,6 +596,26 @@ pub const MetalRenderer = struct {
+         return &slot.*.?;
+     }
+ 
++    /// TEMP #769 — 고르기 직전 세 장의 사용 중 여부와, 가장 오래된 장이 화면에서 내려온 뒤
++    /// (= 두 번 전 present 뒤) 지난 시간. 커밋하지 않는다.
++    fn temp769Sample(self: *MetalRenderer, idx: usize) void {
++        const n = self.targets.len;
++        const held = struct {
++            fn f(slot: *const ?surface_target.Target) ?bool {
++                const t = slot.* orelse return null;
++                return surface_target.IOSurfaceIsInUse(t.surface) != 0;
++            }
++        }.f;
++        const old = held(&self.targets[idx]);
++        const mid = held(&self.targets[(self.shown_target + 2) % n]) orelse false;
++        const shown = held(&self.targets[self.shown_target]) orelse false;
++        var dt: ?u64 = null;
++        if (perf.now()) |t| {
++            if (temp769_prev_present_ns != 0 and t > temp769_prev_present_ns) dt = t - temp769_prev_present_ns;
++        }
++        perf.temp769Record(temp769_from_wake, old, mid, shown, dt);
++    }
++
+     fn targetIndex(self: *MetalRenderer, t: *surface_target.Target) usize {
+         for (&self.targets, 0..) |*slot, i| {
+             if (slot.*) |*cand| if (cand == t) return i;
+@@ -810,6 +836,10 @@ pub const MetalRenderer = struct {
+             objc.msgSendVoid1(self.layer, objc.sel("setContents:"), @as(objc.id, @ptrCast(t.surface)));
+             self.shown_target = self.targetIndex(t);
+             g_frame_presented.store(true, .seq_cst);
++            if (perf.now()) |pt| { // TEMP #769
++                temp769_prev_present_ns = temp769_last_present_ns;
++                temp769_last_present_ns = pt;
++            }
+         }
+         perf.addTimed(&perf.present, present_t0);
+         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
+diff --git a/src/renderer/macos/surface_target.zig b/src/renderer/macos/surface_target.zig
+index 6afb29b..29f152d 100644
+--- a/src/renderer/macos/surface_target.zig
++++ b/src/renderer/macos/surface_target.zig
+@@ -13,6 +13,8 @@ pub const IOSurfaceRef = *opaque {};
+ 
+ extern "IOSurface" fn IOSurfaceCreate(properties: ct.CFDictionaryRef) ?IOSurfaceRef;
+ extern "IOSurface" fn IOSurfaceSetValue(buffer: IOSurfaceRef, key: ct.CFStringRef, value: ct.CFTypeRef) void;
++/// TEMP #769 — 창 서버 등 누군가 이 장을 잡고 있는가 (`IOSurfaceRef.h`). 커밋하지 않는다.
++pub extern "IOSurface" fn IOSurfaceIsInUse(buffer: IOSurfaceRef) u8;
+ extern "IOSurface" const kIOSurfaceWidth: ct.CFStringRef;
+ extern "IOSurface" const kIOSurfaceHeight: ct.CFStringRef;
+ extern "IOSurface" const kIOSurfaceBytesPerElement: ct.CFStringRef;

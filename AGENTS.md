@@ -112,6 +112,10 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 - 시작 전에 `SendMessage` 로 **얼마 동안 · 무엇을** (창 몇 번 · 합성 키 · 화면 녹화) 하는지 알리고, 무거운
   빌드도 미뤄 달라고 해요 — CPU 를 쓰면 지연 측정이 흔들려요.
 - 끝나면 바로 알려요. 상대가 측정 중이면 그쪽이 끝났다고 알릴 때까지 기다려요.
+- **알림을 보내고 바로 시작하지 않아요. 상대가 확인한 뒤에 시작해요.** 메시지는 상대가 다음 도구를 부를 때
+  읽혀서, 보낸 순간에는 상대가 몰라요. 2026-10-16 [#769](https://github.com/ensky0/tildaz/issues/769) 와
+  [#770](https://github.com/ensky0/tildaz/issues/770) 두 세션이 같은 순간 서로 시작 알림을 보내고 바로 시작했어요.
+  #769 쪽 스크립트가 아래 시작 가드에 걸려 피해는 없었어요.
 - 도구는 **자기가 띄운 창만** 골라요. 띄우기 전의 창 목록과 견줘 새 창을 찾아요. 그리고 시작할 때 다른
   TildaZ 가 떠 있으면 멈춰요 (`pgrep -x tildaz` — `pgrep -f` 는 그 글자가 든 셸 명령까지 잡아요).
 
@@ -990,6 +994,36 @@ git apply -R tool/key-redraw-probe.patch
 - **Linux 앱 안 계측 (`in_echo`) 으로는 손해가 안 보여요.** commit 까지만 재서예요 (#763 ①). 화면에 나간 시각은 이 패치의 줄로 봐요.
 - **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹고 충돌을 손으로 풀어요. 패치를 고쳤으면 이 파일을 갱신해요.
 - 패치가 만들어진 판은 [`c50942b`](https://github.com/ensky0/tildaz/commit/c50942b) (#763 수정 머지) 예요. 측정 결과와 절차의 이력은 #763 ①~⑬ 에 있어요.
+
+# macOS — 그릴 표시 버퍼가 창 서버에 잡혀 있는지 재는 법 ([#769](https://github.com/ensky0/tildaz/issues/769))
+
+macOS 는 표시 버퍼 (IOSurface) 3 장을 돌려 써요. 지금 코드는 그릴 장을 고를 때 창 서버가 아직 잡고 있는지 보지 않아요
+(`renderer/macos.zig` 의 `acquireTarget`). 그 빈도를 재는 측정 패치가
+[`tool/surface-inuse-probe_macos.patch`](tool/surface-inuse-probe_macos.patch) 예요. **측정할 때만 얹고 커밋하지 않아요.**
+
+```sh
+git apply tool/surface-inuse-probe_macos.patch
+zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+zig build stress -Doptimize=ReleaseFast -Dsimd=true -- --help   # tildaz-stress 설치 — 사용법을 내고 실패로 끝나도 설치는 돼요
+tool/stress/measure-input-latency.sh --mode both --presses 100
+git apply -R tool/surface-inuse-probe_macos.patch
+```
+
+perf 덤프에 두 줄이 붙어요. `v` 는 vsync tick 에서, `w` 는 출력 통보에서 그린 몫이에요.
+
+| 줄 | 무엇 |
+|---|---|
+| `T769` | 그릴 장을 고른 횟수 (`acq`). 그때 가장 오래된 장 (`old_held`) · 직전 장 (`mid_held`) · 화면에 건 장 (`shown_held`) 이 잡혀 있던 횟수. `old_held_mid_free` 는 가장 오래된 장만 잡히고 직전 장은 비어 있던 횟수예요 |
+| `T769dt` | 가장 오래된 장이 화면에서 내려온 뒤 지난 시간의 분포 — 잡혀 있었을 때 (`held`) / 비어 있었을 때 (`free`). 버킷은 `<1 · 1-2 · 2-4 · 4-8 · 8-16 · >16 ms` 예요 |
+
+- **`shown_held` 가 `acq` 와 거의 같아야 해요.** 화면에 건 장은 창 서버가 늘 잡고 있어요. 다르면 계수가 틀린 거예요.
+- **블록을 골라 읽어요.** 앱 시작부터 누적해 세면 창이 뜬 직후와 포커스 클릭의 프레임이 섞여요. #769 본문의 "타이핑 9 %"
+  가 그렇게 센 값이었고, 측정 구간만 다시 세니 200 번 중 0 번이었어요.
+- **2 벌식 조합 회차는 `mac-input` 으로 못 만들어요.** 이벤트 소스가 `Private` 이라 조합되지 않아요 (바로 아래 절).
+  `kCGEventSourceStateHIDSystemState` 소스로 보내요. 그리고 2026-10-16 판은 조합이 열려 있는 동안 vsync 마다 그려요
+  (`host/macos.zig` 의 `force_render` 에 `g_preedit_len > 0`). 그래서 한글 회차는 그리기 횟수가 크게 늘어요.
+- **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹어요. 패치가 만들어진 판은
+  [`a677eeb`](https://github.com/ensky0/tildaz/commit/a677eeb) 이고, 측정 결과는 #769 에 있어요.
 
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
