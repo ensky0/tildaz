@@ -2276,7 +2276,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 **off 를 faint 로 표현하는 이유.** 글자가 완전히 사라졌다 나타나는 것은 조사한 방식 중 가장 자극적이다. Windows Terminal 도 4-phase 중 2 를 faint 로 렌더하고, WezTerm 은 투명도를 이징한다. 구현도 이쪽이 깔끔하다 — [`cell_color.applyBlinkPhase`](src/renderer/cell_color.zig) 가 off 위상에서 style 의 `faint` 플래그를 세워 돌려주므로, fg 해석뿐 아니라 **§12.3 의 선 색까지 한 번에** 따라온다 (선은 `fg` 를 받아 그리기 때문). 이미 `faint` 인 셀에 blink 가 걸리면 off 위상에서 변화가 없다 — 알려진 귀결이다.
 
-**절전을 깨지 않는 게이트.** host 의 tick 이 게이트로 그릴 이유를 판정한다 (Windows `WM_FRAME_TICK` clock · Linux poll 16ms 는 규칙적으로 돌고, macOS `CADisplayLink` 는 [#770](https://github.com/ensky0/tildaz/issues/770) 부터 할 일이 없으면 멈춘다). 게이트를 *"화면에 blink 셀이 있다"* 로 열면 매 tick 그려서 [#255](https://github.com/ensky0/tildaz/issues/255) 의 절전 이득이 사라진다. 그래서 **"위상이 직전 프레임과 달라졌다" × "직전 프레임에 blink 셀이 실제로 보였다"** 두 조건을 함께 본다 — 추가 렌더가 **초당 2프레임**이다. renderer 가 bg pass (Linux 는 단일 순회) 에서 `saw_blink_cell` 을 기록하고 host 가 그것을 읽는다. tick 을 멈춘 host 는 blink 셀이 보이는 동안 위상이 뒤집히는 시각 (`ui_metrics.blinkNextFlipInMs`) 에 깨어난다.
+**절전을 깨지 않는 게이트.** host 의 tick 이 게이트로 그릴 이유를 판정한다 (Windows `WM_FRAME_TICK` clock 은 규칙적으로 돌고, macOS `CADisplayLink` 와 Linux `poll` 은 [#770](https://github.com/ensky0/tildaz/issues/770) 부터 할 일이 없으면 멈춘다 — 다음 마감은 공통 `frame_wake.idleWakeInNs`). 게이트를 *"화면에 blink 셀이 있다"* 로 열면 매 tick 그려서 [#255](https://github.com/ensky0/tildaz/issues/255) 의 절전 이득이 사라진다. 그래서 **"위상이 직전 프레임과 달라졌다" × "직전 프레임에 blink 셀이 실제로 보였다"** 두 조건을 함께 본다 — 추가 렌더가 **초당 2프레임**이다. renderer 가 bg pass (Linux 는 단일 순회) 에서 `saw_blink_cell` 을 기록하고 host 가 그것을 읽는다. tick 을 멈춘 host 는 blink 셀이 보이는 동안 위상이 뒤집히는 시각 (`ui_metrics.blinkNextFlipInMs`) 에 깨어난다.
 
 **끄는 수단을 두지 않는다.** 조사한 터미널은 모두 끌 수 있게 해 두었지만, 우리 config 는 **재시작할 때만 반영**되어 광과민성처럼 *지금 멈춰야 하는* 문제의 답이 되지 못한다. 필요해지면 config 키가 아니라 **command menu 항목 + 단축키** (즉시 반영) 로 넣는다 — 설계는 #376 에 기록해 두었고 구현은 보류다. OS 접근성 설정 존중은 Linux 에 표준이 없어 (GNOME GSettings / KDE 별도 키 / sway · Hyprland 는 개념 자체 없음) 세 platform 동등이 깨진다. 현재 사용자가 쓸 수 있는 수단은 표준 시퀀스다 — `\e[25m` (blink 해제) · `\e[0m` / `reset` / `tput sgr0`.
 
@@ -2592,7 +2592,7 @@ host 는 *입력을 굶기지 않는 한* 자주 드레인해야 하고, 특히 
 **입력이 항상 드레인보다 우선한다.** Windows 는 대기 중인 메시지가 하나라도 있으면 드레인하지 않고,
 macOS 의 `BeforeWaiting` 은 입력과 displayLink source 가 모두 처리된 뒤다. 유휴에는 드레인할 것이
 없어 각각 `WaitMessage` / run loop sleep 으로 내려가므로 **유휴 절전 (#255 · #386 ②) 이 유지된다.**
-Linux 도 밀린 출력이 없으면 timeout 이 `frame_poll_ms` 로 돌아가 같은 절전을 유지한다.
+Linux 도 밀린 출력이 없으면 `poll` 이 다음 마감까지 (없으면 무한히) 자서 같은 절전을 유지한다 (#770 — 그 전에는 `frame_poll_ms` 16 ms 마다 깨어났다).
 
 **세 host 의 공통 구조는 "드레인이 진행하는 동안 스스로 재진입한다" 다** — Windows 는 `messageLoop`
 의 `if (f(userdata)) continue;`, macOS 는 `CFRunLoopWakeUp`, Linux 는 `poll` timeout 0 이 그 자리다.
