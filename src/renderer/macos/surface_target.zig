@@ -13,6 +13,8 @@ pub const IOSurfaceRef = *opaque {};
 
 extern "IOSurface" fn IOSurfaceCreate(properties: ct.CFDictionaryRef) ?IOSurfaceRef;
 extern "IOSurface" fn IOSurfaceSetValue(buffer: IOSurfaceRef, key: ct.CFStringRef, value: ct.CFTypeRef) void;
+/// `Boolean` (unsigned char). `IOSurfaceRef.h` 가 "in use" 판정에 쓰라고 하는 유일한 함수다.
+extern "IOSurface" fn IOSurfaceIsInUse(buffer: IOSurfaceRef) u8;
 extern "IOSurface" const kIOSurfaceWidth: ct.CFStringRef;
 extern "IOSurface" const kIOSurfaceHeight: ct.CFStringRef;
 extern "IOSurface" const kIOSurfaceBytesPerElement: ct.CFStringRef;
@@ -98,6 +100,14 @@ pub const Target = struct {
         if (texture == null) return error.SurfaceCreateFailed;
 
         return .{ .surface = surface, .texture = texture, .width = width, .height = height };
+    }
+
+    /// #769 — 누군가 (보통 창 서버) 이 장을 아직 잡고 있는가. 잡혀 있으면 다시 그리지 않는다 —
+    /// `IOSurfaceRef.h`: *"anyone attempting to maintain a pool of IOSurfaces to be recycled
+    /// should not reclaim that IOSurface"*. 우리 프로세스는 사용 카운트를 올리지 않으므로 참이면
+    /// 다른 프로세스가 잡고 있다는 뜻이다.
+    pub fn inUse(self: *const Target) bool {
+        return IOSurfaceIsInUse(self.surface) != 0;
     }
 
     pub fn deinit(self: *Target) void {

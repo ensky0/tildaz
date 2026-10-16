@@ -1002,9 +1002,15 @@ git apply -R tool/key-redraw-probe.patch
 
 # macOS — 그릴 표시 버퍼가 창 서버에 잡혀 있는지 재는 법 ([#769](https://github.com/ensky0/tildaz/issues/769))
 
-macOS 는 표시 버퍼 (IOSurface) 3 장을 돌려 써요. 지금 코드는 그릴 장을 고를 때 창 서버가 아직 잡고 있는지 보지 않아요
-(`renderer/macos.zig` 의 `acquireTarget`). 그 빈도를 재는 측정 패치가
-[`tool/surface-inuse-probe_macos.patch`](tool/surface-inuse-probe_macos.patch) 예요. **측정할 때만 얹고 커밋하지 않아요.**
+macOS 는 표시 버퍼 (IOSurface — 앱과 창 서버가 함께 보는 그림 메모리) 를 필요한 만큼 (최대 4 장) 만들어 돌려 써요.
+그릴 장을 고를 때 창 서버가 아직 잡고 있는 장은 건너뛰어요 (`renderer/macos.zig` 의 `acquireTarget`, #769). 그 규칙이
+실제로 어떻게 돌았는지 세는 측정 패치가 [`tool/surface-inuse-probe_macos.patch`](tool/surface-inuse-probe_macos.patch)
+예요. **측정할 때만 얹고 커밋하지 않아요.**
+
+**고치기 전 판** (#769 수정 이전, 예 `218ab61`) 은 확인 없이 다음 칸에 그렸어요. 그 판을 재는 패치는 같은 파일의
+옛 판이에요 — `git show d6791a9:tool/surface-inuse-probe_macos.patch > /tmp/old-probe.patch`. 그 패치의 줄
+(`old_held` · `mid_held` · `shown_held`) 뜻은 [#769 ①](https://github.com/ensky0/tildaz/issues/769#issuecomment-6207877176)
+에 있어요.
 
 ```sh
 git apply tool/surface-inuse-probe_macos.patch
@@ -1014,22 +1020,22 @@ tool/stress/measure-input-latency.sh --mode both --presses 100
 git apply -R tool/surface-inuse-probe_macos.patch
 ```
 
-perf 덤프에 두 줄이 붙어요. `v` 는 vsync tick 에서, `w` 는 출력 통보에서 그린 몫이에요.
+perf 덤프에 한 줄이 붙어요.
 
 | 줄 | 무엇 |
 |---|---|
-| `T769` | 그릴 장을 고른 횟수 (`acq`). 그때 가장 오래된 장 (`old_held`) · 직전 장 (`mid_held`) · 화면에 건 장 (`shown_held`) 이 잡혀 있던 횟수. `old_held_mid_free` 는 가장 오래된 장만 잡히고 직전 장은 비어 있던 횟수예요 |
-| `T769dt` | 가장 오래된 장이 화면에서 내려온 뒤 지난 시간의 분포 — 잡혀 있었을 때 (`held`) / 비어 있었을 때 (`free`). 버킷은 `<1 · 1-2 · 2-4 · 4-8 · 8-16 · >16 ms` 예요 |
+| `T769` | 그릴 장을 고른 횟수 (`acq`) 와 결과 — 있던 장을 다시 씀 (`reuse`) · 새로 만듦 (`create`) · 미룸 (`defer`). `skip_held` 는 창 서버가 잡고 있어 건너뛴 장의 수, `picked_held` 는 고른 장이 잡혀 있던 횟수 (늘 0 이어야 해요), `slots_max` 는 그 구간에 있던 장 수의 최대예요 |
 
-- **`shown_held` 가 `acq` 와 거의 같아야 해요.** 화면에 건 장은 창 서버가 늘 잡고 있어요. 다르면 계수가 틀린 거예요.
+- **`skip_held` 가 0 이 아니어야 측정이 뜻이 있어요.** 건너뛸 일이 없던 회차는 새 규칙을 시험하지 못해요. 폭포
+  (`--mode flood`) 회차에서 나와요 (#769 ① 에서 고치기 전 판의 0.5 %).
 - **블록을 골라 읽어요.** 앱 시작부터 누적해 세면 창이 뜬 직후와 포커스 클릭의 프레임이 섞여요. #769 본문의 "타이핑 9 %"
   가 그렇게 센 값이었고, 측정 구간만 다시 세니 200 번 중 0 번이었어요.
 - **2 벌식 조합 회차는 `mac-input` 으로 못 만들어요.** 이벤트 소스가 `Private` 이라 조합되지 않아요 (바로 아래 절).
   `kCGEventSourceStateHIDSystemState` 소스로 보내요. 그리고 #770 이전 판 (예: `a677eeb`) 은 조합이 열려 있는 동안
   vsync 마다 그려요 (`host/macos.zig` 의 `force_render` 에 `g_preedit_len > 0`). 그 판끼리 견줄 때는 한글 회차의 그리기
   횟수가 크게 늘어요 (#769 ① — 3,751 번 대 #770 뒤 268 번).
-- **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹어요. 패치가 만들어진 판은
-  [`a677eeb`](https://github.com/ensky0/tildaz/commit/a677eeb) 이고, 측정 결과는 #769 에 있어요.
+- **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹어요. 패치가 만들어진 판은 #769 수정
+  커밋 (이 절을 고친 커밋) 이고, 측정 결과는 #769 에 있어요.
 
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 

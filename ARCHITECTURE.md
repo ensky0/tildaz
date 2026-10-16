@@ -116,11 +116,16 @@ come from one place, `src/app_id.zig` ([#654](https://github.com/ensky0/tildaz/i
    atlas. `renderTabBar` starts the frame, `drawPane` draws each pane of the active
    tab, `drawPaneChrome` adds the separators and the amber focus line
    ([#483](https://github.com/ensky0/tildaz/issues/483)), and `endFrame` presents it.
-   Presenting does not use `CAMetalLayer`: the frame is drawn into one of three
-   IOSurfaces, `endFrame` waits for its own GPU work, and sets the surface as the
+   Presenting does not use `CAMetalLayer`: the frame is drawn into one of up to three
+   IOSurfaces (the same limit as `CAMetalLayer.maximumDrawableCount`), `endFrame` waits for its own GPU work, and sets the surface as the
    `CALayer`'s `contents` ([#732](https://github.com/ensky0/tildaz/issues/732)). That
    avoids waiting on the compositor's drawable queue (`nextDrawable`), which blocked
    for 4–8 ms per frame at times and kept frames queued for one more refresh.
+   A surface the window server still holds (`IOSurfaceIsInUse`) is never drawn into:
+   the renderer reuses a free one, creates another up to the limit, or waits for the
+   next refresh, as `nextDrawable` would. That is the rule the Linux host follows with
+   `wl_buffer.release`, and the one a DXGI swap chain enforces on Windows
+   ([#769](https://github.com/ensky0/tildaz/issues/769)).
 5. `host/macos.zig` implements `NSTextInputClient` for Korean / Japanese /
    Chinese IME pre-edit and reconversion. Since v0.4.3, committed-text Hanja /
    kanji reconversion works for the active terminal row.

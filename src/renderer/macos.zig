@@ -66,6 +66,12 @@ const DrawRange = struct { kind: DrawKind, offset: u32, count: u32 };
 // 다른 자리와 같은 규칙으로 atomic 을 둔다.
 var g_frame_presented = std.atomic.Value(bool).init(false);
 
+/// #769 — 표시 대상 (IOSurface) 칸의 상한. macOS 자신의 swap chain 과 같은 수다 —
+/// `CAMetalLayer.h` 의 `maximumDrawableCount`: *"The default value is 3. Values set outside of
+/// range [2, 3] are ignored"*. ghostty 의 `swap_chain_count` 도 3 이다. 칸이 다 잡혀 있으면
+/// `CAMetalLayer.nextDrawable` 처럼 기다린다 (다음 vsync 로 미룬다).
+const MAX_TARGETS = 3;
+
 /// 마지막 show 이후 그림을 화면 쪽 (`CALayer.contents`) 에 넣은 적 있나 (host 의 pause 게이트).
 pub fn frameWasPresented() bool {
     return g_frame_presented.load(.seq_cst);
@@ -288,11 +294,18 @@ pub const MetalRenderer = struct {
     // drawPane 이 pane 마다 encode, endFrame 이 end (탭바 encode + commit + contents).
     // Windows 의 self.rtv 패턴과 같은 의도. null = frame 진행 중 아님.
     current_target: ?*surface_target.Target = null,
-    /// #732 — 표시 대상 세 장. 화면에 걸린 것 · 직전 것 (합성기가 아직 읽고 있을 수 있다) 을
-    /// 피해 가장 오래된 것에 그린다 — ghostty 의 `swap_chain_count = 3` 과 같다.
-    targets: [3]?surface_target.Target = .{ null, null, null },
-    /// 마지막으로 `contents` 에 넣은 대상. 다음 프레임은 그 다음 칸에 그린다.
+    /// #732 · #769 — 표시 대상 칸. 필요할 때 만들고 (`acquireTarget`), 창 서버가 잡고 있는 칸은
+    /// 건너뛴다. 셋째는 직전 장을 창 서버가 아직 놓지 않았을 때 생긴다.
+    targets: [MAX_TARGETS]?surface_target.Target = @splat(null),
+    /// #769 — 칸마다 마지막으로 `contents` 에 넣은 순번 (0 = 아직 안 넣음). 가장 오래전에 화면에
+    /// 건 칸부터 고르는 데 쓴다.
+    target_seq: [MAX_TARGETS]u64 = @splat(0),
+    present_seq: u64 = 0,
+    /// 마지막으로 `contents` 에 넣은 대상. 다음 프레임은 이 칸에 그리지 않는다.
     shown_target: usize = 0,
+    /// #769 — 칸이 다 잡혀 있어 이 프레임을 그리지 못했다. host 가 `takeFrameDeferred` 로 읽고
+    /// 다시 그리기를 요청한다.
+    frame_deferred: bool = false,
     /// #732 — IOSurface 텍스처의 `MTLStorageMode` (통합 메모리 `shared` 0 · 외장 GPU `managed` 1).
     target_storage_mode: objc.NSUInteger = 0,
     /// #349 — 표시 대상에 붙일 sRGB 색공간. `CAMetalLayer.setColorspace:` 를 대신한다.
@@ -535,23 +548,59 @@ pub const MetalRenderer = struct {
         // Metal 객체는 ARC / process exit 으로 정리.
     }
 
-    /// #732 — 다음 프레임을 그릴 표시 대상. 화면에 걸린 칸의 다음 칸이고, 크기가 지금 viewport 와
-    /// 다르면 그 칸만 다시 만든다 (크기를 바꾸면 세 칸이 차례로 새로 만들어진다). viewport 가 아직
-    /// 0 이면 (host 가 `resize` 전) 이 프레임을 건너뛴다.
+    /// #732 · #769 — 다음 프레임을 그릴 표시 대상.
+    ///
+    /// #769 — **창 서버가 아직 잡고 있는 장에는 그리지 않는다** (`Target.inUse`). 예전에는 화면에 건
+    /// 칸의 다음 칸에 확인 없이 그렸고, 매 프레임 그리는 동안 0.5 % 가 잡힌 장이었다 (#769 ①).
+    /// 규칙은 Linux 의 `wl_buffer.release` 처리 (`takeReusableBuffer`) 와 같다.
+    ///
+    /// 1. 화면에 건 칸을 뺀 칸 중 잡히지 않은 칸을, 가장 오래전에 화면에 건 것부터 고른다.
+    /// 2. 없으면 빈 칸에 새로 만든다 (`MAX_TARGETS` 까지 — 처음 몇 장도 이 길로 생긴다).
+    /// 3. 칸이 다 찼으면 이 프레임을 미룬다 (`frame_deferred`). host 가 다음 vsync 에 다시 그린다 —
+    ///    `CAMetalLayer.nextDrawable` 이 쓸 drawable 이 없을 때 기다리는 것과 같다.
+    ///
+    /// 크기가 지금 viewport 와 다르고 잡히지 않은 칸은 먼저 놓는다 (Linux 의
+    /// `discardReleasedRetiredBuffersExcept` 와 같다). viewport 가 아직 0 이면 (host 가 `resize`
+    /// 전) 이 프레임을 건너뛴다 — 미루지 않는다 (크기가 오면 host 가 다시 그린다).
     fn acquireTarget(self: *MetalRenderer) ?*surface_target.Target {
         if (self.vp_width == 0 or self.vp_height == 0) return null;
-        const idx = (self.shown_target + 1) % self.targets.len;
-        const slot = &self.targets[idx];
-        if (slot.*) |*t| {
-            if (t.width == self.vp_width and t.height == self.vp_height) return t;
-            t.deinit();
-            slot.* = null;
+        var pick: ?usize = null;
+        var empty: ?usize = null;
+        for (&self.targets, 0..) |*slot, i| {
+            const t = if (slot.*) |*t| t else {
+                if (empty == null) empty = i;
+                continue;
+            };
+            // 화면에 건 칸은 잡힘 여부와 무관하게 쓰지 않는다. `contents` 를 바꾼 직후에는 아직 창
+            // 서버로 transaction 이 안 갔을 수 있어 `inUse` 가 거짓일 수 있다.
+            if (i == self.shown_target) continue;
+            if (t.inUse()) continue;
+            if (t.width != self.vp_width or t.height != self.vp_height) {
+                t.deinit();
+                slot.* = null;
+                if (empty == null) empty = i;
+                continue;
+            }
+            if (pick == null or self.target_seq[i] < self.target_seq[pick.?]) pick = i;
         }
-        slot.* = surface_target.Target.init(self.device, self.vp_width, self.vp_height, self.target_colorspace, self.target_storage_mode) catch |err| {
+        if (pick) |i| return &self.targets[i].?;
+        const i = empty orelse {
+            self.frame_deferred = true;
+            return null;
+        };
+        self.targets[i] = surface_target.Target.init(self.device, self.vp_width, self.vp_height, self.target_colorspace, self.target_storage_mode) catch |err| {
             std.log.err("surface target creation failed: {s}", .{@errorName(err)});
             return null;
         };
-        return &slot.*.?;
+        self.target_seq[i] = 0;
+        return &self.targets[i].?;
+    }
+
+    /// #769 — 직전 프레임이 칸이 다 잡혀 있어 미뤄졌는가. 읽으면서 지운다.
+    pub fn takeFrameDeferred(self: *MetalRenderer) bool {
+        const d = self.frame_deferred;
+        self.frame_deferred = false;
+        return d;
     }
 
     fn targetIndex(self: *MetalRenderer, t: *surface_target.Target) usize {
@@ -773,6 +822,8 @@ pub const MetalRenderer = struct {
             // layer 서브클래스가 `actionForKey:` 로 기본 애니메이션을 끈다 (host 의 `TildazSurfaceLayer`).
             objc.msgSendVoid1(self.layer, objc.sel("setContents:"), @as(objc.id, @ptrCast(t.surface)));
             self.shown_target = self.targetIndex(t);
+            self.present_seq += 1;
+            self.target_seq[self.shown_target] = self.present_seq;
             g_frame_presented.store(true, .seq_cst);
         }
         perf.addTimed(&perf.present, present_t0);
