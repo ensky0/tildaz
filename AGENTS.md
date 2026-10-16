@@ -959,6 +959,32 @@ tool/present-check_macos.sh tearing --seconds 5  old-nosync=…@TILDAZ_TEMP476=n
 - `mode` 의 전환 찾기는 녹화를 작은 회색 프레임으로 줄여 프레임끼리의 차이가 튀는 곳을 봐요. 화면 스크립트가 같은
   줄만 쏟아서 스크롤로는 거의 안 바뀌기 때문에 되는 방법이에요. 화면을 바꾸면 이 판정도 다시 봐요.
 
+# 키 입력 뒤 빈 프레임을 재는 법 — 세 OS ([#763](https://github.com/ensky0/tildaz/issues/763))
+
+키를 받자마자 그린 빈 프레임이 에코를 한 프레임 막던 결함이 #763 에서 고쳐졌어요 (SPEC.md §13.1.1). 그것이 다시
+생겼는지 볼 때 쓰는 측정 패치가 [`tool/key-redraw-probe.patch`](tool/key-redraw-probe.patch) 예요. **측정할 때만
+얹고 커밋하지 않아요.**
+
+```sh
+git apply tool/key-redraw-probe.patch
+zig build -Doptimize=ReleaseFast -Dsimd=true          # macOS 는 -Dmacos-sign-identity=TildazLocal 도
+tool/stress/measure-input-latency.sh --mode idle --echo --presses 30
+git apply -R tool/key-redraw-probe.patch
+```
+
+로그 (`tildaz_stress.log`) 에 이런 줄이 붙어요.
+
+| OS | 줄 | 빈 프레임이 없을 때 (#763 수정 뒤 실측) |
+|---|---|---|
+| Linux | 키마다 `[temp763] echo shown key_to_commit_ms=… key_to_present_ms=… carrier=…` — commit 마다 `wp_presentation` 으로 화면에 나간 시각을 받아요 | `carrier=both` 가 전부 · `key_to_present_ms` 평균 31.1 ms (KDE Plasma 60 Hz, 고치기 전 47.9) |
+| macOS · Windows | perf 덤프 뒤 `output wake sent= skipped_not_idle=` · `skipped_before_first_key=` · `present` · `echo_pre` · `echo_pres` | 키 뒤 건너뜀 (`skipped_not_idle − skipped_before_first_key`) 0 · `echo_pre` 최악이 한 프레임보다 작음 |
+
+- **블록을 골라 읽어요.** 회차마다 블록이 셋 찍혀요 (창이 뜬 직후 · 측정 구간 · 그 뒤). 측정 구간은 `echo_pre samples=30` 인 블록이에요.
+- **Linux 의 `carrier=first` 는 판정에 못 써요.** 빈 프레임은 에코보다 먼저 commit 되니 에코를 실어 나를 수 없어요 — 원리상 늘 0 이에요 (#763 ⑪). 빈 프레임이 있으면 `carrier` 가 `other` 로 나오고 키당 commit 이 늘어요.
+- **Linux 앱 안 계측 (`in_echo`) 으로는 손해가 안 보여요.** commit 까지만 재서예요 (#763 ①). 화면에 나간 시각은 이 패치의 줄로 봐요.
+- **코드가 바뀌면 안 얹힐 수 있어요.** 그때는 `git apply --3way` 로 얹고 충돌을 손으로 풀어요. 패치를 고쳤으면 이 파일을 갱신해요.
+- 패치가 만들어진 판은 [`c50942b`](https://github.com/ensky0/tildaz/commit/c50942b) (#763 수정 머지) 예요. 측정 결과와 절차의 이력은 #763 ①~⑬ 에 있어요.
+
 # macOS — 합성 입력으로 마우스 보고 · dead key · 키 바이트를 자동 검증하는 법
 
 사람 손 없이 클릭 · 키를 보내 판정하는 도구 셋이에요 ([#583](https://github.com/ensky0/tildaz/issues/583) A3 · A4 · [#684](https://github.com/ensky0/tildaz/issues/684)).

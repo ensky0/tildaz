@@ -1,0 +1,340 @@
+diff --git a/src/host/linux/wayland_minimal.zig b/src/host/linux/wayland_minimal.zig
+index 72b7aab..69a62aa 100644
+--- a/src/host/linux/wayland_minimal.zig
++++ b/src/host/linux/wayland_minimal.zig
+@@ -515,6 +515,8 @@ const Capabilities = struct {
+     keyboard_shortcuts_inhibit: Global = .{},
+     // #277 — GPU (dma-buf) 렌더 경로. 미advertise 면 software `wl_shm` 으로 돈다.
+     linux_dmabuf: Global = .{},
++    // TEMP #763 — presentation-time 측정 패치.
++    presentation: Global = .{},
+ 
+     /// `skip_layer_shell` 은 sway 전용이다 ([#454](https://github.com/ensky0/tildaz/issues/454)).
+     /// sway 는 layer-shell 의 `on_demand` 에서 **map 시 keyboard focus 를 주지 않아**
+@@ -552,6 +554,8 @@ const Capabilities = struct {
+             self.keyboard_shortcuts_inhibit = .{ .name = name, .version = advertised_version };
+         } else if (std.mem.eql(u8, interface, "zwp_linux_dmabuf_v1")) {
+             self.linux_dmabuf = .{ .name = name, .version = advertised_version };
++        } else if (std.mem.eql(u8, interface, "wp_presentation")) {
++            self.presentation = .{ .name = name, .version = advertised_version }; // TEMP #763
+         }
+     }
+ };
+@@ -1233,6 +1237,18 @@ const Client = struct {
+     // true 로 남아 다음 iter 에 재시도). `wl_callback.done` 도착 시 false.
+     frame_callback_id: u32 = 0,
+     awaiting_frame: bool = false,
++    // TEMP #763 — presentation-time 측정 패치. 커밋하지 않는다.
++    temp763_presentation_id: u32 = 0,
++    temp763_clk: u32 = 0xffff_ffff,
++    temp763_fb: [32]Temp763Fb = [_]Temp763Fb{.{}} ** 32,
++    temp763_first_key: u64 = 0,
++    temp763_first_msc: u64 = 0,
++    temp763_first_ns: u64 = 0,
++    temp763_seq: u32 = 0,
++    temp763_echo_seq: u32 = 0,
++    temp763_echo_key: u64 = 0,
++    temp763_echo_commit_ns: u64 = 0,
++    temp763_ti_pending: bool = false,
+     active_buffer: ?SurfaceBuffer = null,
+     retired_buffers: std.ArrayList(SurfaceBuffer) = .empty,
+     compositor_id: u32 = 0,
+@@ -2437,6 +2453,11 @@ const Client = struct {
+                 self.fractional_scale_manager_id,
+             );
+         }
++        // TEMP #763 — presentation-time 측정 패치.
++        if (self.caps.presentation.name != 0) {
++            self.temp763_presentation_id = self.allocId();
++            try self.bind(self.caps.presentation.name, "wp_presentation", 1, self.temp763_presentation_id);
++        }
+         // #193 — wp_cursor_shape_manager_v1 bind. advertise 안 됐으면 (older
+         // compositor) cursor 변경 비활성 (compositor default arrow 유지).
+         if (self.caps.cursor_shape_manager.name != 0) {
+@@ -5359,10 +5380,109 @@ const Client = struct {
+         try self.sendNewId(self.surface_id, 3, callback_id);
+         self.frame_callback_id = callback_id;
+         self.awaiting_frame = true;
++        self.temp763RequestFeedback(); // TEMP #763 — commit 직전 (feedback 은 pending state)
+         // wl_surface.commit (opcode 6) — pending double-buffered state apply.
+         try self.sendNoArgs(self.surface_id, 6);
+     }
+ 
++    // ---- TEMP #763 — presentation-time 측정 패치. 커밋하지 않는다. ----------------
++    //
++    // commit 마다 `wp_presentation.feedback` 을 걸고, 그 내용이 실제로 화면에 나간 시각과
++    // vblank 번호 (MSC) 를 받는다. "키 뒤 첫 commit" (빈 프레임) 과 "에코를 그린 commit" 이
++    // 몇 번째 vblank 에 나갔는지를 견준다.
++
++    fn temp763RequestFeedback(self: *Client) void {
++        if (self.temp763_presentation_id == 0) return;
++        const input_key = perf.temp763PendingInput();
++        const echo_key = perf.temp763ParsedEcho();
++        const ti = self.temp763_ti_pending;
++        self.temp763_ti_pending = false;
++        self.temp763_seq +%= 1;
++        const now_ns = perf.now() orelse 0;
++        if (echo_key != 0) {
++            // 에코를 그린 commit. 이것 또는 그 뒤 commit 중 처음 화면에 나간 것이 글자가 보인 시각이다.
++            self.temp763_echo_seq = self.temp763_seq;
++            self.temp763_echo_key = echo_key;
++            self.temp763_echo_commit_ns = now_ns;
++        }
++        const slot = for (&self.temp763_fb) |*fb| {
++            if (fb.id == 0) break fb;
++        } else {
++            log.appendLine("temp763", "feedback slots full seq={}", .{self.temp763_seq});
++            return;
++        };
++        const fb_id = self.allocId();
++        // wp_presentation.feedback (opcode 1) — (surface, new_id feedback).
++        self.sendArgs(self.temp763_presentation_id, 1, &.{ self.surface_id, fb_id }) catch return;
++        slot.* = .{
++            .id = fb_id,
++            .seq = self.temp763_seq,
++            .key_ns = if (echo_key != 0) echo_key else input_key,
++            .commit_ns = now_ns,
++            .first = input_key != 0,
++            .echo = echo_key != 0,
++            .ti = ti,
++        };
++    }
++
++    fn temp763HandleEvent(self: *Client, id: u32, opcode: u16, payload: []const u8) bool {
++        if (id == 0) return false;
++        if (self.temp763_presentation_id != 0 and id == self.temp763_presentation_id) {
++            if (opcode == 0 and payload.len >= 4) {
++                self.temp763_clk = readU32(payload[0..4]);
++                log.appendLine("temp763", "presentation clock_id={}", .{self.temp763_clk});
++            }
++            return true;
++        }
++        for (&self.temp763_fb) |*fb| {
++            if (fb.id != id) continue;
++            switch (opcode) {
++                1 => if (payload.len >= 28) self.temp763Fate(fb.*, payload[0..28]),
++                2 => self.temp763Fate(fb.*, null),
++                else => return true, // 0 = sync_output — 다음 이벤트가 presented
++            }
++            fb.* = .{};
++            return true;
++        }
++        return false;
++    }
++
++    fn temp763Fate(self: *Client, fb: Temp763Fb, presented: ?*const [28]u8) void {
++        const kind: []const u8 = if (fb.first and fb.echo) "both" else if (fb.first) "first" else if (fb.echo) "echo" else "other";
++        const p = presented orelse {
++            log.appendLine("temp763", "fb seq={} kind={s} ti={} fate=discarded", .{ fb.seq, kind, fb.ti });
++            return;
++        };
++        const sec: u64 = (@as(u64, readU32(p[0..4])) << 32) | readU32(p[4..8]);
++        const pres_ns: u64 = sec * std.time.ns_per_s + readU32(p[8..12]);
++        const msc: u64 = (@as(u64, readU32(p[16..20])) << 32) | readU32(p[20..24]);
++        log.appendLine("temp763", "fb seq={} kind={s} ti={} fate=presented msc={}", .{ fb.seq, kind, fb.ti, msc });
++        if (fb.first and !fb.echo) {
++            self.temp763_first_key = fb.key_ns;
++            self.temp763_first_msc = msc;
++            self.temp763_first_ns = pres_ns;
++        }
++        // 에코가 화면에 나간 시각 — 에코 commit 또는 그 뒤 commit 중 처음 나간 것.
++        if (self.temp763_echo_key == 0 or fb.seq < self.temp763_echo_seq) return;
++        const key = self.temp763_echo_key;
++        const first_same = (fb.first and fb.echo) or self.temp763_first_key == key;
++        const first_msc = if (fb.first and fb.echo) msc else self.temp763_first_msc;
++        log.appendLine(
++            "temp763",
++            "echo shown key_to_commit_ms={d:.3} key_to_present_ms={d:.3} carrier={s} later_by={} msc={} dmsc_vs_first={} clk={}",
++            .{
++                temp763Ms(self.temp763_echo_commit_ns, key),
++                temp763Ms(pres_ns, key),
++                kind,
++                fb.seq - self.temp763_echo_seq,
++                msc,
++                if (first_same) @as(i64, @intCast(msc)) - @as(i64, @intCast(first_msc)) else -1,
++                self.temp763_clk,
++            },
++        );
++        self.temp763_echo_key = 0;
++    }
++
+     fn roundtrip(self: *Client) !void {
+         const callback_id = self.allocId();
+         self.wait_callback_id = callback_id;
+@@ -5581,6 +5701,7 @@ const Client = struct {
+             self.show_timer = null;
+             return;
+         }
++        if (self.temp763HandleEvent(id, opcode, payload)) return; // TEMP #763
+         if (id == self.shm_id and opcode == 0 and payload.len >= 4) {
+             const fmt = readU32(payload[0..4]);
+             if (fmt == shm_format_xrgb8888) self.saw_xrgb8888 = true;
+@@ -6879,7 +7000,10 @@ const Client = struct {
+         // #763 — 다만 **바뀐 것이 있을 때만** 켠다. fcitx5 는 키마다 preedit 이 빈 채로 batch 를
+         // 보내는데, 그때마다 그리면 그 빈 프레임이 에코 commit 을 대신해 8.5 ms 늦춘다 (#763 ②).
+         // 확정 글자의 화면 변화는 위 `queueInput` 과 에코가 맡는다.
+-        if (preedit_changed or moved) self.needs_redraw = true;
++        if (preedit_changed or moved) {
++            self.needs_redraw = true;
++            self.temp763_ti_pending = true; // TEMP #763 — 이 그리기 요청의 출처 표시
++        }
+     }
+ 
+     /// #530 — 조합 중 표시에 dead key 문자를 덧붙인다 (`^` 다음 `´` 면 `^´`). 표시할 문자가
+@@ -11578,6 +11702,13 @@ test "#539 buffer 크기는 0 에서 먼 쪽으로 반올림한다 (내림이 
+     try std.testing.expectEqual(@as(i32, -1250), physicalSizeForLogical(-735, s17));
+ }
+ 
++// TEMP #763 — presentation-time 측정 패치. 커밋하지 않는다.
++const Temp763Fb = struct { id: u32 = 0, seq: u32 = 0, key_ns: u64 = 0, commit_ns: u64 = 0, first: bool = false, echo: bool = false, ti: bool = false };
++fn temp763Ms(a: u64, b: u64) f64 {
++    const d: i128 = @as(i128, a) - @as(i128, b);
++    return @as(f64, @floatFromInt(d)) / 1_000_000.0;
++}
++
+ fn readU32(bytes: *const [4]u8) u32 {
+     return wayland_minimal_readU32(bytes);
+ }
+diff --git a/src/host/macos.zig b/src/host/macos.zig
+index f7f0428..d577055 100644
+--- a/src/host/macos.zig
++++ b/src/host/macos.zig
+@@ -5102,9 +5102,14 @@ fn outputWakePerform(_: ?*anyopaque) callconv(.c) void {
+ /// 그래서 **타이머가 이미 매 프레임 그리고 있으면 통보하지 않는다.** 그때는 통보가 할 일이
+ /// 없다 — 다음 vsync 가 어차피 즉시 집는다. 통보가 필요한 것은 *아무도 안 깨우는* 유휴뿐이다.
+ fn macOutputWake(_: ?*anyopaque) void {
+-    if (!g_frame_idle.load(.acquire)) return;
++    if (!g_frame_idle.load(.acquire)) {
++        _ = perf.temp763_wake_skipped.fetchAdd(1, .monotonic); // TEMP #763
++        if (!perf.temp763_seen_key.load(.acquire)) _ = perf.temp763_wake_skipped_prekey.fetchAdd(1, .monotonic); // TEMP #763 3 차
++        return;
++    }
+     const source = g_output_source orelse return;
+     if (g_output_wake_pending.swap(true, .acq_rel)) return;
++    _ = perf.temp763_wake_sent.fetchAdd(1, .monotonic); // TEMP #763
+     CFRunLoopSourceSignal(source);
+     CFRunLoopWakeUp(CFRunLoopGetMain());
+ }
+diff --git a/src/perf.zig b/src/perf.zig
+index b120e2d..6df21c3 100644
+--- a/src/perf.zig
++++ b/src/perf.zig
+@@ -142,6 +142,7 @@ pub fn markInput() void {
+     const t = now() orelse return;
+     if (t == 0) return;
+     _ = pending_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
++    temp763_seen_key.store(true, .release); // TEMP #763 2 차
+     // #473 — 게이트 구간은 present 가 아니라 **프레임 진입**에서 닫힌다 (`noteFrameTick`).
+     _ = gate_input_ns.cmpxchgStrong(0, t, .acq_rel, .monotonic);
+     // #481 — 키 → PTY write 구간. `markPtyWrite` 에서 닫힌다.
+@@ -389,6 +390,40 @@ pub fn completeEcho() void {
+     recordLatency(&input_echo, &input_echo_hist, t - start);
+ }
+ 
++/// TEMP #763 — presentation-time 측정 패치. 커밋하지 않는다.
++/// 이 commit 이 "키 뒤 첫 commit" 인지, "에코를 그린 commit" 인지를 `completeInput` ·
++/// `completeEcho` 가 지우기 **전에** 읽는다 (같은 판정을 그대로 쓴다).
++/// 출력 통보 (#439) 를 보낸 횟수 · 직전 프레임이 유휴가 아니라서 건너뛴 횟수 (Windows · macOS).
++pub var temp763_wake_sent = std.atomic.Value(u32).init(0);
++pub var temp763_wake_skipped = std.atomic.Value(u32).init(0);
++pub fn temp763PendingInput() u64 {
++    return pending_input_ns.load(.acquire);
++}
++pub fn temp763ParsedEcho() u64 {
++    return echo_parsed_ns.load(.acquire);
++}
++/// TEMP #763 2 차 — 건너뜀 중 첫 키 **전**의 몫 · present 한 번마다의 시간 · 에코 프레임의 분해.
++pub var temp763_seen_key = std.atomic.Value(bool).init(false);
++pub var temp763_wake_skipped_prekey = std.atomic.Value(u32).init(0);
++pub var temp763_present: Counter = .{};
++pub var temp763_present_hist: Histogram = .{};
++/// 에코를 그린 프레임만 — 키 → present 시작 · present 호출.
++pub var temp763_echo_pre: Counter = .{};
++pub var temp763_echo_pre_hist: Histogram = .{};
++pub var temp763_echo_pres: Counter = .{};
++pub var temp763_echo_pres_hist: Histogram = .{};
++/// `Present` 직후, `completeEcho` 가 `echo_parsed_ns` 를 비우기 **전에** 부른다.
++pub fn temp763NotePresent(t0: Timestamp) void {
++    const start = t0 orelse return;
++    const t = now() orelse return;
++    if (t <= start) return;
++    recordLatency(&temp763_present, &temp763_present_hist, t - start);
++    const key = echo_parsed_ns.load(.acquire);
++    if (key == 0 or start <= key) return;
++    recordLatency(&temp763_echo_pre, &temp763_echo_pre_hist, start - key);
++    recordLatency(&temp763_echo_pres, &temp763_echo_pres_hist, t - start);
++}
++
+ /// Cross-platform working-state timestamp(ns). Linux = CLOCK_MONOTONIC,
+ /// macOS = CLOCK_UPTIME_RAW, Windows = QueryUnbiasedInterruptTimePrecise.
+ /// 세 clock 모두 system sleep/hibernate를 세지 않는다. 이 모듈의 성능 진단에만
+@@ -631,6 +666,25 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
+     ) catch return;
+ 
+     log.appendBlock(buf[0 .. text.len + tail.len]);
++    // TEMP #763 — 측정 패치. 검증용 브랜치에만 둔다.
++    log.appendLine("temp763", "output wake sent={} skipped_not_idle={}", .{
++        temp763_wake_sent.swap(0, .monotonic),
++        temp763_wake_skipped.swap(0, .monotonic),
++    });
++    // TEMP #763 2 차
++    const tp = snapshot(&temp763_present);
++    const tep = snapshot(&temp763_echo_pre);
++    const tes = snapshot(&temp763_echo_pres);
++    log.appendLine("temp763", "skipped_before_first_key={}", .{temp763_wake_skipped_prekey.swap(0, .monotonic)});
++    log.appendLine("temp763", "present  samples={d} ms={d:.3} max_ms={d:.3} hist={any}", .{
++        tp[0], @as(f64, @floatFromInt(tp[1])) / 1_000_000.0, @as(f64, @floatFromInt(tp[3])) / 1_000_000.0, temp763_present_hist.take(),
++    });
++    log.appendLine("temp763", "echo_pre samples={d} ms={d:.3} max_ms={d:.3} hist={any}", .{
++        tep[0], @as(f64, @floatFromInt(tep[1])) / 1_000_000.0, @as(f64, @floatFromInt(tep[3])) / 1_000_000.0, temp763_echo_pre_hist.take(),
++    });
++    log.appendLine("temp763", "echo_pres samples={d} ms={d:.3} max_ms={d:.3} hist={any}", .{
++        tes[0], @as(f64, @floatFromInt(tes[1])) / 1_000_000.0, @as(f64, @floatFromInt(tes[3])) / 1_000_000.0, temp763_echo_pres_hist.take(),
++    });
+ }
+ 
+ /// #396 — 측정 인스턴스는 종료 직전에 스냅숏을 **자동으로 한 번** 남긴다. 손으로
+diff --git a/src/renderer/macos.zig b/src/renderer/macos.zig
+index c14deb2..d2c6a1a 100644
+--- a/src/renderer/macos.zig
++++ b/src/renderer/macos.zig
+@@ -812,6 +812,7 @@ pub const MetalRenderer = struct {
+             g_frame_presented.store(true, .seq_cst);
+         }
+         perf.addTimed(&perf.present, present_t0);
++        perf.temp763NotePresent(present_t0); // TEMP #763 3 차 — completeEcho 앞이어야 한다
+         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
+         perf.completeInput();
+         perf.completeOutput();
+diff --git a/src/renderer/windows.zig b/src/renderer/windows.zig
+index 126683c..be916f0 100644
+--- a/src/renderer/windows.zig
++++ b/src/renderer/windows.zig
+@@ -1989,6 +1989,7 @@ pub const D3d11Renderer = struct {
+         const present_t0 = perf.now();
+         _ = self.swap_chain.Present(self.present_sync, 0);
+         perf.addTimed(&perf.present, present_t0);
++        perf.temp763NotePresent(present_t0); // TEMP #763 2 차 — completeEcho 앞이어야 한다
+         // #441 축 ② — 대기 중인 키가 있으면 여기까지가 그 키의 응답 지연이다.
+         perf.completeInput();
+         perf.completeOutput();
+diff --git a/src/window.zig b/src/window.zig
+index 49c8bc6..7f04098 100644
+--- a/src/window.zig
++++ b/src/window.zig
+@@ -1621,9 +1621,14 @@ pub const Window = struct {
+     /// 타이머가 이미 매 프레임 그리고 있으면 통보는 할 일이 없다 — 다음 tick 이 어차피 즉시
+     /// 집는다. 통보가 필요한 것은 *아무도 안 깨우는* 유휴뿐이다.
+     pub fn notifyPtyOutput(self: *Window) void {
+-        if (!self.frame_idle.load(.acquire)) return;
++        if (!self.frame_idle.load(.acquire)) {
++            _ = perf.temp763_wake_skipped.fetchAdd(1, .monotonic); // TEMP #763
++            if (!perf.temp763_seen_key.load(.acquire)) _ = perf.temp763_wake_skipped_prekey.fetchAdd(1, .monotonic); // TEMP #763 2 차
++            return;
++        }
+         const hwnd = self.hwnd orelse return;
+         if (self.output_wake_pending.swap(true, .acq_rel)) return;
++        _ = perf.temp763_wake_sent.fetchAdd(1, .monotonic); // TEMP #763
+         _ = PostMessageW(hwnd, WM_PTY_OUTPUT, 0, 0);
+     }
+ 
