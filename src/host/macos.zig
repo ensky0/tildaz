@@ -52,6 +52,7 @@ const search_input = @import("../search_input.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
+const frame_wake = @import("../frame_wake.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
 
@@ -5219,25 +5220,19 @@ fn wakeTimerFire(_: CFRunLoopTimerRef, _: ?*anyopaque) callconv(.c) void {
 }
 
 /// #770 — 유휴 프레임에서, 시간에 걸린 일의 다음 마감까지 남은 시간 (ns). `null` 이면 그런
-/// 일이 없다 — 출력 · 입력 같은 사건이 깨울 때까지 자도 된다.
+/// 일이 없다 — 출력 · 입력 같은 사건이 깨울 때까지 자도 된다. 판정은 세 host 공통
+/// (`frame_wake.idleWakeInNs`) 이고 macOS 는 키 반복을 OS 가 해서 넘기지 않는다.
 fn idleWakeInNs() ?u64 {
-    var best: ?u64 = g_session.nextWakeInNs();
-    const now_ms = g_rt.nowMs();
-    // blink 셀이 화면에 있으면 위상이 뒤집히는 시각에 깨어나야 깜빡인다 (#376).
-    if (g_renderer) |r| {
-        if (r.saw_blink_cell) {
-            const w: u64 = @intCast(ui_metrics.blinkNextFlipInMs(now_ms) * std.time.ns_per_ms);
-            best = if (best) |b| @min(b, w) else w;
-        }
-    }
-    // 드래그 선택이 창 밖에 머물러 있으면 40 ms 마다 스크롤한다 (#245) — 포인터가 멈춰
-    // 있으면 이벤트가 오지 않는다.
-    if (g_sel_autoscroll_dir != 0) {
-        const left_ms = @max(g_sel_autoscroll_next_ms - now_ms, 0);
-        const w: u64 = @intCast(left_ms * std.time.ns_per_ms);
-        best = if (best) |b| @min(b, w) else w;
-    }
-    return best;
+    return frame_wake.idleWakeInNs(.{
+        // 비활성 탭에만 출력이 남아 있어도 계속 돈다 — `idleDrainObserver` 는 활성 탭 화면이
+        // 바뀌었을 때만 다시 깨우므로, 여기서 멈추면 그 출력이 다음 사건까지 남는다.
+        .pending_output = g_session.hasPendingOutput(),
+        .session_wake_ns = g_session.nextWakeInNs(),
+        .now_ms = g_rt.nowMs(),
+        .saw_blink_cell = if (g_renderer) |r| r.saw_blink_cell else false,
+        // 드래그 선택이 창 밖에 머물러 있으면 40 ms 마다 스크롤한다 (#245).
+        .autoscroll_next_ms = if (g_sel_autoscroll_dir != 0) g_sel_autoscroll_next_ms else null,
+    });
 }
 
 /// #387 — 사양 A ("드레인 한 번이 UI 를 예산 이상 잡지 않는다") 의 macOS 쪽 구현.

@@ -15,6 +15,33 @@ const log = @import("../../log.zig");
 
 pub const DBusConnection = opaque {};
 pub const DBusMessage = opaque {};
+pub const DBusWatch = opaque {};
+
+/// #770 — `DBusWatchFlags` (`dbus/dbus-connection.h`).
+pub const watch_readable: c_uint = 1 << 0;
+pub const watch_writable: c_uint = 1 << 1;
+pub const watch_error: c_uint = 1 << 2;
+pub const watch_hangup: c_uint = 1 << 3;
+/// #770 — `DBusDispatchStatus` 의 `DBUS_DISPATCH_DATA_REMAINS` (첫 값).
+const dispatch_data_remains: c_int = 0;
+
+const DBusAddWatchFunction = *const fn (watch: *DBusWatch, data: ?*anyopaque) callconv(.c) u32;
+const DBusRemoveWatchFunction = *const fn (watch: *DBusWatch, data: ?*anyopaque) callconv(.c) void;
+const DBusWatchToggledFunction = *const fn (watch: *DBusWatch, data: ?*anyopaque) callconv(.c) void;
+const DBusConnectionSetWatchFunctions = *const fn (
+    conn: *DBusConnection,
+    add: DBusAddWatchFunction,
+    remove: DBusRemoveWatchFunction,
+    toggled: DBusWatchToggledFunction,
+    data: ?*anyopaque,
+    free_data: ?*const fn (data: ?*anyopaque) callconv(.c) void,
+) callconv(.c) u32;
+const DBusWatchGetUnixFd = *const fn (watch: *DBusWatch) callconv(.c) c_int;
+const DBusWatchGetFlags = *const fn (watch: *DBusWatch) callconv(.c) c_uint;
+const DBusWatchGetEnabled = *const fn (watch: *DBusWatch) callconv(.c) u32;
+const DBusWatchHandle = *const fn (watch: *DBusWatch, flags: c_uint) callconv(.c) u32;
+const DBusConnectionDispatch = *const fn (conn: *DBusConnection) callconv(.c) c_int;
+const DBusConnectionGetDispatchStatus = *const fn (conn: *DBusConnection) callconv(.c) c_int;
 
 /// `DBusError` C struct 의 Zig ABI 미러. C 정의 (`dbus/dbus-types.h`):
 ///   const char *name;          // offset 0  (8 bytes)
@@ -169,6 +196,13 @@ pub const Api = struct {
     add_match: DBusBusAddMatch,
     remove_match: DBusBusRemoveMatch,
     read_write_dispatch: DBusConnectionReadWriteDispatch,
+    set_watch_functions: DBusConnectionSetWatchFunctions,
+    watch_get_unix_fd: DBusWatchGetUnixFd,
+    watch_get_flags: DBusWatchGetFlags,
+    watch_get_enabled: DBusWatchGetEnabled,
+    watch_handle: DBusWatchHandle,
+    connection_dispatch: DBusConnectionDispatch,
+    connection_get_dispatch_status: DBusConnectionGetDispatchStatus,
 
     fn load() !Api {
         const handle = std.c.dlopen("libdbus-1.so.3", .{ .LAZY = true }) orelse return error.DBusLibraryMissing;
@@ -206,6 +240,13 @@ pub const Api = struct {
             .add_match = lookupSymbol(handle, DBusBusAddMatch, "dbus_bus_add_match"),
             .remove_match = lookupSymbol(handle, DBusBusRemoveMatch, "dbus_bus_remove_match"),
             .read_write_dispatch = lookupSymbol(handle, DBusConnectionReadWriteDispatch, "dbus_connection_read_write_dispatch"),
+            .set_watch_functions = lookupSymbol(handle, DBusConnectionSetWatchFunctions, "dbus_connection_set_watch_functions"),
+            .watch_get_unix_fd = lookupSymbol(handle, DBusWatchGetUnixFd, "dbus_watch_get_unix_fd"),
+            .watch_get_flags = lookupSymbol(handle, DBusWatchGetFlags, "dbus_watch_get_flags"),
+            .watch_get_enabled = lookupSymbol(handle, DBusWatchGetEnabled, "dbus_watch_get_enabled"),
+            .watch_handle = lookupSymbol(handle, DBusWatchHandle, "dbus_watch_handle"),
+            .connection_dispatch = lookupSymbol(handle, DBusConnectionDispatch, "dbus_connection_dispatch"),
+            .connection_get_dispatch_status = lookupSymbol(handle, DBusConnectionGetDispatchStatus, "dbus_connection_get_dispatch_status"),
         };
     }
 
@@ -267,4 +308,85 @@ pub const SessionBus = struct {
         self.api.connection_unref(self.conn);
         self.api.deinit();
     }
+
+    /// #770 — 받은 메시지를 큐가 빌 때까지 처리한다 (filter 콜백이 여기서 불린다).
+    /// `read_write_dispatch` 는 한 번에 하나만 처리하므로, main loop 가 다시 잠들기 전에
+    /// 남은 것을 다 비워야 한다 — 이미 읽어 둔 메시지는 fd 를 다시 깨우지 않는다.
+    pub fn dispatchAll(self: *SessionBus) void {
+        while (self.api.connection_get_dispatch_status(self.conn) == dispatch_data_remains) {
+            _ = self.api.connection_dispatch(self.conn);
+        }
+    }
+};
+
+/// #770 — main loop 가 D-Bus 사건에 깨어나게 하는 watch 목록.
+///
+/// libdbus 문서는 연결의 fd 를 직접 `select()` · `poll()` 하지 말고 **DBusWatch 로 main loop 에
+/// 이으라고** 한다 (`dbus_connection_get_unix_fd`: *"DO NOT read or write to the file
+/// descriptor, or try to select() on it; use DBusWatch for main loop integration"*). 그래서
+/// `dbus_connection_set_watch_functions` 로 libdbus 가 지켜볼 fd 와 조건을 받아 두고, main loop
+/// 가 그것을 `poll` 에 넣은 뒤 준비되면 `dbus_watch_handle` 로 알려 준다.
+///
+/// 콜백은 연결의 lock 을 잡은 채 불리므로 (문서) 여기서는 목록만 고친다 — 연결 함수를 부르면
+/// 교착한다. 켜짐 여부는 `poll` 직전에 `dbus_watch_get_enabled` 로 읽으므로 toggled 는 할 일이
+/// 없다. libdbus 는 보통 watch 하나 (소켓) 를 쓴다.
+pub const WatchSet = struct {
+    pub const max = 4;
+    slots: [max]?*DBusWatch = @splat(null),
+
+    /// libdbus 에 콜백을 건다. `self` 주소가 연결의 수명 동안 바뀌면 안 된다.
+    pub fn install(self: *WatchSet, bus: *SessionBus) bool {
+        return bus.api.set_watch_functions(bus.conn, addWatch, removeWatch, toggledWatch, self, null) != 0;
+    }
+
+    /// 켜진 watch 를 `poll` 항목으로 쓴다. `out` 과 `watches` 는 같은 길이 (`max`) 이고, 반환값이
+    /// 쓴 개수다. 같은 순서로 `handleReady` 에 넘긴다.
+    pub fn pollEntries(self: *const WatchSet, api: *const Api, out: []std.posix.pollfd, watches: []*DBusWatch) usize {
+        var n: usize = 0;
+        for (self.slots) |slot| {
+            const w = slot orelse continue;
+            if (api.watch_get_enabled(w) == 0) continue;
+            const flags = api.watch_get_flags(w);
+            var events: i16 = 0;
+            if ((flags & watch_readable) != 0) events |= std.posix.POLL.IN;
+            if ((flags & watch_writable) != 0) events |= std.posix.POLL.OUT;
+            out[n] = .{ .fd = api.watch_get_unix_fd(w), .events = events, .revents = 0 };
+            watches[n] = w;
+            n += 1;
+        }
+        return n;
+    }
+
+    /// `poll` 이 돌려준 조건을 libdbus 에 알린다. hangup · error 는 문서대로 늘 함께 지켜본다.
+    pub fn handleReady(api: *const Api, fds: []const std.posix.pollfd, watches: []const *DBusWatch) void {
+        for (fds, watches) |fd, w| {
+            var flags: c_uint = 0;
+            if ((fd.revents & std.posix.POLL.IN) != 0) flags |= watch_readable;
+            if ((fd.revents & std.posix.POLL.OUT) != 0) flags |= watch_writable;
+            if ((fd.revents & std.posix.POLL.ERR) != 0) flags |= watch_error;
+            if ((fd.revents & std.posix.POLL.HUP) != 0) flags |= watch_hangup;
+            if (flags != 0) _ = api.watch_handle(w, flags);
+        }
+    }
+
+    fn addWatch(watch: *DBusWatch, data: ?*anyopaque) callconv(.c) u32 {
+        const self: *WatchSet = @ptrCast(@alignCast(data.?));
+        for (&self.slots) |*slot| {
+            if (slot.* == null) {
+                slot.* = watch;
+                return 1;
+            }
+        }
+        // 자리가 없으면 FALSE — libdbus 는 메모리 부족과 같이 다룬다. 실제로는 하나만 쓴다.
+        return 0;
+    }
+
+    fn removeWatch(watch: *DBusWatch, data: ?*anyopaque) callconv(.c) void {
+        const self: *WatchSet = @ptrCast(@alignCast(data.?));
+        for (&self.slots) |*slot| {
+            if (slot.* == watch) slot.* = null;
+        }
+    }
+
+    fn toggledWatch(_: *DBusWatch, _: ?*anyopaque) callconv(.c) void {}
 };
