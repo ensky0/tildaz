@@ -105,7 +105,10 @@ come from one place, `src/app_id.zig` ([#654](https://github.com/ensky0/tildaz/i
 1. The coordinator starts one locked worker per numbered config. `host/macos.zig`
    owns that worker's `NSApplication`, `NSWindow`, global hotkey event tap,
    AppKit input callbacks, and an `NSWindow.displayLink` (CADisplayLink) render
-   loop that auto-suspends while hidden (#255, min macOS 14).
+   loop that auto-suspends while hidden (#255, min macOS 14). Since #770 it is
+   also paused while visible when nothing needs drawing; `requestRender`, PTY
+   output, tab exit, and a one-shot deadline timer (title and search debounce,
+   blink, drag auto-scroll) resume it.
 2. `terminal/posix/pty.zig` (shared with Linux) uses `openpty` + `login_tty` +
    IUTF8 termios on macOS and tears down child process groups on tab close.
 3. The same `session_core.zig` tab/session model is used as Windows.

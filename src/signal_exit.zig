@@ -27,8 +27,29 @@ const is_posix = builtin.os.tag != .windows;
 /// (async-signal-safe) — 로그도 정리도 여기서 하지 않는다.
 var term_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
+/// #770 — main loop 를 깨울 fd (Linux 는 출력 통보 `eventfd`). `-1` 이면 없다.
+///
+/// main loop 가 "그릴 것이 없으면 무한히 잔다" 로 돌면 플래그만으로는 아무도 보지 않는다.
+/// `poll` 은 시그널에 깨지만 zig 의 `posix.poll` 이 `EINTR` 에서 다시 기다려서
+/// (`std/posix.zig` 의 `.INTR => continue`), 깨우는 것은 이 fd 뿐이다.
+var wake_fd: std.atomic.Value(i32) = std.atomic.Value(i32).init(-1);
+
 fn onTerm(_: posix.SIG) callconv(.c) void {
     term_requested.store(true, .release);
+    // `write(2)` 는 async-signal-safe 다. eventfd 는 8 byte 를 원자적으로 더한다. 실패해도
+    // (`EAGAIN` = 카운터 포화) 이미 깨울 통보가 밀려 있다는 뜻이라 잃을 것이 없다.
+    const fd = wake_fd.load(.acquire);
+    if (fd >= 0) {
+        const one: u64 = 1;
+        _ = posix.system.write(fd, std.mem.asBytes(&one), @sizeOf(u64));
+    }
+}
+
+/// #770 — `SIGTERM` 이 오면 이 fd 에 써서 main loop 를 깨운다. fd 는 8 byte 쓰기를 받는
+/// `eventfd` 여야 한다. 닫기 전에 `-1` 로 되돌린다.
+pub fn setWakeFd(fd: i32) void {
+    if (!is_posix) return;
+    wake_fd.store(fd, .release);
 }
 
 /// **`requested()` 를 검사하는 loop 와 같은 자리에서 부른다.** 핸들러만 걸고 아무도 플래그를

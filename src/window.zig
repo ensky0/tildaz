@@ -338,6 +338,13 @@ extern "gdi32" fn GetDeviceCaps(HDC, c_int) callconv(.c) c_int;
 ///   곧 온 에코의 출력 통보를 막았다 — 그 키는 한 프레임 늦었다 (#763 ④ · ⑤). 화면을 바꾸는 키는
 ///   각자 요청한다: 맨 아래로 스크롤 · Shift+PgUp/PgDn · 메뉴 · 탭 동작 (`app_controller`), 조합 ·
 ///   dead key 표시 (`wndProc` 이 처리 전후를 견준다 — `keyVisualState`).
+/// #770 — clock 이 잠든 시각을 적고 읽는 단조 시계 (`.awake` = 절전을 세지 않는다). UI 스레드
+/// (`sleepFrameClock`) 와 clock 스레드가 같은 값을 쓴다.
+fn awakeNowNs(io: std.Io) u64 {
+    const ns = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    return if (ns <= 0) 0 else @intCast(@min(ns, std.math.maxInt(u64)));
+}
+
 fn isFrameGateExempt(msg: UINT) bool {
     return msg == WM_FRAME_TICK or msg == WM_TIMER or msg == WM_IME_NOTIFY or isKeyMessage(msg);
 }
@@ -529,6 +536,12 @@ pub const Window = struct {
     frame_idle: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// 한 프레임의 길이 (100ns 단위). `startFrameClock` 이 재생률로 계산한다.
     frame_period_100ns: i64 = 0,
+    /// #770 — clock 이 잠든 상태. `0` 이면 돈다. 아니면 그 시각 (`Io.Timestamp` `.awake` ns)
+    /// 까지 자고, `std.math.maxInt(u64)` 면 깨울 때까지 잔다. 유휴 프레임이 `sleepFrameClock`
+    /// 으로 세우고, 그리기 게이트를 여는 `requestRender` 가 `wakeFrameClock` 으로 내린다.
+    frame_clock_sleep: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// #770 — 잠든 clock 스레드를 깨우는 이벤트 (auto-reset). clock 과 같은 수명이다.
+    frame_clock_wake: ?*anyopaque = null,
     /// #386 ② — 유휴 렌더 게이트. macOS `g_needs_render` · Linux `needs_redraw` 동등.
     ///
     /// **기본이 "그린다"** 이다 (`true` 로 시작하고 `wndProc` 이 프레임 tick 이 아닌 모든
@@ -822,8 +835,10 @@ pub const Window = struct {
         const init_dpi: UINT = if (dpi > 0) dpi else 96;
         self.rebuildFonts(self.font_size.spec(), init_dpi);
 
-        // #386 — 프레임 clock 시작 (이전엔 여기서 `SetTimer(…, 16, …)` 이었다).
-        self.startFrameClock();
+        // #386 — 프레임 clock 은 여기서 켜지 않는다 (이전엔 `SetTimer(…, 16, …)` 이었다).
+        // #770 — `show` 가 켠다. 여기서 켜면 `hidden_start` 로 숨긴 채 시작했을 때 첫 토글
+        // 전까지 숨은 창에 tick 이 주사율만큼 돌았다 (`hide` 가 불리지 않아 끌 곳도 없었다).
+        // `visible = true` 가 되는 곳은 `show` 하나라서 보이는 창은 늘 clock 이 돈다.
     }
 
     /// 전역 핫키 등록 (config 기본값 = F1, modifiers=0). 실패 사유 (시연 중 발견):
@@ -1558,8 +1573,35 @@ pub const Window = struct {
     }
 
     /// #386 ② — 다음 프레임을 그리게 한다. `needs_render` 주석 참고.
+    ///
+    /// #770 — clock 이 유휴로 잠들어 있으면 깨운다. 게이트를 여는 길은 전부 여기를 지나므로
+    /// (`wndProc` 이 tick 이 아닌 메시지마다 · 앱의 액션 · 유휴 드레인 · `show`), 깨우는 자리도
+    /// 하나다.
     pub fn requestRender(self: *Window) void {
         self.needs_render = true;
+        self.wakeFrameClock();
+    }
+
+    /// #770 — 유휴 프레임이 clock 을 재운다. `wake_in_ns` 는 시간에 걸린 일의 다음 마감
+    /// (`frame_wake.idleWakeInNs`) 이고, 있으면 그 시각에 clock 이 스스로 깨어 tick 을 보낸다.
+    /// `0` 이면 지금 할 일이 있으니 재우지 않는다.
+    ///
+    /// `WM_TIMER` fallback 으로 돌고 있으면 (고해상도 타이머 · 스레드를 못 만들었을 때) 재우지
+    /// 않는다 — 그 경로에는 깨우는 장치가 없다.
+    pub fn sleepFrameClock(self: *Window, wake_in_ns: ?u64) void {
+        if (self.frame_clock == null or self.frame_clock_wake == null) return;
+        const until: u64 = if (wake_in_ns) |ns| blk: {
+            if (ns == 0) return;
+            break :blk awakeNowNs(self.rt.io) +| ns;
+        } else std.math.maxInt(u64);
+        self.frame_clock_sleep.store(until, .release);
+    }
+
+    /// #770 — 잠든 clock 을 깨운다. 이미 돌고 있으면 아무것도 안 한다. 다른 스레드에서 불러도
+    /// 된다 (원자 교환 + `SetEvent`).
+    fn wakeFrameClock(self: *Window) void {
+        if (self.frame_clock_sleep.swap(0, .acq_rel) == 0) return;
+        if (self.frame_clock_wake) |ev| _ = SetEvent(ev);
     }
 
     /// #763 — 키 메시지가 바꿀 수 있는, 이 창이 직접 그리는 표시. `wndProc` 이 처리 전후로 견준다.
@@ -1690,12 +1732,17 @@ pub const Window = struct {
         // thread spawn 실패에 그대로 남아 있다.
 
         self.frame_timer = timer;
+        // #770 — 잠든 clock 을 깨우는 이벤트. 못 만들면 clock 은 재우지 않는다 (`sleepFrameClock`).
+        self.frame_clock_wake = CreateEventW(null, .FALSE, .FALSE, null);
+        self.frame_clock_sleep.store(0, .release);
         self.frame_clock_run.store(true, .release);
         self.frame_clock = std.Thread.spawn(.{}, frameClockThread, .{self}) catch |err| {
             log.appendLine("startup", "frame clock: thread spawn failed ({s}) — using WM_TIMER fallback", .{@errorName(err)});
             self.frame_clock_run.store(false, .release);
             _ = CloseHandle(timer);
             self.frame_timer = null;
+            if (self.frame_clock_wake) |ev| _ = CloseHandle(ev);
+            self.frame_clock_wake = null;
             _ = SetTimer(hwnd, RENDER_TIMER_ID, 16, null);
             return;
         };
@@ -1710,12 +1757,19 @@ pub const Window = struct {
         self.frame_clock_run.store(false, .release);
         // 별도 stop 이벤트를 두지 않는다 — 스레드가 한 주기 (≤17 ms) 안에 루프 조건을
         // 다시 보고 빠져나온다. 그만큼의 join 지연을 허용하는 대신 코드가 단순해진다.
+        // #770 — 잠들어 있으면 주기가 없으니 깨워서 루프 조건을 보게 한다.
+        if (self.frame_clock_wake) |ev| _ = SetEvent(ev);
         thread.join();
         self.frame_clock = null;
         if (self.frame_timer) |t| {
             _ = CloseHandle(t);
             self.frame_timer = null;
         }
+        if (self.frame_clock_wake) |ev| {
+            _ = CloseHandle(ev);
+            self.frame_clock_wake = null;
+        }
+        self.frame_clock_sleep.store(0, .release);
         self.frame_tick_pending.store(false, .release);
     }
 
@@ -1738,6 +1792,32 @@ pub const Window = struct {
         var base = std.Io.Timestamp.now(self.rt.io, .awake);
         var ticks: u64 = 0;
         while (self.frame_clock_run.load(.acquire)) {
+            // #770 — 유휴로 잠들었으면 깨우기 이벤트나 마감까지만 기다린다. 깨면 (재개 요청이든
+            // 마감이든) 기준을 새로 잡고 곧장 tick 을 하나 보낸다 — 깨운 쪽은 지금 그리고 싶다.
+            const sleep_until = self.frame_clock_sleep.load(.acquire);
+            if (sleep_until != 0) {
+                const wake = self.frame_clock_wake orelse break;
+                var wait_ms: DWORD = WAIT_INFINITE;
+                if (sleep_until != std.math.maxInt(u64)) {
+                    const now_ns = awakeNowNs(self.rt.io);
+                    const left_ns = sleep_until -| now_ns;
+                    // 올림 — 내림하면 마감 직전에 깨어 할 일 없이 다시 잠든다. `WAIT_INFINITE`
+                    // (0xFFFFFFFF) 와 겹치지 않게 그 아래로 자른다.
+                    const ms = std.math.divCeil(u64, left_ns, std.time.ns_per_ms) catch unreachable;
+                    wait_ms = @intCast(@min(ms, WAIT_INFINITE - 1));
+                }
+                _ = WaitForSingleObject(wake, wait_ms);
+                if (!self.frame_clock_run.load(.acquire)) break;
+                // 마감으로 깼으면 스스로 돈다. UI 가 그 사이 다른 값을 넣었으면 그대로 둔다.
+                _ = self.frame_clock_sleep.cmpxchgStrong(sleep_until, 0, .acq_rel, .acquire);
+                base = std.Io.Timestamp.now(self.rt.io, .awake);
+                ticks = 0;
+                const hwnd = self.hwnd orelse break;
+                if (!self.frame_tick_pending.swap(true, .acq_rel)) {
+                    _ = PostMessageW(hwnd, WM_FRAME_TICK, 0, 0);
+                }
+                continue;
+            }
             ticks += 1;
             const now = std.Io.Timestamp.now(self.rt.io, .awake);
             const elapsed: u64 = @intCast(@max(0, base.durationTo(now).nanoseconds));

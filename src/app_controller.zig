@@ -25,6 +25,7 @@ const perf = @import("perf.zig");
 const log = @import("log.zig");
 const about = @import("about.zig");
 const ui_metrics = @import("ui_metrics.zig");
+const frame_wake = @import("frame_wake.zig");
 const scrollbar = @import("scrollbar.zig");
 const paths = @import("paths.zig");
 const system_open = @import("system_open.zig");
@@ -796,15 +797,11 @@ pub const App = struct {
             // `needs_render` 는 `wndProc` 이 프레임 tick 이 아닌 모든 메시지에서 연다
             // (window.zig). **이것이 렌더를 줄이는 유일한 게이트다** (#388).
             const should_render = had_output or self.window.needs_render;
-            // IME preedit 활성 시 게이트 우회 — preedit UI 는 PTY 출력과 무관하게 매
-            // keystroke 즉시 화면 갱신이 필요하다 (mac 동등).
-            //
-            // ⚠️ 이 우회가 막던 #164 회귀의 원인은 **throttle** 이었고 그건 #388 에서
-            // 지웠다. 지금 이 값이 넘는 것은 #386 ② 게이트뿐인데, `WM_IME_COMPOSITION`
-            // 이 `wndProc` 에서 `needs_render` 를 열어 주므로 **없어도 될 가능성이 있다.**
-            // 확인하지 않았으므로 그대로 둔다 — 지우려면 한글 · 일본어 IME 로 typing
-            // 중 preedit 이 즉시 따라오는지 실기 검증이 먼저다.
-            const force_render = self.window.imePreeditSlice().len > 0;
+            // #770 — 예전에는 IME preedit 이 열려 있는 동안 매 tick 그렸다 (`force_render`). 그
+            // 우회가 막던 #164 회귀의 원인은 **throttle** 이었고 #388 에서 지웠다. 지금은
+            // `WM_IME_COMPOSITION` 이 `wndProc` 에서 게이트를 열어 주므로 필요 없고, 남겨 두면
+            // 조합하는 동안 clock 이 잠들지 못하고 주사율만큼 그린다 (macOS 실측: 조합을 연 채
+            // 3 초에 384 번). 한글 · 일본어 IME 로 preedit 이 즉시 따라오는지는 #770 Windows 실기에서 본다.
 
             // #376 — blink 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에
             // blink 셀이 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는
@@ -835,10 +832,19 @@ pub const App = struct {
             //
             // waitable 이 없는 경로 (legacy DISCARD · DirectComposition) 는 `frameReady`
             // 가 항상 true 라 동작이 이 이슈 이전과 완전히 같다.
-            const want_render = should_render or force_render or blink_tick;
+            const want_render = should_render or blink_tick;
             // #439 — 그릴 것이 없으면 유휴다. read thread 가 이 값을 보고 통보 여부를 정한다
             // (`Window.notifyPtyOutput` — 폭포에서 통보하면 사양 A 드레인이 굶는다).
             self.window.frame_idle.store(!want_render, .release);
+            // #770 — 할 일이 없으면 다음 마감까지 clock 을 재운다. 마감 판정은 세 host 공통
+            // (`frame_wake`) 이다. 드래그 자동 스크롤은 Windows 가 따로 `WM_TIMER` 를 쓰고, 그
+            // 메시지가 게이트를 열면서 clock 을 깨워서 여기서 셈하지 않는다. 키 반복은 OS 가 한다.
+            if (!want_render) self.window.sleepFrameClock(frame_wake.idleWakeInNs(.{
+                .pending_output = self.session.hasPendingOutput(),
+                .session_wake_ns = self.session.nextWakeInNs(),
+                .now_ms = self.rt.nowMs(),
+                .saw_blink_cell = r.saw_blink_cell,
+            }));
             const swap_ready = want_render and r.frameReady();
             if (want_render and !swap_ready) perf.incExtra(&perf.swapwait);
 

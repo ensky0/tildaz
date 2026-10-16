@@ -287,6 +287,14 @@ const PendingTitle = struct {
         self.active = true;
     }
 
+    /// #770 — `flush` 가 제목을 반영할 수 있게 될 때까지 남은 시간 (ns). 반영할 것이
+    /// 없으면 `null`, 지금 반영할 수 있으면 `0`. 판정은 `flush` 의 조건과 같다.
+    fn wakeInNs(self: *const PendingTitle, now_ns: u64, immediate: bool) ?u64 {
+        if (!self.active) return null;
+        if (immediate) return 0;
+        return TITLE_DEBOUNCE_NS -| (now_ns -| self.since_ns);
+    }
+
     /// `immediate` 는 첫 제목 전용 — 화면에 `Tab N` 만 있고 아직 화면에서
     /// 밀어낼 중간 제목이 없으므로 debounce 를 건너뛴다 (#364).
     fn flush(self: *PendingTitle, dest: []u8, dest_len: *usize, now_ns: u64, immediate: bool) bool {
@@ -1931,6 +1939,33 @@ pub const SessionCore = struct {
         return null;
     }
 
+    /// #770 — 시간에 걸린 일을 처리하려면 언제 다시 `drainOutputForRender` 를 불러야 하는지
+    /// (지금부터 남은 ns). 세 host 가 "그릴 것이 없으면 잔다" 로 돌 때 이 시각까지만 잔다.
+    /// `null` 은 시간에 걸린 일이 없다는 뜻이다 — 출력 · 입력 같은 사건이 깨울 때까지 자도 된다.
+    ///
+    /// 두 가지를 본다. 둘 다 `drainFrame` 이 처리하는 일이고, 판정은 그쪽 조건과 같다.
+    /// - 자동 제목의 debounce 마감 (`TITLE_DEBOUNCE_NS`) — 모든 탭 · pane
+    /// - 활성 pane 의 검색 (debounce 마감 또는 아직 안 끝난 진행) — `drainFrame` 도 활성 pane 만 돈다
+    ///
+    /// 시계는 탭마다 다르다 (`title_clock`). 그래서 절대 시각이 아니라 남은 시간으로 돌려준다.
+    pub fn nextWakeInNs(self: *SessionCore) ?u64 {
+        var best: ?u64 = null;
+        for (self.tabs.items) |g| {
+            for (g.panes) |p| {
+                const tab = p orelse continue;
+                const w = tab.pending_title.wakeInNs(tab.title_clock.read(), tab.initial_title.waiting) orelse continue;
+                best = if (best) |b| @min(b, w) else w;
+            }
+        }
+        if (self.activeGroup()) |group| {
+            const active = group.activeTab();
+            if (active.search.wakeInNs(active.title_clock.read())) |w| {
+                best = if (best) |b| @min(b, w) else w;
+            }
+        }
+        return best;
+    }
+
     pub fn activeGroup(self: *SessionCore) ?*TabGroup {
         if (self.active_tab < self.tabs.items.len) return self.tabs.items[self.active_tab];
         return null;
@@ -2673,6 +2708,31 @@ test "automatic title debounce applies stable title at exact boundary" {
     try std.testing.expect(!pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 149 * std.time.ns_per_ms, false));
     try std.testing.expect(pending.flush(&title, &title_len, 3 * std.time.ns_per_s + 150 * std.time.ns_per_ms, false));
     try std.testing.expectEqualStrings("~", title[0..title_len]);
+}
+
+test "#770 PendingTitle.wakeInNs — flush 가 반영할 수 있는 바로 그 시각을 가리킨다" {
+    var title: [64]u8 = undefined;
+    var title_len = copyValidUtf8Title(&title, "~");
+    var pending: PendingTitle = .{};
+    const ms = std.time.ns_per_ms;
+
+    // 기다리는 제목이 없으면 깨울 이유가 없다.
+    try std.testing.expectEqual(@as(?u64, null), pending.wakeInNs(0, false));
+
+    pending.queue(title[0..title_len], "sleep 3 ~", 0);
+    try std.testing.expectEqual(@as(?u64, 150 * ms), pending.wakeInNs(0, false));
+    try std.testing.expectEqual(@as(?u64, 1 * ms), pending.wakeInNs(149 * ms, false));
+    // 그 직전에는 flush 가 안 되고, 마감에 되는지 — wakeInNs 와 flush 가 같은 조건이다.
+    try std.testing.expect(!pending.flush(&title, &title_len, 149 * ms, false));
+    try std.testing.expectEqual(@as(?u64, 0), pending.wakeInNs(150 * ms, false));
+    try std.testing.expectEqual(@as(?u64, 0), pending.wakeInNs(200 * ms, false));
+    try std.testing.expect(pending.flush(&title, &title_len, 150 * ms, false));
+    // 반영하고 나면 다시 깨울 이유가 없다.
+    try std.testing.expectEqual(@as(?u64, null), pending.wakeInNs(150 * ms, false));
+
+    // 첫 제목 (`immediate`) 은 기다리지 않는다.
+    pending.queue(title[0..title_len], "vim", 300 * ms);
+    try std.testing.expectEqual(@as(?u64, 0), pending.wakeInNs(300 * ms, true));
 }
 
 test "automatic title debounce supports default reset" {

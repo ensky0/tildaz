@@ -60,6 +60,7 @@ const checkErr = unix_socket.checkErr;
 const sway_ipc = @import("sway_ipc.zig");
 const hyprland_ipc = @import("hyprland_ipc.zig");
 const signal_exit = @import("../../signal_exit.zig");
+const frame_wake = @import("../../frame_wake.zig");
 const gsettings_hotkey = @import("gsettings_hotkey.zig");
 const shortcut_sync_linux = @import("../../shortcut_sync/linux.zig");
 const about = @import("../../about.zig");
@@ -89,6 +90,9 @@ const min_height: i32 = 120;
 /// `config.theme` 가 disk 값 매핑 실패 등으로 null 일 때 fallback. themes
 /// 모듈의 첫 entry (= "Tilda" 기본 테마). L13-α 이전엔 항상 이 값을 사용했다.
 const fallback_theme = &themes.themes[0];
+/// 예전 main loop 의 고정 poll 주기. #770 부터 main loop 는 할 일이 없으면 무한히 자고
+/// (`nextPollTimeoutMs`), 이 값은 사건이 깨울 수 없는 두 경우 (GPU 그리기 실패 직후 ·
+/// D-Bus watch 를 못 건 경우) 와 dialog inner pump 의 재시도 간격으로만 쓴다.
 const frame_poll_ms: i32 = 16;
 /// #245 — drag-select auto-scroll tick 간격(ms). 한 tick 당 `sel_autoscroll_step`
 /// 줄. 40ms × 3줄 ≈ 75줄/s — 편안한 속도. frame_poll_ms(16) 보다 커 매 frame 마다는
@@ -1543,6 +1547,11 @@ const Client = struct {
     // (libdbus-1 dlopen). 연결 실패는 fatal 아님 — hotkey 없이 terminal 자체는
     // 정상이며 hidden_start는 즉시 표시로 fallback한다.
     dbus_session: ?dbus.SessionBus = null,
+    /// #770 — `dbus_session` 의 watch 목록. main loop 가 D-Bus 사건 (KDE hotkey 등) 에 깨어나게
+    /// `poll` 에 넣는다. libdbus 가 이 주소를 들고 있으므로 Client 안에 둔다.
+    dbus_watches: dbus.WatchSet = .{},
+    /// #770 — watch 를 걸었는가. 못 걸었으면 예전처럼 `frame_poll_ms` 마다 D-Bus 를 긁는다.
+    dbus_watches_installed: bool = false,
     // #244 — KDE Plasma KGlobalAccel direct client.
     // heap stable address는 D-Bus filter user_data가 참조하며, dbus_session보다
     // 먼저 deinit해야 한다.
@@ -1825,6 +1834,8 @@ const Client = struct {
         if (self.dbus_session) |*session| {
             session.deinit();
             self.dbus_session = null;
+            self.dbus_watches = .{};
+            self.dbus_watches_installed = false;
         }
         self.clearSelectionOwnership(&self.clipboard);
         self.clearSelectionOwnership(&self.primary);
@@ -1899,6 +1910,8 @@ const Client = struct {
         // 모든 PTY thread 를 join 한 뒤라야 안전하다 (바로 아래 `pending_close_buf` 와 같은
         // 이유이고, 위쪽 `toggle_listener_fd` 는 read thread 와 무관해 먼저 닫아도 된다).
         if (self.output_eventfd >= 0) {
+            // #770 — SIGTERM 핸들러도 이 fd 에 쓴다. 닫기 전에 떼어 낸다.
+            signal_exit.setWakeFd(-1);
             closeFd(self.output_eventfd);
             self.output_eventfd = -1;
         }
@@ -2198,8 +2211,8 @@ const Client = struct {
         // `idleDrainObserver` 가 `CFRunLoopWakeUp` 으로 **같은 재진입**을 한다 (duty 91~96 %).
         // 여기서는 poll timeout 0 이 그 `continue` 에 해당한다.
         //
-        // 밀린 것이 없으면 `frame_poll_ms` 로 돌아가므로 **유휴 절전은 그대로**다 (#255 ·
-        // #386 ②). 유휴에서 첫 출력이 최대 16 ms 늦는 것은 별개 축이라 #439 에서 다룬다.
+        // 밀린 것이 없으면 다음 timeout 은 `nextPollTimeoutMs` 가 정한다 (#770) — 할 일이
+        // 없으면 무한히 자고, 시간에 걸린 일은 그 마감까지만 잔다. 첫 바퀴만 예전 값으로 돈다.
         var poll_timeout: i32 = frame_poll_ms;
         while (self.running) {
             self.pollAndDispatch(poll_timeout) catch |err| switch (err) {
@@ -2272,8 +2285,9 @@ const Client = struct {
                 break;
             }
             // #458 — SIGTERM 을 받았으면 평소의 종료 경로로 빠진다. 그래야 `deinit` 이
-            // 돌아 PTY 자식 정리 (#129) 가 실행된다. 시그널이 `poll` 을 EINTR 로 깨우므로
-            // 대기 중이어도 곧 이 검사에 닿는다.
+            // 돌아 PTY 자식 정리 (#129) 가 실행된다. 시그널만으로는 `poll` 이 끝나지 않는다
+            // (`posix.poll` 이 `EINTR` 에서 다시 기다린다) — 핸들러가 출력 eventfd 에 써서
+            // 깨운다 (#770, `signal_exit.setWakeFd`).
             if (signal_exit.requested()) {
                 log.appendLine("exit", "SIGTERM received — shutting down cleanly", .{});
                 self.running = false;
@@ -2283,13 +2297,6 @@ const Client = struct {
                 if (session.drainOutputForRender()) {
                     self.requestRedraw();
                 }
-                // #436 — 예산에 걸려 끊겼으면 ring 이 안 비어 있다. 그러면 다음 poll 을
-                // 기다리지 않고 즉시 회전해 계속 드레인한다 (루프 머리 주석 참고).
-                // **스핀이 아니다** — 참이면 ring 에 실제로 남아 있어 다음 드레인이 반드시
-                // 진행하고, 비면 이 값이 `frame_poll_ms` 로 돌아간다.
-                poll_timeout = if (session.hasPendingOutput()) 0 else frame_poll_ms;
-            } else {
-                poll_timeout = frame_poll_ms;
             }
             // #376 — blink 위상이 뒤집힌 **그 tick 에만**, 그리고 직전 프레임에
             // blink 셀이 실제로 보였을 때만 요청한다. 둘을 함께 봐야 blink 이 없는
@@ -2304,7 +2311,40 @@ const Client = struct {
             // #193 — command menu 열림/닫힘 등 state 변화 후 mouse 안 움직여도 즉시
             // cursor 갱신. cached `last_cursor_shape` 비교라 no-op 자주.
             self.updateCursorShape() catch {};
+            poll_timeout = self.nextPollTimeoutMs();
         }
+    }
+
+    /// #770 — 다음 `poll` 을 얼마나 기다릴지. 할 일이 없으면 **무한히** (`-1`) 잔다. 사건은 fd 가
+    /// 깨운다 — Wayland · toggle 소켓 · 출력 eventfd (PTY 출력 · 탭 종료 · SIGTERM) · sway /
+    /// Hyprland reload · D-Bus watch. 시간에 걸린 일 (제목 · 검색 debounce, blink, 자동 스크롤,
+    /// 키 반복) 은 `frame_wake.idleWakeInNs` 가 마감을 준다.
+    fn nextPollTimeoutMs(self: *Client) i32 {
+        // 세션은 첫 표시 때 만들어진다 (`ensureSessionGrid`). `hidden_start` 로 숨긴 채 시작하면 첫
+        // hotkey 까지 세션이 없다 — 그동안 시간에 걸린 일이 없으니 무한히 잔다. 기다리는 것 (hotkey ·
+        // keymap 도착 · D-Bus) 은 모두 fd 사건이다. 예전에는 이 구간도 16 ms 마다 깨어났다.
+        const session: ?*session_core.SessionCore = if (self.session) |*s| s else null;
+        // #436 — 예산에 걸려 끊겼으면 ring 이 안 비어 있다 (`pending_output`). 그러면 다음 poll 을
+        // 기다리지 않고 즉시 회전해 계속 드레인한다. **스핀이 아니다** — 참이면 ring 에 실제로
+        // 남아 있어 다음 드레인이 반드시 진행한다.
+        const deadline = frame_wake.pollTimeoutMs(frame_wake.idleWakeInNs(.{
+            .pending_output = if (session) |s| s.hasPendingOutput() else false,
+            .session_wake_ns = if (session) |s| s.nextWakeInNs() else null,
+            .now_ms = self.rt.nowMs(),
+            .saw_blink_cell = self.renderer.saw_blink_cell,
+            .autoscroll_next_ms = if (self.sel_autoscroll_dir != 0) self.sel_autoscroll_next_ms else null,
+            .key_repeat_next_ms = if (self.key_repeat_keycode != 0 and self.key_repeat_rate_hz > 0) self.key_repeat_next_ms else null,
+        }));
+
+        // 사건이 깨울 수 없는 두 경우는 예전처럼 `frame_poll_ms` 마다 다시 본다.
+        // - 지금 그릴 수 있는데 못 그렸다 — GPU 그리기가 실패해 software 로 내려간 직후다
+        //   (`redraw` 의 `disableGpu`). 숨김 · configure 전 · frame callback 대기 · 버퍼 상한은
+        //   Wayland 사건이 깨우지만, 이 경우는 깨울 사건이 없다.
+        // - D-Bus 를 watch 로 잇지 못했다 — KDE hotkey 가 오는 길이 매 바퀴 긁는 것뿐이다.
+        const must_poll = (self.needs_redraw and !self.surface_hidden and self.configured and !self.awaiting_frame) or
+            (self.dbus_session != null and !self.dbus_watches_installed);
+        if (must_poll and (deadline < 0 or deadline > frame_poll_ms)) return frame_poll_ms;
+        return deadline;
     }
 
     fn getRegistry(self: *Client) !void {
@@ -5438,7 +5478,10 @@ const Client = struct {
 
         // #198 — wayland fd + toggle listener fd 둘 다 polling. listener fd 가
         // -1 (생성 실패 또는 비활성) 이면 OS poll 이 자동 skip (POSIX 표준).
-        var fds = [_]posix.pollfd{
+        // #770 — 앞 다섯 자리는 고정이고, 그 뒤에 D-Bus watch 가 붙는다 (`dbus.WatchSet`).
+        const fixed_fds = 5;
+        var fds: [fixed_fds + dbus.WatchSet.max]posix.pollfd = undefined;
+        fds[0..fixed_fds].* = .{
             .{
                 .fd = self.wayland_fd,
                 .events = posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP,
@@ -5467,7 +5510,14 @@ const Client = struct {
                 .revents = 0,
             },
         };
-        const n = try posix.poll(&fds, timeout_ms);
+        var dbus_watch_buf: [dbus.WatchSet.max]*dbus.DBusWatch = undefined;
+        var dbus_watch_count: usize = 0;
+        if (self.dbus_watches_installed) {
+            if (self.dbus_session) |*bus| {
+                dbus_watch_count = self.dbus_watches.pollEntries(&bus.api, fds[fixed_fds..], &dbus_watch_buf);
+            }
+        }
+        const n = try posix.poll(fds[0 .. fixed_fds + dbus_watch_count], timeout_ms);
         if (n == 0) return;
         if ((fds[0].revents & posix.POLL.NVAL) != 0) return error.WaylandConnectionClosed;
         if ((fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
@@ -5490,6 +5540,13 @@ const Client = struct {
         }
         if (self.hyprland_reload_fd >= 0 and (fds[4].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
             self.handleHyprlandReloadEvent();
+        }
+        // #770 — D-Bus watch 가 준비됐으면 libdbus 에 알린다. 메시지 처리는 main loop 의
+        // `dispatchDbusMessages` 가 같은 바퀴에 한다.
+        if (dbus_watch_count > 0) {
+            if (self.dbus_session) |*bus| {
+                dbus.WatchSet.handleReady(&bus.api, fds[fixed_fds .. fixed_fds + dbus_watch_count], dbus_watch_buf[0..dbus_watch_count]);
+            }
         }
         if (self.toggle_listener_fd >= 0 and (fds[1].revents & posix.POLL.IN) != 0) {
             // #198 — `tildaz --toggle` 두 번째 인스턴스로부터 toggle 신호.
@@ -8985,6 +9042,11 @@ const Client = struct {
             return;
         };
         self.dbus_session = session;
+        // #770 — main loop 가 무한히 잘 수 있게 D-Bus 를 watch 로 잇는다 (`dbus.WatchSet`).
+        self.dbus_watches_installed = self.dbus_watches.install(&self.dbus_session.?);
+        if (!self.dbus_watches_installed) {
+            log.appendLine("dbus", "watch functions not installed — polling D-Bus every {d} ms", .{frame_poll_ms});
+        }
         // direct 등록이 성공한 뒤에만 hidden_start가 surface 생성을 미룬다.
         kglobalaccel.cleanupLegacyIdentity(self.rt, &self.dbus_session.?);
         const client = kglobalaccel.Client.create(
@@ -9030,15 +9092,18 @@ const Client = struct {
     /// main loop 매 iteration 마다 D-Bus message를 dispatch.
     /// `read_write_dispatch(conn, 0)` 는 socket 의 pending data read + 누적된
     /// message dispatch (filter callback 호출 포함) + 0 timeout 이라 즉시 반환.
-    /// dbus fd 를 wayland fd 와 함께 poll 통합하는 대신 매 iteration 0-timeout
-    /// dispatch 호출 — frame_poll_ms (16ms) 가 wayland poll timeout 이라 hotkey
-    /// latency 도 같은 수준으로 충분 (60Hz 한 frame).
+    /// #770 — 바퀴를 깨우는 것은 `dbus.WatchSet` 이 `poll` 에 넣은 watch 다 (문서가 정한
+    /// main loop 통합). 그 바퀴에 여기서 읽고 큐를 다 비운다 (`dispatchAll`).
     fn dispatchDbusMessages(self: *Client) void {
         if (self.dbus_session) |*bus| {
             const r = bus.api.read_write_dispatch(bus.conn, 0);
             // r == 0 은 connection disconnected — fatal 아니지만 KDE hotkey 더 안 옴.
             if (r == 0) {
                 log.appendLine("dbus", "connection disconnected — KDE hotkey routing stopped", .{});
+            } else {
+                // #770 — main loop 가 다시 잠들기 전에 받은 메시지를 다 처리한다. 이미 읽어 둔
+                // 메시지는 fd 를 다시 깨우지 않는다.
+                bus.dispatchAll();
             }
         }
         if (self.kglobalaccel_client) |client| {
@@ -10979,9 +11044,17 @@ const Client = struct {
 /// 패턴 동등 — buf 에 ptr append 만, main loop 의 `drainExitedTabs` 가 처리.
 fn linuxTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     const client: *Client = @ptrCast(@alignCast(userdata.?));
-    client.pending_close_mutex.lockUncancelable(client.rt.io);
-    defer client.pending_close_mutex.unlock(client.rt.io);
-    client.pending_close_buf.append(client.allocator, tab_ptr) catch {};
+    {
+        client.pending_close_mutex.lockUncancelable(client.rt.io);
+        defer client.pending_close_mutex.unlock(client.rt.io);
+        client.pending_close_buf.append(client.allocator, tab_ptr) catch {};
+    }
+    // #770 — main loop 가 무한히 자고 있어도 탭을 닫게 깨운다. 출력 통보와 같은 eventfd 를 쓰되
+    // coalescing 플래그는 건너뛴다 — 그 플래그는 출력용이고, 여기서 한 번 더 쓰는 것은 무해하다.
+    if (client.output_eventfd >= 0) {
+        const one: u64 = 1;
+        _ = posix.system.write(client.output_eventfd, std.mem.asBytes(&one), @sizeOf(u64));
+    }
 }
 
 /// #439 — PTY 출력이 ring 에 들어갔다는 통보. **PTY read thread 에서 불린다.**
@@ -11089,6 +11162,9 @@ pub fn runBaselineWindow(
     // 매 바퀴 검사하므로 여기서 거는 것이 안전하다. macOS · Windows 는 loop 구조가 달라
     // 각자의 host 가 검사를 갖출 때 함께 건다.
     signal_exit.install();
+    // #770 — main loop 는 그릴 것이 없으면 무한히 잔다. SIGTERM 이 출력 통보 eventfd 에 써서 깨운다
+    // (`posix.poll` 은 `EINTR` 에서 다시 기다려 시그널만으로는 깨지 않는다).
+    signal_exit.setWakeFd(client.output_eventfd);
     // #454 — 이 호출도 `client.is_sway` (peer PID 비교) 뒤에 있어야 한다. 렌더링하지
     // 않는 compositor 에 bindsym 을 등록하는 것은 무의미하고, 무엇보다 stale `SWAYSOCK`
     // 이 **응답 없는 소켓**을 가리키면 `runCommand` 의 read 가 부팅을 영원히 막는다

@@ -52,6 +52,7 @@ const search_input = @import("../search_input.zig");
 const about = @import("../about.zig");
 const log = @import("../log.zig");
 const perf = @import("../perf.zig");
+const frame_wake = @import("../frame_wake.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
 
@@ -201,6 +202,22 @@ extern fn CFRunLoopObserverCreate(
 ) CFRunLoopObserverRef;
 extern fn CFRunLoopAddObserver(runloop: CFRunLoopRef, observer: CFRunLoopObserverRef, mode: CFStringRef) void;
 extern fn CFRunLoopWakeUp(runloop: CFRunLoopRef) void;
+
+// #770 — 다음 마감에 display link 를 다시 켜는 타이머 (Apple `CFRunLoop.h`).
+const CFRunLoopTimerRef = ?*anyopaque;
+const CFRunLoopTimerCallBack = *const fn (timer: CFRunLoopTimerRef, info: ?*anyopaque) callconv(.c) void;
+extern fn CFRunLoopTimerCreate(
+    allocator: ?*anyopaque,
+    fire_date: f64, // CFAbsoluteTime
+    interval: f64, // CFTimeInterval
+    flags: CFOptionFlags,
+    order: CFIndex,
+    callout: CFRunLoopTimerCallBack,
+    context: ?*anyopaque,
+) CFRunLoopTimerRef;
+extern fn CFRunLoopAddTimer(runloop: CFRunLoopRef, timer: CFRunLoopTimerRef, mode: CFStringRef) void;
+extern fn CFRunLoopTimerSetNextFireDate(timer: CFRunLoopTimerRef, fire_date: f64) void;
+extern fn CFAbsoluteTimeGetCurrent() f64;
 
 // #439 — PTY 출력 도착을 main run loop 에 알리는 **version 0 custom source**.
 //
@@ -668,6 +685,13 @@ var g_metal_layer: objc.id = null;
 var g_renderer: ?renderer_module.RendererBackend = null;
 /// CADisplayLink (NSWindow.displayLink) — vsync render driver. null = 미생성.
 var g_display_link: objc.id = null;
+/// #770 — display link 를 `paused` 로 둔 상태인가. 그릴 것도, 가까운 마감도 없는 유휴 프레임이
+/// 세우고 (`sleepFrameClock`), 할 일이 생기면 `wakeFrameClock` 이 내린다.
+var g_frame_clock_paused: bool = false;
+/// #770 — 시간에 걸린 일 (제목 · 검색 debounce, blink, 드래그 자동 스크롤) 의 다음 마감에
+/// display link 를 다시 켜는 타이머. 하나를 만들어 두고 `CFRunLoopTimerSetNextFireDate` 로
+/// 다시 맞춰 쓴다 — 불규칙한 시각에 여러 번 쏘는 타이머에 Apple 문서가 권하는 방식이다.
+var g_wake_timer: CFRunLoopTimerRef = null;
 /// #570 — 첫 displayLink callback과 screen 변경 뒤 첫 callback에서 실제
 /// `targetTimestamp - timestamp`를 읽어 현재 합성 cadence를 기록한다.
 var g_display_timing_pending: bool = true;
@@ -3747,7 +3771,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 g_command_menu_open = !g_command_menu_open;
                 g_command_menu_hover = null;
                 invalidateCursorRects();
-                g_needs_render = true;
+                requestRender();
                 return;
             },
             else => {},
@@ -3793,7 +3817,7 @@ fn tildazMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c)
                 g_command_menu_open = !g_command_menu_open;
                 g_command_menu_hover = null;
                 invalidateCursorRects();
-                g_needs_render = true;
+                requestRender();
                 return;
             },
             .none => {
@@ -4945,6 +4969,15 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         const add_to_run_loop = objc.objcSend(fn (objc.id, objc.SEL, objc.id, CFStringRef) callconv(.c) void);
         add_to_run_loop(g_display_link, objc.sel("addToRunLoop:forMode:"), run_loop, kCFRunLoopCommonModes);
         log.appendLine("startup", "CADisplayLink installed (vsync render driver)", .{});
+
+        // #770 — 마감 타이머. 아주 먼 시각 · 아주 긴 간격으로 만들어 두고 쓸 때마다 다시 맞춘다.
+        // display link 와 같은 common modes — 리사이즈 · 모달 tracking 중에도 마감을 놓치지 않는다.
+        g_wake_timer = CFRunLoopTimerCreate(null, CFAbsoluteTimeGetCurrent() + WAKE_TIMER_FAR_S, WAKE_TIMER_FAR_S, 0, 0, &wakeTimerFire, null);
+        if (g_wake_timer != null) {
+            CFRunLoopAddTimer(CFRunLoopGetMain(), g_wake_timer, kCFRunLoopCommonModes);
+        } else {
+            log.appendLine("startup", "wake timer creation failed — the frame clock keeps running while idle", .{});
+        }
     }
 
     // #266 — OSC 52 복사. 첫 탭이 이미 있어도 `setClipboardWrite` 가 퍼뜨린다.
@@ -5016,9 +5049,18 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 /// .join 부름) → 글로벌 queue 에 enqueue 만 하고 main thread (renderFrameTick)
 /// 가 매 frame 시작 시 drain. Windows 의 PostMessage 패턴과 동등 의도.
 fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
-    g_pending_close_mutex.lockUncancelable(g_rt.io);
-    defer g_pending_close_mutex.unlock(g_rt.io);
-    g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
+    {
+        g_pending_close_mutex.lockUncancelable(g_rt.io);
+        defer g_pending_close_mutex.unlock(g_rt.io);
+        g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
+    }
+    // #770 — display link 가 멈춰 있어도 (유휴 · 창 숨김) 탭을 닫게 main thread 를 깨운다.
+    // 출력 통보 source 를 그대로 쓴다 — `outputWakePerform` 이 `renderFrameTick` 을 부르고, 그
+    // 첫 줄이 `drainExitedTabs` 다. signal 과 wakeup 은 다른 스레드에서 불러도 된다.
+    if (g_output_source) |source| {
+        CFRunLoopSourceSignal(source);
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+    }
 }
 
 /// 매 프레임 시작 시 pending close queue drain. main thread 에서 호출되므로
@@ -5048,7 +5090,7 @@ fn drainExitedTabs() bool {
     if (any_changed) {
         syncGeometryAfterTabCountChange();
         invalidateCursorRects();
-        g_needs_render = true; // #255 Phase2 — 탭 닫힘 후 새 레이아웃 렌더 (idle 재pause 전).
+        requestRender(); // #255 Phase2 — 탭 닫힘 후 새 레이아웃 렌더 (idle 재pause 전).
     }
     return false;
 }
@@ -5127,10 +5169,70 @@ fn macOutputFull(_: ?*anyopaque) void {
 }
 
 /// #255 Phase 2 — "그릴 게 생겼다" 신호 (main thread 전용, 입력/창 핸들러가 호출).
-/// displayLink 는 visible 동안 계속 vsync 로 돌고(규칙적 cadence → 깜빡임 없음 +
-/// auto-scroll tick 유지), 이 플래그가 그 frame 에 *render 작업을 할지*만 가른다.
+/// 이 플래그가 다음 frame 에 *render 작업을 할지* 를 가른다.
+///
+/// #770 — display link 가 유휴로 멈춰 있으면 다시 켠다. 그릴 것이 생기는 길은 전부 여기를
+/// 지나야 한다 — 플래그만 세우면 다음 vsync 가 오지 않아 화면이 안 바뀐다.
 fn requestRender() void {
     g_needs_render = true;
+    wakeFrameClock();
+}
+
+/// #770 — 마감 타이머의 "꺼 둠" 시각 (초). 약 300 년 — 사실상 쏘지 않는다.
+const WAKE_TIMER_FAR_S: f64 = 1.0e10;
+
+/// #770 — display link 를 다시 켠다 (main thread). 이미 돌고 있으면 아무것도 안 한다.
+fn wakeFrameClock() void {
+    if (!g_frame_clock_paused) return;
+    g_frame_clock_paused = false;
+    setDisplayLinkPaused(false);
+}
+
+/// #770 — 유휴 프레임이 display link 를 멈춘다. `wake_in_ns` 는 시간에 걸린 일의 다음 마감
+/// (`idleWakeInNs`) 이고, 있으면 그 시각에 타이머가 다시 켠다. `0` 이면 지금 할 일이 있으니
+/// 멈추지 않는다.
+///
+/// 깨우는 길 (출력 통보 source · 마감 타이머) 중 하나라도 없으면 멈추지 않는다 — 멈추면
+/// 다시 켤 길이 없어서다. 그때는 예전처럼 vsync 마다 돈다.
+fn sleepFrameClock(wake_in_ns: ?u64) void {
+    if (g_output_source == null or g_wake_timer == null or g_display_link == null) return;
+    if (wake_in_ns) |ns| {
+        if (ns == 0) return;
+        const secs = @as(f64, @floatFromInt(ns)) / @as(f64, std.time.ns_per_s);
+        CFRunLoopTimerSetNextFireDate(g_wake_timer, CFAbsoluteTimeGetCurrent() + secs);
+    } else {
+        CFRunLoopTimerSetNextFireDate(g_wake_timer, CFAbsoluteTimeGetCurrent() + WAKE_TIMER_FAR_S);
+    }
+    if (g_frame_clock_paused) return;
+    g_frame_clock_paused = true;
+    setDisplayLinkPaused(true);
+}
+
+fn setDisplayLinkPaused(paused: bool) void {
+    const set_paused = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
+    set_paused(g_display_link, objc.sel("setPaused:"), paused);
+}
+
+/// #770 — 마감 타이머. display link 를 켜면 다음 vsync 의 `renderFrameTick` 이 마감된 일
+/// (제목 반영 · 검색 시작 · blink · 자동 스크롤) 을 처리한다.
+fn wakeTimerFire(_: CFRunLoopTimerRef, _: ?*anyopaque) callconv(.c) void {
+    wakeFrameClock();
+}
+
+/// #770 — 유휴 프레임에서, 시간에 걸린 일의 다음 마감까지 남은 시간 (ns). `null` 이면 그런
+/// 일이 없다 — 출력 · 입력 같은 사건이 깨울 때까지 자도 된다. 판정은 세 host 공통
+/// (`frame_wake.idleWakeInNs`) 이고 macOS 는 키 반복을 OS 가 해서 넘기지 않는다.
+fn idleWakeInNs() ?u64 {
+    return frame_wake.idleWakeInNs(.{
+        // 비활성 탭에만 출력이 남아 있어도 계속 돈다 — `idleDrainObserver` 는 활성 탭 화면이
+        // 바뀌었을 때만 다시 깨우므로, 여기서 멈추면 그 출력이 다음 사건까지 남는다.
+        .pending_output = g_session.hasPendingOutput(),
+        .session_wake_ns = g_session.nextWakeInNs(),
+        .now_ms = g_rt.nowMs(),
+        .saw_blink_cell = if (g_renderer) |r| r.saw_blink_cell else false,
+        // 드래그 선택이 창 밖에 머물러 있으면 40 ms 마다 스크롤한다 (#245).
+        .autoscroll_next_ms = if (g_sel_autoscroll_dir != 0) g_sel_autoscroll_next_ms else null,
+    });
 }
 
 /// #387 — 사양 A ("드레인 한 번이 UI 를 예산 이상 잡지 않는다") 의 macOS 쪽 구현.
@@ -5183,9 +5285,14 @@ fn renderFrameTick() void {
     // 반환값은 활성 탭 본문 또는 어느 탭이든 제목이 바뀌어 현재 화면 redraw가
     // 필요한지 나타낸다. 비활성 탭 본문만 바뀌면 parse하되 GPU render는 생략한다.
     const had_output = g_session.drainOutputForRender();
-    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ preedit/autoscroll
+    // 렌더 게이트: ① PTY 출력 ② 로컬 UI 변화(g_needs_render) ③ autoscroll
     // ④ blink 위상 전환 (#376).
-    const force_render = g_preedit_len > 0 or did_autoscroll;
+    //
+    // #770 — 예전에는 조합 (preedit) 이 열려 있는 동안 매 vsync 그렸다 (`g_preedit_len > 0`).
+    // 그리기 요청 게이트가 생기기 전 (#245 시절 `renderTimerFire`) 의 잔재다. #763 이 조합 표시가
+    // 바뀌는 자리마다 `requestRender` 를 부르게 해서 더 필요 없고, 남겨 두면 한글을 치는 동안
+    // display link 가 멈추지 못하고 120 fps 로 그린다.
+    const force_render = did_autoscroll;
     // #376 — 위상이 뒤집힌 **그 프레임에만**, 그리고 직전 프레임에 blink 셀이
     // 실제로 보였을 때만 연다. 둘을 함께 봐야 blink 이 없는 화면에서 공짜로
     // 초당 2프레임을 낭비하지 않는다.
@@ -5205,6 +5312,9 @@ fn renderFrameTick() void {
             // #439 — 이 프레임에 그릴 것이 없었다 = 유휴다. 다음 PTY 출력은 통보로 깨워야
             // 화면에 빨리 닿는다 (`macOutputWake`).
             g_frame_idle.store(true, .release);
+            // #770 — 할 일이 없으면 다음 마감까지 display link 를 멈춘다. ghostty 의
+            // `syncDisplayLink` (`should_run = visible and (cells_rebuilt or animation)`) 와 같은 원칙이다.
+            sleepFrameClock(idleWakeInNs());
             return;
         }
         // 표시 미확정 → fall through 해 한 프레임 더 그림(present handler 재부착).
@@ -5213,6 +5323,9 @@ fn renderFrameTick() void {
     }
     // #439 — 여기부터는 실제로 그린다 = 타이머가 이미 화면을 몰고 있다. 통보를 멈춘다.
     g_frame_idle.store(false, .release);
+    // #770 — 일을 한 프레임이면 다음 vsync 도 돈다 (이어지는 출력은 통보 없이 vsync 가 집는다 —
+    // `macOutputWake` 는 유휴일 때만 깨운다). 출력 통보 · 탭 종료로 멈춘 채 들어온 경우도 여기서 켠다.
+    wakeFrameClock();
 
     if (!g_visible) return;
     if (g_renderer == null) return;
