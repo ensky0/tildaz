@@ -195,7 +195,15 @@ pub fn listConfigIndices(rt: Runtime, allocator: std.mem.Allocator) ![]u32 {
     errdefer indices.deinit(allocator);
     var it = dir.iterate();
     while (try it.next(rt.io)) |entry| {
-        if (entry.kind != .file) continue;
+        // #758 — **링크도 config 다.** dotfiles 처럼 config 를 링크로 관리하는 사용자가 있다 (#700 이
+        // 쓰기에서 링크를 따라가게 한 그 사용자). 예전에는 `.file` 만 받아 링크로 둔 `config_0.toml` 을
+        // 못 보고, 기본 config 를 새로 만들려다 (`exclusive`) `PathAlreadyExists` 로 launcher 가 실패했다
+        // (macOS 실기). 링크가 일반 파일이 아닌 것 (장치) 을 가리키면 읽는 쪽 (`config.readConfigFile`) 이
+        // 그 번호를 기본값으로 돌린다.
+        switch (entry.kind) {
+            .file, .sym_link => {},
+            else => continue,
+        }
         if (parseConfigFileName(entry.name)) |index| try indices.append(allocator, index);
     }
     std.mem.sort(u32, indices.items, {}, std.sort.asc(u32));
@@ -760,6 +768,37 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
         entries[i] = .{ .index = index, .hotkey = parsed };
     }
     return conflictingLowerIndex(entries, self_index, candidate);
+}
+
+test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
+    // Windows 는 링크를 만들려면 권한이 필요하고, 합성 환경변수 대신 실제 환경을 쓴다 (`paths.testRuntime`).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
+    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    defer allocator.free(env);
+    const block = [_:null]?[*:0]const u8{env.ptr};
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+
+    try tmp.dir.createDirPath(std.testing.io, app_id.name);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real.toml", .data = "auto_start = false\n" });
+    var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
+    defer cfg_dir.close(std.testing.io);
+    // config_0 은 링크 (dotfiles), config_2 는 일반 파일이다.
+    const target = try std.Io.Dir.path.join(allocator, &.{ root, "real.toml" });
+    defer allocator.free(target);
+    try cfg_dir.symLink(std.testing.io, target, "config_0.toml", .{});
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_2.toml", .data = "auto_start = false\n" });
+
+    const indices = try listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 2 }, indices);
+    // 링크를 따라 읽는다 — 그 번호의 값이 그대로 나온다.
+    try std.testing.expect(!try configAutoStart(rt, allocator, 0));
 }
 
 test "#758 launcher 는 크기와 무관하게 config 를 읽고, 일반 파일이 아니면 그 번호의 기본값으로 본다" {

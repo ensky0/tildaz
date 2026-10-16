@@ -66,6 +66,8 @@ read exactly as written, and nothing rewrites its `hotkey`.
 >
 > **TildaZ never edits your file for you.** The defaults live in memory only — rewriting the file would throw away your comments, and fixing it is your call.
 >
+> A config file may be a symlink, for example into a dotfiles repository. TildaZ reads the file the link points to.
+>
 > **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version now starts fine. The new keys run on their defaults and the dialog lists them so you can add them at your leisure. Before v0.10.0 the same file refused to load.
 >
 > **Comments** — TOML has real comments: anything after `#` on a line is ignored, either on its own line or after a value. Use them to annotate your config.
