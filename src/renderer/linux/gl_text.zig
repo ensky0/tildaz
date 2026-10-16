@@ -58,7 +58,8 @@ const vertex_src: [*:0]const u8 =
     \\}
 ;
 
-/// grayscale — atlas 의 `.a` 를 커버리지로 쓰고 fg 색을 곱한다. 결과는
+/// grayscale — atlas 의 `.r` 을 커버리지로 쓰고 fg 색을 곱한다 (#762 — 텍스처가 `GL_R8` 이다. 전에는
+/// `GL_ALPHA` 라 `.a` 였다). 결과는
 /// premultiplied 다 (rgb 에 이미 a 가 곱해져 나간다).
 const fragment_gray_src: [*:0]const u8 =
     \\#ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -70,7 +71,7 @@ const fragment_gray_src: [*:0]const u8 =
     \\varying vec2 v_uv;
     \\varying vec4 v_color;
     \\void main() {
-    \\    float coverage = texture2D(u_atlas, v_uv).a * v_color.a;
+    \\    float coverage = texture2D(u_atlas, v_uv).r * v_color.a;
     \\    gl_FragColor = vec4(v_color.rgb * coverage, coverage);
     \\}
 ;

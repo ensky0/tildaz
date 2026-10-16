@@ -1157,16 +1157,18 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
   그리고 **한 회차를 먼저 돌려** 창 크기 (1272x989 @ 88x33 · 150 %) · `render_path=hardware` · 캡처가 실제 그림인지
   (PNG 을 열어 봐요) 를 확인하고 전체를 돌려요.
 - **`grow` 회수 기대표를 판정에 쓰지 말아요 — 최종 그림 `0 px` 과 `atlas full` 0 으로 판정해요.** 두 가지 이유예요.
-  ① 150 % 의 `cell 14x29` 에서는 `stack2` 6,000 종이 2048² 에 들어가 기본 판이 `grow` 0 이에요 (Linux `14x31` 과 같고
-  macOS `19x39` 와 달라요) — 기본 판의 `grow` 는 `overflow` (17 화면 누적 · `-Wait 15` 이상) 로 봐요. ② `overflow` 의
+  ① 150 % 의 `cell 14x29` 에서는 `stack2` 6,000 종이 2048² 에 들어가 2048 판이 `grow` 0 이에요 (Linux `14x31` 과 같고
+  macOS `19x39` 와 달라요) — 2048 판의 `grow` 는 `overflow` (17 화면 누적 · `-Wait 15` 이상) 로 봐요. 기본 시작 크기는
+  #762 로 512 라 기본 판은 더 일찍 커져요. ② `overflow` 의
   누적 종 수는 **회차마다 달라요** (8192 로 커진 시점의 `clusters` 가 22,043 · 23,916 · 25,319) — Windows 는 화면이 바뀔
   때만 그려서 빠른 스크롤의 중간 화면을 건너뛰어요. 4096 판이 같은 화면에서 `grow` 0 인 회차가 실제로 있었어요.
 - **`-e` 회차의 새 탭도 같은 `-e` 명령을 다시 실행해요.** `-NewTab` 으로 `Ctrl+Shift+T` 를 보내면 Tab 2 가 화면을 처음부터
   다시 뿌리고 (그동안 Tab 1 도 계속 출력), 캡처는 Tab 2 의 최종 화면 + 탭바예요. 대조에는 지장이 없지만 대기를 화면 출력
   시간만큼 넉넉히 둬요 (`overflow` 는 18 초로 돌렸어요).
-- 탭 atlas 의 UV 정규화 (#586 W-a) 를 가르려면 **본문 atlas 가 탭 atlas (2048) 보다 커진 뒤 탭바를 그린 화면**이어야 해요 —
-  `stack2` 는 512 판도 2048 에서 멈춰 조건이 안 돼요. `overflow` + `-NewTab` 을 **main 판** (고정 2048 + 안전망) 과 견줘요.
-  grow 판끼리는 같은 코드라 함정을 스스로 못 가르니까요 (2026-09-03 실측 `0 / 2,640,760 px`).
+- **탭바 글자는 본문 atlas 에 살아요** ([#762](https://github.com/ensky0/tildaz/issues/762) — 탭 atlas 가 없어졌어요).
+  그래서 탭바 그림을 가르려면 **본문 atlas 가 커진 뒤 탭바를 그린 화면**이 필요해요 — `overflow` + `-NewTab` 이에요.
+  견줄 판은 #762 이전 판이에요 (그때는 탭 atlas 가 따로라 크기가 갈려도 맞는지를 봤어요 — #586 W-a,
+  2026-09-03 실측 `0 / 2,640,760 px`).
 
 # Windows — 합성 입력으로 dead key · launcher 실패를 자동 검증하는 법
 
@@ -2172,7 +2174,7 @@ Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`I
 
 ```sh
 python3 tool/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
-git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 2048/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/glyph_atlas_common.zig
+git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 512/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/glyph_atlas_common.zig
 (cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
 tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
 ```
@@ -2191,7 +2193,7 @@ tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/
 - **양성 대조군을 하나 둬요** — 서로 다른 화면의 캡처를 같은 영역으로 견줘 큰 수가 나오는지 (`many` vs emoji 는 353,633 px).
   `0 px` 만 보면 도구가 죽어 있어도 통과처럼 보여요.
 - **기대표는 기기마다 달라요.** Ryzen AI 7 350 노트북 (1.6x · DejaVu 15 · `cell 14x31` 대) 은 cell 이 작아 `stack2`
-  6,000 종이 2048² 에 다 들어가요 — 기본 2048 판의 `grow` 를 보려면 `overflow` (누적) 를 써요. macOS 의 기대표
+  6,000 종이 2048² 에 다 들어가요 — 2048 판의 `grow` 를 보려면 `overflow` (누적) 를 써요 (기본 시작 크기는 #762 로 512 예요). macOS 의 기대표
   (`stack2` 에서 grow 1) 를 그대로 옮기면 "grow 가 안 된다" 로 오독해요.
 - **⚠️ 판 바이너리에 다른 이름을 붙이면 `pgrep -x tildaz` 가 못 잡아요.** `tildaz-4096` · `tildaz-512` 처럼 복사해 두고
   돌리면 comm 이 달라져서, `pgrep -x tildaz` 로 내리는 정리 함수가 **아무것도 안 죽인 채 조용히 통과**해요 — 2026-09-03 에

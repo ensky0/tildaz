@@ -7,23 +7,23 @@
 //! 로 나누는 것과 같은 이유다. 대부분의 글리프는 알파 마스크 하나면 되므로 1 byte
 //! 로 두면 메모리·업로드 대역폭이 4 배 유리하다.
 //!
-//!   - `gray`  : `GL_ALPHA` (1 byte). `FT_PIXEL_MODE_GRAY` 글리프. 셰이더가 fg 색을
+//!   - `gray`  : `GL_R8` (1 byte). `FT_PIXEL_MODE_GRAY` 글리프. 셰이더가 fg 색을
 //!               곱한다. **`GL_NEAREST`** — 1:1 로 그리므로 샘플이 텍셀 중심에
 //!               정확히 떨어지고, software 경로와 픽셀이 같아진다.
-//!   - `color` : `GL_RGBA` (4 byte). `FT_PIXEL_MODE_BGRA` 컬러 emoji. premultiplied
+//!   - `color` : `GL_RGBA8` (4 byte). `FT_PIXEL_MODE_BGRA` 컬러 emoji. premultiplied
 //!               이므로 셰이더가 그대로 출력한다. **`GL_LINEAR`** — emoji bitmap 은
 //!               보통 폰트 strike (~109px) 라 cell 로 크게 축소되는데, nearest 는
 //!               텍셀을 통째로 버려 가장자리가 거칠다 (2026-08-02 사용자 결정,
 //!               ghostty · foot 도 같은 선택). software 경로의 nearest 와는 이
 //!               항목만 의도적으로 갈린다.
 //!
-//! GLES2 코어 포맷만 쓴다 — `GL_R8` 은 GLES3 이상이고, `GL_BGRA` 는 GLES 에 없다
-//! (그래서 업로드 시 R/B 를 바꿔 넣는다).
+//! #762 부터 GLES3 이다 — `GL_R8` · `GL_RGBA8` 은 FBO 에 붙일 수 있어 atlas 를 키울 때 GPU 안에서 옮긴다
+//! (`Surface.grow`). 전에는 GLES2 라 gray 가 `GL_ALPHA` 였고, 그 형식은 FBO 에 못 붙여 CPU 사본을 들었다.
+//! `GL_BGRA` 는 GLES 에 없다 (그래서 업로드 시 R/B 를 바꿔 넣는다).
 //!
 //! 패킹은 공통 [`glyph_atlas_common`](../../renderer/glyph_atlas_common.zig) 의
-//! row-based `packRow` 를 쓴다 — macOS · Windows 와 같은 규칙이다. ghostty 의
-//! bin-packer 보다 낭비가 크지만 이 규모에서는 문제가 아니고, 세 platform 이 같은
-//! 배치 규칙을 쓰는 값이 더 크다.
+//! `Packer` 를 쓴다 — macOS · Windows 와 같은 규칙이다. #762 부터 ghostty 와 같은
+//! skyline 이다 (전에는 줄 단위라 키운 뒤의 오른쪽과 낮은 그림 위의 빈틈을 버렸다).
 
 const std = @import("std");
 const egl = @import("../../host/linux/egl.zig");
@@ -94,6 +94,11 @@ const icon_source: u8 = 0xFE;
 const composed_source: u8 = 0xFD;
 
 /// 한 텍스처와 그 패킹 상태.
+///
+/// #762 — **CPU 사본을 들지 않는다.** 그림은 GPU 텍스처 한 장에만 있다 (macOS · Windows 와 같다). 글리프는
+/// 넣을 때 그 자리만 `glTexSubImage2D` 로 올리고, 키울 때는 새 텍스처를 만들어 옛 내용을 FBO 복사
+/// (`glBlitFramebuffer`) 로 같은 자리에 옮긴다. 전에는 GLES2 라 텍스처끼리 옮길 길이 없어서 (`GL_ALPHA` 는 FBO 에
+/// 붙일 수 없다) `size × size × bpp` 의 CPU 사본을 들고 거기서 다시 올렸다.
 const Surface = struct {
     texture: u32 = 0,
     /// #604 — 패킹 상태 + 지금 크기 (`size`). 세 platform 공통 (`atlas_common.Packer`).
@@ -102,92 +107,137 @@ const Surface = struct {
     resets: u32 = 0,
     /// #586 — 키운 횟수 (진단).
     grows: u32 = 0,
+    /// `glTexImage2D` 의 sized internal format — gray `GL_R8` · color `GL_RGBA8`.
+    internal_format: i32,
+    /// 올릴 때의 픽셀 형식 — gray `GL_RED` · color `GL_RGBA`.
     format: i32,
     filter: i32,
-    /// 텍셀 한 개의 byte 수 — gray (`GL_ALPHA`) 1 · color (`GL_RGBA`) 4.
+    /// 텍셀 한 개의 byte 수 — gray 1 · color 4.
     bpp: u32,
-    /// #586 — **CPU 사본** (`size × size × bpp`). GLES2 에는 텍스처 간 복사가 없어서 (`glCopyImageSubData` 는
-    /// 3.2, `GL_ALPHA` 는 FBO 첨부 불가) 키울 때 옛 내용을 여기서 다시 올린다 — macOS 의 `pixels` 와 같은
-    /// 모델이다. 0 으로 채워 두므로 새 텍스처의 빈 영역 초기화도 겸한다 (`GL_LINEAR` 인 color 에 필수 —
-    /// 선형 보간이 글리프 가장자리 바깥 텍셀을 함께 읽는다). 할당에 실패하면 빈 slice 고 그 surface 는
-    /// 키우지 못한다 (① 만 남는다).
-    shadow: []u8 = &.{},
 
-    fn create(api: *const egl.Api, allocator: std.mem.Allocator, format: i32, filter: i32, bpp: u32, size: u32) Surface {
-        var self: Surface = .{ .format = format, .filter = filter, .bpp = bpp, .pack = .{ .size = size } };
-        self.shadow = allocator.alloc(u8, @as(usize, size) * size * bpp) catch &.{};
-        if (self.shadow.len > 0) @memset(self.shadow, 0);
-        self.texture = self.makeTexture(api);
+    fn create(api: *const egl.Api, allocator: std.mem.Allocator, internal_format: i32, format: i32, filter: i32, bpp: u32, size: u32) Surface {
+        var self: Surface = .{ .internal_format = internal_format, .format = format, .filter = filter, .bpp = bpp, .pack = .{ .size = size } };
+        self.texture = self.makeTexture(api, allocator, size);
         return self;
     }
 
     fn deinit(self: *Surface, api: *const egl.Api, allocator: std.mem.Allocator) void {
         var tex = self.texture;
         api.deleteTextures(1, @ptrCast(&tex));
-        if (self.shadow.len > 0) allocator.free(self.shadow);
-        self.shadow = &.{};
+        self.pack.deinit(allocator);
     }
 
-    /// `size` 크기의 텍스처를 만들고 `shadow` 가 있으면 그 내용으로 채운다 (없으면 미초기화).
-    fn makeTexture(self: *const Surface, api: *const egl.Api) u32 {
+    /// `size` 크기의 텍스처를 만들고 0 으로 채운다.
+    ///
+    /// **0 으로 채우는 이유** — color 는 `GL_LINEAR` 라 선형 보간이 글리프 가장자리 바깥 텍셀을 함께 읽는다.
+    /// 새 텍스처의 내용은 정해져 있지 않으므로 (GLES 사양) 비워 두면 가장자리에 쓰레기가 섞인다. 전에는 0 으로
+    /// 채운 CPU 사본을 올려 이것을 겸했다.
+    ///
+    /// **`glClear` 로 채우지 않는 이유** — 그리는 동안 렌더러가 알파 쓰기를 막아 두고 (`colorMask(1, 1, 1, 0)`,
+    /// `wayland_minimal` 의 render) 키우기는 그 도중에 일어난다. `glClear` 는 color mask 를 따르므로 알파가 안
+    /// 지워진다. `glTexSubImage2D` 는 color mask 와 scissor 의 영향을 받지 않는다. 0 버퍼는 512 KB 이하의 띠로
+    /// 잠깐만 잡는다.
+    fn makeTexture(self: *const Surface, api: *const egl.Api, allocator: std.mem.Allocator, size: u32) u32 {
         var texture: u32 = 0;
         api.genTextures(1, @ptrCast(&texture));
         api.bindTexture(egl.GL_TEXTURE_2D, texture);
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MIN_FILTER, self.filter);
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_MAG_FILTER, self.filter);
         // 글리프 경계 밖을 샘플링하지 않게 clamp — 인접 글리프가 새어 들어오는
-        // 것을 막는다 (`packRow` 가 1px padding 을 주지만 clamp 가 2 차 방어다).
+        // 것을 막는다 (`Packer` 가 1px padding 을 주지만 clamp 가 2 차 방어다).
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_WRAP_S, egl.GL_CLAMP_TO_EDGE);
         api.texParameteri(egl.GL_TEXTURE_2D, egl.GL_TEXTURE_WRAP_T, egl.GL_CLAMP_TO_EDGE);
         api.texImage2D(
             egl.GL_TEXTURE_2D,
             0,
-            self.format,
-            @intCast(self.pack.size),
-            @intCast(self.pack.size),
+            self.internal_format,
+            @intCast(size),
+            @intCast(size),
             0,
             @bitCast(self.format),
             egl.GL_UNSIGNED_BYTE,
-            if (self.shadow.len > 0) self.shadow.ptr else null,
+            null,
         );
+
+        const row_bytes = @as(usize, size) * self.bpp;
+        const band_rows: u32 = @intCast(@max(1, @min(size, (512 * 1024) / row_bytes)));
+        const zeros = allocator.alloc(u8, row_bytes * band_rows) catch return texture; // 못 잡으면 비워 둔다
+        defer allocator.free(zeros);
+        @memset(zeros, 0);
+        var y: u32 = 0;
+        while (y < size) : (y += band_rows) {
+            const rows = @min(band_rows, size - y);
+            api.texSubImage2D(
+                egl.GL_TEXTURE_2D,
+                0,
+                0,
+                @intCast(y),
+                @intCast(size),
+                @intCast(rows),
+                @bitCast(self.format),
+                egl.GL_UNSIGNED_BYTE,
+                zeros.ptr,
+            );
+        }
         return texture;
     }
 
-    /// #586 — **두 배로 키운다** (macOS · Windows `grow` 와 같은 정책). 새 shadow 에 옛 내용을 **같은 (x, y)**
-    /// 로 옮기고 (row stride 만 달라진다) 그것으로 새 텍스처를 만든다 — row-based packing 이라 좌표와 커서가
-    /// 그대로 유효하고, 정점의 UV 는 픽셀 좌표라 (`gl_text.Batch.add`) 이미 쌓인 것도 그대로 맞는다.
-    /// 옛 텍스처는 `glDeleteTextures` — 이미 발행한 draw 와의 순서는 GL command stream 이 지킨다.
-    /// 상한 (`max_size`) · shadow 없음 · 할당 실패면 `false`.
-    fn grow(self: *Surface, api: *const egl.Api, allocator: std.mem.Allocator, max_size: u32) bool {
-        if (self.shadow.len == 0) return false;
-        const new_size = self.pack.grownSize(max_size) orelse return false;
-        const new_shadow = allocator.alloc(u8, @as(usize, new_size) * new_size * self.bpp) catch return false;
-        @memset(new_shadow, 0);
-        const old_row = @as(usize, self.pack.size) * self.bpp;
-        const new_row = @as(usize, new_size) * self.bpp;
-        for (0..self.pack.size) |y| {
-            @memcpy(new_shadow[y * new_row ..][0..old_row], self.shadow[y * old_row ..][0..old_row]);
+    /// #762 — `src` 의 `(0, 0)`–`(size, size)` 를 `dst` 의 같은 자리로 GPU 안에서 옮긴다 (`glBlitFramebuffer`).
+    ///
+    /// - 지금 걸린 FBO (렌더러의 그리기 대상) 를 읽어 두었다가 되돌린다. 키우기는 그리는 도중에 일어난다.
+    /// - blit 은 scissor 를 따르므로 끈다. 렌더러는 그릴 때마다 필요하면 다시 켠다 (`glApplyClip`). color mask 는
+    ///   blit 에 영향이 없다 (GLES 3.0 §4.3.3 — blit 에 걸리는 fragment 단계는 pixel ownership 과 scissor 뿐이다).
+    /// - `glGetIntegerv` 가 없거나 FBO 가 완전하지 않으면 false — 호출자가 키우기를 포기한다.
+    fn copyTexture(api: *const egl.Api, src: u32, dst: u32, size: u32) bool {
+        const get_integerv = api.get_integerv orelse return false;
+        var prev_draw: i32 = 0;
+        var prev_read: i32 = 0;
+        get_integerv(egl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        get_integerv(egl.GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+
+        var fbos: [2]u32 = .{ 0, 0 };
+        api.genFramebuffers(2, &fbos);
+        defer api.deleteFramebuffers(2, &fbos);
+        defer {
+            api.bindFramebuffer(egl.GL_READ_FRAMEBUFFER, @intCast(prev_read));
+            api.bindFramebuffer(egl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw));
         }
-        allocator.free(self.shadow);
-        self.shadow = new_shadow;
-        self.pack.size = new_size;
-        var old_tex = self.texture;
-        self.texture = self.makeTexture(api);
-        api.deleteTextures(1, @ptrCast(&old_tex));
-        self.grows += 1;
+
+        api.bindFramebuffer(egl.GL_READ_FRAMEBUFFER, fbos[0]);
+        api.framebufferTexture2D(egl.GL_READ_FRAMEBUFFER, egl.GL_COLOR_ATTACHMENT0, egl.GL_TEXTURE_2D, src, 0);
+        api.bindFramebuffer(egl.GL_DRAW_FRAMEBUFFER, fbos[1]);
+        api.framebufferTexture2D(egl.GL_DRAW_FRAMEBUFFER, egl.GL_COLOR_ATTACHMENT0, egl.GL_TEXTURE_2D, dst, 0);
+        if (api.checkFramebufferStatus(egl.GL_READ_FRAMEBUFFER) != egl.GL_FRAMEBUFFER_COMPLETE) return false;
+        if (api.checkFramebufferStatus(egl.GL_DRAW_FRAMEBUFFER) != egl.GL_FRAMEBUFFER_COMPLETE) return false;
+
+        api.disable(egl.GL_SCISSOR_TEST);
+        const n: i32 = @intCast(size);
+        api.blitFramebuffer(0, 0, n, n, 0, 0, n, n, egl.GL_COLOR_BUFFER_BIT, @intCast(egl.GL_NEAREST));
         return true;
     }
 
-    /// 업로드한 비트맵을 shadow 에도 적는다 (`grow` 가 다시 올릴 수 있게). `pixels` 는 텍스처에 올린 것과
-    /// 같은 순서 (color 는 이미 RGBA 로 바뀐 것) 다.
-    fn writeShadow(self: *Surface, x: u32, y: u32, w: u32, h: u32, pixels: [*]const u8) void {
-        if (self.shadow.len == 0) return;
-        const row = @as(usize, self.pack.size) * self.bpp;
-        const src_row = @as(usize, w) * self.bpp;
-        for (0..h) |r| {
-            const dst = (y + r) * row + @as(usize, x) * self.bpp;
-            @memcpy(self.shadow[dst..][0..src_row], pixels[r * src_row ..][0..src_row]);
+    /// #586 — **두 배로 키운다** (macOS · Windows `grow` 와 같은 정책). 새 텍스처를 만들고 옛 내용을 **같은 (x, y)**
+    /// 로 GPU 안에서 옮긴다 (#762 — `copyTexture`). 놓은 자리는 그대로 유효하고 새 오른쪽 · 아래는 `Packer.grow` 가
+    /// 빈 자리로 더한다. 정점의 UV 는 픽셀 좌표라 (`gl_text.Batch.add`) 이미 쌓인 것도 그대로 맞는다. 옛 텍스처는
+    /// `glDeleteTextures` — 이미 발행한 draw · 복사와의 순서는 GL command stream 이 지킨다.
+    /// 상한 (`max_size`) · 텍스처 복사 실패 · 할당 실패면 `false` 이고 판은 그대로다.
+    fn grow(self: *Surface, api: *const egl.Api, allocator: std.mem.Allocator, max_size: u32) bool {
+        const new_size = self.pack.grownSize(max_size) orelse return false;
+        const old_size = self.pack.size;
+        var new_tex = self.makeTexture(api, allocator, new_size);
+        if (!copyTexture(api, self.texture, new_tex, old_size)) {
+            api.deleteTextures(1, @ptrCast(&new_tex));
+            return false;
         }
+        self.pack.grow(allocator, new_size) catch {
+            api.deleteTextures(1, @ptrCast(&new_tex));
+            return false;
+        };
+        var old_tex = self.texture;
+        self.texture = new_tex;
+        api.deleteTextures(1, @ptrCast(&old_tex));
+        self.grows += 1;
+        return true;
     }
 
     /// 패킹 커서를 처음으로 되돌린다. 텍스처 내용은 그대로 두고 덮어쓴다.
@@ -208,7 +258,7 @@ pub const Atlas = struct {
     color: Surface,
     /// **캐시를 surface 별로 나눈다** ([#584](https://github.com/ensky0/tildaz/issues/584) ①).
     /// 한쪽이 가득 차 rewind 되면 무효가 되는 것은 **그 surface 의 항목뿐이다** — 다른
-    /// surface 는 커서가 그대로여서 이미 내준 좌표가 살아 있다. 한 맵에 섞어 두면 gray 를
+    /// surface 는 패킹 상태가 그대로여서 이미 내준 좌표가 살아 있다. 한 맵에 섞어 두면 gray 를
     /// 비울 때 color 항목까지 버려서, 같은 emoji 가 color 텍스처에 다시 올라가 자리를 두 번
     /// 먹고 color 가 필요 이상으로 빨리 찬다.
     gray_cache: std.AutoHashMap(Key, AtlasEntry),
@@ -227,7 +277,8 @@ pub const Atlas = struct {
     max_size: u32 = INITIAL_ATLAS_SIZE,
 
     /// 어느 텍스처인지. 로그의 `kind` 자리에 그대로 쓴다 (`@tagName`).
-    pub const Kind = enum { gray, color };
+    /// 판 종류 — 정의는 공통 모듈 하나다 (#762, macOS 도 같은 두 판을 쓴다).
+    pub const Kind = atlas_common.SurfaceKind;
 
     fn cacheFor(self: *Atlas, is_color: bool) *std.AutoHashMap(Key, AtlasEntry) {
         return if (is_color) &self.color_cache else &self.gray_cache;
@@ -240,8 +291,7 @@ pub const Atlas = struct {
     pub fn create(api: *const egl.Api, allocator: std.mem.Allocator) Atlas {
         // 1 byte 정렬 — 글리프 폭이 4 의 배수가 아닐 때 행이 밀리는 것을 막는다.
         api.pixelStorei(egl.GL_UNPACK_ALIGNMENT, 1);
-        // #586 — 두 surface 모두 CPU shadow (0 으로 채운 것) 로 만든다 (`Surface.shadow` 주석). 전에는 회색은
-        // 미초기화로 두어 4 MB 업로드를 아꼈는데, 이제 키울 때 다시 올릴 원본이 필요해 둘 다 가진다.
+        // 두 surface 모두 0 으로 채운 텍스처로 시작한다 (`Surface.makeTexture`). #762 부터 CPU 사본은 없다.
         var max_size: u32 = INITIAL_ATLAS_SIZE;
         if (api.get_integerv) |f| {
             var gl_max: i32 = 0;
@@ -249,8 +299,8 @@ pub const Atlas = struct {
             if (gl_max > 0) max_size = @min(MAX_ATLAS_SIZE, @as(u32, @intCast(gl_max)));
         }
         return .{
-            .gray = Surface.create(api, allocator, egl.GL_ALPHA, egl.GL_NEAREST, 1, INITIAL_ATLAS_SIZE),
-            .color = Surface.create(api, allocator, egl.GL_RGBA, egl.GL_LINEAR, 4, INITIAL_ATLAS_SIZE),
+            .gray = Surface.create(api, allocator, egl.GL_R8, egl.GL_RED, egl.GL_NEAREST, 1, INITIAL_ATLAS_SIZE),
+            .color = Surface.create(api, allocator, egl.GL_RGBA8, egl.GL_RGBA, egl.GL_LINEAR, 4, INITIAL_ATLAS_SIZE),
             .gray_cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
             .color_cache = std.AutoHashMap(Key, AtlasEntry).init(allocator),
             .max_size = max_size,
@@ -390,17 +440,17 @@ pub const Atlas = struct {
         }
 
         const surface = self.surfaceFor(is_color);
-        // #604 — "빈 surface 였나" 는 호출 **전** 값으로 판정한다 (`Packer.pack` 은 실패할 때도 커서를 움직인다).
+        // #604 — "빈 surface 였나" 는 호출 **전** 값으로 판정한다 (실패해도 판은 그대로지만, 키운 뒤에는 비지 않는다).
         const was_empty = surface.pack.isEmpty();
 
-        const placed = surface.pack.pack(bmp.w, bmp.h) orelse blk: {
+        const placed = surface.pack.pack(allocator, bmp.w, bmp.h) orelse blk: {
             // #586 — **먼저 키운다** (macOS #584 ② · Windows 와 같다). 키우면 프레임 중간에 비우는 상황이
             // 없어 이미 쌓인 정점의 UV 가 무효화되지 않는다 — UV 는 픽셀 좌표고 셰이더가 `u_atlas_size`
-            // 로 정규화한다 (`gl_text`). `pack` 이 실패하며 옮긴 커서는 그대로 두고 (더 큰 atlas 안에서
-            // 여전히 유효한 자리다) 이어서 담는다. 상한이면 아래 ① 로.
+            // 로 정규화한다 (`gl_text`). 키운 판에는 새 오른쪽 · 아래가 빈 자리로 더해져 (`Packer.grow`)
+            // 거기에 이어서 담는다. 상한이면 아래 ① 로.
             while (surface.grow(api, allocator, self.max_size)) {
                 log.logAtlasGrew(if (is_color) "color" else "gray", surface.pack.size, surface.grows, cache.count(), 0);
-                if (surface.pack.pack(bmp.w, bmp.h)) |p| break :blk p;
+                if (surface.pack.pack(allocator, bmp.w, bmp.h)) |p| break :blk p;
             }
             // #584 ① — 가득 찼다. **그 자리에서 비우지 않는다.**
             //
@@ -441,12 +491,10 @@ pub const Atlas = struct {
             @intCast(placed[1]),
             @intCast(bmp.w),
             @intCast(bmp.h),
-            @bitCast(if (is_color) egl.GL_RGBA else egl.GL_ALPHA),
+            @bitCast(surface.format),
             egl.GL_UNSIGNED_BYTE,
             pixels,
         );
-        // #586 — `grow` 가 다시 올릴 수 있게 CPU 사본에도 적는다.
-        surface.writeShadow(placed[0], placed[1], bmp.w, bmp.h, pixels);
 
         const entry = AtlasEntry{
             .x = @intCast(placed[0]),

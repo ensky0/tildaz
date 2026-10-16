@@ -65,7 +65,10 @@ pub const GlyphAtlas = struct {
     dw_factory: *dw.IDWriteFactory,
     rendering_params: *dw.IDWriteRenderingParams,
     rendering_mode: u32,
-    font_em_size: f32,
+    /// #762 — **폰트마다의 em 크기 (DIP).** 터미널 폰트와 탭바 폰트가 이 atlas 하나를 쓰고
+    /// (`GlyphKey.source` 가 가른다) 둘은 크기가 다르다. 전에는 atlas 가 크기 하나 (`font_em_size`)
+    /// 에 묶여 있어 탭바용 atlas 를 따로 둬야 했다.
+    em_sizes: std.EnumArray(atlas_common.GlyphSource, f32),
     pixels_per_dip: f32,
 
     // D3D11 texture
@@ -114,7 +117,9 @@ pub const GlyphAtlas = struct {
     pub fn init(
         alloc: std.mem.Allocator,
         dw_factory: *dw.IDWriteFactory,
-        font_em_size: f32,
+        /// #762 — 터미널 · 탭바 폰트의 em 크기 (각 `DWriteFontContext.font_em_size`).
+        terminal_em_size: f32,
+        tab_em_size: f32,
         pixels_per_dip: f32,
         device: *d3d.ID3D11Device,
         ctx: *d3d.ID3D11DeviceContext,
@@ -177,7 +182,7 @@ pub const GlyphAtlas = struct {
             .dw_factory = dw_factory,
             .rendering_params = rp.?,
             .rendering_mode = sys_rendering_mode,
-            .font_em_size = font_em_size,
+            .em_sizes = .init(.{ .terminal = terminal_em_size, .tab = tab_em_size }),
             .pixels_per_dip = pixels_per_dip,
             .texture = gpu.texture,
             .srv = gpu.srv,
@@ -341,7 +346,8 @@ pub const GlyphAtlas = struct {
     }
 
     /// #586 — 차면 **두 배로 키운다** (macOS `grow` 와 같은 정책 · ghostty 방식). 새 텍스처를 만들고 옛 내용을
-    /// **같은 (x, y) 로** 복사한다 — row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다. 이미
+    /// **같은 (x, y) 로** 복사한다 — 놓은 자리는 그대로 유효하고, 새 오른쪽 · 아래는 `Packer.grow` 가 빈 자리로
+    /// 더한다 (#762). 이미
     /// emit 된 인스턴스의 UV 는 픽셀 좌표고 셰이더가 `atlas_w/h` 로 정규화하므로 그대로 맞는다
     /// (`drawTextInstancesWithAtlas` 가 draw 마다 그 atlas 크기를 상수 버퍼에 쓴다).
     ///
@@ -353,8 +359,14 @@ pub const GlyphAtlas = struct {
     pub fn grow(self: *GlyphAtlas) bool {
         const new_size = self.pack.grownSize(MAX_ATLAS_SIZE) orelse return false;
         const gpu = createGpu(self.d3d_device, new_size, self.d2d_factory, self.rendering_params, self.pixels_per_dip) catch return false;
+        // #762 — skyline 윤곽선에 새 오른쪽을 더한다. 실패하면 새 텍스처를 버리고 키우기를 포기한다.
+        const old_size = self.pack.size;
+        self.pack.grow(self.alloc, new_size) catch {
+            gpu.release();
+            return false;
+        };
 
-        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = self.pack.size, .bottom = self.pack.size };
+        const box = d3d.D3D11_BOX{ .left = 0, .top = 0, .right = old_size, .bottom = old_size };
         self.d3d_ctx.CopySubresourceRegion(@ptrCast(gpu.texture), 0, 0, 0, 0, @ptrCast(self.texture), 0, &box);
 
         // 옛 객체는 command list 가 참조를 들고 있어 지연 파괴는 드라이버가 처리한다.
@@ -366,7 +378,6 @@ pub const GlyphAtlas = struct {
         self.atlas_dc = gpu.dc;
         self.atlas_dc4 = gpu.dc4;
         self.atlas_brush = gpu.brush;
-        self.pack.size = new_size;
         self.grows += 1;
         self.is_full = false;
         log.logAtlasGrew("main", new_size, self.grows, self.cache.count(), self.cluster_cache.count());
@@ -379,6 +390,7 @@ pub const GlyphAtlas = struct {
         if (self.d2d_factory) |f| d2d.factoryRelease(f);
         self.alloc.free(self.ct_buf);
         self.alloc.free(self.temp_buf);
+        self.pack.deinit(self.alloc);
         self.cache.deinit();
         self.cluster_cache.deinit();
         _ = self.rendering_params.Release();
@@ -398,23 +410,26 @@ pub const GlyphAtlas = struct {
         /// 키 타입을 쓴다.
         font_id: u64,
         glyph_index: u16,
+        /// #762 — 터미널 폰트인지 탭바 폰트인지. 키를 가르고 em 크기를 고른다.
+        source: atlas_common.GlyphSource,
     ) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = font_id, .index = glyph_index };
+        const key = GlyphKey{ .font_id = font_id, .index = glyph_index, .source = source };
         if (self.cache.get(key)) |entry| return entry;
 
+        const em = self.em_sizes.get(source);
         const single_indices = [_]u16{glyph_index};
         const empty_advances = [_]dw.FLOAT{};
         const empty_offsets = [_]dw.DWRITE_GLYPH_OFFSET{};
-        var entry = self.rasterizeColor(face, &single_indices, &empty_advances, &empty_offsets) orelse
-            self.rasterize(face, &single_indices, &empty_advances, &empty_offsets) orelse return null;
-        entry.advance = self.designAdvancePx(face, glyph_index);
+        var entry = self.rasterizeColor(face, em, &single_indices, &empty_advances, &empty_offsets) orelse
+            self.rasterize(face, em, &single_indices, &empty_advances, &empty_offsets) orelse return null;
+        entry.advance = self.designAdvancePx(face, em, glyph_index);
         self.cache.put(key, entry) catch return null;
         return entry;
     }
 
     /// 글리프의 design advance → 물리 px (#299 — 셀 영역 가운데 정렬용).
     /// 실패 시 0 — caller 의 center 계산이 offset 없이 degrade.
-    fn designAdvancePx(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_index: u16) f32 {
+    fn designAdvancePx(self: *GlyphAtlas, face: *dw.IDWriteFontFace, em: f32, glyph_index: u16) f32 {
         var fm: dw.DWRITE_FONT_METRICS = undefined;
         face.GetMetrics(&fm);
         if (fm.designUnitsPerEm == 0) return 0;
@@ -422,7 +437,7 @@ pub const GlyphAtlas = struct {
         var gm: [1]dw.DWRITE_GLYPH_METRICS = undefined;
         if (face.GetDesignGlyphMetrics(&idx, 1, &gm, .FALSE) < 0) return 0;
         return @as(f32, @floatFromInt(gm[0].advanceWidth)) /
-            @as(f32, @floatFromInt(fm.designUnitsPerEm)) * self.font_em_size * self.pixels_per_dip;
+            @as(f32, @floatFromInt(fm.designUnitsPerEm)) * em * self.pixels_per_dip;
     }
 
     /// Multi-glyph cluster (#139, ZWJ family · 결합 기호 등) atlas entry. GSUB 합성 안 된
@@ -447,9 +462,11 @@ pub const GlyphAtlas = struct {
         /// #418 — cluster 의 결합 기호가 전부 관통 (overlay) 류인지. 폰트 층이 codepoint 로
         /// 판정해 넘긴다 (atlas 는 glyph index 만 받아서 스스로는 알 수 없다).
         overlay_marks: bool,
+        /// #762 — `getOrInsert` 의 같은 인자.
+        source: atlas_common.GlyphSource,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
-        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0]);
+        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0], source);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
         // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
@@ -457,15 +474,16 @@ pub const GlyphAtlas = struct {
         // 것을 확인했다 — 다국어 화면 (cluster 7,560 종 · fallback 폰트 6 종) 에서 `MV Boli` 가
         // 한 프로세스 안에서 주소 2 개로 나왔다. macOS 의 `Monaco` 50 개와 같은 기전이고 규모만
         // 작다. 주소를 키에 실으면 같은 그림이 id 마다 새로 담겨 atlas 가 부푼다.
-        const key = ClusterKey{ .font_id = font_id, .indices_hash = hashIndices(glyph_indices) };
+        const key = ClusterKey{ .font_id = font_id, .indices_hash = hashIndices(glyph_indices), .source = source };
         if (self.cluster_cache.get(key)) |entry| return entry;
 
         // #415 · #418 — shaping 이 배치하지 못한 mark 를 base 위로 되돌린 offsets.
         var fixed_offsets: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
-        const placed_offsets = self.placeUnplacedMarks(face, glyph_indices, advances, offsets, overlay_marks, &fixed_offsets);
+        const em = self.em_sizes.get(source);
+        const placed_offsets = placeUnplacedMarks(face, em, glyph_indices, advances, offsets, overlay_marks, &fixed_offsets);
 
-        var entry = self.rasterizeColor(face, glyph_indices, advances, placed_offsets) orelse
-            self.rasterize(face, glyph_indices, advances, placed_offsets) orelse return null;
+        var entry = self.rasterizeColor(face, em, glyph_indices, advances, placed_offsets) orelse
+            self.rasterize(face, em, glyph_indices, advances, placed_offsets) orelse return null;
         // cluster advance = placements 합 (DIP) × DPI scale (#299).
         if (advances.len == glyph_indices.len) {
             var sum: f32 = 0;
@@ -524,9 +542,10 @@ pub const GlyphAtlas = struct {
     /// `pen_i + off_i` 에 그려진다) 넣을 값이 `원하는 원점 − pen_i` 다.
     ///
     /// placements 가 없거나 metric 을 못 읽으면 입력을 그대로 돌려준다.
+    /// #762 — atlas 상태를 쓰지 않는다 (폰트 크기를 인자로 받으면서 `self` 가 필요 없어졌다).
     fn placeUnplacedMarks(
-        self: *GlyphAtlas,
         face: *dw.IDWriteFontFace,
+        em: f32,
         glyph_indices: []const u16,
         advances: []const dw.FLOAT,
         offsets: []const dw.DWRITE_GLYPH_OFFSET,
@@ -546,7 +565,7 @@ pub const GlyphAtlas = struct {
         var fm: dw.DWRITE_FONT_METRICS = undefined;
         face.GetMetrics(&fm);
         if (fm.designUnitsPerEm == 0) return offsets;
-        const to_dip = self.font_em_size / @as(f32, @floatFromInt(fm.designUnitsPerEm));
+        const to_dip = em / @as(f32, @floatFromInt(fm.designUnitsPerEm));
 
         var indices: [MAX_CLUSTER_GLYPHS]dw.UINT16 = undefined;
         for (glyph_indices, 0..) |gi, i| indices[i] = gi;
@@ -596,7 +615,7 @@ pub const GlyphAtlas = struct {
     /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
     /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon) };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 
@@ -698,7 +717,7 @@ pub const GlyphAtlas = struct {
     /// ([`98eefc8`](https://github.com/ensky0/tildaz/commit/98eefc8)) 와 그 점이 갈린다.
     ///
     /// **스케일 규약이 `rasterizeColor` 와 다르다.** 저쪽은 atlas D2D RT 가 `SetUnitMode(PIXELS)`
-    /// 라 `em_px = font_em_size × pixels_per_dip` 을 쓰고 placements 도 같은 비율로 곱한다 (#149).
+    /// 라 `em_px = em × pixels_per_dip` (`em` 은 그 폰트의 em 크기 — #762) 을 쓰고 placements 도 같은 비율로 곱한다 (#149).
     /// 여기는 `fontEmSize` 를 DIP 로 주고 `CreateGlyphRunAnalysis` 의 두 번째 인자로
     /// `pixels_per_dip` 을 넘겨 DWrite 가 변환하게 하므로, **advances · offsets 도 DIP 그대로**
     /// 넘긴다. 여기서 곱하면 고DPI 에서 cluster 간격이 어긋난다.
@@ -708,6 +727,8 @@ pub const GlyphAtlas = struct {
     fn rasterize(
         self: *GlyphAtlas,
         face: *dw.IDWriteFontFace,
+        /// #762 — 이 글리프 폰트의 em 크기 (DIP). `em_sizes.get(source)`.
+        em: f32,
         glyph_indices: []const u16,
         in_advances: []const dw.FLOAT,
         in_offsets: []const dw.DWRITE_GLYPH_OFFSET,
@@ -727,7 +748,7 @@ pub const GlyphAtlas = struct {
 
         const glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face,
-            .fontEmSize = self.font_em_size,
+            .fontEmSize = em,
             .glyphCount = @intCast(glyph_indices.len),
             .glyphIndices = &indices,
             .glyphAdvances = &advances,
@@ -853,7 +874,7 @@ pub const GlyphAtlas = struct {
     /// is_color=true 인 AtlasEntry 반환. 컬러 글리프 아닌 경우
     /// (`DWRITE_E_NOCOLOR`) 또는 D2D path 실패 시 null → caller 가 일반
     /// `rasterize` (mono ClearType) 로 fall-through.
-    fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, glyph_indices: []const u16, in_advances: []const dw.FLOAT, in_offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
+    fn rasterizeColor(self: *GlyphAtlas, face: *dw.IDWriteFontFace, em: f32, glyph_indices: []const u16, in_advances: []const dw.FLOAT, in_offsets: []const dw.DWRITE_GLYPH_OFFSET) ?AtlasEntry {
         // atlas RT + DC + DC4 + brush + Factory4 모두 있어야 컬러 path 가능.
         // Win 10 1607+ 라 모두 사용 가능.
         const atlas_rt = self.atlas_d2d_rt orelse return null;
@@ -871,9 +892,9 @@ pub const GlyphAtlas = struct {
         var advances_buf: [MAX_CLUSTER_GLYPHS]dw.FLOAT = undefined;
         var offsets_buf: [MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = undefined;
         const has_placements = in_advances.len == glyph_indices.len and in_offsets.len == glyph_indices.len;
-        // GetGlyphPlacements (`dwrite_font.zig:509`) 가 em=`font_em_size` (DIP)
+        // GetGlyphPlacements (`dwrite_font.zig:509`) 가 em=`em` (그 폰트의 DIP 크기)
         // 기준으로 advances/offsets 을 반환. atlas D2D RT 는 PIXEL mode 라
-        // fontEmSize 도 device pixel 로 (em_px = font_em_size * pixels_per_dip)
+        // fontEmSize 도 device pixel 로 (em_px = em * pixels_per_dip)
         // 해석. 따라서 placements 도 같은 비율로 스케일해야 spacing 이 일관 —
         // 스케일 안 하면 ZWJ family 등 cluster 가 좁게 압축 (DPI scale 비율로).
         const em_scale = self.pixels_per_dip;
@@ -891,7 +912,7 @@ pub const GlyphAtlas = struct {
         // 해석됨 (#149). DIP 값 그대로 넘기면 고DPI 환경에서 emoji 가 DPI scale
         // 만큼 작아짐 — 100% DPI 에서만 우연히 정합. mono path 는 CreateGlyphRunAnalysis
         // 의 두 번째 인자 pixels_per_dip 로 동등 처리.
-        const em_px = self.font_em_size * self.pixels_per_dip;
+        const em_px = em * self.pixels_per_dip;
         const glyph_run = dw.DWRITE_GLYPH_RUN{
             .fontFace = face,
             .fontEmSize = em_px,
@@ -1079,7 +1100,7 @@ pub const GlyphAtlas = struct {
     /// 자리를 잡고, 못 잡으면 **비울 가치가 있을 때만** `is_full` 을 세운다 (#584 ①). 두 조건은 공통
     /// `Packer.tryPack` 에 있다 (#604 — 세 platform 이 같은 규칙. #586 전에는 Windows 만 빈 atlas 가드가 없었다).
     fn packOrMarkFull(self: *GlyphAtlas, w: u32, h: u32, kind: []const u8) ?[2]u32 {
-        switch (self.pack.tryPack(w, h)) {
+        switch (self.pack.tryPack(self.alloc, w, h)) {
             .placed => |pos| return pos,
             .full => {
                 self.is_full = true;

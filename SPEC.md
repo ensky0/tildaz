@@ -112,6 +112,8 @@ PT 값 → 같은 *visual* 결과 보장 (DPI / scale 환경 무관).
 
 **선 두께는 정수 px 다** ([#357](https://github.com/ensky0/tildaz/issues/357) 2026-07-31 확정). 격자에 놓이는 실선의 두께는 `linePx` 로 **먼저 정수로 양자화**하고, 위치 규칙(`ui_rect.snap`)은 건드리지 않는다. 근거는 라스터화 규칙이다 — 두께 `t` 의 선이 `top` 에 놓일 때 덮는 행은 `[round(top), round(top + t))` 이고 (`ui_rect.snap` 의 정의이자 GPU 의 pixel-center 규칙), `t` 가 정수면 `round(top + t) = round(top) + t` 가 **항상** 성립해 위치 소수부와 무관하게 정확히 `t` 픽셀이 나온다. 소수 두께는 그렇지 않아 **같은 화면 안 선들의 두께가 갈렸다** — 예: 1pt × 1.7 = 1.7px 은 `top` 소수부 0.85 에서 2px, 0.55 에서 1px 이라 command menu 의 두 구분선 두께가 달랐다. 동시에 이것은 platform 갈래이기도 했다: Linux 는 두께를 미리 정수로 반올림하고 macOS · Windows 는 소수를 그대로 GPU 에 넘겨, `150pt × scale` 이 정수가 아닌 배율(1.25 · 1.75 = Windows 125% · 175%)에서 탭바 세로 구분선이 어긋났다. 배율 1.0 · 1.7 에서는 두 규칙의 결과가 같아 [#343](https://github.com/ensky0/tildaz/issues/343) 단계 1 의 픽셀 검증(1.0 · 1.7)에 걸리지 않았다.
 
+**chrome 아이콘은 정수 px 에 놓는다** ([#762](https://github.com/ensky0/tildaz/issues/762) 2026-10-16 실측 확정). 탭바 · 컨트롤 스트립 · 검색바 · command menu 스크롤 표시의 아이콘은 atlas 텍셀과 1:1 로 nearest (point) 샘플하므로, 버튼 가운데 자리를 `@round` 로 정수 px 에 맞춘다. 반 픽셀에 놓이면 (Windows 150 %: 15 px 아이콘을 36 px 버튼 가운데에 두면 10.5 px) 샘플이 텍셀 경계를 읽어 아이콘 첫 열 · 첫 행에 **이웃 텍셀**이 섞인다. 평소에는 `+` 왼팔이 가늘어지는 정도였지만, 본문 atlas 를 비운 뒤 이웃에 글리프가 오면 그 조각이 아이콘 옆에 보였다. Linux 는 아이콘을 정수 좌표로 다뤄 처음부터 해당이 없었다.
+
 **Wayland surface 의 논리 크기는 물리 픽셀 격자에 맞춘다** ([#619](https://github.com/ensky0/tildaz/issues/619) 2026-09-04 실측 확정). fractional scale 에서 `논리 × scale / 120` 이 정수가 아니면 우리가 보내는 buffer (`physicalSizeForLogical` 의 반올림값) 와 compositor 가 표면을 놓는 device 사각형이 어긋나 **표면 전체가 리샘플**된다 — 글자까지 흐려진다. 그래서 `computeLayerLayout` 이 dock 의 **논리 크기**를 `120 / gcd(scale, 120)` 논리 px 격자로 맞춘다 (여백은 맞추지 않는다 — 맞추면 `offset_percent` 가 붙이라는 edge 에서 창이 떨어지고, buffer 크기가 목적지와 맞으면 원점의 소수부는 리샘플을 만들지 않는다. 2026-09-04 KDE 실측) (1.25x = 4 · 1.5x = 2 · 1.7x = 10 · 정수 배율 = 1). `height_percent` 가 만드는 소수 논리 높이가 이 규칙이 필요한 이유다 — Hyprland 1.25x 의 논리 1037 은 1296.25 px 라 띠 화면의 셀 경계 14 곳이 전부 다른 밝기로 섞였고, 1036 (= 1295 px) 으로 맞추면 전이 행이 0 이 된다. **전면 점유 (100 %) 축은 맞추지 않는다** — 화면 edge 에 붙는 것이 더 강한 계약이고 그 축의 논리 크기는 compositor 가 알려준 값 하나뿐이다. 논리 화면이 격자 위가 아닌 compositor 도 있어서 (KWin 6.7.4 · 1.7x: 논리 2259x1271 → 2259 × 1.7 = 3840.3) 그 축에도 걸면 창이 edge 에서 떨어진다 (2026-09-04 KDE 실기: width 100 % 인데 오른쪽 15 px 이 남았다).
 
 **그리고 배율이 바뀌면 buffer 크기를 다시 계산한다** (같은 이슈). compositor 는 우리가 요청한 논리 layout 이 그대로면 configure 를 다시 보내지 않으므로 (`height_percent = 100` 이 늘 그렇다), buffer 크기 계산이 configure 핸들러에만 있으면 옛 배율의 물리 크기가 남아 compositor 가 그 buffer 를 새 배율 크기로 늘려 그린다. `applyScaleChange` 가 **마지막 configure 의 논리 크기**로 다시 계산한다 — 실측에서 셀 25 px 로 그린 화면이 31 px 로 나왔다 (1.25× stretch).
@@ -2318,7 +2320,7 @@ Windows 는 `MapCharacters` 의 base family 힌트도 이 정식 이름을 쓴�
 |---|---|
 | ⓿ **폰트 식별** | cluster 캐시 키는 폰트를 **주소가 아니라 안정된 id** 로 식별한다 |
 | ① **찼을 때** | **이미 그린 것을 먼저 flush 하고, 비우고, 재시도한다.** 그 프레임의 화면은 온전하다 |
-| ② **용량** | 세 platform 모두 `INITIAL_ATLAS_SIZE` **2048** 에서 시작해 차면 두 배로 키운다 (`MAX_ATLAS_SIZE` **8192** — Linux 는 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소). 산술이 아니라 ③ 의 실측으로 정한다 |
+| ② **용량** | 세 platform 모두 `INITIAL_ATLAS_SIZE` **512** 에서 시작해 차면 두 배로 키운다 (`MAX_ATLAS_SIZE` **8192** — Linux 는 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소). 시작 크기는 [#762 ④](https://github.com/ensky0/tildaz/issues/762#issuecomment-6181912863) 의 실측으로 정했다 (전에는 2048) |
 | ③ **로그** | [`log.logAtlasFull`](src/log.zig) 한 문구를 세 platform 이 그대로 쓴다 |
 
 #### ⓿ 폰트 식별 — 주소를 키에 싣지 않는다
@@ -2386,7 +2388,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | **Linux** | `upload` 가 **먼저 surface 를 키우고** ([#586](https://github.com/ensky0/tildaz/issues/586) · `Surface.grow`), 상한이면 `Atlas.full` 에 **찬 surface 를 표시**하고 호출자가 처리한다 — `glFlushText` 로 먼저 flush, `resetFull()`, 재시도 ([`host/linux/wayland_minimal.zig`](src/host/linux/wayland_minimal.zig) 의 `glAddGlyph`) | **사양대로.** ① · `grow` 모두 실기 확인 (2026-09-03 KDE · 아래 "Linux `grow` 실측" 표) |
 | **macOS** | `is_full` 을 세우고 호출자가 처리한다 (`insertGlyphOrRecover` · `insertClusterOrRecover` → `recoverFromAtlasFull`) — **먼저 ② 의 `grow`**, 상한이면 **지금까지 담은 구간을 pass 로 제출하고 GPU 가 끝나기를 기다린 뒤** (`submitPassEarly`) 비우고 재시도. cluster · 단일 · ligature **모든 삽입 경로가 같은 함수를 지난다** ([#591](https://github.com/ensky0/tildaz/issues/591) — 전에는 ligature 경로만 복구가 없어 조용히 버렸다) | **사양대로.** 실기 확인 |
 
-**Linux 는 축이 둘 더 있다.** 텍스처가 `gray` · `color` 둘이라 (위 머리말의 포맷 분리) **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 캐시도 surface 별로 나눠 둔다. 그리고 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
+**Linux · macOS 는 판이 둘이다.** 텍스처가 `gray` (커버리지 한 채널 — Linux `GL_R8` · macOS `R8Unorm`) · `color` (컬러 emoji — RGBA · BGRA) 둘이라 **찬 쪽만** 비운다 — 다른 쪽은 커서가 그대로여서 이미 내준 좌표가 살아 있다. 그래서 Linux 는 캐시도 surface 별로 나눠 두고, macOS 는 캐시 하나에서 찬 판의 항목만 지운다 (`is_color` 가 판을 가리킨다). 판 종류는 공통 `atlas_common.SurfaceKind` 하나다. macOS 는 [#762](https://github.com/ensky0/tildaz/issues/762) 전까지 BGRA 판 하나에 보통 글자도 (a, a, a, a) 로 담아 4 배를 썼다. Windows 는 ClearType 이 서브픽셀마다 값이 따로라 4 채널 판 하나다. 그리고 Linux 의 flush 는 **그 시점의 clip 을 들고** 해야 한다 — chrome 은 항목마다 `glScissor` 로 탭 경계를 자르므로, 안전망 flush 가 clip 을 빼면 탭 제목이 탭 밖으로 샌다.
 
 **macOS 는 순서를 우리가 만든다.** `MTLTexture.replace(region:…)` 은 **즉시 CPU 복사이고 GPU 작업과 순서가 보장되지 않는다** (Apple 문서: *"immediately copies … does not synchronize against GPU accesses"*). blit encoder 로 옮겨도 staging 을 다음 구간이 덮어써 같은 문제가 났다 — 두 시도 모두 기준판과 **23~38 % 어긋났다.** 뿌리는 하나다: **앞 pass 가 텍스처를 다 읽기 전에 CPU 가 덮었다.** Windows 의 `UpdateSubresource` · Linux 의 `glTexSubImage2D` 는 드라이버가 command 순서에 업로드를 끼워 주지만 Metal 은 그렇지 않다.
 
@@ -2400,15 +2402,15 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | 그림 (정적) | — | **기준판과 `0 / 4,584,100 px`** |
 | **그리는 과정** (기동 직후 40 장 · 0.05 s 간격) | — | 이웃 차이 · 최종 대비 **전부 0 px** — 단계적으로 채워지는 모습이 없다 |
 
-**업로드 단위도 갈렸다가 이제 비슷하다.**
+**업로드 단위도 갈렸다가 이제 같다.**
 
 | platform | 텍스처에 올리는 단위 |
 |---|---|
 | Windows | 글리프 하나 (`UpdateSubresource` + `D3D11_BOX`) |
 | Linux | 글리프 하나 (`glTexSubImage2D`) |
-| macOS | **dirty 구간** (`dirty_min_y`~`dirty_max_y`, blit encoder) — **프레임 끝 draw 직전** (`endFrame` → `beginPassWithRanges`) 과 안전망 제출 직전 |
+| macOS | 글리프 하나 (그 pass 에 새로 그린 글리프의 바이트만 담은 버퍼 → blit encoder) — **프레임 끝 draw 직전** (`endFrame` → `beginPassWithRanges`) 과 안전망 제출 직전 |
 
-macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸다. blit 은 영역 지정이 자연스러워 dirty 구간만 올린다. staging buffer 는 **atlas 마다 따로** 둔다 — blit 은 GPU 가 나중에 실행할 때 buffer 를 읽으므로, 하나를 두 atlas 가 나눠 쓰면 뒤에 복사한 내용이 앞의 blit 에 실린다 (실측으로 탭 아이콘이 깨졌다).
+macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow` 후 64 MB) 를 `replaceRegion` 으로 올렸고, #585 부터는 CPU 사본과 atlas 크기의 staging buffer 를 들고 바뀐 줄 구간 (`dirty_min_y`~`dirty_max_y`) 을 blit 으로 올렸다. [#762](https://github.com/ensky0/tildaz/issues/762) 부터는 **CPU 사본도 큰 staging 도 없다** — atlas 는 GPU 텍스처 한 장이고, 새로 그린 글리프는 대기 목록에 쌓였다가 그 바이트만 담은 버퍼로 자리마다 올라간다. 버퍼는 command buffer 가 끝나면 놓인다. Windows · Linux 의 드라이버가 안에서 하는 일을 Metal 에서는 우리가 한다.
 
 **업로드 시점 — 담은 글리프는 세 platform 모두 같은 프레임에 보인다** ([#591](https://github.com/ensky0/tildaz/issues/591)).
 
@@ -2416,11 +2418,11 @@ macOS 는 예전에 매 프레임 atlas **전체** (2048² × 4 = 16 MB · `grow
 |---|---|
 | Windows | 삽입 즉시 `UpdateSubresource` → 그 프레임의 draw 가 본다 |
 | Linux | 삽입 즉시 `glTexSubImage2D` → 같음 |
-| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에 — 본문은 `.text`, 탭 atlas 는 `.tab_text`), `endFrame` 이 **두 atlas 의 dirty 구간을 blit 한 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
+| macOS | 셀 루프 · 탭바 · 스트립 · 메뉴가 **담기만** 하고 (인스턴스는 mapped 버퍼에, 그릴 순서는 `draw_ranges` 에), `endFrame` 이 **새 글리프를 blit 으로 올린 뒤 encoder 를 열어** 순서대로 그린다 → 같은 프레임 |
 
 macOS 가 그렇게 된 이유 — Metal 은 render encoder 가 열린 동안 텍스처를 갈 수 없다 (blit 은 encoder 밖). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을 끼울 수 없었고, **프레임 시작에 지난 프레임 것을 올리는** 2-frame 구조였다 — 새 글리프가 한 프레임 늦게 보였고 host 가 `atlas.dirty` 를 보고 한 프레임을 더 요청해야 했다. #591 에서 draw 를 셀 루프 뒤로 미루자 그 지연과 재요청이 함께 사라졌다. 실측 (한 줄 출력 화면 · 자연 종료 시 perf 덤프의 `render calls`): 전 **6 · 6 · 5** vs 후 **5 · 5 · 5** — 재요청 프레임 하나가 두 회차에서 보였고, 한 회차는 초기 프레임과 겹친 것으로 보이나 확정하지 않았다. 부수로 draw call 이 프레임당 구간 수만큼으로 줄고 (`MAX_CELLS` 4096 마다 하던 중간 flush 가 없다), 셀 루프의 지역 인스턴스 배열 (bg 48 B + text 64 B) × 4096 = 약 448 KiB 스택이 없어졌다. 그리기 순서는 구간을 닫는 순서로 지킨다 — 셀 bg · SGR 선 → 글리프 → block · box → 커서 → 스크롤바 → preedit 배경 → preedit 글자.
 
-**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 두 atlas 를 올리고 그린다. clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
+**탭 atlas 도 같은 프레임이다** (#591 2 단계). 탭바 · 스트립 · 메뉴는 `endFrame` 초입에서 pane 들 뒤에 **담기만** 하고 (`emitTabBar` · `emitSingleControlStrip` · `emitCommandMenu` — 구간 순서: 탭바 배경 · 밑줄 → 제목 → 컨트롤 fill · hover · 구분선 → 드래그 제목 + 아이콘 / 컨트롤 → 아이콘 / 메뉴 배경 → chevron · 라벨 · 힌트), 그 뒤 `beginPassWithRanges` 가 atlas 를 올리고 그린다 (그때는 탭 atlas 가 따로라 둘을 올렸다 — #762 로 하나가 됐다). clip 은 지오메트리 (`ui_rect.clipX` 가 quad 와 UV 를 같은 양만큼 민다) 라 미뤄도 잘림이 그대로다. 그래서 host 의 *"atlas 가 dirty 면 한 프레임 더"* 재요청은 본문 · 탭 모두 사라졌다 — 프레임이 끝나면 두 atlas 의 dirty 가 늘 false 다. 실측: 스트립 아이콘이 있는 일반 화면에서 1 단계 판과 `0 px` · 과정 30 장 전부 0 · 상한 경로 `0 px`. 렌더 프레임 수는 5 · 5 · 5 vs 5 · 7 · 5 로 **줄지 않았다** — 첫 프레임의 탭 재요청은 다른 초기 렌더와 같은 프레임에 겹쳐 있었던 것으로 보이나 확정하지 않았다.
 
 **비운 뒤 재시도는 한 번뿐이다** (세 platform 공통 — macOS 는 그 앞에 `grow` 가 최대 두 번 더 있어 `insert*OrRecover` 가 세 번까지 돈다). 비운 직후에도 안 들어가면 그림 하나가 atlas 보다 크다는 뜻이라 그 셀을 건너뛴다 — 무한 루프가 없다. Linux 는 조건을 하나 더 둔다: **이미 빈 surface 인데 안 들어가면 `full` 을 아예 표시하지 않는다.** 표시하면 호출자가 글리프마다 헛되게 flush + reset 을 한다.
 
@@ -2483,7 +2485,7 @@ atlas grew to 4096x4096 (grows=N, glyphs=N, clusters=N)
 
 #### ② 용량 — 실측 기준선
 
-atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow` 이전의 고정 크기 상수다) 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 `packRow` 가 줄마다 낭비를 내므로, **위 로그가 유일한 근거**다.
+atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow` 이전의 고정 크기 상수다) 는 산술로 정하지 않는다. cluster 비트맵은 cell 보다 크고 자리 잡기가 빈틈을 남기므로 (그때는 줄 단위 `packRow` — 지금은 skyline, 아래 ②), **위 로그가 유일한 근거**다.
 
 | 환경 | atlas | 담긴 양 |
 |---|---|---|
@@ -2499,7 +2501,7 @@ atlas 크기 (`INITIAL_ATLAS_SIZE` · 아래 실측표의 `ATLAS_SIZE` 는 `grow
 
 Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적이 376 px² 라 (cell 434 px² 보다 작다) 같은 넓이에 더 들어가기 때문이다. **회차마다 갈리는 것이 정상**이다 — 어느 셀에서 차는지가 프레임 경계에 따라 조금씩 달라진다.
 
-**컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
+**컬러 쪽은 자리수가 다르다** — 회색이 9 천인데 컬러는 210 이다. 컬러 비트맵은 **cell 이 아니라 폰트 strike 크기**로 담기기 때문이다 (Noto Color Emoji 는 한 변이 100 px 대다). cell 로 줄이는 것은 그릴 때 하고 (`colorGlyphFit`), atlas 에는 구운 크기가 그대로 들어간다. 그래서 **emoji 를 수백 종 쓰는 화면은 컬러 텍스처를 먼저 채운다** — 회색이 한참 남아 있어도 그렇다. Linux · macOS 는 텍스처가 둘이라 그때 컬러만 비운다 (위 ①).
 
 #### ② 계속 — 차면 키운다 (세 platform)
 
@@ -2507,19 +2509,20 @@ Linux 의 gray 값이 큰 것은 결합 기호 합성 비트맵의 평균 면적
 
 | | |
 |---|---|
-| 시작 크기 | `INITIAL_ATLAS_SIZE` = **2048** |
-| 상한 | `MAX_ATLAS_SIZE` = **8192** — 8192² 는 이미 256 MB (BGRA8) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
-| 옛 내용 | **같은 (x, y) 로 옮긴다.** row-based packing 이라 좌표가 그대로 유효하고 커서도 이어 쓴다 |
-| UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고, Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 surface 마다 **CPU shadow** 를 두고 (GLES2 에는 텍스처 간 복사가 없다 — `glCopyImageSubData` 는 3.2, `GL_ALPHA` 는 FBO 첨부 불가) 옛 내용을 새 shadow 에 옮겨 그것으로 새 텍스처를 만든다. Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
+| 시작 크기 | `INITIAL_ATLAS_SIZE` = **512** ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 2048. 알파벳만 쓰면 512 로 버티고, 커지는 데 약 1 ms 다) |
+| 상한 | `MAX_ATLAS_SIZE` = **8192** (판마다) — 8192² 는 이미 256 MB (4 채널) · 64 MB (`gray` 한 채널) 다. 여기 닿으면 더 키우지 않고 ① 로 물러선다 |
+| 옛 내용 | **같은 (x, y) 로 옮긴다.** 놓은 자리는 그대로 유효하다 |
+| 자리 잡기 | **skyline (bottom-left)** — ghostty `font/Atlas.zig` 와 같은 방식 (Jylänki 의 bin packing · freetype-gl). 새 그림은 바닥이 가장 낮아지는 자리에 놓고, 키우면 새로 생긴 오른쪽을 빈 자리로 더한다 (`Packer.grow`). 세 platform 공통 `atlas_common.Packer` 하나다 ([#762](https://github.com/ensky0/tildaz/issues/762) — 전에는 줄 단위라 키운 뒤 이미 채운 줄의 오른쪽을 버려서, macOS 2 배 화면에서 512 에서 키워 온 1024 가 약 1,100 자 · 처음부터 1024 가 약 1,440 자에서 찼다) |
+| UV | 셰이더가 uniform (`atlas_w`/`atlas_h` · Linux 는 `u_atlas_size`) 으로 정규화하므로 정점의 UV 는 **픽셀 좌표**고, 크기가 바뀌면 그 uniform 과 텍스처를 함께 갱신한다 — macOS 는 `syncAtlasTexture` 가 Metal 텍스처를 다시 만들고 옛 내용을 blit `copyFromTexture` 로 같은 자리에 복사하고 (#762 부터 — CPU 사본이 없다), Windows 는 `grow` 가 텍스처 · SRV · D2D render target 체인 일곱 객체를 다시 만들고 옛 내용을 `CopySubresourceRegion` 으로 같은 자리에 복사한다 (CPU 사본이 없다), Linux 는 새 텍스처를 만들고 옛 내용을 FBO 복사 (`glBlitFramebuffer`) 로 같은 자리에 옮긴다 ([#762](https://github.com/ensky0/tildaz/issues/762) — CPU 사본이 없다. 이를 위해 GL 경로가 GLES **3** 을 요구하고 gray 판이 `GL_R8` 이다. 전에는 GLES2 라 `GL_ALPHA` 를 FBO 에 못 붙여 surface 마다 CPU shadow 를 들고 거기서 다시 올렸다. GLES3 이 없는 GPU 는 software 경로로 그린다). Linux 는 전에 UV 를 정점에 미리 나눠 넣어 (`inv_atlas`) 키우면 이미 쌓인 정점이 옛 크기로 굳었다 — #586 에서 uniform 으로 옮겼다 |
 
-**uniform 은 atlas 마다 따로다.** 본문 atlas 는 커지고 탭 atlas 는 안 커지므로, 크기가 갈리면 하나로는 둘 다 맞출 수 없다 — 실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다. `grow` 를 넣기 전에는 둘이 늘 같은 크기라 드러나지 않던 문제다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).
+**탭바 글자는 본문 atlas 에 산다** ([#762](https://github.com/ensky0/tildaz/issues/762)). 세 platform 이 같은 구조다 — 키의 `GlyphSource` (`terminal` · `tab`) 가 크기가 다른 두 폰트를 가르고, 탭바 글자 · 아이콘도 본문과 같이 차면 키운다. 전에는 macOS · Windows 가 탭 atlas 를 따로 뒀는데 (키에 폰트 크기 축이 없었다) 그쪽은 커지지 않으면서 본문과 같은 크기를 차지했고, **uniform 을 atlas 마다 따로** 둬야 했다 — 본문만 커지면 크기가 갈려 하나로는 둘 다 맞출 수 없었다 (실측에서 본문이 4096 이 된 판의 컨트롤 스트립 아이콘이 절반 자리를 가리켜 잘렸다). Linux 는 처음부터 한 atlas 였다. **Windows 는 상수 버퍼를 나누지 않고 text draw 마다 그 atlas 크기로 다시 쓴다** (`writeConstants` — DYNAMIC + `WRITE_DISCARD` 는 rename 이라 앞서 기록된 draw 는 옛 값을 그대로 본다). Windows 는 삽입 즉시 업로드 · 즉시 draw 라 macOS 의 GPU 대기 (`submitPassEarly`) 도 필요 없다 — 이미 기록된 draw 는 옛 SRV 를 참조한다 (D3D11 계약 — 아래 Windows 실측의 `0 px` 이 그 근거다. 특히 마지막 줄은 본문 atlas 가 8192 · 탭 atlas 가 2048 인 채 탭바를 그린 화면이다).
 
 **검증** (MacBook Pro M5 Pro · macOS 26.6.2 · 5120x2880 60 Hz · Menlo 15pt · `cell 19x39`). mark 를 둘 쌓은 cluster **10,000 종** 화면 (200 칸 × 50 줄) 이라 2048² 을 넘긴다. **`INITIAL_ATLAS_SIZE` 만 바꾼 세 판**을 맞댔다 — `grow` 가 정확하면 **시작 크기와 무관하게 최종 그림이 같아야** 한다.
 
 | 판 | `grow` | `atlas full` | 4096 판과 다른 픽셀 (창 7,588,060 px) |
 |---|---|---|---|
 | 4096 (기준 · 안 넘침) | 0 회 | 0 회 | — |
-| **2048** (기본값) | 1 회 → 4096 | **0 회** | **0 px** |
+| **2048** (그때 기본값) | 1 회 → 4096 | **0 회** | **0 px** |
 | **512** | 3 회 → 1024 → 2048 → 4096 | **0 회** | **0 px** |
 | 일반 화면 (cluster 2,816 종) | **0 회** | 0 회 | 이웃 프레임 `0 px` |
 

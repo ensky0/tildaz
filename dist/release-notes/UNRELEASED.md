@@ -19,6 +19,9 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- Linux: GPU rendering now needs OpenGL ES 3.0. Older GPUs without it (for example Raspberry Pi 3 and earlier) use software rendering instead. ([#762](https://github.com/ensky0/tildaz/issues/762))
+
 ## Body candidates
 
 - Typed characters show up one frame sooner on Linux, and keys no longer sometimes lag a frame on macOS and Windows ([#763](https://github.com/ensky0/tildaz/issues/763)).
+- Uses much less memory. ([#762](https://github.com/ensky0/tildaz/issues/762))

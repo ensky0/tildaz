@@ -1,7 +1,8 @@
 //! #282 G5 — macOS / Windows glyph atlas 의 공통 데이터 타입 + packing 알고리즘.
 //! 두 renderer 의 atlas 는 픽셀 포맷(BGRA premult vs ClearType)·업로드 경로가
-//! 달라 전체를 합치진 않지만, cache entry 구조와 row-based packing 은 라인 단위
+//! 달라 전체를 합치진 않지만, cache entry 구조와 packing 은 라인 단위로
 //! 동일했다. 그 공통분만 여기로 모은다 (per-OS 파일은 이 타입/함수를 사용).
+//! 크기 상수 · `Packer` · `GlyphSource` 는 Linux 도 쓴다.
 
 /// atlas cache entry — 글리프의 atlas 내 위치·크기·bearing·색 여부·advance.
 pub const AtlasEntry = struct {
@@ -19,7 +20,26 @@ pub const AtlasEntry = struct {
     advance: f32 = 0,
 };
 
-/// glyph cache key — 폰트 **id** + glyph index.
+/// 어느 폰트에서 구운 그림인지 — 터미널 폰트와 탭바 폰트 (탭바 · 컨트롤 스트립 · 검색바 · 메뉴).
+///
+/// **세 platform 이 한 atlas 에 두 폰트를 담기 때문에 키에 필요하다** ([#762](https://github.com/ensky0/tildaz/issues/762)).
+/// 탭바 폰트는 터미널 폰트와 크기가 달라서, 같은 PostScript 이름 · 같은 glyph index 라도 다른 그림이다
+/// (Menlo 15pt 본문과 Menlo 탭바 글자). 이 축이 없던 동안 macOS · Windows 는 atlas 를 폰트마다 따로 둬서
+/// 겹침을 피했는데, 탭바 atlas 는 커지지도 않으면서 본문과 같은 2048² 을 차지했다. Linux 는 처음부터
+/// 이 값으로 한 atlas 를 나눠 썼다 (`software_terminal.FontId` 가 이 타입이다).
+///
+/// 아이콘은 폰트가 아니라 `ICON_FONT_ID` 로 갈린다 — 탭바 쪽 그림이라 `.tab` 을 쓴다.
+pub const GlyphSource = enum(u8) {
+    terminal,
+    tab,
+};
+
+/// #762 — atlas 판 종류. 보통 글자는 커버리지 하나면 되므로 1 바이트 판 (`gray`) 에, 컬러 emoji 는
+/// 4 바이트 판 (`color`) 에 담는다 — ghostty 가 포맷마다 atlas 를 나누는 것과 같은 이유다. Linux 와 macOS 가
+/// 이 두 판을 쓴다. Windows 는 ClearType 이 서브픽셀마다 값이 따로라 4 채널 판 하나다.
+pub const SurfaceKind = enum { gray, color };
+
+/// glyph cache key — 폰트 **id** + glyph index + 어느 폰트 (`source`).
 ///
 /// **주소를 쓰면 안 된다** ([#584](https://github.com/ensky0/tildaz/issues/584)). 예전 주석은
 /// *"단일 글리프 경로는 chain 폰트만 쓰므로 객체가 재사용된다"* 고 적었는데 **틀렸다.**
@@ -34,6 +54,8 @@ pub const GlyphKey = struct {
     /// `fontId(PostScript 이름)`. 아래 `ClusterKey.font_id` 와 같은 값을 쓴다.
     font_id: u64,
     index: u16,
+    /// #762 — 크기가 다른 두 폰트가 같은 atlas 를 쓴다. 위 `GlyphSource` 를 본다.
+    source: GlyphSource,
 };
 
 /// 탭바 아이콘 (`+` · `×` · `⋯`) 이 `GlyphKey.font_id` 에 쓰는 **예약값**.
@@ -93,51 +115,141 @@ pub const ClusterKey = struct {
     font_id: u64,
     /// 자르지 않는다 — 자르면 `GlyphKey.index` 대역과 겹칠 여지가 생긴다 (#529).
     indices_hash: u64,
+    /// #762 — `GlyphKey.source` 와 같은 축. 지금 cluster 는 터미널 폰트에서만 오지만 키의 뜻을
+    /// 두 키가 같게 둔다.
+    source: GlyphSource,
 };
 
 /// #586 — 시작 크기와 상한. 세 platform 이 같은 값 · 같은 정책이다 — **차면 두 배로 키운다** (`Packer.grownSize`),
 /// 상한에서만 ① 안전망 (비우기). 8192² 는 BGRA8 로 256 MB 다. 실제 상한은 platform 이 더 낮출 수 있다 (Linux 는
 /// 드라이버 `GL_MAX_TEXTURE_SIZE` 와의 최소, Windows 는 텍스처 생성 실패).
-pub const INITIAL_ATLAS_SIZE: u32 = 2048;
+///
+/// #762 — 시작 크기 512 (전에는 2048). 알파벳만 쓰면 512 로 버티고 (macOS 2 배 화면 실측 — 영문 4 벌
+/// 380 자 + 탭바 글자에서 커지지 않았다), 서로 다른 글자가 약 1,100 자 아래면 1024 로 시작한 것과 결과가
+/// 같다 (둘 다 1024 에서 멈춘다). 512 → 1024 로 커지는 데 약 1 ms 다. 측정과 근거는
+/// [#762 ④](https://github.com/ensky0/tildaz/issues/762#issuecomment-6181912863). ghostty 도 512 로 시작한다.
+pub const INITIAL_ATLAS_SIZE: u32 = 512;
 pub const MAX_ATLAS_SIZE: u32 = 8192;
 
-/// #604 — row-based packing 상태 + 지금 크기. 세 platform 의 atlas (Linux 는 surface 마다) 가 이 struct 하나를
-/// 들고 `pack` · `tryPack` · `rewind` · `grownSize` 를 쓴다. 예전에는 세 파일이 `cursor_x` · `cursor_y` · `row_height`
-/// 세 필드와 "찼음 표시" 규칙을 각자 들고 있어서 (`packRow` 가 포인터 세 개를 받는 시그니처였다) Windows 만 빈
-/// atlas 가드가 빠져 있던 식의 누락이 났다 (#586). 픽셀을 어디에 어떻게 두는지 (CPU 사본 · D3D 텍스처 · GL
-/// shadow) 는 여기 없다 — platform 몫이다.
+/// #604 — 패킹 상태 + 지금 크기. 세 platform 의 atlas (Linux 는 surface 마다) 가 이 struct 하나를 들고
+/// `pack` · `tryPack` · `rewind` · `grow` 를 쓴다. 픽셀을 어디에 어떻게 두는지 (CPU 사본 · Metal · D3D · GL) 는
+/// 여기 없다 — platform 몫이다.
+///
+/// **#762 — skyline (bottom-left) 이다.** ghostty 의 `font/Atlas.zig` 와 같은 방식이다 — Jukka Jylänki,
+/// *"A Thousand Ways to Pack the Bin"* 의 skyline 을 freetype-gl 이 구현한 것. 판 위쪽에 쌓인 높이를 윤곽선
+/// (`nodes`) 으로 들고, 새 그림은 **바닥이 가장 낮아지는 자리**에 놓는다.
+///
+/// 전에는 줄 단위였다. 그 방식은 두 군데에서 공간을 버렸다.
+/// - **키운 뒤 이미 채운 줄의 오른쪽을 다시 쓰지 않았다.** macOS 2 배 화면 실측에서 512 에서 키워 온
+///   1024 는 약 1,100 자, 처음부터 1024 는 약 1,440 자에서 찼다 (#762 ④). skyline 은 키울 때 새로 생긴
+///   오른쪽을 윤곽선에 한 칸 더한다 (`grow`).
+/// - 한 줄의 높이가 그 줄에서 가장 큰 그림으로 정해져서, 낮은 그림 위의 빈틈이 남았다.
+///
+/// 좌표는 키운 뒤에도 그대로 유효하다 — 놓은 자리를 옮기지 않고 판의 오른쪽 · 아래만 넓힌다.
 pub const Packer = struct {
-    cursor_x: u32 = 0,
-    cursor_y: u32 = 0,
-    row_height: u32 = 0,
     /// 지금 한 변 (px).
     size: u32 = INITIAL_ATLAS_SIZE,
+    /// 윤곽선. x 오름차순이고 `[0, size)` 를 빈틈없이 덮는다. **비어 있으면 `{ 0, 0, size }` 한 칸으로 본다** —
+    /// 그래야 `Packer{ .size = n }` 처럼 할당 없이 만들 수 있고, `rewind` 도 할당 없이 비운다.
+    nodes: std.ArrayListUnmanaged(Node) = .empty,
 
     pub const pad: u32 = 1; // 글리프 간 1px padding.
 
-    /// 자리를 잡고 배치 좌표 (x, y) 를 돌려준다. 현재 row 에 안 들어가면 다음 row 로, atlas 가 가득 차면 null.
-    /// **실패할 때도 커서를 움직인다** (줄바꿈 분기가 높이 검사보다 앞이다) — 그래서 "빈 atlas 였나" 는
-    /// 호출 **전** 값으로 판정해야 한다 (`tryPack` 이 그렇게 한다).
-    pub fn pack(self: *Packer, w: u32, h: u32) ?[2]u32 {
-        // 너비가 atlas 보다 크면 어느 줄에도 못 들어간다 — 옛 `packRow` 는 이것을 검사하지 않아 줄바꿈 뒤 x=0
-        // 에 놓고 오른쪽으로 넘쳤다 (글리프가 256 px 이하라 실제로는 걸리지 않던 잠재 결함 · #604 테스트가 드러냈다).
-        if (w + pad > self.size) return null;
-        if (self.cursor_x + w + pad > self.size) {
-            self.cursor_x = 0;
-            self.cursor_y += self.row_height + pad;
-            self.row_height = 0;
+    /// 윤곽선의 한 칸 — x 부터 너비 `w` 까지는 위에서 `y` 까지 찼다.
+    pub const Node = struct { x: u32, y: u32, w: u32 };
+
+    pub fn deinit(self: *Packer, alloc: std.mem.Allocator) void {
+        self.nodes.deinit(alloc);
+    }
+
+    /// 자리를 잡고 배치 좌표 (x, y) 를 돌려준다. 안 들어가면 null — 판은 그대로다.
+    ///
+    /// 그림은 오른쪽 · 아래로 `pad` 만큼 더 차지한다 (글리프 사이 1px). 다만 판의 아래 끝에서는 pad 를 요구하지
+    /// 않는다 — 줄 단위 시절과 같은 경계다. 메모리를 못 잡으면 null 이다 (호출자에게는 "찼다" 로 보인다).
+    pub fn pack(self: *Packer, alloc: std.mem.Allocator, w: u32, h: u32) ?[2]u32 {
+        const rw = w + pad;
+        if (rw > self.size or h > self.size) return null;
+        if (self.nodes.items.len == 0) {
+            self.nodes.append(alloc, .{ .x = 0, .y = 0, .w = self.size }) catch return null;
         }
-        if (self.cursor_y + h > self.size) return null;
-        const x = self.cursor_x;
-        const y = self.cursor_y;
-        self.cursor_x += w + pad;
-        if (h > self.row_height) self.row_height = h;
-        return .{ x, y };
+        // 새 칸을 하나 넣으므로 자리를 먼저 잡는다 — 고른 뒤에 실패하면 윤곽선이 반쯤 바뀐 채 남는다.
+        self.nodes.ensureUnusedCapacity(alloc, 1) catch return null;
+
+        // 바닥이 가장 낮은 자리, 같으면 더 좁은 칸 (ghostty `reserve` 와 같은 기준).
+        var best: ?usize = null;
+        var best_bottom: u32 = std.math.maxInt(u32);
+        var best_w: u32 = std.math.maxInt(u32);
+        var best_y: u32 = 0;
+        for (self.nodes.items, 0..) |node, i| {
+            const y = self.fit(i, rw, h) orelse continue;
+            const bottom = y + h + pad;
+            if (bottom < best_bottom or (bottom == best_bottom and node.w < best_w)) {
+                best = i;
+                best_bottom = bottom;
+                best_w = node.w;
+                best_y = y;
+            }
+        }
+        const idx = best orelse return null;
+        const x = self.nodes.items[idx].x;
+
+        self.nodes.insertAssumeCapacity(idx, .{ .x = x, .y = best_y + h + pad, .w = rw });
+        // 새 칸이 덮은 만큼 뒤 칸들을 깎는다 — 다 깎인 칸은 지운다. 지우면 다음 칸이 같은 자리 (`i`) 로
+        // 당겨지므로 `i` 는 늘 새 칸 바로 뒤다.
+        const i = idx + 1;
+        while (i < self.nodes.items.len) {
+            const prev = self.nodes.items[i - 1];
+            const node = &self.nodes.items[i];
+            const prev_end = prev.x + prev.w;
+            if (node.x >= prev_end) break;
+            const shrink = prev_end - node.x;
+            if (shrink >= node.w) {
+                _ = self.nodes.orderedRemove(i);
+                continue;
+            }
+            node.x += shrink;
+            node.w -= shrink;
+            break;
+        }
+        self.merge();
+        return .{ x, best_y };
+    }
+
+    /// `idx` 칸에서 시작해 너비 `rw` 를 덮을 때 놓을 수 있는 y. 판을 넘으면 null.
+    fn fit(self: *const Packer, idx: usize, rw: u32, h: u32) ?u32 {
+        const nodes = self.nodes.items;
+        if (nodes[idx].x + rw > self.size) return null;
+        var y: u32 = nodes[idx].y;
+        var left = rw;
+        var i = idx;
+        while (left > 0) : (i += 1) {
+            // 윤곽선은 `[0, size)` 를 덮으므로 위 x 검사를 지났으면 여기서 끝나지 않는다.
+            if (i >= nodes.len) return null;
+            y = @max(y, nodes[i].y);
+            if (y + h > self.size) return null;
+            left -|= nodes[i].w;
+        }
+        return y;
+    }
+
+    /// 높이가 같은 이웃 칸을 하나로 합친다.
+    fn merge(self: *Packer) void {
+        var i: usize = 0;
+        while (i + 1 < self.nodes.items.len) {
+            const next = self.nodes.items[i + 1];
+            if (self.nodes.items[i].y == next.y) {
+                self.nodes.items[i].w += next.w;
+                _ = self.nodes.orderedRemove(i + 1);
+                continue;
+            }
+            i += 1;
+        }
     }
 
     /// 아무것도 담지 않은 상태인가.
     pub fn isEmpty(self: *const Packer) bool {
-        return self.cursor_x == 0 and self.cursor_y == 0 and self.row_height == 0;
+        const nodes = self.nodes.items;
+        return nodes.len == 0 or (nodes.len == 1 and nodes[0].y == 0);
     }
 
     pub const PackResult = union(enum) {
@@ -150,30 +262,40 @@ pub const Packer = struct {
     };
 
     /// `pack` + "찼음 표시" 규칙 (macOS `packOrMarkFull` · Linux `glAddGlyph` · Windows #586 가 같은 두 조건).
-    pub fn tryPack(self: *Packer, w: u32, h: u32) PackResult {
+    pub fn tryPack(self: *Packer, alloc: std.mem.Allocator, w: u32, h: u32) PackResult {
         const was_empty = self.isEmpty();
-        if (self.pack(w, h)) |pos| return .{ .placed = pos };
+        if (self.pack(alloc, w, h)) |pos| return .{ .placed = pos };
         return if (was_empty) .too_big else .full;
     }
 
-    /// 커서를 처음으로 되돌린다. 픽셀은 건드리지 않는다 — 다음에 담기는 글리프가 그 위를 덮어쓴다.
+    /// 처음 상태로 되돌린다. 픽셀은 건드리지 않는다 — 다음에 담기는 글리프가 그 위를 덮어쓴다.
     pub fn rewind(self: *Packer) void {
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.row_height = 0;
+        self.nodes.clearRetainingCapacity();
     }
 
-    /// 로그용 — 지금까지 채운 높이 (`atlas full` 의 `filled_y`).
+    /// 로그용 — 윤곽선이 가장 높이 찬 자리 (`atlas full` 의 `filled_y`). pad 를 포함한다.
     pub fn filledY(self: *const Packer) u32 {
-        return self.cursor_y + self.row_height;
+        var top: u32 = 0;
+        for (self.nodes.items) |node| top = @max(top, node.y);
+        return top;
     }
 
     /// #586 — 두 배로 키울 때의 다음 크기. 상한 (`max`) 을 넘으면 null — 호출자가 ① 안전망으로 물러선다.
-    /// 좌표는 그대로 유효하다 (row-based packing 이라 (x, y) 가 보존되고 커서도 이어 쓴다) — 픽셀을 옮기는
-    /// 것은 platform 이 한다.
     pub fn grownSize(self: *const Packer, max: u32) ?u32 {
         const next = self.size * 2;
         return if (next > max) null else next;
+    }
+
+    /// #762 — 판을 `new_size` 로 넓힌다. 새로 생긴 **오른쪽** 은 비어 있는 칸으로 윤곽선에 더하고, 아래는 크기가
+    /// 늘어난 것만으로 쓸 수 있게 된다. 놓은 그림의 좌표는 그대로다 — 픽셀을 같은 자리로 옮기는 것은 platform 이
+    /// 한다. 메모리를 못 잡으면 오류이고 판은 그대로다 (호출자는 키우기를 포기하고 ① 로 물러선다).
+    pub fn grow(self: *Packer, alloc: std.mem.Allocator, new_size: u32) !void {
+        std.debug.assert(new_size >= self.size);
+        if (self.nodes.items.len > 0 and new_size > self.size) {
+            try self.nodes.append(alloc, .{ .x = self.size, .y = 0, .w = new_size - self.size });
+            self.merge();
+        }
+        self.size = new_size;
     }
 };
 
@@ -202,29 +324,115 @@ test "fontId — 빈 이름도 값을 낸다 (이름을 못 읽은 경우)" {
     try std.testing.expect(fontId("") != fontId("Menlo-Regular"));
 }
 
-test "Packer — 한 줄에 안 들어가면 다음 줄로, 다 차면 null (커서는 실패 뒤에도 움직인다)" {
+test "Packer — 바닥이 가장 낮은 자리부터 채우고, 다 차면 null" {
+    const alloc = std.testing.allocator;
     var p = Packer{ .size = 10 };
-    try std.testing.expectEqual([2]u32{ 0, 0 }, p.pack(4, 3).?);
-    try std.testing.expectEqual([2]u32{ 5, 0 }, p.pack(4, 3).?); // 4 + pad 1
-    try std.testing.expectEqual([2]u32{ 0, 4 }, p.pack(4, 3).?); // 줄바꿈 — 3 + pad 1
-    try std.testing.expectEqual([2]u32{ 0, 8 }, p.pack(9, 2).?); // 넓은 것 — 다음 줄
-    try std.testing.expect(p.pack(1, 3) == null); // 줄바꿈 (y 8 → 11) 뒤 11 + 3 > 10
-    try std.testing.expectEqual(@as(u32, 11), p.filledY()); // 실패한 호출도 커서를 옮겼다
-    try std.testing.expect(p.pack(11, 1) == null); // 너비가 atlas 보다 크면 어느 줄에도 못 들어간다
+    defer p.deinit(alloc);
+    try std.testing.expectEqual([2]u32{ 0, 0 }, p.pack(alloc, 4, 3).?);
+    try std.testing.expectEqual([2]u32{ 5, 0 }, p.pack(alloc, 4, 3).?); // 4 + pad 1
+    try std.testing.expectEqual([2]u32{ 0, 4 }, p.pack(alloc, 4, 3).?); // 3 + pad 1
+    try std.testing.expectEqual([2]u32{ 5, 4 }, p.pack(alloc, 4, 5).?); // 같은 높이의 오른쪽 칸
+    try std.testing.expectEqual([2]u32{ 0, 8 }, p.pack(alloc, 4, 2).?); // 왼쪽이 더 낮다 (8 vs 10)
+    try std.testing.expect(p.pack(alloc, 1, 3) == null); // 어디에 놓아도 아래 끝을 넘는다
+    try std.testing.expect(p.pack(alloc, 10, 1) == null); // 너비 + pad 가 판보다 크다
+}
+
+test "Packer — 낮은 그림 위의 빈틈을 쓴다 (줄 단위는 버리던 자리)" {
+    const alloc = std.testing.allocator;
+    var p = Packer{ .size = 20 };
+    defer p.deinit(alloc);
+    _ = p.pack(alloc, 9, 9).?; // 높은 그림 (0,0)
+    _ = p.pack(alloc, 9, 2).?; // 낮은 그림 (10,0)
+    // 줄 단위였다면 다음 줄 (y 10) 로 갔다. skyline 은 낮은 그림 바로 위에 놓는다.
+    try std.testing.expectEqual([2]u32{ 10, 3 }, p.pack(alloc, 9, 2).?);
 }
 
 test "Packer.tryPack — 빈 atlas 에도 안 들어가면 too_big, 아니면 full" {
+    const alloc = std.testing.allocator;
     var p = Packer{ .size = 10 };
-    try std.testing.expect(p.tryPack(11, 1) == .too_big); // 너비
-    try std.testing.expect(p.tryPack(1, 11) == .too_big); // 높이 — 빈 atlas 라 full 이 아니다
-    p.rewind();
-    try std.testing.expect(p.tryPack(4, 4) == .placed); // (0,0)
-    try std.testing.expect(p.tryPack(4, 4) == .placed); // (5,0)
-    try std.testing.expect(p.tryPack(4, 4) == .placed); // (0,5)
-    try std.testing.expect(p.tryPack(4, 4) == .placed); // (5,5)
-    try std.testing.expect(p.tryPack(4, 4) == .full); // 줄바꿈 뒤 10 + 4 > 10 — 담긴 것이 있으니 full
+    defer p.deinit(alloc);
+    try std.testing.expect(p.tryPack(alloc, 11, 1) == .too_big); // 너비
+    try std.testing.expect(p.tryPack(alloc, 1, 11) == .too_big); // 높이 — 빈 atlas 라 full 이 아니다
+    try std.testing.expect(p.isEmpty());
+    try std.testing.expect(p.tryPack(alloc, 4, 4) == .placed); // (0,0)
+    try std.testing.expect(p.tryPack(alloc, 4, 4) == .placed); // (5,0)
+    try std.testing.expect(p.tryPack(alloc, 4, 4) == .placed); // (0,5)
+    try std.testing.expect(p.tryPack(alloc, 4, 4) == .placed); // (5,5)
+    try std.testing.expect(p.tryPack(alloc, 4, 4) == .full); // 10 + 4 > 10 — 담긴 것이 있으니 full
     p.rewind();
     try std.testing.expect(p.isEmpty());
+    try std.testing.expectEqual([2]u32{ 0, 0 }, p.pack(alloc, 4, 4).?);
+}
+
+test "Packer.grow — 키우면 새로 생긴 오른쪽부터 쓴다 (#762)" {
+    const alloc = std.testing.allocator;
+    var p = Packer{ .size = 8 };
+    defer p.deinit(alloc);
+    _ = p.pack(alloc, 3, 3).?; // (0,0)
+    _ = p.pack(alloc, 3, 3).?; // (4,0)
+    _ = p.pack(alloc, 3, 3).?; // (0,4)
+    _ = p.pack(alloc, 3, 3).?; // (4,4)
+    try std.testing.expect(p.pack(alloc, 3, 3) == null);
+    try p.grow(alloc, 16);
+    // 오른쪽 위 (바닥 4) 가 왼쪽 아래 (바닥 12) 보다 낮다. 줄 단위는 이 자리를 버렸다.
+    try std.testing.expectEqual([2]u32{ 8, 0 }, p.pack(alloc, 3, 3).?);
+    // 빈 판을 키우면 할당 없이 크기만 바뀐다.
+    var q = Packer{ .size = 8 };
+    defer q.deinit(alloc);
+    try q.grow(alloc, 16);
+    try std.testing.expect(q.isEmpty());
+    try std.testing.expectEqual(@as(u32, 16), q.size);
+}
+
+test "Packer — 무작위 크기로 채우고 키워도 겹치지 않고 판 밖으로 나가지 않는다" {
+    const alloc = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x762);
+    const rnd = prng.random();
+    const Rect = struct { x: u32, y: u32, w: u32, h: u32 };
+    var placed: std.ArrayList(Rect) = .empty;
+    defer placed.deinit(alloc);
+
+    var p = Packer{ .size = 64 };
+    defer p.deinit(alloc);
+    var n: usize = 0;
+    while (n < 400) : (n += 1) {
+        const w = rnd.intRangeAtMost(u32, 1, 24);
+        const h = rnd.intRangeAtMost(u32, 1, 24);
+        const pos = p.pack(alloc, w, h) orelse blk: {
+            const next = p.grownSize(512) orelse break;
+            try p.grow(alloc, next);
+            break :blk p.pack(alloc, w, h) orelse break;
+        };
+        try std.testing.expect(pos[0] + w <= p.size and pos[1] + h <= p.size);
+        for (placed.items) |r| {
+            const apart = pos[0] + w <= r.x or r.x + r.w <= pos[0] or pos[1] + h <= r.y or r.y + r.h <= pos[1];
+            try std.testing.expect(apart);
+        }
+        try placed.append(alloc, .{ .x = pos[0], .y = pos[1], .w = w, .h = h });
+    }
+    try std.testing.expect(placed.items.len > 100);
+}
+
+test "Packer — 512 에서 키워 온 1024 가 처음부터 1024 와 같은 양을 담는다 (#762)" {
+    // 셀 크기 그림 (macOS 2 배 화면의 넓은 글자 38x39) 로 채운다. 줄 단위 시절에는 키워 온 판이 처음부터
+    // 큰 판보다 적게 담았다 — 키우기 전 줄들의 오른쪽을 버려서다.
+    const alloc = std.testing.allocator;
+    const fill = struct {
+        fn count(a: std.mem.Allocator, start: u32) !usize {
+            var p = Packer{ .size = start };
+            defer p.deinit(a);
+            var n: usize = 0;
+            while (true) : (n += 1) {
+                if (p.pack(a, 38, 39) != null) continue;
+                if (p.size >= 1024) return n;
+                try p.grow(a, p.size * 2);
+                if (p.pack(a, 38, 39) == null) return n;
+            }
+        }
+    };
+    const fresh = try fill.count(alloc, 1024);
+    const grown = try fill.count(alloc, 512);
+    try std.testing.expect(grown * 100 >= fresh * 95);
 }
 
 test "Packer.grownSize — 두 배씩, 상한을 넘으면 null" {
@@ -237,7 +445,21 @@ test "Packer.grownSize — 두 배씩, 상한을 넘으면 null" {
 }
 
 test "ClusterKey — 폰트만 다르면 다른 키다" {
-    const a = ClusterKey{ .font_id = fontId("Menlo-Regular"), .indices_hash = 0x1234 };
-    const b = ClusterKey{ .font_id = fontId("Monaco"), .indices_hash = 0x1234 };
+    const a = ClusterKey{ .font_id = fontId("Menlo-Regular"), .indices_hash = 0x1234, .source = .terminal };
+    const b = ClusterKey{ .font_id = fontId("Monaco"), .indices_hash = 0x1234, .source = .terminal };
     try std.testing.expect(!std.meta.eql(a, b));
+}
+
+test "GlyphKey — 같은 폰트 · 같은 index 라도 터미널과 탭바는 다른 키다 (#762)" {
+    // 탭바 폰트는 크기가 달라 같은 그림이 아니다. 한 atlas 에 둘을 담으므로 이 축이 갈라야 한다.
+    const body = GlyphKey{ .font_id = fontId("Menlo-Regular"), .index = 36, .source = .terminal };
+    const tab = GlyphKey{ .font_id = fontId("Menlo-Regular"), .index = 36, .source = .tab };
+    try std.testing.expect(!std.meta.eql(body, tab));
+
+    var map = std.AutoHashMap(GlyphKey, u8).init(std.testing.allocator);
+    defer map.deinit();
+    try map.put(body, 1);
+    try map.put(tab, 2);
+    try std.testing.expectEqual(@as(usize, 2), map.count());
+    try std.testing.expectEqual(@as(?u8, 1), map.get(body));
 }
