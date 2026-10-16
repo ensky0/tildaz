@@ -1735,8 +1735,11 @@ pub const MetalRenderer = struct {
                 const entry = rself.insertIconOrRecover(icon, isz, istroke) orelse return;
                 if (entry.w == 0 or entry.h == 0) return;
                 const fsz: f32 = @floatFromInt(isz);
-                const gx = box_x + (box_w - fsz) * 0.5;
-                const gy = (tbh - fsz) * 0.5;
+                // #762 — 정수 px 에 놓는다 (검색바 아이콘과 같다). 반 픽셀에 놓이면 nearest 샘플이
+                // 텍셀 경계를 읽어 이웃 텍셀이 섞인다 (Windows 150 % 실기). macOS 배율 1 · 2 에서는
+                // 이미 정수라 그림은 그대로다.
+                const gx = @round(box_x + (box_w - fsz) * 0.5);
+                const gy = @round((tbh - fsz) * 0.5);
                 rself.pushText(.{
                     .pos = .{ gx, gy },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -1805,7 +1808,8 @@ pub const MetalRenderer = struct {
                 const entry = rself.insertIconOrRecover(kind, size, stroke) orelse return;
                 const size_f: f32 = @floatFromInt(size);
                 rself.pushText(.{
-                    .pos = .{ x + (w - size_f) * 0.5, (bar_h - size_f) * 0.5 },
+                    // #762 — 정수 px (탭바 `drawIcon` 주석).
+                    .pos = .{ @round(x + (w - size_f) * 0.5), @round((bar_h - size_f) * 0.5) },
                     .size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
                     .uv_pos = .{ @floatFromInt(entry.x), @floatFromInt(entry.y) },
                     .uv_size = .{ @floatFromInt(entry.w), @floatFromInt(entry.h) },
@@ -2031,9 +2035,10 @@ pub const MetalRenderer = struct {
             const ind_size: u32 = ui_metrics.scaledPx(u32, ui_metrics.MENU_INDICATOR_ICON_PT, scale);
             const ind_stroke = ui_metrics.strokePx(ui_metrics.TAB_ICON_STROKE_PT, scale);
             const size_f: f32 = @floatFromInt(ind_size);
-            const ind_cx = mx + mw * 0.5 - size_f * 0.5;
-            const up_y = (v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;
-            const down_y = (v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5;
+            // #762 — 정수 px (탭바 `drawIcon` 주석).
+            const ind_cx = @round(mx + mw * 0.5 - size_f * 0.5);
+            const up_y = @round((v.rect.y + command_menu.PADDING_PT + command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5);
+            const down_y = @round((v.rect.y + v.rect.h - command_menu.PADDING_PT - command_menu.INDICATOR_HEIGHT_PT * 0.5) * scale - size_f * 0.5);
             const pairs = [2]struct { kind: tab_icons.Icon, y: f32, enabled: bool }{
                 .{ .kind = .chevron_up, .y = up_y, .enabled = v.can_scroll_up },
                 .{ .kind = .chevron_down, .y = down_y, .enabled = v.can_scroll_down },
