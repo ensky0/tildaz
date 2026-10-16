@@ -2320,13 +2320,16 @@ const Client = struct {
     /// Hyprland reload · D-Bus watch. 시간에 걸린 일 (제목 · 검색 debounce, blink, 자동 스크롤,
     /// 키 반복) 은 `frame_wake.idleWakeInNs` 가 마감을 준다.
     fn nextPollTimeoutMs(self: *Client) i32 {
-        const session = if (self.session) |*s| s else return frame_poll_ms;
+        // 세션은 첫 표시 때 만들어진다 (`ensureSessionGrid`). `hidden_start` 로 숨긴 채 시작하면 첫
+        // hotkey 까지 세션이 없다 — 그동안 시간에 걸린 일이 없으니 무한히 잔다. 기다리는 것 (hotkey ·
+        // keymap 도착 · D-Bus) 은 모두 fd 사건이다. 예전에는 이 구간도 16 ms 마다 깨어났다.
+        const session: ?*session_core.SessionCore = if (self.session) |*s| s else null;
         // #436 — 예산에 걸려 끊겼으면 ring 이 안 비어 있다 (`pending_output`). 그러면 다음 poll 을
         // 기다리지 않고 즉시 회전해 계속 드레인한다. **스핀이 아니다** — 참이면 ring 에 실제로
         // 남아 있어 다음 드레인이 반드시 진행한다.
         const deadline = frame_wake.pollTimeoutMs(frame_wake.idleWakeInNs(.{
-            .pending_output = session.hasPendingOutput(),
-            .session_wake_ns = session.nextWakeInNs(),
+            .pending_output = if (session) |s| s.hasPendingOutput() else false,
+            .session_wake_ns = if (session) |s| s.nextWakeInNs() else null,
             .now_ms = self.rt.nowMs(),
             .saw_blink_cell = self.renderer.saw_blink_cell,
             .autoscroll_next_ms = if (self.sel_autoscroll_dir != 0) self.sel_autoscroll_next_ms else null,
