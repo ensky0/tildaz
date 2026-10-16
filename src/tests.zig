@@ -98,7 +98,8 @@ test "aggregate root imports every common and native-host test module" {
             _ = @import("terminal/posix/pty.zig");
         },
         .macos => {
-            // macOS native modules (2 files).
+            // macOS native modules (3 files).
+            _ = @import("font/macos/font.zig");
             _ = @import("host/macos.zig");
             _ = @import("terminal/posix/pty.zig");
         },

@@ -2177,7 +2177,7 @@ VS-16 / 스킨톤 modifier / ZWJ family (`👨‍👩‍👧` 등) / combining m
 | platform | 구현 |
 |---|---|
 | Linux | `font/linux/font.zig` 의 `resolveClusterInner` · `resolveGlyph` 가 위 순서 그대로. 시스템 글꼴은 fontconfig 에 `color` 조건을 넘겨 후보를 고른다 |
-| macOS | cluster 는 CoreText 가 같은 순서로 고른다 (#771 실측 — VS16 371 개 모두 컬러 · VS15 는 흑백 글꼴이 있으면 흑백 · 한 줄 묶음과 하나씩의 결과가 갈린 cluster 0). 선택자 없는 단일 글자는 #771 에서 진행 중 |
+| macOS | cluster 는 CoreText 가 같은 순서로 고른다 (#771 실측 — VS16 371 개 모두 컬러 · VS15 는 흑백 글꼴이 있으면 흑백 · 한 줄 묶음과 하나씩의 결과가 갈린 cluster 0). 선택자 없는 단일 글자는 `font/macos/font.zig` 의 `resolveGlyph` 가 위 순서 그대로다. 시스템 글꼴은 `CTFontCreateForString` 에 글자 + 모양 선택자 (VS16 · VS15) 를 넘겨 고른다. 모양은 `kCTFontTraitColorGlyphs` 로 판정한다 — macOS 렌더러가 컬러로 그릴지를 글꼴 단위로 이 트레이트로 정해서 (`renderer/macos/glyph_atlas.zig`), 이것이 곧 그려지는 결과다 |
 | Windows | #771 에서 진행 중 |
 
 ### 12.2 Ligature (인접 cell sequence)
