@@ -4115,9 +4115,14 @@ pub fn configNoticeMessage(buf: []u8, path: ?[]const u8, n: ConfigNotice) []cons
     // 남기고 **뒤를 자른다** (`dialog/linux.zig` 의 `copyMessage`). 목록을 먼저 다 쓰고
     // 뒤에 붙이면, 목록이 긴 바로 그 경우에 — 파일을 버리는 쪽이 빠른 그 경우에 —
     // 탈출구가 잘려 나간다. 그래서 자리를 먼저 잡고 목록을 그 앞까지만 쓴다.
-    const tail = "\n\n" ++ messages.config_notice_reset_hint;
-    const cut_note = "\n" ++ messages.config_notice_truncated_msg;
-    const reserve = tail.len + cut_note.len;
+    //
+    // #758 — 목록은 줄마다 '\n' 으로 끝난다 (`appendNotice`). 그래서 잘림 문구는 목록 **바로
+    // 다음 줄**에 서고, 꼬리는 빈 줄 **하나** 뒤에 온다 — 두 묶음 사이 간격과 같다. 예전에는
+    // 둘 다 앞에 '\n' 을 하나 더 붙여 목록 끝에 빈 줄이 두 줄 생겼다 (Linux 실기에서 보였다).
+    const tail = "\n" ++ messages.config_notice_reset_hint;
+    const cut_note = messages.config_notice_truncated_msg ++ "\n";
+    // 앞의 1 은 넘쳐서 줄 중간에서 끊긴 본문을 닫는 '\n' 의 자리다.
+    const reserve = 1 + cut_note.len + tail.len;
     if (buf.len <= reserve) return "";
 
     var w: std.Io.Writer = .fixed(buf[0 .. buf.len - reserve]);
@@ -4155,6 +4160,12 @@ pub fn configNoticeMessage(buf: []u8, path: ?[]const u8, n: ConfigNotice) []cons
     // 알고 고친 뒤, 다음 실행에서 처음 보는 항목을 또 만난다. 수집기가 넘친 경우
     // (`n.truncated`) 와 이 버퍼가 모자란 경우 둘 다 같은 줄을 세운다.
     var end = body_len;
+    // 버퍼가 모자라 줄 중간에서 끊겼으면 그 줄을 닫는다. 아니면 잘림 문구가 끊긴 줄 뒤에
+    // 붙는다.
+    if (end > 0 and buf[end - 1] != '\n') {
+        buf[end] = '\n';
+        end += 1;
+    }
     if (n.truncated or overflow) {
         @memcpy(buf[end..][0..cut_note.len], cut_note);
         end += cut_note.len;
@@ -5833,7 +5844,37 @@ test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" 
             "  input -- missing, using the default\n" ++
             "\n" ++ messages.config_notice_removable_header ++ "\n" ++
             "  bogus_key\n" ++
-            "\n\n" ++ messages.config_notice_reset_hint,
+            "\n" ++ messages.config_notice_reset_hint,
+        body,
+    );
+}
+
+test "#758 안내의 목록 끝에는 빈 줄이 하나다 — 두 묶음 사이 간격과 같다" {
+    var buf: [1024]u8 = undefined;
+    const body = configNoticeMessage(&buf, null, .{
+        .repaired = "  input -- missing, using the default\n",
+        .removable = "",
+        .count = 1,
+        .truncated = false,
+    });
+    try std.testing.expect(std.mem.endsWith(u8, body, "the default\n\n" ++ messages.config_notice_reset_hint));
+    try std.testing.expect(std.mem.indexOf(u8, body, "\n\n\n") == null);
+}
+
+test "#758 버퍼가 모자라 줄 중간에서 끊기면 그 줄을 닫고 잘림 문구를 다음 줄에 세운다" {
+    // 목록 자리가 10 바이트뿐이라 머리글 중간에서 끊긴다.
+    const reserve = 1 + messages.config_notice_truncated_msg.len + 1 + 1 + messages.config_notice_reset_hint.len;
+    var buf: [reserve + 10]u8 = undefined;
+    const body = configNoticeMessage(&buf, null, .{
+        .repaired = "  input -- missing, using the default\n",
+        .removable = "",
+        .count = 1,
+        .truncated = false,
+    });
+    try std.testing.expectEqualStrings(
+        messages.config_notice_repaired_header[0..10] ++ "\n" ++
+            messages.config_notice_truncated_msg ++ "\n" ++
+            "\n" ++ messages.config_notice_reset_hint,
         body,
     );
 }
@@ -5911,3 +5952,9 @@ test "#655 allocator 가 없으면 줄은 잃어도 잘렸다는 사실은 남�
     try std.testing.expect(n.truncated);
     try std.testing.expectEqual(@as(usize, 1), n.count);
 }
+    // #758 — 잘림 문구는 목록 **바로 다음 줄**이다 (빈 줄로 떨어지면 목록과 따로 읽힌다).
+    try std.testing.expect(std.mem.endsWith(
+        u8,
+        body,
+        "  a\n" ++ messages.config_notice_truncated_msg ++ "\n\n" ++ messages.config_notice_reset_hint,
+    ));
