@@ -5,7 +5,7 @@
 //! tildaz -e <그 경로> -size 88x33      # 세 platform 모두 같은 명령
 //! ```
 //!
-//! **창 높이를 화면에 맞춘다.** 화면은 62 줄인데 그만큼 창을 키우면 노트북에서 **아래가
+//! **창 높이를 화면에 맞춘다.** 화면은 70 줄인데 그만큼 창을 키우면 노트북에서 **아래가
 //! 화면 밖으로 나간다** (실기에서 걸렸다). 33 줄로 띄우고 **스크롤로 본다** — 절이 위아래로
 //! 이어져 있어서 스크롤이 판정을 방해하지 않는다. 폭 88 은 가장 긴 줄에 맞춘 값이라 줄이면
 //! 줄바꿈이 생겨 `|` 정렬 판정이 깨진다.
@@ -25,7 +25,7 @@
 //! 멀쩡해 보이는데 정작 검사하려던 경로를 안 타게 된다.
 //!
 //! 관련 이슈: #401 (cluster 합성) · #415 (mark 배치) · #416 (script 판정) ·
-//! #417 (advance 가 셀보다 큼) · #418 (관통 overlay).
+//! #417 (advance 가 셀보다 큼) · #418 (관통 overlay) · #771 (이모지 모양).
 
 const std = @import("std");
 const Runtime = @import("runtime.zig").Runtime;
@@ -385,6 +385,56 @@ fn sectionL(o: *Out) void {
     row(o, "가나 濁点", &.{ 0x304B, 0x3099 });
 }
 
+/// (M) 한 줄 — 라벨 · 종류 · `[항목들]`. `sep` 이 항목 사이에 들어간다.
+///
+/// `sep` 이 빈 문자열이면 cluster 가 맞붙어 한 줄 묶음 경로를 타고, `" "` 이면 공백이 묶음을
+/// 끊어 cluster 마다 따로 간다 ((F) 의 연속판 · 공백판과 같은 뜻이다).
+fn presentationLine(o: *Out, label: []const u8, kind: []const u8, items: []const []const u21, sep: []const u8) void {
+    o.raw("   ");
+    pad(o, label, 8);
+    pad(o, kind, 6);
+    o.raw("[");
+    for (items, 0..) |it, i| {
+        if (i > 0) o.raw(sep);
+        o.cps(it);
+    }
+    o.raw("]\n");
+}
+
+/// #771 — 이모지 모양. 같은 글자라도 VS16 (U+FE0F) 이 붙으면 컬러, VS15 (U+FE0E) 가 붙으면
+/// 흰 글자여야 한다. 선택자가 없으면 Unicode 가 글자마다 정한 기본 모양 (Emoji_Presentation)
+/// 을 따른다 (UTS #51 §4).
+///
+/// **고른 글자는 텍스트 글꼴에도 있는 것이다** (Linux 기본 chain 의 DejaVu Sans Mono 에서 판정
+/// 드라이버로 확인 — #771). 텍스트 글꼴에 없는 글자는 무엇을 요청해도 이모지 글꼴로 그려지니
+/// 모양 판정을 시험하지 못한다. `⌚` 가 그래서 빠졌다.
+///
+/// `이웃` 줄의 두 `❤️` 는 옆 글자만 다르다. 묶음 경로가 줄 전체를 한 글꼴로 맞추던 때는
+/// 앞 것만 컬러였다.
+fn sectionM(o: *Out) void {
+    o.raw("(M) 이모지 모양 (#771) — 위 네 줄은 컬러, 아래 세 줄은 흰 글자가 정상\n");
+    const vs16 = [_][]const u21{
+        &.{ 0x2764, 0xFE0F }, &.{ 0x263A, 0xFE0F }, &.{ 0x270C, 0xFE0F }, &.{ 0x2600, 0xFE0F }, &.{ 0x26A0, 0xFE0F },
+        &.{ 0x2714, 0xFE0F }, &.{ 0x203C, 0xFE0F }, &.{ 0x2122, 0xFE0F }, &.{ 0x00A9, 0xFE0F }, &.{ 0x2197, 0xFE0F },
+    };
+    // 선택자 없음 · 기본이 이모지 (Emoji_Presentation=Yes). cluster 가 아니라 단일 글자 경로다.
+    const emoji_default = [_][]const u21{ &.{0x2614}, &.{0x2615}, &.{0x26A1}, &.{0x26BD}, &.{0x2648}, &.{0x1F18E} };
+    const vs15 = [_][]const u21{
+        &.{ 0x2614, 0xFE0E }, &.{ 0x2615, 0xFE0E }, &.{ 0x26A1, 0xFE0E }, &.{ 0x26BD, 0xFE0E },
+        &.{ 0x2648, 0xFE0E }, &.{ 0x2764, 0xFE0E }, &.{ 0x263A, 0xFE0E },
+    };
+    // 선택자 없음 · 기본이 텍스트.
+    const text_default = [_][]const u21{ &.{0x2764}, &.{0x263A}, &.{0x270C}, &.{0x2600}, &.{0x26A0}, &.{0x2714} };
+
+    presentationLine(o, "VS16", "연속", &vs16, "");
+    presentationLine(o, "VS16", "공백", &vs16, " ");
+    presentationLine(o, "이모지", "단일", &emoji_default, " ");
+    presentationLine(o, "이웃", "연속", &.{ &.{ 0x2764, 0xFE0F, 0x1F44B, 0x1F3FB }, &.{ 0x2764, 0xFE0F, 0x263A, 0xFE0F } }, "] [");
+    presentationLine(o, "VS15", "연속", &vs15, "");
+    presentationLine(o, "VS15", "공백", &vs15, " ");
+    presentationLine(o, "텍스트", "단일", &text_default, " ");
+}
+
 pub fn main(init: std.process.Init) !void {
     // #451 — 진입점이 `Io` 를 받는다 (릴리즈 노트 *"Juicy Main"*). 이 하네스는 stdout 쓰기와
     // 대기밖에 하지 않으므로 `Runtime` 하나면 충분하다.
@@ -407,6 +457,7 @@ pub fn main(init: std.process.Init) !void {
     sectionJ(&o);
     sectionK(&o);
     sectionL(&o);
+    sectionM(&o);
 
     try std.Io.File.stdout().writeStreamingAll(rt.io, o.slice());
 

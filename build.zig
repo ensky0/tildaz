@@ -569,12 +569,12 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| stress_run.addArgs(args);
     stress_step.dependOn(&stress_run.step);
 
-    // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418).
+    // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418 · #771).
     //
     //   zig build render-test
     //   tildaz -e <zig-out/bin/render-test> -size 88x33
     //
-    // **`-size` 를 이 값으로 쓴다.** 화면은 62 줄이지만 그만큼 창을 키우면 노트북에서 아래가
+    // **`-size` 를 이 값으로 쓴다.** 화면은 70 줄이지만 그만큼 창을 키우면 노트북에서 아래가
     // 화면 밖으로 나간다 — 33 줄로 띄우고 스크롤로 본다. 폭 88 은 가장 긴 줄 기준이고, 줄이면
     // 줄바꿈이 생겨 `|` 정렬 판정이 깨진다.
     //
