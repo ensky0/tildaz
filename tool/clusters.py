@@ -13,8 +13,9 @@ r"""atlas · cluster 렌더 검증용 화면을 만든다 — 세 platform 공�
     tildaz --instance 9 -e /tmp/many.sh -size 88x33
 
 **Windows 는 `--cmd <본문.txt>` 를 준다** (#586). `sh` 가 없으므로 본문을 그 경로에 UTF-8 (BOM 없음) 로 쓰고
-stdout 에는 그것을 `type` 하는 **`.cmd` 래퍼** (CRLF · `chcp 65001` · `timeout` 대기) 를 낸다. `-e` 가 `.cmd` 를
-받는 것은 #584 Windows 계측에서 확인했다.
+stdout 에는 그것을 출력하는 **`.cmd` 래퍼** (CRLF · `chcp 65001`) 를 낸다. 래퍼는 이 스크립트를 돌린 Python 으로
+본문을 통째로 한 번에 쓰고 그대로 기다린다. `type` 은 글자 중간이 끊겨 `��` 를 내서 쓰지 않는다 (#762). `-e` 가
+`.cmd` 를 받는 것은 #584 Windows 계측에서 확인했다.
 
     python tool\clusters.py stack2 --cmd $env:TEMP\stack2.txt > $env:TEMP\stack2.cmd
     tildaz --instance 9 -e $env:TEMP\stack2.cmd -size 150x40
@@ -46,7 +47,11 @@ def emit(lines, tail="sleep 3600", head=""):
     if CMD_TXT:
         with open(CMD_TXT, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
-        sys.stdout.write("@echo off\r\nchcp 65001>nul\r\ntype \"%s\"\r\ntimeout /t 3600 /nobreak >nul\r\n" % CMD_TXT)
+        # `type` 은 쓰지 않는다 — 콘솔에서 글자 중간이 끊겨 `��` 가 군데군데 나온다 (#762 · Windows
+        # Terminal 에서도 같다). 화면을 만든 이 Python 으로 본문을 통째로 읽어 한 번에 쓴다.
+        reader = ("import sys,time; sys.stdout.buffer.write(open(sys.argv[1],'rb').read()); "
+                  "sys.stdout.buffer.flush(); time.sleep(3600)")
+        sys.stdout.write("@echo off\r\nchcp 65001>nul\r\n\"%s\" -c \"%s\" \"%s\"\r\n" % (sys.executable, reader, CMD_TXT))
         return
     out = ["#!/bin/sh", head] if head else ["#!/bin/sh"]
     out += ["cat <<'S'"] + lines + ["S", tail]

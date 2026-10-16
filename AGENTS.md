@@ -1129,8 +1129,17 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
   Start` fatal 다이얼로그를 띄우고, 하네스는 **그 다이얼로그를 창으로 잡아 찍어요** (870x968 짜리 캡처가 나오면 이거예요).
   하네스가 로그의 `[fatal]` 줄을 함께 찍어 주니 판 줄 아래를 봐요. 2026-09-03 첫 회차에서 걸렸어요.
 - **`clusters.py` 는 `--cmd <본문.txt>` 로** 불러요 — Windows 에는 `sh` 가 없어요. 본문을 UTF-8 (BOM 없음) 로 쓰고
-  stdout 에 `.cmd` 래퍼 (`chcp 65001` → `type` → `timeout` 대기) 를 내요. 그 전에는 stdout 이 cp949 라 결합 기호에서
-  `UnicodeEncodeError` 로 죽었는데, 스크립트가 stdout 을 UTF-8 로 고정해 `PYTHONUTF8` 없이도 돌아요.
+  stdout 에 `.cmd` 래퍼 (`chcp 65001` → 그 Python 으로 본문을 한 번에 쓰고 대기) 를 내요. 그 전에는 stdout 이 cp949 라
+  결합 기호에서 `UnicodeEncodeError` 로 죽었는데, 스크립트가 stdout 을 UTF-8 로 고정해 `PYTHONUTF8` 없이도 돌아요.
+- **⚠️ 화면을 `type` 으로 뿌리지 않아요 — 글자 중간이 끊겨 `��` 가 나와요.** `chcp 65001` 뒤 `type` 으로 UTF-8 파일을
+  출력하면, 여러 바이트로 된 글자가 군데군데 `�` (U+FFFD) 두 개로 바뀌어요. 2026-10-16 [#762](https://github.com/ensky0/tildaz/issues/762)
+  데스크탑 실기에서 셋을 확인했어요. ① 파일은 올바른 UTF-8 이에요. ② 같은 파일을 Python 으로 한 번에 쓰면 `�` 가 0 개예요.
+  ③ Windows Terminal 에서도 같은 `type` 화면에 똑같이 나와요. 그래서 TildaZ 결함이 아니에요.
+  - 두 판이 같은 깨진 화면을 받으니 **그림 대조는 0 px 로 통과해요.** 하지만 `�` 자리에 와야 할 글자는 검증되지 않아요.
+    `�` 가 칸을 더 차지해서 줄 배치도 달라져요.
+  - `clusters.py --cmd` 의 래퍼는 그래서 `type` 대신 Python 으로 본문을 통째로 읽어 한 번에 써요. 화면을 손으로 만들 때도
+    같은 방법을 써요 (`sys.stdout.buffer.write(open(path,'rb').read())`).
+  - 그 전에 찍은 Windows 회차 (`clusters.py --cmd` 화면) 는 이 `�` 가 섞인 화면이에요.
 - **`-e` 회차는 config 를 만들지도 hotkey 를 등록하지도 않아요** (`global hotkey not registered (stress run)`) — 사용자의
   `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` (개발 빌드는 `%APPDATA%\tildaz-dev\`) 예요. 단축키가
   필요한 회차 (`-NewTab`) 만 `config_0.toml` 을 복사해 `config_9.toml` 을 잠깐 만들고 (`auto_start = false`) 끝나면 지워요.
