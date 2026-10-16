@@ -2009,6 +2009,14 @@ grim shot.png                                                          # sway �
     G "imports.ui.extension.reloadExtension('tildaz@ensky0.github.io', imports.ui.extension.Type.EXTENSION); 'reloaded'"
     ```
 
+  - **⚠️ 그 가상 키가 바인딩을 발화하지 않은 회차가 있어요** (2026-10-16 · Cinnamon 6.6.9 Wayland · 미니PC ·
+    [#758](https://github.com/ensky0/tildaz/issues/758) L5). 위 명령으로 보낸 F3 두 번에 창이 그대로였고, 같은 회차에
+    `/dev/uinput` ([`tool/ukbd_linux.py`](tool/ukbd_linux.py)) 으로 보낸 F3 은 토글했어요. 원인은 보지 않았어요 — 장치를
+    만든 바로 그 순간 키를 보내서일 수 있어요 (추정). **판정이 안 나오면 uinput 으로 대조해요.** 그 키는 셸이 잡지 않으면
+    포커스를 가진 창으로 가니, 보내기 전에 셸에 포커스 창을 물어봐요 (`global.display.focus_window.get_title()`).
+  - **셸 로그 (`global.log`) 는 로그인 관리자가 정한 곳으로 가요.** 같은 회차에 저널 · `~/.xsession-errors` 에는 없었고,
+    이 기기 (plasmalogin) 는 `~/.local/share/plasmalogin/wayland-session.log` 였어요. 다른 기기에서는 셸의 표준 오류가
+    어디에 이어져 있는지로 찾아요: `readlink /proc/$(pgrep -x cinnamon)/fd/2`.
   - **바인딩 등록 순서는 `bindings` Map 의 순서 (= action id 순)** 로 읽어요. 같은 조합이 둘이면 **먼저 등록된 쪽만
     발화해요** (#616 실측 — 새 이름 두 쌍으로 순서를 뒤집어 확인). 이름이나 나중 등록이 아니라 **순서**예요.
   - **경쟁자가 단독으로 발화하는지 먼저 확인해요.** 그 대조군이 없으면 "우리가 이겼다" 와 "경쟁자 배선이 고장" 을
