@@ -224,10 +224,9 @@ $rounds = @(
     ) },
     # 경계 ② — modifyOtherKeys=2. Windows 는 mac · Linux 와 갈린다 (머리 주석).
     @{ mode = "mok2"; enable = "[char]27+'[>4;2m'"; keys = @(
-        # `Ctrl+[` · `Ctrl+I` · `Ctrl+Shift+G` 의 mok2 기대값은 **공용 표**에 있다 (#684) —
-        # 세 OS 가 같아야 하는 칸이라 값을 한 곳에만 둔다. 아래 `Ctrl+A` 처럼 C0 가 나오는
-        # 칸만 여기 남긴다.
-        @{ n = "Ctrl+A";       k = ,@($VK.Ctrl, $VK.A);               e = "01" }
+        # `Ctrl+A` · `Ctrl+[` · `Ctrl+I` · `Ctrl+Shift+G` 의 mok2 기대값은 **공용 표**에 있다
+        # (#684 · #779) — 세 OS 가 같아야 하는 칸이라 값을 한 곳에만 둔다. mok2 의 `Ctrl+A` 는
+        # `01` 이 아니라 `CSI 27;5;97~` 다 (#779 — xterm 정의 · ghostty 4406cea).
         @{ n = "Shift+Tab";    k = ,@($VK.Shift, $VK.Tab);            e = "1b 5b 32 37 3b 32 3b 39 7e" }  # #653 — mok2 는 CSI 27;2;9~
         @{ n = "Ctrl+Enter";   k = ,@($VK.Ctrl, $VK.Enter);          e = "1b 5b 32 37 3b 35 3b 31 33 7e" }  # #653 — 켠 앱에는 그대로
     ) },

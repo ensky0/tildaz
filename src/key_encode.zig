@@ -578,6 +578,25 @@ test "#648 modifyOtherKeys=2 를 켠 앱에는 CSI 27 이 그대로 간다" {
     try testing.expectEqualStrings("\x1b[27;6;70~", on);
 }
 
+test "#779 mok2 에서는 C0 가 있는 Ctrl+글자도 CSI 27 이다 — legacy 는 C0" {
+    // xterm modifyOtherKeys 2 단계: "Any shifted (modified) ordinary key sends an escape
+    // sequence." ghostty 도 4406cea ("encode ctrl keys with modifyOtherKeys 2") 부터 mok2 를
+    // `ctrlSeq` 보다 먼저 본다. 세 host 는 Ctrl 을 뺀 글자 (`a`) 를 `utf8` 로 넘긴다.
+    const cases = [_]struct { code: physical_key.PhysicalCode, ch: []const u8, cp: u21, c0: []const u8, mok2: []const u8 }{
+        .{ .code = .key_a, .ch = "a", .cp = 'a', .c0 = "\x01", .mok2 = "\x1b[27;5;97~" },
+        .{ .code = .slash, .ch = "/", .cp = '/', .c0 = "\x1f", .mok2 = "\x1b[27;5;47~" },
+        .{ .code = .space, .ch = " ", .cp = ' ', .c0 = "\x00", .mok2 = "\x1b[27;5;32~" },
+        .{ .code = .digit6, .ch = "6", .cp = '6', .c0 = "\x1e", .mok2 = "\x1b[27;5;54~" },
+    };
+    for (cases) |c| {
+        const ev: Event = .{ .code = c.code, .mods = .{ .ctrl = true }, .utf8 = c.ch, .unshifted_codepoint = c.cp };
+        var b1: [16]u8 = undefined;
+        try testing.expectEqualStrings(c.c0, try encodeToBuf(&b1, ev, .{}));
+        var b2: [16]u8 = undefined;
+        try testing.expectEqualStrings(c.mok2, try encodeToBuf(&b2, ev, .{ .modify_other_keys_state_2 = true }));
+    }
+}
+
 test "#648 legacy 의 Ctrl+Shift+Enter 도 보내지 않는다" {
     // Enter 는 CSI u 가 아니라 `function_keys` 표의 `ESC[27;6;13~` 로 나간다 — 그 항목은
     // modifyOtherKeys 와 무관하게 무조건이라 legacy 에서도 샜다. Windows 는 이것도 삼킨다.
