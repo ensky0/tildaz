@@ -2059,25 +2059,20 @@ pub fn hotkeyTextOrDefault(table: *const toml.Table, index: u32) []const u8 {
     }
     return Defaults.hotkeyFor(index);
 }
-/// config 파일을 읽는 상한. worker (`Config.load`) 와 launcher (`instances.readConfigContent`) 가
-/// 같은 값을 쓴다 — 갈리면 같은 파일을 한쪽은 읽고 한쪽은 기본값으로 본다. 템플릿은 수 KiB 다.
-pub const max_config_bytes = 64 * 1024;
-
-/// #758 — 파일 내용 전체의 SHA-256. 끝까지 나눠 읽어 `max_config_bytes` 를 넘는 파일도 해시한다.
-/// 열거나 읽지 못하면 `null` 이다 — 그 파일은 확장도 못 읽으니 남길 표시가 없다.
-fn fileSha256(rt: Runtime, path: []const u8) ?[32]u8 {
-    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch return null;
-    defer file.close(rt.io);
+/// #758 — config 파일 하나를 끝까지 읽는다. worker (`Config.load`) 와 launcher (`instances.readConfigContent`)
+/// 가 같이 쓴다 — 읽는 규칙이 갈리면 같은 파일을 한쪽은 읽고 한쪽은 기본값으로 본다.
+///
+/// **크기 상한은 두지 않는다.** Alacritty (`fs::read_to_string`) 와 Ghostty (`Config.loadFile`) 도 두지
+/// 않는다. 예전의 64 KiB 는 JSON 시절 `readToEndAlloc` 이 최대 크기를 꼭 받아야 해서 넣은 숫자였고
+/// (`7c91beb`) 근거가 없었다.
+///
+/// 대신 **일반 파일이 아니면 읽지 않는다** (`error.NotAFile`) — Ghostty 와 같다. `config_N.toml` 이
+/// `/dev/zero` 같은 장치를 가리키면 끝없이 읽게 된다. 연 파일의 종류를 보므로 링크는 따라간다.
+pub fn readConfigFile(rt: Runtime, allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
+    const stat = try file.stat(rt.io);
+    if (stat.kind != .file) return error.NotAFile;
     var file_reader = file.reader(rt.io, &.{});
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    var chunk: [4096]u8 = undefined;
-    while (true) {
-        // `readSliceShort` 는 끝에 닿았을 때만 버퍼보다 적게 채운다.
-        const n = file_reader.interface.readSliceShort(&chunk) catch return null;
-        hasher.update(chunk[0..n]);
-        if (n < chunk.len) break;
-    }
-    return hasher.finalResult();
+    return file_reader.interface.allocRemaining(allocator, .unlimited);
 }
 
 /// #758 — 폰트 하나가 이 시스템에 있는가. host 마다 판정 방법이 다르고 (`resolveFonts` 주석), 판정하지
@@ -3175,8 +3170,9 @@ pub const Config = struct {
     /// Linux 에서 그때는 Wayland backend 가 없어 다이얼로그가 stderr / log 로만
     /// 가기 때문이다 — 데스크톱 아이콘으로 띄운 사용자에게는 보이지 않는다.
     load_notice: ?[]const u8 = null,
-    /// #758 — 파일은 있는데 **이 instance 가 그 내용을 무시하고 기본값으로 시작했다** (문법 오류 ·
-    /// 못 읽음). 값은 그 파일 내용의 SHA-256 이다. GNOME · Cinnamon 확장도 같은 config 를 직접 읽어
+    /// #758 — 파일은 있는데 **이 instance 가 문법 오류로 그 내용을 무시하고 기본값으로 시작했다**.
+    /// 값은 그 파일 내용의 SHA-256 이다. 못 읽은 파일 (일반 파일이 아님 · 읽기 오류) 은 남기지 않는다 —
+    /// 확장도 일반 파일만 읽고, 읽기 오류면 확장도 못 읽어 둘 다 기본값이다. GNOME · Cinnamon 확장도 같은 config 를 직접 읽어
     /// hotkey 를 잡고 창을 놓는데 (`gsettings_hotkey.recordIgnoredConfig` 주석), 확장의 줄 단위
     /// 파서는 깨진 파일에서도 읽히는 줄을 읽는다. 그래서 Linux host 가 이 값을 남기고, 확장은
     /// 해시가 지금 파일과 같으면 그 번호를 통째로 기본값으로 읽는다 — 깨졌는지 판정은 앱 한 곳에서만 한다.
@@ -3268,17 +3264,13 @@ pub const Config = struct {
             };
             defer file.close(rt.io);
 
-            var file_reader = file.reader(rt.io, &.{});
-            const content = file_reader.interface.allocRemaining(allocator, .limited(max_config_bytes)) catch |err| {
+            const content = readConfigFile(rt, allocator, file) catch |err| {
                 // #501 — 파일이 **있는데 못 읽은 것**이다. 예전에는 파일이 없는 경우와
                 // 결과가 같았고 (조용히 기본값) 사용자는 자기 설정이 무시된 이유를 알
-                // 방법이 없었다. 64 KiB 상한 초과가 특히 그렇다 — 조용한 절단도 아니고
-                // 조용한 **무시** 다.
+                // 방법이 없었다. 확장에게 남길 표시는 없다 — 확장도 일반 파일만 읽고, 읽기
+                // 오류면 확장도 못 읽어 둘 다 기본값이다.
                 var fallback = defaultOwned(allocator, shell_resolved);
                 fallback.load_notice = readFailedNoticeAlloc(allocator, path, err);
-                // #758 — 상한을 넘은 파일은 확장이 끝까지 읽는다. 그 내용을 앱이 쓰지 않았다는 것을
-                // 남겨야 둘이 같은 값을 본다. 내용은 못 담았으니 파일을 다시 열어 해시만 낸다.
-                fallback.ignored_content_sha256 = fileSha256(rt, path);
                 break :blk fallback;
             };
             defer allocator.free(content);
@@ -4087,25 +4079,24 @@ fn loadNoticeAlloc(
     return configErrorMessageAlloc(allocator, body, config_path) catch null;
 }
 
-/// #501 · #758 — 파일이 **있는데 못 읽었을 때**의 안내. 크기 상한을 넘은 것은 따로 말한다 — 오류 이름
-/// (`StreamTooLong`) 만으로는 사용자가 무엇을 고칠지 알 수 없었다 (#758 Linux 실기).
+/// #501 · #758 — 파일이 **있는데 못 읽었을 때**의 안내. 일반 파일이 아닌 것은 따로 말한다 — 오류 이름
+/// (`NotAFile`) 만으로는 사용자가 무엇을 고칠지 알 수 없다. 64 KiB 상한이 있던 동안의 `StreamTooLong` 이
+/// 같은 문제였다 (#758 Linux 실기).
 fn readFailedNoticeAlloc(allocator: std.mem.Allocator, config_path: []const u8, err: anyerror) ?[]const u8 {
-    if (err == error.StreamTooLong) {
-        var buf: [512]u8 = undefined;
-        const body = std.fmt.bufPrint(&buf, messages.config_too_large_format, .{max_config_bytes / 1024}) catch return null;
-        return configErrorMessageAlloc(allocator, body, config_path) catch null;
+    if (err == error.NotAFile) {
+        return configErrorMessageAlloc(allocator, messages.config_not_a_file_msg, config_path) catch null;
     }
     return loadNoticeAlloc(allocator, messages.config_read_failed_format, config_path, err);
 }
 
-test "#758 크기 상한을 넘어 못 읽은 config 는 오류 이름이 아니라 크기를 말한다" {
+test "#758 일반 파일이 아닌 config 는 오류 이름이 아니라 무엇이 문제인지 말한다" {
     const a = std.testing.allocator;
-    const big = readFailedNoticeAlloc(a, "/c/config_1.toml", error.StreamTooLong) orelse return error.TestUnexpectedResult;
-    defer a.free(big);
-    try std.testing.expect(std.mem.startsWith(u8, big, "Config: /c/config_1.toml"));
-    try std.testing.expect(std.mem.indexOf(u8, big, std.fmt.comptimePrint("larger than {d} KiB", .{max_config_bytes / 1024})) != null);
-    try std.testing.expect(std.mem.indexOf(u8, big, "StreamTooLong") == null);
-    try std.testing.expect(std.mem.indexOf(u8, big, "The file was not changed.") != null);
+    const odd = readFailedNoticeAlloc(a, "/c/config_1.toml", error.NotAFile) orelse return error.TestUnexpectedResult;
+    defer a.free(odd);
+    try std.testing.expect(std.mem.startsWith(u8, odd, "Config: /c/config_1.toml"));
+    try std.testing.expect(std.mem.indexOf(u8, odd, "not a regular file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, odd, "NotAFile") == null);
+    try std.testing.expect(std.mem.indexOf(u8, odd, "The file was not changed.") != null);
 
     // 다른 읽기 실패는 지금처럼 오류 이름을 적는다. 파일은 그대로라는 말은 둘 다 한다.
     const other = readFailedNoticeAlloc(a, "/c/config_1.toml", error.InputOutput) orelse return error.TestUnexpectedResult;
@@ -4641,7 +4632,7 @@ pub fn logTomlParseFallback(config_path: []const u8, parser: *const toml.Parser(
     log.appendLine("config", messages.config_parse_failed_log_format, .{ config_path, brief });
 }
 
-/// #758 — launcher 의 `instances.readConfigContent` 가 열었지만 못 읽은 파일 (64 KiB 초과 등) 을 그 번호의
+/// #758 — launcher 의 `instances.readConfigContent` 가 열었지만 못 읽은 파일 (일반 파일이 아님 등) 을 그 번호의
 /// 기본값으로 읽을 때. 같은 파일 · 같은 오류는 한 번만 적는다 — 위 `logTomlParseFallback` 과 같은 이유다.
 pub fn logConfigReadFallback(config_path: []const u8, err: anyerror) void {
     if (!parse_fallback_seen.firstTime(.read, config_path, @errorName(err))) return;
@@ -4660,7 +4651,7 @@ const ParseFallbackSeen = struct {
     keys: [16]u64 = undefined,
     len: usize = 0,
 
-    /// 문법 오류와 못 읽음은 따로 센다 — 같은 파일이 둘 다 될 수 있다 (고치다 64 KiB 를 넘김).
+    /// 문법 오류와 못 읽음은 따로 센다 — 같은 경로가 때에 따라 둘 다 될 수 있다.
     const Kind = enum(u8) { parse, read };
 
     fn firstTime(self: *ParseFallbackSeen, kind: Kind, config_path: []const u8, detail: []const u8) bool {

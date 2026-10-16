@@ -617,6 +617,8 @@ test "#758 the Shell extensions read the ignored-config marker where the worker 
             "/^instance(0|[1-9][0-9]*)\\.config-ignored$/",
             // 줄 — `ignoredConfigLine` 과 같은 `v1 <SHA-256 소문자 16진수>`.
             "`v1 ${GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes)}`",
+            // 일반 파일만 읽는다 — `config.readConfigFile` 과 같은 규칙.
+            "if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR)) return out;",
         }) |needle| {
             if (std.mem.indexOf(u8, source.js, needle) == null) {
                 std.debug.print("{s} extension 의 config 무시 표시 규칙이 앱과 다르다: {s}\n", .{ source.label, needle });

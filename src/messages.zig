@@ -479,13 +479,13 @@ pub const config_read_failed_format =
     \\The file was not changed. Fix the file above, then start TildaZ again.
 ;
 
-/// #758 — 파일이 크기 상한 (`config.max_config_bytes`) 을 넘어 읽지 않았을 때. 예전에는 위 문구에
-/// 오류 이름 (`StreamTooLong`) 만 실려 무엇을 고칠지 알 수 없었다 (#758 Linux 실기). `{d}` = 상한 (KiB).
-pub const config_too_large_format =
-    \\The config file is larger than {d} KiB, so TildaZ did not read it.
+/// #758 — config 경로가 일반 파일이 아니라 (디렉터리 · 장치) 읽지 않았을 때 (`config.readConfigFile`).
+/// 위 문구에 오류 이름 (`NotAFile`) 만 실으면 무엇을 고칠지 알 수 없어서 따로 말한다.
+pub const config_not_a_file_msg =
+    \\The config file is not a regular file, so TildaZ did not read it.
     \\
     \\TildaZ started with default settings -- nothing from this file was applied.
-    \\The file was not changed. Make the file above smaller, then start TildaZ again.
+    \\The file was not changed. Replace it with a regular file, then start TildaZ again.
 ;
 
 pub const config_dir_create_failed_format =
@@ -542,7 +542,7 @@ pub const config_parse_failed_fallback_msg = "Failed to parse the config file. T
 /// #758 — launcher 가 다른 instance 의 깨진 config 를 기본값으로 읽을 때 남기는 로그 줄.
 /// 사용자에게 보이는 안내는 그 instance 의 worker 가 띄운다.
 pub const config_parse_failed_log_format = "{s} is not valid TOML ({s}) -- reading it as defaults";
-/// #758 — launcher 가 다른 instance 의 config 를 열었지만 못 읽었을 때 (64 KiB 초과 등) 남기는 로그 줄.
+/// #758 — launcher 가 다른 instance 의 config 를 열었지만 못 읽었을 때 (일반 파일이 아님 등) 남기는 로그 줄.
 pub const config_read_failed_log_format = "{s} could not be read ({s}) -- reading it as defaults";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";

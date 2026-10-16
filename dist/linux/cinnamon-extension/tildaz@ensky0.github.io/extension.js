@@ -519,6 +519,9 @@ function readConfig(index) {
       configDirPath(),
       `config_${index}.toml`,
     ]);
+    // #758 — 일반 파일만 읽는다 (앱의 `config.readConfigFile` 과 같은 규칙). 장치를 가리키면 셸이
+    // 끝없이 읽게 되고, 앱은 그 파일을 기본값으로 읽는다.
+    if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR)) return out;
     const [ok, bytes] = GLib.file_get_contents(path);
     if (ok && appIgnoredConfig(index, bytes)) {
       // #758 — 앱이 이 내용을 무시하고 기본값으로 시작했다. 같은 값을 써야 hotkey 기록이 맞는다.

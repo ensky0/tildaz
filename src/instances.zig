@@ -650,9 +650,8 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
 fn readConfigContent(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
     const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
     defer file.close(rt.io);
-    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
-    var file_reader = file.reader(rt.io, &.{});
-    return file_reader.interface.allocRemaining(allocator, .limited(config.max_config_bytes)) catch |err| {
+    // worker 와 같은 읽기다 (`config.readConfigFile` — 크기 상한 없음 · 일반 파일만).
+    return config.readConfigFile(rt, allocator, file) catch |err| {
         // #758 — 같은 파일 · 같은 오류는 한 번만 적는다 (`config.logConfigReadFallback`).
         config.logConfigReadFallback(path, err);
         return null;
@@ -761,6 +760,40 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
         entries[i] = .{ .index = index, .hotkey = parsed };
     }
     return conflictingLowerIndex(entries, self_index, candidate);
+}
+
+test "#758 launcher 는 크기와 무관하게 config 를 읽고, 일반 파일이 아니면 그 번호의 기본값으로 본다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
+    defer allocator.free(root);
+
+    // 예전 상한 (64 KiB) 을 넘는 올바른 config — 끝까지 읽어 값을 쓴다. 긴 주석 한 줄로 크기를 채운다.
+    const head = "hotkey = \"F5\"\n#";
+    const big = try allocator.alloc(u8, 70 * 1024);
+    defer allocator.free(big);
+    @memcpy(big[0..head.len], head);
+    @memset(big[head.len .. big.len - 1], 'x');
+    big[big.len - 1] = '\n';
+    try tmp.dir.writeFile(rt.io, .{ .sub_path = "big.toml", .data = big });
+    const big_path = try std.Io.Dir.path.join(allocator, &.{ root, "big.toml" });
+    defer allocator.free(big_path);
+    const content = (try readConfigContent(rt, allocator, big_path)) orelse return error.TestUnexpectedResult;
+    defer allocator.free(content);
+    try std.testing.expectEqual(big.len, content.len);
+    const text = try hotkeyTextFromContent(allocator, content, big_path, 3);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("F5", text);
+
+    // 장치를 가리키는 config — 열리지만 일반 파일이 아니라 읽지 않는다 (`null` = 그 번호의 기본값).
+    // `/dev/null` 이 없는 Windows 는 여기까지다 (위 갈래가 같은 `config.readConfigFile` 을 지난다).
+    if (@import("builtin").os.tag == .windows) return;
+    try tmp.dir.symLink(rt.io, "/dev/null", "device.toml", .{});
+    const device_path = try std.Io.Dir.path.join(allocator, &.{ root, "device.toml" });
+    defer allocator.free(device_path);
+    try std.testing.expect((try readConfigContent(rt, allocator, device_path)) == null);
 }
 
 test "#758 launcher 는 문법이 깨진 config 를 그 번호의 기본값으로 읽는다" {
