@@ -1259,7 +1259,8 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
   못 가르니까요. **문법이 깨진 파일로는 이제 안 돼요** — [#758](https://github.com/ensky0/tildaz/issues/758) 부터 launcher 도
   worker 처럼 그 번호의 기본값으로 읽어요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
   자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
-  이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
+  이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요. launcher 는 다른 번호를 읽기 전에 `config_0.toml` 이
+  없으면 먼저 만들어요 — 시작 전에 없던 파일이면 도구가 끝에 지워요 (#758 Windows 실기에서 남은 채로 발견했어요).
 - **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
 - **⚠️ `.ps1` 은 UTF-8 **BOM 을 붙여** 저장해요.** Windows PowerShell 5.1 은 BOM 이 없으면 파일을 ANSI (한국어 환경은

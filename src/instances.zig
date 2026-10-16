@@ -751,7 +751,9 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
     const entries = allocator.alloc(HotkeyEntry, indices.len) catch return null;
     defer allocator.free(entries);
     for (indices, 0..) |index, i| {
-        const parsed: ?config.Hotkey = blk: {
+        // #758 — 자기 번호와 그 위는 `conflictingLowerIndex` 가 비교하지 않으니 읽지 않는다. 읽으면
+        // 문법이 깨진 config 의 "기본값으로 읽는다" 로그가 `Config.load` 의 것에 더해 한 번 더 남는다.
+        const parsed: ?config.Hotkey = if (index >= self_index) null else blk: {
             const text = configHotkeyText(rt, allocator, index) catch break :blk null;
             defer allocator.free(text);
             break :blk config.Hotkey.fromString(text);

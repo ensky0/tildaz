@@ -27,7 +27,8 @@
 # 곁가지 — 이 문구가 거친 것 (`UnexpectedToken` 만 · 줄 · 열 없음) 은 #583 B7 이고 이 검증의 범위 밖이다.
 #
 # 실기라서 시작 전에 알린다 — 다이얼로그가 한 번 뜨고 스크립트가 닫는다. launcher 가 `tildaz_0.log` (사용자 instance 의 로그)
-# 에 `[fatal]` 한 줄을 남긴다 — 진단 채널이라 그대로 둔다.
+# 에 `[fatal]` 한 줄을 남긴다 — 진단 채널이라 그대로 둔다. launcher 는 다른 번호를 읽기 전에 `config_0.toml` 이 없으면
+# 먼저 만든다 — 그 파일이 시작 전에 없었으면 끝에 지운다 (#758 Windows 실기에서 남은 채로 발견했다).
 #
 # ⚠️ 이 파일은 UTF-8 **BOM** 으로 저장한다 (Windows PowerShell 5.1 이 BOM 없는 `.ps1` 을 cp949 로 읽는다).
 
@@ -95,6 +96,8 @@ $c9 = Join-Path $env:APPDATA "tildaz-dev\config_9.toml"
 if (Test-Path $c9) { throw "config_9.toml 이 이미 있다 — 사용자 설정일 수 있어 덮지 않는다: $c9" }
 $Out = Join-Path $env:TEMP "tildaz-launcher-fatal"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
+$c0 = Join-Path $env:APPDATA "tildaz-dev\config_0.toml"
+$c0Existed = Test-Path $c0     # launcher 는 config_0 이 없으면 먼저 만든다 — 그때만 끝에 지운다
 $log0 = Join-Path $env:APPDATA "tildaz-dev\tildaz_0.log"
 $logLinesBefore = if (Test-Path $log0) { (Get-Content $log0 -Encoding UTF8).Count } else { 0 }
 
@@ -137,6 +140,10 @@ try {
     & icacls $c9 /remove:d $me | Out-Null
     Remove-Item $c9 -Force -ErrorAction SilentlyContinue
     "config_9.toml 지움: $(-not (Test-Path $c9))"
+    if (-not $c0Existed -and (Test-Path $c0)) {
+        Remove-Item $c0 -Force -ErrorAction SilentlyContinue
+        "launcher 가 만든 config_0.toml 지움: $(-not (Test-Path $c0))"
+    }
 }
 if (Test-Path $log0) {
     $new = Get-Content $log0 -Encoding UTF8 | Select-Object -Skip $logLinesBefore
