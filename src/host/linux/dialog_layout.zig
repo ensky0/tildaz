@@ -547,6 +547,15 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .truncated = false,
     });
 
+    // #758 — 크기 상한을 넘은 config 의 안내 (`config.readFailedNoticeAlloc`). 경로가 첫 줄이다.
+    var big_buf: [512]u8 = undefined;
+    const big_body = try std.fmt.bufPrint(&big_buf, messages.config_too_large_format, .{config_mod.max_config_bytes / 1024});
+    var big_full_buf: [768]u8 = undefined;
+    const big_msg = try std.fmt.bufPrint(&big_full_buf, messages.config_error_with_path_format, .{
+        "/home/example/.config/tildaz/config_0.toml",
+        big_body,
+    });
+
     const Case = struct {
         title: []const u8,
         message: []const u8,
@@ -583,6 +592,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.error_title, .message = messages.request_endpoint_unavailable_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.worker_exited_before_endpoint_ready_msg, .kind = .info },
         .{ .title = messages.error_title, .message = messages.request_endpoint_ready_timeout_msg, .kind = .info },
+        .{ .title = messages.config_not_loaded_title, .message = big_msg, .kind = .info },
         // #758 — 시작 안내는 `Open Config` · `OK` 두 버튼이라 confirm 이다 (`dialogShowNoticeActionCb`).
         // 목록이 길어 640x480 에서는 본문이 넘치고 스크롤로 들어간다 — 정상이다 (모든 다이얼로그 공통 규칙).
         .{ .title = messages.config_notice_title, .message = notice_msg, .kind = .confirm, .standard_scroll_by_scale = .{ 4, 4, 4 } },

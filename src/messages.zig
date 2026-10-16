@@ -476,7 +476,16 @@ pub const config_read_failed_format =
     \\Error: {s}
     \\
     \\TildaZ started with default settings -- nothing from this file was applied.
-    \\Fix the file above, then start TildaZ again.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
+;
+
+/// #758 — 파일이 크기 상한 (`config.max_config_bytes`) 을 넘어 읽지 않았을 때. 예전에는 위 문구에
+/// 오류 이름 (`StreamTooLong`) 만 실려 무엇을 고칠지 알 수 없었다 (#758 Linux 실기). `{d}` = 상한 (KiB).
+pub const config_too_large_format =
+    \\The config file is larger than {d} KiB, so TildaZ did not read it.
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Make the file above smaller, then start TildaZ again.
 ;
 
 pub const config_dir_create_failed_format =

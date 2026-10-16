@@ -3275,7 +3275,7 @@ pub const Config = struct {
                 // 방법이 없었다. 64 KiB 상한 초과가 특히 그렇다 — 조용한 절단도 아니고
                 // 조용한 **무시** 다.
                 var fallback = defaultOwned(allocator, shell_resolved);
-                fallback.load_notice = loadNoticeAlloc(allocator, messages.config_read_failed_format, path, err);
+                fallback.load_notice = readFailedNoticeAlloc(allocator, path, err);
                 // #758 — 상한을 넘은 파일은 확장이 끝까지 읽는다. 그 내용을 앱이 쓰지 않았다는 것을
                 // 남겨야 둘이 같은 값을 본다. 내용은 못 담았으니 파일을 다시 열어 해시만 낸다.
                 fallback.ignored_content_sha256 = fileSha256(rt, path);
@@ -4085,6 +4085,33 @@ fn loadNoticeAlloc(
     var buf: [512]u8 = undefined;
     const body = std.fmt.bufPrint(&buf, fmt, .{@errorName(err)}) catch return null;
     return configErrorMessageAlloc(allocator, body, config_path) catch null;
+}
+
+/// #501 · #758 — 파일이 **있는데 못 읽었을 때**의 안내. 크기 상한을 넘은 것은 따로 말한다 — 오류 이름
+/// (`StreamTooLong`) 만으로는 사용자가 무엇을 고칠지 알 수 없었다 (#758 Linux 실기).
+fn readFailedNoticeAlloc(allocator: std.mem.Allocator, config_path: []const u8, err: anyerror) ?[]const u8 {
+    if (err == error.StreamTooLong) {
+        var buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, messages.config_too_large_format, .{max_config_bytes / 1024}) catch return null;
+        return configErrorMessageAlloc(allocator, body, config_path) catch null;
+    }
+    return loadNoticeAlloc(allocator, messages.config_read_failed_format, config_path, err);
+}
+
+test "#758 크기 상한을 넘어 못 읽은 config 는 오류 이름이 아니라 크기를 말한다" {
+    const a = std.testing.allocator;
+    const big = readFailedNoticeAlloc(a, "/c/config_1.toml", error.StreamTooLong) orelse return error.TestUnexpectedResult;
+    defer a.free(big);
+    try std.testing.expect(std.mem.startsWith(u8, big, "Config: /c/config_1.toml"));
+    try std.testing.expect(std.mem.indexOf(u8, big, std.fmt.comptimePrint("larger than {d} KiB", .{max_config_bytes / 1024})) != null);
+    try std.testing.expect(std.mem.indexOf(u8, big, "StreamTooLong") == null);
+    try std.testing.expect(std.mem.indexOf(u8, big, "The file was not changed.") != null);
+
+    // 다른 읽기 실패는 지금처럼 오류 이름을 적는다. 파일은 그대로라는 말은 둘 다 한다.
+    const other = readFailedNoticeAlloc(a, "/c/config_1.toml", error.InputOutput) orelse return error.TestUnexpectedResult;
+    defer a.free(other);
+    try std.testing.expect(std.mem.indexOf(u8, other, "Error: InputOutput") != null);
+    try std.testing.expect(std.mem.indexOf(u8, other, "The file was not changed.") != null);
 }
 
 /// #501 — host 가 **창이 뜬 뒤** 한 번 부른다. 안내가 없으면 아무 일도 하지 않는다.

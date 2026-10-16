@@ -58,6 +58,7 @@ read exactly as written, and nothing rewrites its `hotkey`.
 > | Two actions share a combination | A combination you changed beats one left at its default — the other action loses that key. If you set it on both actions yourself, neither gets it, and an action left with no key goes back to its default keys. The order in the file does not matter. |
 > | A font is not installed | `font.family` falls back to the system's monospace font (`monospace` on Linux, Menlo on macOS, Consolas on Windows); a `font.glyph_fallback` entry is dropped. Names left at their default are only logged, not shown. |
 > | The file is not valid TOML | Starts that instance on defaults and names the line and column. Nothing from the file is applied until you fix it; other instances are not affected. |
+> | The file is larger than 64 KiB | Starts that instance on defaults and says the file is too large. Nothing from the file is applied until you make it smaller; other instances are not affected. |
 >
 > Two problems still stop startup, each with a message that names it: a `shell` that cannot be run, and a global hotkey that cannot be registered. Fonts stop startup only when not even the system's monospace font can be loaded. On Linux that means the system has no fonts at all, so there is nothing to draw a dialog with: the message goes to the log and to standard error instead.
 >
