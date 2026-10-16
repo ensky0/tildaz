@@ -8,9 +8,9 @@
 //! 호출처:
 //! - Windows · macOS: host 의 `resolveFonts` 바로 뒤. macOS 는 `CoreTextFontContext.init` 의
 //!   안전망도 있다 (판정 뒤 폰트가 지워진 경우).
-//! - Linux: `wayland_minimal.zig` 의 boot 검증 (#289 B6). dialog 는 host 자체 blocking overlay
-//!   (`runFatalDialog`) 라 `notFoundMessage` 만 사용 (C2 패턴 — boot 단계 fire-and-forget
-//!   `showFatal` 은 paint 전에 죽음).
+//! - Linux: `linux_wayland.zig` 의 `resolveFonts` 바로 뒤, 창을 만들기 전. `notFoundMessage` 를
+//!   **로그와 표준 오류에만** 남긴다 — Linux 는 다이얼로그 글자도 앱이 직접 그리는데 폰트가 하나도
+//!   없으면 그릴 수가 없다 (#758 Linux 실기 — 예전 자리는 렌더러를 만든 뒤라 `NoFaceLoaded` 가 먼저 났다).
 
 const std = @import("std");
 const Runtime = @import("../runtime.zig").Runtime;

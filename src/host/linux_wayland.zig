@@ -10,6 +10,7 @@ const config_mod = @import("../config.zig");
 const gsettings_hotkey = @import("linux/gsettings_hotkey.zig");
 const wayland = @import("linux/wayland_minimal.zig");
 const font_linux = @import("../font/linux/font.zig");
+const font_validate = @import("../font/validate.zig");
 const instance_context = @import("../instance_context.zig");
 
 /// L13-α — 사용자 설정. macOS `g_config` 패턴 동등. `run()` 안에서 한 번
@@ -130,9 +131,18 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     log.logConfigLoaded(cfg.*);
     // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 fontconfig 의 `monospace` 로 바꾸고 대체
     // 폰트는 뺀다 (`Config.resolveFonts` — 세 OS 공통 규칙). **렌더러가 폰트를 만들기 전**
-    // (`Client.init`) 이어야 해서 여기서 부른다. `monospace` 마저 못 쓰면 표시만 해 두고, 안내는
-    // Wayland 가 준비된 뒤 `run` 의 boot 검증이 띄운다.
+    // (`Client.init`) 이어야 해서 여기서 부른다.
     cfg.resolveFonts(gpa.allocator(), gpa.allocator(), linuxFontAvailability);
+    // #758 — `monospace` 마저 못 쓰면 폰트가 하나도 없는 기기다 (fontconfig 의 `monospace` 는 폰트가
+    // 하나라도 있으면 무언가로 풀린다). Linux 는 다이얼로그 글자도 앱이 직접 그려서 안내를 화면에
+    // 그릴 수 없고, 렌더러를 만들면 그 자리에서 `NoFaceLoaded` 로 실패해 원인 없는 문구만 남는다
+    // (Linux 실기 · 폰트 0 개). 그래서 창을 만들기 전에 폰트 안내를 로그와 표준 오류에 남기고 끝낸다.
+    if (cfg.font_unusable) {
+        const chain = cfg.font_families[0..cfg.font_family_count];
+        var font_msg_buf: [2048]u8 = undefined;
+        log.userFacing("fatal", font_validate.notFoundMessage(rt, &font_msg_buf, chain[0], chain));
+        std.process.exit(1);
+    }
 
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
     // GNOME · Cinnamon은 Shell extension이 drop-down lifecycle과 hotkey를 함께

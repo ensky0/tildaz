@@ -66,7 +66,6 @@ const shortcut_sync_linux = @import("../../shortcut_sync/linux.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const shell_validate = @import("../../shell_validate.zig");
-const font_validate = @import("../../font/validate.zig");
 const system_open = @import("../../system_open.zig");
 const link = @import("../../link.zig");
 const dialog_mod = @import("../../dialog.zig");
@@ -2094,22 +2093,9 @@ const Client = struct {
             }
         }
 
-        // #758 — 폰트를 하나도 쓸 수 없을 때만 여기서 안내 후 종료한다. 없는 폰트를 바꾸거나 빼는
-        // 일은 `linux_wayland.zig` 가 렌더러를 만들기 전에 이미 했다 (`Config.resolveFonts` — 세 OS
-        // 공통 규칙). 남은 것은 fontconfig 의 `monospace` 마저 풀리지 않은 경우다 (`font_unusable`).
-        // 안내를 이 시점에 띄우는 것은 위 C2 shell 검증과 같은 이유다 — Wayland 준비 후, 첫 탭
-        // PTY 전이라야 blocking overlay 를 그릴 수 있다.
-        if (self.config.font_unusable) {
-            const chain = self.config.font_families[0..self.config.font_family_count];
-            // #406 — 이 dialog 는 **폰트 설정이 잘못됐다고 알리는 화면**이다. 그것을
-            // 그 설정으로 그리면 읽기 어려워진다 (실측: 비례폭 폰트로 자간이 벌어졌다).
-            self.renderer.dialog_use_system_font = true;
-            var font_msg_buf: [2048]u8 = undefined;
-            const msg = font_validate.notFoundMessage(self.rt, &font_msg_buf, chain[0], chain);
-            log.userFacing("fatal", msg);
-            self.runFatalDialog(messages.config_error_title, msg);
-            std.process.exit(1);
-        }
+        // #758 — 없는 폰트는 `linux_wayland.zig` 가 렌더러를 만들기 전에 이미 바꾸거나 뺐다
+        // (`Config.resolveFonts`). 폰트를 하나도 못 쓰는 경우도 거기서 안내 (로그 · 표준 오류) 후
+        // 끝낸다 — 그릴 글꼴이 없어 이 자리의 overlay 로는 보여 줄 수 없다.
 
         // L11-β — hidden_start: 등록 완료된 hotkey 경로가 있는 경우에만
         // surface 생성 skip + `surface_hidden=true` set. 첫 hotkey 신호가

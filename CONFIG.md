@@ -59,7 +59,7 @@ read exactly as written, and nothing rewrites its `hotkey`.
 > | A font is not installed | `font.family` falls back to the system's monospace font (`monospace` on Linux, Menlo on macOS, Consolas on Windows); a `font.glyph_fallback` entry is dropped. Names left at their default are only logged, not shown. |
 > | The file is not valid TOML | Starts that instance on defaults and names the line and column. Nothing from the file is applied until you fix it; other instances are not affected. |
 >
-> Two problems still stop startup, each with a message that names it: a `shell` that cannot be run, and a global hotkey that cannot be registered. Fonts stop startup only when not even the system's monospace font can be loaded.
+> Two problems still stop startup, each with a message that names it: a `shell` that cannot be run, and a global hotkey that cannot be registered. Fonts stop startup only when not even the system's monospace font can be loaded. On Linux that means the system has no fonts at all, so there is nothing to draw a dialog with: the message goes to the log and to standard error instead.
 >
 > On startup you get one dialog listing everything it changed, split into "add or fix these" and "delete these", with a button that opens the file. It appears once per launch, not every time you open the window.
 >
