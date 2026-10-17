@@ -1355,6 +1355,10 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 - autostart entry는 launcher를 `--autostart`로 한 번 실행한다. launcher는
   `auto_start=true`인 config의 TildaZ worker만 시작하고 종료한다. 수동 실행은 모든
   config를 대상으로 한다.
+- autostart entry를 켜고 끄는 규칙은 하나다. 모든 config 중 하나라도 `auto_start=true`면
+  켜고, 아니면 끈다 (`autostart.syncWithConfigs`). 수동 실행과 새 instance 생성이 이 규칙을
+  쓰고, `--autostart` 실행은 건드리지 않는다. 예전에는 새 instance 생성이 config를 보지 않고
+  켰다 ([#755](https://github.com/ensky0/tildaz/issues/755)).
 - Windows에서 동시에 진행 중인 일반 launcher는 하나의 새-instance 요청으로 병합한다.
   첫 launcher만 config/worker 상태를 확인하고, 모든 worker가 이미 실행 중이면 worker 0의
   Create/Cancel 처리가 끝날 때까지 해당 요청을 소유한다. 그동안 시작된 추가 launcher는

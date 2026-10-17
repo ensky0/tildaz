@@ -103,7 +103,8 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
         showCreateError(rt, err);
         return;
     };
-    autostart.enable(rt, allocator) catch |err| log.appendLine("autostart", "enable after instance create failed: {s}", .{@errorName(err)});
+    // #755 — launcher 와 같은 규칙이다. 새 config 의 `auto_start` 도 그 목록에 들어 있다.
+    autostart.syncWithConfigs(rt, allocator, updated_indices) catch |err| log.appendLine("autostart", "sync after instance create failed: {s}", .{@errorName(err)});
     instances.spawnWorker(rt, allocator, index) catch |err| {
         showCreateError(rt, err);
         return;

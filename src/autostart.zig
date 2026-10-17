@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Runtime = @import("runtime.zig").Runtime;
+const instances = @import("instances.zig");
 
 const impl = switch (builtin.os.tag) {
     .windows => @import("autostart/windows.zig"),
@@ -31,4 +32,15 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
 
 pub fn disable(rt: Runtime, allocator: std.mem.Allocator) void {
     impl.disable(rt, allocator);
+}
+
+/// config 들의 `auto_start` 에 자동 시작을 맞춘다 — 하나라도 true 면 켜고, 아니면 끈다.
+/// launcher 의 평소 실행과 새 instance 생성이 같은 규칙을 쓰도록 한 곳에 둔다 (#755).
+/// 예전에는 새 instance 가 config 를 보지 않고 켜서, `auto_start = false` 인 dev 판
+/// config 로도 자동 시작이 등록됐다. 다 false 일 때 끌지는 #753 에서 정한다.
+pub fn syncWithConfigs(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
+    for (indices) |index| {
+        if (try instances.configAutoStart(rt, allocator, index)) return enable(rt, allocator);
+    }
+    disable(rt, allocator);
 }
