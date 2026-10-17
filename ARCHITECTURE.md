@@ -213,10 +213,18 @@ rewrites it. Unknown keys are still called out rather than tolerated: TOML has
 real `#` comments, so there is no need for comment-shaped keys. Numeric fields
 include their units (`_percent`, `_point`, `_ratio`).
 
-Two things still stop startup, and neither is a value the user got wrong: a TOML
-syntax error (the file cannot become a value tree at all) and a global hotkey
-that collides with a lower-numbered instance when even the derived default is
-taken. See SPEC.md 7.3.
+A file that is not valid TOML starts that instance on defaults and says so; a
+font that is not installed is replaced by the OS's monospace font (or dropped
+from the fallback list); two actions that share a key give it to the one the
+user changed. One rule decides each of these for all three platforms
+(`Config.resolveFonts`, `parseKeys`), and the GNOME and Cinnamon extensions,
+which read the config themselves, follow the app's verdict on a broken file
+instead of judging it again (#758).
+
+Only environment problems still stop startup, never a value the user got wrong:
+a global hotkey that collides with a lower-numbered instance when even the
+derived default is taken, and a system with no usable monospace font at all.
+See SPEC.md 7.3.
 
 **Wayland-only on Linux.** Wayland is where modern Linux desktops are heading,
 which matches the goal of behaving well on current desktop managers. X11 is not

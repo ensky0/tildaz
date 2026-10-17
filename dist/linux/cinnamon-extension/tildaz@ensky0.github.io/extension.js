@@ -140,6 +140,48 @@ function hotkeyStatePath(index) {
 }
 
 /**
+ * #758 — 앱이 이 번호의 config 내용을 **무시하고 기본값으로 시작했다**는 표시
+ * (`gsettings_hotkey.recordIgnoredConfig`). 내용은 `v1 <그 파일 내용의 SHA-256>` 한 줄이다.
+ *
+ * 깨졌는지 판정은 앱 한 곳에서만 한다. 아래 `parseTomlSubset` 은 줄 단위라 문법이 깨진 파일에서도
+ * 읽히는 줄 (`hotkey = "F5"`) 을 읽는데, 앱은 그 파일을 통째로 기본값으로 읽는다. 둘이 다른 키를
+ * 보면 앱이 이 확장의 hotkey 기록을 stale 로 보고 시작을 멈춘다 (#676). 같은 판정을 여기서
+ * 하려면 TOML 전체를 검사해야 하고, 그러면 두 판정이 언젠가 어긋난다.
+ */
+const IGNORED_CONFIG_NAME = /^instance(0|[1-9][0-9]*)\.config-ignored$/;
+
+function ignoredConfigPath(index) {
+  return GLib.build_filenamev([hotkeyStateDirPath(), `instance${index}.config-ignored`]);
+}
+
+/** 앱이 **지금 이 내용의** config 를 무시했는가. 사용자가 파일을 고치면 해시가 달라져 false 다. */
+function appIgnoredConfig(index, bytes) {
+  let mark;
+  try {
+    const [ok, contents] = GLib.file_get_contents(ignoredConfigPath(index));
+    if (!ok) return false;
+    mark = new TextDecoder().decode(contents).trim();
+  } catch (_e) {
+    return false; // 표시가 없다 — 앱이 이 파일을 그대로 읽었거나 아직 읽지 않았다
+  }
+  return mark === `v1 ${GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes)}`;
+}
+
+/**
+ * #758 — "앱이 기본값으로 읽었다" 는 번호 · 내용마다 **한 번만** 남긴다. 같은 config 를 두 곳이
+ * 정당하게 읽는다 — 표시 파일을 보고 하는 다시 읽기와, 창이 뜰 때의 배치 (`map`) 다. 읽을 때마다
+ * 남기면 한 번에 두 줄이었다 (#758 GNOME · Cinnamon 실기). 앱의 `config.ParseFallbackSeen` 과 같은
+ * 규칙이다. 확장을 끄면 비운다.
+ */
+const loggedIgnoredConfig = new Map();
+function logIgnoredConfigOnce(index, bytes, log) {
+  const digest = GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes);
+  if (loggedIgnoredConfig.get(index) === digest) return;
+  loggedIgnoredConfig.set(index, digest);
+  log(`${LOG_TAG} config_${index}.toml was read as defaults by the app — using defaults`);
+}
+
+/**
  * #510 — grab 결과를 worker 가 읽을 수 있게 남긴다. 형식은 `v1 <ok|failed> <hotkey>`
  * 한 줄이고, hotkey 는 **config 에 적힌 원문 그대로**다 — worker 가 그 값으로 "이 기록이
  * 지금 config 의 것인가" 를 판정해 stale 파일에 속지 않는다.
@@ -304,16 +346,21 @@ function enable() {
   );
   try {
     st.configMonitor = configDir.monitor_directory(Gio.FileMonitorFlags.NONE, null);
-    st.configMonitorId = st.configMonitor.connect("changed", () => {
-      if (st.configReloadId) GLib.source_remove(st.configReloadId);
-      st.configReloadId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
-        st.configReloadId = 0;
-        syncHotkeys(readConfigs());
-        return GLib.SOURCE_REMOVE;
-      });
-    });
+    st.configMonitorId = st.configMonitor.connect("changed", () => scheduleConfigReload());
   } catch (e) {
     global.logError(LOG_TAG + " config monitor failed: " + e);
+  }
+  // #758 — 앱이 남기는 "이 config 는 기본값으로 읽었다" 표시도 감시한다 (`ignoredConfigPath`).
+  // **이 이름에만 반응한다** — 같은 디렉터리의 `instanceN.hotkey` 는 이 확장이 쓰므로, 거기
+  // 반응하면 재등록 → 재기록의 자가 루프가 된다.
+  try {
+    GLib.mkdir_with_parents(hotkeyStateDirPath(), 0o700);
+    st.runMonitor = Gio.File.new_for_path(hotkeyStateDirPath()).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+    st.runMonitorId = st.runMonitor.connect("changed", (_monitor, file) => {
+      if (IGNORED_CONFIG_NAME.test(file?.get_basename() || "")) scheduleConfigReload();
+    });
+  } catch (e) {
+    global.logError(LOG_TAG + " run directory monitor failed: " + e);
   }
 
   // #616 — Cinnamon 의 단축키 목록이 바뀌면 겹침 판정을 **다시** 한다.
@@ -392,6 +439,7 @@ function replaceAllForMonitorChange() {
 }
 
 function disable() {
+  loggedIgnoredConfig.clear();
   if (st?.monitorsChangedId) {
     try {
       Main.layoutManager.disconnect(st.monitorsChangedId);
@@ -411,6 +459,8 @@ function disable() {
   for (const index of st?.configs?.keys() || []) clearHotkeyState(index);
   if (st?.configMonitorId) st.configMonitor.disconnect(st.configMonitorId);
   if (st?.configMonitor) st.configMonitor.cancel();
+  if (st?.runMonitorId) st.runMonitor.disconnect(st.runMonitorId);
+  if (st?.runMonitor) st.runMonitor.cancel();
   if (st?.configReloadId) GLib.source_remove(st.configReloadId);
   // #616 — 단축키 목록 감시도 함께 거둔다.
   (st?.keybindingSettings || []).forEach((settings, i) => {
@@ -484,8 +534,14 @@ function readConfig(index) {
       configDirPath(),
       `config_${index}.toml`,
     ]);
+    // #758 — 일반 파일만 읽는다 (앱의 `config.readConfigFile` 과 같은 규칙). 장치를 가리키면 셸이
+    // 끝없이 읽게 되고, 앱은 그 파일을 기본값으로 읽는다.
+    if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR)) return out;
     const [ok, bytes] = GLib.file_get_contents(path);
-    if (ok) {
+    if (ok && appIgnoredConfig(index, bytes)) {
+      // #758 — 앱이 이 내용을 무시하고 기본값으로 시작했다. 같은 값을 써야 hotkey 기록이 맞는다.
+      logIgnoredConfigOnce(index, bytes, (m) => global.log(m));
+    } else if (ok) {
       const j = parseTomlSubset(new TextDecoder().decode(bytes));
       if (typeof j.hotkey === "string") {
         const a = toAccel(j.hotkey);
@@ -505,6 +561,17 @@ function readConfig(index) {
     global.logError(LOG_TAG + " config read failed: " + e);
   }
   return out;
+}
+
+/** config 를 다시 읽고 hotkey 를 다시 잡는다. 몰려 오는 파일 이벤트를 한 번으로 묶는다. */
+function scheduleConfigReload() {
+  if (!st) return;
+  if (st.configReloadId) GLib.source_remove(st.configReloadId);
+  st.configReloadId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+    st.configReloadId = 0;
+    syncHotkeys(readConfigs());
+    return GLib.SOURCE_REMOVE;
+  });
 }
 
 function readConfigs() {

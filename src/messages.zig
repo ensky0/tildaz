@@ -4,6 +4,31 @@
 //! 은 여기서 정의하고 실제 표시는 호출처가 `dialog.zig` 로 위임.
 
 const std = @import("std");
+const display_width = @import("font/display_width.zig");
+
+/// #758 — 다이얼로그 제목의 최대 폭 (칸). 세 OS 모두 제목을 **한 줄로** 그린다 (macOS
+/// `setUsesSingleLineMode:` · Windows `DT_SINGLELINE` · Linux 한 줄 그리기). 그래서 길면 줄바꿈되지
+/// 않고 폭을 넘는다. 28 은 다이얼로그 **기본 폭** (`ui_metrics.DIALOG_PREFERRED_WIDTH_PT`) 에 넓은
+/// 글꼴로 들어가는 한도다 — 창은 본문이 화면을 넘칠 때만 그보다 넓어지고, 제목은 그 조건에 들지 않는다.
+/// 근거는 `host/linux/dialog_layout.zig` 의 테스트가 지킨다 (다이얼로그 치수가 바뀌어 28 칸이 안
+/// 들어가면 그 테스트가 실패한다).
+pub const dialog_title_max_width: usize = 28;
+
+// #758 — 이름이 `_title` 로 끝나는 상수는 모두 다이얼로그 제목이다. 하나라도 한도를 넘으면 **빌드가
+// 멈춘다** — 테스트를 돌리기 전, 어느 OS 든 처음 컴파일할 때부터. 예전에는 긴 제목 7 개가 레이아웃
+// 테스트에 케이스가 없어 아무도 몰랐다.
+comptime {
+    @setEvalBranchQuota(100_000);
+    for (@typeInfo(@This()).@"struct".decls) |decl| {
+        if (!std.mem.endsWith(u8, decl.name, "_title")) continue;
+        const title: []const u8 = @field(@This(), decl.name);
+        const width = display_width.stringWidth(title);
+        if (width > dialog_title_max_width) @compileError(std.fmt.comptimePrint(
+            "messages.{s} is {d} columns wide (\"{s}\"); dialog titles must be at most {d}",
+            .{ decl.name, width, title, dialog_title_max_width },
+        ));
+    }
+}
 
 /// #282 G9 — 자체 그리기 dialog 의 버튼 라벨 단일 소스 (macOS NSAlert · Windows
 /// 자체 hotkey 프롬프트 · Linux overlay 공용). Windows 표준 MessageBoxW 의
@@ -139,7 +164,7 @@ pub const panic_format = "panic: {s}\nreturn address: 0x{x}";
 pub const panic_fallback_msg = "panic (format failed)";
 pub const run_failed_format = "TildaZ failed to start.\n\nError: {s}";
 pub const run_failed_fallback_msg = "TildaZ failed to start.";
-pub const startup_layer_unmappable_title = "TildaZ could not open its window";
+pub const startup_layer_unmappable_title = "Cannot Open the Window";
 pub const startup_layer_unmappable_msg =
     "The drop-down window could not be placed at the configured size on this display. Try increasing \"window.height_percent\" in the config, then start TildaZ again. If this continues, check the TildaZ log.";
 pub const request_endpoint_unavailable_msg =
@@ -310,9 +335,10 @@ pub fn runFailureMessage(buf: []u8, err: anyerror, config_notice: ?[]const u8) [
 
 test "#583 B7 config 파싱 오류는 담긴 상세 문구를 그대로 보여 준다" {
     var buf: [256]u8 = undefined;
-    // launcher 가 config 를 읽다 죽은 경우 — `recordTomlParseFatal` 이 담아 둔 문구다.
+    // config 가 시작을 막은 경우 — `recordConfigFatalMsg` 가 담아 둔 문구다. #758 뒤로 그 경우는
+    // 전역 hotkey 중복 하나다 (TOML 구문 오류는 기본값으로 시작하고 알린다).
     const notice = "Config: /home/user/.config/tildaz/config_0.toml\n\n" ++
-        "Failed to parse config file.\n\nLine 12, column 3\nError: UnexpectedToken";
+        "The hotkey \"F1\" is already used by TildaZ 0.";
     try std.testing.expectEqualStrings(notice, runFailureMessage(&buf, error.InvalidConfig, notice));
     // 담긴 것이 없으면 일반 문구 (파싱이 아닌 의미 오류로 `InvalidConfig` 가 오는 경로).
     try std.testing.expectEqualStrings(
@@ -418,8 +444,11 @@ pub const font_substituted_format =
 /// #577 — 경로가 빠졌다. 이제 `notFoundMessageForPath` 가 본문 **앞에**
 /// `config_error_path_prefix_format` 으로 붙인다 (#495 의 "경로는 첫 줄").
 /// 형식 인자가 없어져 `_format` 이 아니라 `_msg` 다.
+/// #758 — 이 안내가 뜨는 것은 **OS 의 고정폭 폰트마저 못 쓸 때**뿐이다. 적은 폰트가 없는 것만으로는
+/// 종료하지 않고 그 폰트로 띄운다 (`Config.resolveFonts`).
 pub const font_chain_footer_msg =
-    "\nAll families listed in font.family must be installed on the system.\n";
+    "\nTildaZ could not use the system's monospace font either, so it cannot start.\n" ++
+    "Install a monospace font, then start TildaZ again.\n";
 
 /// glyph fallback chain 의 모든 명시 폰트 lookup 실패 — chain 비어있는 케이스
 /// (사용자가 모두 잘못된 이름 명시) 등 edge. strict 검증 path 는 한 개 이름을
@@ -447,7 +476,16 @@ pub const config_read_failed_format =
     \\Error: {s}
     \\
     \\TildaZ started with default settings -- nothing from this file was applied.
-    \\Fix the file above, then start TildaZ again.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
+;
+
+/// #758 — config 경로가 일반 파일이 아니라 (디렉터리 · 장치) 읽지 않았을 때 (`config.readConfigFile`).
+/// 위 문구에 오류 이름 (`NotAFile`) 만 실으면 무엇을 고칠지 알 수 없어서 따로 말한다.
+pub const config_not_a_file_msg =
+    \\The config file is not a regular file, so TildaZ did not read it.
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Replace it with a regular file, then start TildaZ again.
 ;
 
 pub const config_dir_create_failed_format =
@@ -474,25 +512,38 @@ pub const config_default_write_failed_format =
 /// 세 경우 (못 읽음 · 못 만듦 · 못 씀) 를 한 제목으로 덮는다. 각각을 따로 두면
 /// "Not Loaded" 가 만들기 실패에 어색해지는데 (애초에 읽을 것이 없었다), 사용자에게
 /// 중요한 것은 원인이 아니라 **지금 기본값으로 돌고 있다**는 사실이다.
-pub const config_not_loaded_title = "TildaZ — Using Default Settings";
+pub const config_not_loaded_title = "Using Default Settings";
 
-/// #495 — **경로를 담지 않는다.** `showConfigFatalMsg` 가 모든 config 오류 앞에 한
-/// 번 붙인다. 예전엔 파싱 오류만 본문 셋째 줄에 `Path:` 를 넣고 의미 오류는 맨 끝에
-/// 넣어, 같은 다이얼로그에서 경로 위치가 오류 종류에 따라 달랐다.
+/// #758 — TOML 문법이 깨진 파일. 예전에는 이 안내 뒤 **종료**했는데, 이제 #501 의 "못 읽음" 과
+/// 같이 기본값으로 시작하고 알린다 (제목도 `config_not_loaded_title`). 앱은 기존 config 를 다시
+/// 쓰지 않으므로 "파일은 그대로" 는 사실이다 — 사용자가 고친 내용을 잃지 않는다는 것을 알린다.
+///
+/// #495 — **경로를 담지 않는다.** `configErrorMessageAlloc` 이 첫 줄로 붙인다.
 pub const config_parse_failed_format =
-    \\Failed to parse config file.
+    \\Failed to parse the config file.
     \\
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
 ;
 /// #493 — TOML 파서는 구문 오류의 **위치**를 준다 (JSON 은 오류 이름만 줬다).
 /// 어디를 고쳐야 하는지 알 수 있어야 사용자가 스스로 해결한다.
 pub const config_parse_failed_at_format =
-    \\Failed to parse config file.
+    \\Failed to parse the config file.
     \\
     \\Line {d}, column {d}
     \\Error: {s}
+    \\
+    \\TildaZ started with default settings -- nothing from this file was applied.
+    \\The file was not changed. Fix the file above, then start TildaZ again.
 ;
-pub const config_parse_failed_fallback_msg = "Failed to parse config file.";
+pub const config_parse_failed_fallback_msg = "Failed to parse the config file. TildaZ started with default settings.";
+/// #758 — launcher 가 다른 instance 의 깨진 config 를 기본값으로 읽을 때 남기는 로그 줄.
+/// 사용자에게 보이는 안내는 그 instance 의 worker 가 띄운다.
+pub const config_parse_failed_log_format = "{s} is not valid TOML ({s}) -- reading it as defaults";
+/// #758 — launcher 가 다른 instance 의 config 를 열었지만 못 읽었을 때 (일반 파일이 아님 등) 남기는 로그 줄.
+pub const config_read_failed_log_format = "{s} could not be read ({s}) -- reading it as defaults";
 
 pub const config_error_fallback_msg = "Configuration is invalid.";
 /// #495 — **경로가 첫 줄이다.** 사용자가 오류 내용을 읽기 *전에* 눈에 들어와야 한다.
@@ -561,7 +612,7 @@ pub const config_unknown_theme_header_format = "Configuration: unknown theme \"{
 /// 같은 글자다 — 같은 일을 하는 자리가 다르게 불리면 안 된다.
 pub const button_open_config = command_open_config;
 
-pub const config_notice_title = "TildaZ started with parts of your config replaced.";
+pub const config_notice_title = "Some Settings Replaced";
 pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
 pub const config_notice_removable_header = "These are not used any more -- delete them:";
 /// 키가 없어 기본값을 쓴 경우. `{s}` = 키 경로.
@@ -593,9 +644,17 @@ pub const config_notice_hotkey_taken_format = "  hotkey -- already used by insta
 /// `[keys]` 의 한 항목만 버렸을 때. 액션은 남은 키로, 다 버렸으면 기본 바인딩으로 돈다.
 pub const config_notice_key_dropped_format = "  keys.{s} -- dropped \"{s}\" ({s})";
 pub const config_notice_key_dropped_fallback_msg = "  keys -- dropped a key that could not be read";
-/// 두 액션이 같은 조합을 쓸 때. 먼저 나온 쪽이 이긴다 (SPEC 7.3).
+/// 두 액션이 같은 조합을 쓸 때 진 쪽에 적는다. 바꾼 키가 기본 키를 이기므로 (#758 · SPEC 7.3) 여기 오는
+/// 것은 다른 액션의 바꾼 키에 자리를 뺏긴 기본 키다.
 pub const config_notice_key_conflict_format = "  keys.{s} -- \"{s}\" is already used by {s}, dropped";
+/// #758 — 두 액션에 같은 조합을 직접 적었다. 어느 쪽 뜻인지 고를 근거가 없어 둘 다 쓰지 않는다.
+/// 액션마다 한 줄씩 나온다.
+pub const config_notice_key_contested_format = "  keys.{s} -- \"{s}\" is also set for {s}, so neither uses it";
 pub const config_notice_key_conflict_fallback_msg = "  keys -- dropped a key that was already used";
+/// #758 — 사용자가 적은 주 폰트가 이 시스템에 없어 OS 의 고정폭 폰트로 띄웠다.
+pub const config_notice_font_replaced_format = "  font.family -- \"{s}\" is not installed, using {s}";
+/// #758 — 사용자가 적은 대체 폰트가 이 시스템에 없어 뺐다. 그 글자는 OS 가 다른 폰트로 그린다.
+pub const config_notice_font_dropped_format = "  font.glyph_fallback -- \"{s}\" is not installed, dropped";
 pub const config_notice_key_reason_unknown = "unknown key";
 pub const config_notice_key_reason_needs_modifier = "needs a modifier";
 pub const config_notice_key_reason_position_aliased = "left/right is not distinguished on macOS";
@@ -685,7 +744,7 @@ pub const renderer_init_failed_fallback_msg =
     \\Both the GPU (hardware) and CPU (software) rendering paths failed. This usually means the graphics driver is missing, outdated, or malfunctioning.
 ;
 
-pub const hotkey_registration_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const hotkey_registration_failed_title = "Hotkey Registration Failed";
 pub const hotkey_registration_failed_format =
     \\Failed to register the global hotkey (vkey=0x{x:0>2}, modifiers=0x{x}).
     \\
@@ -705,7 +764,7 @@ pub const hotkey_registration_failed_fallback_msg = "Failed to register the glob
 /// Hyprland · COSMIC). 그래서 어느 상대에게 무엇이 막혔는지를 본문이 직접 말한다.
 ///
 /// 인자: (1) hotkey 표기 (2) 상대 이름 (3) 그 상대가 준 구체적 사유 (4) config 경로.
-pub const linux_hotkey_failed_title = "TildaZ — Hotkey Registration Failed";
+pub const linux_hotkey_failed_title = "Hotkey Registration Failed";
 pub const linux_hotkey_failed_format =
     \\TildaZ could not claim the global hotkey "{s}" from {s}.
     \\
@@ -722,7 +781,7 @@ pub const linux_hotkey_failed_fallback_msg =
 /// #676 — GNOME · Cinnamon은 Shell extension이 창 배치와 hotkey를 함께 맡는다.
 /// 일반 xdg-shell 창 + GSettings hotkey는 제대로 된 drop-down이 아니므로 더는
 /// fallback하지 않는다. desktop 이름만 인자로 받아 두 host에서 같은 문구를 쓴다.
-pub const linux_shell_extension_required_title = "TildaZ Shell Extension Required";
+pub const linux_shell_extension_required_title = "Shell Extension Required";
 pub const linux_shell_extension_required_format =
     \\TildaZ requires its {s} Shell extension to provide the drop-down window and global hotkey.
     \\

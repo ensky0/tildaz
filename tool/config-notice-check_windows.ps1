@@ -348,9 +348,8 @@ function Case-no-cap {
     # 긴 이름의 모르는 키를 잔뜩 넣는다. 예전에는 안내 버퍼가 16 KiB 고정이라 여기서
     # 잘렸다 — **목록이 길수록 필요한 정보가 많은데 바로 그때** 잘리는 설계였다.
     #
-    # config 파일은 64 KiB 를 넘기면 안 된다 (`Config.load` 의 `allocRemaining` 상한).
-    # 넘기면 파일이 통째로 거부돼 `load failed` 로 빠져 이 회차가 재려던 것이 안 일어난다.
-    # 150 x 200 자 ~ 30 KiB 로 상한 안에 들면서 옛 16 KiB 버퍼는 훌쩍 넘긴다.
+    # 150 x 200 자 ~ 30 KiB 면 옛 16 KiB 버퍼를 훌쩍 넘긴다. config 파일의 크기 상한은 #758 로
+    # 없어졌다 (예전 64 KiB) — 이 크기를 지킬 필요는 이제 없지만 회차가 재는 것은 같다.
     $p = Get-Cfg $idx
     $pad = 'k' * 200
     $sb = New-Object System.Text.StringBuilder

@@ -195,7 +195,15 @@ pub fn listConfigIndices(rt: Runtime, allocator: std.mem.Allocator) ![]u32 {
     errdefer indices.deinit(allocator);
     var it = dir.iterate();
     while (try it.next(rt.io)) |entry| {
-        if (entry.kind != .file) continue;
+        // #758 — **링크도 config 다.** dotfiles 처럼 config 를 링크로 관리하는 사용자가 있다 (#700 이
+        // 쓰기에서 링크를 따라가게 한 그 사용자). 예전에는 `.file` 만 받아 링크로 둔 `config_0.toml` 을
+        // 못 보고, 기본 config 를 새로 만들려다 (`exclusive`) `PathAlreadyExists` 로 launcher 가 실패했다
+        // (macOS 실기). 링크가 일반 파일이 아닌 것 (장치) 을 가리키면 읽는 쪽 (`config.readConfigFile`) 이
+        // 그 번호를 기본값으로 돌린다.
+        switch (entry.kind) {
+            .file, .sym_link => {},
+            else => continue,
+        }
         if (parseConfigFileName(entry.name)) |index| try indices.append(allocator, index);
     }
     std.mem.sort(u32, indices.items, {}, std.sort.asc(u32));
@@ -639,18 +647,42 @@ pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !bool {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
-    defer file.close(rt.io);
-    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
-    var file_reader = file.reader(rt.io, &.{});
-    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    const content = (try readConfigContent(rt, allocator, path)) orelse return config.Defaults.auto_start;
     defer allocator.free(content);
+    return autoStartFromContent(allocator, content, path);
+}
+
+/// #758 — launcher 가 config 하나를 읽는다. **열지 못했거나 읽지 못한 파일은 `null`** 이고 호출부가 그
+/// 번호의 기본값을 쓴다. worker (`Config.load`) 가 같은 파일을 기본값으로 띄우므로 (#501), 여기서 오류를
+/// 올리면 launcher 가 멈추거나 worker 와 다른 값을 본다. 열기 실패도 같다 — 끊어진 링크 (목록이 링크도
+/// 담는다) · 읽기 권한 없음이다. 예전에는 오류를 올려 config 하나 때문에 모든 instance 가 못 떴다
+/// (#758 Linux 실기). Ghostty 도 config 를 못 열면 경고만 남긴다 (`Config.loadOptionalFile`).
+fn readConfigContent(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| {
+        // #758 — 같은 파일 · 같은 오류는 한 번만 적는다 (`config.logConfigReadFallback`).
+        config.logConfigReadFallback(path, err);
+        return null;
+    };
+    defer file.close(rt.io);
+    // worker 와 같은 읽기다 (`config.readConfigFile` — 크기 상한 없음 · 일반 파일만).
+    return config.readConfigFile(rt, allocator, file) catch |err| {
+        // #758 — 같은 파일 · 같은 오류는 한 번만 적는다 (`config.logConfigReadFallback`).
+        config.logConfigReadFallback(path, err);
+        return null;
+    };
+}
+
+/// #758 — 파일 내용에서 `auto_start` 를 읽는다. **문법이 깨진 파일은 기본값이다** (worker 의
+/// `Config.load` 와 같은 규칙 — 그 instance 는 기본값으로 뜬다). 예전에는 오류를 그대로 올려
+/// launcher 가 실패했고, instance 하나의 config 가 깨지면 다른 instance 까지 못 떴다.
+fn autoStartFromContent(allocator: std.mem.Allocator, content: []const u8, path: []const u8) bool {
     // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
     var parser: toml.Parser(toml.Table) = .init(allocator);
     defer parser.deinit();
-    // 파싱 오류는 **그대로 전파**한다. `error.InvalidConfig` 로 뭉개면 런처가
-    // 보여 주는 문구가 "InvalidConfig" 하나로 줄어 원인을 못 알린다 (#495).
-    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
+    var parsed = parser.parseString(content) catch |err| {
+        config.logTomlParseFallback(path, &parser, err);
+        return config.Defaults.auto_start;
+    };
     defer parsed.deinit();
     // #719 — 빠진 줄 · 틀린 형은 config 가 없을 때와 같은 값이다. 예전에는 `error.InvalidConfig`
     // 였고 launcher 가 `try` 로 받아 실행이 통째로 실패했다.
@@ -660,16 +692,22 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
 pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
     const path = try paths.configPathFor(rt, allocator, index);
     defer allocator.free(path);
-    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
-    defer file.close(rt.io);
-    // #451 — `fs.File.readToEndAlloc` ➡️ `File.Reader.allocRemaining` (릴리즈 노트 전용 절).
-    var file_reader = file.reader(rt.io, &.{});
-    const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
+    const content = (try readConfigContent(rt, allocator, path)) orelse
+        return allocator.dupe(u8, config.Defaults.hotkeyFor(index));
     defer allocator.free(content);
+    return hotkeyTextFromContent(allocator, content, path, index);
+}
+
+/// #758 — 파일 내용에서 그 번호의 `hotkey` 글자를 읽는다. **문법이 깨진 파일은 그 번호의 기본 키다**
+/// (`autoStartFromContent` 와 같은 규칙). 돌려주는 글자는 호출부가 해제한다.
+fn hotkeyTextFromContent(allocator: std.mem.Allocator, content: []const u8, path: []const u8, index: u32) ![]u8 {
     // #493 — TOML. 최상위는 문법상 항상 테이블이라 별도 검사가 필요 없다.
     var parser: toml.Parser(toml.Table) = .init(allocator);
     defer parser.deinit();
-    var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
+    var parsed = parser.parseString(content) catch |err| {
+        config.logTomlParseFallback(path, &parser, err);
+        return allocator.dupe(u8, config.Defaults.hotkeyFor(index));
+    };
     defer parsed.deinit();
     // #719 — 빠진 줄 · 읽을 수 없는 값은 그 번호의 기본 키다 (앱 본체 `parse` 와 같은 규칙).
     return allocator.dupe(u8, config.hotkeyTextOrDefault(&parsed.value, index));
@@ -677,20 +715,11 @@ pub fn configHotkeyText(rt: Runtime, allocator: std.mem.Allocator, index: u32) !
 
 pub fn hotkeyOwner(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32, candidate: config.Hotkey) !?u32 {
     for (indices) |index| {
-        const path = try paths.configPathFor(rt, allocator, index);
-        defer allocator.free(path);
-        const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
-        defer file.close(rt.io);
-        var file_reader = file.reader(rt.io, &.{});
-        const content = try file_reader.interface.allocRemaining(allocator, .limited(64 * 1024));
-        defer allocator.free(content);
-        // #493 — TOML. 최상위는 문법상 항상 테이블이다.
-        var parser: toml.Parser(toml.Table) = .init(allocator);
-        defer parser.deinit();
-        var parsed = parser.parseString(content) catch |err| return config.recordTomlParseFatal(rt, path, &parser, err);
-        defer parsed.deinit();
-        // #719 — `configHotkeyText` 와 같은 규칙. 그 인스턴스가 실제로 쓰는 키와 견준다.
-        const existing = config.Hotkey.fromString(config.hotkeyTextOrDefault(&parsed.value, index)) orelse continue;
+        // #719 · #758 — 그 인스턴스가 실제로 쓰는 키와 견준다. 못 읽거나 문법이 깨진 파일은 그 번호의
+        // 기본 키다 (`configHotkeyText`).
+        const text = try configHotkeyText(rt, allocator, index);
+        defer allocator.free(text);
+        const existing = config.Hotkey.fromString(text) orelse continue;
         if (std.meta.eql(existing, candidate)) return index;
     }
     return null;
@@ -735,7 +764,9 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
     const entries = allocator.alloc(HotkeyEntry, indices.len) catch return null;
     defer allocator.free(entries);
     for (indices, 0..) |index, i| {
-        const parsed: ?config.Hotkey = blk: {
+        // #758 — 자기 번호와 그 위는 `conflictingLowerIndex` 가 비교하지 않으니 읽지 않는다. 읽으면
+        // 문법이 깨진 config 의 "기본값으로 읽는다" 로그가 `Config.load` 의 것에 더해 한 번 더 남는다.
+        const parsed: ?config.Hotkey = if (index >= self_index) null else blk: {
             const text = configHotkeyText(rt, allocator, index) catch break :blk null;
             defer allocator.free(text);
             break :blk config.Hotkey.fromString(text);
@@ -743,6 +774,142 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
         entries[i] = .{ .index = index, .hotkey = parsed };
     }
     return conflictingLowerIndex(entries, self_index, candidate);
+}
+
+test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
+    // Windows 는 링크를 만들려면 권한이 필요하고, 합성 환경변수 대신 실제 환경을 쓴다 (`paths.testRuntime`).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
+    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    defer allocator.free(env);
+    const block = [_:null]?[*:0]const u8{env.ptr};
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+
+    try tmp.dir.createDirPath(std.testing.io, app_id.name);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real.toml", .data = "auto_start = false\n" });
+    var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
+    defer cfg_dir.close(std.testing.io);
+    // config_0 은 링크 (dotfiles), config_2 는 일반 파일이다.
+    const target = try std.Io.Dir.path.join(allocator, &.{ root, "real.toml" });
+    defer allocator.free(target);
+    try cfg_dir.symLink(std.testing.io, target, "config_0.toml", .{});
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_2.toml", .data = "auto_start = false\n" });
+
+    const indices = try listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 2 }, indices);
+    // 링크를 따라 읽는다 — 그 번호의 값이 그대로 나온다.
+    try std.testing.expect(!try configAutoStart(rt, allocator, 0));
+}
+
+test "#758 launcher 는 열지 못한 config (끊어진 링크 · 읽기 권한 없음) 를 그 번호의 기본값으로 본다" {
+    // 링크 · 권한을 쓰는 test 라 POSIX 만 돈다.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    defer allocator.free(env);
+    const block = [_:null]?[*:0]const u8{env.ptr};
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+
+    try tmp.dir.createDirPath(std.testing.io, app_id.name);
+    var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
+    defer cfg_dir.close(std.testing.io);
+    // config_0 은 정상, config_3 은 끊어진 링크, config_4 는 읽기 권한이 없다.
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_0.toml", .data = "auto_start = true\n" });
+    const target = try std.Io.Dir.path.join(allocator, &.{ root, "missing.toml" });
+    defer allocator.free(target);
+    try cfg_dir.symLink(std.testing.io, target, "config_3.toml", .{});
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_4.toml", .data = "hotkey = \"F9\"\n" });
+    {
+        const f = try cfg_dir.openFile(std.testing.io, "config_4.toml", .{});
+        defer f.close(std.testing.io);
+        try f.setPermissions(std.testing.io, .fromMode(0o000));
+    }
+    // 권한 000 파일도 `tmp.cleanup` 이 지운다 — 지우기는 폴더의 쓰기 권한만 본다.
+
+    const indices = try listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 3, 4 }, indices);
+    // launcher 의 반복문 (`main.zig`) 이 부르는 그대로 — 오류 없이 각 번호의 값이 나온다. 예전에는
+    // config_3 에서 `FileNotFound` 로 launcher 전체가 멈췄다.
+    try std.testing.expect(try configAutoStart(rt, allocator, 0));
+    try std.testing.expectEqual(config.Defaults.auto_start, try configAutoStart(rt, allocator, 3));
+    const text3 = try configHotkeyText(rt, allocator, 3);
+    defer allocator.free(text3);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(3), text3);
+    // root 처럼 권한과 무관하게 읽히는 환경이면 config_4 갈래는 만들 수 없다.
+    if (cfg_dir.openFile(std.testing.io, "config_4.toml", .{})) |f| {
+        f.close(std.testing.io);
+        return;
+    } else |_| {}
+    const text4 = try configHotkeyText(rt, allocator, 4);
+    defer allocator.free(text4);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(4), text4);
+}
+
+test "#758 launcher 는 크기와 무관하게 config 를 읽고, 일반 파일이 아니면 그 번호의 기본값으로 본다" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
+    defer allocator.free(root);
+
+    // 예전 상한 (64 KiB) 을 넘는 올바른 config — 끝까지 읽어 값을 쓴다. 긴 주석 한 줄로 크기를 채운다.
+    const head = "hotkey = \"F5\"\n#";
+    const big = try allocator.alloc(u8, 70 * 1024);
+    defer allocator.free(big);
+    @memcpy(big[0..head.len], head);
+    @memset(big[head.len .. big.len - 1], 'x');
+    big[big.len - 1] = '\n';
+    try tmp.dir.writeFile(rt.io, .{ .sub_path = "big.toml", .data = big });
+    const big_path = try std.Io.Dir.path.join(allocator, &.{ root, "big.toml" });
+    defer allocator.free(big_path);
+    const content = (try readConfigContent(rt, allocator, big_path)) orelse return error.TestUnexpectedResult;
+    defer allocator.free(content);
+    try std.testing.expectEqual(big.len, content.len);
+    const text = try hotkeyTextFromContent(allocator, content, big_path, 3);
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("F5", text);
+
+    // 장치를 가리키는 config — 열리지만 일반 파일이 아니라 읽지 않는다 (`null` = 그 번호의 기본값).
+    // `/dev/null` 이 없는 Windows 는 여기까지다 (위 갈래가 같은 `config.readConfigFile` 을 지난다).
+    if (@import("builtin").os.tag == .windows) return;
+    try tmp.dir.symLink(rt.io, "/dev/null", "device.toml", .{});
+    const device_path = try std.Io.Dir.path.join(allocator, &.{ root, "device.toml" });
+    defer allocator.free(device_path);
+    try std.testing.expect((try readConfigContent(rt, allocator, device_path)) == null);
+}
+
+test "#758 launcher 는 문법이 깨진 config 를 그 번호의 기본값으로 읽는다" {
+    const a = std.testing.allocator;
+    const path = "/home/user/.config/tildaz/config_3.toml";
+    // 대조군이 기본값과 갈리도록 기본값의 반대를 적는다 (dev · 릴리즈 판의 기본값이 다르다).
+    const flipped = if (config.Defaults.auto_start) "false" else "true";
+
+    const ok = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n", .{flipped});
+    defer a.free(ok);
+    try std.testing.expectEqual(!config.Defaults.auto_start, autoStartFromContent(a, ok, path));
+    const ok_key = try hotkeyTextFromContent(a, ok, path, 3);
+    defer a.free(ok_key);
+    try std.testing.expectEqualStrings("F7", ok_key);
+
+    // 같은 줄 뒤에 섹션 머리의 `]` 를 빠뜨렸다 — 적힌 값이 아니라 **그 번호의 기본값**이어야 한다.
+    const broken = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n[window\n", .{flipped});
+    defer a.free(broken);
+    try std.testing.expectEqual(config.Defaults.auto_start, autoStartFromContent(a, broken, path));
+    const broken_key = try hotkeyTextFromContent(a, broken, path, 3);
+    defer a.free(broken_key);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(3), broken_key);
 }
 
 test "핫키 중복은 뒤에 있는 인스턴스가 양보한다 (#431)" {

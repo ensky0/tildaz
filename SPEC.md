@@ -50,8 +50,8 @@ TildaZ 가 Windows · macOS · Linux 에서 *어떻게 동작해야 하는가* �
    사용자 파일의 주인이 아니다).
 
    경계 하나 — **입력이 아니라 환경이 없어서 못 뜨는 것은 이 원칙 밖이다.** 권한 거부
-   ([#510](https://github.com/ensky0/tildaz/issues/510)) 처럼 앱이 제 일을 아예 할 수 없는
-   자리는 안내하고 종료하는 것이 맞다.
+   ([#510](https://github.com/ensky0/tildaz/issues/510)) 나 OS 의 고정폭 폰트마저 없는 시스템
+   ([#758](https://github.com/ensky0/tildaz/issues/758)) 처럼 앱이 제 일을 아예 할 수 없는 자리는 안내하고 종료하는 것이 맞다.
 
 ---
 
@@ -1293,15 +1293,16 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | 사용자 표시 텍스트 단일 진입점 | 모든 메시지 / format string 한 곳 | `messages.zig` import | 동일 | 동일 (cross-platform module) | ✅ | ✅ | ✅ |
 | 다이얼로그 추상화 | `dialog.showInfo / showError / showFatal / showConfirm / promptHotkey / showAboutAlert` | `dialog/windows.zig` (자체 창 `TildaZScrollableDialogWindow` — 본문 read-only EDIT, 만들 수 없을 때만 `MessageBoxW` + key capture window) | `dialog/macos.zig` (NSAlert + overflow NSScrollView + NSEvent key capture + osascript fallback) | `dialog/linux.zig` runtime callback infra + `wayland_minimal.zig` 의 별 layer-shell `overlay` surface backend (#203 Phase C step 3) — main 위 modal 그림. 같은 client 의 별 wl_surface 쌍 + buffer + SDF 합성. | ✅ | ✅ | ✅ |
 | 본문 overflow 정책 | info/error/fatal/confirm/prompt/About 모두 실제 텍스트의 자연 크기를 먼저 사용하고, 화면을 넘을 때만 본문에 세로 scroll. 제목·button·prompt input/status는 고정. **본문은 화면 높이의 절반을 넘지 않는다** (`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT` = 50, [#655](https://github.com/ensky0/tildaz/issues/655)) — 넘치면 스크롤하므로 목록은 하나도 잃지 않는다. **모달 경고창은 화면을 덮는 물건이 아니다**: config 안내는 업그레이드 한 번에 45 줄이 뜨는데, 창이 화면을 다 먹으면 뒤에 있는 config 와 대조할 수가 없다. 상한이 **본문** 기준인 것이 중요하다 — 창 전체를 자르면 제목·버튼·아이콘 같은 고정 chrome 이 본문을 더 밀어내 짧은 목록에서도 스크롤이 생긴다. 세 host 가 같은 상수를 쓴다 (실측: Linux 안내 39 줄이 955 → **755** / 화면 1000) | info/error/confirm은 길이와 무관하게 자체 창의 read-only multiline `EDIT` (overflow 때만 OS scrollbar), prompt 본문은 `STATIC`. 자체 창을 만들 수 없을 때만 `MessageBoxW` (§11.5) | 짧은 본문은 NSAlert `informativeText`; overflow 때 `NSScrollView` + `NSTextView`. prompt는 같은 accessoryView 아래에 key capture/status를 고정 | 공통 `dialog_layout`이 종류와 무관하게 message viewport를 계산. wheel/touchpad·scrollbar drag는 overflow가 있을 때만 활성 | ✅ | ✅ | ✅ |
+| 제목 ([#758](https://github.com/ensky0/tildaz/issues/758)) | **한 줄이고 28 칸 이하.** 세 OS 모두 제목을 줄바꿈하지 않아서 길면 폭을 넘는다. 28 은 다이얼로그 기본 폭 (`ui_metrics.DIALOG_PREFERRED_WIDTH_PT`) 에 넓은 글꼴로 들어가는 한도다. `messages.zig` 에서 이름이 `_title` 로 끝나는 상수가 이 한도 (`dialog_title_max_width`) 를 넘으면 **어느 OS 빌드든 컴파일이 멈춘다.** `TildaZ` 접두는 넣지 않아도 된다 — 다이얼로그 아이콘이 이름을 대신한다 | 제목 `STATIC` 한 줄 (`DT_SINGLELINE` 으로 잰다). 창 제목 줄 · 작업 표시줄에도 같은 글자 | 제목 `NSTextField` (`setUsesSingleLineMode:`) | 한 줄로 그린다. 28 칸 근거는 `host/linux/dialog_layout.zig` 의 테스트가 지킨다 | ✅ | ✅ | ✅ |
 | 새 인스턴스 창의 상태 문구 ([#721](https://github.com/ensky0/tildaz/issues/721)) | 핫키를 누르면 아래에 뜨는 빨간 문구. **나올 수 있는 문구를 모두 재서 자리를 미리 잡는다** — 가장 긴 것이 본문 기본 폭 (`ui_metrics.DIALOG_PREFERRED_WIDTH_PT`) 안에 들면 창을 그만큼 넓혀 한 줄로 두고, 넘으면 그 폭에서 줄바꿈한다. 높이는 후보 중 최대라 키를 눌러도 창 크기가 그대로다. 줄마다 가운데 정렬. 후보 목록과 규칙은 `hotkey_status.zig` 한 곳이고, OS 마다 다른 것은 글자를 재는 방법뿐이다 | 상태 칸 `STATIC` (`SS_CENTER`) 을 `DrawTextW` 로 잰다. prompt 창은 이미 기본 폭이라 높이만 는다 | 상태 칸 `NSTextField` 의 셀 (`cellSizeForBounds:`) 로 잰다. 여러 줄을 허용한다 | `dialog_layout` 이 본문과 같은 측정 · 줄바꿈으로 잰다 | ✅ | ✅ | ✅ |
 | About 다이얼로그 | 버전 / exe / pid / config / log 경로를 잘림 없이 표시. 실제 입력 길이만큼 본문을 할당하고 화면 높이를 넘을 때만 세로 scroll ([#314](https://github.com/ensky0/tildaz/issues/314)) | read-only multiline EDIT 전용 modal window. wheel·scrollbar drag·selection·Ctrl+C는 OS control 동작 | NSAlert accessoryView의 NSScrollView + selectable NSTextView. scrollbar 자동 숨김 | Ctrl+Shift+I → `about.showAboutDialog()` → `dialog.showAboutAlert` → layer-shell overlay. 아이콘 + Title + separator + body + OK 버튼. overflow 때 아이콘을 생략하고 wheel/touchpad·scrollbar drag 지원 | ✅ | ✅ | ✅ |
-| Config 에러 (**남은 fatal** — TOML 구문 오류 · 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이 폴백 + 안내로 돌려 여기 오지 않는다) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 자체 창의 read-only multiline EDIT (화면을 넘을 때만 scroll). 자체 창을 만들 수 없을 때만 `MessageBoxW` | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전에 돌므로 문구를 담아 두고 (stderr + log 에는 즉시) Wayland globals + keyboard 준비 뒤 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback)로 띄운 뒤 exit(1) (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577)). startup 검증(예: shell)도 같은 overlay. Wayland 연결 자체가 실패하면 stderr + log 뿐이다. **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ |
+| Config 에러 (**남은 fatal** — 갈아탈 자리 없는 전역 hotkey 중복. 값이 틀린 경우는 §7.3 이, TOML 구문 오류는 §11.5 가 기본값 + 안내로 돌려 여기 오지 않는다 — [#758](https://github.com/ensky0/tildaz/issues/758)) | 실제로 연 config 절대경로를 본문에 정확히 한 번 붙이고 종료 (`showFatal`, [#316](https://github.com/ensky0/tildaz/issues/316)). 짧은 본문은 native 표시를 유지하고 overflow 때만 전체 본문을 세로 scroll | 자체 창의 read-only multiline EDIT (화면을 넘을 때만 scroll). 자체 창을 만들 수 없을 때만 `MessageBoxW` | NSApplication을 config load 전에 준비. 짧으면 NSAlert, 화면 높이를 넘으면 NSScrollView + NSTextView | config parse는 Wayland 연결 전에 돌므로 문구를 담아 두고 (stderr + log 에는 즉시) Wayland globals + keyboard 준비 뒤 `runFatalDialog` layer-shell overlay(GNOME/Cinnamon은 xdg fallback)로 띄운 뒤 exit(1) (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577)). startup 검증(예: shell)도 같은 overlay. Wayland 연결 자체가 실패하면 stderr + log 뿐이다. **런타임 config 에러 경로는 아직 없음** (hot-reload #170 미구현). | ✅ | ✅ | ✅ |
 | Panic | dialog + `process.exit(1)` | `dialog.showError` + exit(1) | 동일 | **dialog 호출 안 함** — `showPanic` 이 log(`panic`) + `std.debug.defaultPanic` (stderr 에 file:line + backtrace 후 abort). panic 은 renderer/wayland state 가 이미 불안정할 수 있어 overlay 대신 표준 abort 경로 (의도된 차이). | ✅ | ✅ | 🟨 (dialog 없이 log+abort) |
 | 확인 다이얼로그 (`showConfirm`) | OK / Cancel 선택 — destructive 작업 confirm (Alt+F4 / 단일·다중 탭 모두). mac `applicationShouldTerminate:` / Win `onQuitRequest` 동등 — count==0 (PTY 자동 종료) 만 skip, 단일·다중 탭 *항상* confirm. | 자체 창의 고정 OK/Cancel + 본문 (overflow 때만 scroll), 만들 수 없을 때만 `MessageBoxW MB_OKCANCEL` — `app_controller.onQuitRequest` 가 호출 | 짧으면 NSAlert OK/Cancel, overflow면 고정 button + scroll 본문 — `applicationShouldTerminate:` 가 호출 | `dialog.showConfirm` → host `dialogShowConfirmCb` 의 inner wayland event pump (deferred dismiss + 단일 OK/Cancel 두 버튼 layer-shell overlay). Alt+F4 는 KWin 이 *F4 system shortcut* 으로 가로채고 `closed` event 발송 — `handleEvent` 가 `pending_quit_request=true`, main loop `drainQuitRequest` 가 confirm 호출. Cancel 시 main surface 재생성 (KWin 측 unmap 후 다음 close 이벤트 안 옴 회피, #203 Phase C step 4). | ✅ | ✅ | ✅ |
 | Click 정책 (modal) | dialog 떠 있는 동안 *OK 버튼 / Enter / Esc 만* dismiss. 본문 click / 같은 client 의 main click / 다른 app 영역 모두 dismiss X. | native dialog 또는 소유자 window를 disable한 overflow modal loop | OS modal 표준 자체 | dialog overlay surface 의 pointer button + xkb keysym 처리. `last_pointer_enter_surface_id == dialog.surface_id` + OK 버튼 좌표 hit-test → dismiss. overflow scrollbar drag 외 본문 / main click 은 swallow (focus 만 회복). Enter / Esc → dismiss. | ✅ | ✅ | ✅ |
 | dismiss 후 focus return | dismiss 후 main 에 keyboard focus 자동 양도 | OS 자체 (modal close 후 caller window 복귀) | OS 자체 | `xdg_activation_v1` 표준 — dismiss 직전 dialog 가 token 발급 → main 에 `activate`. dialog 가 *실제 focus* 일 때만 (focus 가드, KWin protocol error 회피). dismiss 호출은 main loop deferred (inner roundtrip reentrancy 차단). | ✅ | ✅ | ✅ |
 | Dialog 위치 | 현재 monitor 중앙 | overflow window와 prompt는 같은 TildaZ process의 foreground window를 owner로 삼고 그 monitor work area 중앙. 다른 process window는 owner로 사용하지 않음 | NSAlert의 OS modal 배치 | layer-shell 경로(KDE Plasma, COSMIC, Hyprland)는 `anchor=0`으로 현재 output 중앙에 두며 main 창의 dock/width margin과 분리 ([#314](https://github.com/ensky0/tildaz/issues/314), KDE Plasma 1.7x 실기). xdg-toplevel fallback(GNOME, Cinnamon, sway [#454](https://github.com/ensky0/tildaz/issues/454))은 Wayland에 절대 위치 지정 API가 없어 compositor의 transient 배치를 따름 (sway 1.12 실기: floating 중앙 배치·Esc dismiss·focus 복귀 확인) | ✅ | ✅ | ✅ (layer-shell) / 🟨 (xdg compositor 배치) |
-| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기. **떠 있는 동안 배율이 바뀌어도 따라간다** | overflow window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt. 배율이 바뀌면 `WM_DPICHANGED` 에서 폰트 3벌·아이콘을 새 DPI로 다시 만들고 창과 자식을 재배치한다 — 배치 계산이 순수 함수 하나라 생성 경로와 같은 코드를 쓴다 ([#540](https://github.com/ensky0/tildaz/issues/540)) | NSAlert native, overflow accessory 폭은 최대 580pt. AppKit 좌표가 logical point라 backing scale 변환은 OS가 하고 재배치가 필요 없다 | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 떠 있는 동안 `preferred_scale`이 바뀌면 `applyScaleChange`가 dialog 폰트를 새 scale로 다시 만들고 `sendDialogSurfaceLayout`이 물리 viewport 기준으로 배치를 다시 계산해 surface 크기를 재요청한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 일반 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 scroll 없이 표시하고, 더 긴 본문은 종류와 무관하게 overflow viewport를 사용한다 ([#306](https://github.com/ensky0/tildaz/issues/306), [#318](https://github.com/ensky0/tildaz/issues/318)). About은 최대 폭 960 logical pt다 ([#314](https://github.com/ensky0/tildaz/issues/314)). config parse fatal도 연결 뒤 같은 overlay 로 띄운다 (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577) — #316 당시에는 Wayland 연결 전 stderr + log fallback 이었다). | ✅ | ✅ | ✅ |
+| Dialog 시각 크기·배치 scale-aware | DPI / fractional scale 환경에서 일관 시각 크기. **떠 있는 동안 배율이 바뀌어도 따라간다** | overflow window는 현재 monitor DPI와 work area 사용, 최대 폭 960 logical pt. 배율이 바뀌면 `WM_DPICHANGED` 에서 폰트 3벌·아이콘을 새 DPI로 다시 만들고 창과 자식을 재배치한다 — 배치 계산이 순수 함수 하나라 생성 경로와 같은 코드를 쓴다 ([#540](https://github.com/ensky0/tildaz/issues/540)) | NSAlert native, overflow accessory 폭은 최대 580pt. AppKit 좌표가 logical point라 backing scale 변환은 OS가 하고 재배치가 필요 없다 | 본문·버튼 15pt, 제목 18pt 고정 logical 크기이며 terminal `font.size_point`와 독립. corner radius / shadow margin / button w/h / icon size도 PT 단위로 scale 변환한다. 떠 있는 동안 `preferred_scale`이 바뀌면 `applyScaleChange`가 dialog 폰트를 새 scale로 다시 만들고 `sendDialogSurfaceLayout`이 물리 viewport 기준으로 배치를 다시 계산해 surface 크기를 재요청한다. 실제 본문 폭과 wrap 후 행 수로 surface를 키우되 basis output에서 16pt씩 여백을 남긴다. 현재 일반 메시지는 640×480 logical viewport에서 1.0x / 1.7x / 2.0x 모두 scroll 없이 표시하고, 더 긴 본문은 종류와 무관하게 overflow viewport를 사용한다 ([#306](https://github.com/ensky0/tildaz/issues/306), [#318](https://github.com/ensky0/tildaz/issues/318)). About은 최대 폭 960 logical pt다 ([#314](https://github.com/ensky0/tildaz/issues/314)). 남은 config fatal 도 연결 뒤 같은 overlay 로 띄운다 (§11.4 · [#577](https://github.com/ensky0/tildaz/issues/577) — #316 당시에는 Wayland 연결 전 stderr + log fallback 이었다). | ✅ | ✅ | ✅ |
 
 ---
 
@@ -1414,6 +1415,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   Windows 는 2026-09-03 실기로 확인했다 — 깨진 TOML 의 `config_9.toml` + 인자 없는 실행 (launcher 단독 실패) 에서
   `TildaZ failed to start. / Error: CannotParseValue` 다이얼로그가 124 ms 에 뜨고 닫으면 exit 0
   ([`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) · [#577 댓글](https://github.com/ensky0/tildaz/issues/577)).
+  #758 부터 깨진 config 로는 launcher 가 실패하지 않아서, 그 도구는 config 폴더의 목록을 막아 같은 자리를 만든다.
 
   Linux 는 창도 PTY 도 만들지 않고 **다이얼로그만** 세운다 (`showFatalStandalone`). dialog
   는 자기 layer-shell surface 이고 항상 `wl_shm` 이라 (GPU 불필요) Wayland 연결 + globals +
@@ -1464,14 +1466,16 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 >
 > **명시 font chain 길이 제한** (#185): `font.family` 1개 + `font.glyph_fallback` 최대 7개 = 총 8개가 hard limit 이다. 코드 source of truth 는 `src/font/constants.zig` 의 `MAX_CHAIN = 8` 이며, config parser / Windows DirectWrite backend / macOS CoreText backend 는 이 상수를 공유한다. 이 값은 "primary + common fallback 한글 / 이모지 / 심볼 + 사용자 추가 여유" 를 주면서 font face lifetime / atlas key 안정성을 단순하게 유지하기 위한 고정 상한이다. 상한을 바꾸면 SPEC / CONFIG.md / README 의 chain limit 설명도 같이 갱신한다.
 >
-> 모든 명시 폰트 (primary + fallback) 가 system 에 register 되어 있어야 함 — 하나라도 없으면 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로). macOS substitute font 회피 위해 `CTFontCopyFamilyName` 으로 *실제 family name* 검증, Windows 는 `DWriteFontContext.isFontAvailable` 로 검증한다. Linux 는 boot 시 `font_linux.familyInstalledDetail` 로 검증한다 (검증 시점·overlay 는 §7 startup shell 검증과 동일 C2 패턴; [#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)). **검증과 실제 로드가 같은 해석 함수를 쓴다** (Linux `resolveRequested` · Windows `resolveFamily`) — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다 ([#409](https://github.com/ensky0/tildaz/issues/409)). Windows 는 cell 측정 (`measureCell`) 도 같은 함수를 쓴다 — 거기만 따로 판정하면 chain 은 열리는데 측정만 실패해 GDI fallback (이름을 못 찾으면 **조용히 대체하는** 경로) 으로 떨어진다.
+> **없는 폰트는 시작을 막지 않는다** ([#758](https://github.com/ensky0/tildaz/issues/758)). 주 폰트 (`font.family`) 가 없으면 그 OS 에 늘 있는 고정폭 폰트 (`config.system_monospace_font` — Linux 는 fontconfig 의 별칭 `monospace`, macOS 는 Menlo, Windows 는 Consolas. Alacritty 의 기본값과 같다) 로 바꾸고, 대체 폰트가 없으면 그 항목만 뺀다 (그 글자는 OS 의 대체 폰트 찾기가 그린다). **안내는 사용자가 적은 이름일 때만** §7.3 의 시작 안내에 한 줄씩 적는다 — 기본값 그대로인 이름이면 로그만 남긴다. 고른 적 없는 폰트로 매 시작마다 안내를 띄우지 않기 위해서이고, `[keys]` 충돌의 "바꾼 쪽이 이긴다" 와 같은 원칙이다. OS 폰트마저 못 쓸 때만 fatal dialog (`font_validate` 의 공통 메시지, chain dump + 미설치 표시 + config 경로) 다. **Linux 는 같은 메시지를 로그와 표준 오류에만 남기고 끝낸다** — fontconfig 의 `monospace` 는 폰트가 하나라도 있으면 무언가로 풀리므로 이 경우는 폰트가 0 개인 시스템이고, 앱이 직접 그리는 다이얼로그도 그릴 글꼴이 없다 (#758 Linux 실기).
+>
+> 규칙은 `Config.resolveFonts` 한 곳이고 세 OS 가 같다. host 는 "이 폰트가 있나" 만 답한다 — macOS `isFamilyUsable` (CoreText 가 같은 family 를 돌려주거나 설치 목록에 있음 — substitute font 를 가르려고 *실제 family name* 을 본다), Windows `DWriteFontContext.isFontAvailable`, Linux `font_linux.familyInstalled`. 판정하지 못하면 (`unknown` — DirectWrite · libfontconfig 를 못 엶) 그대로 둔다. 렌더러가 폰트를 만들기 **전**, 시작 안내 **전**에 부른다. Linux 는 렌더러가 `Client.init` 에서 폰트를 만들어서 config 로드 직후에 부르고, OS 폰트마저 없으면 **창을 만들기 전 그 자리에서** 안내를 남기고 끝낸다. 예전에는 Wayland 준비 뒤 boot 검증 자리에서 다이얼로그로 띄우려 했는데 ([#289](https://github.com/ensky0/tildaz/issues/289) B6, [#305](https://github.com/ensky0/tildaz/issues/305)), 그보다 먼저 렌더러가 폰트를 열다 `NoFaceLoaded` 로 실패해 그 자리에 닿지 못했다 ([#758](https://github.com/ensky0/tildaz/issues/758) Linux 실기). **검증과 실제 로드가 같은 해석 함수를 쓴다** (Linux `resolveRequested` · Windows `resolveFamily`) — 둘이 각자 판정하면 검증을 통과하고도 다른 폰트가 조용히 그려질 수 있다 ([#409](https://github.com/ensky0/tildaz/issues/409)). Windows 는 cell 측정 (`measureCell`) 도 같은 함수를 쓴다 — 거기만 따로 판정하면 chain 은 열리는데 측정만 실패해 GDI fallback (이름을 못 찾으면 **조용히 대체하는** 경로) 으로 떨어진다.
 >
 > 이름 하나를 face 하나로 해석하는 **순서는 세 platform 이 같다.** 이름 비교는 모두 정규화 (소문자 + 공백 · `-` · `_` 제거) 후 exact match 다.
 >
 > 1. 적은 이름 그대로 **family** 조회 — Linux 는 `FC_FAMILY` 매치 (반환된 primary family 와 alias 항목 중 하나와 맞으면 설치로 인정), Windows 는 `IDWriteFontCollection.FindFamilyName` (컬렉션 exact match, 대소문자 무시). `monospace` / `sans-serif` / `serif` generic family 는 substitution 이 의도이므로 Linux 에서 항상 통과.
 > 2. 설치된 family 목록에 정규화가 같은 이름이 있으면 **그 정식 표기로 다시 조회**한다. Linux 는 `FcFontList` (프로세스당 1 회) — fontconfig 의 family 매칭은 `-` 를 유효 문자로 보므로 `NotoSerifKannada-Light` 같은 표기는 1 에서 엉뚱한 폰트로 간다. Windows 는 `IDWriteFontCollection` 열거 + `GetFamilyNames` 로, **로케일별 이름까지 전부** 본다 (`Malgun Gothic` 은 `맑은 고딕` 도 갖고 둘 다 `FindFamilyName` 으로 왕복한다 — 그래서 `맑은고딕` 도 여기서 잡힌다). 이 단계가 곧 붙여쓰기 (`CascadiaCode`) 를 받는 경로이고, PostScript 조회로는 대신할 수 없다 (실측: `GetMatchingFonts(WIN32_FAMILY_NAME, "CascadiaCode")` 도 0 개). Linux 에서 정식 표기가 원문과 같은데도 다른 폰트가 왔으면 시스템 별칭 규칙이 가로챈 것이다 (`Noto Color Emoji` → `Twemoji`) — **시작을 막지 않고** 그 폰트로 띄우며 로그를 남긴다 ([#406](https://github.com/ensky0/tildaz/issues/406)). **Windows 에는 이 별칭 상태가 없다** — `FindFamilyName` 이 시스템 컬렉션 exact match 라 대체가 개입할 여지가 없고, 그래서 `font_validate` 의 `substitute` 가 Windows 에서 `null` 이다.
 > 3. family 가 아니면 **PostScript 이름**으로 조회한다. Linux 는 `FC_POSTSCRIPT_NAME` (`NotoSansCJKkr-Regular`), Windows 는 `IDWriteFontSet.GetMatchingFonts` 의 `DWRITE_FONT_PROPERTY_ID_POSTSCRIPT_NAME` (`CascadiaCodeRoman-Bold`). PostScript 이름은 family 가 아니라 **face** 를 가리키므로 bold PostScript 이름은 bold face 로 로드된다 — macOS `CTFontCreateWithName` 과 같은 의미다. **자기검증 필요 여부가 갈린다**: `FcFontMatch` 는 없는 이름에도 최선 폰트를 돌려주므로 Linux 는 반환된 `postscriptname` 을 되짚어 검증하지만, Windows 는 없는 이름에 빈 set 이 와서 (실측) 그 층이 없다. Windows 의 이 경로는 `IDWriteFactory3` 를 요구하고, 못 얻으면 1 · 2 만으로 판정한다 (컬렉션 열거는 DirectWrite 1.0 이라 붙여쓰기는 그래도 받는다).
-> 4. 셋 다 아니면 미설치 — fatal.
+> 4. 셋 다 아니면 미설치 — 위 규칙대로 바꾸거나 뺀다 (#758).
 >
 > **PostScript 를 마지막에 두는 순서가 중요하다.** 먼저 보면 family 이면서 동시에 그 폰트의 PostScript 이름이기도 한 경우 (`Noto Color Emoji`) 에 시스템 별칭 규칙을 덮어 버린다 — 별칭은 시스템 관리자·사용자가 명시한 의도라 우리가 뒤집지 않는다 (#406). Windows 에는 별칭이 없어 그 사고가 안 나지만 **순서는 세 platform 이 같게** 둔다.
 >
@@ -1725,9 +1729,10 @@ binding은 같은 accelerator를 재사용하면 새 TildaZ command로 덮이고
 | 값 오류 | 그 값만 기본값 | "읽을 수 없어 기본값 `X` 를 씁니다" |
 | 범위 밖 숫자 | **clamp** | "100 으로 제한했습니다" — 기본값으로 되돌리지 않는다. 사용자 의도 ("아주 크게") 에 더 가깝다 |
 | `[keys]` 리스트의 한 항목 | **나쁜 항목만** 버린다 | 나머지는 그대로 쓴다. 다 빠지면 그 액션은 기본 바인딩 |
-| `[keys]` 충돌 (두 액션이 같은 조합) | **하나만 살리고 진 쪽을 안내에 적는다.** 어느 쪽이 사는지는 내부 순서 (`KeyAction` 의 순서) 로 정해져 사용자는 미리 알 수 없다 — 파일 순서가 아니다 (TOML 표는 순서를 남기지 않는다) | 규칙을 "기본값에서 바꾼 쪽이 이긴다" 로 바꾸는 일은 [#758](https://github.com/ensky0/tildaz/issues/758) |
+| `[keys]` 충돌 (두 액션이 같은 조합) | **바꾼 쪽이 이긴다** ([#758](https://github.com/ensky0/tildaz/issues/758)). 그 액션의 기본 키가 아닌 키를 "사용자가 바꾼 키" 로 본다 — 풀린 `Hotkey` 로 견주므로 표기가 달라도 같은 키다. 바꾼 키 대 기본 키면 바꾼 쪽이 갖고, 기본 키 쪽 액션은 그 키를 잃는다. 바꾼 키끼리면 **어느 쪽도 갖지 않는다.** 기본 키끼리는 충돌하지 않는다 (`test "#493 default [keys] has no conflicting bindings"`). 파일 · 코드의 순서와 무관하다 — TOML 표는 순서를 남기지 않는다 | 진 쪽 · 둘 다 못 쓴 쪽을 적는다. 적어 둔 키가 하나도 안 남은 액션은 기본 바인딩으로 돌아간다 |
 | `[keys]` 같은 액션 안의 중복 | **조용히 하나로 합친다** | 안내하지 않는다. 원한 동작은 이미 걸려 있다. 같은 글자가 platform 마다 다르게 풀리므로 판정은 풀린 값으로 한다 — Windows 는 `=` · `plus` 가 같은 키 (`VK_OEM_PLUS`) 라 기본값의 `ctrl+shift+=` · `ctrl+shift+plus` 가 한 조합이 된다 ([#693](https://github.com/ensky0/tildaz/issues/693)) |
 | `[keys]` 개수 초과 | 상한까지만 | 나머지는 버렸다고 안내 |
+| `[font]` 의 없는 폰트 | 주 폰트는 OS 의 고정폭 폰트로, 대체 폰트는 뺀다 (`font.family` 의 폰트 절 · [#758](https://github.com/ensky0/tildaz/issues/758)) | 사용자가 적은 이름만 안내한다. 기본값 그대로인 이름은 로그만 |
 | 이름이 바뀐 키 | 위 둘로 저절로 처리된다 | 옛 이름은 "지우세요", 새 이름은 "기본값을 씁니다" 가 함께 뜬다 |
 
 **없는 키의 기본값은 config 파일이 아예 없을 때와 같은 값이다** ([#718](https://github.com/ensky0/tildaz/issues/718)). 둘이 갈리면 같은 사용자가 파일 유무에 따라 다른 앱을 쓴다. 대부분은 같은 `Defaults` 를 써서 저절로 같지만, 세 자리는 따로 맞춘다.
@@ -1784,7 +1789,11 @@ config 를 `parse` 밖에서 읽는 곳도 같은 규칙이다 ([#719](https://g
 - **`-e` 측정 모드는 로그만.** blocking 다이얼로그가 뜨면 세 OS 자동 검증 하네스가 거기서 멈춘다.
   `-e` 는 이미 전역 핫키 · worker lock 을 건너뛰는 측정 전용 모드라 같은 자리에 둔다.
 
-TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **남은 fatal** 이다 — 값 트리를 만들 수 없어 고칠 자리를 짚어 줄 기준이 없다. 파서가 준 줄 · 열과 "파일을 지우면 새로 만든다" 는 안내를 띄우고 종료한다 (§11.4 · `config.showFatalNoticeIfAny`). 이슈의 처음 계획 (*"전부 기본값 + 안내"*) 과 다르다. **파일을 아예 못 읽는** 경우는 §11.5 대로 기본값 + 안내다.
+TOML 문법 자체가 깨져 파싱이 안 되는 파일은 **그 instance 만 기본값으로 시작하고 알린다** ([#758](https://github.com/ensky0/tildaz/issues/758)). 값 트리를 만들 수 없어 고칠 자리를 하나씩 짚을 수는 없으므로, 파서가 준 줄 · 열과 *"기본값으로 시작했고 파일은 바꾸지 않았다"* 를 안내한다 — §11.5 의 "못 읽음" 과 같은 갈래다 (둘 다 그 파일에서 아무것도 적용하지 못했다). 다른 터미널의 관례도 같다 (Alacritty · WezTerm · Windows Terminal — #758 본문). 예전에는 안내 후 종료했는데, 그 이유는 UX 가 아니라 부분 config 의 메모리 정리를 피하려는 것이었다.
+
+launcher 가 config 를 따로 읽는 세 곳 (`instances.configAutoStart` · `configHotkeyText` · `hotkeyOwner`) 도 **같은 규칙**이다 — 못 읽거나 문법이 깨진 파일은 그 번호의 기본값이다. 그래서 config 하나가 깨져도 다른 instance 는 그대로 뜬다. **열지 못한 파일도 같다** — 끊어진 링크 · 읽기 권한 없음이다. 예전에는 열기 실패를 그대로 올려 config 하나 때문에 launcher 전체가 멈췄다 (#758 Linux 실기). Ghostty 도 config 를 못 열면 경고만 남긴다 (`Config.loadOptionalFile`). **링크로 둔 config 도 instance 다** — launcher 의 목록 (`instances.listConfigIndices`) 이 링크도 담는다. 예전에는 일반 파일만 담아, 링크로 둔 `config_0.toml` (dotfiles) 로는 launcher 가 기본 config 를 새로 만들려다 `PathAlreadyExists` 로 실패했다. 읽는 함수도 worker 와 같은 하나다 (`config.readConfigFile`). **크기 상한은 없다** — Alacritty (`fs::read_to_string`) · Ghostty (`Config.loadFile`) 와 같다. 대신 Ghostty 처럼 일반 파일이 아니면 읽지 않는다 (`/dev/zero` 같은 장치를 가리키면 끝없이 읽게 된다). 예전의 64 KiB 상한은 JSON 시절 API 가 최대 크기를 요구해서 넣은 숫자였다.
+
+**GNOME · Cinnamon 확장도 같은 값을 보게 한다.** 두 확장은 config 를 자기 줄 단위 파서로 직접 읽어 hotkey 를 잡고 창을 놓는다 — 로그인 때는 앱이 아직 없어서 확장이 먼저 읽어야 한다. 그 파서는 깨진 파일에서도 읽히는 줄 (`hotkey = "F5"`) 을 읽으므로, 그대로 두면 앱 (기본 키) 과 확장 (파일의 키) 이 다른 키를 보고 #676 의 hotkey 기록 검사가 *"확장이 필요하다"* 로 시작을 멈춘다. **깨졌는지 판정은 앱 한 곳에서만 한다** — 확장이 같은 판정을 하려면 TOML 전체를 검사해야 하고, 그러면 두 판정이 언젠가 어긋난다. worker 가 문법 오류로 무시한 파일의 내용 SHA-256 을 `<runtime>/<앱>/run/instanceN.config-ignored` 에 `v1 <해시>` 로 남기고 (`gsettings_hotkey.recordIgnoredConfig` — hotkey 기록을 기다리기 전에 쓴다), 확장은 해시가 지금 파일과 같으면 그 번호를 통째로 기본값으로 읽고 hotkey 를 다시 잡는다. 확장은 그 디렉터리를 감시하되 이 이름에만 반응한다 (같은 자리의 `instanceN.hotkey` 는 확장이 쓰므로 거기 반응하면 자가 루프다). 확장도 앱처럼 일반 파일만 읽는다 (`GLib.file_test(…, IS_REGULAR)`). 사용자가 파일을 고치면 해시가 달라져 평소대로 읽고, 정상 파일을 읽은 worker 는 표시를 지운다. 앱이 그 파일을 아직 읽지 않은 동안 (로그인 직후의 첫 grab) 은 표시가 없어 확장이 파일 값으로 잡지만, worker 가 뜨며 표시를 남기면 hotkey 기록을 기다리는 사이에 고쳐진다.
 
 
 ## 8. PTY 자식 종료
@@ -2049,15 +2058,15 @@ env var expansion (`~`, `%APPDATA%`) 안 쓰고 펼친 절대 경로. 사용자�
 ### 11.4 config error 시 dialog 경로 안내
 
 **#655 이후 이 절이 다루는 것은 "남은 fatal" 뿐이다.** 값이 틀린 경우는 더 이상 여기로
-오지 않는다 — §7.3 이 그것을 폴백 + 안내로 돌렸다. 여기 남은 것은 둘이다:
-**TOML 구문 오류** (파일을 값 트리로 만들 수조차 없어 고칠 자리를 짚어 줄 기준이 없다) 와
-**전역 hotkey 중복** (§7.3 의 예외 — 갈아탈 자리까지 없는 경우).
+오지 않는다 — §7.3 이 그것을 폴백 + 안내로 돌렸다. 여기 남은 것은 **전역 hotkey 중복**
+(§7.3 의 예외 — 갈아탈 자리까지 없는 경우) 하나다. **TOML 구문 오류**도 예전에는 여기였지만
+[#758](https://github.com/ensky0/tildaz/issues/758) 부터 §11.5 처럼 기본값 + 안내다.
 
 잘못된 config 발견 시 dialog 본문에 *실제로 연 config 파일 절대경로*를 정확히 한 번 명시해
 사용자가 어디를 고쳐야 할지 즉시 알게 한다 ([#316](https://github.com/ensky0/tildaz/issues/316)).
 `Config.load`가 연 path를 `Config.parse`에 직접 전달하고 동적 message 를 조립한다. TOML parse
-실패는 파서가 준 줄·열까지 함께 보인다. path 조회를 다시 수행하지 않으므로 instance 번호와
-실제 파일이 갈리지 않는다.
+실패의 기본값 안내 (§11.5) 도 같은 봉투이고, 파서가 준 줄·열까지 함께 보인다. path 조회를 다시
+수행하지 않으므로 instance 번호와 실제 파일이 갈리지 않는다.
 
 **안내는 담아 두고 host 가 그릴 수 있게 된 뒤에 띄운다** ([#577](https://github.com/ensky0/tildaz/issues/577)). config 파싱은 세 platform 공통이고 Linux 에서는 dialog backend (layer-shell overlay) 가 등록되기 **전에** 돈다 — `Client` 가 config 을 인자로 받아 만들어지기 때문이다. 그 자리에서 `dialog.showFatal` 을 부르면 안내가 stderr + 로그로만 가고, `.desktop` (메뉴 · autostart) 로 띄운 사용자에게는 **창도 다이얼로그도 없이 조용히 죽는 것**만 보였다.
 
@@ -2111,6 +2120,10 @@ Error: UnexpectedToken
 **fatal 이 아니다 — 안내하고 기본값으로 계속 돈다.**
 
 시작을 거부하면 **사용자가 스스로 잠긴다** — config 를 고치려면 편집기가 필요하고 편집기를 띄우려면 터미널이 필요한데, tildaz 가 그 터미널이면 벗어날 방법이 없다. 원인이 사용자 잘못이 아닐 수도 있다 (권한 · 디스크 오류 · 홈이 읽기 전용인 컨테이너).
+
+**기본 config 는 파일이 정말 없을 때 (`FileNotFound`) 만 만든다** ([#758](https://github.com/ensky0/tildaz/issues/758)). 그 밖의 여는 실패 (읽기 권한 없음 등) 는 "못 읽음" 이다 — 기본값 + 오류 이름 안내, 파일은 그대로. 예전에는 여는 실패를 모두 "없음" 으로 보아, 쓰기만 되는 파일 (권한 `200`) 위에 기본 템플릿을 썼다. 끊어진 링크는 `FileNotFound` 라 가리키던 자리에 새로 쓴다 — 덮어쓰기가 아니라 빈자리를 채우는 것이다 (Ghostty 도 config 가 없으면 템플릿을 쓴다).
+
+**TOML 문법이 깨진 파일도 같은 갈래다** ([#758](https://github.com/ensky0/tildaz/issues/758)). 파일은 읽었지만 값 트리를 만들지 못해, 못 읽은 것과 마찬가지로 아무것도 적용하지 못했다. 안내 (`load_notice`) 는 파서가 준 줄 · 열과 *"기본값으로 시작했고 파일은 바꾸지 않았다"* 를 적는다. 그 instance 만 기본값이고 다른 instance 는 영향이 없다 (§7.3).
 
 **#655 이전에는 여기에 표가 하나 더 있었다** — "파일은 읽혔는데 내용이 틀림" 은 부분 적용이라
 *"테마는 먹었는데 핫키는 안 먹은"* 상태를 한 문장으로 설명할 수 없으므로 fatal 이 정직하다는

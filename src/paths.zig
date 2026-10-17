@@ -263,6 +263,19 @@ pub fn instanceHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index:
     return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.hotkey", .{ dir, sep, index });
 }
 
+/// #758 — worker 가 **config 내용을 무시하고 기본값으로 시작했다** 는 표시를 남기는 자리
+/// (`gsettings_hotkey.recordIgnoredConfig`). GNOME · Cinnamon 확장이 읽는다. 위 hotkey 상태
+/// 파일과 방향이 반대다 — 그쪽은 확장이 쓰고 worker 가 읽는다. 같은 디렉터리인 이유도 같다
+/// (확장이 감시하는 config 디렉터리에 두지 않는다). 확장은 이 디렉터리도 감시하되 이 이름에만
+/// 반응한다 — 자기가 쓰는 `instanceN.hotkey` 에 반응하면 자가 루프다.
+pub fn instanceIgnoredConfigPath(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
+    const dir = try lockDir(rt, allocator);
+    defer allocator.free(dir);
+    try ensureDir(rt, dir);
+    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
+    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.config-ignored", .{ dir, sep, index });
+}
+
 /// #708 — 업그레이드 넘어가는 동안 옛 확장이 쓰는 자리. v0.10.1 까지의 확장은 runtime
 /// 갈래에 `/run` 없이 `$XDG_RUNTIME_DIR/tildaz/instanceN.hotkey` 에 썼다 (#654 ⓑ 이전).
 /// 확장 코드는 셸이 로그인 때 한 번만 올리므로, 업그레이드 뒤 첫 실행에는 **옛 확장 + 새 앱**
@@ -584,6 +597,33 @@ test "#616 the Cinnamon extension checks for a conflicting accelerator before re
         if (std.mem.indexOf(u8, js, needle) == null) {
             std.debug.print("cinnamon extension 에 \"{s}\" 가 없다 — #616 겹침 판정이 빠졌다\n", .{needle});
             return error.ExtensionHotkeyConflictCheckMissing;
+        }
+    }
+}
+
+test "#758 the Shell extensions read the ignored-config marker where the worker writes it" {
+    // 방향이 #510 과 반대다 — worker 가 쓰고 (`gsettings_hotkey.recordIgnoredConfig`) 확장이 읽는다.
+    // 규칙이 두 언어에 복제돼 있어 한쪽만 바뀌면 확장이 표시를 못 보고, 그러면 문법이 깨진 config 로
+    // GNOME · Cinnamon 이 다시 "확장이 필요하다" 로 멈춘다.
+    const sources = [_]struct { label: []const u8, js: []const u8 }{
+        .{ .label = "gnome", .js = @embedFile("gnome_extension_js") },
+        .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
+    };
+    for (sources) |source| {
+        for ([_][]const u8{
+            // 자리 — `instanceIgnoredConfigPath` 와 같은 디렉터리 · 같은 이름.
+            "GLib.build_filenamev([hotkeyStateDirPath(), `instance${index}.config-ignored`])",
+            // 감시가 반응하는 이름. 이 이름에만 반응해야 `instanceN.hotkey` 와 자가 루프가 안 생긴다.
+            "/^instance(0|[1-9][0-9]*)\\.config-ignored$/",
+            // 줄 — `ignoredConfigLine` 과 같은 `v1 <SHA-256 소문자 16진수>`.
+            "`v1 ${GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes)}`",
+            // 일반 파일만 읽는다 — `config.readConfigFile` 과 같은 규칙.
+            "if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR)) return out;",
+        }) |needle| {
+            if (std.mem.indexOf(u8, source.js, needle) == null) {
+                std.debug.print("{s} extension 의 config 무시 표시 규칙이 앱과 다르다: {s}\n", .{ source.label, needle });
+                return error.ExtensionIgnoredConfigOutOfSync;
+            }
         }
     }
 }

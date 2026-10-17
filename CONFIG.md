@@ -55,13 +55,19 @@ read exactly as written, and nothing rewrites its `hotkey`.
 > | A value it cannot read | Uses the default. |
 > | A number out of range | Clamps it to the nearest limit — it does not fall back to the default. |
 > | One entry in a `[keys]` list is unusable | Drops that entry only; the other keys for that action still work. |
-> | Two actions share a combination | One of them keeps it, decided by TildaZ's internal order — not by the order in the file. Change one of them. |
+> | Two actions share a combination | A combination you changed beats one left at its default — the other action loses that key. If you set it on both actions yourself, neither gets it, and an action left with no key goes back to its default keys. The order in the file does not matter. |
+> | A font is not installed | `font.family` falls back to the system's monospace font (`monospace` on Linux, Menlo on macOS, Consolas on Windows); a `font.glyph_fallback` entry is dropped. Names left at their default are only logged, not shown. |
+> | The file is not valid TOML | Starts that instance on defaults and names the line and column. Nothing from the file is applied until you fix it; other instances are not affected. |
+> | The path is not a regular file (a directory, a device) | Starts that instance on defaults and says so. Other instances are not affected. There is no size limit for a regular file. |
+> | The file cannot be opened (no read permission, a symlink whose target is gone) | Starts that instance on defaults and names the error. The file is not changed; other instances are not affected. A broken symlink is treated as a missing file: TildaZ writes a new default config where the link points. |
 >
-> A few problems still stop startup, each with a message that names it: a file that is not valid TOML, a `shell` that cannot be run, a font that is not installed, and a global hotkey that cannot be registered.
+> Two problems still stop startup, each with a message that names it: a `shell` that cannot be run, and a global hotkey that cannot be registered. Fonts stop startup only when not even the system's monospace font can be loaded. On Linux that means the system has no fonts at all, so there is nothing to draw a dialog with: the message goes to the log and to standard error instead.
 >
 > On startup you get one dialog listing everything it changed, split into "add or fix these" and "delete these", with a button that opens the file. It appears once per launch, not every time you open the window.
 >
 > **TildaZ never edits your file for you.** The defaults live in memory only — rewriting the file would throw away your comments, and fixing it is your call.
+>
+> A config file may be a symlink, for example into a dotfiles repository. TildaZ reads the file the link points to.
 >
 > **Upgrading:** when a newer version adds keys (for example the split-pane actions in `[keys]`), a file written by an older version now starts fine. The new keys run on their defaults and the dialog lists them so you can add them at your leisure. Before v0.10.0 the same file refused to load.
 >
@@ -193,8 +199,8 @@ dialog names the field.
 | `window.height_percent` | float | 1.0–100.0 | 100.0 | 100.0 | 100.0 | Height as % of screen |
 | `window.offset_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Position along edge (0 = start, 50 = center, 100 = end) |
 | `window.opacity_percent` | float | 0.0–100.0 | 100.0 | 100.0 | 100.0 | Window opacity (%) — internally converted to 0–255 alpha |
-| `font.family` | string | — | "DejaVu Sans Mono" | "Menlo" | "Cascadia Code" | Primary font. Must be installed on the system; missing → fatal |
-| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Noto Sans CJK KR", "Noto Color Emoji"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. **All listed entries must be installed.** Empty array `[]` is allowed (system fallback only). Leave the key out to keep the default list; `[]` means no fallback fonts |
+| `font.family` | string | — | "DejaVu Sans Mono" | "Menlo" | "Cascadia Code" | Primary font. If it is not installed, the system's monospace font is used instead (see [Font names](#font-names)) |
+| `font.glyph_fallback` | string[] | max 7 entries (chain total ≤ 8 with `family`) | `["Noto Sans CJK KR", "Noto Color Emoji"]` | `["Apple SD Gothic Neo", "Apple Color Emoji", "Apple Symbols"]` | `["Malgun Gothic", "Segoe UI Emoji", "Segoe UI Symbol"]` | Glyph fallback chain. Codepoints not in `family` are looked up in this order; misses fall through to the OS system font. An entry that is not installed is dropped. Empty array `[]` is allowed (system fallback only). Leave the key out to keep the default list; `[]` means no fallback fonts |
 | `font.size_point` | int | 8–72 | 15 | 15 | 15 | Logical font size (host applies the OS scale; the legacy key name does not mean a physical 1/72-inch point) |
 | `font.cell_width_ratio` | float | 0.5–2.0 | 1.0 | 1.0 | 1.0 | Cell-width multiplier (1.0 = font's own advance) |
 | `font.line_height_ratio` | float | 0.5–2.0 | 1.1 | 1.1 | 1.1 | Line-height multiplier (1.0 = font's own ascent + descent + leading) |
@@ -211,10 +217,13 @@ dialog names the field.
 
 ### Font names
 
-Every family in `font.family` and `font.glyph_fallback` must be installed. The spelling is forgiving —
+Name fonts that are installed. The spelling is forgiving —
 case, spaces, hyphens and underscores are ignored, so `Cascadia Code`, `cascadia code` and
-`CascadiaCode` all name the same font. A name that matches no installed font is fatal at startup, so
-it is worth checking before editing the config.
+`CascadiaCode` all name the same font. A name that matches no installed font does not stop startup:
+a missing `font.family` is replaced with the system's monospace font (`monospace` on Linux — the
+fontconfig alias for the default monospace font — Menlo on macOS, Consolas on Windows), a missing
+`font.glyph_fallback` entry is dropped, and the startup dialog lists what changed. It is still worth
+checking the name before editing the config.
 
 The **PostScript name** works too, on all three platforms — the `NotoSansCJKkr-Regular` /
 `CascadiaCodeRoman-Bold` form that font tools such as Font Book show. A PostScript name identifies
@@ -282,8 +291,8 @@ asked for, either name the substitute directly, or drop the rule:
 sudo rm /etc/fonts/conf.d/75-twemoji.conf && fc-cache -f
 ```
 
-Startup only fails when the name matches **no** installed font at all — a typo, or a font that is
-not installed.
+The replacement in [Font names](#font-names) only happens when the name matches **no** installed
+font at all — a typo, or a font that is not installed.
 
 #### Ligatures and emoji
 
@@ -310,10 +319,11 @@ quit      = []
 - **A list, not a single value** — an action can have several keys.
 - **An empty list unbinds the action.** That is the only way to express "no
   key"; the entry itself always stays in the file.
-- **Every key may trigger only one action.** If you bind the same combination
-  to two actions, one keeps it and the other loses that key. Which one keeps it
-  depends on TildaZ's internal order, not on where you wrote them in the file, so
-  you cannot tell in advance. The startup dialog names both — change one of them.
+- **Every key may trigger only one action.** If two actions end up with the same
+  combination, the one you changed keeps it and the action still on its default
+  loses that key. If you wrote it for both actions yourself, neither keeps it, and
+  an action left with no key goes back to its default keys. The order in the file
+  does not matter, and the startup dialog names both — change one of them.
 - **The defaults are not the same on every OS.** macOS follows Apple's
   convention (`Cmd+T`, `Shift+Cmd+[`), Linux and Windows use `Ctrl+Shift+T`.
   A modifier swap is not enough to express that, so the two default tables are

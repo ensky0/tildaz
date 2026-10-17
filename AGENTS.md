@@ -590,6 +590,15 @@ force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계
 
 **Dialog overflow 정책은 Linux · macOS · Windows 공통**이에요. 먼저 실제 텍스트를 측정해 화면 안에 들어오도록 창을 키우고, 그래도 화면을 넘을 때만 본문에 세로 scroll을 둬요. 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
 
+**다이얼로그 제목은 28 칸 이하예요 — 넘기면 빌드가 멈춰요** ([#758](https://github.com/ensky0/tildaz/issues/758)).
+세 OS 모두 제목을 한 줄로 그려서 (줄바꿈하지 않아요) 길면 폭을 넘어요. `messages.zig` 의 `comptime` 가드가
+이름이 `_title` 로 끝나는 상수를 모두 재고, 한도 (`dialog_title_max_width`) 를 넘으면 컴파일 오류를 내요.
+28 은 다이얼로그 기본 폭에 넓은 글꼴로 들어가는 한도이고, 근거는 `host/linux/dialog_layout.zig` 의 테스트가
+지켜요. 2026-10-16 사용자 지시 (*"30자 넘으면 처음부터 문제 생기게"*) 로 넣었어요 — 그때 긴 제목 7 개가
+레이아웃 테스트에 케이스가 없어 아무도 몰랐어요. 처음엔 30 칸이었는데, 근거 테스트가 기본 폭에서는 28 칸까지만
+들어간다고 알려 줘서 28 로 정했어요. 제목이 길면 `TildaZ` 접두를 빼요. 다이얼로그 아이콘이
+TildaZ 라 이름을 대신해요.
+
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 
 패치 실패 / config 검증 / About 등 사용자 안내 dialog 는 모두 같은 경로 (`dialog.zig`) 를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요. **단 panic 은 예외** — Windows / macOS 는 `dialog.showError` + exit(1) 이지만 Linux 는 `showPanic` 이 log + `std.debug.defaultPanic` (stderr backtrace + abort) 으로, dialog 를 호출하지 않아요 (panic 시점엔 renderer / wayland state 가 불안정할 수 있어 overlay 대신 표준 abort — 의도된 차이, SPEC §6).
@@ -1215,7 +1224,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | 도구 | 무엇 |
 |---|---|
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
-| [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | TOML 이 깨진 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+| [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | 격리 `APPDATA` 의 config 폴더에서 목록 보기를 막고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
 | [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 + `-Mode layout` (비US 배열 — 창 스레드만 프랑스어 AZERTY 로 바꿔 `Ctrl+a` · `Ctrl+q` · `AltGr+e` 를 본다). 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 의 행도 더해 키마다 판정한다 ([#684](https://github.com/ensky0/tildaz/issues/684)) |
 | [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
@@ -1227,7 +1236,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
-tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
+tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · 격리 폴더 (사용자 config 를 안 건드림)
 tool\key-bytes-check_windows.ps1                                    # 창 4 회 (legacy · kitty · mok2 · layout) · 합성 키
 tool\key-bytes-check_windows.ps1 -Mode layout                       # 비US 배열만 — layout 이 그 창에만 잠깐 올라간다
 tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
@@ -1253,11 +1262,17 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
   `TildaZScrollableDialogWindow` 이고 본문을 직접 그려 자식 컨트롤로는 제목 Static 과 OK Button 만 보여요. 본문 문구는
   **캡처 (PrintWindow) 와 로그** (`tildaz_0.log` 의 `[fatal] run failed: <err>`) 로 확인해요. 첫 회차에 `#32770` 을 기대해
   거짓 FAIL 이 났어요 (2026-09-03).
-- **launcher 단독 실패를 만드는 법은 "깨진 TOML 의 `config_9.toml` + 인자 없는 실행"** 이에요. `runLauncher` 가 spawn 전에
-  모든 index 의 config 를 `configAutoStart` 로 읽고 파서 오류를 그대로 전파하므로 worker 는 뜨지도 않아요 — worker 가 다이얼로그를
-  띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
-  자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
-  이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요.
+- **launcher 단독 실패를 만드는 법은 "목록을 못 읽는 config 폴더 + 인자 없는 실행"** 이에요 (Windows 는 격리 `APPDATA` 의
+  `<앱>` 폴더에 `icacls /deny <나>:(RD)`, Linux 는 격리 `XDG_CONFIG_HOME` 의 `<앱>` 폴더에 `chmod 300`). `runLauncher` 가 spawn
+  전에 `listConfigIndices` 로 그 폴더를 열어 훑고 그 오류를 그대로 전파하므로 worker 는 뜨지도 않아요 — worker 가 다이얼로그를
+  띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 자동 시작
+  설정도 그대로예요.
+  - **config 파일로는 이제 안 돼요.** [#758](https://github.com/ensky0/tildaz/issues/758) 부터 launcher 는 문법이 깨진 config 도,
+    열지 못하는 config (읽기를 막은 파일 · 끊어진 링크) 도 그 번호의 기본값으로 읽고 worker 를 띄워요 (`ed9a08a`). 예전 방식으로
+    돌리면 도구가 worker 를 띄우고 `실패 있음` 으로 끝나요 (2026-10-17 Windows 실기).
+  - **Windows 는 이 방법으로 `[fatal]` 로그 줄이 안 남아요.** 로그 폴더가 config 폴더와 같아서 (`%APPDATA%\<앱>`) 로그 경로
+    준비 (`paths.logPath` 의 `ensureDir`) 도 같은 이유로 실패해 조용히 건너뛰어요. 판정은 다이얼로그와 종료 코드로 해요. Linux 는
+    로그가 `XDG_STATE_HOME` 이라 남아요.
 - **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
 - **⚠️ `.ps1` 은 UTF-8 **BOM 을 붙여** 저장해요.** Windows PowerShell 5.1 은 BOM 이 없으면 파일을 ANSI (한국어 환경은
@@ -1997,6 +2012,14 @@ grim shot.png                                                          # sway �
     G "imports.ui.extension.reloadExtension('tildaz@ensky0.github.io', imports.ui.extension.Type.EXTENSION); 'reloaded'"
     ```
 
+  - **⚠️ 그 가상 키가 바인딩을 발화하지 않은 회차가 있어요** (2026-10-16 · Cinnamon 6.6.9 Wayland · 미니PC ·
+    [#758](https://github.com/ensky0/tildaz/issues/758) L5). 위 명령으로 보낸 F3 두 번에 창이 그대로였고, 같은 회차에
+    `/dev/uinput` ([`tool/ukbd_linux.py`](tool/ukbd_linux.py)) 으로 보낸 F3 은 토글했어요. 원인은 보지 않았어요 — 장치를
+    만든 바로 그 순간 키를 보내서일 수 있어요 (추정). **판정이 안 나오면 uinput 으로 대조해요.** 그 키는 셸이 잡지 않으면
+    포커스를 가진 창으로 가니, 보내기 전에 셸에 포커스 창을 물어봐요 (`global.display.focus_window.get_title()`).
+  - **셸 로그 (`global.log`) 는 로그인 관리자가 정한 곳으로 가요.** 같은 회차에 저널 · `~/.xsession-errors` 에는 없었고,
+    이 기기 (plasmalogin) 는 `~/.local/share/plasmalogin/wayland-session.log` 였어요. 다른 기기에서는 셸의 표준 오류가
+    어디에 이어져 있는지로 찾아요: `readlink /proc/$(pgrep -x cinnamon)/fd/2`.
   - **바인딩 등록 순서는 `bindings` Map 의 순서 (= action id 순)** 로 읽어요. 같은 조합이 둘이면 **먼저 등록된 쪽만
     발화해요** (#616 실측 — 새 이름 두 쌍으로 순서를 뒤집어 확인). 이름이나 나중 등록이 아니라 **순서**예요.
   - **경쟁자가 단독으로 발화하는지 먼저 확인해요.** 그 대조군이 없으면 "우리가 이겼다" 와 "경쟁자 배선이 고장" 을
@@ -2020,6 +2043,8 @@ grim shot.png                                                          # sway �
   KWin 과 사용자 세션 버스로 말하니 바깥 셸에서 타이머로 찍어요. 다만 devkit 뷰어는 검게, Cinnamon nested 는 희게 찍혀서
   (2026-09-03) **다이얼로그의 픽셀 증거는 못 얻었어요** — 판정은 로그의 `[dialog] configured logical=… physical=…` (configure
   를 받고 buffer 를 만든 것) 과 `layer_shell=false` (= xdg_toplevel fallback 만 가능) 로 해요.
+  **GNOME 51 은 `--devkit` 이 없어서** `headless-check_linux.sh launcher-fatal gnome` 이 `--headless --virtual-monitor` 로
+  띄워요. 판정은 같은 로그 줄이고, 캡처에는 nested 화면이 없어요 (2026-10-16 · GNOME Shell 51.1 · [#758](https://github.com/ensky0/tildaz/issues/758)).
 - **Cinnamon nested (`cinnamon --nested --wayland`) 의 소켓은 `ss -xlp` 의 pid 로 찾아요.** 이름을 지정할 수 없고 로그에도
   안 남으며, 실제 runtime dir 의 **기존 `wayland-N` 파일을 재사용**하기도 해서 (`wayland-0.lock` 실패 뒤 `wayland-1` 을
   집었어요) "새로 생긴 소켓" 을 목록 비교로 찾는 방식은 빈손이에요. `ss -xlp | grep "pid=<cinnamon pid>,"` 로 봐요.

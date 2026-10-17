@@ -292,12 +292,26 @@ cmd_compositor_exit() {   # #613 — compositor 가 먼저 끝나면 시작 실�
 cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devkit 은 pipewire 가 필요해 격리 불가) · 자기 세션 버스
     local de=$1 XCD COMP WD=wayland-77
     case $de in
-        gnome)    XCD=GNOME;      COMP=(gnome-shell --devkit --wayland --wayland-display=$WD) ;;
+        gnome)    XCD=GNOME
+                  # GNOME 51 은 `--devkit` 이 없다 (`알 수 없는 옵션` — AGENTS.md). 그때는 화면 없이 띄운다.
+                  # 판정은 로그 (`[dialog] configured`) 라 화면이 없어도 되고, 캡처만 빈다 (#758 · 51.1 실측).
+                  if gnome-shell --help 2>&1 | grep -q -- '--devkit'; then
+                      COMP=(gnome-shell --devkit --wayland --wayland-display=$WD)
+                  else
+                      COMP=(gnome-shell --headless --wayland --no-x11 --virtual-monitor 1024x700 --wayland-display=$WD)
+                  fi ;;
         cinnamon) XCD=X-Cinnamon; COMP=(cinnamon --nested --wayland) ;;
         *) die "launcher-fatal gnome|cinnamon" ;;
     esac
     OUT=$WORK/launcher-fatal-$de; rm -rf $OUT; mkdir -p $OUT $WORK/xdg-$de/config/$APP $WORK/xdg-$de/state
-    printf 'this is not toml [[[\n' > $WORK/xdg-$de/config/$APP/config_9.toml      # launcher 단독 실패 (#577)
+    # launcher 단독 실패 (#577) — **config 폴더의 목록을 막는다** (`chmod 300` · 읽기만 뺀다). launcher 는 spawn 전에
+    # `instances.listConfigIndices` 로 그 폴더를 열어 훑고, 여는 오류는 그대로 전파돼 fatal 다이얼로그로 간다.
+    # #758 부터 깨진 config 와 열지 못하는 config (예전 방식의 `chmod 000` config_9) 는 그 번호의 기본값이라 launcher 가
+    # 실패하지 않는다 (`ed9a08a`) — 이력은 tool/launcher-fatal-check_windows.ps1 머리 주석. 로그는 XDG_STATE_HOME 이라
+    # config 폴더를 막아도 남는다 (Windows 는 같은 폴더라 안 남는다).
+    chmod 700 $WORK/xdg-$de/config/$APP                # 앞 회차가 막은 채 남겼을 수 있다
+    rm -f $WORK/xdg-$de/config/$APP/config_9.toml      # 예전 방식이 남긴 000 파일
+    chmod 300 $WORK/xdg-$de/config/$APP
     # spectacle 은 사용자 세션 버스로 KWin 과 말하므로 dbus-run-session 안에서는 실패 — 바깥에서 타이머로 찍는다.
     # (전체 화면이라 사용자의 다른 창이 담긴다 — 이슈에는 nested 창만 crop. mutter devkit 뷰어는 검게 나올 수 있다 — 2026-09-03 실측.)
     ( sleep 14; spectacle -b -n -f -o $OUT/full.png >/dev/null 2>&1 && echo "spectacle: $OUT/full.png" ) &
@@ -330,6 +344,7 @@ cmd_launcher_fatal() {   # $1 gnome|cinnamon — 실제 runtime dir (mutter devk
         kill -TERM $CPID; sleep 2; kill -0 $CPID 2>/dev/null && kill -KILL $CPID
     ' _ $OUT $WD $de "${COMP[@]}"
     wait
+    chmod 700 $WORK/xdg-$de/config/$APP                # 막은 것을 푼다
 }
 
 cmd_key_bytes() {   # #684 — Ctrl + 기호 · 숫자 · Space 의 PTY 바이트. 칠 키 · 기대값은 세 OS 공용 표 tool/key-bytes-cases.tsv

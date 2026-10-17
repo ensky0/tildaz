@@ -202,24 +202,17 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #266 — OSC 52 복사. 이미 있는 탭에도 `setClipboardWrite` 가 퍼뜨린다.
     app.session.setClipboardWrite(onClipboardWrite, &app.window);
     log.logOutputWakeInstalled();
-    const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
 
-    // Validate all font families exist on the system. 하나라도 미설치면 즉시
-    // fatal — 사용자가 명시한 chain 전체가 시스템에 있어야 한다는 의도. macOS
-    // CoreTextFontContext.init 의 per-entry CTFontCopyFamilyName 검증과 동등.
-    // 메시지는 font_validate 가 처리 — 다른 config 에러 (shell_validate / hotkey)
-    // 와 같은 풍부한 형식 (chain dump + 미설치 표시 + config 경로).
-    const font_validate = @import("../font/validate.zig");
-    for (0..config.font_family_count) |i| {
-        const idx: u8 = @intCast(i);
-        const fam_w = config.windowsFontFamilyUtf16(idx);
-        if (!DWriteFontCtx.isFontAvailable(fam_w)) {
-            font_validate.showNotFoundFatal(
-                rt,
-                config.font_families[i],
-                config.font_families[0..config.font_family_count],
-            );
-        }
+    // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 Consolas 로 바꾸고 대체 폰트는 뺀다
+    // (`Config.resolveFonts` — 세 OS 공통 규칙). Consolas 마저 못 쓸 때만 안내 후 종료한다.
+    // 아래 `showLoadNotice` · `showConfigNotice` 보다 **먼저** 불러야 바꾼 내용이 시작 안내에 담긴다.
+    config.resolveFonts(alloc, {}, windowsFontAvailability);
+    if (config.font_unusable) {
+        @import("../font/validate.zig").showNotFoundFatal(
+            rt,
+            config.font_families[0],
+            config.font_families[0..config.font_family_count],
+        );
     }
 
     // font.family chain 을 *전체* renderer 까지 전달 — 이전엔 chain[0] 만 도달
@@ -351,6 +344,23 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     log.appendLine("startup", "enter message loop", .{});
     app.window.messageLoop();
     log.appendLine("startup", "message loop exited", .{});
+}
+
+/// #758 — `Config.resolveFonts` 에 넘기는 Windows 판정. 렌더러가 쓰는 해석 규칙 (`isFontAvailable`
+/// → `resolveFamily`) 그대로다.
+///
+/// UTF-16 으로 옮기지 못하는 이름 (버퍼를 넘음) 은 **없음**이다. 렌더러가 받는 쪽
+/// (`Config.windowsFontFamilyUtf16`) 도 같은 버퍼 크기라 그 이름을 쓰지 못하고, 그때 조용히 Consolas 로
+/// 바꾼다 — 여기서 없음으로 답해야 그 교체가 시작 안내에 보인다.
+fn windowsFontAvailability(_: void, name: []const u8) config_mod.FontAvailability {
+    var buf: [512]u16 = undefined;
+    // UTF-16 code unit 수는 UTF-8 byte 수를 넘지 않는다. 이 검사로 아래 변환이 버퍼를 넘지 않는다.
+    if (name.len > buf.len - 1) return .missing;
+    const n = std.unicode.utf8ToUtf16Le(buf[0 .. buf.len - 1], name) catch return .missing;
+    buf[n] = 0;
+    const DWriteFontCtx = @import("../font/windows/font.zig").DWriteFontContext;
+    const found = DWriteFontCtx.isFontAvailable(buf[0..n :0]) orelse return .unknown;
+    return if (found) .installed else .missing;
 }
 
 /// 자식 셸에 inject 할 env. macOS host 의 `g_extra_env` 와 동등 — 양쪽 host 가

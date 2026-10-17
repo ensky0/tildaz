@@ -66,8 +66,6 @@ const shortcut_sync_linux = @import("../../shortcut_sync/linux.zig");
 const about = @import("../../about.zig");
 const paths = @import("../../paths.zig");
 const shell_validate = @import("../../shell_validate.zig");
-const font_linux = @import("../../font/linux/font.zig");
-const font_validate = @import("../../font/validate.zig");
 const system_open = @import("../../system_open.zig");
 const link = @import("../../link.zig");
 const dialog_mod = @import("../../dialog.zig");
@@ -2095,37 +2093,9 @@ const Client = struct {
             }
         }
 
-        // #282 B6 — startup font chain 검증 (#289). Windows(`isFontAvailable`)/
-        // macOS(`CTFontCopyFamilyName`) 는 명시 family 미설치 시 fatal dialog 인데
-        // Linux 만 loader 가 log + skip 으로 조용히 진행해 chain 의미가 달라졌다
-        // (첫 family 미설치면 fallback 이 사실상 primary). 위 C2 shell 검증과 같은
-        // 시점 — Wayland 준비 후, 첫 탭 PTY/renderer 전 — 에 fontconfig 가용성을
-        // 검증하고 blocking overlay 로 안내 후 종료한다. libfontconfig 를 못 여는
-        // 등 판정 불가(unknown)면 미설치로 오판하지 않고 loader 의 기존 에러
-        // 경로에 맡긴다.
-        {
-            const chain = self.config.font_families[0..self.config.font_family_count];
-            for (chain) |family| {
-                if (family.len == 0) continue;
-                // #405 — 대체된 폰트 이름을 함께 받아 메시지에 싣는다. 설치는 됐는데
-                // fontconfig 규칙이 다른 폰트로 바꿔치기한 경우 (`ttf-twemoji` 등) 사용자가
-                // 원인을 찾을 수 있게 한다.
-                var sub_buf: [256]u8 = undefined;
-                const avail = font_linux.familyInstalledDetail(self.allocator, family, &sub_buf);
-                // #406 — 대체된 것 (`.substituted`) 은 폰트가 실재하므로 막지 않는다. 로더가
-                // 그 폰트로 chain 을 만들고 로그를 남긴다. 시작을 막는 것은 이름이 아예
-                // 없을 때 (`.missing`) 뿐이다.
-                if (avail.availability != .missing) continue;
-                // #406 — 이 dialog 는 **폰트 설정이 잘못됐다고 알리는 화면**이다. 그것을
-                // 그 설정으로 그리면 읽기 어려워진다 (실측: 비례폭 폰트로 자간이 벌어졌다).
-                self.renderer.dialog_use_system_font = true;
-                var font_msg_buf: [2048]u8 = undefined;
-                const msg = font_validate.notFoundMessageSub(self.rt, &font_msg_buf, family, chain, avail.substitute);
-                log.userFacing("fatal", msg);
-                self.runFatalDialog(messages.config_error_title, msg);
-                std.process.exit(1);
-            }
-        }
+        // #758 — 없는 폰트는 `linux_wayland.zig` 가 렌더러를 만들기 전에 이미 바꾸거나 뺐다
+        // (`Config.resolveFonts`). 폰트를 하나도 못 쓰는 경우도 거기서 안내 (로그 · 표준 오류) 후
+        // 끝낸다 — 그릴 글꼴이 없어 이 자리의 overlay 로는 보여 줄 수 없다.
 
         // L11-β — hidden_start: 등록 완료된 hotkey 경로가 있는 경우에만
         // surface 생성 skip + `surface_hidden=true` set. 첫 hotkey 신호가

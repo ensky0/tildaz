@@ -562,8 +562,9 @@ pub fn resolveFamily(
     // ③ PostScript 이름.
     if (resolveByPostScript(factory, collection, requested)) |r| return r;
 
-    // ④ 오타 · 미설치. 이 경로는 계속 fatal 이어야 한다 — 조용히 다른 폰트로 띄우면 사용자가
-    //    이름을 잘못 적은 것을 영영 모른다.
+    // ④ 오타 · 미설치. 비슷한 이름으로 넘겨짚지 않는다. 무엇으로 띄울지는 `Config.resolveFonts`
+    //    가 정하고 시작 안내로 알린다 (#758) — 조용히 다른 폰트로 띄우면 사용자가 이름을 잘못
+    //    적은 것을 영영 모른다.
     return error.FontNotFound;
 }
 
@@ -743,8 +744,8 @@ pub const DWriteFontContext = struct {
         if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return error.FontCollectionFailed;
         errdefer _ = collection.?.vtable.Release(collection.?);
 
-        // 3. chain entry 마다 face 생성. caller 가 사전 검증 (windows_host 의
-        //    isFontAvailable loop) 했지만 race 방지 위해 여기서도 missing 시 error.
+        // 3. chain entry 마다 face 생성. caller 가 사전에 없는 폰트를 바꾸거나 뺐지만
+        //    (`Config.resolveFonts`, #758) race 방지 위해 여기서도 missing 시 error.
         //    중간 실패 시 errdefer 가 이미 만든 faces 모두 release.
         var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
         // #584 — chain face 의 PostScript 이름 id. 여기서 한 번만 구한다.
@@ -1694,13 +1695,17 @@ pub const DWriteFontContext = struct {
     /// `FindFamilyName` 을 따로 불러서, 판정 규칙이 두 벌이면 검증을 통과하고도 다른 폰트가
     /// 조용히 그려질 수 있었다. 해석에 성공하면 face 를 실제로 열어 본 것이므로 (`CreateFontFace`
     /// 까지 통과) "설치돼 있다" 가 로드 가능과 같은 뜻이 된다.
-    pub fn isFontAvailable(family: [*:0]const WCHAR) bool {
+    ///
+    /// #758 — DirectWrite 를 열지 못하면 `null` (판정하지 못함) 이다. "없음" 과 가른다 —
+    /// `Config.resolveFonts` 는 없는 폰트를 다른 폰트로 바꾸므로, 판정 실패를 없음으로 읽으면
+    /// 정상 폰트까지 바꾼다.
+    pub fn isFontAvailable(family: [*:0]const WCHAR) ?bool {
         var factory: ?*dw.IDWriteFactory = null;
-        if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0) return false;
+        if (dw.DWriteCreateFactory(dw.DWRITE_FACTORY_TYPE_SHARED, &dw.IID_IDWriteFactory, @ptrCast(&factory)) < 0) return null;
         defer _ = factory.?.vtable.Release(factory.?);
 
         var collection: ?*dw.IDWriteFontCollection = null;
-        if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return false;
+        if (factory.?.GetSystemFontCollection(&collection, .FALSE) < 0) return null;
         defer _ = collection.?.vtable.Release(collection.?);
 
         const resolved = resolveFamily(factory.?, collection.?, family) catch return false;

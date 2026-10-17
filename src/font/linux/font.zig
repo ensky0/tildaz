@@ -1742,8 +1742,8 @@ pub const FamilyAvailability = enum {
 };
 
 /// `family` 가 시스템에 설치되어 있는지 — fontconfig lookup + substitution
-/// 판정 (`matchResolvesFamily`). caller (Linux host boot 검증) 는 `.missing`
-/// 일 때만 fatal.
+/// 판정 (`matchResolvesFamily`). #758 — caller (`linux_wayland.zig` 의 `linuxFontAvailability`
+/// → `Config.resolveFonts`) 는 `.missing` 인 폰트만 바꾸거나 뺀다. 시작을 막지 않는다.
 ///
 /// `substitute_buf` 를 주면 **substitution 때문에 `.missing` 인 경우** 그 자리에 fontconfig 가
 /// 실제로 돌려준 family 를 채우고 그 slice 를 돌려준다 (#405). 그러지 않으면 사용자는
