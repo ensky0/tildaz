@@ -1408,6 +1408,35 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
   Direct3D 앱이 뜰 때 나오는 것으로 추정해요 (확인 필요). 화면 캡처 (`CopyFromScreen`) 에 찍히고, 클릭 자리를 덮을 수도 있어요 —
   2026-10-10 `selection-check_windows.ps1` 회차에서 창 아래쪽을 덮은 채 찍혔어요 (클릭은 창 위쪽이라 영향이 없었어요).
 
+# Windows — DirectWrite 가 합성하는 bold · italic 의 양을 재는 법 ([#759](https://github.com/ensky0/tildaz/issues/759))
+
+글꼴에 bold · italic 파일이 없으면 DirectWrite 가 합성해요. 그 양 (기울기 · 굵기) 은 문서에 없어서
+[`tool/synthetic-style-probe_windows.zig`](tool/synthetic-style-probe_windows.zig) 로 재요. 같은 글꼴 파일로
+`IDWriteFactory::CreateFontFace` 에 합성 플래그를 주어 regular · 합성 bold · 합성 oblique 를 만들고, 곧은 세로획
+(`|`) 을 aliased 로 크게 그려 기울기 · 획 폭을, `GetDesignGlyphMetrics` 로 글자 간격을 재요.
+
+```powershell
+zig build-exe -O ReleaseSafe --dep directwrite -Mroot=tool/synthetic-style-probe_windows.zig `
+    -O ReleaseSafe -Mdirectwrite=src/font/windows/directwrite.zig --cache-dir C:/ziglang/tildaz-cache
+.\synthetic-style-probe_windows.exe                       # 기본 글꼴 넷 (없는 글꼴은 건너뜀)
+.\synthetic-style-probe_windows.exe --family "D2Coding" --char l --em 300
+```
+
+- **`-O` · `-target` 은 `-M` 앞에 둬요.** 모듈 설정은 바로 뒤의 `-M` 에 붙어요. 뒤에 두면 도구가 지금 기기 ·
+  Debug 로 컴파일되어, Linux 에서 크로스 빌드할 때 *"Windows 전용이에요"* 오류가 나요 (2026-10-17 실측).
+- **대조 줄 (`regular + 변환 0.2`) 이 0.200 으로 읽혀야 측정이 맞아요.** 우리 변환으로 그린 줄이라 정답을 알아요.
+- **Linux 에서 Wine 으로 도구를 검증할 수 있어요.** Wine 의 DirectWrite 는 소스로 값을 알아요 (기울기 1/3 ·
+  굵기 em/24 · 글자 간격 em/50 — [`dwrite/freetype.c`](https://gitlab.winehq.org/wine/wine/-/blob/wine-10.0/dlls/dwrite/freetype.c#L427-L468)).
+  2026-10-17 미니PC (Wine 11.19) 에서 도구가 0.333 · 0.040~0.045 · 0.0200 을 읽었어요. **Wine 값은 Windows 값이
+  아니에요** — 측정 방법 검증용이에요. 설정 폴더는 홈을 건드리지 않게 따로 둬요.
+
+    ```sh
+    WINEPREFIX=<scratch>/wineprefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" \
+        wine probe-x86_64-windows.exe --family "DejaVu Sans Mono"
+    ```
+
+- 획 폭은 정수 픽셀이라 em 200 px 에서 ±0.005 em 쯤 흔들려요. 더 정확히 보려면 `--em` 을 키워요.
+
 # Windows — 번들 ConPTY 를 올리는 법
 
 올리는 도구와 올린 뒤 확인할 목록은 [`vendor/conpty/README.md`](vendor/conpty/README.md) 의 "업데이트 방법" · "업데이트 후 확인" 절에 있어요 ([#757](https://github.com/ensky0/tildaz/issues/757)).

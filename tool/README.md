@@ -80,6 +80,7 @@
 | [`present-check_macos.sh`](present-check_macos.sh) | macOS | 여러 앱 판을 번갈아 띄워 표시 경로를 견줌 — 키 → 화면 (`latency` · `--flood`) · Metal HUD 의 Direct / Composited 와 전체화면 전환 영상 (`mode`) · 찢김 눈 시험 (`tearing`) ([#766](https://github.com/ensky0/tildaz/issues/766)) | `# macOS — 표시 대기열을 재는 법` |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |
 | [`surface-inuse-probe_macos.patch`](surface-inuse-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — 그릴 표시 버퍼 (IOSurface) 를 고를 때 창 서버가 잡고 있던 횟수 ([#769](https://github.com/ensky0/tildaz/issues/769)) | `# macOS — 그릴 표시 버퍼가 창 서버에 잡혀 있는지 재는 법` |
+| [`synthetic-style-probe_windows.zig`](synthetic-style-probe_windows.zig) | Windows | DirectWrite 가 글꼴에 없는 bold · italic 을 얼마나 합성하는지 (기울기 · 획 폭 · 글자 간격) 를 잼 ([#759](https://github.com/ensky0/tildaz/issues/759)). 독립 zig 도구 · `zig build probe-check` | `# Windows — DirectWrite 가 합성하는 bold · italic 의 양을 재는 법` |
 | [`tab-churn-check_windows.ps1`](tab-churn-check_windows.ps1) | Windows | 탭을 빠르게 열고 닫아 ConPTY teardown 을 봄 | — (도구 머리 주석) |
 | [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` |
 | [`vkbd_linux.py`](vkbd_linux.py) | Linux | headless sway 안의 가상 키보드 데몬 (`zwp_virtual_keyboard_v1`) | `# Linux — headless sway …` |
