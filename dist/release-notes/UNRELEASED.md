@@ -26,3 +26,4 @@ Internal changes belong in neither.
 - Typed characters show up one frame sooner on Linux, and keys no longer sometimes lag a frame on macOS and Windows ([#763](https://github.com/ensky0/tildaz/issues/763)).
 - Uses much less memory. ([#762](https://github.com/ensky0/tildaz/issues/762))
 - On Windows, the Japanese IME candidate list now opens next to the cursor instead of in a corner of the screen ([#772](https://github.com/ensky0/tildaz/issues/772)).
+- Emoji with a color request (like `❤️`) now always draw in color, and text requests draw as plain text — no longer depending on what was drawn before. ([#771](https://github.com/ensky0/tildaz/issues/771))

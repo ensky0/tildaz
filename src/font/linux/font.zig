@@ -21,6 +21,8 @@ const perf = @import("../../perf.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
+const presentation = @import("../presentation.zig");
+const Presentation = presentation.Presentation;
 const font_spec = @import("../spec.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
@@ -49,14 +51,44 @@ fn asciiSlot(cp: u21) ?usize {
     return cp - ASCII_LO;
 }
 
-/// #399 — 한 번의 shape 호출로 묶는 cluster 수 상한. 넘으면 caller 가 런을 끊고
-/// 다음 런이 이어받는다. Windows 판과 같은 값이다 (`MAX_RUN_CLUSTERS = 32`) — 이 값이
-/// shaping 작업 버퍼 크기를 정하는데, 32 면 codepoint 버퍼가 2 KB 로 지역 배열에 둘 만하다.
-pub const MAX_RUN_CLUSTERS = 32;
+/// #771 — 글리프의 모양. 컬러 비트맵 (`BGRA`) 이면 이모지, 그 밖은 텍스트다.
+///
+/// **글꼴이 아니라 글리프로 판정한다** — ghostty 와 같은 기준이다
+/// (`font/face/freetype.zig` 의 `isColorGlyph`). 우리가 실제로 그릴 그림이 곧 판정이라,
+/// 컬러 · 흑백 글리프가 섞인 글꼴이나 이모지 언어 태그만 단 흑백 글꼴 (#771 에서 foot 이
+/// 고른 `Segoe UI Symbol`) 에도 틀리지 않는다. 잉크 없는 글리프 (공백) 는 `rasterByIndexInner`
+/// 가 `GRAY` 로 저장해 텍스트로 본다.
+fn glyphPresentation(g: *const Glyph) Presentation {
+    return if (g.pixel_mode == freetype.FT_PIXEL_MODE_BGRA) .emoji else .text;
+}
 
-/// cluster 하나가 가질 수 있는 codepoint 수 상한. 셀 루프의 개별 경로가 쓰는
-/// `cluster: [16]u21` (base 1 + extras 15) 과 **같은 값이어야** 배칭과 개별 경로가 같은
-/// cluster 를 본다.
+/// #771 — face 에 컬러 글리프 표가 있는가 (`FT_HAS_COLOR`). system fallback 의 **후보**를
+/// 고를 때만 쓴다 — fontconfig 의 `color` 속성과 같은 기준이라 둘이 어긋나지 않는다.
+fn faceHasColor(ft_face: freetype.FT_Face) bool {
+    return (ft_face.face_flags & freetype.FT_FACE_FLAG_COLOR) != 0;
+}
+
+/// #771 — `system_fallback` 의 키. codepoint (21 bit) 위에 모양 요청을 얹는다.
+fn fallbackKey(cp: u21, want: ?Presentation) u32 {
+    const tag: u32 = if (want) |w| switch (w) {
+        .text => 1,
+        .emoji => 2,
+    } else 0;
+    return @as(u32, cp) | (tag << 21);
+}
+
+/// 로그용 — 모양 요청의 이름.
+fn presentationName(want: ?Presentation) []const u8 {
+    return if (want) |w| @tagName(w) else "any";
+}
+
+/// cluster 하나가 가질 수 있는 codepoint 수 상한 (base 1 + extras 15). 셀 루프가 cluster 를
+/// 이 크기로 모으고, `shapeRunOnFace` 의 작업 버퍼도 이 크기다.
+///
+/// #771 — 예전에는 한 줄의 cluster 를 묶어 한 번에 shape 하는 경로 (#399 의
+/// `resolveClusterRun`) 가 있어서 버퍼가 `32 × 16` 이었다. 그 경로는 "한 글꼴로 줄 전체" 를
+/// 맞춰서 옆 cluster 가 결과를 바꿨고, 캐시 위에서 잰 이득이 cluster 하나에 0.7 µs 뿐이라
+/// 지웠다.
 pub const MAX_CLUSTER_CPS = 16;
 
 /// #401 — cluster 하나가 만들 수 있는 글리프 수 상한. codepoint 수보다 많을 수 있어
@@ -183,26 +215,19 @@ pub const Context = struct {
     hb_api: ?harfbuzz.Api = null,
     /// shape 호출 사이 reuse 하는 buffer. shape 마다 clear_contents 호출 후 재사용.
     hb_buffer: ?*harfbuzz.hb_buffer_t = null,
-    /// #399 — cluster shaping 이 **직전에 성공한 face**. chain 순회를 이 face 부터
-    /// 시작한다.
-    ///
-    /// **이게 Linux 의 진짜 병목이었다.** mac (CoreText) · Win (DirectWrite) 은 호출당
-    /// 고정 비용 (`CTLine` 생성 · COM 왕복) 이 커서 런 배칭만으로 크게 줄었는데,
-    /// HarfBuzz 는 그 고정 비용이 작고 **codepoint 수에 비례**한다. 그래서 배칭해도
-    /// chain 앞쪽의 emoji 없는 face 들에서 런 전체를 shape 하고 버리는 작업량이 그대로
-    /// 남아, `zwj` 는 shape 호출이 11 배 줄었는데도 시간이 -0.4 % 였다 (실측).
-    ///
-    /// 터미널 화면은 같은 종류의 cluster 가 이어지는 것이 보통이라 (한 줄이 전부 emoji
-    /// 이거나 전부 한글), 직전 face 를 먼저 보면 대부분 한 번에 맞는다. 틀리면 기존대로
-    /// 전체를 돌므로 **결과는 바뀌지 않고 순서만 바뀐다.**
-    last_cluster_face: u8 = 0,
     /// pair/triple lookahead cache. 세 backend 공통 key + positive/negative 저장.
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고
     /// Linux 값은 `ClusterGlyph` (face index + glyph/합성 키) 라 소유권이 없어 `release`
-    /// 가 `null` 이다. **Linux 에서 이게 주 레버다** — HarfBuzz 는 호출당 고정 비용이 작아
-    /// 런 배칭이 준 것이 작았고 (`zwj` -0.4 %), 남은 비용은 shape 작업량 자체라 그것을
-    /// 통째로 건너뛰는 캐시가 듣는다.
+    /// 가 `null` 이다. **Linux 에서는 이것 하나가 속도를 맡는다** — HarfBuzz 는 호출당 고정
+    /// 비용이 작고 codepoint 수에 비례해서, shape 를 통째로 건너뛰는 캐시가 듣는다.
+    ///
+    /// #771 — 예전에는 직전에 맞은 face 부터 시도하는 힌트 (`last_cluster_face`) 와 한 줄
+    /// 묶음 경로가 이 위에 있었다. 둘 다 "어느 face 부터 봐도 결과는 같다" 를 전제했는데,
+    /// 두 face 가 다 그릴 수 있는 cluster 는 먼저 본 쪽이 이겨서 **그리는 순서 · 옆 cluster 가
+    /// 결과를 바꿨다** (`❤️` 가 흰 하트로). 캐시 위에서 둘이 버는 몫을 재니 처음 보는 cluster
+    /// 하나에 0.7 µs · 캐시 적중에 34 ns 라 지웠다 (#771 미니PC 실측). 이제 결과는 cluster 만으로
+    /// 정해진다.
     cluster_cache: cluster_cache.ClusterCache(ClusterGlyph, null),
     /// #401 — 여러 글리프를 한 비트맵으로 합성한 결과. 키는 `(face << 32) | 해시` 이고
     /// 해시는 글리프 인덱스 · offset · advance 로 만든다 (macOS atlas 가 `Wyhash` 를
@@ -233,9 +258,12 @@ pub const Context = struct {
     /// / shape 경로의 face_idx 는 chain 만 가리키므로 index 충돌 없음.
     fallback_faces: [MAX_FALLBACK]?Face,
     fallback_count: usize,
-    /// cp → fallback_faces index. **null = 시스템 전체에 없음** (negative
+    /// (cp, 모양 요청) → fallback_faces index. **null = 시스템 전체에 없음** (negative
     /// cache — 없으면 미보유 cp 가 cell 마다 매 frame fontconfig 왕복 유발).
-    system_fallback: std.AutoHashMap(u21, ?u8),
+    ///
+    /// #771 — 키에 모양 요청이 들어간다 (`fallbackKey`). 같은 글자라도 "컬러 글꼴에서" ·
+    /// "흑백 글꼴에서" · "아무 데서나" 는 답이 다르다.
+    system_fallback: std.AutoHashMap(u32, ?u8),
 
     /// #362 — cp → 최종 글리프. `glyph` 가 chain 순회 · `FT_Get_Char_Index` ·
     /// face 캐시 조회 · system fallback 조회를 통째로 건너뛰게 해 준다.
@@ -294,7 +322,7 @@ pub const Context = struct {
             .styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1),
             .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
             .fallback_count = 0,
-            .system_fallback = std.AutoHashMap(u21, ?u8).init(allocator),
+            .system_fallback = std.AutoHashMap(u32, ?u8).init(allocator),
             .resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count,
             .resolved = .{std.AutoHashMap(u21, *const Glyph).init(allocator)} ** font_constants.FaceStyle.count,
             .pixel_height = pixel_height,
@@ -542,12 +570,11 @@ pub const Context = struct {
     /// `ShapedGlyph.cluster` 가 **입력 codepoint 인덱스**라 되짚을 수 있다. 합쳐진 글리프는
     /// cluster 가 base 를 가리키므로 mark 로 오인되지 않는다.
     ///
-    /// `cluster_base` 는 런 배칭에서 여러 cluster 를 이어 붙였을 때의 시작 offset 이다
-    /// (개별 경로는 0).
-    fn glyphIsMark(self: *Context, cps: []const u21, cluster_base: u32, g: ShapedGlyph) bool {
+    /// shape 하는 것은 늘 cluster 하나라 그 인덱스가 곧 `cps` 의 인덱스다 (#771 이 한 줄 묶음
+    /// 경로를 지우기 전에는 cluster 의 시작 offset 을 빼야 했다).
+    fn glyphIsMark(self: *Context, cps: []const u21, g: ShapedGlyph) bool {
         const api = if (self.hb_api) |*a| a else return false;
-        if (g.cluster < cluster_base) return false;
-        const idx = g.cluster - cluster_base;
+        const idx = g.cluster;
         if (idx >= cps.len) return false;
         return api.isNonSpacingMark(cps[idx]);
     }
@@ -556,10 +583,9 @@ pub const Context = struct {
     ///
     /// 집합이 작고 고정이라 표로 둔다 — Windows 판과 같은 목록이다. 관통 mark 만 세로를 base
     /// 잉크 중앙에 맞춘다 (위 · 아래 mark 는 자기 디자인 높이가 옳다).
-    fn glyphIsOverlayMark(self: *Context, cps: []const u21, cluster_base: u32, g: ShapedGlyph) bool {
+    fn glyphIsOverlayMark(self: *Context, cps: []const u21, g: ShapedGlyph) bool {
         _ = self;
-        if (g.cluster < cluster_base) return false;
-        const idx = g.cluster - cluster_base;
+        const idx = g.cluster;
         if (idx >= cps.len) return false;
         return switch (cps[idx]) {
             0x0334...0x0338, 0x20D2, 0x20D3, 0x20E5, 0x20E6, 0x20EB => true,
@@ -690,46 +716,79 @@ pub const Context = struct {
     /// chain 순회 → 첫 매치 face 의 cache 에서 lazy raster + insert. chain 모두
     /// 미스면 system fallback (#289 B5), 그마저 미보유 (또는 raster / OOM 실패)
     /// → placeholder. **codepoint 당 한 번만 불린다** (`glyph` 가 결과를 캐시).
+    ///
+    /// #771 — 기본 모양이 이모지인 글자 (`presentation.forCodepoint`) 는 **컬러 글리프를 먼저**
+    /// 찾는다. 순서는 chain → system fallback → (어디에도 없으면) 모양과 무관하게 chain 의 첫
+    /// 글꼴 → system fallback 이다. `☔` 는 chain 첫 글꼴 DejaVu Sans Mono 가 흑백 글리프를
+    /// 가져서 예전에는 거기서 멈췄다. 요청이 없는 글자 (거의 전부) 는 예전과 같이 첫 글꼴에서
+    /// 끝난다.
     fn resolveGlyph(self: *Context, cp: u21, style: font_constants.FaceStyle) *const Glyph {
         self.ensureStyledChain(style);
+        const want = presentation.forCodepoint(cp);
+        // 모양과 무관하게 처음 찾은 글리프 — 요청한 모양이 어디에도 없을 때의 답이다.
+        var first: ?*const Glyph = null;
         for (0..self.face_count) |i| {
             const face = self.faceFor(i, style) orelse continue;
             const idx = self.ft_api.get_char_index(face.ft_face, cp);
             if (idx == 0) continue;
 
-            return rasterCached(self.allocator, self.ft_api, face, cp) orelse &self.placeholder;
+            const g = rasterCached(self.allocator, self.ft_api, face, cp) orelse &self.placeholder;
+            const w = want orelse return g;
+            if (glyphPresentation(g) == w) return g;
+            if (first == null) first = g;
         }
-        return self.systemFallbackGlyph(cp) orelse &self.placeholder;
+        if (want) |w| {
+            if (self.systemFallbackGlyph(cp, w)) |g| return g;
+        }
+        if (first) |g| return g;
+        return self.systemFallbackGlyph(cp, null) orelse &self.placeholder;
     }
 
-    /// #289 B5 — chain 밖 cp 의 system fallback 경로. cp → face 매핑이
-    /// `system_fallback` 에 캐시되어 fontconfig 왕복은 cp 당 최초 1회.
-    fn systemFallbackGlyph(self: *Context, cp: u21) ?*const Glyph {
+    /// #289 B5 — chain 밖 cp 의 system fallback 경로. (cp, 모양) → face 매핑이
+    /// `system_fallback` 에 캐시되어 fontconfig 왕복은 조합당 최초 1회.
+    ///
+    /// #771 — `want` 를 주면 **그 모양의 글리프만** 돌려준다. 후보 글꼴은 fontconfig 가 글꼴
+    /// 단위로 고르고 (`loadFallbackForCp`), 여기서 글리프를 그려 본 결과로 확정한다.
+    fn systemFallbackGlyph(self: *Context, cp: u21, want: ?Presentation) ?*const Glyph {
+        const key = fallbackKey(cp, want);
         const idx: u8 = blk: {
-            if (self.system_fallback.get(cp)) |entry| {
+            if (self.system_fallback.get(key)) |entry| {
                 break :blk entry orelse return null; // null = 시스템 전체 미보유 확정
             }
-            const loaded = self.loadFallbackForCp(cp);
-            self.system_fallback.put(cp, loaded) catch {};
+            const loaded = self.loadFallbackForCp(cp, want);
+            self.system_fallback.put(key, loaded) catch {};
             break :blk loaded orelse return null;
         };
         const face = if (self.fallback_faces[idx]) |*f| f else return null;
-        return rasterCached(self.allocator, self.ft_api, face, cp);
+        const g = rasterCached(self.allocator, self.ft_api, face, cp) orelse return null;
+        if (want) |w| {
+            if (glyphPresentation(g) != w) return null;
+        }
+        return g;
     }
 
     /// cp 를 보유한 system fallback face 의 index 를 반환 — 필요 시 fontconfig
     /// charset 매치로 lazy 로드. null = 시스템 전체 미보유 / 로드 실패 (caller
     /// 가 negative cache 기록).
-    fn loadFallbackForCp(self: *Context, cp: u21) ?u8 {
+    ///
+    /// #771 — `want` 를 주면 **그 모양의 글꼴** (컬러 / 흑백) 만 후보로 본다. 판정은 글꼴
+    /// 단위 (`FT_HAS_COLOR` · fontconfig `color`) 다 — fontconfig 가 글꼴 단위로만 물을 수 있어서다.
+    /// 글리프 단위의 최종 판정은 caller 가 한다.
+    fn loadFallbackForCp(self: *Context, cp: u21, want: ?Presentation) ?u8 {
         // 기로드 fallback face 가 cp 를 보유하면 재사용 — fontconfig 왕복 회피
         // (같은 스크립트의 cp 들이 한 face 로 묶이는 일반 케이스).
         for (self.fallback_faces[0..self.fallback_count], 0..) |slot, idx| {
             const existing = slot orelse continue;
-            if (self.ft_api.get_char_index(existing.ft_face, cp) != 0) return @intCast(idx);
+            if (self.ft_api.get_char_index(existing.ft_face, cp) == 0) continue;
+            if (want) |w| {
+                if (faceHasColor(existing.ft_face) != (w == .emoji)) continue;
+            }
+            return @intCast(idx);
         }
 
-        const fc_result = fontconfig.lookupForChar(self.allocator, cp) catch |err| {
-            log.appendLineVerbose("font", "system fallback lookup failed cp=U+{X} err={s}", .{ cp, @errorName(err) });
+        const want_color: ?bool = if (want) |w| w == .emoji else null;
+        const fc_result = fontconfig.lookupForChar(self.allocator, cp, want_color) catch |err| {
+            log.appendLineVerbose("font", "system fallback lookup failed cp=U+{X} want={s} err={s}", .{ cp, presentationName(want), @errorName(err) });
             return null;
         };
         defer fc_result.deinitAdditionalFamilies(self.allocator);
@@ -769,10 +828,22 @@ pub const Context = struct {
             }
         }
         // fontconfig charset 은 폰트 metadata — 실제 cmap 미보유면 확정 miss.
+        // #771 — `want` 를 준 질의에서는 이것이 곧 "그 모양의 글꼴이 이 글자를 안 가진다" 다.
+        // fontconfig 는 `color` 를 charset 보다 먼저 봐서, 맞는 글꼴이 없으면 글자 없는 같은
+        // 모양 글꼴을 돌려준다 (`lookupForChar` 주석).
         if (self.ft_api.get_char_index(ft_face, cp) == 0) {
             _ = self.ft_api.done_face(ft_face);
-            log.appendLineVerbose("font", "system fallback miss cp=U+{X} (best match {s} lacks glyph)", .{ cp, fc_result.family });
+            log.appendLineVerbose("font", "system fallback miss cp=U+{X} want={s} (best match {s} lacks glyph)", .{ cp, presentationName(want), fc_result.family });
             return null;
+        }
+        // `color` 속성을 모르는 옛 fontconfig (2.11.91 이전) 는 그 조건을 무시한다. 그때 다른
+        // 모양의 글꼴이 와도 받지 않는다 — 모양이 맞는 후보가 없는 것과 같게 다룬다.
+        if (want) |w| {
+            if (faceHasColor(ft_face) != (w == .emoji)) {
+                _ = self.ft_api.done_face(ft_face);
+                log.appendLineVerbose("font", "system fallback miss cp=U+{X} want={s} (best match {s} has the other presentation)", .{ cp, presentationName(want), fc_result.family });
+                return null;
+            }
         }
 
         self.fallback_faces[self.fallback_count] = .{
@@ -788,7 +859,7 @@ pub const Context = struct {
         owned_by_face = true;
         const idx: u8 = @intCast(self.fallback_count);
         self.fallback_count += 1;
-        log.appendLineVerbose("font", "system fallback[{d}] family={s} path={s} index={d} (cp=U+{X})", .{ idx, fc_result.family, fc_result.path, fc_result.index, cp });
+        log.appendLineVerbose("font", "system fallback[{d}] family={s} path={s} index={d} (cp=U+{X} want={s})", .{ idx, fc_result.family, fc_result.path, fc_result.index, cp, presentationName(want) });
         return idx;
     }
 
@@ -883,10 +954,10 @@ pub const Context = struct {
         // codepoint array 를 u32 로 reinterpret (u21 → u32 동일 비트 layout 아님
         // → 명시 변환 buffer 사용).
         //
-        // #399 — 크기가 `MAX_RUN_CLUSTERS * 16` 이다. 런 배칭 (`resolveClusterRun`) 이
-        // cluster 들을 이어붙여 이 함수로 넘기므로, 예전 64 로는 한 줄이 조용히 잘렸다.
-        // 2 KB 짜리 지역 배열이라 프레임마다 불려도 부담이 아니다.
-        var u32_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]u32 = undefined;
+        // 크기는 cluster 하나 (`MAX_CLUSTER_CPS`) 다. 이 함수로 오는 것은 cluster 하나 ·
+        // ligature 후보 (2~3 글자) 뿐이다 — #771 이 한 줄 묶음 경로를 지우기 전에는 줄 전체가
+        // 와서 `32 × 16` 이었다. 셀 루프가 cluster 를 같은 상한으로 모으므로 잘리지 않는다.
+        var u32_buf: [MAX_CLUSTER_CPS]u32 = undefined;
         const n = @min(cps.len, u32_buf.len);
         for (cps[0..n], 0..) |cp, i| u32_buf[i] = @intCast(cp);
 
@@ -935,10 +1006,12 @@ pub const Context = struct {
     /// face_idx>0 으로 매치. mac `CTLineCreateWithAttributedString` 의 자동
     /// fallback / Win `IDWriteTextAnalyzer.GetGlyphs` 의 face fallback 동등.
     ///
-    /// 매치 정책 — 첫 face 가 *clean single-glyph* (= n==1 + glyph_index != 0)
-    /// 결과 내면 그 face 결과 return. 그 외 (다중 glyph 또는 0-glyph) 는 다음
-    /// face 시도. 모든 face 미매치면 null — caller 가 base codepoint chain
-    /// lookup (`glyph(cp)`) 으로 fallback (cluster extras 무시되지만 base 표시).
+    /// 매치 정책 — face 가 `.notdef` 없이 shape 하면 그 face 의 결과다 (`tryClusterOnFace`).
+    /// 모든 face 미매치면 null — caller 가 base codepoint chain lookup (`glyph(cp)`) 으로
+    /// fallback (cluster extras 무시되지만 base 표시).
+    ///
+    /// #771 — **모양 요청이 있으면 모양이 맞는 face 를 먼저** 찾는다 (`resolveClusterInner`).
+    /// 결과는 cluster 만으로 정해지고 그리는 순서 · 옆 cluster 와 무관하다.
     ///
     /// #395 — 실제 구현은 `resolveClusterInner` 이고 여기서는 `perf.shape` 만 얹는다.
     /// cluster 셀마다 · 프레임마다 불리는 경로라, render 안에서 shaping 이 차지하는
@@ -952,168 +1025,6 @@ pub const Context = struct {
         // fallback 한다. Windows 는 이때 system fallback 까지 돌아 가장 비싸다.
         if (result == null) perf.incExtra(&perf.shape);
         return result;
-    }
-
-    /// #399 — 연속된 grapheme cluster 를 **한 번의 shape 호출**로 묶는다.
-    /// mac `resolveGraphemeRun` · Win `resolveGraphemeRun` 과 같은 자리다.
-    ///
-    /// `render` 시간의 91.5 % 가 cluster shaping 이고 (#395) 그 대부분이 cluster 마다
-    /// chain 을 처음부터 순회하며 HarfBuzz 를 새로 부르는 **고정 비용**이다. 한 줄을
-    /// 묶으면 그만큼 준다.
-    ///
-    /// 성공하면 `clusters.len` 을, 하나라도 못 채우면 0 을 돌려준다 — caller 는 0 이면
-    /// 기존 개별 경로 (`resolveCluster`) 로 떨어진다. **렌더가 틀리느니 느린 게 낫다.**
-    pub fn resolveClusterRun(
-        self: *Context,
-        clusters: []const []const u21,
-        out: []ClusterGlyph,
-    ) usize {
-        const t0 = perf.now();
-        const n = self.resolveClusterRunInner(clusters, out);
-        perf.addTimed(&perf.shape, t0);
-        // **런 실패를 miss 로 세지 않는다.** 실패하면 caller 가 개별 경로로 떨어지고
-        // 거기서 cluster 마다 `resolveCluster` 가 chain miss 를 센다 — 여기서 또 세면
-        // 한 실패가 두 번 잡혀서, `miss` 가 배칭 전후로 **다른 의미**가 된다 (실측에서
-        // 180 → 1,133 으로 보여 실패가 6 배 는 것처럼 읽혔다). 이 카운터는 세 platform
-        // 에서 계속 "chain 이 못 맞춘 cluster 수" 하나만 뜻해야 비교가 성립한다.
-        return n;
-    }
-
-    fn resolveClusterRunInner(
-        self: *Context,
-        clusters: []const []const u21,
-        out: []ClusterGlyph,
-    ) usize {
-        if (clusters.len == 0 or clusters.len > MAX_RUN_CLUSTERS) return 0;
-        if (out.len < clusters.len) return 0;
-        if (self.face_count == 0 or self.hb_api == null) return 0;
-
-        // cluster 들을 이어붙이면서 **각자의 시작 offset** 을 적어 둔다.
-        //
-        // `shapeRunOnFace` 는 `hb_buffer_add_codepoints` 로 넣는데, 그때 HarfBuzz 가
-        // 매기는 cluster 번호가 **버퍼 안 codepoint 인덱스**다. 그래서 이 offset 표가
-        // 그대로 "글리프 → 우리 cluster" 매핑이 된다 — `hb_buffer_add` 를 새로 바인딩할
-        // 필요가 없다.
-        // #399 (B) — shape 하기 전에 런의 cluster 를 **전부** 캐시에서 찾는다. 다 있으면
-        // shape 없이 끝난다. `zwj` 처럼 한 줄이 같은 cluster 면 첫 런 이후 shape 가 0 이 된다.
-        //
-        // 하나라도 없으면 (또는 캐시된 결과가 실패면) 아래 기존 경로로 간다 — 부분만 쓰고
-        // 나머지를 shape 하는 식으로 섞지 않는다. 런은 한 face 로 전체를 맞추는 것이 전제라
-        // 섞으면 그 전제가 깨진다.
-        var all_hit = true;
-        for (clusters, 0..) |c, i| {
-            if (self.cluster_cache.get(c)) |cached| {
-                if (cached) |g| {
-                    out[i] = g;
-                    continue;
-                }
-            }
-            all_hit = false;
-            break;
-        }
-        if (all_hit) return clusters.len;
-
-        var cps_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]u21 = undefined;
-        var starts: [MAX_RUN_CLUSTERS]u32 = undefined;
-        var total: usize = 0;
-        for (clusters, 0..) |c, i| {
-            if (c.len == 0 or c.len > MAX_CLUSTER_CPS) return 0;
-            if (total + c.len > cps_buf.len) return 0;
-            starts[i] = @intCast(total);
-            @memcpy(cps_buf[total..][0..c.len], c);
-            total += c.len;
-        }
-
-        // #399 — 직전에 맞은 face 를 먼저 본다 (`last_cluster_face` 주석). 런은 codepoint
-        // 가 많아 (`zwj` 13 개면 65 개) 헛도는 face 하나가 그만큼 비싸다.
-        var shape_buf: [MAX_RUN_CLUSTERS * MAX_CLUSTER_CPS]ShapedGlyph = undefined;
-        const hint = self.last_cluster_face;
-        var order: [MAX_CHAIN + 1]u8 = undefined;
-        var order_n: usize = 0;
-        if (hint < self.face_count) {
-            order[0] = hint;
-            order_n = 1;
-        }
-        for (0..self.face_count) |fi| {
-            const idx_u8: u8 = @intCast(fi);
-            if (order_n > 0 and idx_u8 == hint) continue; // 이미 앞에 넣었다
-            order[order_n] = idx_u8;
-            order_n += 1;
-        }
-
-        for (order[0..order_n]) |idx_u8| {
-            const n = self.shapeRunOnFace(idx_u8, cps_buf[0..total], &shape_buf);
-            // cluster 수보다 글리프가 적으면 HarfBuzz 가 인접 cluster 둘을 하나로 합친
-            // 것이다 — 우리 경계와 다르므로 이 face 는 쓸 수 없다.
-            if (n < clusters.len) continue;
-
-            // #401 — 글리프를 **cluster 별로 묶는다.** 예전에는 `n == clusters.len` 을
-            // 요구해 cluster 당 글리프가 정확히 하나여야 했는데, 결합 기호처럼 base +
-            // mark 로 나오는 cluster 가 섞이면 런 전체가 실패했다. `shape_buf[].cluster`
-            // 가 버퍼 안 codepoint 인덱스라 `starts` 표와 그대로 맞는다.
-            var ok = true;
-            var gi: usize = 0;
-            var group_at: [MAX_RUN_CLUSTERS]usize = undefined;
-            var group_n: [MAX_RUN_CLUSTERS]usize = undefined;
-            for (0..clusters.len) |i| {
-                // 경계가 어긋났거나 순서가 뒤집힌 경우를 여기서 함께 잡는다.
-                if (gi >= n or shape_buf[gi].cluster != starts[i]) {
-                    ok = false;
-                    break;
-                }
-                // **다음 cluster 가 시작되기 전까지**를 이 cluster 의 글리프로 본다.
-                // `== starts[i]` 로 비교하면 cluster 병합을 끈 뒤 (#418) mark 글리프가
-                // `starts[i]+1` 을 갖게 되어 그룹이 끊긴다. 이 비교는 병합 여부와 무관하게 옳다.
-                const next_start: u32 = if (i + 1 < clusters.len) starts[i + 1] else @intCast(total);
-                var end = gi + 1;
-                while (end < n and shape_buf[end].cluster < next_start) end += 1;
-                group_at[i] = gi;
-                group_n[i] = end - gi;
-                gi = end;
-            }
-            if (!ok or gi != n) continue;
-
-            // 개별 경로 (`tryClusterOnFace`) 와 같은 기준 — `.notdef` 만 거부한다.
-            for (shape_buf[0..n]) |g| {
-                if (g.glyph_index == 0) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (!ok) continue;
-
-            // 결과를 먼저 다 만들고 나서 옮긴다. 합성이 하나라도 실패하면 이 face 를 통째로
-            // 넘겨야 한다 — 런은 **한 face 로 전체를 맞추는 것**이 전제라 일부만 쓰면 그
-            // 전제가 깨진다 (위 캐시 조회에서 부분 적중을 안 쓰는 것과 같은 이유다).
-            var built: [MAX_RUN_CLUSTERS]ClusterGlyph = undefined;
-            for (0..clusters.len) |i| {
-                const gs = shape_buf[group_at[i]..][0..group_n[i]];
-                if (gs.len == 1) {
-                    built[i] = .{
-                        .face_idx = idx_u8,
-                        .glyph_index = gs[0].glyph_index,
-                        .x_offset = gs[0].x_offset,
-                        .y_offset = gs[0].y_offset,
-                    };
-                } else {
-                    const key = self.composeCluster(idx_u8, clusters[i], starts[i], gs) orelse {
-                        ok = false;
-                        break;
-                    };
-                    built[i] = .{ .face_idx = idx_u8, .glyph_index = key, .composed = true };
-                }
-            }
-            if (!ok) continue;
-
-            for (0..clusters.len) |i| {
-                out[i] = built[i];
-                // 다음 런이 shape 를 건너뛸 수 있게 담는다.
-                self.cluster_cache.put(clusters[i], out[i]);
-            }
-            self.last_cluster_face = idx_u8;
-            return clusters.len;
-        }
-        return 0;
     }
 
     /// 한 face 로 cluster 하나를 시도한다.
@@ -1143,7 +1054,7 @@ pub const Context = struct {
                 .y_offset = shape_buf[0].y_offset,
             };
         }
-        const key = self.composeCluster(face_idx, cps, 0, shape_buf[0..n]) orelse return null;
+        const key = self.composeCluster(face_idx, cps, shape_buf[0..n]) orelse return null;
         return .{ .face_idx = face_idx, .glyph_index = key, .composed = true };
     }
 
@@ -1153,7 +1064,7 @@ pub const Context = struct {
     /// `y_offset` 을 더한다. **결합 기호는 mark 의 `x_advance` 가 0** 이라 pen 이 안 움직여
     /// base 위에 겹친다. 우리가 겹치라고 정하는 것이 아니라 폰트가 그렇게 지시하는 것이다
     /// (Windows 가 `advances` · `offsets` 를, macOS 가 `positions` 를 넘기는 것과 같다 — #139).
-    fn composeCluster(self: *Context, face_idx: u8, cps: []const u21, cluster_base: u32, glyphs: []const ShapedGlyph) ?u32 {
+    fn composeCluster(self: *Context, face_idx: u8, cps: []const u21, glyphs: []const ShapedGlyph) ?u32 {
         if (glyphs.len < 2 or glyphs.len > MAX_CLUSTER_GLYPHS) return null;
 
         // 키 — 같은 face 에서 (글리프 인덱스 + 배치) 가 같으면 그림이 같다.
@@ -1173,7 +1084,7 @@ pub const Context = struct {
         const map_key = (@as(u64, face_idx) << 32) | @as(u64, key);
         if (self.composed_glyphs.contains(map_key)) return key;
 
-        const composed = self.rasterizeCluster(face_idx, cps, cluster_base, glyphs) orelse return null;
+        const composed = self.rasterizeCluster(face_idx, cps, glyphs) orelse return null;
         const slot = self.allocator.create(Glyph) catch {
             if (composed.bitmap.len > 0) self.allocator.free(composed.bitmap);
             return null;
@@ -1194,7 +1105,7 @@ pub const Context = struct {
     /// 칠해질 것을 전제로 한 커버리지고 컬러 비트맵은 자기 색을 갖는데, 둘을 한 비트맵에 담으면
     /// 어느 쪽 규약으로도 읽을 수 없다. 한 face 는 보통 한 모드라 (DejaVu 는 전부 회색, Noto
     /// Color Emoji 는 전부 BGRA) 실제로 섞이는 경우는 거의 없다.
-    fn rasterizeCluster(self: *Context, face_idx: u8, cps: []const u21, cluster_base: u32, glyphs: []const ShapedGlyph) ?Glyph {
+    fn rasterizeCluster(self: *Context, face_idx: u8, cps: []const u21, glyphs: []const ShapedGlyph) ?Glyph {
         var rasters: [MAX_CLUSTER_GLYPHS]*const Glyph = undefined;
         var xs: [MAX_CLUSTER_GLYPHS]i32 = undefined;
         var ys: [MAX_CLUSTER_GLYPHS]i32 = undefined;
@@ -1258,11 +1169,11 @@ pub const Context = struct {
             //
             // GDEF 조회가 안 되는 환경 (심볼 없는 축소 libharfbuzz) 에서는 `false` 가 와서
             // 예전과 같은 advance 기준으로 degrade 한다.
-            const is_mark = self.glyphIsMark(cps, cluster_base, g) or g.x_advance == 0;
+            const is_mark = self.glyphIsMark(cps, g) or g.x_advance == 0;
             marks[i] = is_mark and i > 0;
             if (marks[i]) {
                 has_mark = true;
-                if (!self.glyphIsOverlayMark(cps, cluster_base, g)) overlay_only = false;
+                if (!self.glyphIsOverlayMark(cps, g)) overlay_only = false;
             }
             const unplaced_mark = i > 0 and is_mark and g.x_offset == 0;
             // 글리프 잉크의 **자기 원점 기준** 가로 중앙.
@@ -1462,7 +1373,7 @@ pub const Context = struct {
                     // overlay 는 advance 를 갖고 (`DejaVu` 의 `U+0336` = 12) 그대로 더하면
                     // `k̶` 의 advance 가 24 로 두 칸이 된다 — pen 을 안 미는 것과 같은 이유로
                     // 폭에도 넣지 않는다 (#418).
-                    if (self.glyphIsMark(cps, cluster_base, g2)) continue;
+                    if (self.glyphIsMark(cps, g2)) continue;
                     sum += g2.x_advance;
                 }
                 if (sum > 0) break :blk @intCast(sum);
@@ -1472,6 +1383,18 @@ pub const Context = struct {
         };
     }
 
+    /// #771 — 순서는 넷이다. 모양 요청 (`presentation.forCluster`) 이 없으면 첫 단계에서 바로
+    /// 답이 나와 예전과 같다 (직전 face 힌트만 없다).
+    ///
+    /// 1. chain 을 앞에서부터 — **모양이 맞는** 첫 face
+    /// 2. system fallback 에서 **모양이 맞는** face
+    /// 3. chain 에서 모양과 무관하게 처음 맞은 face (1 단계가 이미 shape 한 결과를 쓴다)
+    /// 4. system fallback 에서 모양과 무관하게 (#419)
+    ///
+    /// ghostty 와 같은 순서다 (`CodepointResolver.getIndex` — 로드한 글꼴 → discovery → any).
+    /// macOS 는 CoreText 가 이렇게 고른다 (#771 macOS 실측 — VS16 371 개 모두 컬러, VS15 는
+    /// 흑백 글리프가 어느 글꼴에 있으면 흑백). 2 단계가 빠지면 chain 의 텍스트 글꼴에 없는 VS15
+    /// 글자가 시스템의 흑백 글꼴을 두고 컬러로 그려진다 (#771 미니PC 에서 371 개 중 240 개).
     fn resolveClusterInner(self: *Context, cps: []const u21) ?ClusterGlyph {
         if (cps.len == 0 or self.face_count == 0 or self.hb_api == null) return null;
 
@@ -1479,47 +1402,60 @@ pub const Context = struct {
         // null) chain 이 못 맞춘 cluster 가 매 프레임 chain 을 헛돌지 않는다.
         if (self.cluster_cache.get(cps)) |cached| return cached;
 
-        // #399 — 직전에 맞은 face 를 먼저 본다 (`last_cluster_face` 주석).
-        const hint = self.last_cluster_face;
-        if (hint < self.face_count) {
-            if (self.tryClusterOnFace(hint, cps)) |g| {
-                self.cluster_cache.put(cps, g);
-                return g;
-            }
+        const want = presentation.forCluster(cps);
+        // 모양과 무관하게 처음 맞은 결과 — 3 단계의 답이다.
+        var first: ?ClusterGlyph = null;
+        for (0..self.face_count) |face_idx| {
+            const g = self.tryClusterOnFace(@intCast(face_idx), cps) orelse continue;
+            const w = want orelse return self.rememberCluster(cps, g);
+            if (self.clusterPresentation(g) == w) return self.rememberCluster(cps, g);
+            if (first == null) first = g;
         }
 
-        for (0..self.face_count) |face_idx| {
-            const idx_u8: u8 = @intCast(face_idx);
-            if (idx_u8 == hint) continue; // 바로 위에서 이미 봤다
-            if (self.tryClusterOnFace(idx_u8, cps)) |g| {
-                self.last_cluster_face = idx_u8;
-                self.cluster_cache.put(cps, g);
-                return g;
-            }
+        if (want) |w| {
+            if (self.tryClusterOnFallback(cps, w)) |g| return self.rememberCluster(cps, g);
         }
-        // #419 — chain 이 다 놓쳤으면 **system fallback face** 로 한 번 더 본다.
-        //
-        // 단일 codepoint 는 예전부터 여기로 왔다 (`glyph` → `systemFallbackGlyph`, #289 B5).
-        // cluster 만 chain 에서 끝나서, Devanagari `क्षि` 처럼 chain 밖 스크립트는 **base 만
-        // 그려지고 결합이 빠졌다** — 같은 폰트를 한쪽 경로는 쓰고 다른 쪽은 안 쓰는 비대칭이었다.
-        // SPEC 은 fallback 을 하는 쪽이다 (*"chain 에 없는 codepoint 는 system fallback 이 자동
-        // 처리"*).
-        //
-        // face 는 **cluster 의 base codepoint** 로 고른다. mark 는 대개 base 와 같은 스크립트라
-        // 그 face 가 함께 갖고 있고, 아니면 아래 `tryClusterOnFace` 의 `.notdef` 검사가 걸러 준다.
-        if (self.loadFallbackForCp(cps[0])) |fb_idx| {
-            const face_idx = FALLBACK_FACE_BASE + fb_idx;
-            if (self.tryClusterOnFace(face_idx, cps)) |g| {
-                // `last_cluster_face` 에는 담지 않는다 — 그 값은 chain 순회의 시작점이라
-                // fallback index 를 넣으면 다음 cluster 가 엉뚱한 곳을 먼저 본다.
-                self.cluster_cache.put(cps, g);
-                return g;
-            }
-        }
+        if (first) |g| return self.rememberCluster(cps, g);
+        if (self.tryClusterOnFallback(cps, null)) |g| return self.rememberCluster(cps, g);
 
         // 전부 실패한 것도 담는다 — 안 담으면 매 프레임 다시 헛돈다.
         self.cluster_cache.put(cps, null);
         return null;
+    }
+
+    /// #419 — chain 이 놓친 cluster 를 **system fallback face** 로 본다.
+    ///
+    /// 단일 codepoint 는 예전부터 system fallback 으로 갔다 (`glyph` → `systemFallbackGlyph`,
+    /// #289 B5). cluster 만 chain 에서 끝나서, Devanagari `क्षि` 처럼 chain 밖 스크립트는 **base 만
+    /// 그려지고 결합이 빠졌다** — 같은 폰트를 한쪽 경로는 쓰고 다른 쪽은 안 쓰는 비대칭이었다.
+    ///
+    /// face 는 **cluster 의 base codepoint** 로 고른다. mark 는 대개 base 와 같은 스크립트라 그
+    /// face 가 함께 갖고 있고, 아니면 `tryClusterOnFace` 의 `.notdef` 검사가 걸러 준다.
+    ///
+    /// #771 — `want` 를 주면 그 모양의 글꼴만 후보로 보고 (`loadFallbackForCp`), shape 결과의
+    /// 글리프로 한 번 더 확인한다.
+    fn tryClusterOnFallback(self: *Context, cps: []const u21, want: ?Presentation) ?ClusterGlyph {
+        const fb_idx = self.loadFallbackForCp(cps[0], want) orelse return null;
+        const g = self.tryClusterOnFace(FALLBACK_FACE_BASE + fb_idx, cps) orelse return null;
+        if (want) |w| {
+            if (self.clusterPresentation(g) != w) return null;
+        }
+        return g;
+    }
+
+    fn rememberCluster(self: *Context, cps: []const u21, g: ClusterGlyph) ClusterGlyph {
+        self.cluster_cache.put(cps, g);
+        return g;
+    }
+
+    /// #771 — cluster 결과의 모양. 합성 비트맵이면 그 비트맵으로 본다 (`rasterizeCluster` 는
+    /// 컬러와 흑백을 섞지 않는다). 판정에 쓴 래스터는 face 캐시에 남아 그릴 때 그대로 쓰인다.
+    fn clusterPresentation(self: *Context, cg: ClusterGlyph) Presentation {
+        const g = if (cg.composed)
+            self.composedGlyph(cg.face_idx, cg.glyph_index)
+        else
+            self.glyphByIndex(cg.face_idx, cg.glyph_index);
+        return glyphPresentation(g);
     }
 
     /// 2-char ligature lookup with cache. paint loop 가 매 cell pair 에 호출.

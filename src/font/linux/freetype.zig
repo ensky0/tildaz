@@ -21,6 +21,11 @@ pub const FT_LOAD_RENDER: c_int = 0x4;
 /// `( 1L << 20 )` — color emoji (BGRA) raster 활성화. mono 폰트엔 무시됨.
 pub const FT_LOAD_COLOR: c_int = 0x100000;
 
+/// `( 1L << 14 )` — face 에 컬러 글리프 표 (CBDT · sbix · COLR 등) 가 있다 (`FT_HAS_COLOR`).
+/// fontconfig 의 `color` 속성도 이 값이다. #771 은 system fallback 후보를 고를 때만 쓴다 —
+/// 모양의 최종 판정은 글리프를 그려 본 `pixel_mode` 다.
+pub const FT_FACE_FLAG_COLOR: FT_Long = 1 << 14;
+
 pub const FT_PIXEL_MODE_MONO: u8 = 1;
 pub const FT_PIXEL_MODE_GRAY: u8 = 2;
 pub const FT_PIXEL_MODE_BGRA: u8 = 7;

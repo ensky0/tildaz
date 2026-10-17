@@ -9,6 +9,8 @@ const ct = @import("coretext.zig");
 const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
+const presentation = @import("../presentation.zig");
+const Presentation = presentation.Presentation;
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const font_spec = @import("../spec.zig");
 const log = @import("../../log.zig");
@@ -1150,9 +1152,18 @@ pub const CoreTextFontContext = struct {
     /// 이 값을 따르고, grapheme cluster (emoji 등) · ligature 경로는 regular 를
     /// 그대로 쓴다 — 컬러 emoji 에 굵기는 의미가 없고, ligature 는 `style_id` 가
     /// 같은 구간에서만 일어나므로 섞이지 않는다.
+    ///
+    /// #771 — 기본 모양이 이모지인 글자 (`presentation.forCodepoint`) 는 **컬러 글리프를 먼저**
+    /// 찾는다. 순서는 Linux `resolveGlyph` 와 같다 — chain → system fallback → (어디에도 없으면)
+    /// 모양과 무관하게 chain 의 첫 글꼴 → system fallback. `☔` 는 chain 첫 글꼴 Menlo 가 흑백
+    /// 글리프를 가져서 예전에는 거기서 멈췄다 (Unicode 18.0 의 1,228 개 중 19 개). 요청이 없는
+    /// 글자 (거의 전부) 는 예전과 같이 첫 글꼴에서 끝난다 — **이 경로는 캐시 없이 셀마다 · 매
+    /// 프레임 불린다** (`renderer/macos.zig` 의 셀 루프).
     pub fn resolveGlyph(self: *CoreTextFontContext, codepoint: u21, style: font_constants.FaceStyle) ?GlyphResult {
-        // codepoint 를 UTF-16 surrogate pair (또는 single unit) 으로.
-        var utf16_buf: [2]u16 = undefined;
+        const want = presentation.forCodepoint(codepoint);
+        // codepoint 를 UTF-16 surrogate pair (또는 single unit) 으로. 한 칸을 더 둔 것은
+        // system fallback 에 모양 선택자를 붙여 넘기기 위해서다 (`systemFallbackGlyph`).
+        var utf16_buf: [3]u16 = undefined;
         var utf16_len: usize = undefined;
         if (codepoint <= 0xFFFF) {
             utf16_buf[0] = @intCast(codepoint);
@@ -1164,28 +1175,66 @@ pub const CoreTextFontContext = struct {
             utf16_len = 2;
         }
 
-        // 1. chain 순회 — 글리프 가진 첫 폰트 사용.
+        // 1. chain 순회 — 글리프 가진 첫 폰트 사용. 모양을 요청했으면 그 모양의 첫 폰트.
         const chain = self.chainFor(style);
         const chain_ids = self.chainIdFor(style);
+        // 모양과 무관하게 처음 찾은 글리프 — 요청한 모양이 어디에도 없을 때의 답이다.
+        var first: ?GlyphResult = null;
         for (chain, 0..) |f, ci| {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    return .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci] };
+                    const r: GlyphResult = .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci] };
+                    const w = want orelse return r;
+                    if (fontPresentation(f) == w) return r;
+                    if (first == null) first = r;
                 }
             }
         }
 
-        // 2. chain 모두 없으면 system auto fallback (CTFontCreateForString).
-        //    Apple Color Emoji 같이 chain 에 명시 안 한 폰트 자동 찾음.
-        const str = ct.CFStringCreateWithCharacters(null, &utf16_buf, @intCast(utf16_len)) orelse return null;
+        // 2. chain 에 요청한 모양이 없으면 system fallback 에서 그 모양을 찾는다.
+        if (want) |w| {
+            if (systemFallbackGlyph(self.primary_font, &utf16_buf, utf16_len, w)) |r| return r;
+        }
+        // 3. 모양이 어디에도 없으면 모양과 무관하게 — chain 에서 처음 찾은 것, 그다음 system fallback.
+        if (first) |r| return r;
+        return systemFallbackGlyph(self.primary_font, &utf16_buf, utf16_len, null);
+    }
+
+    /// #771 — 글꼴의 모양. 렌더러가 컬러로 그리는 기준 (`glyph_atlas.zig` 의
+    /// `kCTFontTraitColorGlyphs`) 과 **같은 판정**이어야 "컬러로 골랐다" 와 "컬러로 그린다" 가
+    /// 어긋나지 않는다. 그래서 글리프가 아니라 글꼴 단위다.
+    fn fontPresentation(f: ct.CTFontRef) Presentation {
+        return if ((ct.CTFontGetSymbolicTraits(f) & ct.kCTFontTraitColorGlyphs) != 0) .emoji else .text;
+    }
+
+    /// chain 밖 글자의 system fallback (`CTFontCreateForString`). 결과는 `owned = true` — caller 가
+    /// `CFRelease` 한다.
+    ///
+    /// #771 — `want` 를 주면 **그 모양의 글꼴만** 돌려준다. 글자 뒤에 모양 선택자 (VS16 · VS15) 를
+    /// 붙여 넘기면 CoreText 가 그 모양의 글꼴을 고른다 (2026-10-16 실측 — 고칠 19 개 모두 글자만
+    /// 넘기면 Menlo, VS16 을 붙이면 Apple Color Emoji. cluster 경로에서 VS16 371 개를 모두 따른
+    /// 것과 같은 동작이다). 그래서 글꼴 이름을 코드에 박지 않는다. 글리프는 선택자 없이 찾는다.
+    fn systemFallbackGlyph(primary: ct.CTFontRef, utf16_buf: *[3]u16, utf16_len: usize, want: ?Presentation) ?GlyphResult {
+        var str_len = utf16_len;
+        if (want) |w| {
+            utf16_buf[utf16_len] = @intCast(if (w == .emoji) presentation.VS16 else presentation.VS15);
+            str_len += 1;
+        }
+        const str = ct.CFStringCreateWithCharacters(null, utf16_buf, @intCast(str_len)) orelse return null;
         defer ct.CFRelease(str);
 
-        const fallback_font = ct.CTFontCreateForString(self.primary_font, str, ct.CFRange{ .location = 0, .length = @intCast(utf16_len) });
+        const fallback_font = ct.CTFontCreateForString(primary, str, ct.CFRange{ .location = 0, .length = @intCast(str_len) });
         if (fallback_font == null) return null;
+        if (want) |w| {
+            if (fontPresentation(fallback_font.?) != w) {
+                ct.CFRelease(fallback_font.?);
+                return null;
+            }
+        }
 
         var fb_glyphs: [2]ct.CGGlyph = .{ 0, 0 };
-        if (ct.CTFontGetGlyphsForCharacters(fallback_font.?, &utf16_buf, &fb_glyphs, @intCast(utf16_len))) {
+        if (ct.CTFontGetGlyphsForCharacters(fallback_font.?, utf16_buf, &fb_glyphs, @intCast(utf16_len))) {
             if (fb_glyphs[0] != 0) {
                 // #584 — **여기서 id 를 잰다.** `CTFontCreateForString` 은 같은 폰트에도 매번 새
                 // 객체를 주므로 (실측: 이 맵의 주소가 256 개를 넘었다 — 실제 폰트는 32 종) 주소를
@@ -1201,3 +1250,37 @@ pub const CoreTextFontContext = struct {
         return null;
     }
 };
+
+/// 테스트용 — 이름으로 글꼴을 만든다. 없는 이름에도 CoreText 가 다른 글꼴을 주므로 (`resolveInstalledName`
+/// 머리 주석) 호출부가 결과의 모양으로 판정한다.
+fn testFont(name: []const u8) !ct.CTFontRef {
+    const s = ct.CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), ct.kCFStringEncodingUTF8, 0) orelse
+        return error.CFStringCreateFailed;
+    defer ct.CFRelease(s);
+    return ct.CTFontCreateWithName(s, 15, null) orelse error.FontCreateFailed;
+}
+
+test "#771 — 모양 판정은 렌더러와 같은 글꼴 트레이트다" {
+    const menlo = try testFont("Menlo-Regular");
+    defer ct.CFRelease(menlo);
+    const emoji = try testFont("AppleColorEmoji");
+    defer ct.CFRelease(emoji);
+    try std.testing.expectEqual(Presentation.text, CoreTextFontContext.fontPresentation(menlo));
+    try std.testing.expectEqual(Presentation.emoji, CoreTextFontContext.fontPresentation(emoji));
+}
+
+test "#771 — system fallback 은 모양 선택자를 붙여 그 모양의 글꼴을 고른다" {
+    // `☔` (기본이 이모지) — 글자만 넘기면 CoreText 는 Menlo 의 흑백 글리프를 고른다 (#771 실측).
+    const menlo = try testFont("Menlo-Regular");
+    defer ct.CFRelease(menlo);
+    var buf: [3]u16 = .{ 0x2614, 0, 0 };
+
+    const plain = CoreTextFontContext.systemFallbackGlyph(menlo, &buf, 1, null) orelse return error.NoFallback;
+    defer ct.CFRelease(plain.font);
+    try std.testing.expectEqual(Presentation.text, CoreTextFontContext.fontPresentation(plain.font));
+
+    const colored = CoreTextFontContext.systemFallbackGlyph(menlo, &buf, 1, .emoji) orelse return error.NoFallback;
+    defer ct.CFRelease(colored.font);
+    try std.testing.expectEqual(Presentation.emoji, CoreTextFontContext.fontPresentation(colored.font));
+    try std.testing.expect(colored.index != 0);
+}

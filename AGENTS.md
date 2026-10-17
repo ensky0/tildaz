@@ -1123,6 +1123,29 @@ clang -fobjc-arc -framework AppKit -framework Carbon -framework CoreGraphics \
 
 **입력 소스 전환은 사용자가 직접 해야 해요.** 한국어 UI 는 설정 앱의 항목 이름이 영어 문서와 달라 보이니, `--list-sources` 로 **그 기기에 실제로 표시되는 이름**을 뽑아서 안내해요 (예: `Russian – Phonetic` 이 이 기기에서는 `Russian – QWERTY` 로 보였어요). 그리고 이 측정도 위 `# 실행 환경` 의 규칙대로 **시작 전에 알리고 확인을 받아요.**
 
+# macOS — CoreText 가 이모지 모양을 어떻게 고르는지 재는 법 ([#771](https://github.com/ensky0/tildaz/issues/771))
+
+macOS 앱은 cluster (`❤` + VS16 처럼 한 칸에 그리는 글자 묶음) 의 글꼴을 CoreText 에 맡겨요. CoreText 는 macOS 가
+글꼴을 고르고 글자를 배치하는 라이브러리예요. 그 동작은 macOS · Apple Color Emoji 판에 따라 바뀔 수 있어요. 그래서
+앱 코드 밖에서 앱과 같은 방식으로 CoreText 를 불러 재는 도구를 뒀어요 —
+[`tool/emoji-presentation-probe_macos.m`](tool/emoji-presentation-probe_macos.m). 빌드 · 실행 명령은 그 파일 머리 주석에 있어요.
+
+| 모드 | 무엇 |
+|---|---|
+| `cases` | `render-test` 의 (M) 절 글자를 cluster · 묶음 · 단일 글자 경로로 돌려 고른 글꼴을 찍어요 |
+| `vs` | VS16 · VS15 시퀀스 전부 (742 개) — 모양이 맞는지, 묶음 경로와 결과가 갈리는지 |
+| `ep` | 이모지가 기본인 글자 전부 (1,228 개) — 단일 글자 경로가 흑백 글꼴로 가는 글자 |
+
+- **표본만 보고 일반화하지 말아요.** 2026-10-16 에 VS15 표본 7 개가 모두 흑백이라 *"CoreText 는 VS15 를 따른다"* 고
+  이슈에 적었어요. 371 개를 다 보니 196 개가 컬러였어요. 그중 193 개는 흑백 글리프가 설치된 어느 글꼴에도 없어서
+  이모지로 대신 그린 것이었어요. `vs` 모드가 그 판정 (흑백 글꼴 전수 검색) 을 함께 찍어요.
+- **컬러 판정은 글꼴 단위예요** — 글꼴에 컬러 표 (`sbix` · `COLR` · `CBDT`) 가 있는가. 화면에서 Apple Color Emoji 의
+  `✔️ ™️ ©️` 는 회색으로 보이지만 컬러 글꼴의 글리프예요. 흰 텍스트 글리프와 헷갈리지 않아요.
+- **uucode 표는 우리 `build.zig.zon` 이 가리키는 ghostty 의 것을 써요.** `zig-pkg` 에는 옛 pin 의 ghostty 와 uucode 가
+  지워지지 않고 남아 있어서, `zig-pkg/ghostty-*` 로 고르면 둘이 잡혀요.
+- **도구는 앱 코드를 부르지 않아요.** 지금 앱의 고르는 방식을 따라 적은 것이라, 앱을 고친 뒤에도 `ep` 는 고치기 전
+  방식 (chain 순서대로) 의 결과를 내요. 고친 뒤의 확인은 `render-test` 화면으로 해요.
+
 # Windows — 렌더 결과를 픽셀로 검증하는 법
 
 macOS (`tool/render-ab-shot/render-ab-shot_macos.sh`) · Linux (`tool/render-ab-shot/render-ab-shot_linux.sh`) 와 같은 일을 PowerShell 로 해요 —
@@ -2107,14 +2130,14 @@ rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 c
 ## ② 화면으로 볼 때 — `render-test` + `-e`
 
 **세 platform 공용 검증 화면이 있어요** ([`src/render_test.zig`](src/render_test.zig), #422).
-결합 기호 · cluster 관련 이슈 (#401 · #415~421) 를 (A)~(L) 열두 절로 한 번에 봐요.
+결합 기호 · cluster 관련 이슈 (#401 · #415~421) 와 이모지 모양 (#771) 을 (A)~(M) 열세 절로 한 번에 봐요.
 
 ```sh
 zig build render-test
 tildaz --instance 1 -e <zig-out/bin/render-test> -size 88x33 &
 ```
 
-⚠️ **`-size` 는 반드시 `88x33` 이에요.** 화면이 62 줄이라 그만큼 창을 키우면 **노트북 화면
+⚠️ **`-size` 는 반드시 `88x33` 이에요.** 화면이 70 줄이라 그만큼 창을 키우면 **노트북 화면
 아래로 잘려서 안 보여요** (실기에서 여러 번 걸렸어요 — 68 줄로 띄웠다가 사용자가 못 봤어요).
 33 줄로 띄우고 **스크롤로** 봐요. 절이 위아래로 이어져 있어서 스크롤이 판정을 방해하지 않아요.
 **폭 88 도 줄이면 안 돼요** — 가장 긴 줄 기준이라 줄이면 줄바꿈이 생겨 `|` 정렬 판정이 깨져요.
@@ -2862,3 +2885,17 @@ upstream이 움직이면 CI의 `zig build -Dsimd=true --fetch`가 캐시 불일�
 `.github/workflows/release.yml`에는 rolling URL을 막는 sanity check가 있으니, 실수로 되돌리면 바로 빌드가 깨질 수 있어요.
 
 ghostty 의존성을 갱신하려면 `dist/update-ghostty.sh`를 실행해서 upstream `main` HEAD sha 기준으로 URL과 hash를 함께 업데이트해요.
+
+**ghostty 를 올렸으면 이모지 모양 표가 맞는지 봐요** ([#771](https://github.com/ensky0/tildaz/issues/771)). 선택자 없는 글자를
+컬러 이모지로 그릴지 정하는 표 (`src/font/emoji_presentation_table.zig`) 는 ghostty 가 셀 폭을 정할 때 쓰는 uucode 판에서
+만들어요. 판이 어긋나면 두 칸으로 잡힌 글자가 흑백으로 그려지거나 그 반대가 돼요.
+
+```sh
+zig build                                          # zig-pkg 에 새 ghostty · uucode 를 받는다
+python3 tool/emoji-presentation-table.py --check   # 다르면 종료 코드 1
+python3 tool/emoji-presentation-table.py           # 다르면 다시 만든다
+```
+
+- 다시 만들면 `src/font/presentation.zig` 의 글자 수 테스트 (Unicode 18.0 의 1,228 개) 도 새 판의 수로 고쳐요.
+- 생성기는 우리 `build.zig.zon` 이 가리키는 ghostty 부터 따라가요. `zig-pkg` 에는 옛 pin 의 ghostty · uucode 가 남아 있어서
+  디렉터리 이름으로 고르면 둘이 잡혀요.

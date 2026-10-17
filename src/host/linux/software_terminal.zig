@@ -357,20 +357,6 @@ pub const Renderer = struct {
     /// 그린다. "blink 셀이 있다" 만으로 열면 매 tick(16ms) 그리게 된다.
     saw_blink_cell: bool = false,
 
-    // #399 — cluster shaping 을 런 단위로 묶는 데 쓰는 작업 버퍼다. 셀 루프의 지역 변수로
-    // 두면 3 KB 가량이라 프레임 스택에 부담이라 renderer 가 들고 재사용한다. `render` 의
-    // 91.5 % 가 shaping 이고 (#395), cluster 마다 chain 을 처음부터 순회하며 HarfBuzz 를
-    // 새로 부르는 고정 비용이 그 대부분이다.
-    /// 런 안 cluster 들의 codepoint 를 이어 담는다 (base 1 + extras 최대 15).
-    run_cps: [font.MAX_RUN_CLUSTERS * font.MAX_CLUSTER_CPS]u21 = undefined,
-    /// 위 버퍼를 cluster 단위로 가리키는 slice 들. `resolveClusterRun` 의 입력이다.
-    run_slices: [font.MAX_RUN_CLUSTERS][]const u21 = undefined,
-    /// 각 cluster 가 있던 셀의 x. 글리프를 되돌려 놓을 때 쓴다 (셀마다 색이 다르다).
-    run_cells: [font.MAX_RUN_CLUSTERS]u16 = undefined,
-    /// shaping 결과. cluster 당 하나다. #401 부터 그 하나가 **합성 비트맵일 수 있다** —
-    /// 폰트가 cluster 를 글리프 하나로 안 줄이면 여러 글리프를 겹쳐 구운 결과를 가리킨다.
-    run_results: [font.MAX_RUN_CLUSTERS]font.ClusterGlyph = undefined,
-
     font_ctx: font.Context,
     tab_font_ctx: font.Context,
     /// #368 — dialog 폰트는 **처음 dialog 를 열 때** 만든다. 대부분의 세션은 dialog 를
@@ -1052,79 +1038,12 @@ pub const Renderer = struct {
                 // cell 은 2-char ASCII pair 가 아니라 cluster 자체로 해석되어야
                 // 함.
                 if (raw.hasGrapheme() and x < graphemes.len) {
-                    // #399 — **연속된 grapheme 셀을 모아 한 번에 shape 한다.** cluster 마다
-                    // chain 을 처음부터 순회하며 HarfBuzz 를 새로 부르는 고정 비용이
-                    // `render` 의 대부분이라, 한 줄을 묶으면 그만큼 준다. 런이 2 개 미만이면
-                    // 이득이 없어 아래 개별 경로로 간다.
-                    //
-                    // 런 경계는 셋만 본다 (mac · Win 과 같다): 연속 grapheme 셀 ·
-                    // `spacer_tail` 은 **건너뛰고 이어감** (wide cluster 뒤엔 항상 오므로
-                    // 여기서 끊으면 런이 1 개씩 쪼개진다) · `invisible` 에서 끊음.
-                    // **`style_id` 는 안 본다** — 글리프는 폰트에만 의존하고 색은 셀마다
-                    // 따로 계산한다.
-                    var run_n: usize = 0;
-                    var cps_used: usize = 0;
-                    var scan = x;
-                    while (scan < limit and scan < raws.len and run_n < font.MAX_RUN_CLUSTERS) {
-                        const rr = raws[scan];
-                        if (rr.wide == .spacer_tail) {
-                            scan += 1;
-                            continue;
-                        }
-                        if (!(rr.hasText() and rr.wide != .spacer_head and rr.codepoint() != 0)) break;
-                        if (!(rr.hasGrapheme() and scan < graphemes.len)) break;
-                        if (rr.style_id != 0 and styles[scan].flags.invisible) break;
-
-                        const ex = graphemes[scan];
-                        // 개별 경로의 `cluster[16]` 과 같은 상한이다 (base 1 + extras 15).
-                        const ex_take = @min(ex.len, font.MAX_CLUSTER_CPS - 1);
-                        if (cps_used + 1 + ex_take > self.run_cps.len) break;
-                        self.run_cps[cps_used] = rr.codepoint();
-                        @memcpy(self.run_cps[cps_used + 1 ..][0..ex_take], ex[0..ex_take]);
-                        self.run_slices[run_n] = self.run_cps[cps_used..][0 .. 1 + ex_take];
-                        self.run_cells[run_n] = @intCast(scan);
-                        cps_used += 1 + ex_take;
-                        run_n += 1;
-                        scan += 1;
-                    }
-
-                    if (run_n >= 2 and
-                        self.font_ctx.resolveClusterRun(self.run_slices[0..run_n], self.run_results[0..run_n]) == run_n)
-                    {
-                        for (0..run_n) |i| {
-                            const rx: usize = self.run_cells[i];
-                            const rr = raws[rx];
-                            // 색은 셀마다 다시 계산한다 — 런을 style 로 끊지 않기 때문이다.
-                            const rs = if (rr.style_id != 0) styles[rx] else ghostty.Style{};
-                            const rst = cell_color.applyBlinkPhase(rs, blink_faint);
-                            const rx16: u16 = @intCast(rx);
-                            const rsel = if (sel_range) |sr| (rx16 >= sr[0] and rx16 <= sr[1]) else false;
-                            const rhl = hlAt(hl_row, rx16);
-                            const cg = self.run_results[i];
-                            appendGlyph(&self.layer.glyphs, allocator, .{
-                                .ref = clusterRef(cg),
-                                .glyph = clusterGlyph(&self.font_ctx, cg),
-                                .cell_x = pad + @as(i32, @intCast(rx)) * cw,
-                                .cell_y = cell_y,
-                                .cell_w = if (rr.wide == .wide) cw * 2 else cw,
-                                .cell_h = ch,
-                                .ascent = ascent,
-                                .x_offset = cg.x_offset,
-                                .y_offset = cg.y_offset,
-                                .fg = resolveFg(rst, &rr, &colors, rsel, rhl),
-                            });
-                        }
-                        // **`x` 를 점프하지 않는다.** 이 셀 루프는 셀마다 배경 · 선택 · 커서를
-                        // 먼저 만들고 나서 텍스트로 오기 때문에, 건너뛰면 그 셀들의 배경이
-                        // 통째로 사라진다 (mac · Win 은 배경을 따로 모아서 점프해도 됐다).
-                        // `text_skip` 은 **텍스트만** 건너뛴다 — ligature 경로가 쓰는 그
-                        // 변수다. `spacer_tail` 은 루프 맨 위에서 먼저 `continue` 되어 이 값을
-                        // 소비하지 않으므로, wide cluster 가 섞여도 수가 어긋나지 않는다.
-                        text_skip = run_n - 1;
-                        continue;
-                    }
-
-                    var cluster: [16]u21 = undefined;
+                    // #771 — cluster 는 **하나씩** 해석한다. 예전 (#399) 에는 이어지는 grapheme
+                    // 셀을 모아 한 번에 shape 했는데, 그 경로는 줄 전체를 한 글꼴로 맞춰서 옆
+                    // cluster 가 결과를 바꿨다 (`[❤️👋🏻]` 와 `[❤️☺️]` 의 `❤️` 가 달랐다). 속도는
+                    // `resolveCluster` 의 결과 캐시가 맡는다 — 묶음이 더 벌던 몫은 처음 보는
+                    // cluster 하나에 0.7 µs 였다 (#771 미니PC 실측).
+                    var cluster: [font.MAX_CLUSTER_CPS]u21 = undefined;
                     cluster[0] = cp;
                     const extras = graphemes[x];
                     const take = @min(extras.len, cluster.len - 1);

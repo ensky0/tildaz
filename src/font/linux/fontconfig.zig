@@ -72,6 +72,12 @@ const FcPatternAddCharSet = *const fn (
     object: [*:0]const u8,
     cs: *const FcCharSet,
 ) callconv(.c) c_int;
+/// #771 — `FcBool` 은 `int` 다 (`fontconfig.h`). `lookupForChar` 의 `color` 조건에 쓴다.
+const FcPatternAddBool = *const fn (
+    p: *FcPattern,
+    object: [*:0]const u8,
+    b: c_int,
+) callconv(.c) c_int;
 
 // #406 — 설치된 family **목록**을 얻는다. `FcFontMatch` 는 요청한 이름이 시스템에 없어도
 // 항상 무언가를 돌려주므로 (오타 `NoSuchFont12345` 에도 `Noto Sans` 가 나온다) 그것만으로는
@@ -105,6 +111,7 @@ const Api = struct {
     charset_destroy: FcCharSetDestroy,
     charset_add_char: FcCharSetAddChar,
     pattern_add_charset: FcPatternAddCharSet,
+    pattern_add_bool: FcPatternAddBool,
     object_set_create: FcObjectSetCreate,
     object_set_add: FcObjectSetAdd,
     object_set_destroy: FcObjectSetDestroy,
@@ -131,6 +138,7 @@ const Api = struct {
             .charset_destroy = lookupSym(handle, FcCharSetDestroy, "FcCharSetDestroy") orelse return error.FontconfigSymbolMissing,
             .charset_add_char = lookupSym(handle, FcCharSetAddChar, "FcCharSetAddChar") orelse return error.FontconfigSymbolMissing,
             .pattern_add_charset = lookupSym(handle, FcPatternAddCharSet, "FcPatternAddCharSet") orelse return error.FontconfigSymbolMissing,
+            .pattern_add_bool = lookupSym(handle, FcPatternAddBool, "FcPatternAddBool") orelse return error.FontconfigSymbolMissing,
             .object_set_create = lookupSym(handle, FcObjectSetCreate, "FcObjectSetCreate") orelse return error.FontconfigSymbolMissing,
             .object_set_add = lookupSym(handle, FcObjectSetAdd, "FcObjectSetAdd") orelse return error.FontconfigSymbolMissing,
             .object_set_destroy = lookupSym(handle, FcObjectSetDestroy, "FcObjectSetDestroy") orelse return error.FontconfigSymbolMissing,
@@ -331,7 +339,14 @@ pub fn lookupStyled(
 /// 를 안 가져도 "최선" 폰트를 반환한다 (error 아님). caller 가 로드한 face 의
 /// `get_char_index(cp)` 로 실보유를 확인하고, 미보유면 negative cache 에
 /// 기록해 재조회를 막아야 한다.
-pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21) !MatchResult {
+///
+/// #771 — `color` 를 주면 **컬러 글꼴 (`true`) 이나 흑백 글꼴 (`false`) 만** 고른다 (`FC_COLOR`).
+/// fontconfig 는 그 조건을 글자 보유보다 먼저 본다 — 흑백 글꼴 중 `cp` 를 가진 것이 없으면
+/// `cp` 가 없는 흑백 글꼴을 돌려준다 (2026-10-16 미니PC 실측: `fc-match ':charset=1FAFA:color=false'`
+/// → `Noto Sans CJK KR`). 그래서 위 실보유 확인이 그대로 "모양이 맞는 글꼴 없음" 을 걸러 준다.
+/// 이건 **후보 고르기**일 뿐이다 — fontconfig 는 글꼴 단위로만 물을 수 있어서, 모양의 최종 판정은
+/// caller 가 글리프를 그려 본 결과로 한다 (ghostty `CodepointResolver.getIndex` 와 같은 구조).
+pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21, color: ?bool) !MatchResult {
     const api = try sharedApi();
 
     const pattern = api.pattern_create() orelse return error.FontconfigPatternCreateFailed;
@@ -343,6 +358,9 @@ pub fn lookupForChar(allocator: std.mem.Allocator, cp: u21) !MatchResult {
     defer api.charset_destroy(charset);
     if (api.charset_add_char(charset, cp) == 0) return error.FontconfigCharSetAddFailed;
     if (api.pattern_add_charset(pattern, "charset", charset) == 0) return error.FontconfigPatternAddFailed;
+    if (color) |c| {
+        if (api.pattern_add_bool(pattern, "color", @intFromBool(c)) == 0) return error.FontconfigPatternAddFailed;
+    }
 
     return matchAndExtract(api, pattern, allocator);
 }
