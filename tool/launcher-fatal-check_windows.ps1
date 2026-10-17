@@ -10,25 +10,32 @@
 # **`undefined` 를 읽고 있었다.** macOS 회차 (2026-09-02) 는 worker 가 다이얼로그를 띄우는 경로여서 이 자리를 확정하지
 # 못했다 — worker 가 스스로 안내를 띄우면 launcher 는 조용히 물러나도록 설계돼 있기 때문이다.
 #
-# launcher 단독 실패를 만드는 법 — **읽기 권한을 막은 `config_9.toml`** 을 두고 launcher (인자 없는 `tildaz.exe`) 를 띄운다.
-# `runLauncher` 는 spawn 전에 모든 index 의 config 를 `instances.configAutoStart` 로 읽고 (auto_start 집계), 파일을 **열지
-# 못한** 오류는 그대로 전파된다. 그래서 worker 는 뜨지도 않고 launcher 가 `main.zig` 의
-# `catch |err| host.showFatalRunError(rt, …, err)` 로 간다 — 기대 다이얼로그는 `TildaZ Error` /
-# `TildaZ failed to start.  Error: AccessDenied`. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의 자동 시작 설정도,
-# 떠 있는 instance 0 도 건드리지 않는다 (launcher_lock · gate 는 defer 로 풀린다).
+# launcher 단독 실패를 만드는 법 — **격리한 `APPDATA` 의 config 폴더에서 목록 보기 (`RD`) 를 막고** launcher (인자 없는
+# `tildaz.exe`) 를 띄운다. `runLauncher` 는 spawn 전에 `instances.listConfigIndices` 로 그 폴더를 열어 훑는데, 여는 오류는
+# 그대로 전파된다. 그래서 worker 는 뜨지도 않고 launcher 가 `main.zig` 의 `catch |err| host.showFatalRunError(rt, …, err)`
+# 로 간다 — 기대 다이얼로그는 `TildaZ Error` / `TildaZ failed to start.  Error: AccessDenied`. 그 실패는
+# `autostart.enable/disable` **앞**이라 자동 시작 설정을 건드리지 않는다 (launcher_lock · gate 는 defer 로 풀린다).
 #
-# 예전에는 **문법이 깨진** `config_9.toml` 로 실패시켰다. #758 부터 launcher 는 깨진 파일을 그 번호의 기본값으로 읽어
-# 실패하지 않는다 (worker 와 같은 규칙) — 그래서 열지 못하는 파일로 바꿨다. 차단은 읽기 (`R`) 만이라 지우기는 된다.
+# 실패시키는 법의 이력 (#758) — 처음에는 **문법이 깨진** `config_9.toml` 이었고, 그다음 **읽기를 막은** `config_9.toml`
+# 이었다. #758 이 둘 다 그 번호의 기본값으로 읽게 바꿔서 (`ed9a08a` — config 하나 때문에 다른 instance 까지 못 뜨지 않게)
+# launcher 가 더는 실패하지 않는다. 그래서 config **파일**이 아니라 config **폴더**를 막는다. 2026-10-17 Windows 실기에서
+# 읽기를 막은 config 로 돌린 이 도구가 worker 0 · 9 를 띄우고 `실패 있음` 으로 끝난 것을 보고 바꿨다.
 #
-# 판정 — ① 그 프로세스의 `#32770` (MessageBox) 창이 뜬다 ② 제목 · 본문이 위 문구다 ③ 닫으면 (`WM_CLOSE`) 프로세스가
-# 끝난다 (다이얼로그 없이 사라졌으면 크래시 의심). 캡처는 PrintWindow 로 남긴다. 끝나면 `config_9.toml` 을 지운다 —
-# 있던 파일이면 시작 자체를 거부한다 (사용자 설정을 덮지 않는다).
+# **격리 폴더에서만 돈다** — `APPDATA` · `LOCALAPPDATA` 를 `%TEMP%` 아래로 돌린다. 사용자의 config · lock · 로그를 건드리지
+# 않는다 (예전에는 실제 `%APPDATA%\tildaz-dev` 에 `config_9.toml` 을 만들었다). dev 판 (`tildaz-dev`) · 릴리즈 판
+# (`tildaz`) 어느 쪽이든 그 이름의 폴더를 둘 다 만들어 막는다.
+#
+# ⚠️ **이 방법으로는 `[fatal]` 로그 줄이 남지 않는다.** Windows 는 로그 폴더가 config 폴더와 같아서 (`paths.logDir` ·
+# `configDir` 둘 다 `%APPDATA%\<앱>`), 로그 경로를 준비하는 `paths.logPath` 의 `ensureDir` 가 같은 이유로 실패해 로그를
+# 조용히 건너뛴다. 판정은 다이얼로그와 종료 코드로만 한다.
+#
+# 판정 — ① launcher 프로세스의 앱 다이얼로그 창이 뜬다 ② 제목이 `TildaZ Error` 다 ③ 닫으면 (`WM_CLOSE`) 프로세스가 끝난다
+# (다이얼로그 없이 사라졌으면 크래시 의심) ④ worker 가 뜨지 않는다 (떴으면 이 실패를 만드는 법이 또 깨진 것이다). 본문
+# 문구는 캡처로 본다 — 창이 본문을 직접 그려 자식 컨트롤로는 안 보인다.
 #
 # 곁가지 — 이 문구가 거친 것 (`UnexpectedToken` 만 · 줄 · 열 없음) 은 #583 B7 이고 이 검증의 범위 밖이다.
 #
-# 실기라서 시작 전에 알린다 — 다이얼로그가 한 번 뜨고 스크립트가 닫는다. launcher 가 `tildaz_0.log` (사용자 instance 의 로그)
-# 에 `[fatal]` 한 줄을 남긴다 — 진단 채널이라 그대로 둔다. launcher 는 다른 번호를 읽기 전에 `config_0.toml` 이 없으면
-# 먼저 만든다 — 그 파일이 시작 전에 없었으면 끝에 지운다 (#758 Windows 실기에서 남은 채로 발견했다).
+# 실기라서 시작 전에 알린다 — 다이얼로그가 한 번 뜨고 스크립트가 닫는다. 끝나면 격리 폴더의 차단을 풀고 지운다.
 #
 # ⚠️ 이 파일은 UTF-8 **BOM** 으로 저장한다 (Windows PowerShell 5.1 이 BOM 없는 `.ps1` 을 cp949 로 읽는다).
 
@@ -92,22 +99,24 @@ public static class TzFatal {
 [TzFatal]::MakeDpiAware()
 
 if (-not (Test-Path $Bin)) { throw "바이너리 없음: $Bin" }
-$c9 = Join-Path $env:APPDATA "tildaz-dev\config_9.toml"
-if (Test-Path $c9) { throw "config_9.toml 이 이미 있다 — 사용자 설정일 수 있어 덮지 않는다: $c9" }
 $Out = Join-Path $env:TEMP "tildaz-launcher-fatal"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$c0 = Join-Path $env:APPDATA "tildaz-dev\config_0.toml"
-$c0Existed = Test-Path $c0     # launcher 는 config_0 이 없으면 먼저 만든다 — 그때만 끝에 지운다
-$log0 = Join-Path $env:APPDATA "tildaz-dev\tildaz_0.log"
-$logLinesBefore = if (Test-Path $log0) { (Get-Content $log0 -Encoding UTF8).Count } else { 0 }
-
-# 열 수 없는 config — 내용은 멀쩡하고 읽기 권한만 막는다. 문법이 깨진 파일은 #758 부터 기본값으로 읽혀 실패하지 않는다.
-[IO.File]::WriteAllText($c9, "auto_start = false`n", (New-Object System.Text.UTF8Encoding $false))
+$iso = Join-Path $env:TEMP "tildaz-launcher-fatal-iso"
+if (Test-Path $iso) { throw "격리 폴더가 이미 있다 — 앞 회차의 잔재일 수 있어 지우고 다시 돌린다: $iso" }
+$dirs = @("tildaz", "tildaz-dev") | ForEach-Object { Join-Path $iso $_ }     # 릴리즈 · dev 판의 config 폴더 이름
+foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+New-Item -ItemType Directory -Force -Path (Join-Path $iso "local") | Out-Null
 $me = "$env:USERDOMAIN\$env:USERNAME"
-& icacls $c9 /deny "${me}:(R)" | Out-Null
-if ($LASTEXITCODE -ne 0) { Remove-Item $c9 -Force -ErrorAction SilentlyContinue; throw "icacls 로 읽기 권한을 막지 못했다 (exit=$LASTEXITCODE)" }
+foreach ($d in $dirs) {
+    & icacls $d /deny "${me}:(RD)" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls 로 목록 보기를 막지 못했다 (exit=$LASTEXITCODE): $d" }
+}
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$runBefore = ((Get-ItemProperty $runKey -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object Name -like '*ildaz*' | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ; '
 $ok = $true
+$t0 = Get-Date
 try {
+    $env:APPDATA = $iso; $env:LOCALAPPDATA = Join-Path $iso "local"     # 이 프로세스가 띄우는 launcher 에만 간다
     $p = Start-Process -FilePath (Resolve-Path $Bin) -PassThru      # 인자 없음 = launcher
     $h = [IntPtr]::Zero
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -126,8 +135,7 @@ try {
         "본문: $body"
         $png = Join-Path $Out "dialog.png"; [TzFatal]::Capture($h, $png); "캡처: $png"
         # 앱의 error 다이얼로그는 `dialog/windows.zig` 의 자체 창 (`TildaZScrollableDialogWindow` — 본문을 직접 그려 자식
-        # 컨트롤로는 제목 Static 과 OK Button 만 보인다) 이거나 짧은 경로의 MessageBox (`#32770`) 다. 본문 문구는 캡처와
-        # 로그 (`[fatal] run failed: <err>`) 로 확인한다.
+        # 컨트롤로는 제목 Static 과 OK Button 만 보인다) 이거나 짧은 경로의 MessageBox (`#32770`) 다. 본문 문구는 캡처로 본다.
         if ($cls -ne "#32770" -and $cls -ne "TildaZScrollableDialogWindow") { "❌ 앱 다이얼로그 창이 아니다 (class=$cls)"; $ok = $false }
         if ($title -ne "TildaZ Error") { "❌ 제목이 'TildaZ Error' 가 아니다"; $ok = $false }
         [void][TzFatal]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
@@ -137,17 +145,16 @@ try {
         else { "❌ 다이얼로그를 닫았는데 프로세스가 남아 있다"; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; $ok = $false }
     }
 } finally {
-    & icacls $c9 /remove:d $me | Out-Null
-    Remove-Item $c9 -Force -ErrorAction SilentlyContinue
-    "config_9.toml 지움: $(-not (Test-Path $c9))"
-    if (-not $c0Existed -and (Test-Path $c0)) {
-        Remove-Item $c0 -Force -ErrorAction SilentlyContinue
-        "launcher 가 만든 config_0.toml 지움: $(-not (Test-Path $c0))"
-    }
+    # 이 회차가 띄운 worker — 떴다면 실패를 만드는 법이 또 깨진 것이다 (머리 주석의 이력).
+    # 같은 실행 파일로 이 회차 뒤에 뜬 것만 본다 — 다른 세션의 TildaZ 를 잡아 내리지 않는다.
+    $exe = (Resolve-Path $Bin).Path
+    $workers = @(Get-CimInstance Win32_Process -Filter "Name like 'tildaz%'" | Where-Object { $_.CreationDate -ge $t0 -and $_.ExecutablePath -eq $exe -and $_.CommandLine -match '--instance' })
+    foreach ($w in $workers) { "❌ worker 가 떴다 — pid=$($w.ProcessId) cmd=[$($w.CommandLine)]"; Stop-Process -Id $w.ProcessId -Force -ErrorAction SilentlyContinue }
+    if ($workers.Count -gt 0) { $ok = $false; Start-Sleep -Milliseconds 500 }
+    foreach ($d in $dirs) { & icacls $d /remove:d $me | Out-Null }
+    Remove-Item $iso -Recurse -Force -ErrorAction SilentlyContinue
+    "격리 폴더 지움: $(-not (Test-Path $iso))"
 }
-if (Test-Path $log0) {
-    $new = Get-Content $log0 -Encoding UTF8 | Select-Object -Skip $logLinesBefore
-    "tildaz_0.log 에 새로 남은 줄 ($($new.Count)):"
-    $new | ForEach-Object { "  " + ($_ -replace '^\[[^\]]+\]\s*', '') }
-}
+$runAfter = ((Get-ItemProperty $runKey -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object Name -like '*ildaz*' | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ; '
+if ($runAfter -ne $runBefore) { "❌ 자동 시작 설정 (HKCU Run) 이 바뀌었다 — 전 [$runBefore] 후 [$runAfter]"; $ok = $false } else { "자동 시작 설정 그대로" }
 if ($ok) { "결과: OK — launcher 단독 실패가 다이얼로그로 알려지고 크래시 없음" } else { "결과: 실패 있음" }

@@ -1415,6 +1415,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   Windows 는 2026-09-03 실기로 확인했다 — 깨진 TOML 의 `config_9.toml` + 인자 없는 실행 (launcher 단독 실패) 에서
   `TildaZ failed to start. / Error: CannotParseValue` 다이얼로그가 124 ms 에 뜨고 닫으면 exit 0
   ([`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) · [#577 댓글](https://github.com/ensky0/tildaz/issues/577)).
+  #758 부터 깨진 config 로는 launcher 가 실패하지 않아서, 그 도구는 config 폴더의 목록을 막아 같은 자리를 만든다.
 
   Linux 는 창도 PTY 도 만들지 않고 **다이얼로그만** 세운다 (`showFatalStandalone`). dialog
   는 자기 layer-shell surface 이고 항상 `wl_shm` 이라 (GPU 불필요) Wayland 연결 + globals +

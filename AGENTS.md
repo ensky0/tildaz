@@ -1224,7 +1224,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 | 도구 | 무엇 |
 |---|---|
 | [`tool/deadkey-check/deadkey-check_windows.ps1`](tool/deadkey-check/deadkey-check_windows.ps1) | US-International (`00020409`) 을 올리고 `'`+`e` 등 네 케이스를 `SendInput` 으로 쳐 자식이 받은 UTF-8 바이트로 판정 (#494) |
-| [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | 읽기 권한을 막은 `config_9.toml` 을 두고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
+| [`tool/launcher-fatal-check_windows.ps1`](tool/launcher-fatal-check_windows.ps1) | 격리 `APPDATA` 의 config 폴더에서 목록 보기를 막고 인자 없는 `tildaz.exe` (launcher) 를 띄워 `TildaZ failed to start` 다이얼로그가 뜨고 닫으면 exit 0 인지 (#577 의 `showFatalRunError(rt, …)` 자리) |
 | [`tool/key-bytes-check_windows.ps1`](tool/key-bytes-check_windows.ps1) | [`tool/key-bytes.py`](tool/key-bytes.py) 를 탭에 띄우고 `Ctrl+[` · `Ctrl+I` · `Ctrl+M` · `Ctrl+Shift+<글자>` 등을 쳐 **PTY 로 나간 바이트**를 기대값과 자동 판정 ([#648](https://github.com/ensky0/tildaz/issues/648) · [#650](https://github.com/ensky0/tildaz/issues/650)). legacy · kitty · mok2 세 모드 + `-Mode layout` (비US 배열 — 창 스레드만 프랑스어 AZERTY 로 바꿔 `Ctrl+a` · `Ctrl+q` · `AltGr+e` 를 본다). 세 OS 공용 표 [`tool/key-bytes-cases.tsv`](tool/key-bytes-cases.tsv) 의 행도 더해 키마다 판정한다 ([#684](https://github.com/ensky0/tildaz/issues/684)) |
 | [`tool/link-click-check_windows.ps1`](tool/link-click-check_windows.ps1) | 터미널 링크 ([#647](https://github.com/ensky0/tildaz/issues/647)) 를 합성 마우스 · 키로 판정 — **밑줄** (`PrintWindow` 캡처 픽셀) · **손 커서** (`GetCursorInfo` 의 `hCursor` 를 `LoadCursorW` 공유 핸들과 비교) · **열림** (`[link] opening link:` 줄 수). `-Mode probe` 로 좌표를 먼저 읽고 `-Mode A` (평소 셸) · `-Mode B` (`DECSET 1000`) · `-Mode C` (클릭 뒤 수식키) · `-Mode D` (미끄러진 클릭) · `-Mode E` (포인터 이탈 — 링크 밑줄과 탭바 컨트롤 강조가 창 밖에서 풀리는지) 를 돌린다. **Windows PowerShell 5.1 로 부른다** (`powershell.exe -NoProfile -File …`) — PowerShell 7 은 `System.Drawing.Common` 이 갈라져 `Add-Type` 이 `CS1069` 로 떨어진다 |
 | [`tool/kitty-text-check_windows.ps1`](tool/kitty-text-check_windows.ps1) | kitty keyboard protocol 을 flags 11 · 1 로 켠 채 `a` · `Shift+a` · `Space` · `Enter` · dead key · `Shift` 단독 · `Ctrl` 단독 (flags 11 만 — #606 의 `CSI 57441;2u`) 을 쳐 **앱이 PTY 에 쓴 바이트**를 판정 (#602). 자식 (Python) 이 `ENABLE_VIRTUAL_TERMINAL_INPUT` 으로 raw 바이트를 받는다 — `Read-Host` 로는 `CSI u` 를 볼 수 없다 |
@@ -1236,7 +1236,7 @@ macOS 의 `deadkey-check_macos.sh` 에 대응하는 도구 둘이에요 ([#583](
 
 ```powershell
 tool\deadkey-check\deadkey-check_windows.ps1 -Bin zig-out\bin\tildaz.exe          # 창 1 회 · 합성 키 · layout 잠깐
-tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · config_9 잠깐
+tool\launcher-fatal-check_windows.ps1 -Bin zig-out\bin\tildaz.exe   # 다이얼로그 1 회 · 격리 폴더 (사용자 config 를 안 건드림)
 tool\key-bytes-check_windows.ps1                                    # 창 4 회 (legacy · kitty · mok2 · layout) · 합성 키
 tool\key-bytes-check_windows.ps1 -Mode layout                       # 비US 배열만 — layout 이 그 창에만 잠깐 올라간다
 tool\search-bar-check_windows.ps1 -Mode probe                       # 바 자리 · 격자만 재고 끝
@@ -1262,14 +1262,17 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
   `TildaZScrollableDialogWindow` 이고 본문을 직접 그려 자식 컨트롤로는 제목 Static 과 OK Button 만 보여요. 본문 문구는
   **캡처 (PrintWindow) 와 로그** (`tildaz_0.log` 의 `[fatal] run failed: <err>`) 로 확인해요. 첫 회차에 `#32770` 을 기대해
   거짓 FAIL 이 났어요 (2026-09-03).
-- **launcher 단독 실패를 만드는 법은 "열 수 없는 `config_9.toml` + 인자 없는 실행"** 이에요 (Windows 는 `icacls /deny` 로
-  읽기만 막고, Linux 는 `chmod 000`). `runLauncher` 가 spawn 전에 모든 index 의 config 를 `configAutoStart` 로 읽고 **열지 못한**
-  오류를 그대로 전파하므로 worker 는 뜨지도 않아요 — worker 가 다이얼로그를 띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를
-  못 가르니까요. **문법이 깨진 파일로는 이제 안 돼요** — [#758](https://github.com/ensky0/tildaz/issues/758) 부터 launcher 도
-  worker 처럼 그 번호의 기본값으로 읽어요. 그 실패는 `autostart.enable/disable` **앞**이라 사용자의
-  자동 시작 설정도 떠 있는 instance 0 도 그대로예요. 다만 launcher 는 `tildaz_0.log` 에 `[fatal]` 한 줄을 남겨요. `config_9.toml`
-  이 이미 있으면 도구가 시작을 거부해요 — 사용자 설정을 덮지 않아요. launcher 는 다른 번호를 읽기 전에 `config_0.toml` 이
-  없으면 먼저 만들어요 — 시작 전에 없던 파일이면 도구가 끝에 지워요 (#758 Windows 실기에서 남은 채로 발견했어요).
+- **launcher 단독 실패를 만드는 법은 "목록을 못 읽는 config 폴더 + 인자 없는 실행"** 이에요 (Windows 는 격리 `APPDATA` 의
+  `<앱>` 폴더에 `icacls /deny <나>:(RD)`, Linux 는 격리 `XDG_CONFIG_HOME` 의 `<앱>` 폴더에 `chmod 300`). `runLauncher` 가 spawn
+  전에 `listConfigIndices` 로 그 폴더를 열어 훑고 그 오류를 그대로 전파하므로 worker 는 뜨지도 않아요 — worker 가 다이얼로그를
+  띄우는 경로 (macOS 2026-09-02 회차) 로는 이 자리를 못 가르니까요. 그 실패는 `autostart.enable/disable` **앞**이라 자동 시작
+  설정도 그대로예요.
+  - **config 파일로는 이제 안 돼요.** [#758](https://github.com/ensky0/tildaz/issues/758) 부터 launcher 는 문법이 깨진 config 도,
+    열지 못하는 config (읽기를 막은 파일 · 끊어진 링크) 도 그 번호의 기본값으로 읽고 worker 를 띄워요 (`ed9a08a`). 예전 방식으로
+    돌리면 도구가 worker 를 띄우고 `실패 있음` 으로 끝나요 (2026-10-17 Windows 실기).
+  - **Windows 는 이 방법으로 `[fatal]` 로그 줄이 안 남아요.** 로그 폴더가 config 폴더와 같아서 (`%APPDATA%\<앱>`) 로그 경로
+    준비 (`paths.logPath` 의 `ensureDir`) 도 같은 이유로 실패해 조용히 건너뛰어요. 판정은 다이얼로그와 종료 코드로 해요. Linux 는
+    로그가 `XDG_STATE_HOME` 이라 남아요.
 - **`deadkey-check_windows.ps1 -Capture`** 는 dead key 직후와 조합 직후 창을 찍어 preedit 색 (`64,64,128` · ±2) 픽셀을 세요 — #530 의
   Windows 표시 판정이에요 (기대 `>0` → `0`). 2026-09-03 실측 374 → 0.
 - **⚠️ `.ps1` 은 UTF-8 **BOM 을 붙여** 저장해요.** Windows PowerShell 5.1 은 BOM 이 없으면 파일을 ANSI (한국어 환경은
