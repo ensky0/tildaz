@@ -320,12 +320,8 @@ fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool
             indices = expanded;
         }
 
-        var any_auto_start = false;
-        for (indices) |index| {
-            if (try instances.configAutoStart(rt, allocator, index)) any_auto_start = true;
-        }
         if (!autostart_launch) {
-            if (any_auto_start) try autostart.enable(rt, allocator) else autostart.disable(rt, allocator);
+            try autostart.syncWithConfigs(rt, allocator, indices);
             // #701 — sway · Hyprland 는 XDG 자동 시작을 읽지 않아 그 설정에 따로 넣는다.
             desktop_setup.onLaunch(rt, allocator);
         }
