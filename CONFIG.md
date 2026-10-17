@@ -59,6 +59,7 @@ read exactly as written, and nothing rewrites its `hotkey`.
 > | A font is not installed | `font.family` falls back to the system's monospace font (`monospace` on Linux, Menlo on macOS, Consolas on Windows); a `font.glyph_fallback` entry is dropped. Names left at their default are only logged, not shown. |
 > | The file is not valid TOML | Starts that instance on defaults and names the line and column. Nothing from the file is applied until you fix it; other instances are not affected. |
 > | The path is not a regular file (a directory, a device) | Starts that instance on defaults and says so. Other instances are not affected. There is no size limit for a regular file. |
+> | The file cannot be opened (no read permission, a symlink whose target is gone) | Starts that instance on defaults and names the error. The file is not changed; other instances are not affected. A broken symlink is treated as a missing file: TildaZ writes a new default config where the link points. |
 >
 > Two problems still stop startup, each with a message that names it: a `shell` that cannot be run, and a global hotkey that cannot be registered. Fonts stop startup only when not even the system's monospace font can be loaded. On Linux that means the system has no fonts at all, so there is nothing to draw a dialog with: the message goes to the log and to standard error instead.
 >

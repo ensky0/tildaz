@@ -3248,7 +3248,17 @@ pub const Config = struct {
         defer allocator.free(path);
 
         var loaded = blk: {
-            const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch {
+            const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| {
+                // #758 — **정말 없을 때만** 기본 config 를 쓴다. 예전에는 여는 실패를 모두 "없음" 으로
+                // 보고 `createDefault` 로 갔다. 그래서 쓰기만 되는 파일 (권한 `200`) 은 사용자 파일 위에
+                // 기본 템플릿이 써졌다 (Linux 실기 — 14 바이트가 7,445 바이트로). 그 밖의 여는 실패
+                // (읽기 권한 없음 등) 는 아래 "못 읽음" 과 같다 — 기본값 + 안내, 파일은 그대로다.
+                // 끊어진 링크는 `FileNotFound` 라 가리키던 자리에 새로 쓴다 — 빈자리를 채우는 것이다.
+                if (err != error.FileNotFound) {
+                    var fallback = defaultOwned(allocator, shell_resolved);
+                    fallback.load_notice = readFailedNoticeAlloc(allocator, path, err);
+                    break :blk fallback;
+                }
                 // #382 — 측정 인스턴스는 **사용자 설정을 만들지 않는다.** config 는 worker 와
                 // 공유하지만 (같은 폰트 · 테마로 재야 다른 터미널과의 비교가 성립한다) 그것은
                 // *읽기* 까지다. 파일이 없는 기계에서 하네스를 먼저 돌리면 측정 프로세스가
@@ -4939,6 +4949,73 @@ test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 �
     // 빼면 사용자는 자기 설정이 적용됐는지 모른 채 쓰게 된다 — 이 이슈의 원래 증상과
     // 사실상 같아진다.
     try std.testing.expect(std.mem.indexOf(u8, notice.?, "default settings") != null);
+}
+
+test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는 가리키던 자리에 기본 config 를 쓴다" {
+    // 권한 · 링크를 쓰는 test 라 POSIX 만 돈다.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
+    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    defer allocator.free(env);
+    const block = [_:null]?[*:0]const u8{env.ptr};
+    const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } } };
+    try tmp.dir.createDirPath(io, app_id.name);
+    var cfg_dir = try tmp.dir.openDir(io, app_id.name, .{});
+    defer cfg_dir.close(io);
+    const previous_index = instance_context.workerIndex();
+    defer if (previous_index) |i| instance_context.setWorkerIndex(i);
+
+    // ① 쓰기만 되는 파일 (권한 200). 예전에는 "없음" 으로 보고 기본 템플릿을 그 위에 썼다.
+    const user_text = "hotkey = \"F5\"\n";
+    try cfg_dir.writeFile(io, .{ .sub_path = "config_5.toml", .data = user_text });
+    {
+        const f = try cfg_dir.openFile(io, "config_5.toml", .{});
+        defer f.close(io);
+        try f.setPermissions(io, .fromMode(0o200));
+    }
+    // root 처럼 권한과 무관하게 읽히는 환경이면 이 갈래를 만들 수 없다.
+    if (cfg_dir.openFile(io, "config_5.toml", .{})) |f| {
+        f.close(io);
+        return error.SkipZigTest;
+    } else |_| {}
+    instance_context.setWorkerIndex(5);
+    {
+        const cfg = Config.load(rt, allocator, try allocator.dupe(u8, "/bin/bash"));
+        defer cfg.deinit(allocator);
+        defer clearConfigNotice();
+        const notice = cfg.load_notice orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, notice, "AccessDenied") != null);
+        try std.testing.expect(std.mem.indexOf(u8, notice, "The file was not changed.") != null);
+    }
+    {
+        const f = try cfg_dir.openFile(io, "config_5.toml", .{ .mode = .write_only });
+        defer f.close(io);
+        try f.setPermissions(io, .fromMode(0o600));
+    }
+    const kept = try cfg_dir.readFileAlloc(io, "config_5.toml", allocator, .limited(1024));
+    defer allocator.free(kept);
+    try std.testing.expectEqualStrings(user_text, kept);
+
+    // ② 끊어진 링크 — 정말 없는 것이라 가리키던 자리에 기본 config 를 쓴다 (빈자리를 채움).
+    const target = try std.Io.Dir.path.join(allocator, &.{ root, "missing.toml" });
+    defer allocator.free(target);
+    try cfg_dir.symLink(io, target, "config_6.toml", .{});
+    instance_context.setWorkerIndex(6);
+    {
+        const cfg = Config.load(rt, allocator, try allocator.dupe(u8, "/bin/bash"));
+        defer cfg.deinit(allocator);
+        defer clearConfigNotice();
+        try std.testing.expect(cfg.load_notice == null);
+    }
+    const written = try tmp.dir.readFileAlloc(io, "missing.toml", allocator, .limited(64 * 1024));
+    defer allocator.free(written);
+    try std.testing.expect(std.mem.startsWith(u8, written, "# TildaZ config"));
 }
 
 test "#501 안내는 Config 소유이고 deinit 이 정확히 한 번 해제한다" {

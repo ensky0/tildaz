@@ -652,11 +652,17 @@ pub fn configAutoStart(rt: Runtime, allocator: std.mem.Allocator, index: u32) !b
     return autoStartFromContent(allocator, content, path);
 }
 
-/// #758 — launcher 가 config 하나를 읽는다. **열었는데 못 읽은 파일은 `null`** 이고 호출부가 그 번호의
-/// 기본값을 쓴다. worker (`Config.load`) 가 같은 파일을 기본값으로 띄우므로 (#501), 여기서 오류를
-/// 올리면 launcher 가 멈추거나 worker 와 다른 값을 본다. 열지 못한 것은 지금까지처럼 오류다.
+/// #758 — launcher 가 config 하나를 읽는다. **열지 못했거나 읽지 못한 파일은 `null`** 이고 호출부가 그
+/// 번호의 기본값을 쓴다. worker (`Config.load`) 가 같은 파일을 기본값으로 띄우므로 (#501), 여기서 오류를
+/// 올리면 launcher 가 멈추거나 worker 와 다른 값을 본다. 열기 실패도 같다 — 끊어진 링크 (목록이 링크도
+/// 담는다) · 읽기 권한 없음이다. 예전에는 오류를 올려 config 하나 때문에 모든 instance 가 못 떴다
+/// (#758 Linux 실기). Ghostty 도 config 를 못 열면 경고만 남긴다 (`Config.loadOptionalFile`).
 fn readConfigContent(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
-    const file = try std.Io.Dir.openFileAbsolute(rt.io, path, .{});
+    const file = std.Io.Dir.openFileAbsolute(rt.io, path, .{}) catch |err| {
+        // #758 — 같은 파일 · 같은 오류는 한 번만 적는다 (`config.logConfigReadFallback`).
+        config.logConfigReadFallback(path, err);
+        return null;
+    };
     defer file.close(rt.io);
     // worker 와 같은 읽기다 (`config.readConfigFile` — 크기 상한 없음 · 일반 파일만).
     return config.readConfigFile(rt, allocator, file) catch |err| {
@@ -799,6 +805,55 @@ test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
     try std.testing.expectEqualSlices(u32, &.{ 0, 2 }, indices);
     // 링크를 따라 읽는다 — 그 번호의 값이 그대로 나온다.
     try std.testing.expect(!try configAutoStart(rt, allocator, 0));
+}
+
+test "#758 launcher 는 열지 못한 config (끊어진 링크 · 읽기 권한 없음) 를 그 번호의 기본값으로 본다" {
+    // 링크 · 권한을 쓰는 test 라 POSIX 만 돈다.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    defer allocator.free(env);
+    const block = [_:null]?[*:0]const u8{env.ptr};
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+
+    try tmp.dir.createDirPath(std.testing.io, app_id.name);
+    var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
+    defer cfg_dir.close(std.testing.io);
+    // config_0 은 정상, config_3 은 끊어진 링크, config_4 는 읽기 권한이 없다.
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_0.toml", .data = "auto_start = true\n" });
+    const target = try std.Io.Dir.path.join(allocator, &.{ root, "missing.toml" });
+    defer allocator.free(target);
+    try cfg_dir.symLink(std.testing.io, target, "config_3.toml", .{});
+    try cfg_dir.writeFile(std.testing.io, .{ .sub_path = "config_4.toml", .data = "hotkey = \"F9\"\n" });
+    {
+        const f = try cfg_dir.openFile(std.testing.io, "config_4.toml", .{});
+        defer f.close(std.testing.io);
+        try f.setPermissions(std.testing.io, .fromMode(0o000));
+    }
+    // 권한 000 파일도 `tmp.cleanup` 이 지운다 — 지우기는 폴더의 쓰기 권한만 본다.
+
+    const indices = try listConfigIndices(rt, allocator);
+    defer allocator.free(indices);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 3, 4 }, indices);
+    // launcher 의 반복문 (`main.zig`) 이 부르는 그대로 — 오류 없이 각 번호의 값이 나온다. 예전에는
+    // config_3 에서 `FileNotFound` 로 launcher 전체가 멈췄다.
+    try std.testing.expect(try configAutoStart(rt, allocator, 0));
+    try std.testing.expectEqual(config.Defaults.auto_start, try configAutoStart(rt, allocator, 3));
+    const text3 = try configHotkeyText(rt, allocator, 3);
+    defer allocator.free(text3);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(3), text3);
+    // root 처럼 권한과 무관하게 읽히는 환경이면 config_4 갈래는 만들 수 없다.
+    if (cfg_dir.openFile(std.testing.io, "config_4.toml", .{})) |f| {
+        f.close(std.testing.io);
+        return;
+    } else |_| {}
+    const text4 = try configHotkeyText(rt, allocator, 4);
+    defer allocator.free(text4);
+    try std.testing.expectEqualStrings(config.Defaults.hotkeyFor(4), text4);
 }
 
 test "#758 launcher 는 크기와 무관하게 config 를 읽고, 일반 파일이 아니면 그 번호의 기본값으로 본다" {
