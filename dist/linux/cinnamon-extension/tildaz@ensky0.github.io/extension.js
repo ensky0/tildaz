@@ -168,6 +168,20 @@ function appIgnoredConfig(index, bytes) {
 }
 
 /**
+ * #758 — "앱이 기본값으로 읽었다" 는 번호 · 내용마다 **한 번만** 남긴다. 같은 config 를 두 곳이
+ * 정당하게 읽는다 — 표시 파일을 보고 하는 다시 읽기와, 창이 뜰 때의 배치 (`map`) 다. 읽을 때마다
+ * 남기면 한 번에 두 줄이었다 (#758 GNOME · Cinnamon 실기). 앱의 `config.ParseFallbackSeen` 과 같은
+ * 규칙이다. 확장을 끄면 비운다.
+ */
+const loggedIgnoredConfig = new Map();
+function logIgnoredConfigOnce(index, bytes, log) {
+  const digest = GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes);
+  if (loggedIgnoredConfig.get(index) === digest) return;
+  loggedIgnoredConfig.set(index, digest);
+  log(`${LOG_TAG} config_${index}.toml was read as defaults by the app — using defaults`);
+}
+
+/**
  * #510 — grab 결과를 worker 가 읽을 수 있게 남긴다. 형식은 `v1 <ok|failed> <hotkey>`
  * 한 줄이고, hotkey 는 **config 에 적힌 원문 그대로**다 — worker 가 그 값으로 "이 기록이
  * 지금 config 의 것인가" 를 판정해 stale 파일에 속지 않는다.
@@ -425,6 +439,7 @@ function replaceAllForMonitorChange() {
 }
 
 function disable() {
+  loggedIgnoredConfig.clear();
   if (st?.monitorsChangedId) {
     try {
       Main.layoutManager.disconnect(st.monitorsChangedId);
@@ -525,7 +540,7 @@ function readConfig(index) {
     const [ok, bytes] = GLib.file_get_contents(path);
     if (ok && appIgnoredConfig(index, bytes)) {
       // #758 — 앱이 이 내용을 무시하고 기본값으로 시작했다. 같은 값을 써야 hotkey 기록이 맞는다.
-      global.log(`${LOG_TAG} config_${index}.toml was read as defaults by the app — using defaults`);
+      logIgnoredConfigOnce(index, bytes, (m) => global.log(m));
     } else if (ok) {
       const j = parseTomlSubset(new TextDecoder().decode(bytes));
       if (typeof j.hotkey === "string") {
