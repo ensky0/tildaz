@@ -1416,11 +1416,15 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
 (`|`) 을 aliased 로 크게 그려 기울기 · 획 폭을, `GetDesignGlyphMetrics` 로 글자 간격을 재요.
 
 ```powershell
-zig build-exe -O ReleaseSafe --dep directwrite -Mroot=tool/synthetic-style-probe_windows.zig `
-    -O ReleaseSafe -Mdirectwrite=src/font/windows/directwrite.zig --cache-dir C:/ziglang/tildaz-cache
+zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
+    -O ReleaseSafe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
 .\synthetic-style-probe_windows.exe                       # 기본 글꼴 넷 (없는 글꼴은 건너뜀)
 .\synthetic-style-probe_windows.exe --family "D2Coding" --char l --em 300
 ```
+
+- **PowerShell 에서는 `-M…=…` 인자를 따옴표로 감싸요.** 감싸지 않으면 PowerShell 5.1 이 그 인자를 `=` 에서
+  나눠 `found another zig file '.zig' after root source file '.zig'` 로 빌드가 실패해요 (2026-10-17 데스크탑
+  Ryzen 7 5700G 실측).
 
 - **`-O` · `-target` 은 `-M` 앞에 둬요.** 모듈 설정은 바로 뒤의 `-M` 에 붙어요. 뒤에 두면 도구가 지금 기기 ·
   Debug 로 컴파일되어, Linux 에서 크로스 빌드할 때 *"Windows 전용이에요"* 오류가 나요 (2026-10-17 실측).
