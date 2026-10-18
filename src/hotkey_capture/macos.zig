@@ -1,8 +1,19 @@
 const std = @import("std");
 const objc = @import("../macos_objc.zig");
+const app_id = @import("../app_id.zig");
 
-pub const begin_notification_name = "me.ensky0.tildaz.hotkey-capture-begin";
-pub const end_notification_name = "me.ensky0.tildaz.hotkey-capture-end";
+/// 같은 판의 다른 worker 에게만 "hotkey 를 잠깐 멈춰라" 를 알린다. 판 (dev · 릴리즈) 을
+/// 가르지 않으면 dev 의 캡처가 릴리즈 hotkey 까지 멈춘다 (#760 — `instance_request` 와 같은 결함).
+pub const begin_notification_name = app_id.bundle_id ++ ".hotkey-capture-begin";
+pub const end_notification_name = app_id.bundle_id ++ ".hotkey-capture-end";
+
+test "알림 이름은 판마다 갈린다 (#760)" {
+    const request = @import("../instance_request/macos.zig");
+    for ([_][]const u8{ request.notification_name, begin_notification_name, end_notification_name }) |n| {
+        try std.testing.expect(std.mem.startsWith(u8, n, app_id.bundle_id ++ "."));
+    }
+    if (app_id.is_dev) try std.testing.expectEqualStrings("me.ensky0.tildaz.dev.new-instance", request.notification_name);
+}
 
 var suspended = std.atomic.Value(bool).init(false);
 

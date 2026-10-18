@@ -2757,6 +2757,11 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   어느 쪽인지는 *뜨는 순서*가 정해요 (dev 를 먼저 띄우면 릴리즈 창을, 릴리즈를 먼저 띄우면
   dev 창을 집었어요). 그러면 릴리즈 launcher 의 새-instance 요청이 개발 빌드로 가요.
   **Linux 는 IPC 가 소켓이라 이 문제가 없어요** — 창 이름으로 남을 찾는 것은 Windows 뿐이에요.
+- **macOS 는 세션 전체 알림 (`NSDistributedNotificationCenter`) 의 이름이 IPC 주소예요.** 새 instance 요청과
+  hotkey 캡처 시작 · 끝 알림이 2026-10-18 까지 고정 이름 (`me.ensky0.tildaz.new-instance` 등) 이라, dev
+  launcher 한 번에 **릴리즈 instance 0 도 다이얼로그를 띄웠어요** ([#760](https://github.com/ensky0/tildaz/issues/760)
+  macOS 실기). 두 다이얼로그가 같은 자리에 겹쳐서 합성 키가 릴리즈 쪽으로 갔어요. 지금은 이름 앞에
+  `app_id.bundle_id` 를 붙여요 (릴리즈 이름은 그대로예요).
 - **⚠️ 창 *제목*을 가를 때는 확장의 토큰을 함께 봐요.** 그 제목은 **Linux 의 `xdg_toplevel`
   제목으로도 쓰이고** (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension
   의 `workerIndex()` 가 그것으로 번호를 읽어요. 처음에는 확장이 `/^TildaZ-(\d+)$/` 리터럴로
