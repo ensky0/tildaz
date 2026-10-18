@@ -110,9 +110,19 @@ function Invoke-AppQuiet([int]$i) {
     }
 }
 
+# #799 — 만든 뒤 전역 hotkey 를 `shift+f11` 로 바꾼다. dev 판의 기본값은 instance 9 가 `F1` 이라
+# (`Defaults.hotkeyFor` 가 표를 거꾸로 읽는다) 평소 쓰는 릴리즈 instance 0 의 `F1` 과 부딪혀
+# `boots` · `no-cap` 이 `Hotkey Registration Failed` 로 깨졌다 (#796 Windows 회차). 이 회차들이 재는
+# 것은 config 로드라 hotkey 값은 상관없다. 처음 만드는 한 번은 기본값으로 뜰 수밖에 없다 — config 를
+# 앱이 만들게 하는 것이 이 도구의 원칙이라서다.
 function New-Base([int]$i) {
     Invoke-App $i
-    Test-Path (Get-Cfg $i)
+    $cfg = Get-Cfg $i
+    if (-not (Test-Path $cfg)) { return $false }
+    $re = [regex]'(?m)^hotkey\s*=.*$'
+    $txt = $re.Replace([IO.File]::ReadAllText($cfg), 'hotkey           = "shift+f11"', 1)
+    [IO.File]::WriteAllText($cfg, $txt, (New-Object Text.UTF8Encoding($false)))
+    $true
 }
 
 # 로그에서 `[config]` 안내 줄 (들여쓴 목록 항목) 만 뽑는다.

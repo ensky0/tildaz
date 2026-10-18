@@ -108,8 +108,13 @@ cmd_no_layer_shell() {
     local LOG=$XDG_STATE_HOME/$APP/tildaz_stress.log; : > $LOG
     TILDAZ_VERBOSE=1 timeout 6 "$TILDAZ" --instance 0 -e $WORK/bands.sh >/dev/null 2>&1
     grep -E 'scale preferred|capabilities:|output mode|basis output' $LOG | sed -E 's/^\[[^]]+\] /    /; s/(capabilities: ).*(layer_shell=[a-z]+).*/\1\2/' | head -6
-    echo "== ③ #577 — 깨진 config_9 + 인자 없는 launcher → 다이얼로그 (xdg_toplevel fallback) · 캡처"
-    printf 'this is not toml [[[\n' > $XDG_CONFIG_HOME/$APP/config_9.toml
+    echo "== ③ #577 — 목록을 못 읽는 config 폴더 + 인자 없는 launcher → 다이얼로그 (xdg_toplevel fallback) · 캡처"
+    # #799 — 예전에는 깨진 config_9 를 적었다. #758 부터 launcher 는 깨진 config 를 그 번호의 기본값으로
+    # 읽고 worker 를 띄워서, 이 회차가 다이얼로그 대신 worker 0 · 9 를 실제 세션에 띄웠다 (dev 9 의 기본
+    # `F1` 이 평소 쓰는 릴리즈 instance 0 과 부딪혔다). 지금 방법은 폴더 목록 보기를 막는 것이다 —
+    # `runLauncher` 가 spawn 전에 그 폴더를 훑다 실패해 worker 는 뜨지 않는다 (AGENTS.md
+    # `# Windows — 합성 입력으로 dead key · launcher 실패를 …`).
+    chmod 300 $XDG_CONFIG_HOME/$APP
     local L0=$XDG_STATE_HOME/$APP/tildaz_0.log; : > $L0
     TILDAZ_VERBOSE=1 "$TILDAZ" >$WORK/launcher.out 2>&1 & local lp=$!; sleep 4
     grep -E 'fatal|dialog\] (open|configured|createDialogSurface)' $L0 | sed -E 's/^\[[^]]+\] /    /' | head -6
@@ -123,7 +128,7 @@ cmd_no_layer_shell() {
         echo "    ⚠️ 자동 캡처 실패 — 다이얼로그를 띄워 둔 채 **사용자가 PrtSc** 로 찍는다 (아래 30 초 대기)"
         sleep 30
     fi
-    kill -TERM $lp 2>/dev/null; rm -f $XDG_CONFIG_HOME/$APP/config_9.toml
+    kill -TERM $lp 2>/dev/null; chmod 700 $XDG_CONFIG_HOME/$APP
 }
 
 # #619 실험 ③ — **한 배율 안에서** 논리 높이만 바꾼다. 배율을 바꾸는 회차 (`hypr-scale`) 는 "배율이 원인" 까지만

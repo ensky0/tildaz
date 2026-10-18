@@ -2736,6 +2736,20 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
 기본 hotkey 도 갈려요 — 릴리즈는 index 0 → `F1`, 개발 빌드는 0 → `F10` 으로 **표를 거꾸로**
 읽어요 (같은 조합을 둘이 등록하면 먼저 등록한 쪽만 발화하고 재등록으로 못 빼앗아서예요).
 
+**그래서 손으로 띄우는 dev 판은 instance 0 부터 써요** (`F10` · `F9` …) — 평소 쓰는 릴리즈 앞 번호
+(`F1` · `F2` …) 와 겹치지 않아요. 표가 열 칸을 거꾸로 나눠 쓰는 것이라 **짝은 남아요** — dev 9 = 릴리즈
+0 = `F1` 이에요 ([#799](https://github.com/ensky0/tildaz/issues/799)). 두 판이 절대 안 겹치게 하려면 dev 가
+다른 키 묶음을 써야 하는데, 2026-10-19 사용자 결정으로 그렇게 하지 않았어요 (실용).
+
+- **검사 도구는 instance 9 를 써요** (평소 쓰는 0 번과 config · 로그 · lock 이 섞이지 않게). `-e` 로 띄우면
+  config 에 단축키가 있어도 등록하지 않아 문제가 없어요.
+- **`-e` 없이 9 번을 띄우는 회차는 겹치지 않는 단축키를 적고 띄워요** — `shift+f11` 을 써요
+  (`config-notice-check` 의 `mkbase` · `New-Base`, `actions-check_windows.ps1` 의 worker 모드,
+  `stress/measure-repeat.sh`). 기본 `F1` 그대로면 릴리즈 0 이 떠 있는 기기에서 Windows 는 등록 실패
+  (`[fatal] Hotkey Registration Failed`) 로 회차가 깨지고, macOS 는 event tap 이 둘 다 반응해요.
+- **9 를 0 으로 바꾸지 않아요.** 여러 도구가 `--instance 9` 글자로 프로세스를 고르고 `config_9.toml` 을
+  지워서, 0 으로 바꾸면 평소 쓰는 instance 0 을 죽이고 dev `config_0.toml` 을 지워요 (#799 조사).
+
 - **`release` 기본값은 `false`예요.** 옵션을 생략해도 설치된 릴리즈의 설정을 건드리지 않아요.
   `zig build`는 dev, `zig build -Drelease=true`는 릴리즈예요. 옛 `-Ddev` 옵션은 쓰지 않아요.
 - **`zig build package` 는 `-Drelease=true` 없이는 아예 실패해요.** 릴리즈 산출물이 dev 이름으로

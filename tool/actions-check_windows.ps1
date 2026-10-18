@@ -240,7 +240,7 @@ $VK = @{
     A = 0x41; B = 0x42; C = 0x43; D = 0x44; E = 0x45; F = 0x46; G = 0x47; H = 0x48; I = 0x49; J = 0x4A
     K = 0x4B; L = 0x4C; M = 0x4D; N = 0x4E; O = 0x4F; P = 0x50; Q = 0x51; R = 0x52; S = 0x53; T = 0x54
     U = 0x55; V = 0x56; W = 0x57; X = 0x58; Y = 0x59; Z = 0x5A; D0 = 0x30; D1 = 0x31; D2 = 0x32; D3 = 0x33
-    Shift = 0x10; Ctrl = 0x11; Alt = 0x12; Enter = 0x0D; Esc = 0x1B; Back = 0x08; F1 = 0x70; F4 = 0x73; F12 = 0x7B
+    Shift = 0x10; Ctrl = 0x11; Alt = 0x12; Enter = 0x0D; Esc = 0x1B; Back = 0x08; F1 = 0x70; F4 = 0x73; F11 = 0x7A; F12 = 0x7B
     Left = 0x25; Up = 0x26; Right = 0x27; Down = 0x28; Home = 0x24; End = 0x23; PgUp = 0x21; PgDn = 0x22
     Plus = 0xBB; Minus = 0xBD; LBracket = 0xDB; RBracket = 0xDD; Slash = 0xBF; Hangul = 0x15
 }
@@ -854,7 +854,16 @@ function Run-Worker {
     if (Test-Path $Cfg9) { throw "config_9.toml 이 이미 있다 — 사용자 설정을 건드리지 않으려고 멈춘다: $Cfg9" }
     $runBefore = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).'tildaz-dev'
     try {
-        Start-App $false
+        # 첫 실행은 앱이 config_9 를 만들게만 한다. 이때는 기본값 `F1` 이라 평소 쓰는 릴리즈
+        # instance 0 이 떠 있으면 `Hotkey Registration Failed` 로 끝나므로 (#799 Windows 회차),
+        # `Start-App` 의 fatal 판정을 거치지 않고 파일이 생기기만 기다린다.
+        Stop-Tz; Start-Sleep -Milliseconds 400
+        $first = Start-Process -FilePath $Bin -PassThru -ArgumentList '--instance', '9'
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path $Cfg9) -and $sw.ElapsedMilliseconds -lt 20000) { Start-Sleep -Milliseconds 150 }
+        Start-Sleep -Milliseconds 800
+        Stop-Tz
+        if (-not (Test-Path $Cfg9)) { throw "앱이 config_9 를 만들지 않았다 (exit=$(if ($first.HasExited) { $first.ExitCode } else { '-' }))" }
         $hot = ((Get-Content $Cfg9 -Encoding UTF8 -ErrorAction SilentlyContinue) | Where-Object { $_ -match '^\s*hotkey\s*=' } | Select-Object -First 1)
         $auto = ((Get-Content $Cfg9 -Encoding UTF8 -ErrorAction SilentlyContinue) | Where-Object { $_ -match '^\s*auto_start\s*=' } | Select-Object -First 1)
         "config_9: $hot · $auto"
@@ -862,22 +871,30 @@ function Run-Worker {
         if ($hk -ne 'f1') { Record 'W0' 'dev instance 9 의 hotkey 는 F1' 'f1' $hk $false; return }
         Record 'W0' 'config_9 auto_start = false (#683)' 'false' $auto ($auto -match 'false')
 
-        # W1 — 전역 hotkey 토글. 첫 F1 은 우리 창이 foreground 일 때만 보낸다 (안 먹으면 그 창으로 간다).
-        Guard; LogMark; [void][TzAct]::Chord(@($VK.F1)); Start-Sleep -Milliseconds 900
+        # #799 — dev 9 의 기본 `F1` 은 평소 쓰는 릴리즈 instance 0 의 `F1` 과 부딪힌다. 겹치지 않는
+        # `shift+f11` 로 바꿔 다시 띄우고, 아래 회차는 그 키로 누른다.
+        $re = [regex]'(?m)^hotkey\s*=.*$'
+        $txt = $re.Replace([IO.File]::ReadAllText($Cfg9), 'hotkey           = "shift+f11"', 1)
+        [IO.File]::WriteAllText($Cfg9, $txt, (New-Object Text.UTF8Encoding($false)))
+        Start-App $false
+        $toggle = @($VK.Shift, $VK.F11)
+
+        # W1 — 전역 hotkey 토글. 첫 키는 우리 창이 foreground 일 때만 보낸다 (안 먹으면 그 창으로 간다).
+        Guard; LogMark; [void][TzAct]::Chord($toggle); Start-Sleep -Milliseconds 900
         $v1 = [TzAct]::IsWindowVisible($script:h)
         $hidden = -not $v1
-        if ($hidden) { [void][TzAct]::Chord(@($VK.F1)); Start-Sleep -Milliseconds 1200 }
+        if ($hidden) { [void][TzAct]::Chord($toggle); Start-Sleep -Milliseconds 1200 }
         $v2 = [TzAct]::IsWindowVisible($script:h)
-        Record 'W1' '전역 hotkey F1 두 번 — 숨김 → 보임' '1 → 0 → 1' "1 → $([int]$v1) → $([int]$v2) · 로그 $(((LogFind '\[toggle\]') | ForEach-Object { Short $_ }) -join ' / ')" ($hidden -and $v2)
+        Record 'W1' '전역 hotkey Shift+F11 두 번 — 숨김 → 보임' '1 → 0 → 1' "1 → $([int]$v1) → $([int]$v2) · 로그 $(((LogFind '\[toggle\]') | ForEach-Object { Short $_ }) -join ' / ')" ($hidden -and $v2)
         if (-not $v2) { return }
         Start-Sleep -Milliseconds 500; [TzAct]::Topmost($script:h, $true); Guard
 
-        # W2 — ⋯ → Show/Hide (첫 항목) → 숨김. F1 로 다시 띄운다.
+        # W2 — ⋯ → Show/Hide (첫 항목) → 숨김. Shift+F11 로 다시 띄운다.
         MenuKeys @($VK.Home)
         $v1 = [TzAct]::IsWindowVisible($script:h)
-        if (-not $v1) { [void][TzAct]::Chord(@($VK.F1)); Start-Sleep -Milliseconds 1200 }
+        if (-not $v1) { [void][TzAct]::Chord($toggle); Start-Sleep -Milliseconds 1200 }
         $v2 = [TzAct]::IsWindowVisible($script:h)
-        Record 'W2' '⋯ → Show/Hide → 숨김, F1 → 보임' '0 → 1' "$([int]$v1) → $([int]$v2)" ((-not $v1) -and $v2)
+        Record 'W2' '⋯ → Show/Hide → 숨김, Shift+F11 → 보임' '0 → 1' "$([int]$v1) → $([int]$v2)" ((-not $v1) -and $v2)
         if (-not $v2) { return }
         Start-Sleep -Milliseconds 500; [TzAct]::Topmost($script:h, $true); Guard
 
