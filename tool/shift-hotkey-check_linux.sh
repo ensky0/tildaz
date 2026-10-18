@@ -150,6 +150,12 @@ for hk in "${HOTKEYS[@]}"; do
         RESULT[$hk]="❌ 반응 없음"
     fi
     echo "  $hk → ${RESULT[$hk]}   (등록 로그: ${reg:-없음})"
+    # sway 는 worker 가 실행 중에 `bindcode` 로 등록하고, worker 를 내려도 그 바인딩이 남는다. sway 에는
+    # 실행 중 바인딩을 나열하는 명령이 없으니 worker 로그의 등록 줄에서 키를 읽어 푼다 (2026-10-18 실제 sway 회차).
+    case "$DE" in *sway*)
+        combo=$(grep -o 'bindcode --no-warn [^ ]* exec' "$LOG" | tail -1 | cut -d' ' -f3)
+        [ -n "$combo" ] && swaymsg "unbindcode $combo" >/dev/null 2>&1 ;;
+    esac
 done
 
 echo "RESULT $DE:"
