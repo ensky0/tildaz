@@ -73,11 +73,45 @@ press() {
     if [ -n "${VKBD_FIFO:-}" ]; then echo "key $1" > "$VKBD_FIFO"; else echo "key $1" > "$UFIFO"; fi
 }
 
+# Hyprland · COSMIC 은 launcher 쪽 동기화 (`shortcut_sync`) 가 등록한다 — worker 만 띄우면 등록이 없다.
+# 그 동기화는 **모든** dev config 를 다시 맞추므로 (예: dev `config_0` 의 `F10`) 회차 전 상태를 저장했다가
+# 끝나면 되돌린다. 2026-10-18 Hyprland 회차에서 저장 없이 돌려 dev `F10` 바인딩이 남았다.
+# KDE · sway 는 worker 가, GNOME · Cinnamon 은 확장이 등록한다 — 동기화를 부르지 않는다.
+NEEDS_SYNC=0
+case "$DE" in *Hyprland*|*COSMIC*) NEEDS_SYNC=1 ;; esac
+COSMIC_RON=${XDG_CONFIG_HOME:-$HOME/.config}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
+
+hypr_tildaz_binds() {   # tildaz 바인딩의 description (`<명령> · <키>`) 을 한 줄씩
+    hyprctl binds -j 2>/dev/null | python3 -c 'import json,sys
+for b in json.load(sys.stdin):
+    d=b.get("description","")
+    if "tildaz" in d and " · " in d: print(d)'
+}
+save_desktop_state() {
+    case "$DE" in
+        *Hyprland*) hypr_tildaz_binds > $WORK/hypr.before ;;
+        *COSMIC*) if [ -f "$COSMIC_RON" ]; then cp "$COSMIC_RON" $WORK/cosmic.before; else : > $WORK/cosmic.absent; fi ;;
+    esac
+}
+restore_desktop_state() {
+    case "$DE" in
+        *Hyprland*)
+            # 회차 전에 없던 tildaz 바인딩만 푼다. 키는 description 의 ` · ` 뒤다 (`shortcut_sync` 의 규칙).
+            hypr_tildaz_binds | while IFS= read -r d; do
+                grep -qxF -- "$d" $WORK/hypr.before 2>/dev/null && continue
+                keys=${d##* · }
+                hyprctl eval "hl.unbind(\"$keys\")" >/dev/null 2>&1 || hyprctl keyword unbind "$keys" >/dev/null 2>&1
+            done ;;
+        *COSMIC*)
+            if [ -f $WORK/cosmic.before ]; then cp $WORK/cosmic.before "$COSMIC_RON"
+            elif [ -f $WORK/cosmic.absent ]; then rm -f "$COSMIC_RON"; fi ;;
+    esac
+}
+
 cleanup() {
     stop_worker
     rm -f "$CONFIG" "$LOG"
-    # COSMIC 항목 · sway/Hyprland 런타임 등록은 남은 config 기준으로 다시 맞춘다.
-    "$TILDAZ" --desktop cleanup >/dev/null 2>&1
+    [ -f $WORK/template.toml ] && restore_desktop_state
     case "$DE" in *KDE*)
         gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
             --method org.kde.KGlobalAccel.unregister "$APP.instance$INSTANCE" "toggle-$INSTANCE" >/dev/null 2>&1 ;;
@@ -88,6 +122,7 @@ cleanup() {
 trap cleanup EXIT
 
 make_template
+save_desktop_state
 if [ -z "${VKBD_FIFO:-}" ]; then
     setsid python3 "$ROOT/tool/ukbd_linux.py" --fifo "$UFIFO" >$WORK/ukbd.log 2>&1 </dev/null &
     sleep 6; grep -q ready $WORK/ukbd.log || die "uinput 장치를 못 만들었다 — $(cat $WORK/ukbd.log)"
@@ -98,14 +133,14 @@ for hk in "${HOTKEYS[@]}"; do
     stop_worker
     sed -e "s|^hotkey  *= .*|hotkey           = \"$hk\"|" -e 's|^auto_start  *= .*|auto_start       = false|' \
         -e 's|^hidden_start  *= .*|hidden_start     = false|' $WORK/template.toml > "$CONFIG"
-    # COSMIC 은 launcher 쪽 동기화가 등록한다. 다른 데스크톱에서는 할 일이 없다.
-    "$TILDAZ" --desktop cleanup >/dev/null 2>&1
+    [ "$NEEDS_SYNC" = 1 ] && "$TILDAZ" --desktop cleanup >/dev/null 2>&1
     : > "$LOG"
     TILDAZ_VERBOSE=1 setsid "$TILDAZ" --instance $INSTANCE >/dev/null 2>&1 </dev/null &
     sleep 5
     [ -n "$(worker_pids)" ] || { RESULT[$hk]="worker 가 안 떴다"; continue; }
     grep -q "\[fatal\]\|notice shown" "$LOG" && echo "  ⚠️  $hk: 시작 안내 · fatal 로그가 있다 — 회차가 섞였을 수 있다"
     reg=$(grep -h -E "hotkey registered|bindcode|bind.*toggle|grab" "$LOG" | tail -1 | cut -c1-160)
+    case "$DE" in *Hyprland*) reg=$(hypr_tildaz_binds | grep -- "--toggle $INSTANCE " | head -1) ;; esac
     mark=$(wc -l < "$LOG")
     press "$(press_name "$hk")"
     sleep 2.5
