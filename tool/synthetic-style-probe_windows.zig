@@ -14,6 +14,7 @@
 //!     위가 오른쪽으로 가면 양수예요. 앱이 쓰는 변환 0.2 로 그린 대조 줄이 0.200 근처로 나와야
 //!     측정이 맞는 거예요.
 //!   - **획 폭** — 같은 행들의 평균 폭 (px). regular 와의 차이를 em 대비로 적어요.
+//!   - **가로획 두께** — `-` 를 그려 가운데 60 % 열의 잉크 높이 평균. 합성 bold 가 위아래로도 굵히는지 봐요.
 //!   - **advance** — `GetDesignGlyphMetrics` 의 글자 간격 (design unit). 합성 bold 가 글자 간격을
 //!     넓히는지 봐요.
 //!
@@ -66,43 +67,9 @@ fn p(comptime fmt: []const u8, args: anytype) void {
     _ = WriteFile(GetStdHandle(@bitCast(@as(i32, -11))), s.ptr, @intCast(s.len), &written, null);
 }
 
-// --- 본체 바인딩이 타입 없이 둔 vtable 슬롯 (dwrite.h 시그니처) ---
-//
-// 본체 `directwrite.zig` 는 쓰지 않는 슬롯을 `*const anyopaque` 로 두었어요. 그 파일은 건드리지
-// 않고, `factory4TranslateColorGlyphRun` 과 같은 모양으로 여기서만 타입을 붙여 불러요.
-
-fn faceType(face: *dw.IDWriteFontFace) u32 {
-    const f = @as(*const fn (*dw.IDWriteFontFace) callconv(.c) u32, @ptrCast(@alignCast(face.vtable.GetType)));
-    return f(face);
-}
-
-fn faceIndex(face: *dw.IDWriteFontFace) u32 {
-    const f = @as(*const fn (*dw.IDWriteFontFace) callconv(.c) u32, @ptrCast(@alignCast(face.vtable.GetIndex)));
-    return f(face);
-}
-
-fn faceSimulations(face: *dw.IDWriteFontFace) u32 {
-    const f = @as(*const fn (*dw.IDWriteFontFace) callconv(.c) u32, @ptrCast(@alignCast(face.vtable.GetSimulations)));
-    return f(face);
-}
-
-/// `GetFiles(UINT32* numberOfFiles, IDWriteFontFile** fontFiles)` — 먼저 개수만, 그다음 배열.
-fn faceFiles(face: *dw.IDWriteFontFace, buf: []?*dw.IUnknown) ![]?*dw.IUnknown {
-    const F = *const fn (*dw.IDWriteFontFace, *UINT32, ?[*]?*dw.IUnknown) callconv(.c) HRESULT;
-    const f = @as(F, @ptrCast(@alignCast(face.vtable.GetFiles)));
-    var n: UINT32 = 0;
-    if (f(face, &n, null) < 0) return error.GetFilesFailed;
-    if (n == 0 or n > buf.len) return error.GetFilesCount;
-    if (f(face, &n, buf.ptr) < 0) return error.GetFilesFailed;
-    return buf[0..n];
-}
-
-/// `IDWriteFactory::CreateFontFace(type, numberOfFiles, fontFiles, faceIndex, simulations, fontFace)`.
 fn createFace(factory: *dw.IDWriteFactory, ty: u32, files: []?*dw.IUnknown, index: u32, sims: u32) !*dw.IDWriteFontFace {
-    const F = *const fn (*dw.IDWriteFactory, u32, UINT32, [*]const ?*dw.IUnknown, UINT32, u32, *?*dw.IDWriteFontFace) callconv(.c) HRESULT;
-    const f = @as(F, @ptrCast(@alignCast(factory.vtable.CreateFontFace)));
     var face: ?*dw.IDWriteFontFace = null;
-    if (f(factory, ty, @intCast(files.len), files.ptr, index, sims, &face) < 0) return error.CreateFontFaceFailed;
+    if (factory.CreateFontFace(ty, files, index, sims, &face) < 0) return error.CreateFontFaceFailed;
     return face orelse error.CreateFontFaceFailed;
 }
 
@@ -116,7 +83,10 @@ const Measure = struct {
     height: i32,
 };
 
-fn render(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em: f32, transform: ?*const dw.DWRITE_MATRIX) !Measure {
+const Bitmap = struct { px: []u8, w: i32, h: i32 };
+
+/// 글자 하나를 aliased (흑백) 로 그린다. 0 이 아닌 칸이 잉크예요.
+fn raster(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em: f32, transform: ?*const dw.DWRITE_MATRIX) !Bitmap {
     const idx = [_]u16{glyph};
     const run = dw.DWRITE_GLYPH_RUN{
         .fontFace = face,
@@ -141,6 +111,15 @@ fn render(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em
     const size: usize = @intCast(w * h);
     const px = try out_alloc.alloc(u8, size);
     if (analysis.?.CreateAlphaTexture(dw.DWRITE_TEXTURE_ALIASED_1x1, &rc, px.ptr, @intCast(size)) < 0) return error.TextureFailed;
+    return .{ .px = px, .w = w, .h = h };
+}
+
+/// 세로획 (`|`) 의 기울기와 폭.
+fn render(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em: f32, transform: ?*const dw.DWRITE_MATRIX) !Measure {
+    const bm = try raster(factory, face, glyph, em, transform);
+    const px = bm.px;
+    const w = bm.w;
+    const h = bm.h;
 
     // 잉크가 있는 행의 범위.
     var top: i32 = -1;
@@ -184,6 +163,41 @@ fn render(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em
     const slope = if (denom == 0) 0 else (n * syc - sy * sc) / denom;
     // 비트맵의 y 는 아래로 커요. 위가 오른쪽으로 가면 slope 가 음수라 부호를 뒤집어요.
     return .{ .slant = -slope, .stem_px = sw / n, .rows = @intFromFloat(n), .width = w, .height = h };
+}
+
+/// 가로획 (`-`) 의 두께 — 잉크가 있는 열 중 가운데 60 % 열에서 잉크 칸 수의 평균 (px).
+/// 합성 bold 가 위아래로도 굵히는지 본다 (#759 — 세로획 폭만으로는 알 수 없었다).
+fn thickness(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace, glyph: u16, em: f32) !f64 {
+    const bm = try raster(factory, face, glyph, em, null);
+    var left: i32 = -1;
+    var right: i32 = -1;
+    var x: i32 = 0;
+    while (x < bm.w) : (x += 1) {
+        var y: i32 = 0;
+        while (y < bm.h) : (y += 1) {
+            if (bm.px[@intCast(y * bm.w + x)] != 0) {
+                if (left < 0) left = x;
+                right = x;
+                break;
+            }
+        }
+    }
+    if (left < 0) return error.EmptyGlyph;
+    const span = right - left + 1;
+    var n: f64 = 0;
+    var sum: f64 = 0;
+    x = left + @divTrunc(span * 2, 10);
+    while (x <= right - @divTrunc(span * 2, 10)) : (x += 1) {
+        var y: i32 = 0;
+        var ink: f64 = 0;
+        while (y < bm.h) : (y += 1) {
+            if (bm.px[@intCast(y * bm.w + x)] != 0) ink += 1;
+        }
+        n += 1;
+        sum += ink;
+    }
+    if (n == 0) return error.TooFewColumns;
+    return sum / n;
 }
 
 fn advanceOf(face: *dw.IDWriteFontFace, glyph: u16) i64 {
@@ -241,14 +255,14 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
     var base: ?*dw.IDWriteFontFace = null;
     if (regular_font.?.CreateFontFace(&base) < 0) return;
     defer _ = base.?.Release();
-    if (faceSimulations(base.?) != 0) {
-        p("  regular 도 합성된 글꼴이에요 (sim={s}) — 건너뜀\n", .{simName(faceSimulations(base.?))});
+    if (base.?.GetSimulations() != 0) {
+        p("  regular 도 합성된 글꼴이에요 (sim={s}) — 건너뜀\n", .{simName(base.?.GetSimulations())});
         return;
     }
 
     var fbuf: [8]?*dw.IUnknown = .{null} ** 8;
-    const files = faceFiles(base.?, &fbuf) catch |err| {
-        p("  GetFiles 실패: {s}\n", .{@errorName(err)});
+    const files = base.?.GetFiles(&fbuf) orelse {
+        p("  GetFiles 실패\n", .{});
         return;
     };
     defer {
@@ -256,8 +270,8 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
             if (f) |ff| _ = ff.Release();
         }
     }
-    const ty = faceType(base.?);
-    const index = faceIndex(base.?);
+    const ty = base.?.GetType();
+    const index = base.?.GetIndex();
 
     var metrics: dw.DWRITE_FONT_METRICS = undefined;
     base.?.GetMetrics(&metrics);
@@ -269,8 +283,12 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
         p("  U+{X:0>4} 글리프가 없어요 — 건너뜀\n", .{cp});
         return;
     }
-    p("  글자 U+{X:0>4} · em {d} px · upem {d}\n", .{ cp, em, metrics.designUnitsPerEm });
-    p("  {s:<22} {s:>8} {s:>7} {s:>9} {s:>10} {s:>8} {s:>12}\n", .{ "변종", "기울기", "각도", "획폭px", "Δ획폭/em", "advance", "Δadv/upem" });
+    // 가로획 — '-' (U+002D). 없으면 그 칸을 비워요.
+    const hcps = [_]u32{'-'};
+    var hgi = [_]u16{0};
+    if (base.?.GetGlyphIndices(&hcps, 1, &hgi) < 0) hgi[0] = 0;
+    p("  글자 U+{X:0>4} · 가로획 '-' · em {d} px · upem {d}\n", .{ cp, em, metrics.designUnitsPerEm });
+    p("  {s:<22} {s:>8} {s:>7} {s:>9} {s:>10} {s:>8} {s:>12} {s:>10} {s:>10}\n", .{ "변종", "기울기", "각도", "획폭px", "Δ획폭/em", "advance", "Δadv/upem", "가로획px", "Δ가로/em" });
 
     const shear = dw.DWRITE_MATRIX{ .m11 = 1, .m12 = 0, .m21 = -control_shear, .m22 = 1, .dx = 0, .dy = 0 };
     const Variant = struct { label: []const u8, sims: u32, transform: ?*const dw.DWRITE_MATRIX };
@@ -284,6 +302,7 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
 
     var reg_stem: f64 = 0;
     var reg_adv: i64 = 0;
+    var reg_thick: f64 = 0;
     for (variants) |v| {
         const face = if (v.sims == 0) base.? else (createFace(factory, ty, files, index, v.sims) catch |err| {
             p("  {s:<22} 만들기 실패: {s}\n", .{ v.label, @errorName(err) });
@@ -292,20 +311,25 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
         defer if (v.sims != 0) {
             _ = face.Release();
         };
-        const got = faceSimulations(face);
+        const got = face.GetSimulations();
         const m = render(factory, face, gi[0], em, v.transform) catch |err| {
             p("  {s:<22} 그리기 실패: {s}\n", .{ v.label, @errorName(err) });
             continue;
         };
         const adv = advanceOf(face, gi[0]);
+        // 가로획은 변환 없이 잰다 — 기울이면 두께가 아니라 기울기가 섞여요.
+        const thick: f64 = if (hgi[0] == 0) 0 else (thickness(factory, face, hgi[0], em) catch 0);
         if (v.sims == 0 and v.transform == null) {
             reg_stem = m.stem_px;
             reg_adv = adv;
+            reg_thick = thick;
         }
         const deg = std.math.atan(m.slant) * 180.0 / std.math.pi;
-        p("  {s:<22} {d:>8.3} {d:>6.1}° {d:>9.2} {d:>10.4} {d:>8} {d:>12.4}   (sim={s}, 행 {d})\n", .{
-            v.label,                                       m.slant,      deg,    m.stem_px, (m.stem_px - reg_stem) / em, @as(u64, @intCast(@max(adv, 0))),
-            @as(f64, @floatFromInt(adv - reg_adv)) / upem, simName(got), m.rows,
+        p("  {s:<22} {d:>8.3} {d:>6.1}° {d:>9.2} {d:>10.4} {d:>8} {d:>12.4} {d:>10.2} {d:>10.4}   (sim={s}, 행 {d})\n", .{
+            v.label,                                       m.slant,                     deg,
+            m.stem_px,                                     (m.stem_px - reg_stem) / em, @as(u64, @intCast(@max(adv, 0))),
+            @as(f64, @floatFromInt(adv - reg_adv)) / upem, thick,                       (thick - reg_thick) / em,
+            simName(got),                                  m.rows,
         });
     }
 }

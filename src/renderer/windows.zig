@@ -1192,7 +1192,7 @@ pub const D3d11Renderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                        const entry = c.self.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                        const entry = c.self.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                             if (result.owned) _ = result.face.vtable.Release(result.face);
                             return;
                         };
@@ -1772,7 +1772,7 @@ pub const D3d11Renderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.insertOrGrow(result.face, result.font_id, result.index, .terminal) orelse {
+                const entry = self.insertOrGrow(result.face, result.font_id, result.index, .terminal, result.slant) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
@@ -2076,7 +2076,7 @@ pub const D3d11Renderer = struct {
                         x += adv;
                         continue;
                     };
-                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         x += adv;
                         continue;
@@ -2114,7 +2114,7 @@ pub const D3d11Renderer = struct {
                 fn put(c: @This(), g: search_bar.Glyph) void {
                     if (c.n.* >= c.out.len) return;
                     const result = c.r.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                    const entry = c.r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = c.r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         return;
                     };
@@ -2233,7 +2233,7 @@ pub const D3d11Renderer = struct {
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(cp, .regular) orelse continue;
-                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         continue;
                     };
@@ -2357,10 +2357,11 @@ pub const D3d11Renderer = struct {
     /// #762 — 탭바 · 스트립 · 검색바 · 메뉴 글자도 여기를 지난다 (`source = .tab`). 그 자리들도
     /// 인스턴스를 모았다 한 번에 그리므로 ① 비우기를 하지 않는 이 함수가 맞다. 탭 atlas 가 따로이던
     /// 때는 그쪽이 커지지 않아 차면 글자를 건너뛰었다.
-    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16, source: atlas_common.GlyphSource) ?AtlasEntry {
-        var entry = self.atlas.getOrInsert(face, font_id, index, source);
+    /// #759 — `slant` 는 `GlyphResult.slant` 를 그대로 넘긴다. 탭바 글자는 스타일이 없어 `false` 다.
+    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16, source: atlas_common.GlyphSource, slant: bool) ?AtlasEntry {
+        var entry = self.atlas.getOrInsert(face, font_id, index, source, slant);
         while (entry == null and self.atlas.is_full and self.atlas.grow()) {
-            entry = self.atlas.getOrInsert(face, font_id, index, source);
+            entry = self.atlas.getOrInsert(face, font_id, index, source, slant);
         }
         return entry;
     }
@@ -2548,7 +2549,7 @@ pub const D3d11Renderer = struct {
         const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
 
         for (split.marks[0..split.mark_count]) |m| {
-            const me = self.insertOrGrow(m.face, m.font_id, m.index, .terminal) orelse {
+            const me = self.insertOrGrow(m.face, m.font_id, m.index, .terminal, m.slant) orelse {
                 if (m.owned) _ = m.face.vtable.Release(m.face);
                 continue;
             };

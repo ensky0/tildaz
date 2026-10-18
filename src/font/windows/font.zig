@@ -11,6 +11,7 @@ const log = @import("../../log.zig");
 const perf = @import("../../perf.zig");
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const presentation = @import("../presentation.zig");
+const synthetic = @import("../synthetic.zig");
 const Presentation = presentation.Presentation;
 
 const BOOL = std.os.windows.BOOL;
@@ -37,6 +38,10 @@ pub const GlyphResult = struct {
     /// **기본값을 두지 않는다** ([#749](https://github.com/ensky0/tildaz/issues/749)). 빠뜨린 자리가
     /// 0 을 받으면 모든 폰트가 한 id 를 나눠 써서, 같은 글리프 번호의 남의 그림이 그려진다.
     font_id: u64,
+    /// #759 — 그릴 때 [`synthetic.slant`](../synthetic.zig) 로 기울인다. DirectWrite 의 기울임 합성
+    /// (0.340) 을 뺀 face 에만 붙는다 (`DWriteFontContext.styled_slant`). 저장소 키는 `font_id`
+    /// 가 이미 가른다 — 합성 비트가 섞여 있다 (`withSimulations`).
+    slant: bool = false,
 };
 
 /// ZWJ family / VS-16 / skin tone modifier cluster 의 multi-glyph 결과 (#139).
@@ -332,6 +337,23 @@ fn withSimulations(id: u64, simulations: u32) u64 {
         h *%= 0x100000001b3;
     }
     return h;
+}
+
+/// #759 — 같은 글꼴 파일로 **기울임 합성만 뺀** face 를 만든다. 굵기 합성 (`BOLD`) 은 남긴다 —
+/// DirectWrite 는 굵기 양을 바꿀 수 없어서 그 값 (em/50) 이 곧 세 OS 공통 값이다
+/// ([`synthetic`](../synthetic.zig)). 실패하면 `null`.
+fn withoutObliqueSimulation(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace) ?*dw.IDWriteFontFace {
+    var buf: [8]?*dw.IUnknown = .{null} ** 8;
+    const files = face.GetFiles(&buf) orelse return null;
+    defer {
+        for (files) |f| {
+            if (f) |ff| _ = ff.Release();
+        }
+    }
+    const sims = face.GetSimulations() & ~dw.DWRITE_FONT_SIMULATIONS_OBLIQUE;
+    var out: ?*dw.IDWriteFontFace = null;
+    if (factory.CreateFontFace(face.GetType(), files, face.GetIndex(), sims, &out) < 0) return null;
+    return out;
 }
 
 test "withSimulations — 합성 변종은 regular 와 갈리고, 합성이 없으면 그대로다 (#749)" {
@@ -689,6 +711,10 @@ pub const DWriteFontContext = struct {
     /// regular" 를 우리가 따로 판정하지 않아도 된다.
     styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
         .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
+    /// #759 — `styled_faces` 를 그릴 때 우리가 기울일지. DirectWrite 가 기울임을 합성한 변종은
+    /// 그 합성을 뺀 face 로 바꿔 두고 여기를 `true` 로 한다 (`withoutObliqueSimulation`).
+    styled_slant: [font_constants.FaceStyle.count - 1][MAX_CHAIN]bool =
+        .{.{false} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
     chain_count: u8 = 0,
     rendering_params: ?*dw.IDWriteRenderingParams = null,
     number_sub: ?*dw.IUnknown = null,
@@ -754,6 +780,8 @@ pub const DWriteFontContext = struct {
             .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
             .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
+        var styled_slant: [font_constants.FaceStyle.count - 1][MAX_CHAIN]bool =
+            .{.{false} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
         var chain_count: u8 = 0;
         errdefer {
             for (chain_faces[0..chain_count]) |maybe_face| {
@@ -800,6 +828,16 @@ pub const DWriteFontContext = struct {
                         defer _ = styled_font.?.vtable.Release(styled_font.?);
                         var styled_face: ?*dw.IDWriteFontFace = null;
                         if (styled_font.?.CreateFontFace(&styled_face) >= 0) {
+                            // #759 — DirectWrite 가 기울임을 합성했으면 (0.340) 그 합성을 빼고
+                            // 그릴 때 세 OS 공통 기울기로 기울인다. 다시 만들지 못하면 DirectWrite
+                            // 합성을 그대로 쓴다 — 기울기만 다를 뿐 똑바로 서지는 않는다.
+                            if (styled_font.?.GetSimulations() & dw.DWRITE_FONT_SIMULATIONS_OBLIQUE != 0) {
+                                if (withoutObliqueSimulation(factory.?, styled_face.?)) |plain| {
+                                    _ = styled_face.?.Release();
+                                    styled_face = plain;
+                                    styled_slant[fs.index() - 1][chain_count] = true;
+                                }
+                            }
                             styled_faces[fs.index() - 1][chain_count] = styled_face.?;
                             // #584 — `IDWriteFont` 를 손에 든 이 자리에서 id 를 구한다.
                             styled_font_id[fs.index() - 1][chain_count] = postscriptNameId(styled_font.?);
@@ -827,6 +865,7 @@ pub const DWriteFontContext = struct {
             .chain_font_id = chain_font_id,
             .styled_font_id = styled_font_id,
             .styled_faces = styled_faces,
+            .styled_slant = styled_slant,
             .chain_count = chain_count,
             .cell_width_px = cell_w,
             .cell_height_px = cell_h,
@@ -998,6 +1037,13 @@ pub const DWriteFontContext = struct {
         return self.chain_font_id[i];
     }
 
+    /// #759 — `faceAt` 이 고른 face 를 그릴 때 기울일지. `chainFontId` 와 같은 갈림을 따른다.
+    fn chainSlant(self: *const DWriteFontContext, i: usize, style: font_constants.FaceStyle) bool {
+        if (style == .regular) return false;
+        if (self.styled_faces[style.index() - 1][i] == null) return false;
+        return self.styled_slant[style.index() - 1][i];
+    }
+
     /// [#771](https://github.com/ensky0/tildaz/issues/771) — 글리프 (들) 의 모양. 하나라도 컬러
     /// 레이어가 있으면 `.emoji` 다 — 렌더러가 컬러 경로로 그리는 조건과 같다 (`glyph_atlas.zig`
     /// 의 `TranslateColorGlyphRun` · `DWRITE_GLYPH_IMAGE_FORMATS_ALL`). 흑백이면
@@ -1085,7 +1131,7 @@ pub const DWriteFontContext = struct {
             if (glyph_index != 0) {
                 // chain face 는 stable — cache 안 해도 OK (deinit 에서 release).
                 // #584 — id 는 `init` 에서 구해 둔 것을 쓴다 (변종도 face 마다 갈린다).
-                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = self.chainFontId(i, style) };
+                return .{ .face = face, .index = glyph_index, .owned = false, .font_id = self.chainFontId(i, style), .slant = self.chainSlant(i, style) };
             }
         }
 
