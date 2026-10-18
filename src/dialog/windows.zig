@@ -11,6 +11,7 @@ const hotkey_status = @import("../hotkey_status.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const dialog_fit = @import("../dialog_fit.zig");
 
 const WCHAR = u16;
 const HWND = ?*anyopaque;
@@ -791,23 +792,6 @@ fn scrollLayout(
 ) ScrollLayout {
     const widths = dialogWidths(dpi, work, frame);
     const margin = widths.margin;
-    const min_content_w = @min(scaled(472, dpi), widths.preferred_content_w);
-
-    // EDIT 의 border/formatting inset 만큼 control 폭을 더 확보한 뒤 실제 formatting
-    // 폭으로 wrap 높이를 재서 경계의 마지막 줄도 보존한다.
-    const desired_content_w = @max(
-        @as(i64, title_natural_w),
-        @as(i64, body_natural_w) + @as(i64, edit_inset),
-    );
-    var content_w: c_int = @intCast(std.math.clamp(
-        desired_content_w,
-        @as(i64, min_content_w),
-        @as(i64, widths.preferred_content_w),
-    ));
-    var wrapped_h = blk: {
-        const measured = wrap.height(content_w);
-        break :blk if (measured > 0) measured + scaled(6, dpi) else scaled(130, dpi);
-    };
 
     const top = scaled(20, dpi);
     const header = dialogHeaderGeometry(top, metrics.title_h, metrics.body_line_h, dpi);
@@ -826,14 +810,37 @@ fn scrollLayout(
         ui_metrics.dialogBodyMaxHeightPx(work.bottom - work.top),
     );
 
-    // preferred 폭에서 고정 chrome 까지 합친 자연 높이가 screen 을 넘을 때만 maximum
-    // 폭으로 확장해 다시 wrap 한다.
-    if (wrapped_h > max_body_h and content_w < widths.max_content_w) {
-        content_w = widths.max_content_w;
-        const measured = wrap.height(content_w);
-        if (measured > 0) wrapped_h = measured + scaled(6, dpi);
-    }
-    const body_h = @min(wrapped_h, max_body_h);
+    // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 Windows 의
+    // 값만 넘긴다 — EDIT 의 border/formatting inset 만큼 control 폭을 더 잡은 자연 폭, 그리고
+    // 그 폭에서 잰 wrap 높이 (경계의 마지막 줄도 보존하려고 6 을 더한다). EDIT 은 스크롤바가
+    // 생기면 스스로 다시 접으므로 `scrollbar_w` 는 0 이다.
+    const measurer = struct {
+        natural: c_int,
+        wrap: WrapMeasurer,
+        dpi: UINT,
+
+        pub fn naturalWidth(self: @This()) c_int {
+            return self.natural;
+        }
+
+        pub fn wrappedHeight(self: @This(), w: c_int) c_int {
+            const measured = self.wrap.height(w);
+            return if (measured > 0) measured + scaled(6, self.dpi) else scaled(130, self.dpi);
+        }
+    }{
+        .natural = @max(title_natural_w, body_natural_w + edit_inset),
+        .wrap = wrap,
+        .dpi = dpi,
+    };
+    const fitted = dialog_fit.fit(c_int, measurer, .{
+        .min_w = scaled(@intCast(ui_metrics.DIALOG_MIN_WIDTH_PT), dpi),
+        .preferred_w = widths.preferred_content_w,
+        .max_w = widths.max_content_w,
+        .body_max_h = max_body_h,
+    });
+    const content_w = fitted.width;
+    const wrapped_h = fitted.height;
+    const body_h = fitted.visible_height;
     const client_w = margin + content_w + margin;
     const button_y = body_y + body_h + gap;
     const client_h = button_y + button_h + bottom;
@@ -1580,8 +1587,10 @@ const PromptLayout = struct {
 /// #540 — 핫키 캡처 다이얼로그의 배치 전체. `scrollLayout` 과 같은 규약이다:
 /// GDI 를 부르지 않고, wrap 높이만 `wrap` 으로 되묻는다.
 ///
-/// 본문 다이얼로그와 다른 점은 **본문 폭이 텍스트를 따라가지 않는다**는 것이다 —
-/// 아래의 캡처 · 상태 · 버튼이 고정 높이라 폭까지 흔들리면 창이 매번 달라 보인다.
+/// #795 — 폭은 본문 다이얼로그와 같은 공통 규칙 (`dialog_fit.fit`) 이다. 예전에는 Windows 만
+/// 늘 기본 폭이었다 (macOS · Linux 는 글을 따라갔다). 메시지는 instance 수로 정해지고 키를
+/// 눌러도 바뀌지 않으므로 창이 키마다 흔들리지 않는다. 하한은 prompt 하한과 상태 문구 폭 중
+/// 큰 쪽이다 (macOS 와 같다).
 fn promptLayout(
     dpi: UINT,
     work: RECT,
@@ -1590,15 +1599,14 @@ fn promptLayout(
     wrap: WrapMeasurer,
     /// #721 — 상태 문구 후보 중 가장 큰 높이 (`hotkey_status.fit`). 0 = 못 쟀다.
     status_text_h: c_int,
+    /// #795 — 제목과 메시지 (EDIT inset 포함) 의 자연 폭 중 큰 쪽. 0 = 못 쟀다.
+    natural_w: c_int,
+    /// #721 · #795 — 상태 문구 칸의 폭 (`hotkey_status.fit` 의 width). 0 = 못 쟀다.
+    status_w: c_int,
 ) PromptLayout {
     const widths = dialogWidths(dpi, work, frame);
     const margin = widths.margin;
     const gap = scaled(16, dpi);
-    var content_w = widths.preferred_content_w;
-    var msg_h = blk: {
-        const measured = wrap.height(content_w);
-        break :blk if (measured > 0) measured else scaled(48, dpi);
-    };
 
     // client 좌표로 각 컨트롤 위치를 위→아래로 누적.
     const capture_h = scaled(40, dpi); // 캡처된 키 표시 (큰 폰트)
@@ -1613,15 +1621,35 @@ fn promptLayout(
     const bottom = scaled(20, dpi);
     const max_client_h = dialogMaxClientHeight(dpi, work, frame);
     const fixed_after_message = gap + capture_h + scaled(4, dpi) + status_h + gap + button_h + bottom;
-    const max_message_h = @max(1, max_client_h - msg_y - fixed_after_message);
+    // #795 — 본문 다이얼로그 · 다른 OS 와 같은 높이 상한 (화면에 남은 높이와 화면 절반 중 작은 쪽).
+    const max_message_h = @min(
+        @max(1, max_client_h - msg_y - fixed_after_message),
+        ui_metrics.dialogBodyMaxHeightPx(work.bottom - work.top),
+    );
 
-    if (msg_h > max_message_h and content_w < widths.max_content_w) {
-        content_w = widths.max_content_w;
-        const measured = wrap.height(content_w);
-        if (measured > 0) msg_h = measured;
-    }
-    const message_overflow = msg_h > max_message_h;
-    msg_h = @min(msg_h, max_message_h);
+    const measurer = struct {
+        natural: c_int,
+        wrap: WrapMeasurer,
+        dpi: UINT,
+
+        pub fn naturalWidth(self: @This()) c_int {
+            return self.natural;
+        }
+
+        pub fn wrappedHeight(self: @This(), w: c_int) c_int {
+            const measured = self.wrap.height(w);
+            return if (measured > 0) measured else scaled(48, self.dpi);
+        }
+    }{ .natural = natural_w, .wrap = wrap, .dpi = dpi };
+    const fitted = dialog_fit.fit(c_int, measurer, .{
+        .min_w = @max(scaled(@intCast(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT), dpi), status_w),
+        .preferred_w = widths.preferred_content_w,
+        .max_w = widths.max_content_w,
+        .body_max_h = max_message_h,
+    });
+    const content_w = fitted.width;
+    const message_overflow = fitted.scroll;
+    const msg_h = fitted.visible_height;
     const capture_y = msg_y + msg_h + gap;
     const status_y = capture_y + capture_h + scaled(4, dpi);
     const button_y = status_y + status_h + gap;
@@ -1674,6 +1702,8 @@ fn measurePromptLayout(
     var metrics = TextMetrics{ .title_h = scaled(24, dpi), .body_line_h = scaled(20, dpi) };
     var wrap_ctx = DcWrapMeasurer{ .dc = null, .text = message_w, .inset = edit_inset };
     var status_text_h: c_int = 0;
+    var status_w: c_int = 0;
+    var natural_w: c_int = 0;
 
     const dc = GetDC(null);
     var previous: ?*anyopaque = null;
@@ -1687,6 +1717,7 @@ fn measurePromptLayout(
         var title_rect = RECT{ .left = 0, .top = 0, .right = widths.preferred_content_w, .bottom = 0 };
         _ = DrawTextW(dc, title_w.ptr, @intCast(title_w.len), &title_rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
         if (title_rect.bottom > 0) metrics.title_h = @intCast(title_rect.bottom);
+        const title_natural_w = @max(0, title_rect.right - title_rect.left);
         if (fonts.body != null) _ = SelectObject(dc, fonts.body);
         var body_line_rect = RECT{ .left = 0, .top = 0, .right = widths.preferred_content_w, .bottom = 0 };
         const body_line_sample = std.unicode.utf8ToUtf16LeStringLiteral("Ag");
@@ -1694,10 +1725,13 @@ fn measurePromptLayout(
         if (body_line_rect.bottom > 0) metrics.body_line_h = @intCast(body_line_rect.bottom);
         wrap_ctx.dc = dc;
         // 상태 칸도 본문 글꼴이다 (`setPromptFonts`). 세 OS 공통 규칙으로 자리를 정한다.
-        status_text_h = hotkey_status.fit(c_int, DcStatusMeasurer{ .dc = dc }, widths.preferred_content_w).height;
+        const status_fit = hotkey_status.fit(c_int, DcStatusMeasurer{ .dc = dc }, widths.preferred_content_w);
+        status_text_h = status_fit.height;
+        status_w = status_fit.width;
+        natural_w = @max(title_natural_w, longestExplicitLineWidth(dc, message_w) + edit_inset);
     }
 
-    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer(), status_text_h);
+    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer(), status_text_h, natural_w, status_w);
 
     if (dc != null) {
         if (previous != null) _ = SelectObject(dc, previous);
@@ -2016,7 +2050,7 @@ test "#540 핫키 캡처 다이얼로그도 같은 규칙을 지킨다" {
     for ([_]UINT{ 96, 144, 192 }) |dpi| {
         const frame = testFrame(dpi);
         var wrap = FakeWrap{ .total_px = 200_000 };
-        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0);
+        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, 0, 0);
 
         try std.testing.expect(layout.win_w <= test_work.right - test_work.left);
         try std.testing.expect(layout.win_h <= test_work.bottom - test_work.top);
@@ -2044,9 +2078,12 @@ test "#721 상태 문구가 여러 줄이면 그만큼 자리를 잡고 버튼�
     for ([_]UINT{ 96, 144, 192 }) |dpi| {
         const frame = testFrame(dpi);
         var wrap = FakeWrap{ .total_px = 200_000 };
-        const one = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0);
+        // #795 — prompt 폭은 글을 따라간다. 이 테스트는 상태 칸만 보므로 메시지를 기본 폭 글로 둬서
+        // 높이 상한에 걸리지 않게 한다 (못 잰 자연 폭 0 이면 하한 360 에서 접혀 메시지가 길어진다).
+        const natural = dialogWidths(dpi, test_work, frame).preferred_content_w;
+        const one = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, natural, 0);
         const tall_h = scaled(28, dpi) + scaled(40, dpi);
-        const tall = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), tall_h);
+        const tall = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), tall_h, natural, 0);
 
         // 한 줄 (또는 못 잰 경우) 은 예전 높이 그대로다.
         try std.testing.expectEqual(scaled(28, dpi), one.status.h);

@@ -9,6 +9,7 @@ const font_validate = @import("../../font/validate.zig");
 const hotkey_status = @import("../../hotkey_status.zig");
 const messages = @import("../../messages.zig");
 const ui_metrics = @import("../../ui_metrics.zig");
+const dialog_fit = @import("../../dialog_fit.zig");
 
 pub const Kind = enum { info, about, confirm, prompt };
 
@@ -56,6 +57,10 @@ pub const Metrics = struct {
     /// #793 — **글 영역** 의 기본 · 최대 폭이다. 창은 여기에 여백 · 그림자를 더한 만큼 넓다.
     preferred_w: i32,
     max_w: i32,
+    /// #795 — 글 영역의 하한 (일반 · prompt). `ui_metrics.DIALOG_MIN_WIDTH_PT` ·
+    /// `DIALOG_PROMPT_MIN_WIDTH_PT` 에 배율을 곱한 값이다. 예전에는 글자 30 · 42 개였다.
+    min_w: i32,
+    prompt_min_w: i32,
     scrollbar_w: i32,
     scrollbar_gap: i32,
 };
@@ -242,11 +247,6 @@ fn computeWithinSurface(
         .w = @min(available_surface.w, max_content_room_w + chrome_w),
         .h = available_surface.h,
     };
-    const preferred_surface_w = @min(max_surface.w, preferred_content_room_w + chrome_w);
-    const min_width: i32 = ref_adv * @as(i32, if (kind == .prompt) 42 else 30);
-    const natural_width = longestExplicitLineWidth(message, body_measure);
-    var wrap_width = @min(@max(natural_width, min_width), preferred_content_room_w);
-    var measured = measureMessage(message, wrap_width, body_measure);
 
     // #721 — prompt 는 입력 칸 (한 줄 + 위아래 반 줄) 과 상태 칸이다. 상태 칸은 나올 수
     // 있는 문구를 모두 재서 잡는다 — 짧으면 한 줄로 두고 창을 넓히되 본문 기본 폭까지,
@@ -264,52 +264,58 @@ fn computeWithinSurface(
         metrics.button_h +
         metrics.shadow_margin * 2;
     const icon_h = metrics.icon_size + metrics.icon_gap;
-    var rows_h: i32 = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
     const show_icon = true;
-    var message_scroll_max: usize = 0;
-    var expanded_to_max = false;
 
-    // preferred 폭에서 자연 높이를 먼저 측정하고, 고정 chrome까지 합쳐 화면을
-    // 넘을 때만 maximum 폭으로 다시 wrap한다.
-    if (fixed_h + rows_h + icon_h > max_surface.h and preferred_content_room_w < max_content_room_w) {
-        expanded_to_max = true;
-        wrap_width = @min(@max(natural_width, min_width), max_content_room_w);
-        measured = measureMessage(message, wrap_width, body_measure);
-        rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-    }
+    // 본문 상한 — 화면에 남은 높이와 (`compute` 경로면) 화면 절반 중 작은 쪽이다.
+    // prompt input과 button은 fixed_h에 포함되어 항상 viewport 밖에 고정된다.
+    // #655 — 화면 절반 상한이 없으면 목록이 길수록 창이 화면 높이까지 자라서 (실측
+    // 955/1000) 뒤의 config 와 대조할 수가 없었다.
+    var row_room: i32 = @max(1, max_surface.h - fixed_h - icon_h);
+    if (body_max_h > 0) row_room = @min(row_room, body_max_h);
 
-    var visible_message_rows = measured.rows;
-
-    // 모든 dialog는 먼저 본문 자연 높이를 사용하고, 화면을 넘을 때만 message
-    // viewport를 만든다. scrollbar 공간을 먼저 제외하고 다시 wrap해야 측정 행
-    // 수와 실제 그리기 행 수가 정확히 같다. prompt input과 button은 fixed_h에
-    // 포함되어 항상 viewport 밖에 고정된다.
-    //
-    // #655 — **본문 상한을 넘을 때도** 같은 길로 간다. 그 상한이 없으면 목록이 길수록
-    // 창이 화면 높이까지 자라서 (실측 955/1000) 뒤의 config 와 대조할 수가 없었다.
-    const body_capped = body_max_h > 0 and rows_h > body_max_h;
-    if (fixed_h + rows_h + icon_h > max_surface.h or body_capped) {
-        const scrollbar_room = metrics.scrollbar_w + metrics.scrollbar_gap;
-        const scroll_content_room_w = @max(
-            ref_adv,
-            max_content_room_w - scrollbar_room,
-        );
-        wrap_width = @min(@max(natural_width, min_width), scroll_content_room_w);
-        measured = measureMessage(message, wrap_width, body_measure);
-        rows_h = @intCast(measured.rows * @as(usize, @intCast(metrics.body_cell_h)));
-        var row_room = max_surface.h - fixed_h - icon_h;
-        if (body_max_h > 0) row_room = @min(row_room, body_max_h);
-        visible_message_rows = @min(
-            measured.rows,
-            @as(usize, @intCast(@max(1, @divTrunc(row_room, metrics.body_cell_h)))),
-        );
-        message_scroll_max = measured.rows - visible_message_rows;
-    }
-
-    const scroll_extra = if (message_scroll_max > 0) metrics.scrollbar_w + metrics.scrollbar_gap else 0;
-    const body_w = measured.max_width + scroll_extra;
+    // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 예전 이 자리의 판단은
+    // 창 **전체**가 화면을 넘을 때만 최대 폭으로 넓혀, 본문이 화면 절반만 넘는 경우 Windows ·
+    // macOS 와 갈렸다. Linux 의 값만 넘긴다 — 줄 단위 높이, 그리고 글 영역 안에 서는 스크롤바.
+    // 제목 · 상태 문구도 글 영역 안이라 자연 폭 · 하한에 넣는다 (Windows · macOS 와 같다).
     const title_w: i32 = title_measure.width(title);
-    const inner_w = @max(@max(body_w, title_w), status.width);
+    const measurer = struct {
+        message: []const u8,
+        measure: Measure,
+        row_h: i32,
+        natural: i32,
+
+        pub fn naturalWidth(self: @This()) i32 {
+            return self.natural;
+        }
+
+        pub fn wrappedHeight(self: @This(), w: i32) i32 {
+            const rows = measureMessage(self.message, w, self.measure).rows;
+            return @as(i32, @intCast(rows)) * self.row_h;
+        }
+    }{
+        .message = message,
+        .measure = body_measure,
+        .row_h = metrics.body_cell_h,
+        .natural = @max(longestExplicitLineWidth(message, body_measure), title_w),
+    };
+    const fitted = dialog_fit.fit(i32, measurer, .{
+        .min_w = @max(if (kind == .prompt) metrics.prompt_min_w else metrics.min_w, status.width),
+        .preferred_w = preferred_content_room_w,
+        .max_w = max_content_room_w,
+        .body_max_h = row_room,
+        .scrollbar_w = metrics.scrollbar_w + metrics.scrollbar_gap,
+    });
+    const wrap_width = fitted.wrap_width;
+    const measured = measureMessage(message, wrap_width, body_measure);
+    const visible_message_rows = if (fitted.scroll)
+        @min(measured.rows, @as(usize, @intCast(@max(1, @divTrunc(row_room, metrics.body_cell_h)))))
+    else
+        measured.rows;
+    const message_scroll_max = measured.rows - visible_message_rows;
+
+    // 창은 정해진 글 폭 그대로다 (Windows 의 EDIT · macOS 의 accessory 와 같다). 예전에는 실제로
+    // 접힌 글 폭으로 줄여서, 하한이 줄바꿈에만 쓰이고 창에는 안 쓰였다.
+    const inner_w = @max(@max(fitted.width, title_w), status.width);
     const buttons_w = switch (kind) {
         .info, .about => metrics.button_w,
         .confirm, .prompt => metrics.button_w * 2 + metrics.button_gap,
@@ -322,11 +328,10 @@ fn computeWithinSurface(
 
     const visible_rows_h: i32 = @intCast(visible_message_rows * @as(usize, @intCast(metrics.body_cell_h)));
     const desired_h = fixed_h + visible_rows_h + (if (show_icon) icon_h else 0);
-    const width_limit = if (expanded_to_max) max_surface.w else preferred_surface_w;
 
     return .{
         .size = .{
-            .w = @min(desired_w, width_limit),
+            .w = @min(desired_w, max_surface.w),
             .h = @min(desired_h, max_surface.h),
         },
         .wrap_width = wrap_width,
@@ -334,7 +339,7 @@ fn computeWithinSurface(
         .visible_message_rows = visible_message_rows,
         .message_scroll_max = message_scroll_max,
         .show_icon = show_icon,
-        .fits = desired_w <= width_limit and desired_h <= max_surface.h,
+        .fits = desired_w <= max_surface.w and desired_h <= max_surface.h,
         .status_wrap_width = status.width,
     };
 }
@@ -774,6 +779,8 @@ fn testMetricsWithCellWidths(scale_percent: u32, body_cell_w: i32, title_cell_w:
         .button_gap = scale(@intCast(ui_metrics.DIALOG_BODY_FONT_PT * 8 / 5), scale_percent),
         .preferred_w = scale(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), scale_percent),
         .max_w = scale(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), scale_percent),
+        .min_w = scale(@intCast(ui_metrics.DIALOG_MIN_WIDTH_PT), scale_percent),
+        .prompt_min_w = scale(@intCast(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT), scale_percent),
         .scrollbar_w = scale(10, scale_percent),
         .scrollbar_gap = scale(8, scale_percent),
     };

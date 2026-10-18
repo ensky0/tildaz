@@ -2197,6 +2197,8 @@ pub const Renderer = struct {
             .button_gap = scaledPt(dialog_button_gap_pt, self.scale),
             .preferred_w = scaledPt(ui_metrics.DIALOG_PREFERRED_WIDTH_PT, self.scale),
             .max_w = scaledPt(ui_metrics.DIALOG_MAX_WIDTH_PT, self.scale),
+            .min_w = scaledPt(ui_metrics.DIALOG_MIN_WIDTH_PT, self.scale),
+            .prompt_min_w = scaledPt(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT, self.scale),
             .scrollbar_w = scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale),
             .scrollbar_gap = scaledPt(ui_metrics.DIALOG_SCROLLBAR_GAP_PT, self.scale),
         };

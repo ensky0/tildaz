@@ -33,6 +33,7 @@ const hotkey_status = @import("../hotkey_status.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const dialog_fit = @import("../dialog_fit.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -483,7 +484,7 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
     _ = addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
     const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
-    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
     _ = runModalOverHost(alert, .single);
 }
 
@@ -538,6 +539,14 @@ fn dialogTextNaturalSize(tv: objc.id, layout_manager: objc.id, text_container: o
 }
 
 const dialog_screen_horizontal_margin_pt: f64 = 96.0;
+
+/// #795 — 가장 긴 줄의 자연 폭을 잴 때 쓰는 "접히지 않을 만큼 넓은" 폭. 본문은 최대 폭
+/// (`DIALOG_MAX_WIDTH_PT`) 을 넘는지만 가리면 되므로 그보다 충분히 크면 된다.
+const dialog_unbounded_measure_w: f64 = 100_000.0;
+
+/// #795 — 세 OS 공통 하한 (`ui_metrics`). 예전에는 호출부마다 320 · 360 리터럴이었다.
+const dialog_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_MIN_WIDTH_PT);
+const dialog_prompt_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT);
 
 fn dialogMaxAccessoryWidth(visible_frame_w: f64) f64 {
     const common_max: f64 = @floatFromInt(ui_metrics.DIALOG_MAX_WIDTH_PT);
@@ -815,20 +824,58 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const setDocument = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setDocument(scroll, objc.sel("setDocumentView:"), tv);
 
-    // preferred 폭에서 먼저 실제 wrap 높이를 잰다. 그 높이가 screen을 넘을
-    // 때만 maximum 폭으로 확장한다. 짧은 prose는 compact하게 유지되고 긴
-    // path만 가로 공간을 더 써서 scroll 전에 최대한 자연 높이를 확보한다.
+    // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 AppKit 의 값만
+    // 넘긴다 — 아주 넓은 폭에서 잰 가장 긴 줄 (경계에서 접히지 않게 4pt 여유), 그리고 그 폭에서
+    // 접은 높이. NSScrollView 는 scroller 를 켜면 스스로 content 폭을 줄이므로 `scrollbar_w` 는 0
+    // 이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
     const minimum_size = NSAlertSize{ .w = min_accessory_w, .h = initial_body_h };
-    const first_natural = measureDialogBodyAtWidth(
-        scroll,
-        tv,
-        layout_manager,
-        text_container,
-        accessory_w,
-        max_accessory_h,
-        minimum_size,
-    );
-    accessory_w = @min(preferred_accessory_w, @max(min_accessory_w, first_natural.w + 4.0));
+    const measurer = struct {
+        scroll: objc.id,
+        tv: objc.id,
+        layout_manager: objc.id,
+        text_container: objc.id,
+        viewport_h: f64,
+        minimum: NSAlertSize,
+
+        pub fn naturalWidth(self: @This()) f64 {
+            const unbounded = measureDialogBodyAtWidth(
+                self.scroll,
+                self.tv,
+                self.layout_manager,
+                self.text_container,
+                dialog_unbounded_measure_w,
+                self.viewport_h,
+                .{ .w = 0, .h = self.minimum.h },
+            );
+            return unbounded.w + 4.0;
+        }
+
+        pub fn wrappedHeight(self: @This(), width: f64) f64 {
+            return measureDialogBodyAtWidth(
+                self.scroll,
+                self.tv,
+                self.layout_manager,
+                self.text_container,
+                width,
+                self.viewport_h,
+                self.minimum,
+            ).h;
+        }
+    }{
+        .scroll = scroll,
+        .tv = tv,
+        .layout_manager = layout_manager,
+        .text_container = text_container,
+        .viewport_h = max_accessory_h,
+        .minimum = minimum_size,
+    };
+    const fitted = dialog_fit.fit(f64, measurer, .{
+        .min_w = min_accessory_w,
+        .preferred_w = preferred_accessory_w,
+        .max_w = max_accessory_w,
+        .body_max_h = max_accessory_h,
+    });
+    accessory_w = fitted.width;
     var natural = measureDialogBodyAtWidth(
         scroll,
         tv,
@@ -838,18 +885,6 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         max_accessory_h,
         minimum_size,
     );
-    if (natural.h > max_accessory_h and accessory_w < max_accessory_w) {
-        accessory_w = max_accessory_w;
-        natural = measureDialogBodyAtWidth(
-            scroll,
-            tv,
-            layout_manager,
-            text_container,
-            accessory_w,
-            max_accessory_h,
-            minimum_size,
-        );
-    }
 
     const overflow = dialogBodyNeedsScroller(natural.h, max_accessory_h);
     setBool(scroll, objc.sel("setHasVerticalScroller:"), overflow);
@@ -1175,7 +1210,7 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
     setStyle(alert, alertStyleFor(.info));
     _ = addButton(alert, messages.button_ok);
     const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
-    _ = attachBrandedContent(alert, title, body, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, body, 0, dialog_min_accessory_w, actions[0..]);
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard mode=single).
@@ -1215,7 +1250,7 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
         .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
         .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
     };
-    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
 
     const result = runModalOverHost(alert, .confirm);
     return result == 1000;
@@ -1244,7 +1279,7 @@ fn showNoticeWithActionImpl(rt: Runtime, title: []const u8, message: []const u8,
         .{ .title = action_label, .response = dialog_inline_response, .key_equivalent = "" },
         .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
     };
-    const branded = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    const branded = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
 
     // **`.confirm` 이 아니라 `.single` 이다.** `.confirm` 은 Esc 를 두 번째 버튼으로
     // 보내는데 (`dismissMonitorInvoke`), 거기서는 그것이 "아무 일도 하지 않음" 이고
@@ -1385,7 +1420,7 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
         title,
         message,
         prompt_controls_h + prompt_body_gap,
-        @max(360.0, status_fit.width),
+        @max(dialog_prompt_min_accessory_w, status_fit.width),
         actions[0..],
     ) orelse return null;
     const branded = attached.content;

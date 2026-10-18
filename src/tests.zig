@@ -22,6 +22,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("frame_wake.zig");
     _ = @import("desktop_setup/autostart_notice.zig");
     _ = @import("dialog.zig");
+    _ = @import("dialog_fit.zig");
     _ = @import("font/display_width.zig");
     _ = @import("renderer/glyph_atlas_common.zig");
     _ = @import("font/ligature.zig");
