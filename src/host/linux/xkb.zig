@@ -459,6 +459,38 @@ pub const Keyboard = struct {
         return null;
     }
 
+    /// #760 — `keysym` 을 **기본 단계 (level 0)** 로 내는 키를 활성 group 에서 찾아, 그 키의
+    /// **Shift 단계 (level 1)** keysym 을 돌려준다. US 의 `bracketright` → `braceright`,
+    /// `1` → `exclam`. 그 키가 없거나 Shift 단계가 없거나 같은 글자면 null 이다.
+    ///
+    /// KDE 전역 hotkey 의 등록 보정에 쓴다 — KDE 는 Shift 를 글자에 접어 보므로
+    /// `Ctrl+Shift+]` 를 실제 키에 맞추려면 `Ctrl+}` 로 등록해야 한다 (2026-10-18 실측).
+    /// `findKeycode` 와 달리 level 0 만 맞춘다. 다른 단계까지 보면 `}` 를 내는 키도
+    /// `braceright` 로 잡혀 Shift 를 두 번 접게 된다.
+    pub fn shiftedKeysymFor(self: *Keyboard, keysym: u32) ?u32 {
+        const api = if (self.api) |*a| a else return null;
+        const scan = api.keymap_scan orelse return null;
+        const keymap = self.keymap orelse return null;
+
+        const min = scan.min_keycode(keymap);
+        const max = scan.max_keycode(keymap);
+        var key: c_uint = min;
+        while (key <= max) : (key += 1) {
+            const layouts = scan.num_layouts_for_key(keymap, key);
+            if (layouts == 0) continue;
+            const layout: c_uint = @intCast(self.active_group % layouts);
+            var base: [*]const c_uint = undefined;
+            if (scan.key_get_syms_by_level(keymap, key, layout, 0, &base) <= 0) continue;
+            if (base[0] != keysym) continue;
+            if (scan.num_levels_for_key(keymap, key, layout) < 2) return null;
+            var shifted: [*]const c_uint = undefined;
+            if (scan.key_get_syms_by_level(keymap, key, layout, 1, &shifted) <= 0) return null;
+            if (shifted[0] == keysym) return null;
+            return @intCast(shifted[0]);
+        }
+        return null;
+    }
+
     pub fn canProduceKeysym(self: *Keyboard, keysym: u32) ?bool {
         // 판정 불가 (심볼 / keymap 없음) 와 "못 찾았다" 를 갈라야 한다.
         if (self.api == null) return null;
@@ -865,6 +897,14 @@ test "#496 1-a canProduceKeysym — 판정 불가는 false 가 아니라 null �
     var kb: Keyboard = .{};
     defer kb.deinit();
     try std.testing.expectEqual(@as(?bool, null), kb.canProduceKeysym('w'));
+}
+
+test "#760 shiftedKeysymFor — keymap 이 없으면 null 이다" {
+    // null 이면 호출부 (KDE 등록) 가 적힌 대로 등록한다 — 보정 전과 같은 동작이다. 판정 불가를
+    // 다른 글자로 꾸미면 엉뚱한 키가 등록된다.
+    var kb: Keyboard = .{};
+    defer kb.deinit();
+    try std.testing.expectEqual(@as(?u32, null), kb.shiftedKeysymFor(']'));
 }
 
 // 실측 확인 (2026-08-24, 이 개발 머신 · libxkbcommon.so.0). `xkbcli compile-keymap`

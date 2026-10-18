@@ -996,9 +996,9 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
     // Ctrl 동반은 숫자 binding 과 맞지 않는다 (`alt+1` 에 Ctrl 이 없다).
     try T.expectEqual(@as(?A, null), C(b, xkb_key_1, true, false, true));
 
-    // #482 — Ctrl+PgUp / PgDn 으로 이전 / 다음 탭 (layout 무관 대안).
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .prev_tab } }), C(b, xkb_key_page_up, true, false, false));
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .next_tab } }), C(b, xkb_key_page_down, true, false, false));
+    // #760 — Ctrl+PgUp / PgDn 은 기본값에서 뺐다 (#482 에서 더했던 것). 이제 PTY 로 간다.
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_up, true, false, false));
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, true, false, false));
     // Shift+PgUp / PgDn 은 scrollback 이라 `[keys]` 에 없고, Ctrl+Shift 조합도 탭
     // 전환으로 잡지 않는다 — 기존 동작을 건드리지 않았음을 고정한다.
     try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, false, true, false));
@@ -1335,6 +1335,12 @@ const Client = struct {
     /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
     /// context 안에서 호출되면 안 됨 (deferred dismiss 와 동일 reentrancy 위험).
     pending_quit_request: bool = false,
+    /// #760 — `hidden_start` 의 첫 show 를 미뤄 둔 표시. 토글은 이벤트 처리 (`pollAndDispatch`)
+    /// 안에서 오는데 첫 창 띄우기 (`showInitialWindow`) 는 configure 를 기다리며 다시 이벤트를
+    /// 처리한다. 그 안에서 부르면 재진입이라, 메인 루프가 바깥에서 부른다 (`drainInitialShow`).
+    pending_initial_show: bool = false,
+    /// 첫 창을 띄우는 중. 그 사이 들어온 토글은 무시한다 — 띄우는 도중에 숨기기가 끼면 창 상태가 어긋난다.
+    initial_show_running: bool = false,
     /// #87 — Alt+Enter / Shift+Alt+Enter fullscreen 상태. hide 가 건드리지 않아
     /// F1 hide→show 시 그대로 복원된다 (Win `Window.fullscreen_mode` 동등).
     /// layer-shell 계열에서만 동작 — xdg fallback(GNOME/Cinnamon)은 별도(#87).
@@ -1559,9 +1565,10 @@ const Client = struct {
     // KGlobalAccel filter 안에서는 Wayland roundtrip을 시작하지 않는다. Pressed
     // callback은 이 flag만 세우고 main loop가 D-Bus dispatch 반환 뒤 toggle한다.
     kglobalaccel_toggle_pending: bool = false,
-    /// #496 1-c — KDE 에 지금 등록돼 있는 keysym (위치 표기 hotkey 일 때만 쓴다).
-    /// layout 이 바뀌었는지 비교하는 기준이라 0 은 "아직 등록 안 함" 이다.
-    kde_position_keysym: u32 = 0,
+    /// #496 1-c · #760 — keymap 으로 풀어 KDE 에 등록한 keysym 과 수식키 (`kdeNeedsKeymap` 인
+    /// hotkey 일 때만 쓴다). layout 이 바뀌었는지 비교하는 기준이라 keysym 0 은 "아직 등록 안 함" 이다.
+    kde_keymap_keysym: u32 = 0,
+    kde_keymap_modifiers: u32 = 0,
     /// #496 1-c — COSMIC RON 에 지금 쓰여 있는 keysym. KDE 쪽과 같은 역할이다.
     cosmic_position_keysym: u32 = 0,
     /// #510 — **기동 시** 전역 hotkey 를 못 잡았다는 기록.
@@ -2009,8 +2016,10 @@ const Client = struct {
         // `keyboard ready` roundtrip 뒤로 미루는데, 그 자리는 `hidden_at_start` 판단보다
         // **앞이라** 동작이 달라지지 않는다 — 미룬 등록이 늦어 `has_kde_hotkey` 가 false
         // 로 읽히면 숨은 채 시작해야 할 창이 뜬다.
-        if (!self.run_opts.isStressRun() and self.config.hotkey.code == null)
-            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, null);
+        // #760 — Shift 와 기호 · 숫자를 함께 적은 hotkey 도 미룬다. KDE 는 Shift 를 글자에 접어
+        // 보므로 그 키를 Shift 로 누른 글자를 알아야 등록할 수 있다 (`kdeKeymapRegistration`).
+        if (!self.run_opts.isStressRun() and !self.kdeNeedsKeymap())
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
         self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
@@ -2032,7 +2041,7 @@ const Client = struct {
         //   - config 를 못 읽은 실행은 기본값으로 도는 중이라, shell · 폰트 검증이
         //     보는 값이 사용자가 적은 값이 아니다. 그 상태의 안내를 먼저 내면 사용자는
         //     자기가 고치지도 않은 shell 을 의심한다.
-        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdePositionHotkey`) 과 hotkey
+        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdeKeymapHotkey`) 과 hotkey
         //     claim 판정 (`fatalIfHotkeyClaimFailed`) 보다 앞이다. 그 판정이 보는
         //     hotkey 도 기본값이라 "F1 을 못 잡았다" 가 사용자 설정과 무관해진다.
         //
@@ -2052,7 +2061,7 @@ const Client = struct {
 
         // #496 1-c — 위치 표기 hotkey 의 KDE 등록. keymap 이 방금 도착했다.
         if (!self.run_opts.isStressRun()) {
-            self.registerKdePositionHotkey();
+            self.registerKdeKeymapHotkey();
             self.writeCosmicPositionHotkey();
         }
 
@@ -2137,19 +2146,7 @@ const Client = struct {
             log.appendLine("startup", "hidden_start — surface deferred until first hotkey toggle", .{});
             self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
         } else {
-            try self.bringUpInitialSurface();
-            self.logBootElapsed("first configure");
-            try self.ensureSessionGrid();
-            self.logBootElapsed("session+PTY");
-            _ = try self.redraw();
-            self.logBootElapsed("first frame");
-
-            log.appendLine("linux", "Wayland terminal window mapped", .{});
-            // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
-            // (`sway_ipc.moveWindowIfSway` 주석). gate 는 `is_sway` (peer PID 비교) —
-            // 함수 내부의 SWAYSOCK 존재 확인만 믿으면 stale 변수가 남은 세션에서
-            // 무의미한 IPC 가 나가고, 응답 없는 소켓이면 map 직후 hang 이다.
-            if (self.is_sway) sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
+            try self.showInitialWindow(.boot);
         }
 
         // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
@@ -2238,7 +2235,6 @@ const Client = struct {
             self.drainInfoRequest();
             self.drainConfigNotice();
             self.drainSwayToggleRegister();
-            self.drainKdeLayoutChange();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -2246,6 +2242,15 @@ const Client = struct {
             self.drainExitedTabs();
             // KGlobalAccel Pressed / NameOwnerChanged D-Bus signal dispatch.
             self.dispatchDbusMessages();
+            // #760 — KDE 의 배열 전환은 위의 D-Bus dispatch 가 받아 둔다. **그 뒤에** 처리해야 받은
+            // 그 바퀴에 다시 등록한다. 예전엔 dispatch 앞에 있어서, 받아 둔 전환이 다음에 루프를 깨우는
+            // 일 (대개 다음 배열 전환) 까지 밀렸다 — 독일어로 바꾸면 아무 일 없다가 US 로 되돌릴 때
+            // 독일어 글자로 등록됐다 (2026-10-18 KDE 실측). #770 이 루프를 일이 있을 때만 깨우게 한
+            // 뒤로 드러났고 (추정), 위치 표기 hotkey 의 재등록 (#496 1-c) 도 같은 길이다.
+            self.drainKdeLayoutChange();
+            // #760 — hidden_start 의 첫 show. 위의 토글 경로 (소켓 · D-Bus) 가 세운 표시를 이벤트 처리
+            // 밖에서 처리한다.
+            self.drainInitialShow();
             // L12-γ-5 — Wayland client-side key repeat timer 검사.
             try self.maybeRepeatKey();
             // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
@@ -3682,6 +3687,44 @@ const Client = struct {
     /// destroy + 재생성으로 재시도하고, 상한(3회)을 넘기면 정직하게 안내(showError,
     /// host overlay 또는 stderr fallback) 후 실패를 반환한다. (a)가 정상 동작하면
     /// 재시도 분기는 거의 타지 않는 순수 안전망이다.
+    /// 창을 처음 띄운다 — 창 · 첫 configure · 터미널 세션 · 첫 그림 · (sway) 위치. 시작할 때와
+    /// `hidden_start` 의 첫 show 가 **이 함수 하나**를 쓴다.
+    ///
+    /// 예전에는 첫 show 가 `createShellObjects` 만 하고 세션 생성을 configure 처리기에 맡겼다.
+    /// 그 처리기가 창 방식 (layer-shell · `xdg_toplevel`) 마다 따로라, `8d62efb` 가 layer-shell
+    /// 쪽만 고친 뒤로 sway (`xdg_toplevel`, #454) 에서 같은 증상이 남았다 — 창은 토글되는데 셸이
+    /// 없어 비어 있었다 (2026-10-18 실제 sway 세션, #760). 숨김 시작은 보통 시작을 미룬 것뿐이라
+    /// 같은 길을 타게 했다. configure 처리기는 이제 이미 있는 세션의 크기만 맞춘다.
+    const InitialShow = enum { boot, first_toggle };
+    fn showInitialWindow(self: *Client, comptime phase: InitialShow) !void {
+        const logPhase = if (phase == .boot) logBootElapsed else logShowElapsed;
+        try self.bringUpInitialSurface();
+        logPhase(self, "first configure");
+        try self.ensureSessionGrid();
+        logPhase(self, "session+PTY");
+        _ = try self.redraw();
+        logPhase(self, "first frame");
+
+        log.appendLine("linux", "Wayland terminal window mapped", .{});
+        // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
+        // (`sway_ipc.moveWindowIfSway` 주석). gate 는 `is_sway` (peer PID 비교) —
+        // 함수 내부의 SWAYSOCK 존재 확인만 믿으면 stale 변수가 남은 세션에서
+        // 무의미한 IPC 가 나가고, 응답 없는 소켓이면 map 직후 hang 이다.
+        if (self.is_sway) sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
+    }
+
+    fn drainInitialShow(self: *Client) void {
+        if (!self.pending_initial_show) return;
+        self.pending_initial_show = false;
+        self.initial_show_running = true;
+        defer self.initial_show_running = false;
+        self.showInitialWindow(.first_toggle) catch |err| {
+            log.appendLine("toggle", "first window (hidden_start) failed: {s}", .{@errorName(err)});
+            return;
+        };
+        log.appendLine("toggle", "show — first window (hidden_start)", .{});
+    }
+
     fn bringUpInitialSurface(self: *Client) !void {
         const max_attempts: u8 = 3;
         var attempt: u8 = 0;
@@ -5968,15 +6011,11 @@ const Client = struct {
                         &.{ w, h },
                     );
                 }
-                // hidden_start=true 의 첫 toggle show — handleActivatedToggle 가
-                // createShellObjects 만 하고 session 생성은 안 함. 이전 guard
-                // `if (self.session != null)` 가 첫 configure 에서 ensureSessionGrid
-                // 를 skip 시켜 session 이 영영 안 만들어졌음 (사용자가 fillBuffer
-                // gradient 만 봄). ensureSessionGrid 는 idempotent (session 존재
-                // 시 resize, null 시 create) — guard 없이 호출 안전.
-                try self.ensureSessionGrid();
+                // 이미 있는 세션의 크기만 맞춘다. 세션은 `showInitialWindow` 가 만든다 —
+                // `xdg_toplevel` 처리기와 같은 규칙이다 (#760).
+                if (self.session != null) try self.ensureSessionGrid();
                 self.configured = true;
-                self.logShowElapsed("first configure+session");
+                self.logShowElapsed("configure");
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
                 // 인 경우도 redraw — hide 후 re-map sequence 의 첫 attach.
                 if (self.mapped or !self.surface_hidden) self.requestRedraw();
@@ -7052,7 +7091,7 @@ const Client = struct {
         }
         // #496 1-a — layout 이 바뀌면 이 event 가 다시 온다. 그래서 매번 다시 푼다.
         self.resolveBindingFallbacks();
-        self.refreshKdePositionHotkey();
+        self.refreshKdeKeymapHotkey();
         self.writeCosmicPositionHotkey();
     }
 
@@ -7580,7 +7619,7 @@ const Client = struct {
         );
         if (group_changed) {
             self.resolveBindingFallbacks();
-            self.refreshKdePositionHotkey();
+            self.refreshKdeKeymapHotkey();
             self.writeCosmicPositionHotkey();
         }
 
@@ -9001,7 +9040,7 @@ const Client = struct {
     /// (`claimKey` 의 사전 조회 → 사용자 확인 → 인수 → 사후 검증) 그 앎을 버리는 것이
     /// 아까웠다. 실제 안내 · 종료는 `fatalIfHotkeyClaimFailed` 가 나중에 한다 — 여기서는
     /// overlay 를 아직 못 그린다 (`hotkey_claim_failure` 주석).
-    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, codepoint: ?u21) void {
+    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, modifiers: u32, codepoint: ?u21) void {
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
             self.recordHotkeyClaimFailure(
@@ -9024,7 +9063,7 @@ const Client = struct {
             self.allocator,
             &self.dbus_session.?,
             keysym,
-            self.config.hotkey.modifiers,
+            modifiers,
             codepoint,
             onKGlobalAccelPressed,
             self,
@@ -9077,17 +9116,13 @@ const Client = struct {
             }
         }
         if (self.kglobalaccel_client) |client| {
-            // #496 1-c — 위치 표기는 `hotkey.keysym` 이 sentinel 0 이라 그대로 넘기면
-            // 재등록이 실패한다. 우리가 풀어 둔 값을 준다.
-            const keysym = if (self.config.hotkey.code == null)
-                self.config.hotkey.keysym
-            else
-                self.kde_position_keysym;
-            const codepoint: ?u21 = if (self.config.hotkey.code == null)
-                null
-            else
-                self.keyboard.keysymToUtf32(keysym);
-            client.drainOwnerRestart(keysym, self.config.hotkey.modifiers, codepoint);
+            // #496 1-c · #760 — keymap 으로 푼 hotkey (위치 표기 · Shift+기호) 는 config 값을
+            // 그대로 넘기면 안 맞는다. 우리가 풀어 둔 값을 준다.
+            if (self.kdeNeedsKeymap()) {
+                client.drainOwnerRestart(self.kde_keymap_keysym, self.kde_keymap_modifiers, self.keyboard.keysymToUtf32(self.kde_keymap_keysym));
+            } else {
+                client.drainOwnerRestart(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
+            }
         }
         if (self.kglobalaccel_toggle_pending) {
             self.kglobalaccel_toggle_pending = false;
@@ -9170,20 +9205,65 @@ const Client = struct {
         self.cosmic_position_keysym = keysym;
     }
 
-    /// #496 1-c — 위치 표기 hotkey 를 KDE 에 등록한다 (`keyboard ready` 직후).
-    fn registerKdePositionHotkey(self: *Client) void {
-        if (self.config.hotkey.code == null) return;
+    /// #760 — KDE 에 등록하려면 keymap 이 필요한 hotkey 인가. 위치 표기 (`[KeyW]`, #496 1-c) 와
+    /// **Shift + 기호 · 숫자** (`ctrl+shift+]`) 다.
+    ///
+    /// KDE 는 Shift 를 글자에 접어 본다. `Ctrl+Shift+]` 로 등록하면 실제 키를 눌러도 안 맞고,
+    /// `Ctrl+}` 로 등록해야 맞았다 (2026-10-18 KDE Plasma 실측 — `dbus-monitor` 의
+    /// `globalShortcutPressed`). 같은 측정에서 sway · Hyprland · GNOME · Cinnamon · COSMIC ·
+    /// Windows · macOS 는 그대로 맞아서 보정은 KDE 등록에만 둔다 (#760 3단계 댓글). 글자 키
+    /// (`ctrl+shift+t`) 는 Qt 도 Shift 를 따로 쳐서 보정하지 않는다 — 알파벳은 Qt 키가 대문자
+    /// 하나라 접을 것이 없다.
+    fn kdeNeedsKeymap(self: *const Client) bool {
+        if (self.config.hotkey.code != null) return true;
+        if ((self.config.hotkey.modifiers & config_mod.Hotkey.MOD_SHIFT) == 0) return false;
+        const k = self.config.hotkey.keysym;
+        const printable = k >= 0x21 and k <= 0x7e;
+        const letter = (k >= 'a' and k <= 'z') or (k >= 'A' and k <= 'Z');
+        return printable and !letter;
+    }
+
+    const KdeRegistration = struct { keysym: u32, modifiers: u32 };
+
+    /// #760 — `kdeNeedsKeymap` 인 hotkey 를 **지금 layout** 으로 풀어 KDE 에 등록할 값.
+    /// 위치 표기는 그 자리가 내는 글자 (#496 1-c), Shift + 기호 · 숫자는 그 키를 Shift 로 누른
+    /// 글자에서 Shift 를 뺀 것이다 (US 의 `ctrl+shift+]` → `Ctrl+}`). null 은 풀 수 없다는 뜻이다.
+    fn kdeKeymapRegistration(self: *Client) ?KdeRegistration {
+        if (self.config.hotkey.code != null) {
+            const keysym = self.positionHotkeyKeysym() orelse return null;
+            return .{ .keysym = keysym, .modifiers = self.config.hotkey.modifiers };
+        }
+        const shifted = self.keyboard.shiftedKeysymFor(self.config.hotkey.keysym) orelse return null;
+        return .{ .keysym = shifted, .modifiers = self.config.hotkey.modifiers & ~config_mod.Hotkey.MOD_SHIFT };
+    }
+
+    /// #496 1-c · #760 — keymap 이 필요한 hotkey 를 KDE 에 등록한다 (`keyboard ready` 직후).
+    fn registerKdeKeymapHotkey(self: *Client) void {
+        if (!self.kdeNeedsKeymap()) return;
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
-        const keysym = self.positionHotkeyKeysym() orelse {
-            log.appendLine("kglobalaccel", "position hotkey unresolved -- keymap has no keysym at that spot, hotkey disabled", .{});
+        const reg = self.kdeKeymapRegistration() orelse {
+            if (self.config.hotkey.code != null) {
+                log.appendLine("kglobalaccel", "position hotkey unresolved -- keymap has no keysym at that spot, hotkey disabled", .{});
+                return;
+            }
+            // Shift 단계를 못 찾으면 (그 글자를 기본 단계로 내는 키가 이 배열에 없다) 적힌 대로
+            // 등록한다. 보정 전과 같은 동작이다.
+            log.appendLine("kglobalaccel", "shifted symbol hotkey -- no shifted keysym on this layout, registered as written", .{});
+            self.kde_keymap_keysym = self.config.hotkey.keysym;
+            self.kde_keymap_modifiers = self.config.hotkey.modifiers;
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
             return;
         };
-        if (isDeadKeysym(keysym)) {
+        if (isDeadKeysym(reg.keysym)) {
             log.appendLine("kglobalaccel", "position hotkey is a dead key on this layout -- not registered (use a function key)", .{});
             return;
         }
-        self.kde_position_keysym = keysym;
-        self.tryConnectKGlobalAccel(keysym, self.keyboard.keysymToUtf32(keysym));
+        if (self.config.hotkey.code == null) {
+            log.appendLine("kglobalaccel", "shifted symbol hotkey -- registering keysym=0x{x} without Shift (KDE folds Shift into the character)", .{reg.keysym});
+        }
+        self.kde_keymap_keysym = reg.keysym;
+        self.kde_keymap_modifiers = reg.modifiers;
+        self.tryConnectKGlobalAccel(reg.keysym, reg.modifiers, self.keyboard.keysymToUtf32(reg.keysym));
     }
 
     /// #496 1-c — KDE 가 D-Bus 로 알려 준 layout 전환을 처리한다.
@@ -9198,21 +9278,24 @@ const Client = struct {
     fn drainKdeLayoutChange(self: *Client) void {
         const client = self.kglobalaccel_client orelse return;
         const index = client.takeLayoutChange() orelse return;
-        if (self.config.hotkey.code == null) return;
+        if (!self.kdeNeedsKeymap()) return;
         self.keyboard.active_group = index;
-        self.refreshKdePositionHotkey();
+        self.refreshKdeKeymapHotkey();
     }
 
     /// #496 1-c — layout 이 바뀌면 그 자리가 내는 글자도 바뀌므로 다시 등록한다.
     ///
     /// 자리를 그대로 받는 경로 (sway `bindcode`) 는 이것이 필요 없다 — 한 번 고정하면
     /// 끝이다. KDE 는 글자만 받아서 따라다녀야 한다.
-    fn refreshKdePositionHotkey(self: *Client) void {
+    /// #760 — Shift + 기호 · 숫자도 같다. 그 키를 Shift 로 누른 글자가 배열마다 다르다.
+    fn refreshKdeKeymapHotkey(self: *Client) void {
         const client = self.kglobalaccel_client orelse return;
-        if (self.config.hotkey.code == null) return;
-        const keysym = self.positionHotkeyKeysym() orelse return;
-        if (keysym == self.kde_position_keysym) return;
-        self.kde_position_keysym = keysym;
+        if (!self.kdeNeedsKeymap()) return;
+        const reg = self.kdeKeymapRegistration() orelse return;
+        const keysym = reg.keysym;
+        if (keysym == self.kde_keymap_keysym and reg.modifiers == self.kde_keymap_modifiers) return;
+        self.kde_keymap_keysym = keysym;
+        self.kde_keymap_modifiers = reg.modifiers;
         // **가드가 여기에도 있어야 한다.** 처음엔 등록 경로에만 뒀는데, 실기에서 독일어로
         // 전환하니 dead key 가 그대로 `rebind` 로 흘러 일반 실패
         // (`KGlobalAccelUnsupportedKey`) 로 끝났다 — 결과는 "등록 안 됨" 으로 같지만
@@ -9224,7 +9307,7 @@ const Client = struct {
             log.appendLine("kglobalaccel", "layout changed -- position is a dead key now, hotkey unregistered", .{});
             return;
         }
-        client.rebind(keysym, self.config.hotkey.modifiers, self.keyboard.keysymToUtf32(keysym));
+        client.rebind(keysym, reg.modifiers, self.keyboard.keysymToUtf32(keysym));
     }
 
     fn onKGlobalAccelPressed(user_data: ?*anyopaque, timestamp: i64) void {
@@ -9256,6 +9339,10 @@ const Client = struct {
     ///
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
+        if (self.pending_initial_show or self.initial_show_running) {
+            log.appendLineVerbose("toggle", "ignored — the first window is still coming up (#760)", .{});
+            return;
+        }
         if (self.surface_hidden) {
             log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
@@ -9263,13 +9350,13 @@ const Client = struct {
             // 발생하므로 그 site 에 별도 logShowElapsed.
             self.show_timer = .start(self.rt);
             self.surface_hidden = false;
-            // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 surface 아직
-            // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
+            // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 세션도 surface 도
+            // 아직 없으므로 보통 시작과 같은 `showInitialWindow`. 이후 hide/show cycle 은 unmap/remap
             // path (#205 — wl_surface + layer_surface 유지가 ~165ms → ~16ms 줄임,
             // KWin Bug 503121 의 kitty workaround pattern).
             // #454 — sway 는 surface 를 유지한 채 scratchpad 로 숨겼다. 그래서 show 도
             // 재생성이 아니라 scratchpad 에서 꺼내는 것이다 (`sway_ipc.showFromScratchpad`).
-            // 첫 show (hidden_start) 는 아직 surface 가 없으므로 아래 create 로 간다.
+            // 첫 show (hidden_start) 는 아직 surface 가 없으므로 아래 `showInitialWindow` 로 간다.
             if (self.is_sway and self.surface_id != 0) {
                 // #454 — sway 는 scratchpad 로 옮기는 순간 fullscreen 을 해제한다 (실기
                 // 확인 — hide 중 트리의 fullscreen_mode 가 0 으로 떨어짐). 앱의
@@ -9297,10 +9384,14 @@ const Client = struct {
                 log.appendLineVerbose("toggle", "show — scratchpad show (#454 sway)", .{});
                 return;
             }
-            if (self.surface_id == 0) {
+            if (self.session == null) {
+                // hidden_start 의 첫 show — 보통 시작과 같은 길 (`showInitialWindow` 주석). 이벤트
+                // 처리 밖에서 띄운다 (`pending_initial_show` 주석).
+                self.pending_initial_show = true;
+            } else if (self.surface_id == 0) {
                 try self.createShellObjects();
-                self.logShowElapsed("createShellObjects (first show)");
-                log.appendLine("toggle", "show — created shell objects (first)", .{});
+                self.logShowElapsed("createShellObjects (recreate)");
+                log.appendLineVerbose("toggle", "show — recreated shell objects", .{});
             } else {
                 try self.remapShellObjects();
                 self.logShowElapsed("remapShellObjects");
@@ -9959,8 +10050,12 @@ const Client = struct {
             if (self.keyboard.ctrlActive()) modifiers |= config_mod.CAPTURE_MOD_CTRL;
             if (self.keyboard.shiftActive()) modifiers |= config_mod.CAPTURE_MOD_SHIFT;
             if (self.keyboard.superActive()) modifiers |= config_mod.CAPTURE_MOD_PRIMARY;
+            // #760 — Shift 를 누른 채면 Shift 를 뺀 키 값으로 이름을 정한다. `Ctrl+Shift+]` 는
+            // `braceright` 로 와서 이름표에 없었다. Windows · macOS 는 키 코드가 Shift 와 무관해
+            // 이미 `ctrl+shift+]` 로 적는다 — 세 OS 가 같은 글자가 된다.
+            const capture_sym = if (self.keyboard.shiftActive()) self.keyboard.keysymAtEvdev(@intCast(key)) orelse sym else sym;
             var capture_buf: [64]u8 = undefined;
-            if (config_mod.capturedHotkeyText(&capture_buf, sym, modifiers)) |captured| {
+            if (config_mod.capturedHotkeyText(&capture_buf, capture_sym, modifiers)) |captured| {
                 @memcpy(self.dialog.input_buf[0..captured.len], captured);
                 self.dialog.input_len = captured.len;
                 _ = self.validatePromptInput();

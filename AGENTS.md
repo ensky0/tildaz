@@ -364,10 +364,17 @@ SPEC 변경 등 *"방향"* 에 해당하는 결정은 단독으로 정하고 진
 사용자와 상의해서 함께 결정해요. 사실 확인 / 소스 분석 / 진단은 자유롭게 하되,
 결정 지점에서는 옵션을 제시하고 사용자 선택을 기다려요.
 
-**외부에 공개되는 댓글은 올리기 전에 반드시 확인받아요 — 새 댓글이든 정정이든.**
-GitHub 이슈 / PR 의 외부 기여자 대상 답변, 그리고 **이미 올린 댓글의 수정**까지
-전부 해당해요. 초안을 보여 주고 사용자 승인을 받은 뒤에 올려요 (2026-08-22 사용자
-지시). 내부 기술 기록도 같은 이슈에 올라가 외부에 보이니 함께 적용해요.
+**다른 사람이 연 이슈 · PR 에 다는 댓글은 올리기 전에 확인받아요 — 새 댓글이든 정정이든.**
+외부 신고자 · 기여자에게 하는 답변과 **그 스레드에 이미 올린 댓글의 수정**이 해당해요.
+초안을 영어 (올릴 글) 와 한국어 (확인용) 로 함께 보여 주고, 승인을 받은 뒤에 올려요
+(2026-08-22 사용자 지시).
+
+**개발 과정의 이슈 · PR · 댓글은 초안 확인 없이 바로 올려요** (2026-10-18 사용자 지시:
+*"개발 도중에 적는 댓글은 초안 확인받을 필요 없어 … 다른 사람글에 적는 댓글만 초안 확인받아"*,
+같은 날 *"댓글만 그런게 아니라 개발 과정에 있는 이슈, pr, 댓글 등은 초안 필요 없고 바로 올리고
+시작해"*). 새 이슈 · PR 본문 · 계획 · 진행 · 결정 · 검증 결과 기록이 여기에 해당해요. 올리고
+바로 다음 작업으로 가요. 예전에는 이것도 승인을 받았는데, 그 사이 작업이 멈춰 있었어요. 방향을
+정하는 일은 그대로 사용자와 함께 정해요 (이 절의 처음) — 확인을 안 받는 것은 *글의 문구*예요.
 
 **외부 신고자 답변의 형식** (2026-10-09 사용자 지시: *"계속 잊어버리네"*):
 
@@ -420,6 +427,12 @@ GitHub 이슈 / PR 의 외부 기여자 대상 답변, 그리고 **이미 올린
 **사용자 질문 답변이 최우선.** 작업 중 질문이 오면 진행 중인 tool 호출을 이어가기
 전에 답부터 해요 — 답변을 tool 작업 뒤로 미루지 않아요 (2026-07-08 사용자 명시:
 "내 질문에 답하는 게 가장 최우선이야. 항상 기억해").
+
+- **질문이 온 바로 다음 메시지의 첫 내용이 그 답이에요.** 하던 작업의 결과 보고 · 다음 계획보다 먼저 써요.
+  작업 중간에 끼어든 질문도 같아요 — 돌던 도구가 끝나면 결과 해설보다 답을 먼저 해요.
+- 2026-10-18 [#760](https://github.com/ensky0/tildaz/issues/760) 에서 *"760 은 hotkey 하나만 다루는 거야?"* 를
+  작업 중에 받고, 재현 결과를 먼저 보고한 뒤에야 답했어요. 사용자가 같은 질문을 다시 보내며 지적했어요
+  (*"항상 내 질문부터 대답해 줘"*).
 
 **시각 / 인지 개선 아이디어는 요청 없어도 먼저 제안해요** (2026-07-27 사용자 명시:
 "인지적으로 더 예쁘게 만들 수 있는 방법 있으면 언제든 제안해 줘"). 위의 "방향은
@@ -523,7 +536,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 | 글자 크기 크게 / 작게 / 되돌리기 | `⌘=` · `⌘-` · `⌘0` (+ `⇧⌘⌫`) | `Ctrl+Shift+=` · `-` · `Backspace` |
 
 - 분할이 `⌃⌘방향` 이 아닌 이유는 macOS 의 Mission Control (`⌃↑` `⌃↓`) 과 부딪혀서고, Linux 에서 `Ctrl+Alt+방향` 을 피한 이유는 GNOME 이 workspace 전환 · 이동에 쓰기 때문이에요 (둘 다 `config.zig` 주석에 근거가 있어요).
-- 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에는 **`PgUp` / `PgDn` 을 함께** 둬요 — AZERTY 에서 bracket 이 `AltGr+5` 라 못 눌러요 ([#482](https://github.com/ensky0/tildaz/issues/482)).
+- 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에 **`PgUp` / `PgDn` 은 두지 않아요.** [#482](https://github.com/ensky0/tildaz/issues/482) 에서 AZERTY 용으로 더했다가 [#760](https://github.com/ensky0/tildaz/issues/760) 에서 뺐어요 — 노트북에는 PgUp 키가 없어 (Fn+↑) 신고자도 쓰지 못했어요. AZERTY 는 `Alt+1`–`9` 와 위치 표기로 탭을 골라요.
 
 ## 글자를 고르는 세 기준
 
@@ -546,7 +559,7 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 
 ① `HotkeyNamedKey` 열거형 ② `hotkeyKeyFromName` 의 이름 · 글자 ③ `parseHotkeyString` 의 전역 hotkey 거부 ④ 같은 함수의 `types_text` ⑤ Linux keysym (`keysymFromKey`) ⑥ Windows VK (`vkeyFromKey`) ⑦ macOS 라벨 (`labelFromKey`) ⑧ macOS keycode (`keycodeFromKey`) ⑨ 라틴 fallback (`usPositionForKeysym`) ⑩ 표시 이름 (`bindingDisplay`)
 
-- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 앱의 hotkey 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 쓰므로, 이름을 빼는 쪽으로는 통일할 수 없어요.
+- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 예전 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 써서, 그 config 를 읽으려고 이름도 계속 받아요. 지금 캡처는 글자 그대로 적어요 (#760).
 - **키 코드 값은 [`physical_key.zig`](src/physical_key.zig) 표와 맞춰요.** named ↔ code 테스트가 macOS keycode 를 그 표와 대조하고, named 키가 하나라도 빠지면 개수 단언이 걸려요.
 - **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
 - **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.
@@ -1585,6 +1598,19 @@ ls /run/user/$(id -u)/tildaz-dev/run/                                    # insta
 | KDE · COSMIC | **그 자리가 지금 내는 글자** | us `` ` `` · fr `²` · ru `Ё` · **de 는 등록 안 함** (dead key) |
 | Windows | **자리** (raw scan code) | `0x29`. `RegisterHotKey` 가 아니라 `WH_KEYBOARD_LL` 훅으로 잡아요 — 아래 |
 | macOS | 자리 (`kVK_*`) | 변화 없음 |
+
+**Shift 와 기호를 함께 적은 hotkey (`ctrl+shift+]`) 도 데스크톱마다 갈려요** ([#760](https://github.com/ensky0/tildaz/issues/760)).
+KDE 는 Shift 를 글자에 접어서 봐요 — `Ctrl+Shift+]` 로 등록하면 실제 키에 안 맞고 `Ctrl+}` 여야 맞았어요 (2026-10-18
+실측). 그래서 KDE 등록만 보정해요 (SPEC §7.1). sway · Hyprland · GNOME · Cinnamon · COSMIC · Windows · macOS 는
+그대로 맞았어요 — 모두 실제 세션에서 쟀어요. 다시 잴 때는 [`tool/shift-hotkey-check_linux.sh`](tool/shift-hotkey-check_linux.sh)
+를 그 세션에서 돌려요 — 실제 dev config 폴더에 `config_9.toml` 하나를 두고 uinput 으로 눌러 앱 로그로 판정한 뒤 다
+지워요. 맨 앞의 대조군 `ctrl+alt+]` 가 토글되지 않으면 나머지 결과는 믿지 않아요.
+
+- **시작 안내 다이얼로그가 회차를 망쳐요.** 키가 빠진 config 로 띄우면 안내 다이얼로그가 layer-shell `exclusive` 로
+  키보드를 독점해서, 누른 키가 데스크톱 단축키에 닿지 않아요. 도구는 격리 폴더에서 worker 를 잠깐 띄워 이번 판의
+  완전한 템플릿을 만들어 써요.
+- **KDE 의 단축키 신호는 D-Bus 로 바로 보여요** — `dbus-monitor --session "interface='org.kde.kglobalaccel.Component',member='globalShortcutPressed'"`.
+  앱 로그보다 먼저 "KDE 가 키를 맞췄는가" 를 갈라요. `setShortcutKeys` 를 `gdbus` 로 불러 Qt 값을 바꿔 가며 재 볼 수 있어요.
 
 **Windows 는 `RegisterHotKey` 로 위치 표기를 담을 수 없어요 — 실측으로 확정.** 그 API 는 VK 만 받는데 VK 는 layout DLL 이 배정하는 값이라 자판마다 자리가 움직여요 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27`). 그래서 자리를 VK 로 한 번 풀어 등록하면 그 값은 *그 layout 에서만* 맞아요. 처음 구현은 그 파생값을 캐시하고 `WM_INPUTLANGCHANGE` 에서 다시 풀었는데, **숨은 채 layout 이 바뀌면 핫키가 다른 물리 키로 옮겨갔어요** (실측: `[Backquote]` 로 적었는데 `1` 왼쪽 키는 죽고 `'` 키가 창을 띄웠어요 — [#512 코멘트](https://github.com/ensky0/tildaz/pull/512#issuecomment-5412301433)). 그 메시지가 **스레드별이고 포커스를 얻을 때** 와서, 핫키가 먹어야 포커스를 얻고 포커스를 얻어야 갱신되는 순환이라 그 구조로는 창을 좁힐 수만 있고 닫을 수 없어요.
 
@@ -2738,6 +2764,11 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   어느 쪽인지는 *뜨는 순서*가 정해요 (dev 를 먼저 띄우면 릴리즈 창을, 릴리즈를 먼저 띄우면
   dev 창을 집었어요). 그러면 릴리즈 launcher 의 새-instance 요청이 개발 빌드로 가요.
   **Linux 는 IPC 가 소켓이라 이 문제가 없어요** — 창 이름으로 남을 찾는 것은 Windows 뿐이에요.
+- **macOS 는 세션 전체 알림 (`NSDistributedNotificationCenter`) 의 이름이 IPC 주소예요.** 새 instance 요청과
+  hotkey 캡처 시작 · 끝 알림이 2026-10-18 까지 고정 이름 (`me.ensky0.tildaz.new-instance` 등) 이라, dev
+  launcher 한 번에 **릴리즈 instance 0 도 다이얼로그를 띄웠어요** ([#760](https://github.com/ensky0/tildaz/issues/760)
+  macOS 실기). 두 다이얼로그가 같은 자리에 겹쳐서 합성 키가 릴리즈 쪽으로 갔어요. 지금은 이름 앞에
+  `app_id.bundle_id` 를 붙여요 (릴리즈 이름은 그대로예요).
 - **⚠️ 창 *제목*을 가를 때는 확장의 토큰을 함께 봐요.** 그 제목은 **Linux 의 `xdg_toplevel`
   제목으로도 쓰이고** (`wayland_minimal.zig` 의 `createXdgToplevel`), GNOME · Cinnamon extension
   의 `workerIndex()` 가 그것으로 번호를 읽어요. 처음에는 확장이 `/^TildaZ-(\d+)$/` 리터럴로

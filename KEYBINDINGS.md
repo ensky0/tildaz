@@ -10,7 +10,7 @@
 | New tab | Ctrl+Shift+T | Cmd+T |
 | Close tab (all its panes) | Ctrl+Shift+W | Cmd+W |
 | Go to tab 1–9 | Alt+1–9 | Cmd+1–9 |
-| Previous / next tab | Ctrl+Shift+[ / ] *or* Ctrl+PgUp / PgDn | Shift+Cmd+[ / ] *or* Cmd+PgUp / PgDn |
+| Previous / next tab | Ctrl+Shift+[ / ] | Shift+Cmd+[ / ] |
 | Split pane (new pane on that side) | Ctrl+Shift+←/→/↑/↓ | Option+Cmd+←/→/↑/↓ |
 | Move focus to a pane | Alt+←/→/↑/↓ | Cmd+←/→/↑/↓ |
 | Resize pane by one cell | Shift+Alt+←/→/↑/↓ | Shift+Cmd+←/→/↑/↓ |
@@ -61,11 +61,11 @@ a US keyboard would press instead. Nothing to configure.
 ```toml
 [keys]
 close_tab = ["ctrl+shift+[KeyW]"]
-prev_tab  = ["ctrl+shift+[BracketLeft]", "ctrl+pageup"]
+prev_tab  = ["ctrl+shift+[BracketLeft]"]
 ```
 
-**French AZERTY.** `[` needs AltGr there, so use `Ctrl+PgUp` / `Ctrl+PgDn` (or
-`[BracketLeft]`) for tabs. `?` is on a different key, so write `ctrl+shift+[KeyM]` for
+**French AZERTY.** `[` needs AltGr there, so use `Alt+1`–`9`, or name the bracket keys by
+position (`ctrl+shift+[BracketLeft]` / `[BracketRight]`) for previous / next tab. `?` is on a different key, so write `ctrl+shift+[KeyM]` for
 *Open this page* if you want it. Digits work as-is: digit shortcuts ignore Shift.
 
 **Dead keys** (`^`, `¨`, `´`, `` ` ``, `~`) combine with the next key the way other apps do:

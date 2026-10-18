@@ -608,8 +608,8 @@ function Run-Actions {
     [void](TabCheck 'D4' '이전 탭 (Ctrl+Shift+[)' @($VK.Ctrl, $VK.Shift, $VK.LBracket) 'tc' $true)
     [void](TabCheck 'D5' '다음 탭 (Ctrl+Shift+])' @($VK.Ctrl, $VK.Shift, $VK.RBracket) 'td' $false)
     [void](TabCheck 'D6' '다음 탭 — 끝에서 돈다' @($VK.Ctrl, $VK.Shift, $VK.RBracket) 'te' $true)
-    [void](TabCheck 'D7' '다음 탭 (Ctrl+PgDn)' @($VK.Ctrl, $VK.PgDn) 'tf' $false)
-    [void](TabCheck 'D8' '이전 탭 (Ctrl+PgUp)' @($VK.Ctrl, $VK.PgUp) 'tg' $true)
+    [void](TabCheck 'D7' '다음 탭 (Ctrl+Shift+])' @($VK.Ctrl, $VK.Shift, $VK.RBracket) 'tf' $false)
+    [void](TabCheck 'D8' '이전 탭 (Ctrl+Shift+[)' @($VK.Ctrl, $VK.Shift, $VK.LBracket) 'tg' $true)
     # D9 — 갈린 탭 (지금 첫 탭) 에서 새 탭. 새 셸은 처음부터 탭 전체 격자다 (`leafRect`).
     $before = @(Kids)
     TzSend @($VK.Ctrl, $VK.Shift, $VK.T) 300
