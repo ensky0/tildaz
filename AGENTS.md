@@ -622,6 +622,19 @@ force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계
 들어간다고 알려 줘서 28 로 정했어요. 제목이 길면 `TildaZ` 접두를 빼요. 다이얼로그 아이콘이
 TildaZ 라 이름을 대신해요.
 
+**다이얼로그 문구의 들여쓰기는 2칸 단위예요 — 어기면 빌드가 멈춰요** ([#781](https://github.com/ensky0/tildaz/issues/781)).
+한 단계 들어가면 2칸, 두 단계는 4칸, 세 단계는 6칸이에요. 손으로 나눈 이어지는 줄도 한 단계 더 들여 써요.
+`messages.zig` 의 `comptime` 가드가 문자열 상수의 줄마다 앞 공백을 세어 2 (`dialog_indent_step`) 의 배수가
+아니면 컴파일 오류를 내요. 다이얼로그 문구가 모두 그 파일에 있어서 이 가드가 모든 다이얼로그를 덮어요.
+
+- **위 줄 글자에 공백으로 맞추지 않아요.** 다이얼로그 본문 글꼴은 고정폭이 아니라서 `Tip: ` 뒤 5칸 같은
+  맞춤은 원래 맞지 않아요. 맞추고 싶으면 머리줄 (`Tip:`) 을 따로 두고 그 아래를 한 단계 들여 써요.
+- **긴 항목은 머리와 설명을 줄로 나눠요.** 세 OS 모두 줄바꿈한 줄을 들여 쓰지 못해서, 긴 줄이 넘어가면
+  이어지는 줄이 왼쪽 끝에서 시작해요. 시작 안내 목록이 그래서 `키:` 다음 줄에 설명을 둬요.
+- **`help_text` 만 예외예요.** 다이얼로그가 아니라 터미널에 찍혀요. 고정폭이라 옵션 설명을 열로 맞추는 CLI
+  관례가 실제로 맞아요.
+- 2026-10-18 사용자 지시예요: *"그냥 일반적인 규칙을 만들고 거기에 따르려고 했지"*.
+
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 
 패치 실패 / config 검증 / About 등 사용자 안내 dialog 는 모두 같은 경로 (`dialog.zig`) 를 써요. 이번 변경 (`refactor(dialog)` 커밋) 이전엔 host 별로 흩어져 있었지만 이젠 모두 정리됐어요. **단 panic 은 예외** — Windows / macOS 는 `dialog.showError` + exit(1) 이지만 Linux 는 `showPanic` 이 log + `std.debug.defaultPanic` (stderr backtrace + abort) 으로, dialog 를 호출하지 않아요 (panic 시점엔 renderer / wayland state 가 불안정할 수 있어 overlay 대신 표준 abort — 의도된 차이, SPEC §6).

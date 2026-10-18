@@ -2042,10 +2042,11 @@ config: /Users/<u>/.config/tildaz/config_0.toml            (mac)
 log   : /Users/<u>/Library/Logs/tildaz/tildaz_0.log        (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\tildaz_0.log    (win)
 
-Tip: Shift+Cmd+P opens config in default editor.       (mac)
-     Shift+Cmd+L opens log.
-     Ctrl+Shift+P opens config in default editor.       (win)
-     Ctrl+Shift+L opens log.
+Tip:
+  Shift+Cmd+P opens config in default editor.          (mac)
+  Shift+Cmd+L opens log.
+  Ctrl+Shift+P opens config in default editor.         (win)
+  Ctrl+Shift+L opens log.
 
 https://github.com/ensky0/tildaz
 ```

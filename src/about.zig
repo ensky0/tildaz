@@ -206,8 +206,9 @@ test "#682 About Tip — 기본 키는 예전 본문과 같고 · 바꾼 키를 
         \\config: /tmp/config_0.toml
         \\log   : /tmp/tildaz_0.log
         \\
-        \\Tip: Ctrl+Shift+P opens config in default editor.
-        \\     Ctrl+Shift+L opens log.
+        \\Tip:
+        \\  Ctrl+Shift+P opens config in default editor.
+        \\  Ctrl+Shift+L opens log.
         \\
         \\https://github.com/ensky0/tildaz
     , both);
@@ -216,7 +217,7 @@ test "#682 About Tip — 기본 키는 예전 본문과 같고 · 바꾼 키를 
     custom.open_config_key = "Ctrl+Alt+P";
     const changed = try formatMessageAlloc(a, custom);
     defer a.free(changed);
-    try std.testing.expect(std.mem.find(u8, changed, "Tip: Ctrl+Alt+P opens config in default editor.\n") != null);
+    try std.testing.expect(std.mem.find(u8, changed, "Tip:\n  Ctrl+Alt+P opens config in default editor.\n") != null);
 
     var only_log = base;
     only_log.open_config_key = "";

@@ -4389,6 +4389,14 @@ pub fn clearConfigNotice() void {
     notice_allocator = null;
 }
 
+/// #781 — 안내 항목의 로그 형식. 다이얼로그는 키 다음 줄에 설명을 들여 쓰지만
+/// (`messages.config_notice_item_sep`), 로그는 그 자리를 ` -- ` 로 바꿔 한 줄로 남긴다.
+fn noticeLogFormat(comptime fmt: []const u8) []const u8 {
+    const sep = messages.config_notice_item_sep;
+    const i = std.mem.indexOf(u8, fmt, sep) orelse return fmt;
+    return fmt[0..i] ++ messages.config_notice_item_sep_log ++ fmt[i + sep.len ..];
+}
+
 /// 한 줄을 묶음에 더한다. **로그에는 언제나 남긴다** — 담지 못해도 원인이 사라지지 않게.
 fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) void {
     var line_buf: [512]u8 = undefined;
@@ -4399,7 +4407,7 @@ fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytyp
         notice_truncated = true;
         return;
     };
-    log.appendLine("config", "{s}", .{line});
+    log.appendLine("config", comptime noticeLogFormat(fmt), args);
     notice_count += 1;
 
     const a = notice_allocator orelse {
@@ -5058,7 +5066,7 @@ test "#758 적은 주 폰트가 없으면 OS 의 고정폭 폰트로 띄우고 �
     try expectFontChain(&config, &.{ system_monospace_font, "User Emoji" });
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 1), n.count);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family -- \"User Mono\" is not installed, using " ++ system_monospace_font) != null);
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family" ++ messages.config_notice_item_sep ++ "\"User Mono\" is not installed, using " ++ system_monospace_font) != null);
 }
 
 test "#758 기본값 그대로인 주 폰트가 없으면 알리지 않고 OS 폰트로 띄운다" {
@@ -5096,7 +5104,7 @@ test "#758 없는 대체 폰트는 빼고, 적은 이름만 알린다 — 남은
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     // 기본 대체 폰트는 로그에만 남는다.
     try std.testing.expectEqual(@as(usize, 1), n.count);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.glyph_fallback -- \"User Emoji\" is not installed, dropped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.glyph_fallback" ++ messages.config_notice_item_sep ++ "\"User Emoji\" is not installed, dropped") != null);
 }
 
 test "#758 OS 폰트마저 없으면 목록을 그대로 두고 쓸 수 없다고 표시한다" {
@@ -5709,8 +5717,10 @@ test "#655 모르는 테마 이름 — 기본 테마로 돌고 목록은 로그�
     try std.testing.expectEqual(default_theme, c.config.theme);
     const n = ValueCase.notice();
     try std.testing.expect(std.mem.indexOf(u8, n.repaired, "theme") != null);
-    // 18 개 테마 이름이 다이얼로그로 쏟아지면 나머지 안내가 밀린다 — 한 줄만 선다.
-    try std.testing.expect(std.mem.count(u8, n.repaired, "\n") == 1);
+    // 18 개 테마 이름이 다이얼로그로 쏟아지면 나머지 안내가 밀린다 — 항목 하나만 선다.
+    // 항목은 키 줄과 설명 줄 두 줄이다 (#781) — 구분자로 센다.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, n.repaired, messages.config_notice_item_sep));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, n.repaired, "\n"));
 }
 
 test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된다" {
@@ -5811,8 +5821,8 @@ test "#758 [keys] 두 액션에 같은 키를 직접 적으면 둘 다 쓰지 �
         }
     }
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.new_tab -- \"ctrl+shift+9\" is also set for close_tab") != null);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.close_tab -- \"ctrl+shift+9\" is also set for new_tab") != null);
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.new_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for close_tab") != null);
+    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.close_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for new_tab") != null);
 }
 
 test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무관하다" {
@@ -5848,7 +5858,7 @@ test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무
         try std.testing.expectEqual(@as(?KeyAction, c.changed), owner.action);
         // 진 쪽은 그 키를 잃고, 안내는 **한 줄**이다 — 기본 키로 다시 채우며 같은 키로 한 번 더 지지 않는다.
         const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        const line = try std.fmt.allocPrint(a, "keys.{s} -- \"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
+        const line = try std.fmt.allocPrint(a, "keys.{s}" ++ messages.config_notice_item_sep ++ "\"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
         try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, n.repaired, line));
     }
 }
@@ -5942,6 +5952,23 @@ test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이�
     try std.testing.expectEqual(DEFAULT_FONT_CHAIN_COUNT, config.font_family_count);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family") != null);
+}
+
+test "#781 안내 항목은 다이얼로그에서 설명을 다음 줄에 들여 쓰고, 로그에는 한 줄로 남는다" {
+    try std.testing.expectEqualStrings(
+        "  {s}:\n    missing, using the default",
+        messages.config_notice_missing_format,
+    );
+    try std.testing.expectEqualStrings(
+        "  {s} -- missing, using the default",
+        comptime noticeLogFormat(messages.config_notice_missing_format),
+    );
+    try std.testing.expectEqualStrings(
+        "  keys.{s} -- \"{s}\" is also set for {s}, so neither uses it",
+        comptime noticeLogFormat(messages.config_notice_key_contested_format),
+    );
+    // 설명이 없는 항목은 그대로다.
+    try std.testing.expectEqualStrings("  {s}", comptime noticeLogFormat(messages.config_notice_unknown_format));
 }
 
 test "#655 안내 본문은 '넣을 것' 과 '지울 것' 을 나눠 세운다" {
@@ -6059,8 +6086,8 @@ test "#655 목록이 아무리 길어도 잘리지 않는다 — 상한 대신 �
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expect(!n.truncated);
     try std.testing.expectEqual(@as(usize, 200), n.count);
-    // 200 줄이 **전부** 담겼다 — 16 KiB 를 훌쩍 넘는다.
-    try std.testing.expectEqual(@as(usize, 200), std.mem.count(u8, n.repaired, "\n"));
+    // 200 항목이 **전부** 담겼다 — 16 KiB 를 훌쩍 넘는다. 항목마다 구분자가 하나다 (#781).
+    try std.testing.expectEqual(@as(usize, 200), std.mem.count(u8, n.repaired, messages.config_notice_item_sep));
     try std.testing.expect(n.repaired.len > 16 * 1024);
 }
 

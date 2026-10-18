@@ -593,7 +593,10 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
         .{ .title = messages.config_not_loaded_title, .message = odd_msg, .kind = .info },
         // #758 — 시작 안내는 `Open Config` · `OK` 두 버튼이라 confirm 이다 (`dialogShowNoticeActionCb`).
         // 목록이 길어 640x480 에서는 본문이 넘치고 스크롤로 들어간다 — 정상이다 (모든 다이얼로그 공통 규칙).
-        .{ .title = messages.config_notice_title, .message = notice_msg, .kind = .confirm, .standard_scroll_by_scale = .{ 4, 4, 4 } },
+        //
+        // #781 — 4/4/4 → 6/6/6. 항목마다 키 줄과 설명 줄을 나눠 (줄바꿈된 줄이 왼쪽 끝에서 시작하던
+        // 것을 없애려고) 목록이 길어졌다. 세 배율이 함께 늘었다.
+        .{ .title = messages.config_notice_title, .message = notice_msg, .kind = .confirm, .standard_scroll_by_scale = .{ 6, 6, 6 } },
     };
 
     for (cases) |case| try expectFitsLogicalMinimum(case.title, case.message, case.kind, case.standard_scroll_by_scale);

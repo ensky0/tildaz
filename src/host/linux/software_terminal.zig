@@ -3190,8 +3190,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\config: /home/ensky0/.config/tildaz/config_0.json
         \\log   : /home/ensky0/.local/state/tildaz/tildaz_0.log
         \\
-        \\Tip: Ctrl+Shift+P opens config in default editor.
-        \\     Ctrl+Shift+L opens log.
+        \\Tip:
+        \\  Ctrl+Shift+P opens config in default editor.
+        \\  Ctrl+Shift+L opens log.
         \\
         \\https://github.com/ensky0/tildaz
     ;
