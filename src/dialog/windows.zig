@@ -64,6 +64,7 @@ extern "user32" fn GetKeyState(c_int) callconv(.c) i16;
 extern "user32" fn GetDpiForSystem() callconv(.c) UINT;
 extern "user32" fn GetDpiForWindow(HWND) callconv(.c) UINT;
 extern "user32" fn GetSystemMetrics(c_int) callconv(.c) c_int;
+extern "user32" fn GetSystemMetricsForDpi(c_int, UINT) callconv(.c) c_int;
 extern "user32" fn GetForegroundWindow() callconv(.c) HWND;
 extern "user32" fn SetForegroundWindow(HWND) callconv(.c) c_int;
 extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.c) DWORD;
@@ -337,6 +338,14 @@ fn dialogWidths(dpi: UINT, work: RECT, frame: FrameMetrics) DialogWidths {
         .max_content_w = max_content_w,
         .preferred_content_w = @min(scaled(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), dpi), max_content_w),
     };
+}
+
+const SM_CXVSCROLL: c_int = 2;
+
+/// #795 — `EDIT` 의 세로 스크롤바 폭 (그 DPI 의 시스템 값). 못 얻으면 기본 17 DIP 에 배율을 곱한다.
+fn editScrollbarWidth(dpi: UINT) c_int {
+    const w = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi);
+    return if (w > 0) w else scaled(17, dpi);
 }
 
 /// client 높이 상한 — work area 에서 viewport 여백과 frame 을 뺀 값.
@@ -789,6 +798,9 @@ fn scrollLayout(
     edit_inset: c_int,
     wrap: WrapMeasurer,
     confirm: bool,
+    /// #795 — 세로 스크롤바 폭 (`editScrollbarWidth`). 스크롤이 생기면 `EDIT` 안에서 글 자리를
+    /// 차지하므로 공통 규칙 4 가 그만큼 창을 넓힌다.
+    scrollbar_w: c_int,
 ) ScrollLayout {
     const widths = dialogWidths(dpi, work, frame);
     const margin = widths.margin;
@@ -812,8 +824,9 @@ fn scrollLayout(
 
     // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 Windows 의
     // 값만 넘긴다 — EDIT 의 border/formatting inset 만큼 control 폭을 더 잡은 자연 폭, 그리고
-    // 그 폭에서 잰 wrap 높이 (경계의 마지막 줄도 보존하려고 6 을 더한다). EDIT 은 스크롤바가
-    // 생기면 스스로 다시 접으므로 `scrollbar_w` 는 0 이다.
+    // 그 폭에서 잰 wrap 높이 (경계의 마지막 줄도 보존하려고 6 을 더한다), 그리고 세로 스크롤바
+    // 폭. EDIT 은 스크롤바를 글 자리 안에 세워서, 예전처럼 0 을 넘기면 스크롤이 생길 때 가장 긴
+    // 줄이 그만큼 모자라 접혔다 (#795 Windows 실측 — 경로 줄이 두 줄로).
     const measurer = struct {
         natural: c_int,
         wrap: WrapMeasurer,
@@ -837,6 +850,7 @@ fn scrollLayout(
         .preferred_w = widths.preferred_content_w,
         .max_w = widths.max_content_w,
         .body_max_h = max_body_h,
+        .scrollbar_w = scrollbar_w,
     });
     const content_w = fitted.width;
     const wrapped_h = fitted.height;
@@ -944,6 +958,7 @@ fn measureScrollLayout(
         edit_inset,
         wrap_ctx.measurer(),
         confirm,
+        editScrollbarWidth(dpi),
     );
 
     if (dc != null) {
@@ -1603,6 +1618,8 @@ fn promptLayout(
     natural_w: c_int,
     /// #721 · #795 — 상태 문구 칸의 폭 (`hotkey_status.fit` 의 width). 0 = 못 쟀다.
     status_w: c_int,
+    /// #795 — 메시지 `EDIT` 의 세로 스크롤바 폭 (`scrollLayout` 과 같다).
+    scrollbar_w: c_int,
 ) PromptLayout {
     const widths = dialogWidths(dpi, work, frame);
     const margin = widths.margin;
@@ -1646,6 +1663,7 @@ fn promptLayout(
         .preferred_w = widths.preferred_content_w,
         .max_w = widths.max_content_w,
         .body_max_h = max_message_h,
+        .scrollbar_w = scrollbar_w,
     });
     const content_w = fitted.width;
     const message_overflow = fitted.scroll;
@@ -1731,7 +1749,7 @@ fn measurePromptLayout(
         natural_w = @max(title_natural_w, longestExplicitLineWidth(dc, message_w) + edit_inset);
     }
 
-    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer(), status_text_h, natural_w, status_w);
+    const layout = promptLayout(dpi, work, frame, metrics, wrap_ctx.measurer(), status_text_h, natural_w, status_w, editScrollbarWidth(dpi));
 
     if (dc != null) {
         if (previous != null) _ = SelectObject(dc, previous);
@@ -1987,6 +2005,7 @@ test "#540 본문 다이얼로그 배치는 어느 배율에서도 화면 안에
             scaled(6, dpi),
             wrap.measurer(),
             true,
+            scaled(17, dpi),
         );
 
         // 창이 work area 를 넘지 않는다.
@@ -2020,8 +2039,8 @@ test "#540 배율을 올리면 배치가 그만큼 커진다 — 옛 배율에 �
     // 96 / 192 로 넣어 자식 자리가 실제로 두 배 근처로 커지는지 본다.
     var wrap_low = FakeWrap{ .total_px = 400_000 };
     var wrap_high = FakeWrap{ .total_px = 400_000 };
-    const low = scrollLayout(96, test_work, testFrame(96), testMetrics(96), 200, 300, 6, wrap_low.measurer(), false);
-    const high = scrollLayout(192, test_work, testFrame(192), testMetrics(192), 400, 600, 12, wrap_high.measurer(), false);
+    const low = scrollLayout(96, test_work, testFrame(96), testMetrics(96), 200, 300, 6, wrap_low.measurer(), false, 17);
+    const high = scrollLayout(192, test_work, testFrame(192), testMetrics(192), 400, 600, 12, wrap_high.measurer(), false, 34);
 
     try std.testing.expect(high.icon.w == low.icon.w * 2);
     try std.testing.expect(high.ok.w == low.ok.w * 2);
@@ -2035,22 +2054,25 @@ test "#540 배율을 올리면 배치가 그만큼 커진다 — 옛 배율에 �
 test "#540 본문이 넘치면 overflow 로 표시된다 — scrollbar style 을 갈 근거다" {
     const dpi: UINT = 96;
     var short_wrap = FakeWrap{ .total_px = 100_000 };
-    const short_layout = scrollLayout(dpi, test_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, short_wrap.measurer(), false);
+    const short_layout = scrollLayout(dpi, test_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, short_wrap.measurer(), false, scaled(17, dpi));
     try std.testing.expect(!short_layout.overflow);
 
     var long_wrap = FakeWrap{ .total_px = 4_000_000 };
-    const long_layout = scrollLayout(dpi, test_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, long_wrap.measurer(), false);
+    const long_layout = scrollLayout(dpi, test_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, long_wrap.measurer(), false, scaled(17, dpi));
     try std.testing.expect(long_layout.overflow);
     // 넘쳐도 창은 화면 안이다 — 본문만 잘리고 버튼은 남는다.
     try std.testing.expect(long_layout.win_h <= test_work.bottom - test_work.top);
     try std.testing.expect(long_layout.ok.y + long_layout.ok.h <= long_layout.client_h);
+    // #795 — 스크롤이 생기면 본문 EDIT 이 스크롤바만큼 넓어져 접는 폭이 그대로다. 예전에는
+    // 스크롤바가 글 자리를 먹어 가장 긴 줄이 접혔다 (Windows 실측 — 경로 줄이 두 줄로).
+    try std.testing.expectEqual(short_layout.body.w + scaled(17, dpi), long_layout.body.w);
 }
 
 test "#540 핫키 캡처 다이얼로그도 같은 규칙을 지킨다" {
     for ([_]UINT{ 96, 144, 192 }) |dpi| {
         const frame = testFrame(dpi);
         var wrap = FakeWrap{ .total_px = 200_000 };
-        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, 0, 0);
+        const layout = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, 0, 0, scaled(17, dpi));
 
         try std.testing.expect(layout.win_w <= test_work.right - test_work.left);
         try std.testing.expect(layout.win_h <= test_work.bottom - test_work.top);
@@ -2081,9 +2103,9 @@ test "#721 상태 문구가 여러 줄이면 그만큼 자리를 잡고 버튼�
         // #795 — prompt 폭은 글을 따라간다. 이 테스트는 상태 칸만 보므로 메시지를 기본 폭 글로 둬서
         // 높이 상한에 걸리지 않게 한다 (못 잰 자연 폭 0 이면 하한 360 에서 접혀 메시지가 길어진다).
         const natural = dialogWidths(dpi, test_work, frame).preferred_content_w;
-        const one = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, natural, 0);
+        const one = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), 0, natural, 0, scaled(17, dpi));
         const tall_h = scaled(28, dpi) + scaled(40, dpi);
-        const tall = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), tall_h, natural, 0);
+        const tall = promptLayout(dpi, test_work, frame, testMetrics(dpi), wrap.measurer(), tall_h, natural, 0, scaled(17, dpi));
 
         // 한 줄 (또는 못 잰 경우) 은 예전 높이 그대로다.
         try std.testing.expectEqual(scaled(28, dpi), one.status.h);
@@ -2104,7 +2126,7 @@ test "#540 화면이 작으면 본문을 줄여서라도 버튼을 남긴다" {
     const dpi: UINT = 96;
     const small_work = RECT{ .left = 0, .top = 0, .right = 800, .bottom = 480 };
     var wrap = FakeWrap{ .total_px = 2_000_000 };
-    const layout = scrollLayout(dpi, small_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, wrap.measurer(), true);
+    const layout = scrollLayout(dpi, small_work, testFrame(dpi), testMetrics(dpi), 200, 300, 6, wrap.measurer(), true, scaled(17, dpi));
 
     try std.testing.expect(layout.win_w <= small_work.right - small_work.left);
     try std.testing.expect(layout.win_h <= small_work.bottom - small_work.top);
