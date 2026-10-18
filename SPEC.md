@@ -2188,12 +2188,12 @@ VS-16 / 스킨톤 modifier / ZWJ family (`👨‍👩‍👧` 등) / combining m
 Windows 는 2 단계가 없다 — 아래 표의 Windows 행.
 
 - **모양은 글리프를 그려 본 결과로 판정한다** — 컬러 비트맵이면 이모지다. 글꼴 단위 (컬러 표 유무 · 이모지 언어 태그) 로 정하지 않는다. 흑백 글꼴이 이모지 태그를 달고 있는 경우가 있다 (#771 실측 — `Segoe UI Symbol`). 시스템 글꼴 *후보*는 글꼴 단위로 고르고 (fontconfig 는 글꼴 단위로만 물을 수 있다) 최종 판정은 글리프로 한다.
-- **chain 안에서는 결과가 cluster 만으로 정해진다.** 그리는 순서 · 같은 줄의 옆 cluster 와 무관하다. 시스템 글꼴 단계는 Linux 에서 아직 먼저 불러온 글꼴에 따라 갈린다 ([#780](https://github.com/ensky0/tildaz/issues/780)).
+- **결과는 cluster 만으로 정해진다.** 그리는 순서 · 같은 줄의 옆 cluster 와 무관하다. 시스템 글꼴 단계도 그렇다 — Linux 는 처음 보는 (글자, 모양) 마다 fontconfig 에 묻고 그 답을 캐시한다. 먼저 불러온 글꼴을 앞세우지 않는다 ([#780](https://github.com/ensky0/tildaz/issues/780) — 예전에는 먼저 불러온 글꼴이 이겨서 그리는 순서에 따라 글꼴이 갈렸다. kitty 와 같은 방식이다).
 - 근거: [UTS #51 §4](https://www.unicode.org/reports/tr51/tr51-31.html#Presentation_Style) (선택자가 있으면 어느 환경이든 VS16 = 이모지 · VS15 = 텍스트), ghostty [`CodepointResolver.getIndex`](https://github.com/ghostty-org/ghostty/blob/246f702876b924a1cb7cade1e99274d1470302fc/src/font/CodepointResolver.zig#L159-L226) (같은 순서 · 글리프 단위 판정).
 
 | platform | 구현 |
 |---|---|
-| Linux | `font/linux/font.zig` 의 `resolveClusterInner` · `resolveGlyph` 가 위 순서 그대로. 시스템 글꼴은 fontconfig 에 `color` 조건을 넘겨 후보를 고른다 |
+| Linux | `font/linux/font.zig` 의 `resolveClusterInner` · `resolveGlyph` 가 위 순서 그대로. 시스템 글꼴은 fontconfig 에 `color` 조건을 넘겨 후보를 고른다. 단일 글자와 cluster 가 같은 (글자, 모양) 캐시 (`systemFallbackIndex`) 를 쓴다 |
 | macOS | cluster 는 CoreText 가 같은 순서로 고른다 (#771 실측 — VS16 371 개 모두 컬러 · VS15 는 흑백 글꼴이 있으면 흑백 · 한 줄 묶음과 하나씩의 결과가 갈린 cluster 0). 선택자 없는 단일 글자는 `font/macos/font.zig` 의 `resolveGlyph` 가 위 순서 그대로다. 시스템 글꼴은 `CTFontCreateForString` 에 글자 + 모양 선택자 (VS16 · VS15) 를 넘겨 고른다. 모양은 `kCTFontTraitColorGlyphs` 로 판정한다 — macOS 렌더러가 컬러로 그릴지를 글꼴 단위로 이 트레이트로 정해서 (`renderer/macos/glyph_atlas.zig`), 이것이 곧 그려지는 결과다 |
 | Windows | `font/windows/font.zig` 의 `resolveGraphemeUncached` · `resolveGlyph`. **2 단계 (시스템 글꼴 중 모양이 맞는 것) 가 없다** — 시스템 글꼴 찾기 (`IDWriteFontFallback::MapCharacters`) 가 선택자 · 색을 받지 않는다 (#771 실측 — VS16 · VS15 371 쌍 모두 같은 글꼴 · 2026-10-17 결정). 다른 터미널도 Windows 에서 이 단계는 모양을 보지 않는다. 그래서 chain (모양 맞음) → chain (모양 무관) → 시스템 글꼴 (모양 무관) 이다. 기본 chain 에 Segoe UI Emoji · Segoe UI Symbol 이 있어 VS16 359 / 371 · VS15 371 / 371 이 1 단계에서 맞는다 (못 맞는 12 개는 키캡의 첫 글자 `# * 0`~`9` — 컬러 글리프가 chain 어디에도 없다). 사용자가 chain 에서 그 두 글꼴을 빼면 그때만 Linux · macOS 와 결과가 갈린다. 모양은 렌더러와 같은 `IDWriteFactory4::TranslateColorGlyphRun` (모든 글리프 형식) 으로 판정한다 — 흑백이면 `DWRITE_E_NOCOLOR`. 선택자 없는 단일 글자는 chain 의 컬러 글리프를 먼저 찾고 결과를 글자마다 담는다 (`emoji_glyph`) — 그 경로가 셀마다 · 매 프레임 불려서다 |
 
@@ -2414,7 +2414,7 @@ cluster 경로가 거치는 shape 결과 캐시 (`font/cluster_cache.zig`, `CAPA
 | # | 근거 | 어디 |
 |---|---|---|
 | 1 | 합성 cluster 키가 **내용 해시**라 같은 그림이면 항상 같은 키다 | `font/linux/font.zig` 의 `composeCluster` |
-| 2 | fallback face index 를 **재사용하지 않는다** — `MAX_FALLBACK` (8) 에 닿으면 퇴출이 아니라 그 자리에서 placeholder + 로그 | 같은 파일의 `loadFallbackForCp` |
+| 2 | fallback face index 를 **재사용하지 않는다** — `MAX_FALLBACK` (127 — `face_idx` 의 `0x80`~`0xFE`, #780) 에 닿으면 퇴출이 아니라 그 자리에서 placeholder + 로그 | 같은 파일의 `loadFallbackForCp` |
 | 3 | 합성 비트맵 맵 `composed_glyphs` 에 **상한이 없다.** 폰트를 다시 로드할 때만 비운다 | 같은 파일의 `Context.composed_glyphs` |
 
 3 번이 macOS 를 부풀린 사슬을 끊는다. 그쪽은 *"`cluster_cache` 가 넘쳐 비워지면 face 를 놓고, 다시 shape 하면 CoreText 가 새 객체를 준다"* 였는데, Linux 는 `cluster_cache` 가 비워져도 다시 shape 한 **내용이 같으므로 해시가 같고 곧 같은 키**다. cluster 10,400 종 화면 (`CAPACITY` 의 5 배) 실측에서 face index 가 하나뿐이었고 같은 그림이 두 키로 담긴 흔적이 없었다.
