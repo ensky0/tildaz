@@ -9959,8 +9959,12 @@ const Client = struct {
             if (self.keyboard.ctrlActive()) modifiers |= config_mod.CAPTURE_MOD_CTRL;
             if (self.keyboard.shiftActive()) modifiers |= config_mod.CAPTURE_MOD_SHIFT;
             if (self.keyboard.superActive()) modifiers |= config_mod.CAPTURE_MOD_PRIMARY;
+            // #760 — Shift 를 누른 채면 Shift 를 뺀 키 값으로 이름을 정한다. `Ctrl+Shift+]` 는
+            // `braceright` 로 와서 이름표에 없었다. Windows · macOS 는 키 코드가 Shift 와 무관해
+            // 이미 `ctrl+shift+]` 로 적는다 — 세 OS 가 같은 글자가 된다.
+            const capture_sym = if (self.keyboard.shiftActive()) self.keyboard.keysymAtEvdev(@intCast(key)) orelse sym else sym;
             var capture_buf: [64]u8 = undefined;
-            if (config_mod.capturedHotkeyText(&capture_buf, sym, modifiers)) |captured| {
+            if (config_mod.capturedHotkeyText(&capture_buf, capture_sym, modifiers)) |captured| {
                 @memcpy(self.dialog.input_buf[0..captured.len], captured);
                 self.dialog.input_len = captured.len;
                 _ = self.validatePromptInput();
