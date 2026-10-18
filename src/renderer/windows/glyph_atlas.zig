@@ -468,9 +468,11 @@ pub const GlyphAtlas = struct {
         overlay_marks: bool,
         /// #762 — `getOrInsert` 의 같은 인자.
         source: atlas_common.GlyphSource,
+        /// #759 — `getOrInsert` 의 같은 인자 (`ClusterResult.slant`). 키는 `font_id` 가 이미 가른다.
+        slant: bool,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
-        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0], source, false);
+        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0], source, slant);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
         // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
@@ -487,7 +489,7 @@ pub const GlyphAtlas = struct {
         const placed_offsets = placeUnplacedMarks(face, em, glyph_indices, advances, offsets, overlay_marks, &fixed_offsets);
 
         var entry = self.rasterizeColor(face, em, glyph_indices, advances, placed_offsets) orelse
-            self.rasterize(face, em, glyph_indices, advances, placed_offsets, false) orelse return null;
+            self.rasterize(face, em, glyph_indices, advances, placed_offsets, slant) orelse return null;
         // cluster advance = placements 합 (DIP) × DPI scale (#299).
         if (advances.len == glyph_indices.len) {
             var sum: f32 = 0;

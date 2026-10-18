@@ -78,6 +78,10 @@ pub const ClusterResult = struct {
     /// **전부** overlay 일 때만 참이다. 위 mark 와 섞이면 (`a` + acute + stroke) 보수적으로
     /// 거짓이 되어 세로 보정을 하지 않는다 — 위 mark 를 글자 가운데로 내리면 안 되기 때문이다.
     overlay_marks: bool = false,
+    /// #759 — `GlyphResult.slant` 와 같다. 셀 글자 경로가 `resolveGlyph` 결과를 이 구조로 다시
+    /// 담으므로, 여기서 빠뜨리면 atlas 가 기울이지 않는다 (Windows 실기에서 한글 Italic 이 똑바로
+    /// 섰다). 여러 글리프 cluster 는 regular chain 으로만 shape 해서 늘 `false` 다.
+    slant: bool = false,
 };
 
 /// [#418](https://github.com/ensky0/tildaz/issues/418) — **글자를 관통하는 결합 기호**인지.

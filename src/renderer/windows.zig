@@ -1705,6 +1705,8 @@ pub const D3d11Renderer = struct {
                     .offsets = single_offsets,
                     .count = 1,
                     .owned = single.owned,
+                    // #759 — 빠뜨리면 DirectWrite 합성을 뺀 face 가 기울지 않고 똑바로 그려진다.
+                    .slant = single.slant,
                 };
                 _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
                 x += 1;
@@ -2461,11 +2463,11 @@ pub const D3d11Renderer = struct {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
         }
-        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         // #586 — **먼저 키운다** (macOS #584 ② 와 같다). 키우면 프레임 중간에 비우는 상황이 없어 이미
         // emit 한 UV 가 무효화되지 않는다. 상한이면 아래 ① 안전망으로.
         while (entry_opt == null and self.atlas.is_full and self.atlas.grow()) {
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         }
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
@@ -2477,7 +2479,7 @@ pub const D3d11Renderer = struct {
                 block_count.* = 0;
             }
             self.atlas.reset();
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);
