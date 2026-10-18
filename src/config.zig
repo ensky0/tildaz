@@ -3440,7 +3440,7 @@ pub const Config = struct {
         var default_parsed = default_parser.parseString(default_doc) catch unreachable;
         defer default_parsed.deinit();
         const default_root: toml.Value = .{ .table = &default_parsed.value };
-        repairStructure(root, default_root, "(top-level)", default_doc);
+        repairStructure(root, default_root, "(top-level)", default_doc, content);
 
         // #533 — input section. macOS 만 값을 쓰지만 세 platform 이 같은 파일을
         // 읽을 수 있어야 해서 어디서든 파싱한다 (`MacOptionAsAlt` 주석 참고).
@@ -4745,7 +4745,9 @@ fn resetFatalNoticeForTest() void {
 ///
 /// **해시맵을 돌면서 지우지 않는다.** 지울 키를 먼저 모아 두고 순회가 끝난 뒤 지운다 —
 /// `StringHashMap` 은 순회 중 수정이 안전하지 않다.
-fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []const u8) void {
+/// `doc` 는 기본 템플릿 글자 (빠진 키의 차례), `user_doc` 은 사용자 파일 글자 (모르는 키의
+/// 차례 — #796) 다.
+fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []const u8, user_doc: []const u8) void {
     const user_tag = std.meta.activeTag(user);
     const def_tag = std.meta.activeTag(def);
     if (user_tag != .table or def_tag != .table) return;
@@ -4777,6 +4779,18 @@ fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []co
     }
 
     // ② 파일에 있는데 스키마에 없는 키 — 지우고 "지우세요" 로.
+    //
+    // #796 — **차례가 사용자 파일의 차례다.** ① 과 같은 이유다 — 해시 순서로 세우면 사용자가
+    // 목록을 파일과 대조할 수 없다. 파일 글자에서 못 찾은 키 (따옴표 · 점 키) 는 아래 순회가
+    // 끝에 붙인다. 차례는 잃어도 안내를 잃지는 않는다.
+    var file_buf: [MAX_FILE_KEYS][]const u8 = undefined;
+    const file_order = fileKeyOrder(user_doc, ctx, &file_buf);
+    for (file_order) |key| {
+        if (def.table.get(key) != null) continue;
+        if (user.table.get(key) == null) continue;
+        var path_buf: [256]u8 = undefined;
+        noticeUnknown(joinPath(&path_buf, ctx, key));
+    }
     while (true) {
         var drop_buf: [64][]const u8 = undefined;
         var drop_n: usize = 0;
@@ -4786,8 +4800,10 @@ fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []co
             if (def.table.get(key) != null) continue;
             // #493 — `_` prefix 를 주석 대용으로 허용하던 예외는 없앤 채로 둔다. TOML 에는 `#`
             // 주석이 있으므로 우회가 필요 없고, `_shell` 같은 오타가 조용히 무시되면 안 된다.
-            var path_buf: [256]u8 = undefined;
-            noticeUnknown(joinPath(&path_buf, ctx, key));
+            if (!containsKey(file_order, key)) {
+                var path_buf: [256]u8 = undefined;
+                noticeUnknown(joinPath(&path_buf, ctx, key));
+            }
             drop_buf[drop_n] = key;
             drop_n += 1;
             if (drop_n == drop_buf.len) break;
@@ -4829,7 +4845,7 @@ fn repairStructure(user: toml.Value, def: toml.Value, ctx: []const u8, doc: []co
                     continue;
                 }
             }
-            if (ut == .table) repairStructure(u_val, entry.value_ptr.*, path, doc);
+            if (ut == .table) repairStructure(u_val, entry.value_ptr.*, path, doc, user_doc);
         }
         // 순회 중 지우면 iterator 가 깨진다 — 다 훑은 뒤에 지운다.
         for (bad_buf[0..bad_n]) |key| _ = user.table.remove(key);
@@ -4869,6 +4885,47 @@ fn schemaKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []con
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         if (key.len == 0) continue;
+        if (n == out.len) break;
+        out[n] = key;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+/// #796 — 사용자 파일에서 한 섹션이 가질 수 있는 키 수의 상한. 넘으면 나머지는 해시 순서로
+/// 끝에 붙는다 (안내는 잃지 않는다).
+const MAX_FILE_KEYS = 256;
+
+/// #796 — 사용자 파일에서 `section` 의 키를 **적힌 차례대로** 뽑는다. `schemaKeyOrder` 와 같은
+/// 방식이고, 하위 섹션 머리 (`[section.x]`, 최상위면 `[x]`) 의 첫 이름도 그 자리 차례로 넣는다 —
+/// 모르는 섹션도 안내에 한 줄로 서기 때문이다. 같은 이름은 한 번만 넣는다.
+fn fileKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const []const u8 {
+    const want_top = std.mem.eql(u8, section, "(top-level)");
+    var n: usize = 0;
+    var in_section = want_top;
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const key: []const u8 = if (line[0] == '[') blk: {
+            const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            const name = std.mem.trim(u8, line[1..close], " \t");
+            in_section = !want_top and std.mem.eql(u8, name, section);
+            // 하위 섹션의 첫 이름 — 최상위면 머리 이름 전체의 첫 조각, 아니면 `section.` 뒤의 첫 조각.
+            const rest = if (want_top)
+                name
+            else if (name.len > section.len + 1 and std.mem.startsWith(u8, name, section) and name[section.len] == '.')
+                name[section.len + 1 ..]
+            else
+                continue;
+            const dot = std.mem.indexOfScalar(u8, rest, '.') orelse rest.len;
+            break :blk std.mem.trim(u8, rest[0..dot], " \t");
+        } else blk: {
+            if (!in_section) continue;
+            const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            break :blk std.mem.trim(u8, line[0..eq], " \t");
+        };
+        if (key.len == 0 or containsKey(out[0..n], key)) continue;
         if (n == out.len) break;
         out[n] = key;
         n += 1;
@@ -5319,6 +5376,51 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
     // "지울 것" 묶음에 들어가야 한다 — "넣을 것" 과 사용자가 할 일이 다르다.
     try std.testing.expect(std.mem.indexOf(u8, notice.removable, "bogus_key") != null);
     try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
+}
+
+test "#796 모르는 키 · 섹션은 파일에 적힌 차례대로 안내한다" {
+    const allocator = std.testing.allocator;
+    resetFatalNoticeForTest();
+    defer resetFatalNoticeForTest();
+    clearConfigNotice();
+    defer clearConfigNotice();
+
+    const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
+    defer allocator.free(full);
+    // 최상위 키는 첫 섹션 머리보다 앞이어야 한다 (TOML). 이름은 일부러 사전 순 · 해시 순과 다르게 섞는다.
+    const first_header = std.mem.indexOf(u8, full, "\n[") orelse return error.TestUnexpectedResult;
+    var names: [24][]const u8 = undefined;
+    var name_bufs: [24][16]u8 = undefined;
+    var top: std.ArrayList(u8) = .empty;
+    defer top.deinit(allocator);
+    for (&names, &name_bufs, 0..) |*name, *buf, i| {
+        // 23, 0, 17, 6, 11, … — 7 씩 건너뛴 차례 (24 와 서로소라 모두 한 번씩 나온다).
+        name.* = try std.fmt.bufPrint(buf, "zz_{d:0>2}", .{(i * 7 + 23) % 24});
+        try top.print(allocator, "{s} = 1\n", .{name.*});
+    }
+    const text = try std.mem.concat(allocator, u8, &.{
+        full[0..first_header],
+        "\n",
+        top.items,
+        full[first_header..],
+        "\n[bogus_b]\nx = 1\n[bogus_a]\ny = 1\n",
+    });
+    defer allocator.free(text);
+
+    var config = try Config.parse(allocator, text, "/home/user/.config/tildaz/config_0.toml");
+    defer config.deinit(allocator);
+
+    const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
+    // 최상위 키 24 개 → 섹션 둘 (`bogus_b` 가 먼저) 의 차례로 선다.
+    var pos: usize = 0;
+    for (names) |name| {
+        var line_buf: [32]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buf, "  {s}\n", .{name});
+        const at = std.mem.indexOfPos(u8, notice.removable, pos, line) orelse return error.TestUnexpectedResult;
+        pos = at + line.len;
+    }
+    const b = std.mem.indexOfPos(u8, notice.removable, pos, "  bogus_b\n") orelse return error.TestUnexpectedResult;
+    _ = std.mem.indexOfPos(u8, notice.removable, b, "  bogus_a\n") orelse return error.TestUnexpectedResult;
 }
 
 test "#719 parse 밖에서 읽어도 빠진 줄 · 틀린 값은 config 가 없을 때와 같은 값이다" {
