@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const font_constants = @import("../constants.zig");
+const synthetic = @import("../synthetic.zig");
 
 const FcConfig = opaque {};
 const FcPattern = opaque {};
@@ -64,6 +65,10 @@ const FcPatternGetInteger = *const fn (
     i: *c_int,
 ) callconv(.c) c_int;
 const FcFini = *const fn () callconv(.c) void;
+/// #759 — 매치 결과의 합성 표시. `embolden` 은 `FcBool` (= `int`), `matrix` 는 `FcMatrix` (`fontconfig.h`).
+const FcMatrix = extern struct { xx: f64, xy: f64, yx: f64, yy: f64 };
+const FcPatternGetBool = *const fn (p: *FcPattern, object: [*:0]const u8, n: c_int, b: *c_int) callconv(.c) c_int;
+const FcPatternGetMatrix = *const fn (p: *FcPattern, object: [*:0]const u8, n: c_int, m: **FcMatrix) callconv(.c) c_int;
 const FcCharSetCreate = *const fn () callconv(.c) ?*FcCharSet;
 const FcCharSetDestroy = *const fn (cs: *FcCharSet) callconv(.c) void;
 const FcCharSetAddChar = *const fn (cs: *FcCharSet, ucs4: FcChar32) callconv(.c) c_int;
@@ -106,6 +111,8 @@ const Api = struct {
     font_match: FcFontMatch,
     pattern_get_string: FcPatternGetString,
     pattern_get_integer: FcPatternGetInteger,
+    pattern_get_bool: FcPatternGetBool,
+    pattern_get_matrix: FcPatternGetMatrix,
     fini: FcFini,
     charset_create: FcCharSetCreate,
     charset_destroy: FcCharSetDestroy,
@@ -133,6 +140,8 @@ const Api = struct {
             .font_match = lookupSym(handle, FcFontMatch, "FcFontMatch") orelse return error.FontconfigSymbolMissing,
             .pattern_get_string = lookupSym(handle, FcPatternGetString, "FcPatternGetString") orelse return error.FontconfigSymbolMissing,
             .pattern_get_integer = lookupSym(handle, FcPatternGetInteger, "FcPatternGetInteger") orelse return error.FontconfigSymbolMissing,
+            .pattern_get_bool = lookupSym(handle, FcPatternGetBool, "FcPatternGetBool") orelse return error.FontconfigSymbolMissing,
+            .pattern_get_matrix = lookupSym(handle, FcPatternGetMatrix, "FcPatternGetMatrix") orelse return error.FontconfigSymbolMissing,
             .fini = lookupSym(handle, FcFini, "FcFini") orelse return error.FontconfigSymbolMissing,
             .charset_create = lookupSym(handle, FcCharSetCreate, "FcCharSetCreate") orelse return error.FontconfigSymbolMissing,
             .charset_destroy = lookupSym(handle, FcCharSetDestroy, "FcCharSetDestroy") orelse return error.FontconfigSymbolMissing,
@@ -170,6 +179,11 @@ pub const MatchResult = struct {
     /// variable font 의 named instance 도 fontconfig 가 상위 16 비트에 실어 주고 FreeType 이
     /// 같은 인코딩을 읽으므로 값을 건드리지 않는 것이 맞다.
     index: i32,
+    /// #759 — fontconfig 가 이 face 에 **합성하라** 고 붙인 표시. 요청한 스타일의 파일이 없을 때
+    /// 기본 설정 (`90-synthetic.conf`) 이 기울임 행렬과 `embolden` 을 붙인다. 값 (얼마나 기울이고
+    /// 굵힐지) 은 쓰지 않고 [`synthetic`](../synthetic.zig) 의 공통 값을 쓴다 — 세 OS 를 맞추기로 했다.
+    /// 사용자가 fontconfig 로 그 규칙을 끄면 표시가 오지 않아 합성하지 않는다.
+    synthetic: synthetic.Synthetic = .{},
 
     pub fn deinitAdditionalFamilies(self: MatchResult, allocator: std.mem.Allocator) void {
         for (self.additional_families) |family| allocator.free(family);
@@ -476,5 +490,16 @@ fn extract(api: *const Api, match: *FcPattern, allocator: std.mem.Allocator) !Ma
         .additional_families = additional_owned,
         .path = path_dup,
         .index = @intCast(face_index),
+        .synthetic = syntheticOf(api, match),
     };
+}
+
+/// #759 — 매치 pattern 의 합성 표시. `embolden=true` 면 굵기, 기울임 행렬 (`xy` 가 0 이 아님) 이
+/// 있으면 기울임이다. 표시가 없거나 읽지 못하면 합성하지 않는다.
+fn syntheticOf(api: *const Api, match: *FcPattern) synthetic.Synthetic {
+    var embolden: c_int = 0;
+    const bold = api.pattern_get_bool(match, "embolden", 0, &embolden) == FC_RESULT_MATCH and embolden != 0;
+    var matrix: *FcMatrix = undefined;
+    const italic = api.pattern_get_matrix(match, "matrix", 0, &matrix) == FC_RESULT_MATCH and matrix.xy != 0;
+    return .{ .bold = bold, .italic = italic };
 }
