@@ -1901,7 +1901,7 @@ fn rasterByIndexInner(
     };
 }
 
-/// #759 — 합성 bold · italic 으로 글리프를 그린다. 외곽선으로 받아 굵히고 (가로로 em/50) 기울인
+/// #759 — 합성 bold · italic 으로 글리프를 그린다. 외곽선으로 받아 굵히고 (가로 · 세로 em/50) 기울인
 /// (0.2) 뒤 비트맵으로 만든다. 순서는 Wine 의 DirectWrite 재구현과 같다 (굵힌 뒤 기울임 —
 /// `dwrite/freetype.c`). 값은 [`synthetic`](../synthetic.zig) 에 있다.
 ///
@@ -1919,7 +1919,8 @@ fn loadSynthetic(api: freetype.Api, face: freetype.FT_Face, idx: u32, synth: syn
             // (Wine 의 em/24 를 Wine 위에서 도구로 재 보니 그대로 나왔다 — #759).
             const ppem: f64 = if (face.size) |sz| @floatFromInt(sz.metrics.x_ppem) else 0;
             const strength: freetype.FT_Pos = @intFromFloat(@round(synthetic.emboldenPx(ppem) * 64.0));
-            if (strength > 0) _ = api.outline_embolden_xy(&slot.outline, strength, 0);
+            // 세로로도 같은 양 — DirectWrite 가 가로획도 굵힌다 (#759 Windows 측정).
+            if (strength > 0) _ = api.outline_embolden_xy(&slot.outline, strength, strength);
         }
         if (synth.italic) {
             // 외곽선의 y 는 위로 커진다. x' = x + slant·y 라 위가 오른쪽으로 간다.

@@ -2340,7 +2340,7 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 |---|---|
 | face 선택 | **같은 family 에서 자동 style-match** — 각 OS 폰트 매칭 API 에 위임 |
 | config 키 | **없다.** `font.family_bold` 류를 두지 않는다 |
-| face 가 없는 family | **합성한다** — 굵게 · 비스듬히. Ghostty 의 `font-synthetic-style` 기본값 (*"By default, synthetic styles are enabled."*) 과 같다. 값은 세 OS 공통이고 [`font/synthetic.zig`](src/font/synthetic.zig) 한 곳에 있다 — **기울기 0.2 (11.3°)** (fontconfig `90-synthetic.conf` · WezTerm · iTerm2 와 같다), **굵기는 획을 가로로 em/50** (DirectWrite 합성 bold 의 실측값 — DirectWrite 는 양을 바꿀 수 없어 macOS · Linux 가 맞춘다). 글자 간격은 넓히지 않는다 (2026-10-17 결정 · [#759](https://github.com/ensky0/tildaz/issues/759)) |
+| face 가 없는 family | **합성한다** — 굵게 · 비스듬히. Ghostty 의 `font-synthetic-style` 기본값 (*"By default, synthetic styles are enabled."*) 과 같다. 값은 세 OS 공통이고 [`font/synthetic.zig`](src/font/synthetic.zig) 한 곳에 있다 — **기울기 0.2 (11.3°)** (fontconfig `90-synthetic.conf` · WezTerm · iTerm2 와 같다), **굵기는 획을 가로 · 세로로 em/50** (DirectWrite 합성 bold 의 실측값 — 세로획 em/50, 가로획도 약 em/50. DirectWrite 는 양을 바꿀 수 없어 macOS · Linux 가 맞춘다). 글자 간격은 넓히지 않는다 (2026-10-17 결정 · [#759](https://github.com/ensky0/tildaz/issues/759)) |
 | 적용 범위 | **셀 본문 글리프만.** grapheme cluster (emoji) · ligature · IME preedit · 탭 제목 · system fallback 은 regular |
 | `bold_is_bright` | 그대로 유지 — 굵기와 색 승격은 독립이다 |
 
