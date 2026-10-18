@@ -358,7 +358,7 @@ fn waitUntilRunningWithProbe(probe: anytype, timeout_ns: u64) !void {
 /// lock 을 잡은 뒤 endpoint 상태 `.starting` 을 먼저 쓰고, 그 다음 owner PID 를 쓴다.
 ///
 /// 이 읽기가 **이전 실행이 남긴 endpoint 파일을 보고 오판하지 않는** 근거는
-/// `spawnWorker` 가 spawn 직전에 그 파일을 지운다는 것이다 (`clearEndpointState`).
+/// `spawnWorker` 가 spawn 직전에 그 파일과 남은 owner PID 를 지운다는 것이다 (`clearStaleStartupState`).
 /// 그래서 여기서 파일이 보이면 방금 띄운 worker 가 쓴 것이다.
 fn probeStartupFiles(rt: Runtime, lock_path: []const u8, endpoint_path: []const u8) !StartupProbeResult {
     // PID는 worker가 lock을 획득한 뒤 기록한다. 파일이 비어 있는 동안 lock을
@@ -614,13 +614,17 @@ pub fn spawnWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void 
     const exe = exe_buf[0..exe_len];
     const index_text = try std.fmt.allocPrint(allocator, "{d}", .{index});
     defer allocator.free(index_text);
-    // #577 — spawn **직전에** 이전 실행이 남긴 endpoint 상태 파일을 지운다.
-    // `waitUntilRunning` 이 "그 파일이 있다 = 방금 띄운 worker 가 lock 을 잡았다" 로
-    // 읽어 조기 사망을 판정하므로, stale 파일이 남아 있으면 시작하자마자 죽은 것으로
-    // 오판한다. 여기가 자리인 이유는 spawn 하는 쪽이 한 곳이라 호출처가 잊을 수 없다는
-    // 것이다. 이 시점에 그 index 의 worker 는 살아 있지 않다 (`main.zig` 가
-    // `!isRunning(index)` 일 때만 부른다).
-    try clearEndpointState(rt, allocator, index);
+    // #577 · #760 — spawn **직전에** 이전 실행이 남긴 기동 표식을 지운다.
+    // `waitUntilRunning` 은 endpoint 상태 파일과 lock 의 owner PID 를 "방금 띄운 worker
+    // 가 lock 을 잡았다" 로 읽어 조기 사망을 판정한다. 그래서 남은 표식이 있으면 시작하자마자
+    // 죽은 것으로 오판한다. 여기가 자리인 이유는 spawn 하는 쪽이 한 곳이라 호출처가 잊을 수
+    // 없다는 것이다. launcher 는 그 전에 `isRunning` 을 불러 PID 가 이미 비지만, 새 instance
+    // 생성 (`new_instance.handle`) 은 그 확인 없이 여기로 온다.
+    const lock_path = try paths.instanceLockPath(rt, allocator, index);
+    defer allocator.free(lock_path);
+    const endpoint_path = try paths.instanceEndpointStatePath(rt, allocator, index);
+    defer allocator.free(endpoint_path);
+    try clearStaleStartupState(rt, lock_path, endpoint_path);
     // 자식을 기다리지 않는다 — worker 는 독립 프로세스이고, launcher 는 lock 파일로
     // 기동을 확인한 뒤 (`waitUntilRunning`) 곧 끝난다. 예전 `Child.init` + `spawn` 도
     // 같았다 (`wait` 를 부르지 않았다).
@@ -628,13 +632,14 @@ pub fn spawnWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void 
 }
 
 /// #577 — endpoint 상태 파일을 없앤다. 없으면 아무 일도 하지 않는다.
-fn clearEndpointState(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void {
-    const path = try paths.instanceEndpointStatePath(rt, allocator, index);
-    defer allocator.free(path);
-    std.Io.Dir.deleteFileAbsolute(rt.io, path) catch |err| switch (err) {
+/// #760 — 강제 종료 · 크래시로 끝난 worker 가 lock 파일에 남긴 owner PID 도 비운다.
+/// `workerLockOwned` 가 lock 을 잡을 수 있을 때 (= 주인이 없을 때) 만 비운다.
+fn clearStaleStartupState(rt: Runtime, lock_path: []const u8, endpoint_path: []const u8) !void {
+    std.Io.Dir.deleteFileAbsolute(rt.io, endpoint_path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
+    _ = try workerLockOwned(rt, lock_path);
 }
 
 pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
@@ -993,6 +998,35 @@ test "current process id is available for lock diagnostics" {
 /// 인자로 받는다). `paths.zig` 처럼 합성 환경변수가 필요한 경우가 아니라 `.empty` 로 족하다.
 fn testRuntime() Runtime {
     return .{ .io = std.testing.io, .environ = .empty };
+}
+
+test "spawn 전 정리는 강제 종료가 남긴 owner PID 를 비운다 (#760)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const rt = testRuntime();
+    const root = try tmp.dir.realPathFileAlloc(rt.io, ".", allocator);
+    defer allocator.free(root);
+    const lock_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance1.lock" });
+    defer allocator.free(lock_path);
+    const endpoint_path = try std.Io.Dir.path.join(allocator, &.{ root, "instance1.endpoint" });
+    defer allocator.free(endpoint_path);
+
+    // 강제 종료된 worker 의 흔적 — lock 은 비었는데 PID 와 endpoint 상태가 남았다.
+    try tmp.dir.writeFile(rt.io, .{ .sub_path = "instance1.lock", .data = "\nv1 999999\n" });
+    try writeEndpointSnapshot(rt, allocator, endpoint_path, 999999, .ready);
+    try std.testing.expectEqual(StartupProbeResult.worker_exited, try probeStartupFiles(rt, lock_path, endpoint_path));
+
+    try clearStaleStartupState(rt, lock_path, endpoint_path);
+    try std.testing.expectEqual(StartupProbeResult.not_yet, try probeStartupFiles(rt, lock_path, endpoint_path));
+
+    // 주인이 살아 있는 lock 은 비우지 않는다.
+    var owner = (try tryAcquireProcessLock(rt, lock_path)).?;
+    try writeOwnerPid(rt, owner.file);
+    owner.clear_pid_on_close = true;
+    try clearStaleStartupState(rt, lock_path, endpoint_path);
+    try std.testing.expect(ownerPidWritten(rt, lock_path));
+    owner.deinit(rt);
 }
 
 test "process lock records pid and excludes a second owner" {
