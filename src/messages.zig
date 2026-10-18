@@ -30,6 +30,40 @@ comptime {
     }
 }
 
+/// #781 — 다이얼로그 문구의 들여쓰기 단위 (칸). 한 단계 들어가면 2 칸, 두 단계는 4 칸, 세 단계는
+/// 6 칸이다. 손으로 나눈 이어지는 줄도 한 단계 더 들여 쓴다. 다이얼로그 본문 글꼴은 고정폭이 아니라서
+/// 위 줄의 글자에 공백으로 맞추는 들여쓰기 (`Tip: ` 뒤 5 칸 같은) 는 원래 맞지 않는다.
+pub const dialog_indent_step: usize = 2;
+
+// #781 — 줄 앞의 공백이 단위의 배수가 아니면 **빌드가 멈춘다** (제목 가드와 같은 방식). 다이얼로그
+// 문구가 모두 이 파일에 있어서 이 검사가 모든 다이얼로그를 덮는다. `help_text` 만 예외다 — 다이얼로그가
+// 아니라 터미널에 찍히고, 고정폭이라 옵션 설명을 열로 맞추는 CLI 관례가 실제로 맞는다.
+comptime {
+    @setEvalBranchQuota(1_000_000);
+    for (@typeInfo(@This()).@"struct".decls) |decl| {
+        if (std.mem.eql(u8, decl.name, "help_text")) continue;
+        const T = @TypeOf(@field(@This(), decl.name));
+        const info = @typeInfo(T);
+        if (info != .pointer) continue;
+        const is_text = switch (@typeInfo(info.pointer.child)) {
+            .array => |a| a.child == u8, // 문자열 리터럴
+            .int => info.pointer.child == u8 and info.pointer.size == .slice, // `[]const u8` 로 적은 것
+            else => false,
+        };
+        if (!is_text) continue;
+        const text: []const u8 = @field(@This(), decl.name);
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, text, i, '\n')) |nl| : (i = nl + 1) {
+            var spaces: usize = 0;
+            while (nl + 1 + spaces < text.len and text[nl + 1 + spaces] == ' ') spaces += 1;
+            if (spaces % dialog_indent_step != 0) @compileError(std.fmt.comptimePrint(
+                "messages.{s} indents a line by {d} spaces; dialog text indents in steps of {d}",
+                .{ decl.name, spaces, dialog_indent_step },
+            ));
+        }
+    }
+}
+
 /// #282 G9 — 자체 그리기 dialog 의 버튼 라벨 단일 소스 (macOS NSAlert · Windows
 /// 자체 hotkey 프롬프트 · Linux overlay 공용). Windows 표준 MessageBoxW 의
 /// OK/Cancel 은 OS 가 제공하므로 해당 없음.
@@ -141,8 +175,9 @@ pub const about_format =
 /// 앞뒤 개행은 `about_format` 의 빈 줄을 만든다.
 pub const about_tip_both_format =
     \\
-    \\Tip: {s} opens config in default editor.
-    \\     {s} opens log.
+    \\Tip:
+    \\  {s} opens config in default editor.
+    \\  {s} opens log.
     \\
 ;
 pub const about_tip_config_format =
@@ -615,14 +650,22 @@ pub const button_open_config = command_open_config;
 pub const config_notice_title = "Some Settings Replaced";
 pub const config_notice_repaired_header = "Using defaults for these -- add or fix them in the file:";
 pub const config_notice_removable_header = "These are not used any more -- delete them:";
+/// #781 — 항목의 키와 설명 사이. 다이얼로그에서는 설명을 **다음 줄에** 키보다 2 칸 더 들여 쓴다 (머리줄 0 · 키 2 · 설명 4).
+/// 한 줄에 이어 쓰면 긴 설명이 줄바꿈되면서 이어지는 줄이 왼쪽 끝에서 시작해, 어디까지가 한
+/// 항목인지 안 보였다. 세 OS 의 다이얼로그 모두 줄바꿈한 줄을 들여 쓰지 못해서, 그리는 쪽이
+/// 아니라 문구에서 줄을 짧게 만든다.
+pub const config_notice_item_sep = ":\n    ";
+/// #781 — 로그에서는 같은 자리를 이것으로 바꿔 **한 줄**로 남긴다 (`config.appendNotice`).
+/// 줄을 나누면 둘째 줄에 시각과 `[config]` 가 빠진다.
+pub const config_notice_item_sep_log = " -- ";
 /// 키가 없어 기본값을 쓴 경우. `{s}` = 키 경로.
-pub const config_notice_missing_format = "  {s} -- missing, using the default";
+pub const config_notice_missing_format = "  {s}" ++ config_notice_item_sep ++ "missing, using the default";
 /// 값을 읽을 수 없어 기본값을 쓴 경우. `{s}` = 키 경로, `{s}` = 쓰는 값.
-pub const config_notice_bad_value_format = "  {s} -- could not read the value, using {s}";
+pub const config_notice_bad_value_format = "  {s}" ++ config_notice_item_sep ++ "could not read the value, using {s}";
 /// 범위 밖이라 잘라낸 경우. `{s}` = 키 경로, `{s}` = 잘라낸 값.
-pub const config_notice_clamped_format = "  {s} -- out of range, limited to {s}";
+pub const config_notice_clamped_format = "  {s}" ++ config_notice_item_sep ++ "out of range, limited to {s}";
 /// 리스트에서 항목 하나를 뺀 경우. `{s}` = 키 경로, `{s}` = 뺀 항목.
-pub const config_notice_dropped_format = "  {s} -- dropped {s}";
+pub const config_notice_dropped_format = "  {s}" ++ config_notice_item_sep ++ "dropped {s}";
 /// 모르는 키 · 섹션. `{s}` = 키 경로.
 pub const config_notice_unknown_format = "  {s}";
 /// `config_notice_bad_value_format` 의 흔한 인자 — "기본값" 이라고만 적는 경우.
@@ -640,21 +683,21 @@ pub const config_notice_reset_hint =
 pub const config_notice_the_limit = "the limit";
 /// #655 — 전역 hotkey 가 낮은 index 의 인스턴스와 겹쳐 파생 기본값으로 갈아탔다.
 /// 죽이는 대신 갈아타므로 안내 묶음으로 간다.
-pub const config_notice_hotkey_taken_format = "  hotkey -- already used by instance {d}, using {s}";
+pub const config_notice_hotkey_taken_format = "  hotkey" ++ config_notice_item_sep ++ "already used by instance {d}, using {s}";
 /// `[keys]` 의 한 항목만 버렸을 때. 액션은 남은 키로, 다 버렸으면 기본 바인딩으로 돈다.
-pub const config_notice_key_dropped_format = "  keys.{s} -- dropped \"{s}\" ({s})";
-pub const config_notice_key_dropped_fallback_msg = "  keys -- dropped a key that could not be read";
+pub const config_notice_key_dropped_format = "  keys.{s}" ++ config_notice_item_sep ++ "dropped \"{s}\" ({s})";
+pub const config_notice_key_dropped_fallback_msg = "  keys" ++ config_notice_item_sep ++ "dropped a key that could not be read";
 /// 두 액션이 같은 조합을 쓸 때 진 쪽에 적는다. 바꾼 키가 기본 키를 이기므로 (#758 · SPEC 7.3) 여기 오는
 /// 것은 다른 액션의 바꾼 키에 자리를 뺏긴 기본 키다.
-pub const config_notice_key_conflict_format = "  keys.{s} -- \"{s}\" is already used by {s}, dropped";
+pub const config_notice_key_conflict_format = "  keys.{s}" ++ config_notice_item_sep ++ "\"{s}\" is already used by {s}, dropped";
 /// #758 — 두 액션에 같은 조합을 직접 적었다. 어느 쪽 뜻인지 고를 근거가 없어 둘 다 쓰지 않는다.
 /// 액션마다 한 줄씩 나온다.
-pub const config_notice_key_contested_format = "  keys.{s} -- \"{s}\" is also set for {s}, so neither uses it";
-pub const config_notice_key_conflict_fallback_msg = "  keys -- dropped a key that was already used";
+pub const config_notice_key_contested_format = "  keys.{s}" ++ config_notice_item_sep ++ "\"{s}\" is also set for {s}, so neither uses it";
+pub const config_notice_key_conflict_fallback_msg = "  keys" ++ config_notice_item_sep ++ "dropped a key that was already used";
 /// #758 — 사용자가 적은 주 폰트가 이 시스템에 없어 OS 의 고정폭 폰트로 띄웠다.
-pub const config_notice_font_replaced_format = "  font.family -- \"{s}\" is not installed, using {s}";
+pub const config_notice_font_replaced_format = "  font.family" ++ config_notice_item_sep ++ "\"{s}\" is not installed, using {s}";
 /// #758 — 사용자가 적은 대체 폰트가 이 시스템에 없어 뺐다. 그 글자는 OS 가 다른 폰트로 그린다.
-pub const config_notice_font_dropped_format = "  font.glyph_fallback -- \"{s}\" is not installed, dropped";
+pub const config_notice_font_dropped_format = "  font.glyph_fallback" ++ config_notice_item_sep ++ "\"{s}\" is not installed, dropped";
 pub const config_notice_key_reason_unknown = "unknown key";
 pub const config_notice_key_reason_needs_modifier = "needs a modifier";
 pub const config_notice_key_reason_position_aliased = "left/right is not distinguished on macOS";
@@ -888,15 +931,15 @@ pub const macos_permission_required_format =
     \\  2. In the sidebar, click "Privacy & Security".
     \\  3. Scroll down and click "Input Monitoring".
     \\  4. Look for "tildaz" in the list:
-    \\       • If it is there, turn the switch ON.
-    \\       • If not, click the "+" button at the bottom,
-    \\         find TildaZ.app, click Open, then turn it ON.
+    \\    • If it is there, turn the switch ON.
+    \\    • If not, click the "+" button at the bottom,
+    \\      find TildaZ.app, click Open, then turn it ON.
     \\
     \\Step 2 — {s}
     \\  1. Click "< Privacy & Security" to go back.
     \\  2. Click "{s}" instead.
     \\  3. Same as above: turn "tildaz" ON,
-    \\     or click "+" to add TildaZ.app and then turn it ON.
+    \\    or click "+" to add TildaZ.app and then turn it ON.
     \\
     \\Step 3 — Start TildaZ again
     \\  Launch the app. The new permissions take effect on the next start.

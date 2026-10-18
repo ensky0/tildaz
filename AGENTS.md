@@ -611,7 +611,10 @@ force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계
 - **`src/messages.zig`**: 사용자에게 노출되는 모든 텍스트 상수 / format string 의 단일 진입점. 새 메시지가 필요하면 여기 먼저 추가하고 호출처는 이 상수만 import 해요. 같은 의미의 메시지를 platform 별로 두 번 작성하지 않아요.
 - **`src/dialog.zig`**: cross-platform 다이얼로그 추상화. `showInfo` / `showError` / `showFatal` / `showConfirm` / `promptHotkey` / `showAboutAlert` 만 호출해요. comptime 으로 `dialog/linux.zig` (host 의 layer-shell overlay — #203, Wayland 연결 전 config fatal은 stderr + log fallback), `dialog/macos.zig` (짧은 본문은 `NSAlert`, overflow 본문은 `NSScrollView`, 일부 경로는 `osascript` fallback), `dialog/windows.zig` (본문 길이와 관계없이 자체 창 `TildaZScrollableDialogWindow` + read-only `EDIT` 본문, hotkey 입력은 key capture window. 자체 창을 못 만들 때만 `MessageBoxW` fallback)가 선택돼요.
 
-**Dialog overflow 정책은 Linux · macOS · Windows 공통**이에요. 먼저 실제 텍스트를 측정해 화면 안에 들어오도록 창을 키우고, 그래도 화면을 넘을 때만 본문에 세로 scroll을 둬요. 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
+**Dialog 크기 규칙은 Linux · macOS · Windows 공통이고, 판단 코드도 [`src/dialog_fit.zig`](src/dialog_fit.zig) 하나예요** ([#795](https://github.com/ensky0/tildaz/issues/795)). 규칙은 SPEC §2.4 가 단일 출처예요 — 가장 긴 줄이 960pt 안에 들면 그 폭, 아니면 580pt 에서 접기, 접은 줄이 있고 높이가 넘치면 960pt 로 넓히기, 그래도 넘치면 본문만 scroll (scrollbar 가 글 자리를 차지하면 그만큼 창을 넓혀요 — #781). 폭은 모두 글 영역 폭이에요 (#793). 제목과 button, prompt의 input/status는 고정해요. About이나 fatal만의 예외가 아니라 info/error/confirm/prompt를 포함한 모든 dialog에 적용해요.
+
+- **OS 마다 다시 구현하지 않아요.** 각 OS 는 글자 재기 (`naturalWidth` · `wrappedHeight`) 와 여백 · 스크롤바 같은 자기 값만 넘기고, 넓힐지 · 스크롤할지는 `dialog_fit.fit` 이 정해요. 예전에는 세 함수가 같은 규칙을 따로 구현하다 어긋났어요 — 580pt 가 무엇의 폭인지 (#793), 언제 960pt 로 넓히는지 (Linux 만 창 전체 높이를 봤어요).
+- 크기 상수 (580 · 960 · 320 · 360 · 화면 50 %) 는 `ui_metrics.zig` 에 있어요.
 
 **다이얼로그 제목은 28 칸 이하예요 — 넘기면 빌드가 멈춰요** ([#758](https://github.com/ensky0/tildaz/issues/758)).
 세 OS 모두 제목을 한 줄로 그려서 (줄바꿈하지 않아요) 길면 폭을 넘어요. `messages.zig` 의 `comptime` 가드가
@@ -621,6 +624,19 @@ force push 를 막아요 (`allow_force_pushes: false`). 2026-10-13 에 admin 계
 레이아웃 테스트에 케이스가 없어 아무도 몰랐어요. 처음엔 30 칸이었는데, 근거 테스트가 기본 폭에서는 28 칸까지만
 들어간다고 알려 줘서 28 로 정했어요. 제목이 길면 `TildaZ` 접두를 빼요. 다이얼로그 아이콘이
 TildaZ 라 이름을 대신해요.
+
+**다이얼로그 문구의 들여쓰기는 2칸 단위예요 — 어기면 빌드가 멈춰요** ([#781](https://github.com/ensky0/tildaz/issues/781)).
+한 단계 들어가면 2칸, 두 단계는 4칸, 세 단계는 6칸이에요. 손으로 나눈 이어지는 줄도 한 단계 더 들여 써요.
+`messages.zig` 의 `comptime` 가드가 문자열 상수의 줄마다 앞 공백을 세어 2 (`dialog_indent_step`) 의 배수가
+아니면 컴파일 오류를 내요. 다이얼로그 문구가 모두 그 파일에 있어서 이 가드가 모든 다이얼로그를 덮어요.
+
+- **위 줄 글자에 공백으로 맞추지 않아요.** 다이얼로그 본문 글꼴은 고정폭이 아니라서 `Tip: ` 뒤 5칸 같은
+  맞춤은 원래 맞지 않아요. 맞추고 싶으면 머리줄 (`Tip:`) 을 따로 두고 그 아래를 한 단계 들여 써요.
+- **긴 항목은 머리와 설명을 줄로 나눠요.** 세 OS 모두 줄바꿈한 줄을 들여 쓰지 못해서, 긴 줄이 넘어가면
+  이어지는 줄이 왼쪽 끝에서 시작해요. 시작 안내 목록이 그래서 `키:` 다음 줄에 설명을 둬요.
+- **`help_text` 만 예외예요.** 다이얼로그가 아니라 터미널에 찍혀요. 고정폭이라 옵션 설명을 열로 맞추는 CLI
+  관례가 실제로 맞아요.
+- 2026-10-18 사용자 지시예요: *"그냥 일반적인 규칙을 만들고 거기에 따르려고 했지"*.
 
 **금지**: `MessageBoxW` / `MessageBoxA` / `NSAlert` / `osascript` 같은 platform 직접 호출. 정책 우회가 한 군데라도 생기면 메시지 변경 / i18n / 톤 통일 모두 해당 호출처를 따로 추적해야 해요. 새 platform 분기가 필요하면 `dialog.zig` 의 `impl` switch 에 추가해요.
 

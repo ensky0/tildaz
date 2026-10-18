@@ -33,6 +33,7 @@ const hotkey_status = @import("../hotkey_status.zig");
 const log = @import("../log.zig");
 const messages = @import("../messages.zig");
 const ui_metrics = @import("../ui_metrics.zig");
+const dialog_fit = @import("../dialog_fit.zig");
 
 var nsapp_ready: bool = false;
 /// 우리 NSWindow (popup level) — alert 띄우는 동안만 normal level 로 낮춰야
@@ -288,6 +289,31 @@ fn dialogForceKeyFn(_: objc.id, _: objc.SEL, alert: objc.id) callconv(.c) void {
     }
 }
 var force_key_instance: objc.id = null;
+
+fn dialogBodyCanBecomeKeyView(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return false;
+}
+
+var dialog_body_text_view_class: ?objc.Class = null;
+
+/// #794 — 다이얼로그 본문용 NSTextView. 키보드 포커스 대상 (key view) 이 되지 않는다는 것만 다르다.
+///
+/// 모달 창이 뜰 때 macOS 의 포커스 시스템이 첫 key view 에 포커스를 주고 그 보기가 보이게 스크롤한다
+/// (`-[NSApplication _orderFrontModalWindow:]` → `-[NSFocusController initializeKeyViewLoop]` →
+/// `-[NSFocusController _tryToScrollForUpdateContext:]` → `-[NSClipView _scrollRectToVisible:…]`,
+/// 2026-10-19 · macOS 27.0.1 lldb 로 확인). 본문이 스크롤 칸보다 크면 그 보기를 가운데로 맞추느라
+/// 첫 줄이 가려진 채 열렸다 (504pt 본문 · 474.5pt 칸 → 14.5pt 아래). key view 가 아니면 포커스가 OK
+/// 버튼으로 가서 그 스크롤이 일어나지 않는다. 마우스 선택 · 자동 복사는 key view 와 무관하다.
+/// Enter · Esc 는 별도 감시자 (`addDismissMonitor`) 가 처리해 포커스 자리와 상관없다.
+fn dialogBodyTextViewClass() objc.Class {
+    if (dialog_body_text_view_class) |cls| return cls;
+    const NSTextView = objc.getClass("NSTextView");
+    const cls = objc.objc_allocateClassPair(NSTextView, "TildazDialogBodyTextView", 0) orelse return NSTextView;
+    _ = objc.class_addMethod(cls, objc.sel("canBecomeKeyView"), @ptrCast(&dialogBodyCanBecomeKeyView), "B@:");
+    objc.objc_registerClassPair(cls);
+    dialog_body_text_view_class = cls;
+    return cls;
+}
 /// `dialogForceKeyFn` 을 modal 루프 안에서 실행되도록 예약(중앙배치 후). 0 / 0.1s 두 시점에
 /// idempotent 하게 — 비동기 activate 가 한 번에 적용 안 될 때 대비(이미 key 면 둘 다 no-op).
 fn scheduleForceKey(alert: objc.id) void {
@@ -483,7 +509,7 @@ fn showNSAlert(severity: dialog.Severity, title: []const u8, message: []const u8
     _ = addButton(alert, messages.button_ok);
     setStyle(alert, alertStyleFor(severity));
     const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
-    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
     _ = runModalOverHost(alert, .single);
 }
 
@@ -538,6 +564,57 @@ fn dialogTextNaturalSize(tv: objc.id, layout_manager: objc.id, text_container: o
 }
 
 const dialog_screen_horizontal_margin_pt: f64 = 96.0;
+
+extern "AppKit" const NSFontAttributeName: objc.id;
+
+/// #795 — 본문에서 가장 긴 줄의 폭 (줄 조각 여백 · 안쪽 여백 포함). 본문 보기 (`NSTextView`) 의
+/// 레이아웃에서 읽지 않고 줄마다 같은 글꼴로 직접 잰다. `usedRectForTextContainer:` 는 본문이
+/// `\n` 으로 끝나면 컨테이너 폭 전체를 돌려주고, 처음 잴 때도 한 번 그랬다 (2026-10-19 · macOS
+/// 27.0.1 실측 — 시작 안내 · About 이 늘 기본 폭에서 접혔고, 짧은 확인창은 하한까지 안 좁아졌다).
+fn dialogLongestLineWidth(body: []const u8, font: objc.id, tv: objc.id, text_container: objc.id) f64 {
+    // 글꼴이 없으면 잴 수 없다 — 최대 폭보다 큰 값을 돌려 기본 폭에서 접게 한다 (`dialog_fit` 규칙 2).
+    if (font == null) return std.math.floatMax(f64);
+    const NSDictionary = objc.getClass("NSDictionary");
+    const dictWith = objc.objcSend(fn (objc.Class, objc.SEL, objc.id, objc.id) callconv(.c) objc.id);
+    const attrs = dictWith(NSDictionary, objc.sel("dictionaryWithObject:forKey:"), font, NSFontAttributeName);
+    const sizeWith = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) NSAlertSize);
+    var longest: f64 = 0;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const text = nsStringFromSlice(line) orelse continue;
+        longest = @max(longest, sizeWith(text, objc.sel("sizeWithAttributes:"), attrs).w);
+    }
+    const getFloat = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const padding = if (text_container != null) getFloat(text_container, objc.sel("lineFragmentPadding")) else 0;
+    const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
+    const inset = getSize(tv, objc.sel("textContainerInset"));
+    return @ceil(longest + padding * 2.0 + inset.w * 2.0);
+}
+
+/// #795 — 스크롤할 때 세로 scroller 가 글 자리를 차지하는 폭. 이 스크롤 보기의 scroller 방식
+/// (`scrollerStyle` — 시스템 설정 "스크롤 막대 보기" 와 입력 장치가 정한다) 으로 AppKit 에 물어,
+/// scroller 가 있을 때와 없을 때의 글 폭 차이를 쓴다
+/// (`+[NSScrollView contentSizeForFrameSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle:]`).
+/// 겹쳐 뜨는 scroller 는 자리를 차지하지 않아 0 이 나온다.
+fn dialogVerticalScrollerWidth(scroll: objc.id) f64 {
+    if (scroll == null) return 0;
+    const getStyle = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) isize);
+    const style = getStyle(scroll, objc.sel("scrollerStyle"));
+    const NSScrollView = objc.getClass("NSScrollView");
+    const NSScroller = objc.getClass("NSScroller");
+    const contentSizeFor = objc.objcSend(fn (objc.Class, objc.SEL, NSAlertSize, ?objc.Class, ?objc.Class, usize, usize, isize) callconv(.c) NSAlertSize);
+    const sel = objc.sel("contentSizeForFrameSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle:");
+    const frame = NSAlertSize{ .w = 1000, .h = 1000 };
+    // NSNoBorder (0) · NSControlSizeRegular (0) — 본문 스크롤 보기 설정과 같다.
+    const with = contentSizeFor(NSScrollView, sel, frame, null, NSScroller, 0, 0, style);
+    const without = contentSizeFor(NSScrollView, sel, frame, null, null, 0, 0, style);
+    return @max(0, without.w - with.w);
+}
+
+/// #795 — 세 OS 공통 하한 (`ui_metrics`). 예전에는 호출부마다 320 · 360 리터럴이었다.
+const dialog_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_MIN_WIDTH_PT);
+const dialog_prompt_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT);
 
 fn dialogMaxAccessoryWidth(visible_frame_w: f64) f64 {
     const common_max: f64 = @floatFromInt(ui_metrics.DIALOG_MAX_WIDTH_PT);
@@ -754,10 +831,9 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const max_accessory_h = dialogBodyMaxHeight(visible_frame.h, base_alert_h, reserved_h);
 
     const NSScrollView = objc.getClass("NSScrollView");
-    const NSTextView = objc.getClass("NSTextView");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return null;
-    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return null;
+    const tv_alloc = alloc(dialogBodyTextViewClass(), objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
     const initial_body_h: f64 = @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT + 8);
     const scroll_owned = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = initial_body_h }) orelse return null;
@@ -815,20 +891,56 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const setDocument = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) void);
     setDocument(scroll, objc.sel("setDocumentView:"), tv);
 
-    // preferred 폭에서 먼저 실제 wrap 높이를 잰다. 그 높이가 screen을 넘을
-    // 때만 maximum 폭으로 확장한다. 짧은 prose는 compact하게 유지되고 긴
-    // path만 가로 공간을 더 써서 scroll 전에 최대한 자연 높이를 확보한다.
+    // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 AppKit 의 값만
+    // 넘긴다 — 줄마다 잰 가장 긴 줄 (`dialogLongestLineWidth`, 경계에서 접히지 않게 4pt 여유), 그리고
+    // 그 폭에서 접은 높이 (scroller 없이). 스크롤할 때 scroller 가 글 자리를 차지하는 폭은
+    // `dialogVerticalScrollerWidth` 가 이 스크롤 보기의 scroller 방식으로 재서 넘긴다 — 공통 규칙 4 가
+    // 그만큼 글 영역을 넓혀 접는 폭을 지킨다 (#795). NSScrollView 는 scroller 를 켜면 스스로 content
+    // 폭을 그만큼 줄이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
     const minimum_size = NSAlertSize{ .w = min_accessory_w, .h = initial_body_h };
-    const first_natural = measureDialogBodyAtWidth(
-        scroll,
-        tv,
-        layout_manager,
-        text_container,
-        accessory_w,
-        max_accessory_h,
-        minimum_size,
-    );
-    accessory_w = @min(preferred_accessory_w, @max(min_accessory_w, first_natural.w + 4.0));
+    const measurer = struct {
+        scroll: objc.id,
+        tv: objc.id,
+        layout_manager: objc.id,
+        text_container: objc.id,
+        viewport_h: f64,
+        minimum: NSAlertSize,
+        body: []const u8,
+        font: objc.id,
+
+        pub fn naturalWidth(self: @This()) f64 {
+            return dialogLongestLineWidth(self.body, self.font, self.tv, self.text_container) + 4.0;
+        }
+
+        pub fn wrappedHeight(self: @This(), width: f64) f64 {
+            return measureDialogBodyAtWidth(
+                self.scroll,
+                self.tv,
+                self.layout_manager,
+                self.text_container,
+                width,
+                self.viewport_h,
+                self.minimum,
+            ).h;
+        }
+    }{
+        .scroll = scroll,
+        .tv = tv,
+        .layout_manager = layout_manager,
+        .text_container = text_container,
+        .viewport_h = max_accessory_h,
+        .minimum = minimum_size,
+        .body = body,
+        .font = font,
+    };
+    const fitted = dialog_fit.fit(f64, measurer, .{
+        .min_w = min_accessory_w,
+        .preferred_w = preferred_accessory_w,
+        .max_w = max_accessory_w,
+        .body_max_h = max_accessory_h,
+        .scrollbar_w = dialogVerticalScrollerWidth(scroll),
+    });
+    accessory_w = fitted.width;
     var natural = measureDialogBodyAtWidth(
         scroll,
         tv,
@@ -838,18 +950,6 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         max_accessory_h,
         minimum_size,
     );
-    if (natural.h > max_accessory_h and accessory_w < max_accessory_w) {
-        accessory_w = max_accessory_w;
-        natural = measureDialogBodyAtWidth(
-            scroll,
-            tv,
-            layout_manager,
-            text_container,
-            accessory_w,
-            max_accessory_h,
-            minimum_size,
-        );
-    }
 
     const overflow = dialogBodyNeedsScroller(natural.h, max_accessory_h);
     setBool(scroll, objc.sel("setHasVerticalScroller:"), overflow);
@@ -1175,7 +1275,7 @@ fn showAboutText(title: []const u8, body: []const u8) bool {
     setStyle(alert, alertStyleFor(.info));
     _ = addButton(alert, messages.button_ok);
     const actions = [_]DialogAction{.{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" }};
-    _ = attachBrandedContent(alert, title, body, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, body, 0, dialog_min_accessory_w, actions[0..]);
 
     // #249 — NSTextView 가 first responder 라 Enter 를 먹던 문제는 runModalOverHost 의
     // dismiss monitor 가 Enter 를 직접 가로채 해결(keyboard mode=single).
@@ -1215,7 +1315,7 @@ pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
         .{ .title = messages.button_cancel, .response = 1001, .key_equivalent = "\x1b" },
         .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
     };
-    _ = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    _ = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
 
     const result = runModalOverHost(alert, .confirm);
     return result == 1000;
@@ -1244,7 +1344,7 @@ fn showNoticeWithActionImpl(rt: Runtime, title: []const u8, message: []const u8,
         .{ .title = action_label, .response = dialog_inline_response, .key_equivalent = "" },
         .{ .title = messages.button_ok, .response = 1000, .key_equivalent = "\r" },
     };
-    const branded = attachBrandedContent(alert, title, message, 0, 320.0, actions[0..]);
+    const branded = attachBrandedContent(alert, title, message, 0, dialog_min_accessory_w, actions[0..]);
 
     // **`.confirm` 이 아니라 `.single` 이다.** `.confirm` 은 Esc 를 두 번째 버튼으로
     // 보내는데 (`dismissMonitorInvoke`), 거기서는 그것이 "아무 일도 하지 않음" 이고
@@ -1385,7 +1485,7 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
         title,
         message,
         prompt_controls_h + prompt_body_gap,
-        @max(360.0, status_fit.width),
+        @max(dialog_prompt_min_accessory_w, status_fit.width),
         actions[0..],
     ) orelse return null;
     const branded = attached.content;

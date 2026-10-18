@@ -2197,6 +2197,8 @@ pub const Renderer = struct {
             .button_gap = scaledPt(dialog_button_gap_pt, self.scale),
             .preferred_w = scaledPt(ui_metrics.DIALOG_PREFERRED_WIDTH_PT, self.scale),
             .max_w = scaledPt(ui_metrics.DIALOG_MAX_WIDTH_PT, self.scale),
+            .min_w = scaledPt(ui_metrics.DIALOG_MIN_WIDTH_PT, self.scale),
+            .prompt_min_w = scaledPt(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT, self.scale),
             .scrollbar_w = scaledPt(ui_metrics.SCROLLBAR_W_PT, self.scale),
             .scrollbar_gap = scaledPt(ui_metrics.DIALOG_SCROLLBAR_GAP_PT, self.scale),
         };
@@ -3190,8 +3192,9 @@ test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
         \\config: /home/ensky0/.config/tildaz/config_0.json
         \\log   : /home/ensky0/.local/state/tildaz/tildaz_0.log
         \\
-        \\Tip: Ctrl+Shift+P opens config in default editor.
-        \\     Ctrl+Shift+L opens log.
+        \\Tip:
+        \\  Ctrl+Shift+P opens config in default editor.
+        \\  Ctrl+Shift+L opens log.
         \\
         \\https://github.com/ensky0/tildaz
     ;

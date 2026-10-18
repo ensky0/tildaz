@@ -643,11 +643,25 @@ AccessoryBar bezel(Swift의 `recessed`)로 표시한다. macOS 26 이상에서�
 적용하고, Cancel과 disabled Create는 neutral native appearance를 유지한다. AppKit logical point 좌표라
 현재 screen의 `backingScaleFactor`에 맞춰 물리 픽셀로 자동 변환된다.
 
-Dialog 본문 폭은 Linux · macOS · Windows 공통으로 preferred 580 logical pt에서
-실제 wrap 높이를 먼저 측정한다. 고정 header/action/prompt controls까지 현재 screen
-높이를 넘을 때만 maximum 960pt로 확장해 다시 측정하고, 그래도 넘을 때만 본문을
-scroll한다. macOS는 현재 screen의 좌우에 각각 최소 48pt를 남기도록 더 작은 값을
-선택한다. macOS error는 AppKit의
+Dialog 본문의 폭과 높이는 Linux · macOS · Windows 공통 규칙이고, 판단 코드도 하나다
+([`dialog_fit.zig`](src/dialog_fit.zig), [#795](https://github.com/ensky0/tildaz/issues/795)).
+폭은 모두 **글 영역** 폭이고, 창은 여백 · 테두리 · 그림자만큼 더 넓다
+([#793](https://github.com/ensky0/tildaz/issues/793) — 예전에는 Windows · Linux가 창 전체 폭으로 썼다).
+
+1. 가장 긴 줄이 최대 폭 **960pt** 안에 들면 그 줄이 들어가는 폭이다. 짧으면 최소 폭까지 좁아진다
+   (일반 **320pt**, 새 instance 창 **360pt** 또는 상태 문구 폭).
+2. 960pt로도 한 줄에 안 들어가는 줄이 있으면 기본 폭 **580pt**에서 접는다.
+3. 2 에서 접은 줄이 있고 본문이 높이 상한 (화면에 남은 높이와 화면의 50 % 중 작은 쪽) 을 넘으면
+   960pt로 넓혀 다시 접는다. 1 처럼 접은 줄이 없으면 넓혀도 높이가 그대로라 넓히지 않는다.
+4. 그래도 넘치면 본문만 scroll한다. 제목 · 버튼 · prompt 입력 칸은 고정이다. scroll은 언제나 맨 위
+   (첫 줄) 에서 시작하고, dialog는 터미널 창보다 앞에 뜬다 ([#794](https://github.com/ensky0/tildaz/issues/794)).
+   scrollbar가 글 자리를 차지하면 **그만큼 창을 넓혀** 접는 폭을 지킨다 — 1 에서 한 줄이던 가장 긴 줄이
+   scrollbar 때문에 넘어가지 않게. 960pt에 막히면 막힌 만큼만 접는 폭이 좁아진다
+   ([#781](https://github.com/ensky0/tildaz/issues/781)).
+
+화면이 좁으면 세 폭 모두 화면 안에 들도록 줄어든다. macOS는 현재 screen의 좌우에 각각 최소 48pt를
+남긴다. OS마다 다른 것은 글자를 재는 방법과 창 · scroll 위젯에 적용하는 방법뿐이다.
+macOS error는 AppKit의
 critical style이 만드는 caution icon+app badge 조합을 사용하지 않고 warning style과
 TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.apple.com/documentation/appkit/nscriticalalertstyle),
 [#237](https://github.com/ensky0/tildaz/issues/237)).
@@ -2042,10 +2056,11 @@ config: /Users/<u>/.config/tildaz/config_0.toml            (mac)
 log   : /Users/<u>/Library/Logs/tildaz/tildaz_0.log        (mac)
         C:\Users\<u>\AppData\Roaming\tildaz\tildaz_0.log    (win)
 
-Tip: Shift+Cmd+P opens config in default editor.       (mac)
-     Shift+Cmd+L opens log.
-     Ctrl+Shift+P opens config in default editor.       (win)
-     Ctrl+Shift+L opens log.
+Tip:
+  Shift+Cmd+P opens config in default editor.          (mac)
+  Shift+Cmd+L opens log.
+  Ctrl+Shift+P opens config in default editor.         (win)
+  Ctrl+Shift+L opens log.
 
 https://github.com/ensky0/tildaz
 ```
