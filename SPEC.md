@@ -655,6 +655,9 @@ Dialog 본문의 폭과 높이는 Linux · macOS · Windows 공통 규칙이고,
    960pt로 넓혀 다시 접는다. 1 처럼 접은 줄이 없으면 넓혀도 높이가 그대로라 넓히지 않는다.
 4. 그래도 넘치면 본문만 scroll한다. 제목 · 버튼 · prompt 입력 칸은 고정이다. scroll은 언제나 맨 위
    (첫 줄) 에서 시작하고, dialog는 터미널 창보다 앞에 뜬다 ([#794](https://github.com/ensky0/tildaz/issues/794)).
+   scrollbar가 글 자리를 차지하면 **그만큼 창을 넓혀** 접는 폭을 지킨다 — 1 에서 한 줄이던 가장 긴 줄이
+   scrollbar 때문에 넘어가지 않게. 960pt에 막히면 막힌 만큼만 접는 폭이 좁아진다
+   ([#781](https://github.com/ensky0/tildaz/issues/781)).
 
 화면이 좁으면 세 폭 모두 화면 안에 들도록 줄어든다. macOS는 현재 screen의 좌우에 각각 최소 48pt를
 남긴다. OS마다 다른 것은 글자를 재는 방법과 창 · scroll 위젯에 적용하는 방법뿐이다.

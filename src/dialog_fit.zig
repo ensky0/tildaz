@@ -10,7 +10,9 @@
 //! 2. 최대 폭으로도 안 들어가는 줄이 있으면 기본 폭에서 접는다.
 //! 3. 접은 줄이 있고 본문이 높이 상한을 넘으면 최대 폭으로 넓혀 다시 접는다. 접은 줄이 없으면
 //!    넓혀도 높이가 그대로라 넓히지 않는다.
-//! 4. 그래도 넘치면 본문만 스크롤한다. 스크롤바가 글 영역 안에 서면 그만큼 빼고 다시 접는다.
+//! 4. 그래도 넘치면 본문만 스크롤한다. 스크롤바가 글 영역 안에 서면 **그만큼 넓힌다** — 접는 폭을
+//!    지켜서 1 에서 한 줄이던 가장 긴 줄이 스크롤바 때문에 넘어가지 않게 (#781). 최대 폭에 막히면
+//!    막힌 만큼만 접는 폭이 좁아진다.
 //!
 //! **OS 마다 다른 것은 넘겨받는다.** 글자 재기 (`measurer`), 화면 크기로 줄인 폭 · 높이 상한,
 //! 스크롤바 자리. 선례는 [`hotkey_status.fit`](hotkey_status.zig) (#721) 이다.
@@ -29,8 +31,8 @@ pub fn Limits(comptime T: type) type {
         /// 본문이 쓸 수 있는 최대 높이 — 화면에 남은 높이와 화면의 절반 중 작은 쪽
         /// (`ui_metrics.DIALOG_BODY_MAX_SCREEN_PERCENT`). 이보다 높으면 스크롤한다.
         body_max_h: T,
-        /// 스크롤할 때 글 폭에서 빼는 스크롤바 자리. 스크롤바가 글 영역 밖에 붙거나 OS 위젯이
-        /// 스스로 다시 접으면 0 이다.
+        /// 스크롤할 때 스크롤바가 글 영역 안에서 차지하는 자리. 스크롤하면 글 폭을 이만큼 넓힌다
+        /// (최대 폭까지). 스크롤바가 글 영역 밖에 붙으면 0 이다.
         scrollbar_w: T = 0,
 
         /// 화면이 아주 좁아 최소 폭이 최대 폭을 넘는 경우 등을 정리한다.
@@ -48,7 +50,7 @@ pub fn Fit(comptime T: type) type {
     return struct {
         /// 글 영역 폭. 창은 여기에 여백 · 테두리 · 그림자를 더한다.
         width: T,
-        /// 줄을 접는 폭. 스크롤바가 글 영역 안에 서면 `width - scrollbar_w`, 아니면 `width`.
+        /// 줄을 접는 폭. 스크롤하고 스크롤바가 글 영역 안에 서면 `width - scrollbar_w`, 아니면 `width`.
         wrap_width: T,
         /// `wrap_width` 에서 접은 본문 전체의 높이.
         height: T,
@@ -81,12 +83,14 @@ pub fn fit(comptime T: type, measurer: anytype, raw_limits: Limits(T)) Fit(T) {
         widened = true;
     }
 
-    // 규칙 4.
+    // 규칙 4. 스크롤바 자리만큼 글 폭을 넓혀 접는 폭을 지킨다 (#781). 최대 폭에 막히면 그만큼만.
     const scroll = height > limits.body_max_h;
     var wrap_width = width;
     if (scroll and limits.scrollbar_w > 0) {
-        wrap_width = @max(width - limits.scrollbar_w, 1);
-        height = measurer.wrappedHeight(wrap_width);
+        const scrolled_w = @min(width + limits.scrollbar_w, limits.max_w);
+        wrap_width = @max(scrolled_w - limits.scrollbar_w, 1);
+        if (wrap_width != width) height = measurer.wrappedHeight(wrap_width);
+        width = scrolled_w;
     }
 
     return .{
@@ -179,6 +183,31 @@ test "#795 still too tall scrolls and rewraps inside the scrollbar" {
     // 90 폭에서 줄마다 2 행 — 240. 보이는 것은 상한 100.
     try std.testing.expectEqual(@as(i32, 240), got.height);
     try std.testing.expectEqual(@as(i32, 100), got.visible_height);
+}
+
+test "#781 scrolling widens by the scrollbar so the longest line still fits" {
+    // 가장 긴 줄 (70) 에 맞춘 폭에서 높이만 넘친다. 스크롤바 (6) 만큼 넓혀 76 이 되고, 접는 폭은
+    // 70 그대로라 줄이 넘어가지 않는다 — 높이도 그대로다.
+    var limits = test_limits;
+    limits.scrollbar_w = 6;
+    const lines = [_]usize{ 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70 };
+    const got = fit(i32, LinesMeasurer{ .lines = &lines }, limits);
+    try std.testing.expect(got.scroll);
+    try std.testing.expectEqual(@as(i32, 76), got.width);
+    try std.testing.expectEqual(@as(i32, 70), got.wrap_width);
+    try std.testing.expectEqual(@as(i32, 120), got.height);
+}
+
+test "#781 near the maximum the scrollbar widens only up to it" {
+    // 가장 긴 줄 92 + 스크롤바 6 = 98 은 최대 폭 96 을 넘는다 — 96 까지 넓히고 남는 2 만큼 접는 폭이
+    // 좁아진다 (90). 그 폭에서는 줄마다 2 행이다.
+    var limits = test_limits;
+    limits.scrollbar_w = 6;
+    const lines = [_]usize{ 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92, 92 };
+    const got = fit(i32, LinesMeasurer{ .lines = &lines }, limits);
+    try std.testing.expectEqual(@as(i32, 96), got.width);
+    try std.testing.expectEqual(@as(i32, 90), got.wrap_width);
+    try std.testing.expectEqual(@as(i32, 240), got.height);
 }
 
 test "#795 limits are normalized on a screen narrower than the minimum" {
