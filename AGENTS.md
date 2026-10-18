@@ -530,7 +530,7 @@ macOS / Linux 각각 sub-struct 로 쪼개는 안은 마지막 옵션이에요. 
 | 글자 크기 크게 / 작게 / 되돌리기 | `⌘=` · `⌘-` · `⌘0` (+ `⇧⌘⌫`) | `Ctrl+Shift+=` · `-` · `Backspace` |
 
 - 분할이 `⌃⌘방향` 이 아닌 이유는 macOS 의 Mission Control (`⌃↑` `⌃↓`) 과 부딪혀서고, Linux 에서 `Ctrl+Alt+방향` 을 피한 이유는 GNOME 이 workspace 전환 · 이동에 쓰기 때문이에요 (둘 다 `config.zig` 주석에 근거가 있어요).
-- 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에는 **`PgUp` / `PgDn` 을 함께** 둬요 — AZERTY 에서 bracket 이 `AltGr+5` 라 못 눌러요 ([#482](https://github.com/ensky0/tildaz/issues/482)).
+- 탭 순환 (`⇧⌘[` `⇧⌘]` / `Ctrl+Shift+[` `]`) 에 **`PgUp` / `PgDn` 은 두지 않아요.** [#482](https://github.com/ensky0/tildaz/issues/482) 에서 AZERTY 용으로 더했다가 [#760](https://github.com/ensky0/tildaz/issues/760) 에서 뺐어요 — 노트북에는 PgUp 키가 없어 (Fn+↑) 신고자도 쓰지 못했어요. AZERTY 는 `Alt+1`–`9` 와 위치 표기로 탭을 골라요.
 
 ## 글자를 고르는 세 기준
 
@@ -553,7 +553,7 @@ awk '/new_tab => &\.\{"ctrl\+shift\+t"\}/,/^    \}/' src/config.zig   # Linux ·
 
 ① `HotkeyNamedKey` 열거형 ② `hotkeyKeyFromName` 의 이름 · 글자 ③ `parseHotkeyString` 의 전역 hotkey 거부 ④ 같은 함수의 `types_text` ⑤ Linux keysym (`keysymFromKey`) ⑥ Windows VK (`vkeyFromKey`) ⑦ macOS 라벨 (`labelFromKey`) ⑧ macOS keycode (`keycodeFromKey`) ⑨ 라틴 fallback (`usPositionForKeysym`) ⑩ 표시 이름 (`bindingDisplay`)
 
-- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 앱의 hotkey 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 쓰므로, 이름을 빼는 쪽으로는 통일할 수 없어요.
+- **기호는 글자와 이름을 둘 다 받아요.** 글자로 적을 수 없는 것 (`+` — 구분자) 만 이름으로만 받아요. 이름은 kitty 를 따라요. 예전 캡처가 이름 (`grave` · `bracketleft`) 으로 config 를 써서, 그 config 를 읽으려고 이름도 계속 받아요. 지금 캡처는 글자 그대로 적어요 (#760).
 - **키 코드 값은 [`physical_key.zig`](src/physical_key.zig) 표와 맞춰요.** named ↔ code 테스트가 macOS keycode 를 그 표와 대조하고, named 키가 하나라도 빠지면 개수 단언이 걸려요.
 - **새 키는 `[keys]` 전용으로 시작해요.** 전역 hotkey 로 받으려면 데스크톱 등록 이름표 (`linuxKeysymName` 등) 까지 채우고 실기로 확인해야 해요.
 - **받는 범위와 OS 별로 무엇으로 맞추는지는 SPEC.md §7.1 의 `Key 토큰` 표가 단일 출처예요.** 키를 더하면 그 표에 한 줄, CONFIG.md 의 `Accepted keys` 에 한 줄을 같은 PR 에서 더해요.

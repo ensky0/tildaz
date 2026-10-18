@@ -11,7 +11,7 @@
 #
 # 장면 (AGENTS.md `# Linux — headless sway …` 절):
 #   스크롤백을 올린 채 글자 · 에코 없는 글자 (`stty -echo`) · Ctrl+C · 붙여넣기 · dead key (`'` → `é`, 에코 없을 때 · Esc) ·
-#   탭 (`Ctrl+Shift+T` · `Alt+1` · `Ctrl+PgDn/PgUp`) · 명령 메뉴 (`⋯` 클릭 · `Down` · `Esc`) · 한글 조합 (격리 fcitx5 가 있을 때)
+#   탭 (`Ctrl+Shift+T` · `Alt+1` · `Ctrl+Shift+]` / `[`) · 명령 메뉴 (`⋯` 클릭 · `Down` · `Esc`) · 한글 조합 (격리 fcitx5 가 있을 때)
 #
 # 판정 — `RESULT` 줄:
 #   ① 장면마다 기준판 ↔ 수정판이 회차마다 0 px 인가.
@@ -149,8 +149,8 @@ cmd_run() {
     # 탭
     snd "key ctrl+shift+t"; sleep 2; shot s16_newtab
     snd "key alt+1"; shot s17_alt1
-    snd "key ctrl+pagedown"; shot s18_ctrl_pgdn
-    snd "key ctrl+pageup"; shot s19_ctrl_pgup
+    snd "key ctrl+shift+bracketright"; shot s18_next_tab
+    snd "key ctrl+shift+bracketleft"; shot s19_prev_tab
     # 명령 메뉴 — ⋯ 는 창 오른쪽 위 끝 (sway 트리의 창 사각형에서 계산 · 배율 1)
     local xy
     xy=$(swaymsg -t get_tree | python3 -c '

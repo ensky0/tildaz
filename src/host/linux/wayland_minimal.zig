@@ -996,9 +996,9 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
     // Ctrl 동반은 숫자 binding 과 맞지 않는다 (`alt+1` 에 Ctrl 이 없다).
     try T.expectEqual(@as(?A, null), C(b, xkb_key_1, true, false, true));
 
-    // #482 — Ctrl+PgUp / PgDn 으로 이전 / 다음 탭 (layout 무관 대안).
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .prev_tab } }), C(b, xkb_key_page_up, true, false, false));
-    try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .next_tab } }), C(b, xkb_key_page_down, true, false, false));
+    // #760 — Ctrl+PgUp / PgDn 은 기본값에서 뺐다 (#482 에서 더했던 것). 이제 PTY 로 간다.
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_up, true, false, false));
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, true, false, false));
     // Shift+PgUp / PgDn 은 scrollback 이라 `[keys]` 에 없고, Ctrl+Shift 조합도 탭
     // 전환으로 잡지 않는다 — 기존 동작을 건드리지 않았음을 고정한다.
     try T.expectEqual(@as(?A, null), C(b, xkb_key_page_down, false, true, false));

@@ -17,7 +17,7 @@
 # | R2 | 스크롤백을 올린 채 `q` (자식이 에코하지 않는다) | 같음 |
 # | R3a · R3b | 스크롤백을 올린 채 `Ctrl+C` · `Ctrl+Shift+V` | 같음 + 자식이 `03` · `50 5a` 를 받는다 |
 # | R4 | MS-IME `ㄱ` `ㅏ` → `→` · 다시 → `Enter` | 조합 색 (64,64,128) 이 생겼다 사라진다 + 자식이 `가` 와 그 키를 받는다 |
-# | R6 | `Alt+1` · `Ctrl+PgDn` · `Ctrl+PgUp` · `⋯` 클릭 뒤 `↓` × 2 · `Esc` | 150 ms 에 바뀌었고 800 ms 와 같다 |
+# | R6 | `Alt+1` · `Ctrl+Shift+]` · `Ctrl+Shift+[` · `⋯` 클릭 뒤 `↓` × 2 · `Esc` | 150 ms 에 바뀌었고 800 ms 와 같다 |
 #
 # dead key 표시는 `tool\deadkey-check\deadkey-check_windows.ps1 -Capture` 가 본다 (이 도구는 안 본다).
 #
@@ -155,7 +155,7 @@ public static class Tz {
 
 $VK = @{ A = 0x41; K = 0x4B; Q = 0x51; R = 0x52; T = 0x54; V = 0x56; C = 0x43; D1 = 0x31
          Shift = 0x10; Ctrl = 0x11; Alt = 0x12; Enter = 0x0D; Esc = 0x1B; Right = 0x27; Down = 0x28
-         PgUp = 0x21; PgDn = 0x22; Hangul = 0x15 }
+         PgUp = 0x21; PgDn = 0x22; Hangul = 0x15; LBracket = 0xDB; RBracket = 0xDD }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Get-ChildItem $Out -Filter *.png -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -354,12 +354,12 @@ try {
     # 두 탭은 같은 300 줄이라 차이는 탭바 강조와 1 번 탭의 마지막 줄 (에코한 글자) 뿐이다.
     Record "R6a" "Alt+1 → 150 ms 에 1 번 탭" "tab2 와 $($dA.n) px [$($dA.bb)] · 150↔800 $($lA.n)" (($dA.n -gt 500) -and ($lA.n -eq 0))
     $t1 = $s[1]
-    $s = After @($VK.Ctrl, $VK.PgDn) "T_pgdn"
+    $s = After @($VK.Ctrl, $VK.Shift, $VK.RBracket) "T_next"
     $dB = D $s[0] $t1; $dB2 = D $s[0] $t2; $lB = D $s[0] $s[1]
-    Record "R6b" "Ctrl+PgDn → 150 ms 에 2 번 탭" "tab1 과 $($dB.n) · tab2 와 $($dB2.n) [$($dB2.bb)] · 150↔800 $($lB.n)" (($dB.n -gt 500) -and ((BBH $dB2.bb) -le (2 * $script:CellH)) -and ($lB.n -eq 0))
-    $s = After @($VK.Ctrl, $VK.PgUp) "T_pgup"
+    Record "R6b" "Ctrl+Shift+] → 150 ms 에 2 번 탭" "tab1 과 $($dB.n) · tab2 와 $($dB2.n) [$($dB2.bb)] · 150↔800 $($lB.n)" (($dB.n -gt 500) -and ((BBH $dB2.bb) -le (2 * $script:CellH)) -and ($lB.n -eq 0))
+    $s = After @($VK.Ctrl, $VK.Shift, $VK.LBracket) "T_prev"
     $dC = D $s[0] $t1; $lC = D $s[0] $s[1]
-    Record "R6c" "Ctrl+PgUp → 150 ms 에 1 번 탭" "tab1 과 $($dC.n) [$($dC.bb)] · 150↔800 $($lC.n)" (((BBH $dC.bb) -le (2 * $script:CellH)) -and ($lC.n -eq 0))
+    Record "R6c" "Ctrl+Shift+[ → 150 ms 에 1 번 탭" "tab1 과 $($dC.n) [$($dC.bb)] · 150↔800 $($lC.n)" (((BBH $dC.bb) -le (2 * $script:CellH)) -and ($lC.n -eq 0))
 
     # 메뉴 — ⋯ 위에 포인터를 둔 채 (hover) 기준을 찍고, 클릭으로 열고, ↓ · Esc 를 키로.
     $mx = [int]($script:CW - 13 * $Scale); $my = [int](13 * $Scale)

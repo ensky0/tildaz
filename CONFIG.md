@@ -209,7 +209,7 @@ dialog names the field.
 | `input.copy_on_select` | bool | true / false | false | false | false | Copy to the clipboard as soon as you finish a mouse selection. `false` keeps what you copied with `Ctrl+Shift+C` (`Cmd+C` on macOS): copy a selection with that key or a **right-click** — right-click with nothing selected pastes, as in Windows Terminal. `true` makes every selection replace the clipboard, and right-click always pastes. **On Linux the selection also goes to the primary selection either way** — middle-click pastes it (when the app has turned on mouse reporting, middle-click goes to the app; `Shift`+middle-click still pastes) |
 | `theme` | string | see Built-in themes below | "Tilda" | "Tilda" | "Tilda" | Color theme |
 | `shell` | string | — | `$SHELL` env (or `/bin/bash`) | `$SHELL` env (or `/bin/bash`) | "cmd.exe" | Shell to spawn. A new tab starts in the **active tab's current directory**, falling back to your home directory when that location can't be determined or entered (see "New tab working directory" below). WSL tabs use *Linux* paths — TildaZ passes `--cd` to `wsl.exe` automatically, skipped if your command already has `--cd`. Windows accepts arguments — e.g. `"wsl.exe -d Debian"` — so the first space ends the executable path; a path that itself contains spaces has to be quoted inside the value, as in `shell = "\"C:\\Program Files\\Git\\bin\\bash.exe\""`. macOS / Linux expect an absolute binary path; for argv beyond the binary, configure your shell via `~/.zshrc`, `~/.bashrc`, etc. |
-| `hotkey` | string | "F1", "Ctrl+Space", "Shift+Cmd+T", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. Development builds read the table in reverse (`F10` for instance 0). `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
+| `hotkey` | string | "f1", "ctrl+space", "shift+cmd+t", … | `F(N+1)` | `F(N+1)` | `F(N+1)` | Global toggle hotkey. Generated configs derive the default from the instance number — `F1` for instance 0, `F2` for 1, up to `F10` for 9. Development builds read the table in reverse (`F10` for instance 0). `cmd` token = Win key on Windows / Cmd on macOS / Super on Linux |
 | `auto_start` | bool | — | true | true | true | Start on login (Registry Run on Windows, LaunchAgent on macOS, XDG autostart `.desktop` on Linux). Development builds default to `false` |
 | `hidden_start` | bool | — | false | false | false | Start hidden (first toggle reveals) |
 | `max_scroll_lines` | int | 100–10,000,000 | 10,000 | 10,000 | 10,000 | Scrollback buffer (lines) |
@@ -328,8 +328,8 @@ quit      = []
   convention (`Cmd+T`, `Shift+Cmd+[`), Linux and Windows use `Ctrl+Shift+T`.
   A modifier swap is not enough to express that, so the two default tables are
   separate. See KEYBINDINGS.md for the full list.
-- `cmd` resolves per platform (Super on Linux, Win on Windows, Command on
-  macOS), so a combination you write yourself works on all three.
+- `cmd` and `super` are the same key (Command on macOS, Win on Windows, Super
+  on Linux), so a combination you write yourself works on all three.
 
 #### The actions
 
@@ -415,22 +415,10 @@ the equivalent work.
 
 #### Accepted keys
 
-**By label**: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`, `Escape` (`Esc`),
-`Return` (`Enter`), `PageUp` (`PgUp`), `PageDown` (`PgDn`), `Left` / `Right` /
-`Up` / `Down` (the arrow keys — the split-pane defaults use them), `Backspace`,
-and these symbols:
-
-| Symbol | Write it as |
-|---|---|
-| `` ` `` | `` ` `` or `Grave` / `Backquote` |
-| `[` `]` | `[` `]` or `BracketLeft` / `BracketRight` |
-| `/` | `/` or `Slash` |
-| `=` | `=` or `Equal` |
-| `-` | `-` or `Minus` |
-| `+` | `Plus` only — `+` already separates the keys |
-
-`Page_Up` and `Page_Down` also work. They are the same keys, spelled the way
-TildaZ writes them when you capture a hotkey on Linux.
+**By label**: `f1`–`f12`, `a`–`z`, `0`–`9`, `space`, `tab`, `escape`,
+`return`, `pageup`, `pagedown`, `left` / `right` / `up` / `down` (the arrow
+keys), `backspace`, and the symbols `` ` `` `[` `]` `/` `=` `-`. Write `+` as
+`plus` — `+` already separates the keys.
 
 Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
@@ -472,8 +460,9 @@ Windows.
 
 #### Modifiers
 
-`Ctrl` (also `Control`), `Alt` (also `Option` / `Opt`), `Shift`, and the platform key written as
-`Cmd` (also `Command` / `Super` / `Win` / `Meta` / `Logo`).
+`ctrl`, `shift`, `alt`, and `super` (the Win key on Windows). On macOS write them
+the Mac way: `opt` for Option and `cmd` for Command. `alt` and `opt` are the same
+key, and so are `super` and `cmd`, so one config works on every system.
 
 **A key that types text needs `Ctrl`, `Alt`, or `Cmd`** — binding it with no
 modifier, or with `Shift` alone, would make that character impossible to type in
@@ -515,12 +504,11 @@ safest choice there, being identical on every layout.
 ## Hotkey syntax
 
 `hotkey` accepts a single key optionally combined with modifiers, joined by `+`
-(e.g. `"F1"`, `"Ctrl+Space"`, `"Shift+Cmd+T"`). Rules (validated at startup — an
+(e.g. `"f1"`, `"ctrl+space"`, `"shift+cmd+t"`). Rules (validated at startup — an
 invalid value falls back to the default hotkey and is named in the dialog):
 
-- **Modifiers**: `Ctrl`, `Alt`, `Shift`, and the platform key written as `Cmd`
-  (Win key on Windows / Command on macOS / Super on Linux). The `cmd` token maps
-  to each platform's equivalent, so one config value works everywhere.
+- **Modifiers**: the same as in `[keys]` — `ctrl`, `shift`, `alt`, `super`, and on
+  macOS `opt` and `cmd`. One config value works everywhere.
 - **A modifier-free hotkey must be a function key** — `F1`–`F12` by label, or
   `[F1]`–`[F24]` by position. A plain letter, digit, or `Space` with no modifier
   is rejected. `[F13]`–`[F24]` are accepted bare even though no label names them:
@@ -529,12 +517,10 @@ invalid value falls back to the default hotkey and is named in the dialog):
   reach entirely. They type nothing, so they cannot steal everyday input.
 - **`Shift` alone is not a valid trigger modifier** — combine it with
   `Ctrl` / `Alt` / `Cmd` (e.g. `Shift+Cmd+T` is fine, `Shift+T` is not).
-- **Accepted keys**, in full: `F1`–`F12`, `A`–`Z`, `0`–`9`, `Space`, `Tab`,
-  `Escape` (`Esc`), `Return` (`Enter`), `PageUp` (`PgUp`, `Page_Up`), `PageDown` (`PgDn`, `Page_Down`),
-  `Left` / `Right` / `Up` / `Down`, `` ` `` (also `Grave` / `Backquote`), `[`
-  (also `BracketLeft`), and `]` (also `BracketRight`). Letter case does not
-  matter. This is the label set `[keys]` accepts, minus `Backspace` and the
-  symbols `/` `=` `-` `+` — otherwise the two differ in what they allow *without*
+- **Accepted keys**, in full: `f1`–`f12`, `a`–`z`, `0`–`9`, `space`, `tab`,
+  `escape`, `return`, `pageup`, `pagedown`, `left` / `right` / `up` / `down`,
+  `` ` ``, `[`, and `]`. Letter case does not matter. This is the label set
+  `[keys]` accepts, minus `backspace` and the symbols `/` `=` `-` `plus` — otherwise the two differ in what they allow *without*
   a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:

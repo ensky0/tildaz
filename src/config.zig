@@ -112,21 +112,6 @@ pub const CAPTURE_MOD_CTRL: u32 = 0x2;
 pub const CAPTURE_MOD_SHIFT: u32 = 0x4;
 pub const CAPTURE_MOD_PRIMARY: u32 = 0x8;
 
-fn modifierFreeCaptureAllowed(key_name: []const u8) bool {
-    const names = [_][]const u8{
-        "F1", "F2", "F3", "F4",  "F5",  "F6",
-        "F7", "F8", "F9", "F10", "F11", "F12",
-    };
-    for (names) |name| {
-        if (std.mem.eql(u8, key_name, name)) return true;
-    }
-    return false;
-}
-
-fn globalHotkeyAllowed(key_name: []const u8, has_command_modifier: bool) bool {
-    return has_command_modifier or modifierFreeCaptureAllowed(key_name);
-}
-
 // --- 공통 hotkey 토크나이저 (#294 G1) ---
 //
 // 문법 · alias · 일반 입력 보호 규칙은 세 OS 가 동일해야 한다 (SPEC §7.1
@@ -289,7 +274,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     }
     // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
     // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
-    // 허용하는 키는 F1~F12뿐 — capturedHotkeyText 와 동일 규칙.
+    // 허용하는 키는 F1~F12뿐 — 캡처 (`capturedHotkeyText`) 도 이 판정을 그대로 쓴다.
     const is_function_key = switch (resolved) {
         .named => |n| switch (n) {
             .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => true,
@@ -398,8 +383,8 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // layout 종속 문제가 없다 (#482).
         .{ .name = "pageup", .key = .page_up },           .{ .name = "pgup", .key = .page_up },
         .{ .name = "pagedown", .key = .page_down },       .{ .name = "pgdn", .key = .page_down },
-        // #693 — XKB 이름. Linux 의 hotkey 캡처가 이 이름으로 config 를 쓴다 (`linuxKeysymName`) —
-        // 받지 않으면 캡처한 값이 다음 실행에서 읽히지 않는다.
+        // #693 — XKB 이름. #760 전의 Linux 캡처가 이 이름으로 config 를 썼다 — 그 config 를
+        // 읽으려고 계속 받는다. 지금 캡처는 `pageup` 으로 적는다 (`hotkeyConfigText`).
         .{ .name = "page_up", .key = .page_up },          .{ .name = "page_down", .key = .page_down },
         // #483 — 분할 pane 의 기본 bindings 가 쓴다. 이름은 kitty · Windows Terminal 과
         // 같다 (`left`). 위치 표기 `[ArrowLeft]` 도 그대로 된다.
@@ -494,77 +479,147 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
     }
 }
 
-/// OS key event를 config에 저장하는 canonical hotkey 문자열로 변환한다.
-/// key_code의 의미만 platform별이다: Linux keysym, Windows virtual-key,
-/// macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_*로 정규화한다.
-pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 {
-    const key_name = switch (builtin.os.tag) {
-        .linux => linuxKeysymName(if (key_code >= 'A' and key_code <= 'Z') key_code + 0x20 else key_code),
-        .windows => windowsVkeyName(key_code),
-        .macos => macKeycodeName(key_code),
-        else => null,
-    } orelse return null;
-
-    // Bare 문자/숫자/Space/Tab/grave나 Shift-only 조합을 전역 단축키로
-    // 등록하면 일상 입력을 OS 전체에서 가로챈다. modifier 없이 안전하게
-    // 허용하는 키는 F1~F12뿐이다. 일반 키는 command 성격의 modifier가 필수다.
-    const command_modifiers = CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
-    if (!globalHotkeyAllowed(key_name, (modifiers & command_modifiers) != 0)) return null;
-
+/// #760 — hotkey 를 config 에 적는 글자. 세 OS 가 **같은 표 하나**로 적는다.
+///
+/// - 전부 소문자다. 기호는 글자 그대로 (`` ` `` · `[` · `/`) 이고 `+` 만 `plus` 다 (구분자라서).
+/// - 수식키 순서는 ctrl → shift → alt → super 다. 지금 기본 바인딩이 모두 이 순서다.
+/// - macOS 는 수식키를 Mac 자판 이름으로 적는다 (`opt` · `cmd`). `cmd` 를 이미 쓰니 Option 도
+///   같은 원칙이다 (2026-10-13 · 10-18 사용자 결정). 파서는 `alt` · `opt` · `super` · `cmd` 를
+///   같은 키로 읽으므로 어느 OS 에서 적은 config 든 다른 OS 에서 읽힌다.
+///
+/// 읽기는 예전 별칭 (`Page_Up` · `pgup` · `Command` …) 도 계속 받는다 (`hotkeyKeyFromName`).
+/// 화면 표시는 이 함수가 아니라 `bindingDisplay` 다 — 저장용과 표시용은 모양이 다르다.
+pub fn hotkeyConfigText(buf: []u8, parsed: ParsedHotkey) ?[]const u8 {
     // #451 — `std.io.fixedBufferStream` 은 0.16 에서 삭제됐다 (릴리즈 노트 *Io: delete
     // GenericReader, AnyReader, FixedBufferStream*). 고정 버퍼 쓰기는 `Io.Writer.fixed`
     // 가 그 자리이고, 쓴 만큼은 `getWritten()` 대신 `buffered()` 로 얻는다.
     var fbs: std.Io.Writer = .fixed(buf);
-    const writer = &fbs;
-    const ModifierPart = struct { bit: u32, text: []const u8 };
-    const modifier_parts = if (builtin.os.tag == .macos)
-        [_]ModifierPart{
-            .{ .bit = CAPTURE_MOD_CTRL, .text = "Control+" },
-            .{ .bit = CAPTURE_MOD_ALT, .text = "Option+" },
-            .{ .bit = CAPTURE_MOD_SHIFT, .text = "Shift+" },
-            .{ .bit = CAPTURE_MOD_PRIMARY, .text = "Command+" },
-        }
-    else
-        [_]ModifierPart{
-            .{ .bit = CAPTURE_MOD_CTRL, .text = "Ctrl+" },
-            .{ .bit = CAPTURE_MOD_SHIFT, .text = "Shift+" },
-            .{ .bit = CAPTURE_MOD_ALT, .text = "Alt+" },
-            .{ .bit = CAPTURE_MOD_PRIMARY, .text = "Super+" },
-        };
-    for (modifier_parts) |part| {
-        if ((modifiers & part.bit) != 0) writer.writeAll(part.text) catch return null;
+    const w = &fbs;
+    const Part = struct { on: bool, text: []const u8 };
+    const parts = [_]Part{
+        .{ .on = parsed.ctrl, .text = "ctrl+" },
+        .{ .on = parsed.shift, .text = "shift+" },
+        .{ .on = parsed.alt, .text = if (is_macos) "opt+" else "alt+" },
+        .{ .on = parsed.super, .text = if (is_macos) "cmd+" else "super+" },
+    };
+    for (parts) |part| {
+        if (part.on) w.writeAll(part.text) catch return null;
     }
-    writer.writeAll(key_name) catch return null;
+    switch (parsed.key) {
+        .char => |c| w.writeByte(c) catch return null,
+        .named => |n| w.writeAll(configKeyName(n)) catch return null,
+        .code => |code| w.print("[{s}]", .{physical_key.name(code)}) catch return null,
+    }
     return fbs.buffered();
 }
 
-/// Parsed platform-native hotkey를 command menu에 표시할 canonical 문자열로
-/// 되돌린다. config가 source of truth이며 F1을 별도로 hardcode하지 않는다.
+/// `hotkeyConfigText` 의 키 이름. 이름마다 파서가 받는 대표 이름이다 (`hotkeyKeyFromName`).
+fn configKeyName(key: HotkeyNamedKey) []const u8 {
+    return switch (key) {
+        .f1 => "f1",
+        .f2 => "f2",
+        .f3 => "f3",
+        .f4 => "f4",
+        .f5 => "f5",
+        .f6 => "f6",
+        .f7 => "f7",
+        .f8 => "f8",
+        .f9 => "f9",
+        .f10 => "f10",
+        .f11 => "f11",
+        .f12 => "f12",
+        .space => "space",
+        .grave => "`",
+        .tab => "tab",
+        .escape => "escape",
+        .@"return" => "return",
+        .page_up => "pageup",
+        .page_down => "pagedown",
+        .arrow_left => "left",
+        .arrow_right => "right",
+        .arrow_up => "up",
+        .arrow_down => "down",
+        .bracket_left => "[",
+        .bracket_right => "]",
+        .slash => "/",
+        .equal => "=",
+        .minus => "-",
+        .plus => "plus",
+        .backspace => "backspace",
+    };
+}
+
+/// 이 OS 의 키 코드 → 공통 토큰 (#760). 라벨 키만 되짚는다 — 위치 표기는 hotkey 의 `code`
+/// 필드가 따로 들고 있다. 표를 따로 두지 않고 **파서 쪽 변환 (`Hotkey.fromParsed`) 을 거꾸로**
+/// 훑는다. 표가 둘이면 갈라진다 — 예전 캡처 표 셋이 파서와 따로 놀아 OS 마다 글자가 갈렸다.
+///
+/// Windows 는 `=` 와 `plus` 가 같은 VK 라 앞의 것 (`=`) 이 나온다. 둘 다 `[keys]` 전용이라
+/// 캡처 (`capturedHotkeyText`) 에는 영향이 없다.
+fn tokenFromNativeKey(native_key: u32) ?HotkeyKeyToken {
+    // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다. 파서의 글자는 소문자다.
+    const key = if (builtin.os.tag == .linux and native_key >= 'A' and native_key <= 'Z') native_key + 0x20 else native_key;
+    for (std.enums.values(HotkeyNamedKey)) |named| {
+        const token: HotkeyKeyToken = .{ .named = named };
+        if (nativeKeyOf(token) == key) return token;
+    }
+    for ("abcdefghijklmnopqrstuvwxyz0123456789") |c| {
+        const token: HotkeyKeyToken = .{ .char = c };
+        if (nativeKeyOf(token) == key) return token;
+    }
+    return null;
+}
+
+fn nativeKeyOf(token: HotkeyKeyToken) u32 {
+    const hotkey = Hotkey.fromParsed(.{ .ctrl = false, .shift = false, .alt = false, .super = false, .key = token });
+    return switch (builtin.os.tag) {
+        .linux => hotkey.keysym,
+        .windows => hotkey.vkey,
+        .macos => hotkey.keycode,
+        else => 0,
+    };
+}
+
+/// OS key event 를 config 에 적을 hotkey 글자로 바꾼다. key_code 의 뜻만 platform 별이다:
+/// Linux keysym, Windows virtual-key, macOS hardware keyCode. modifier 비트는 위 CAPTURE_MOD_* 로
+/// 정규화한다. 글자 모양은 세 OS 공통이다 (`hotkeyConfigText`, #760).
+pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 {
+    const parsed: ParsedHotkey = .{
+        .ctrl = (modifiers & CAPTURE_MOD_CTRL) != 0,
+        .shift = (modifiers & CAPTURE_MOD_SHIFT) != 0,
+        .alt = (modifiers & CAPTURE_MOD_ALT) != 0,
+        .super = (modifiers & CAPTURE_MOD_PRIMARY) != 0,
+        .key = tokenFromNativeKey(key_code) orelse return null,
+    };
+    const text = hotkeyConfigText(buf, parsed) orelse return null;
+    // 전역 hotkey 로 받을 수 있는지는 파서 한 곳이 정한다 — 적을 글자를 다시 읽혀 본다.
+    // 수식키 없는 글자 · Shift 만 · `[keys]` 전용 키 (`/` · `=` …) 가 여기서 걸러진다.
+    // 다시 읽은 값이 같은지도 본다. 적은 글자가 다른 키로 읽히면 config 가 사용자가 누른 키를 잃는다.
+    return switch (parseHotkeyString(text, .global_hotkey)) {
+        .ok => |reread| if (std.meta.eql(reread, parsed)) text else null,
+        else => null,
+    };
+}
+
+/// Parsed platform-native hotkey 를 화면에 보일 글자로 되돌린다 (메뉴 · 시작 안내 · 오류 문구).
+/// config 가 source of truth 이며 F1 을 별도로 hardcode 하지 않는다. 모양은 `[keys]` 의 메뉴
+/// 글자와 같다 (`bindingDisplay` — 글자는 대문자, macOS 는 `Control` `Option` `Shift` `Cmd`).
 pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
-    const native = switch (builtin.os.tag) {
-        .linux => .{ .key = hotkey.keysym, .modifiers = hotkey.modifiers },
-        .windows => .{ .key = hotkey.vkey, .modifiers = hotkey.modifiers },
-        .macos => blk: {
-            var modifiers: u32 = 0;
-            if ((hotkey.modifiers & 0x00040000) != 0) modifiers |= CAPTURE_MOD_CTRL;
-            if ((hotkey.modifiers & 0x00080000) != 0) modifiers |= CAPTURE_MOD_ALT;
-            if ((hotkey.modifiers & 0x00020000) != 0) modifiers |= CAPTURE_MOD_SHIFT;
-            if ((hotkey.modifiers & 0x00100000) != 0) modifiers |= CAPTURE_MOD_PRIMARY;
-            break :blk .{ .key = hotkey.keycode, .modifiers = modifiers };
-        },
+    const native_key: u32 = switch (builtin.os.tag) {
+        .linux => hotkey.keysym,
+        .windows => hotkey.vkey,
+        .macos => hotkey.keycode,
         else => return "?",
     };
-    const text = capturedHotkeyText(buf, native.key, native.modifiers) orelse return "?";
-    // Linux 의 캡처 canonical 은 소문자 문자 키 (`Ctrl+Shift+t` — parser 정규화와
-    // round-trip). 사용자 *표시* 관례는 세 platform 모두 대문자 (`Ctrl+Shift+T`,
-    // KDE / GNOME 표기 동일) 라 표시 시점에만 대문자화한다. 문자 키 토큰은
-    // 항상 마지막 + 단일 char — `space` / `grave` 같은 이름 키는 건드리지 않음.
-    if (text.len >= 1) {
-        const is_single_char_key = text.len == 1 or text[text.len - 2] == '+';
-        const last = &buf[text.len - 1];
-        if (is_single_char_key and last.* >= 'a' and last.* <= 'z') last.* -= 0x20;
-    }
-    return text;
+    const key: HotkeyKeyToken = if (hotkey.code) |code| .{ .code = code } else tokenFromNativeKey(native_key) orelse return "?";
+    const parsed: ParsedHotkey = .{
+        .ctrl = (hotkey.modifiers & Hotkey.MOD_CTRL) != 0,
+        .shift = (hotkey.modifiers & Hotkey.MOD_SHIFT) != 0,
+        .alt = (hotkey.modifiers & Hotkey.MOD_ALT) != 0,
+        .super = (hotkey.modifiers & Hotkey.MOD_SUPER) != 0,
+        .key = key,
+    };
+    const text = bindingDisplay(buf, parsed, is_macos);
+    return if (text.len == 0) "?" else text;
 }
 
 test "configured hotkey display is derived from the parsed native value" {
@@ -572,6 +627,22 @@ test "configured hotkey display is derived from the parsed native value" {
     const parsed = Hotkey.fromString("ctrl+shift+t").?;
     const expected = if (builtin.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
     try std.testing.expectEqualStrings(expected, hotkeyDisplay(&buf, parsed));
+    // #760 — 화면 글자는 `[keys]` 메뉴와 같은 모양이다. 예전에는 캡처 글자를 그대로 써서
+    // Linux 가 `Ctrl+Page_Up`, macOS 가 `Command+` 로 보였다.
+    try std.testing.expectEqualStrings(
+        if (is_macos) "Control+PgUp" else "Ctrl+PgUp",
+        hotkeyDisplay(&buf, Hotkey.fromString("ctrl+Page_Up").?),
+    );
+    try std.testing.expectEqualStrings(
+        if (is_macos) "Shift+Cmd+`" else "Shift+Super+`",
+        hotkeyDisplay(&buf, Hotkey.fromString("Command+Shift+grave").?),
+    );
+    try std.testing.expectEqualStrings("F1", hotkeyDisplay(&buf, Hotkey.fromString("f1").?));
+    // 위치 표기는 적은 이름 그대로다. 예전에는 `?` 였다 (라벨 쪽 값이 sentinel 이라).
+    try std.testing.expectEqualStrings(
+        if (is_macos) "Control+[Backquote]" else "Ctrl+[Backquote]",
+        hotkeyDisplay(&buf, Hotkey.fromString("ctrl+[Backquote]").?),
+    );
 }
 
 /// Linux global-hotkey backend 공통 xkb keysym 매핑. Win `WindowsHotkey` /
@@ -714,44 +785,84 @@ const linux_single_char_lookup = blk: {
     break :blk table;
 };
 
-test "captured hotkey is formatted canonically" {
+test "#760 — 캡처는 세 OS 가 같은 글자로 적는다" {
+    const C = struct { key: HotkeyKeyToken, mods: u32, pc: []const u8, mac: []const u8 };
+    const ctrl = CAPTURE_MOD_CTRL;
+    const all = CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT | CAPTURE_MOD_ALT | CAPTURE_MOD_PRIMARY;
+    const cases = [_]C{
+        .{ .key = .{ .named = .f3 }, .mods = 0, .pc = "f3", .mac = "f3" },
+        .{ .key = .{ .named = .f2 }, .mods = ctrl | CAPTURE_MOD_SHIFT, .pc = "ctrl+shift+f2", .mac = "ctrl+shift+f2" },
+        .{ .key = .{ .char = 't' }, .mods = all, .pc = "ctrl+shift+alt+super+t", .mac = "ctrl+shift+opt+cmd+t" },
+        .{ .key = .{ .char = '7' }, .mods = CAPTURE_MOD_ALT, .pc = "alt+7", .mac = "opt+7" },
+        .{ .key = .{ .named = .page_up }, .mods = ctrl, .pc = "ctrl+pageup", .mac = "ctrl+pageup" },
+        .{ .key = .{ .named = .page_down }, .mods = ctrl, .pc = "ctrl+pagedown", .mac = "ctrl+pagedown" },
+        .{ .key = .{ .named = .arrow_left }, .mods = ctrl, .pc = "ctrl+left", .mac = "ctrl+left" },
+        .{ .key = .{ .named = .bracket_left }, .mods = ctrl, .pc = "ctrl+[", .mac = "ctrl+[" },
+        .{ .key = .{ .named = .bracket_right }, .mods = ctrl, .pc = "ctrl+]", .mac = "ctrl+]" },
+        .{ .key = .{ .named = .grave }, .mods = CAPTURE_MOD_PRIMARY, .pc = "super+`", .mac = "cmd+`" },
+        .{ .key = .{ .named = .space }, .mods = ctrl, .pc = "ctrl+space", .mac = "ctrl+space" },
+        .{ .key = .{ .named = .tab }, .mods = ctrl, .pc = "ctrl+tab", .mac = "ctrl+tab" },
+        .{ .key = .{ .named = .@"return" }, .mods = ctrl, .pc = "ctrl+return", .mac = "ctrl+return" },
+        .{ .key = .{ .named = .escape }, .mods = ctrl, .pc = "ctrl+escape", .mac = "ctrl+escape" },
+    };
+    for (cases) |c| {
+        var buf: [64]u8 = undefined;
+        const text = capturedHotkeyText(&buf, nativeKeyOf(c.key), c.mods) orelse {
+            std.debug.print("캡처 실패: {s}\n", .{c.pc});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expectEqualStrings(if (is_macos) c.mac else c.pc, text);
+    }
+    // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다.
     if (builtin.os.tag == .linux) {
         var buf: [64]u8 = undefined;
-        const text = capturedHotkeyText(&buf, 0xffbf, CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?;
-        try std.testing.expectEqualStrings("Ctrl+Shift+F2", text);
-        try std.testing.expect(Hotkey.fromString(text) != null);
+        try std.testing.expectEqualStrings("ctrl+shift+t", capturedHotkeyText(&buf, 'T', ctrl | CAPTURE_MOD_SHIFT).?);
     }
 }
 
-test "macOS captured hotkey uses native modifier names and keeps legacy aliases" {
-    if (builtin.os.tag == .macos) {
-        var buf: [64]u8 = undefined;
-        const text = capturedHotkeyText(
-            &buf,
-            0x11, // kVK_ANSI_T
-            CAPTURE_MOD_CTRL | CAPTURE_MOD_ALT | CAPTURE_MOD_SHIFT | CAPTURE_MOD_PRIMARY,
-        ).?;
-        try std.testing.expectEqualStrings("Control+Option+Shift+Command+T", text);
-
-        const native = MacHotkey.fromString(text).?;
-        const legacy = MacHotkey.fromString("Ctrl+Alt+Shift+Cmd+T").?;
-        try std.testing.expectEqual(native.keycode, legacy.keycode);
-        try std.testing.expectEqual(native.modifiers, legacy.modifiers);
+test "#760 — 예전 별칭도 같은 키로 읽힌다" {
+    const pairs = [_][2][]const u8{
+        .{ "ctrl+shift+opt+cmd+t", "Control+Option+Shift+Command+T" },
+        .{ "ctrl+shift+alt+super+t", "Ctrl+Alt+Shift+Cmd+T" },
+        .{ "ctrl+shift+alt+super+t", "ctrl+shift+opt+cmd+t" },
+        .{ "ctrl+pageup", "Ctrl+Page_Up" },
+        .{ "ctrl+pageup", "ctrl+PgUp" },
+        .{ "ctrl+pagedown", "Ctrl+Page_Down" },
+        .{ "ctrl+left", "Ctrl+Left" },
+        .{ "ctrl+[", "Ctrl+bracketleft" },
+        .{ "ctrl+]", "Ctrl+BracketRight" },
+        .{ "ctrl+`", "Ctrl+grave" },
+        .{ "ctrl+`", "ctrl+backquote" },
+        .{ "ctrl+return", "Ctrl+Enter" },
+        .{ "ctrl+escape", "Ctrl+Esc" },
+        .{ "ctrl+t", "Ctrl+T" },
+        .{ "f1", "F1" },
+    };
+    for (pairs) |p| {
+        const canonical = Hotkey.fromString(p[0]) orelse return error.TestUnexpectedResult;
+        const legacy = Hotkey.fromString(p[1]) orelse {
+            std.debug.print("별칭이 안 읽힘: {s}\n", .{p[1]});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.meta.eql(canonical, legacy));
     }
 }
 
 test "modifier-free capture only accepts function keys" {
-    if (builtin.os.tag == .linux) {
-        var buf: [64]u8 = undefined;
-        try std.testing.expectEqualStrings("F3", capturedHotkeyText(&buf, 0xffc0, 0).?);
-        try std.testing.expect(capturedHotkeyText(&buf, 't', 0) == null);
-        try std.testing.expect(capturedHotkeyText(&buf, '3', 0) == null);
-        try std.testing.expect(capturedHotkeyText(&buf, ' ', 0) == null);
-        try std.testing.expect(capturedHotkeyText(&buf, 0xff09, 0) == null);
-        try std.testing.expect(capturedHotkeyText(&buf, '`', 0) == null);
-        try std.testing.expect(capturedHotkeyText(&buf, 't', CAPTURE_MOD_SHIFT) == null);
-        try std.testing.expectEqualStrings("Ctrl+t", capturedHotkeyText(&buf, 't', CAPTURE_MOD_CTRL).?);
-        try std.testing.expectEqualStrings("Ctrl+Shift+t", capturedHotkeyText(&buf, 't', CAPTURE_MOD_CTRL | CAPTURE_MOD_SHIFT).?);
+    var buf: [64]u8 = undefined;
+    const rejected = [_]HotkeyKeyToken{
+        .{ .char = 't' },          .{ .char = '3' },            .{ .named = .space },
+        .{ .named = .tab },        .{ .named = .grave },        .{ .named = .page_up },
+        .{ .named = .arrow_left }, .{ .named = .bracket_left },
+    };
+    for (rejected) |key| {
+        try std.testing.expect(capturedHotkeyText(&buf, nativeKeyOf(key), 0) == null);
+        try std.testing.expect(capturedHotkeyText(&buf, nativeKeyOf(key), CAPTURE_MOD_SHIFT) == null);
+    }
+    // `[keys]` 전용 키는 수식키가 있어도 캡처하지 않는다 — 전역 hotkey 로 등록할 이름이 없다.
+    const app_only = [_]HotkeyKeyToken{ .{ .named = .slash }, .{ .named = .minus }, .{ .named = .backspace } };
+    for (app_only) |key| {
+        try std.testing.expect(capturedHotkeyText(&buf, nativeKeyOf(key), CAPTURE_MOD_CTRL) == null);
     }
 }
 
@@ -1197,8 +1308,9 @@ test "#493 default [keys] has no conflicting bindings" {
     // #693 이전 42 개 — 두 platform 표가 같은 수였다. #693 의 글자 크기 셋이 macOS 에 6 개
     // (`cmd+=` · `shift+cmd+=` · `cmd+plus` · `cmd+-` · `cmd+0` · `shift+cmd+backspace`), Linux ·
     // Windows 에 4 개 (`ctrl+shift+=` · `ctrl+shift+plus` · `ctrl+shift+-` · `ctrl+shift+backspace`)
-    // 를 더한다. macOS 만 둘이 더 많은 이유는 그 표의 주석에 있다.
-    try std.testing.expectEqual(@as(usize, if (is_macos) 48 else 46), count);
+    // 를 더한다. macOS 만 둘이 더 많은 이유는 그 표의 주석에 있다. #760 이 탭 전환의 PgUp / PgDn
+    // 둘을 뺐다.
+    try std.testing.expectEqual(@as(usize, if (is_macos) 46 else 44), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1413,45 +1525,6 @@ const WindowsHotkey = struct {
     }
 };
 
-fn windowsVkeyName(vkey: u32) ?[]const u8 {
-    return switch (vkey) {
-        0x70 => "F1",
-        0x71 => "F2",
-        0x72 => "F3",
-        0x73 => "F4",
-        0x74 => "F5",
-        0x75 => "F6",
-        0x76 => "F7",
-        0x77 => "F8",
-        0x78 => "F9",
-        0x79 => "F10",
-        0x7A => "F11",
-        0x7B => "F12",
-        0x20 => "space",
-        0xC0 => "grave",
-        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`VK_PRIOR` · `VK_NEXT` · 방향 · `VK_OEM_4/6`).
-        0x21 => "pageup",
-        0x22 => "pagedown",
-        0x25 => "left",
-        0x26 => "up",
-        0x27 => "right",
-        0x28 => "down",
-        0xDB => "[",
-        0xDD => "]",
-        0x09 => "Tab",
-        0x0D => "Return",
-        0x1B => "Escape",
-        'A'...'Z', '0'...'9' => &windows_single_char_lookup[vkey - '0'],
-        else => null,
-    };
-}
-
-const windows_single_char_lookup = blk: {
-    var table: ['Z' - '0' + 1][1]u8 = undefined;
-    for ('0'..'Z' + 1) |value| table[value - '0'][0] = @intCast(value);
-    break :blk table;
-};
-
 const MacHotkey = struct {
     /// #483 6단계 — 같은 키가 **Shift 없이** 내는 값 (라벨 / keysym). 이벤트 쪽에만 채우고 binding 쪽은 0.
     /// Shift 를 적은 binding (`shift+cmd+0`, `shift+alt+0`, `shift+cmd+[`) 은 이 값으로도 맞는다 —
@@ -1633,45 +1706,6 @@ const MacHotkey = struct {
         };
     }
 };
-
-fn macKeycodeName(keycode: u32) ?[]const u8 {
-    const map = [_]struct { code: u32, name: []const u8 }{
-        .{ .code = 0x7A, .name = "F1" },     .{ .code = 0x78, .name = "F2" },
-        .{ .code = 0x63, .name = "F3" },     .{ .code = 0x76, .name = "F4" },
-        .{ .code = 0x60, .name = "F5" },     .{ .code = 0x61, .name = "F6" },
-        .{ .code = 0x62, .name = "F7" },     .{ .code = 0x64, .name = "F8" },
-        .{ .code = 0x65, .name = "F9" },     .{ .code = 0x6D, .name = "F10" },
-        .{ .code = 0x67, .name = "F11" },    .{ .code = 0x6F, .name = "F12" },
-        .{ .code = 0x31, .name = "space" },  .{ .code = 0x32, .name = "grave" },
-        // #693 — 전역 hotkey 가 받는 키를 캡처도 쓸 수 있게 (`kVK_PageUp` · `..Down` · 방향 · 괄호).
-        .{ .code = 0x74, .name = "pageup" }, .{ .code = 0x79, .name = "pagedown" },
-        .{ .code = 0x7B, .name = "left" },   .{ .code = 0x7C, .name = "right" },
-        .{ .code = 0x7E, .name = "up" },     .{ .code = 0x7D, .name = "down" },
-        .{ .code = 0x21, .name = "[" },      .{ .code = 0x1E, .name = "]" },
-        .{ .code = 0x30, .name = "Tab" },    .{ .code = 0x24, .name = "Return" },
-        .{ .code = 0x35, .name = "Escape" }, .{ .code = 0x00, .name = "A" },
-        .{ .code = 0x0B, .name = "B" },      .{ .code = 0x08, .name = "C" },
-        .{ .code = 0x02, .name = "D" },      .{ .code = 0x0E, .name = "E" },
-        .{ .code = 0x03, .name = "F" },      .{ .code = 0x05, .name = "G" },
-        .{ .code = 0x04, .name = "H" },      .{ .code = 0x22, .name = "I" },
-        .{ .code = 0x26, .name = "J" },      .{ .code = 0x28, .name = "K" },
-        .{ .code = 0x25, .name = "L" },      .{ .code = 0x2E, .name = "M" },
-        .{ .code = 0x2D, .name = "N" },      .{ .code = 0x1F, .name = "O" },
-        .{ .code = 0x23, .name = "P" },      .{ .code = 0x0C, .name = "Q" },
-        .{ .code = 0x0F, .name = "R" },      .{ .code = 0x01, .name = "S" },
-        .{ .code = 0x11, .name = "T" },      .{ .code = 0x20, .name = "U" },
-        .{ .code = 0x09, .name = "V" },      .{ .code = 0x0D, .name = "W" },
-        .{ .code = 0x07, .name = "X" },      .{ .code = 0x10, .name = "Y" },
-        .{ .code = 0x06, .name = "Z" },      .{ .code = 0x12, .name = "1" },
-        .{ .code = 0x13, .name = "2" },      .{ .code = 0x14, .name = "3" },
-        .{ .code = 0x15, .name = "4" },      .{ .code = 0x17, .name = "5" },
-        .{ .code = 0x16, .name = "6" },      .{ .code = 0x1A, .name = "7" },
-        .{ .code = 0x1C, .name = "8" },      .{ .code = 0x19, .name = "9" },
-        .{ .code = 0x1D, .name = "0" },
-    };
-    for (map) |entry| if (entry.code == keycode) return entry.name;
-    return null;
-}
 
 fn eqIc(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
@@ -1875,53 +1909,16 @@ pub fn defaultConfigToml(
     const glyph_fallback_toml = fb_fbs.buffered();
 
     const head = try std.fmt.allocPrint(allocator,
-        \\# TildaZ config
-        \\#
-        \\# Since v0.9.0 this file is TOML. If you had a JSON config, it is still
-        \\# next to this file as config_N.json -- TildaZ no longer reads it.
-        \\#
-        \\# Field meanings and accepted ranges: CONFIG.md
+        \\# TildaZ config. CONFIG.md explains every setting.
         \\
-        \\# Global hotkey -- the OS delivers this even when TildaZ is not focused.
-        \\#
-        \\# Two ways to name the key:
-        \\#   label      "ctrl+space"        the character the key types
-        \\#   position   "ctrl+[Backquote]"  the physical spot, whatever it prints
-        \\#
-        \\# A function key is the safest choice: F1-F12 sit in the same place on
-        \\# every layout. Function-key positions are also the only ones accepted
-        \\# without a modifier -- "[F13]" is valid, "[KeyW]" is not.
-        \\#
-        \\# Reach for a position when the key you want prints something different
-        \\# from one layout to the next. The key left of 1 is the clearest case;
-        \\# these are measured, not guessed:
-        \\#
-        \\#   layout                      that key prints
-        \\#   US QWERTY                   `      (same on all three platforms)
-        \\#   French   (Linux)            ²
-        \\#   French   (Windows legacy)   ²
-        \\#   French   (Windows standard) @
-        \\#   French   (macOS)            <
-        \\#   Russian  (Linux, Windows)   ё
-        \\#   Russian  (macOS)            ]
-        \\#   German   (Linux)            a dead key -- refused, with a message
-        \\#
-        \\# "ctrl+[Backquote]" means that one physical key on every row above. A
-        \\# label such as "ctrl+grave" only fires where the layout types a backtick.
-        \\#
-        \\# More positions worth knowing:
-        \\#   "ctrl+[BracketLeft]"   [ on US. On French it needs AltGr, so the
-        \\#                          label form would be a four-finger chord.
-        \\#   "[F13]"                On a PC keyboard attached to a Mac this is
-        \\#                          the PrintScreen spot -- macOS reports F13.
-        \\#
-        \\# Position names are W3C KeyboardEvent.code values. Full list: CONFIG.md
+        \\# Global hotkey. Works even when TildaZ is not focused.
+        \\# Name a key by what it types ("ctrl+space") or by where it sits
+        \\# ("ctrl+[Backquote]"). Only F1-F12 work without a modifier.
         \\hotkey           = "{s}"
         \\
-        \\# Windows accepts arguments, so the first space ends the executable path:
-        \\# "wsl.exe -d Debian" runs wsl.exe. A path that itself contains spaces has
-        \\# to be quoted -- "\"C:\\Program Files\\Git\\bin\\bash.exe\"".
-        \\# macOS and Linux expect a plain absolute path with no arguments.
+        \\# macOS, Linux: an absolute path, no arguments.
+        \\# Windows: the first space ends the executable path, so arguments work.
+        \\# Quote a path that has spaces: "\"C:\\Program Files\\Git\\bin\\bash.exe\""
         \\shell            = "{s}"
         \\
         \\auto_start       = {}
@@ -1943,37 +1940,16 @@ pub fn defaultConfigToml(
         \\size_point        = {d}
         \\cell_width_ratio  = {d:.1}
         \\line_height_ratio = {d:.1}
-        \\# macOS only. false draws thin strokes, as iTerm2 and Ghostty do.
-        \\# true draws each stroke a little heavier, as Terminal.app does.
-        \\# On Linux and Windows this key is read but not used.
+        \\# macOS only. true draws strokes a little heavier, like Terminal.app.
         \\macos_smoothing   = {}
         \\
         \\[input]
-        \\# macOS only. On Linux and Windows this key is read but not used --
-        \\# there Alt is always Meta, because Alt+a produces no character.
-        \\#
-        \\# macOS is different: the OS itself turns Option+a into a character
-        \\# (ABC types "a-ring", French types "e-circumflex"). One key press,
-        \\# two meanings -- so you pick one.
-        \\#
-        \\#   none    Option types characters. The macOS default.
-        \\#   both    Both Option keys act as Alt, so Option+n reaches zellij,
-        \\#           tmux and emacs. You lose the characters above.
-        \\#   left    Only the left Option acts as Alt. The right one keeps
-        \\#           typing characters.
-        \\#   right   The mirror of "left".
+        \\# macOS only. Which Option key acts as Alt: none | both | left | right.
+        \\# "none" keeps Option for typing characters such as å.
         \\macos_option_as_alt = "{s}"
         \\
-        \\# Copy to the clipboard as soon as you finish selecting with the mouse.
-        \\#
-        \\#   false   The clipboard keeps what you copied. Copy the selection
-        \\#           with Ctrl+Shift+C (Cmd+C on macOS) or a right-click.
-        \\#           Right-click with nothing selected pastes.
-        \\#   true    Every selection replaces the clipboard. Right-click
-        \\#           always pastes.
-        \\#
-        \\# On Linux the selection also goes to the primary selection either
-        \\# way -- middle-click pastes it.
+        \\# true: every mouse selection replaces the clipboard.
+        \\# false: copy with Ctrl+Shift+C (Cmd+C on macOS) or a right-click.
         \\copy_on_select = {}
         \\
     , .{
@@ -2002,8 +1978,8 @@ pub fn defaultConfigToml(
     // `[keys]` 는 액션 수가 많아 별 helper 로 조립한다. **최상위 스칼라 뒤, 테이블
     // 뒤**에 온다 — TOML 은 테이블 헤더 다음의 키를 그 테이블 소속으로 읽으므로
     // 순서를 바꿀 수 없다.
-    // 액션 하나가 한 줄 ~60 byte (지금 38 개) + 안내 주석 (라벨 / 위치 두 표기 설명이
-    // 들어가 커졌다). 고정 버퍼로 충분하고 (이 코드베이스의 `Io.Writer.fixed` 패턴)
+    // 액션 하나가 한 줄 ~60 byte (지금 46 개) + 안내 주석 두 줄. 고정 버퍼로 충분하고
+    // (이 코드베이스의 `Io.Writer.fixed` 패턴)
     // 넘치면 `writeAll` 이 오류를 낸다 — 조용히 잘리지 않는다.
     var keys_buf: [8192]u8 = undefined;
     var keys_fbs: std.Io.Writer = .fixed(&keys_buf);
@@ -2146,8 +2122,8 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
     return switch (action) {
         .new_tab => &.{"cmd+t"},
         .close_tab => &.{"cmd+w"},
-        .prev_tab => &.{ "shift+cmd+[", "cmd+pageup" },
-        .next_tab => &.{ "shift+cmd+]", "cmd+pagedown" },
+        .prev_tab => &.{"shift+cmd+["},
+        .next_tab => &.{"shift+cmd+]"},
         .switch_tab1 => &.{"cmd+1"},
         .switch_tab2 => &.{"cmd+2"},
         .switch_tab3 => &.{"cmd+3"},
@@ -2172,11 +2148,11 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .dump_perf => &.{"shift+cmd+f12"},
         // #483 — 분할 (2026-08-27 결정): 방향키가 곧 새 pane 이 생기는 방향. `ctrl+cmd+방향키` 는 macOS 의
         // `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 사용자가 뺐고, Apple Terminal · iTerm2 의 `⌘D` 는 뜻이 없는
-        // 글자라 안 쓴다. `alt+cmd+방향키` 는 시스템 기본에 없다.
-        .split_left => &.{"alt+cmd+left"},
-        .split_right => &.{"alt+cmd+right"},
-        .split_up => &.{"alt+cmd+up"},
-        .split_down => &.{"alt+cmd+down"},
+        // 글자라 안 쓴다. `opt+cmd+방향키` 는 시스템 기본에 없다.
+        .split_left => &.{"opt+cmd+left"},
+        .split_right => &.{"opt+cmd+right"},
+        .split_up => &.{"opt+cmd+up"},
+        .split_down => &.{"opt+cmd+down"},
         .focus_pane_left => &.{"cmd+left"},
         .focus_pane_right => &.{"cmd+right"},
         .focus_pane_up => &.{"cmd+up"},
@@ -2210,10 +2186,11 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
     return switch (action) {
         .new_tab => &.{"ctrl+shift+t"},
         .close_tab => &.{"ctrl+shift+w"},
-        // #482 — bracket 조합은 AZERTY 에서 쓸 수 없어 (`[` = AltGr+5) PgUp / PgDn
-        // 을 layout 무관 대안으로 함께 둔다.
-        .prev_tab => &.{ "ctrl+shift+[", "ctrl+pageup" },
-        .next_tab => &.{ "ctrl+shift+]", "ctrl+pagedown" },
+        // #760 — #482 에서 AZERTY 용으로 더했던 `ctrl+pageup` / `ctrl+pagedown` 은 뺐다
+        // (2026-10-18 사용자 결정). 노트북에는 PgUp 키가 없어 (Fn+↑) 신고자도 쓰지 못했다.
+        // AZERTY 는 `Alt+1`~`9` 와 위치 표기 (`ctrl+shift+[BracketLeft]`) 로 탭을 고른다.
+        .prev_tab => &.{"ctrl+shift+["},
+        .next_tab => &.{"ctrl+shift+]"},
         .switch_tab1 => &.{"alt+1"},
         .switch_tab2 => &.{"alt+2"},
         .switch_tab3 => &.{"alt+3"},
@@ -2269,38 +2246,8 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
 fn appendKeysSection(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\
-        \\# ─────────────────────────────────────────────────────────────────────────
-        \\# Keyboard shortcuts
-        \\#
-        \\# An action may have several keys. An empty list [] means "no shortcut".
-        \\#
-        \\# `cmd` resolves per OS -- Super on Linux, Win on Windows, Command on
-        \\# macOS -- so a combination you write yourself works on all three.
-        \\#
-        \\# A key can be named two ways:
-        \\#
-        \\#   by label      "ctrl+shift+w"        the letter printed on the key
-        \\#   by position   "ctrl+shift+[KeyW]"   the physical spot, any layout
-        \\#
-        \\# Labels are simpler and are what these defaults use. Use a position when
-        \\# a label cannot reach the key -- on a Cyrillic or Greek layout no key
-        \\# produces `w`, so "ctrl+shift+w" can never fire. Position names are W3C
-        \\# KeyboardEvent.code values: https://www.w3.org/TR/uievents-code/
-        \\#
-        \\# Accepted labels: F1-F12, A-Z, 0-9, space, tab, escape, return,
-        \\#                  grave(`), pageup, pagedown, left, right, up, down, [, ],
-        \\#                  / (slash), = (equal), - (minus), plus (for +),
-        \\#                  backspace
-        \\# Accepted positions: every key a keyboard can send -- letters, digits,
-        \\#                  symbols, numpad, arrows, F13-F24. See CONFIG.md.
-        \\#
-        \\# Scrolling (shift+pageup / shift+pagedown) and ctrl+c are not here: the
-        \\# first is the mouse wheel driven from the keyboard, the second sends
-        \\# SIGINT. Neither can be rebound.
-        \\#
-        \\# CONFIG.md has the full syntax; KEYBINDINGS.md has worked examples for
-        \\# AZERTY and non-Latin keyboards.
-        \\# ─────────────────────────────────────────────────────────────────────────
+        \\# Keyboard shortcuts. An action can have several keys; [] means none.
+        \\# Key names and examples: CONFIG.md and KEYBINDINGS.md.
         \\
         \\[keys]
         \\

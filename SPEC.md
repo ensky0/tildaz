@@ -447,8 +447,10 @@ minimize/restore.
 | 활성 탭 닫기 | Ctrl+Shift+W | Cmd+W | Ctrl+Shift+W (L12-β) | ✅ | ✅ | ✅ |
 | 활성 pane 닫기 | Ctrl+Shift+X | Shift+Cmd+X | Ctrl+Shift+X | ✅ | ✅ | ✅ |
 | 인덱스 점프 (1..9) | Alt+1..9 ([`Window.wndProc`의 `WM_SYSKEYDOWN`](src/window.zig)) | Cmd+1..9 | Alt+1..9 ([c0828f1](https://github.com/ensky0/tildaz/commit/c0828f1)) | ✅ | ✅ | ✅ |
-| 이전 탭 | Ctrl+Shift+[ **또는 Ctrl+PgUp** | Shift+Cmd+[ **또는 Cmd+PgUp** | Ctrl+Shift+[ (L12-β) **또는 Ctrl+PgUp** | ✅ | ✅ | ✅ |
-| 다음 탭 | Ctrl+Shift+] **또는 Ctrl+PgDn** | Shift+Cmd+] **또는 Cmd+PgDn** | Ctrl+Shift+] (L12-β) **또는 Ctrl+PgDn** | ✅ | ✅ | ✅ |
+| 이전 탭 | Ctrl+Shift+[ | Shift+Cmd+[ | Ctrl+Shift+[ (L12-β) | ✅ | ✅ | ✅ |
+| 다음 탭 | Ctrl+Shift+] | Shift+Cmd+] | Ctrl+Shift+] (L12-β) | ✅ | ✅ | ✅ |
+
+이전 · 다음 탭에는 [#482](https://github.com/ensky0/tildaz/issues/482) 에서 AZERTY 용으로 `Ctrl+PgUp` / `Ctrl+PgDn` (macOS `Cmd+PgUp` / `Cmd+PgDn`) 을 함께 뒀는데, [#760](https://github.com/ensky0/tildaz/issues/760) 에서 뺐다 (2026-10-18 사용자 결정). 노트북에는 PgUp 키가 없어 (Fn+↑) 신고자도 쓰지 못했다. AZERTY 는 `Alt+1`..`9` 와 위치 표기 (`ctrl+shift+[BracketLeft]`) 로 탭을 고른다.
 
 **이 표는 기본값이다** ([#493](https://github.com/ensky0/tildaz/issues/493) 3-c 이후).
 scrollback 쌍과 `Ctrl+C` 를 뺀 모든 조합은 config 의 `[keys]` 로 바꿀 수 있고, 세 platform 의
@@ -997,7 +999,7 @@ pane 이 좁으면 바도 폭을 따라 줄고 돋보기 → 컨트롤 (`‹ ›
 > **`<` / `>` 화살표 vs 활성 탭 — Firefox 패턴 (#117):**
 >
 > 1. `<` / `>` 클릭은 *viewport 스크롤 전용* — 활성 탭은 절대 안 바뀜. 사용자가 "다른 탭 *목록* 을 보러 왔다" 는 명시 의도이지 활성 전환 의도 아님.
-> 2. 활성 변경 트리거는 **탭 클릭 / Alt+숫자 / Ctrl+Shift+[ / Ctrl+Shift+] / Ctrl+PgUp / Ctrl+PgDn (Win · Linux) / Cmd+숫자 / Shift+Cmd+[ / Shift+Cmd+] / Cmd+PgUp / Cmd+PgDn (mac) / `+` (새 탭)** 만.
+> 2. 활성 변경 트리거는 **탭 클릭 / Alt+숫자 / Ctrl+Shift+[ / Ctrl+Shift+] (Win · Linux) / Cmd+숫자 / Shift+Cmd+[ / Shift+Cmd+] (mac) / `+` (새 탭)** 만.
 > 3. `<` / `>` 누르는 순간 `tab_scroll_user_override = true` set → 매 frame `ensureActiveTabVisible` skip → 활성 탭이 viewport 밖이어도 그대로. 활성 변경 / 새 탭 / drag reorder 끝나는 시점에 false 로 reset 되어 ensure 재가동.
 > 4. 활성 변경 시 viewport 동작: 활성 탭이 이미 보이면 그대로 (색깔만 변경), 안 보이면 보이는 가장 가까운 위치로 *minimum* 이동 (Chrome / Firefox 동등).
 >
@@ -1059,7 +1061,7 @@ terminal preedit(조합 중 자모) 활성 중에 어떤 focus_loss (마우스 �
 
 | 항목 | 동작 정의 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
-| 분할 | 네 방향 **`split_left` · `split_right` · `split_up` · `split_down`** — 화살표가 곧 새 pane 이 놓이는 자리다. 왼쪽 · 위는 오른쪽 · 아래와 격자가 **완전히 같고** 새 pane 이 분할 노드의 first 냐 second 냐만 다르다 (`Direction.towardSecond()`). 2026-08-27 에는 오른쪽 · 아래 둘뿐이었고 이름도 `split_vertical` / `split_horizontal` 이었는데, 2026-08-29 에 네 방향으로 넓히면서 방향 이름으로 바꿨다 — `vertical` / `horizontal` 은 tmux 와 iTerm2 가 **정반대 뜻**으로 쓰는 낱말이라 어느 쪽을 따르든 절반은 헷갈리고, 방향 이름은 `focus_pane_*` · `resize_pane_*` 와 낱말이 같아진다. 활성 pane 을 반씩 가르고 새 pane (새 셸, cwd 상속 규칙은 새 탭과 같다) 이 **활성** 이 된다 (tmux · iTerm2 · WT · Ghostty · vim 모두 새 pane 으로). 왼쪽 · 위를 4a 에서 뺐던 근거 ("어느 터미널에도 기본에 없다") 는 지금도 사실이지만, 그때는 `[keys]` 가 양방향 strict 라 액션 추가가 곧 기존 config 의 부팅을 막았으므로 (#655 이후로는 빠진 액션이 기본값으로 돌고 시작 안내에 한 줄이 뜬다 — 이 이유는 더 이상 성립하지 않는다) **이미 스키마가 깨지는 v0.9.3 에 함께 넣는 것이 사용자 비용 0** 이고, `Ctrl+Shift+←` 가 비어 있어 "수식키가 동사, 방향키가 방향" 규칙이 절반만 적용돼 있었다. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | `ctrl+shift+{right,down,left,up}` → `config.ActionInput` (`.split` + `direction`) → 공통 `app_actions.split` ([#692](https://github.com/ensky0/tildaz/issues/692)) | `alt+cmd+{right,down,left,up}` → `app_actions.split` — 4a 의 `ctrl+cmd+방향키` 는 `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 바꿨고, Apple Terminal · iTerm2 의 `⌘D` 는 글자에 뜻이 없어 안 쓴다 | `ctrl+shift+{right,down,left,up}` → `app_actions.split` → `SessionCore.splitActive` | ✅ | ✅ | ✅ |
+| 분할 | 네 방향 **`split_left` · `split_right` · `split_up` · `split_down`** — 화살표가 곧 새 pane 이 놓이는 자리다. 왼쪽 · 위는 오른쪽 · 아래와 격자가 **완전히 같고** 새 pane 이 분할 노드의 first 냐 second 냐만 다르다 (`Direction.towardSecond()`). 2026-08-27 에는 오른쪽 · 아래 둘뿐이었고 이름도 `split_vertical` / `split_horizontal` 이었는데, 2026-08-29 에 네 방향으로 넓히면서 방향 이름으로 바꿨다 — `vertical` / `horizontal` 은 tmux 와 iTerm2 가 **정반대 뜻**으로 쓰는 낱말이라 어느 쪽을 따르든 절반은 헷갈리고, 방향 이름은 `focus_pane_*` · `resize_pane_*` 와 낱말이 같아진다. 활성 pane 을 반씩 가르고 새 pane (새 셸, cwd 상속 규칙은 새 탭과 같다) 이 **활성** 이 된다 (tmux · iTerm2 · WT · Ghostty · vim 모두 새 pane 으로). 왼쪽 · 위를 4a 에서 뺐던 근거 ("어느 터미널에도 기본에 없다") 는 지금도 사실이지만, 그때는 `[keys]` 가 양방향 strict 라 액션 추가가 곧 기존 config 의 부팅을 막았으므로 (#655 이후로는 빠진 액션이 기본값으로 돌고 시작 안내에 한 줄이 뜬다 — 이 이유는 더 이상 성립하지 않는다) **이미 스키마가 깨지는 v0.9.3 에 함께 넣는 것이 사용자 비용 0** 이고, `Ctrl+Shift+←` 가 비어 있어 "수식키가 동사, 방향키가 방향" 규칙이 절반만 적용돼 있었다. 분할선은 앞 pane 의 셀 경계에 두고 남는 px 는 뒤 pane 에 (1단계 결정 2) | `ctrl+shift+{right,down,left,up}` → `config.ActionInput` (`.split` + `direction`) → 공통 `app_actions.split` ([#692](https://github.com/ensky0/tildaz/issues/692)) | `opt+cmd+{right,down,left,up}` → `app_actions.split` — 4a 의 `ctrl+cmd+방향키` 는 `⌃↑` / `⌃↓` (Mission Control) 와 부딪혀 바꿨고, Apple Terminal · iTerm2 의 `⌘D` 는 글자에 뜻이 없어 안 쓴다 | `ctrl+shift+{right,down,left,up}` → `app_actions.split` → `SessionCore.splitActive` | ✅ | ✅ | ✅ |
 | 상한 · 최소 크기 | 탭당 pane **16** (`MAX_PANES_PER_TAB`, 탭 32 와 독립 — 1단계 결정 1) · pane 최소 **20×5** 셀 (`MIN_PANE_COLS/ROWS`). 넘으면 트리를 바꾸지 않고 거부 + dialog (`messages.pane_limit_*` / `pane_too_small_*`) — 단축키에는 시각 피드백이 없어 탭 한도와 같은 방식 | 공통 `app_actions.split` (같은 dialog) | 동일 | 동일 | ✅ | ✅ | ✅ |
 | 포커스 이동 | **기하 기반** 이웃 (`pane_layout.neighbor`) — 활성 pane 의 커서 행/열에서 그 방향으로 쏴 처음 만나는 pane (3 분할 이상에서 트리 형제가 아닌 화면상 이웃으로 간다). 창 가장자리면 무시. 떠나는 pane 의 진행 중 선택 · 드래그는 탭 전환과 같이 정리 | `alt+방향키` → `app_actions.focusPane` | `cmd+방향키` → `app_actions.focusPane` | `alt+방향키` → `app_actions.focusPane` → `SessionCore.focusPane` | ✅ | ✅ | ✅ |
 | 크기 조절 · 균등 | 활성 pane 에 닿은 분할선을 한 셀 옮김 (`Tree.resize` — 그쪽 변이 창 가장자리면 반대쪽 분할선). 드래그와 **같은 경로** (`Tree.setSeparatorPx`) 라 규칙도 같다 — 최소 크기에 닿으면 **거부하지 않고 거기서 멈추고** (clamp), **선에 붙은 칸만** 변한다 (아래 분할선 드래그 행, 2026-08-27 결정). 균등은 **같은 축으로 이어진 분할선을 한 줄로 보고 그 줄을 행 · 열 수로 고르게 나눈다** (`Tree.equalize(rect, m)` · `cellsAlong` — 칸 = pane 하나 또는 다른 축으로 갈린 묶음 하나). 비율이 아니라 **셀 수** 로 나누는 이유: 비율만 정하면 픽셀 위치를 `splitGeometry` 가 그때그때 반올림하는데 그 반올림이 트리 중첩을 따라 일어나 같은 4 칸이라도 만든 순서가 다르면 결과가 달랐다 (2026-08-28 실기 — 두 열의 가로선이 26 px 어긋나고 한 열 안 높이가 466 · 505 로 벌어짐). 같은 이유로 `splitGeometry` 의 셀 격자도 앞 자식이 품은 **칸 수** 를 센다 (결정 2 개정 — 중첩된 두 칸이 38 · 37 열 + 남는 11 px 대신 38 · 38 열로 떨어진다). A \| B \| C 는 ⅓ 씩, A \| (B/C) 는 A ½ 에 B · C 가 오른쪽 절반을 위아래 반씩, 2×2 는 ¼ 씩 — tmux · iTerm2 처럼 한 줄에 칸이 여럿인 (n-ary) 분할의 "고르게 펴기" 와 같은 결과 (tmux `even-*` 는 배치를 한 줄로 바꾸는 다른 것). 2026-08-28 결정 ① — 거쳐 온 둘: vim `Ctrl+W =` 식 leaf 수 가중은 A \| (B/C) 에서 A 가 ⅓ 로 줄어 어색했고, 층별 반씩은 A \| B \| C 가 A ½ · B ¼ · C ¼ 라 "셋인데 균등이 아니다" 였다. 메뉴에는 없다 (2026-08-27 — 쓰임이 드물어 단축키만) | `shift+alt+방향키` · `shift+alt+0` | `shift+cmd+방향키` · `shift+cmd+0` | `shift+alt+방향키` · `shift+alt+0` | ✅ | ✅ | ✅ |
@@ -1571,30 +1573,25 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 | Plus | `plus` (이름만 — `+` 는 구분자) | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_PLUS` ⚠️ — US 의 `=+` 키이자 독일어의 `+` 키 |
 | 그 밖의 ASCII symbol | `~` `!` `@` `#` `$` `%` `^` `&` `*` `(` `)` `_` `{` `}` `;` `:` `'` `"` `,` `.` `<` `>` `?` `\` `|` | ❌ | ❌ | — | — | — |
 
-- **기호는 글자와 이름 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다. 이름은 kitty 와 같다 ([`kitty/options/definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py)). 앱의 hotkey 캡처는 `` ` `` 를 `grave` 로, Linux 의 `[` 를 `bracketleft` 로 config 에 쓴다 — 그래서 이름을 빼는 쪽으로는 통일할 수 없었다.
+- **기호는 글자와 이름 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다. 이름은 kitty 와 같다 ([`kitty/options/definition.py`](https://github.com/kovidgoyal/kitty/blob/master/kitty/options/definition.py)). 예전 캡처가 `` ` `` 를 `grave` 로, Linux 의 `[` 를 `bracketleft` 로 config 에 썼다 — 그 config 를 읽어야 해서 이름도 계속 받는다 (#760 부터 캡처는 글자 그대로 적는다).
 - **⚠️ Windows 의 기호 키는 라벨도 위치도 아니다.** `VK_OEM_*` 는 layout DLL 이 배정하는 슬롯이라 배열마다 다른 물리 키로 옮겨 다닌다 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27` — AGENTS.md `# Windows — 키보드 layout 조회 실측 방법`). 대부분의 배열에서는 그 기호가 인쇄된 키지만 보장은 없다. 그런 배열에서는 위치 표기를 쓴다 (CONFIG.md 의 *Symbol keys on Windows*). 프랑스어 AZERTY 의 `VK_OEM_MINUS` · `VK_OEM_PLUS` 자리는 **확인 필요**.
 - **Shift 를 적은 라벨 binding 은 무시프트 값으로도 맞는다** (`lookupAction` 의 `try_unshifted`). 그래서 US 의 `ctrl+shift+=` (키가 낸 글자 `+`) 가 `=` binding 에 맞는다. Windows 는 VK 가 Shift 와 무관해 이 규칙이 필요 없다.
-- **전역 `hotkey` 가 받는 키는 모든 표에 이름이 있어야 한다** — Linux 등록 이름 (`linuxKeysymName`) · KDE (`kglobalaccel.qtKey`) · GNOME · Cinnamon 확장 (`_toAccel`) · 세 OS 의 캡처 표. 하나라도 빠지면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon · sway — `hotkey_format.gtkName`) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다. #693 이전에는 방향키가 Linux 의 모든 표에, `PageUp` · `PageDown` 이 KDE 와 확장 표에, 괄호가 확장 표에 없었다 (확장은 `<Control>pageup` 처럼 GTK 가 모르는 이름을 냈다). `config.zig` 의 #693 테스트가 이 표들을 맞춘다. 채운 뒤의 Linux 데스크톱 실기는 **확인 필요**.
+- **전역 `hotkey` 가 받는 키는 모든 표에 이름이 있어야 한다** — Linux 등록 이름 (`linuxKeysymName`) · KDE (`kglobalaccel.qtKey`) · GNOME · Cinnamon 확장 (`_toAccel`) · 세 OS 의 캡처 (#760 부터 따로 표가 없고 파서 변환을 거꾸로 훑는다). 하나라도 빠지면 그 데스크톱에서 조용히 `F1` 이 되거나 (GNOME · Cinnamon · sway — `hotkey_format.gtkName`) 오류로 끝나거나 (Hyprland · COSMIC) 캡처한 값이 다시 읽히지 않는다. #693 이전에는 방향키가 Linux 의 모든 표에, `PageUp` · `PageDown` 이 KDE 와 확장 표에, 괄호가 확장 표에 없었다 (확장은 `<Control>pageup` 처럼 GTK 가 모르는 이름을 냈다). `config.zig` 의 #693 테스트가 이 표들을 맞춘다. 채운 뒤의 Linux 데스크톱 실기는 **확인 필요**.
 - **❌ 전역 `hotkey` 의 거부**는 데스크톱 등록 이름 (`linuxKeysymName` 등) 을 확인하지 않은 키라서다. 거부는 `LinuxHotkey.fromString` 이 명시로 하고 (#208), config 로드가 그 값을 기본 hotkey 로 바꾸고 시작 안내에 담는다 (위 *잘못된 hotkey 처리* · §7.3). #655 전에는 `dialog.showFatal` 로 알리고 종료했다.
 
-**캡처가 config 에 적는 이름 — 지금은 OS 마다 다르다** ([#760](https://github.com/ensky0/tildaz/issues/760)). hotkey 를 눌러서 정하면 (새 instance 다이얼로그 · hotkey 캡처) [`config.capturedHotkeyText`](src/config.zig) 가 그 키를 글자로 바꿔 config 에 적는다. 같은 함수가 메뉴의 hotkey 표시 (`hotkeyDisplay`) 에도 쓰인다. 위 표는 **받는** 이름이고, 아래는 **적는** 이름이다 (2026-10-13 소스 기준). 파서가 별칭을 다 받고 대소문자를 구분하지 않아 서로 읽히지만, 같은 키가 OS 마다 다른 글자로 남는다.
+**캡처가 config 에 적는 이름 — 세 OS 가 같다** ([#760](https://github.com/ensky0/tildaz/issues/760)). hotkey 를 눌러서 정하면 (새 instance 다이얼로그 · hotkey 캡처) [`config.capturedHotkeyText`](src/config.zig) 가 그 키를 글자로 바꿔 config 에 적는다. 다이얼로그 입력칸에도 같은 글자가 보인다 (2026-10-18 사용자 결정 — 사용자가 config 파일에서 볼 글자와 같게). 위 표는 **받는** 이름이고, 아래는 **적는** 이름이다.
 
-| 키 | Linux (`linuxKeysymName`) | Windows (`windowsVkeyName`) | macOS (`macKeycodeName`) |
-|---|---|---|---|
-| F 키 | `F1` ~ `F12` | `F1` ~ `F12` | `F1` ~ `F12` |
-| 글자 | **소문자** `a` ~ `z` | 대문자 `A` ~ `Z` | 대문자 `A` ~ `Z` |
-| 숫자 | `0` ~ `9` | `0` ~ `9` | `0` ~ `9` |
-| Space · Tab · Return · Escape | `space` `Tab` `Return` `Escape` | 같음 | 같음 |
-| Backtick | `grave` | `grave` | `grave` |
-| Page | **`Page_Up` · `Page_Down`** | `pageup` · `pagedown` | `pageup` · `pagedown` |
-| 방향 | **`Left` `Right` `Up` `Down`** | `left` `right` `up` `down` | `left` `right` `up` `down` |
-| Bracket | **`bracketleft` · `bracketright`** | `[` · `]` | `[` · `]` |
-| 수식키 (적는 순서) | `Ctrl+` `Shift+` `Alt+` `Super+` | `Ctrl+` `Shift+` `Alt+` `Super+` | **`Control+` `Option+` `Shift+` `Command+`** |
+| | 적는 이름 |
+|---|---|
+| 키 | 전부 소문자 — `f1` · `a` · `0` · `space` · `tab` · `escape` · `return` · `pageup` · `pagedown` · `left` `right` `up` `down` |
+| 기호 | 글자 그대로 — `` ` `` · `[` · `]` (`+` 만 `plus` 지만 `[keys]` 전용이라 캡처가 적지 않는다) |
+| 수식키 · 순서 | Linux · Windows `ctrl+` `shift+` `alt+` `super+`, macOS `ctrl+` `shift+` `opt+` `cmd+` |
 
-- **Linux 가 갈리는 이유** — `linuxKeysymName` 은 원래 데스크톱에 등록할 때 쓰는 XKB 이름표인데 (sway · Hyprland · COSMIC 설정, `shortcut_sync/linux.zig`), 캡처도 이 표에서 이름을 가져온다. Windows · macOS 는 캡처용 표가 따로 있다.
-- 캡처 표에 있는 키는 전역 `hotkey` 가 받는 키뿐이다 (위 표의 ✅). `Backspace` · `/` · `=` · `-` · `Plus` 는 `[keys]` 전용이라 캡처가 적지 않는다.
-- **기본 바인딩은 또 다른 모양이다** — 전부 소문자 (`ctrl+shift+t` · `ctrl+pageup` · `cmd+t`, `config.zig` 의 기본값 목록).
-- 세 OS 가 같은 이름을 적게 맞추는 일은 #760 이다.
+- **표는 하나다.** OS 별 표는 키 코드 → 공통 토큰만 하고 (`tokenFromNativeKey` — 파서 쪽 변환 `Hotkey.fromParsed` 를 거꾸로 훑는다), 글자는 공통 표 `hotkeyConfigText` 가 만든다. Linux 의 `linuxKeysymName` 은 데스크톱 등록 (sway · Hyprland · COSMIC) 에만 쓴다. #760 전에는 캡처가 OS 별 표에서 글자를 바로 만들어 같은 키가 OS 마다 달랐다 (Linux `Page_Up` · `bracketleft` · 소문자 글자, Windows · macOS `pageup` · `[` · 대문자 글자, macOS 수식키 `Control+` `Option+` `Command+`).
+- **macOS 는 Mac 자판 이름이다** (`opt` · `cmd`). `cmd` 를 이미 쓰니 Option 도 같은 원칙이다 (2026-10-18 사용자 결정). 파서가 `alt` · `opt` 을, `super` · `cmd` 를 같은 키로 읽으므로 어느 OS 에서 적은 config 든 다른 OS 에서 읽힌다. macOS 기본 바인딩도 `opt+cmd+…` 다.
+- **순서는 ctrl → shift → alt → super** 다. 기본 바인딩이 모두 이 순서다. 화면 표시 (메뉴 · 시작 안내) 는 이 글자가 아니라 `bindingDisplay` 다 — macOS 는 Apple 순서 (`Control` `Option` `Shift` `Cmd`) 로 그린다.
+- 캡처는 적을 글자를 파서로 다시 읽혀 확인한다. 전역 hotkey 로 받을 수 없는 키 (수식키 없는 글자 · Shift 만 · `[keys]` 전용 키) 는 거기서 걸러진다.
+- **예전 별칭은 계속 읽는다** (`Page_Up` · `pgup` · `bracketleft` · `grave` · `Command` · `Control` · `Option` …, 위 표). 사용자가 보는 문서 (CONFIG.md · KEYBINDINGS.md) 에는 대표 이름만 적는다 (2026-10-13 사용자 결정).
 
 **KDE Plasma direct KGlobalAccel** (`kglobalaccel.Client`, #244):
 
