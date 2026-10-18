@@ -540,9 +540,32 @@ fn dialogTextNaturalSize(tv: objc.id, layout_manager: objc.id, text_container: o
 
 const dialog_screen_horizontal_margin_pt: f64 = 96.0;
 
-/// #795 — 가장 긴 줄의 자연 폭을 잴 때 쓰는 "접히지 않을 만큼 넓은" 폭. 본문은 최대 폭
-/// (`DIALOG_MAX_WIDTH_PT`) 을 넘는지만 가리면 되므로 그보다 충분히 크면 된다.
-const dialog_unbounded_measure_w: f64 = 100_000.0;
+extern "AppKit" const NSFontAttributeName: objc.id;
+
+/// #795 — 본문에서 가장 긴 줄의 폭 (줄 조각 여백 · 안쪽 여백 포함). 본문 보기 (`NSTextView`) 의
+/// 레이아웃에서 읽지 않고 줄마다 같은 글꼴로 직접 잰다. `usedRectForTextContainer:` 는 본문이
+/// `\n` 으로 끝나면 컨테이너 폭 전체를 돌려주고, 처음 잴 때도 한 번 그랬다 (2026-10-19 · macOS
+/// 27.0.1 실측 — 시작 안내 · About 이 늘 기본 폭에서 접혔고, 짧은 확인창은 하한까지 안 좁아졌다).
+fn dialogLongestLineWidth(body: []const u8, font: objc.id, tv: objc.id, text_container: objc.id) f64 {
+    // 글꼴이 없으면 잴 수 없다 — 최대 폭보다 큰 값을 돌려 기본 폭에서 접게 한다 (`dialog_fit` 규칙 2).
+    if (font == null) return std.math.floatMax(f64);
+    const NSDictionary = objc.getClass("NSDictionary");
+    const dictWith = objc.objcSend(fn (objc.Class, objc.SEL, objc.id, objc.id) callconv(.c) objc.id);
+    const attrs = dictWith(NSDictionary, objc.sel("dictionaryWithObject:forKey:"), font, NSFontAttributeName);
+    const sizeWith = objc.objcSend(fn (objc.id, objc.SEL, objc.id) callconv(.c) NSAlertSize);
+    var longest: f64 = 0;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const text = nsStringFromSlice(line) orelse continue;
+        longest = @max(longest, sizeWith(text, objc.sel("sizeWithAttributes:"), attrs).w);
+    }
+    const getFloat = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const padding = if (text_container != null) getFloat(text_container, objc.sel("lineFragmentPadding")) else 0;
+    const getSize = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSAlertSize);
+    const inset = getSize(tv, objc.sel("textContainerInset"));
+    return @ceil(longest + padding * 2.0 + inset.w * 2.0);
+}
 
 /// #795 — 세 OS 공통 하한 (`ui_metrics`). 예전에는 호출부마다 320 · 360 리터럴이었다.
 const dialog_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_MIN_WIDTH_PT);
@@ -825,9 +848,9 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     setDocument(scroll, objc.sel("setDocumentView:"), tv);
 
     // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 AppKit 의 값만
-    // 넘긴다 — 아주 넓은 폭에서 잰 가장 긴 줄 (경계에서 접히지 않게 4pt 여유), 그리고 그 폭에서
-    // 접은 높이. NSScrollView 는 scroller 를 켜면 스스로 content 폭을 줄이므로 `scrollbar_w` 는 0
-    // 이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
+    // 넘긴다 — 줄마다 잰 가장 긴 줄 (`dialogLongestLineWidth`, 경계에서 접히지 않게 4pt 여유), 그리고
+    // 그 폭에서 접은 높이. NSScrollView 는 scroller 를 켜면 스스로 content 폭을 줄이므로
+    // `scrollbar_w` 는 0 이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
     const minimum_size = NSAlertSize{ .w = min_accessory_w, .h = initial_body_h };
     const measurer = struct {
         scroll: objc.id,
@@ -836,18 +859,11 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         text_container: objc.id,
         viewport_h: f64,
         minimum: NSAlertSize,
+        body: []const u8,
+        font: objc.id,
 
         pub fn naturalWidth(self: @This()) f64 {
-            const unbounded = measureDialogBodyAtWidth(
-                self.scroll,
-                self.tv,
-                self.layout_manager,
-                self.text_container,
-                dialog_unbounded_measure_w,
-                self.viewport_h,
-                .{ .w = 0, .h = self.minimum.h },
-            );
-            return unbounded.w + 4.0;
+            return dialogLongestLineWidth(self.body, self.font, self.tv, self.text_container) + 4.0;
         }
 
         pub fn wrappedHeight(self: @This(), width: f64) f64 {
@@ -868,6 +884,8 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         .text_container = text_container,
         .viewport_h = max_accessory_h,
         .minimum = minimum_size,
+        .body = body,
+        .font = font,
     };
     const fitted = dialog_fit.fit(f64, measurer, .{
         .min_w = min_accessory_w,
