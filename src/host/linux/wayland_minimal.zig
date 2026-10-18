@@ -1335,6 +1335,12 @@ const Client = struct {
     /// `dialog.showConfirm` 의 inner pump 가 `dispatchBuffered` 의 reentrant
     /// context 안에서 호출되면 안 됨 (deferred dismiss 와 동일 reentrancy 위험).
     pending_quit_request: bool = false,
+    /// #760 — `hidden_start` 의 첫 show 를 미뤄 둔 표시. 토글은 이벤트 처리 (`pollAndDispatch`)
+    /// 안에서 오는데 첫 창 띄우기 (`showInitialWindow`) 는 configure 를 기다리며 다시 이벤트를
+    /// 처리한다. 그 안에서 부르면 재진입이라, 메인 루프가 바깥에서 부른다 (`drainInitialShow`).
+    pending_initial_show: bool = false,
+    /// 첫 창을 띄우는 중. 그 사이 들어온 토글은 무시한다 — 띄우는 도중에 숨기기가 끼면 창 상태가 어긋난다.
+    initial_show_running: bool = false,
     /// #87 — Alt+Enter / Shift+Alt+Enter fullscreen 상태. hide 가 건드리지 않아
     /// F1 hide→show 시 그대로 복원된다 (Win `Window.fullscreen_mode` 동등).
     /// layer-shell 계열에서만 동작 — xdg fallback(GNOME/Cinnamon)은 별도(#87).
@@ -2137,19 +2143,7 @@ const Client = struct {
             log.appendLine("startup", "hidden_start — surface deferred until first hotkey toggle", .{});
             self.logBootElapsed("ready (hidden_start, awaiting first hotkey)");
         } else {
-            try self.bringUpInitialSurface();
-            self.logBootElapsed("first configure");
-            try self.ensureSessionGrid();
-            self.logBootElapsed("session+PTY");
-            _ = try self.redraw();
-            self.logBootElapsed("first frame");
-
-            log.appendLine("linux", "Wayland terminal window mapped", .{});
-            // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
-            // (`sway_ipc.moveWindowIfSway` 주석). gate 는 `is_sway` (peer PID 비교) —
-            // 함수 내부의 SWAYSOCK 존재 확인만 믿으면 stale 변수가 남은 세션에서
-            // 무의미한 IPC 가 나가고, 응답 없는 소켓이면 map 직후 hang 이다.
-            if (self.is_sway) sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
+            try self.showInitialWindow(.boot);
         }
 
         // #304 — listener만 먼저 열린 시점이 아니라 Wayland globals, 입력,
@@ -2246,6 +2240,9 @@ const Client = struct {
             self.drainExitedTabs();
             // KGlobalAccel Pressed / NameOwnerChanged D-Bus signal dispatch.
             self.dispatchDbusMessages();
+            // #760 — hidden_start 의 첫 show. 위의 토글 경로 (소켓 · D-Bus) 가 세운 표시를 이벤트 처리
+            // 밖에서 처리한다.
+            self.drainInitialShow();
             // L12-γ-5 — Wayland client-side key repeat timer 검사.
             try self.maybeRepeatKey();
             // #245 — drag-select auto-scroll tick (포인터가 grid 경계 밖에 머물면 연속).
@@ -3682,6 +3679,44 @@ const Client = struct {
     /// destroy + 재생성으로 재시도하고, 상한(3회)을 넘기면 정직하게 안내(showError,
     /// host overlay 또는 stderr fallback) 후 실패를 반환한다. (a)가 정상 동작하면
     /// 재시도 분기는 거의 타지 않는 순수 안전망이다.
+    /// 창을 처음 띄운다 — 창 · 첫 configure · 터미널 세션 · 첫 그림 · (sway) 위치. 시작할 때와
+    /// `hidden_start` 의 첫 show 가 **이 함수 하나**를 쓴다.
+    ///
+    /// 예전에는 첫 show 가 `createShellObjects` 만 하고 세션 생성을 configure 처리기에 맡겼다.
+    /// 그 처리기가 창 방식 (layer-shell · `xdg_toplevel`) 마다 따로라, `8d62efb` 가 layer-shell
+    /// 쪽만 고친 뒤로 sway (`xdg_toplevel`, #454) 에서 같은 증상이 남았다 — 창은 토글되는데 셸이
+    /// 없어 비어 있었다 (2026-10-18 실제 sway 세션, #760). 숨김 시작은 보통 시작을 미룬 것뿐이라
+    /// 같은 길을 타게 했다. configure 처리기는 이제 이미 있는 세션의 크기만 맞춘다.
+    const InitialShow = enum { boot, first_toggle };
+    fn showInitialWindow(self: *Client, comptime phase: InitialShow) !void {
+        const logPhase = if (phase == .boot) logBootElapsed else logShowElapsed;
+        try self.bringUpInitialSurface();
+        logPhase(self, "first configure");
+        try self.ensureSessionGrid();
+        logPhase(self, "session+PTY");
+        _ = try self.redraw();
+        logPhase(self, "first frame");
+
+        log.appendLine("linux", "Wayland terminal window mapped", .{});
+        // #454 — sway 는 크기를 `for_window` 가 잡고 **위치는 map 후**에 준다
+        // (`sway_ipc.moveWindowIfSway` 주석). gate 는 `is_sway` (peer PID 비교) —
+        // 함수 내부의 SWAYSOCK 존재 확인만 믿으면 stale 변수가 남은 세션에서
+        // 무의미한 IPC 가 나가고, 응답 없는 소켓이면 map 직후 hang 이다.
+        if (self.is_sway) sway_ipc.moveWindowIfSway(self.rt, self.allocator, self.config);
+    }
+
+    fn drainInitialShow(self: *Client) void {
+        if (!self.pending_initial_show) return;
+        self.pending_initial_show = false;
+        self.initial_show_running = true;
+        defer self.initial_show_running = false;
+        self.showInitialWindow(.first_toggle) catch |err| {
+            log.appendLine("toggle", "first window (hidden_start) failed: {s}", .{@errorName(err)});
+            return;
+        };
+        log.appendLine("toggle", "show — first window (hidden_start)", .{});
+    }
+
     fn bringUpInitialSurface(self: *Client) !void {
         const max_attempts: u8 = 3;
         var attempt: u8 = 0;
@@ -5968,15 +6003,11 @@ const Client = struct {
                         &.{ w, h },
                     );
                 }
-                // hidden_start=true 의 첫 toggle show — handleActivatedToggle 가
-                // createShellObjects 만 하고 session 생성은 안 함. 이전 guard
-                // `if (self.session != null)` 가 첫 configure 에서 ensureSessionGrid
-                // 를 skip 시켜 session 이 영영 안 만들어졌음 (사용자가 fillBuffer
-                // gradient 만 봄). ensureSessionGrid 는 idempotent (session 존재
-                // 시 resize, null 시 create) — guard 없이 호출 안전.
-                try self.ensureSessionGrid();
+                // 이미 있는 세션의 크기만 맞춘다. 세션은 `showInitialWindow` 가 만든다 —
+                // `xdg_toplevel` 처리기와 같은 규칙이다 (#760).
+                if (self.session != null) try self.ensureSessionGrid();
                 self.configured = true;
-                self.logShowElapsed("first configure+session");
+                self.logShowElapsed("configure");
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
                 // 인 경우도 redraw — hide 후 re-map sequence 의 첫 attach.
                 if (self.mapped or !self.surface_hidden) self.requestRedraw();
@@ -9256,6 +9287,10 @@ const Client = struct {
     ///
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
+        if (self.pending_initial_show or self.initial_show_running) {
+            log.appendLineVerbose("toggle", "ignored — the first window is still coming up (#760)", .{});
+            return;
+        }
         if (self.surface_hidden) {
             log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
@@ -9263,13 +9298,13 @@ const Client = struct {
             // 발생하므로 그 site 에 별도 logShowElapsed.
             self.show_timer = .start(self.rt);
             self.surface_hidden = false;
-            // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 surface 아직
-            // 안 만들어졌으므로 full create. 이후 hide/show cycle 은 unmap/remap
+            // 첫 show (hidden_start=true 의 첫 hotkey activation) 면 세션도 surface 도
+            // 아직 없으므로 보통 시작과 같은 `showInitialWindow`. 이후 hide/show cycle 은 unmap/remap
             // path (#205 — wl_surface + layer_surface 유지가 ~165ms → ~16ms 줄임,
             // KWin Bug 503121 의 kitty workaround pattern).
             // #454 — sway 는 surface 를 유지한 채 scratchpad 로 숨겼다. 그래서 show 도
             // 재생성이 아니라 scratchpad 에서 꺼내는 것이다 (`sway_ipc.showFromScratchpad`).
-            // 첫 show (hidden_start) 는 아직 surface 가 없으므로 아래 create 로 간다.
+            // 첫 show (hidden_start) 는 아직 surface 가 없으므로 아래 `showInitialWindow` 로 간다.
             if (self.is_sway and self.surface_id != 0) {
                 // #454 — sway 는 scratchpad 로 옮기는 순간 fullscreen 을 해제한다 (실기
                 // 확인 — hide 중 트리의 fullscreen_mode 가 0 으로 떨어짐). 앱의
@@ -9297,10 +9332,14 @@ const Client = struct {
                 log.appendLineVerbose("toggle", "show — scratchpad show (#454 sway)", .{});
                 return;
             }
-            if (self.surface_id == 0) {
+            if (self.session == null) {
+                // hidden_start 의 첫 show — 보통 시작과 같은 길 (`showInitialWindow` 주석). 이벤트
+                // 처리 밖에서 띄운다 (`pending_initial_show` 주석).
+                self.pending_initial_show = true;
+            } else if (self.surface_id == 0) {
                 try self.createShellObjects();
-                self.logShowElapsed("createShellObjects (first show)");
-                log.appendLine("toggle", "show — created shell objects (first)", .{});
+                self.logShowElapsed("createShellObjects (recreate)");
+                log.appendLineVerbose("toggle", "show — recreated shell objects", .{});
             } else {
                 try self.remapShellObjects();
                 self.logShowElapsed("remapShellObjects");
