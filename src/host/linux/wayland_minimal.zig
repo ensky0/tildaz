@@ -4051,6 +4051,14 @@ const Client = struct {
         try self.sendLayerSurfaceLayout(false);
     }
 
+    /// #790 — 세션이 아직 없고, `showInitialWindow` 가 `-size` 요청 격자를 담은 configure 를
+    /// 기다리며 세션 생성을 미뤄 둔 상태. `grid_wait_configures` 는 아래 기다림 갈래에서만 오르고
+    /// (`run_opts.grid` 가 있을 때뿐), 세션이 생기는 호출에서 0 으로 돌아가거나 상한에서 멈춘 채
+    /// 세션이 생긴다 — 그래서 `session == null` 과 함께 보면 이 상태와 정확히 같다.
+    fn sessionAwaitsGrid(self: *const Client) bool {
+        return self.session == null and self.grid_wait_configures > 0;
+    }
+
     fn ensureSessionGrid(self: *Client) !void {
         const grid = self.gridSize();
         // #382 — 측정 모드는 격자를 `-size` 로 **고정한다.** 창 크기에서 뽑은 `gridSize()` 를
@@ -6013,7 +6021,11 @@ const Client = struct {
                 }
                 // 이미 있는 세션의 크기만 맞춘다. 세션은 `showInitialWindow` 가 만든다 —
                 // `xdg_toplevel` 처리기와 같은 규칙이다 (#760).
-                if (self.session != null) try self.ensureSessionGrid();
+                // #790 — 예외 하나. `showInitialWindow` 가 `-size` 격자를 기다리며 세션을 미뤘으면
+                // (`sessionAwaitsGrid`) 그 기다림은 여기서만 끝난다 — 요청 격자를 담은 configure 가
+                // 이 처리기로 온다. `-size` 는 layer-shell 에서만 허용돼서 (`guardLayerShellForGrid`)
+                // `xdg_toplevel` 처리기에는 이 예외가 필요 없다.
+                if (self.session != null or self.sessionAwaitsGrid()) try self.ensureSessionGrid();
                 self.configured = true;
                 self.logShowElapsed("configure");
                 // mapped 면 단순 redraw. unmapped + show 대기 (surface_hidden=false)
@@ -9339,7 +9351,10 @@ const Client = struct {
     ///
     /// → 모든 compositor 일관 동작 위해 destroy + recreate 정공 채택.
     fn handleActivatedToggle(self: *Client) !void {
-        if (self.pending_initial_show or self.initial_show_running) {
+        // #790 — `-size` 격자를 기다리는 중 (`sessionAwaitsGrid`) 도 첫 창이 뜨는 중이다. 아래
+        // `session == null` 갈래가 그 상태를 숨김 시작의 첫 show 로 읽어 `showInitialWindow` 를 한 번
+        // 더 타지 않게 막는다.
+        if (self.pending_initial_show or self.initial_show_running or self.sessionAwaitsGrid()) {
             log.appendLineVerbose("toggle", "ignored — the first window is still coming up (#760)", .{});
             return;
         }
