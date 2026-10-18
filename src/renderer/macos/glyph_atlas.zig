@@ -18,6 +18,7 @@ const std = @import("std");
 const ct = @import("../../font/macos/coretext.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const atlas_common = @import("../glyph_atlas_common.zig");
+const synthetic = @import("../../font/synthetic.zig");
 const log = @import("../../log.zig");
 
 /// atlas 텍스처의 **처음** 한 변 (px). 차면 `grow` 가 두 배로 키운다 (#584 ②).
@@ -147,11 +148,13 @@ pub const GlyphAtlas = struct {
         glyph_index: ct.CGGlyph,
         /// #762 — 터미널 폰트인지 탭바 폰트인지. 두 폰트가 이 atlas 하나를 쓴다.
         source: atlas_common.GlyphSource,
+        /// #759 — 합성 bold 로 굵혀 그린다. 키는 `font_id` 가 이미 가른다 (`synthetic.mixId`).
+        bold: bool,
     ) ?AtlasEntry {
         const key = GlyphKey{ .font_id = font_id, .index = glyph_index, .source = source };
         if (self.cache.get(key)) |entry| return entry;
 
-        const entry = self.rasterize(font, glyph_index) orelse return null;
+        const entry = self.rasterize(font, glyph_index, bold) orelse return null;
         self.cache.put(key, entry) catch return null;
         return entry;
     }
@@ -182,7 +185,7 @@ pub const GlyphAtlas = struct {
         source: atlas_common.GlyphSource,
     ) ?AtlasEntry {
         if (glyphs.len == 0) return null;
-        if (glyphs.len == 1) return self.getOrInsert(font, font_id, glyphs[0], source);
+        if (glyphs.len == 1) return self.getOrInsert(font, font_id, glyphs[0], source, false);
 
         // 키는 글리프 인덱스들의 해시 + **폰트 id** 다. 같은 인덱스 조합이면 결과가 같다
         // (positions 는 그 조합에서 결정되므로 키에 안 넣는다).
@@ -500,7 +503,7 @@ pub const GlyphAtlas = struct {
         };
     }
 
-    fn rasterize(self: *GlyphAtlas, font: ct.CTFontRef, glyph_index: ct.CGGlyph) ?AtlasEntry {
+    fn rasterize(self: *GlyphAtlas, font: ct.CTFontRef, glyph_index: ct.CGGlyph, bold: bool) ?AtlasEntry {
         const glyphs = [1]ct.CGGlyph{glyph_index};
         var bounding_rect: ct.CGRect = undefined;
         _ = ct.CTFontGetBoundingRectsForGlyphs(
@@ -515,6 +518,18 @@ pub const GlyphAtlas = struct {
         // 같은 RGBA path 로 그리지만 셰이더 분기를 위해 entry 에 플래그 저장.
         const traits = ct.CTFontGetSymbolicTraits(font);
         const is_color = (traits & ct.kCTFontTraitColorGlyphs) != 0;
+
+        // #759 — 합성 bold. 외곽선을 선 두께만큼 덧그리면 (`kCGTextFillStroke`) 획이 그만큼 넓어진다
+        // (양쪽에 반씩). 두께는 글꼴 크기 (pt) 의 1/50 — 아래 CTM 이 pt 를 px 로 키우므로 화면에서
+        // em/50 px 이다. 그림 상자도 그만큼 키운다 (Ghostty `face/coretext.zig` 와 같은 처리).
+        // 컬러 비트맵 글리프는 외곽선이 없어 굵히지 않는다.
+        const stroke_pt: ct.CGFloat = if (bold and !is_color) ct.CTFontGetSize(font) * synthetic.embolden_per_em else 0;
+        if (stroke_pt > 0) {
+            bounding_rect.origin.x -= stroke_pt / 2;
+            bounding_rect.origin.y -= stroke_pt / 2;
+            bounding_rect.size.width += stroke_pt;
+            bounding_rect.size.height += stroke_pt;
+        }
 
         // 글리프 advance (pt) → 물리 px. 셀 영역 가운데 정렬용 (#299).
         var adv_size = [1]ct.CGSize{.{ .width = 0, .height = 0 }};
@@ -585,6 +600,11 @@ pub const GlyphAtlas = struct {
         // 흰색 opaque fill — 일반 글리프엔 흰색 antialiased 마스크가 그려짐.
         // 컬러 글리프는 이 색깔 무시되고 SBIX bitmap 의 본래 색이 들어감.
         ct.CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+        if (stroke_pt > 0) {
+            ct.CGContextSetRGBStrokeColor(ctx, 1, 1, 1, 1);
+            ct.CGContextSetTextDrawingMode(ctx, ct.kCGTextFillStroke);
+            ct.CGContextSetLineWidth(ctx, stroke_pt);
+        }
 
         // CTM scale = Retina factor. bitmap 은 gw x gh pixel 인데
         // CTFontDrawGlyphs 는 point 좌표로 그리므로 scale 보정 없으면 글리프가

@@ -10,6 +10,7 @@ const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
 const presentation = @import("../presentation.zig");
+const synthetic = @import("../synthetic.zig");
 const Presentation = presentation.Presentation;
 const atlas_common = @import("../../renderer/glyph_atlas_common.zig");
 const font_spec = @import("../spec.zig");
@@ -72,7 +73,15 @@ pub const GlyphResult = struct {
     ///
     /// 0 이면 모르는 것이고, atlas 가 단일 글리프 advance 로 물러선다.
     advance: f32 = 0,
+
+    /// #759 — 그릴 때 외곽선을 덧그려 굵힌다 (합성 bold). 굵은 파일이 없는 글꼴의 변종에만 붙는다
+    /// (`CoreTextFontContext.styled_bold`). 합성 기울임은 글꼴 자체 (변환 행렬을 준 사본) 에 들어
+    /// 있어 표시가 필요 없다. 저장소 키는 `font_id` 가 가른다 (`synthetic.mixId`).
+    bold: bool = false,
 };
+
+/// #759 — regular chain 의 합성 bold 표시 (늘 거짓). 조각을 돌려주므로 파일 수준에 둔다.
+const no_bold = [_]bool{false} ** MAX_FALLBACK_FONTS;
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
 ///
@@ -257,14 +266,17 @@ pub const CoreTextFontContext = struct {
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `fallback_fonts` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
-    /// **해당 트레이트 face 가 없는 family 는 regular face 를 retain 해서 넣는다** —
-    /// 조회가 언제나 성공하므로 호출부에 "없으면 regular" 분기를 두지 않아도 된다
-    /// (synthetic 은 만들지 않는다는 결정의 자연스러운 귀결).
+    /// **해당 트레이트 face 가 없는 family 는 합성한다** (#759 — 예전에는 regular 를 그대로 넣었다).
+    /// 기울임은 변환 행렬을 준 사본 글꼴이 여기 들어가고, 굵기는 `styled_bold` 가 그릴 때 덧그린다.
+    /// 조회가 언제나 성공하므로 호출부에 "없으면 regular" 분기를 두지 않아도 된다.
     styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef,
     /// #584 — `styled_fonts` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Menlo-Bold` vs
     /// `Menlo-Regular`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
     styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
         .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
+    /// #759 — `styled_fonts` 를 그릴 때 합성 bold 로 굵힐지. `chainFor` 와 같은 순서다.
+    styled_bold: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]bool =
+        .{.{false} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
     /// platform 별이다.
@@ -297,6 +309,12 @@ pub const CoreTextFontContext = struct {
     fn chainIdFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const u64 {
         if (style == .regular) return self.fallback_font_id[0..self.fallback_count];
         return self.styled_font_id[style.index() - 1][0..self.fallback_count];
+    }
+
+    /// #759 — `chainFor` 와 같은 순서의 합성 bold 표시. regular 는 늘 거짓이다.
+    fn chainBoldFor(self: *const CoreTextFontContext, style: font_constants.FaceStyle) []const bool {
+        if (style == .regular) return no_bold[0..self.fallback_count];
+        return self.styled_bold[style.index() - 1][0..self.fallback_count];
     }
 
     pub fn init(
@@ -471,20 +489,25 @@ pub const CoreTextFontContext = struct {
 
         // #375 — 변종 chain. `CTFontCreateCopyWithSymbolicTraits` 는 해당 face 가
         // 없으면 null 을 주므로, 그 결과가 곧 "이 family 에 bold / italic 이 있나" 의
-        // 답이다. 없으면 regular 를 retain 해 넣어 조회가 언제나 성공하게 한다.
+        // 답이다. 없으면 합성한다 (#759 — `styledCopy`). 조회가 언제나 성공한다.
         var styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
         // #584 — 폰트 id 도 여기서 한 번만 구한다. atlas 키가 주소 대신 이 값을 쓴다.
         var fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS;
         var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
             .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
+        var styled_bold: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]bool =
+            .{.{false} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
         for (fallback_fonts[0..fallback_count], 0..) |base, i| {
             fallback_font_id[i] = fontIdOf(base);
         }
         inline for ([_]font_constants.FaceStyle{ .bold, .italic, .bold_italic }) |fs| {
             const slot = fs.index() - 1;
             for (fallback_fonts[0..fallback_count], 0..) |base, i| {
-                styled_fonts[slot][i] = styledCopy(base, spec.size_logical, fs);
-                styled_font_id[slot][i] = fontIdOf(styled_fonts[slot][i]);
+                const styled = styledCopy(base, spec.size_logical, fs);
+                styled_fonts[slot][i] = styled.font;
+                styled_bold[slot][i] = styled.synth.bold;
+                // #759 — 합성한 사본은 PostScript 이름이 regular 와 같아 id 에 합성 여부를 섞는다.
+                styled_font_id[slot][i] = synthetic.mixId(fontIdOf(styled.font), styled.synth);
             }
         }
 
@@ -502,6 +525,7 @@ pub const CoreTextFontContext = struct {
             .fallback_count = fallback_count,
             .styled_fonts = styled_fonts,
             .styled_font_id = styled_font_id,
+            .styled_bold = styled_bold,
             .ligature_cache = ligature.Cache.init(allocator),
             .cluster_cache = cluster_cache.ClusterCache(GlyphResult, releaseCluster).init(allocator),
         };
@@ -531,17 +555,55 @@ pub const CoreTextFontContext = struct {
         }
     }
 
-    /// #375 — 같은 family 의 변종 face. 없으면 `base` 를 retain 해 돌려준다
-    /// (호출부가 소유권을 일관되게 다루도록 — 어느 쪽이든 `CFRelease` 한 번).
-    fn styledCopy(base: ct.CTFontRef, size_logical: f32, style: font_constants.FaceStyle) ct.CTFontRef {
-        var traits: u32 = 0;
-        if (style.isBold()) traits |= ct.kCTFontTraitBold;
-        if (style.isItalic()) traits |= ct.kCTFontTraitItalic;
-        const mask = ct.kCTFontTraitBold | ct.kCTFontTraitItalic;
-        if (ct.CTFontCreateCopyWithSymbolicTraits(base, @floatCast(size_logical), null, traits, mask)) |f| {
-            return f;
+    /// #375 · #759 — 같은 family 의 변종 face 와, 그 위에 할 합성. 언제나 글꼴 하나를 돌려준다
+    /// (retain 했거나 새로 만든 것 — 호출부는 어느 쪽이든 `CFRelease` 한 번).
+    ///
+    /// 진짜 파일을 먼저 찾고, 없는 스타일만 합성한다. Bold+Italic 은 Bold 파일이 있으면 그 위에
+    /// 기울임만, Italic 파일만 있으면 그 위에 굵기만 합성한다. 기울임은 [`synthetic.slant`] 를 준
+    /// 사본 글꼴로 만든다 (CoreText 의 y 는 위로 커서 `c` 가 양수면 위가 오른쪽으로 간다 —
+    /// Ghostty `syntheticItalic` 과 같은 방식). 사본을 못 만들면 기울이지 않는다.
+    const Styled = struct { font: ct.CTFontRef, synth: synthetic.Synthetic };
+
+    fn styledCopy(base: ct.CTFontRef, size_logical: f32, style: font_constants.FaceStyle) Styled {
+        const want_bold = style.isBold();
+        const want_italic = style.isItalic();
+        if (traitCopy(base, size_logical, want_bold, want_italic)) |f| return .{ .font = f, .synth = .{} };
+
+        var font: ct.CTFontRef = undefined;
+        var synth: synthetic.Synthetic = .{ .bold = want_bold, .italic = want_italic };
+        if (want_bold and want_italic) {
+            if (traitCopy(base, size_logical, true, false)) |f| {
+                font = f;
+                synth.bold = false;
+            } else if (traitCopy(base, size_logical, false, true)) |f| {
+                font = f;
+                synth.italic = false;
+            } else {
+                font = @ptrCast(ct.CFRetain(base));
+            }
+        } else {
+            font = @ptrCast(ct.CFRetain(base));
         }
-        return @ptrCast(ct.CFRetain(base));
+
+        if (synth.italic) {
+            const skew = ct.CGAffineTransform{ .a = 1, .b = 0, .c = synthetic.slant, .d = 1, .tx = 0, .ty = 0 };
+            if (ct.CTFontCreateCopyWithAttributes(font, 0.0, &skew, null)) |slanted| {
+                ct.CFRelease(font);
+                font = slanted;
+            } else {
+                synth.italic = false;
+            }
+        }
+        return .{ .font = font, .synth = synth };
+    }
+
+    /// 같은 family 에서 요청한 트레이트 (bold · italic) 를 **정확히** 가진 face. 없으면 `null`.
+    fn traitCopy(base: ct.CTFontRef, size_logical: f32, bold: bool, italic: bool) ?ct.CTFontRef {
+        var traits: u32 = 0;
+        if (bold) traits |= ct.kCTFontTraitBold;
+        if (italic) traits |= ct.kCTFontTraitItalic;
+        const mask = ct.kCTFontTraitBold | ct.kCTFontTraitItalic;
+        return ct.CTFontCreateCopyWithSymbolicTraits(base, @floatCast(size_logical), null, traits, mask);
     }
 
     /// grapheme cluster (base + extras) 통째 shape → 첫 run 의 첫 glyph 반환.
@@ -1208,13 +1270,14 @@ pub const CoreTextFontContext = struct {
         // 1. chain 순회 — 글리프 가진 첫 폰트 사용. 모양을 요청했으면 그 모양의 첫 폰트.
         const chain = self.chainFor(style);
         const chain_ids = self.chainIdFor(style);
+        const chain_bold = self.chainBoldFor(style);
         // 모양과 무관하게 처음 찾은 글리프 — 요청한 모양이 어디에도 없을 때의 답이다.
         var first: ?GlyphResult = null;
         for (chain, 0..) |f, ci| {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    const r: GlyphResult = .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci] };
+                    const r: GlyphResult = .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci], .bold = chain_bold[ci] };
                     const w = want orelse return r;
                     if (fontPresentation(f) == w) return r;
                     if (first == null) first = r;

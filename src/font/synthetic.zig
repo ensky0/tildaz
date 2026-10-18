@@ -40,6 +40,30 @@ pub fn emboldenPx(em_px: f64) f64 {
     return em_px * embolden_per_em;
 }
 
+/// 저장소 (atlas) 키의 글꼴 id 에 합성 여부를 섞는다. 합성한 글꼴은 regular 와 이름 (PostScript)
+/// 이 같아서, 섞지 않으면 기울인 그림과 똑바른 그림이 한 칸을 나눠 쓴다 — Windows 가
+/// [#749](https://github.com/ensky0/tildaz/issues/749) 에서 겪은 결함이다. 합성이 없으면 값이 그대로다.
+pub fn mixId(id: u64, s: Synthetic) u64 {
+    if (id == 0 or !s.any()) return id;
+    var h = id;
+    for ([_]u8{ '+', 's', 'y', 'n', @as(u8, @as(u2, @bitCast(s))) }) |b| {
+        h ^= @as(u64, b);
+        h *%= 0x100000001b3;
+    }
+    return h;
+}
+
+test "mixId — 합성이 없으면 그대로, 있으면 종류마다 갈린다" {
+    const base: u64 = 0x1234_5678_9abc_def0;
+    try std.testing.expectEqual(base, mixId(base, .{}));
+    const b = mixId(base, .{ .bold = true });
+    const i = mixId(base, .{ .italic = true });
+    const bi = mixId(base, .{ .bold = true, .italic = true });
+    try std.testing.expect(b != base and i != base and bi != base);
+    try std.testing.expect(b != i and b != bi and i != bi);
+    try std.testing.expectEqual(@as(u64, 0), mixId(0, .{ .italic = true }));
+}
+
 test "기울기는 0.2 — 11.3° 다" {
     const deg = std.math.atan(slant) * 180.0 / std.math.pi;
     try std.testing.expectApproxEqAbs(@as(f64, 11.31), deg, 0.01);
