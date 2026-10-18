@@ -1601,8 +1601,9 @@ ls /run/user/$(id -u)/tildaz-dev/run/                                    # insta
 
 **Shift 와 기호를 함께 적은 hotkey (`ctrl+shift+]`) 도 데스크톱마다 갈려요** ([#760](https://github.com/ensky0/tildaz/issues/760)).
 KDE 는 Shift 를 글자에 접어서 봐요 — `Ctrl+Shift+]` 로 등록하면 실제 키에 안 맞고 `Ctrl+}` 여야 맞았어요 (2026-10-18
-실측). sway 는 키 자리로 등록해서 그대로 맞았어요. 다른 데스크톱은 [`tool/shift-hotkey-check_linux.sh`](tool/shift-hotkey-check_linux.sh)
-를 그 세션에서 돌려 재요 — 실제 dev config 폴더에 `config_9.toml` 하나를 두고 uinput 으로 눌러 앱 로그로 판정한 뒤 다
+실측). 그래서 KDE 등록만 보정해요 (SPEC §7.1). sway · Hyprland · GNOME · Cinnamon · COSMIC · Windows · macOS 는
+그대로 맞았어요 — 모두 실제 세션에서 쟀어요. 다시 잴 때는 [`tool/shift-hotkey-check_linux.sh`](tool/shift-hotkey-check_linux.sh)
+를 그 세션에서 돌려요 — 실제 dev config 폴더에 `config_9.toml` 하나를 두고 uinput 으로 눌러 앱 로그로 판정한 뒤 다
 지워요. 맨 앞의 대조군 `ctrl+alt+]` 가 토글되지 않으면 나머지 결과는 믿지 않아요.
 
 - **시작 안내 다이얼로그가 회차를 망쳐요.** 키가 빠진 config 로 띄우면 안내 다이얼로그가 layer-shell `exclusive` 로

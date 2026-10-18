@@ -1565,9 +1565,10 @@ const Client = struct {
     // KGlobalAccel filter 안에서는 Wayland roundtrip을 시작하지 않는다. Pressed
     // callback은 이 flag만 세우고 main loop가 D-Bus dispatch 반환 뒤 toggle한다.
     kglobalaccel_toggle_pending: bool = false,
-    /// #496 1-c — KDE 에 지금 등록돼 있는 keysym (위치 표기 hotkey 일 때만 쓴다).
-    /// layout 이 바뀌었는지 비교하는 기준이라 0 은 "아직 등록 안 함" 이다.
-    kde_position_keysym: u32 = 0,
+    /// #496 1-c · #760 — keymap 으로 풀어 KDE 에 등록한 keysym 과 수식키 (`kdeNeedsKeymap` 인
+    /// hotkey 일 때만 쓴다). layout 이 바뀌었는지 비교하는 기준이라 keysym 0 은 "아직 등록 안 함" 이다.
+    kde_keymap_keysym: u32 = 0,
+    kde_keymap_modifiers: u32 = 0,
     /// #496 1-c — COSMIC RON 에 지금 쓰여 있는 keysym. KDE 쪽과 같은 역할이다.
     cosmic_position_keysym: u32 = 0,
     /// #510 — **기동 시** 전역 hotkey 를 못 잡았다는 기록.
@@ -2015,8 +2016,10 @@ const Client = struct {
         // `keyboard ready` roundtrip 뒤로 미루는데, 그 자리는 `hidden_at_start` 판단보다
         // **앞이라** 동작이 달라지지 않는다 — 미룬 등록이 늦어 `has_kde_hotkey` 가 false
         // 로 읽히면 숨은 채 시작해야 할 창이 뜬다.
-        if (!self.run_opts.isStressRun() and self.config.hotkey.code == null)
-            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, null);
+        // #760 — Shift 와 기호 · 숫자를 함께 적은 hotkey 도 미룬다. KDE 는 Shift 를 글자에 접어
+        // 보므로 그 키를 Shift 로 누른 글자를 알아야 등록할 수 있다 (`kdeKeymapRegistration`).
+        if (!self.run_opts.isStressRun() and !self.kdeNeedsKeymap())
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
         self.logBootElapsed("KGlobalAccel");
         // L13-γ — ARGB8888 광고 필수 (opacity_percent 적용을 위한 alpha
         // channel). 거의 모든 compositor 가 광고하므로 fallback 없이 fatal.
@@ -2038,7 +2041,7 @@ const Client = struct {
         //   - config 를 못 읽은 실행은 기본값으로 도는 중이라, shell · 폰트 검증이
         //     보는 값이 사용자가 적은 값이 아니다. 그 상태의 안내를 먼저 내면 사용자는
         //     자기가 고치지도 않은 shell 을 의심한다.
-        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdePositionHotkey`) 과 hotkey
+        //   - 위치 표기 hotkey 의 KDE 등록 (`registerKdeKeymapHotkey`) 과 hotkey
         //     claim 판정 (`fatalIfHotkeyClaimFailed`) 보다 앞이다. 그 판정이 보는
         //     hotkey 도 기본값이라 "F1 을 못 잡았다" 가 사용자 설정과 무관해진다.
         //
@@ -2058,7 +2061,7 @@ const Client = struct {
 
         // #496 1-c — 위치 표기 hotkey 의 KDE 등록. keymap 이 방금 도착했다.
         if (!self.run_opts.isStressRun()) {
-            self.registerKdePositionHotkey();
+            self.registerKdeKeymapHotkey();
             self.writeCosmicPositionHotkey();
         }
 
@@ -2232,7 +2235,6 @@ const Client = struct {
             self.drainInfoRequest();
             self.drainConfigNotice();
             self.drainSwayToggleRegister();
-            self.drainKdeLayoutChange();
             self.drainNewInstanceRequest();
             // L12-β — exit 한 탭들을 main thread 에서 close. read thread 의
             // `linuxTabExit` 가 pending_close_buf 에 ptr 쌓아둠. drain 이
@@ -2240,6 +2242,12 @@ const Client = struct {
             self.drainExitedTabs();
             // KGlobalAccel Pressed / NameOwnerChanged D-Bus signal dispatch.
             self.dispatchDbusMessages();
+            // #760 — KDE 의 배열 전환은 위의 D-Bus dispatch 가 받아 둔다. **그 뒤에** 처리해야 받은
+            // 그 바퀴에 다시 등록한다. 예전엔 dispatch 앞에 있어서, 받아 둔 전환이 다음에 루프를 깨우는
+            // 일 (대개 다음 배열 전환) 까지 밀렸다 — 독일어로 바꾸면 아무 일 없다가 US 로 되돌릴 때
+            // 독일어 글자로 등록됐다 (2026-10-18 KDE 실측). #770 이 루프를 일이 있을 때만 깨우게 한
+            // 뒤로 드러났고 (추정), 위치 표기 hotkey 의 재등록 (#496 1-c) 도 같은 길이다.
+            self.drainKdeLayoutChange();
             // #760 — hidden_start 의 첫 show. 위의 토글 경로 (소켓 · D-Bus) 가 세운 표시를 이벤트 처리
             // 밖에서 처리한다.
             self.drainInitialShow();
@@ -7083,7 +7091,7 @@ const Client = struct {
         }
         // #496 1-a — layout 이 바뀌면 이 event 가 다시 온다. 그래서 매번 다시 푼다.
         self.resolveBindingFallbacks();
-        self.refreshKdePositionHotkey();
+        self.refreshKdeKeymapHotkey();
         self.writeCosmicPositionHotkey();
     }
 
@@ -7611,7 +7619,7 @@ const Client = struct {
         );
         if (group_changed) {
             self.resolveBindingFallbacks();
-            self.refreshKdePositionHotkey();
+            self.refreshKdeKeymapHotkey();
             self.writeCosmicPositionHotkey();
         }
 
@@ -9032,7 +9040,7 @@ const Client = struct {
     /// (`claimKey` 의 사전 조회 → 사용자 확인 → 인수 → 사후 검증) 그 앎을 버리는 것이
     /// 아까웠다. 실제 안내 · 종료는 `fatalIfHotkeyClaimFailed` 가 나중에 한다 — 여기서는
     /// overlay 를 아직 못 그린다 (`hotkey_claim_failure` 주석).
-    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, codepoint: ?u21) void {
+    fn tryConnectKGlobalAccel(self: *Client, keysym: u32, modifiers: u32, codepoint: ?u21) void {
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
         const session = dbus.SessionBus.connect() catch |err| {
             self.recordHotkeyClaimFailure(
@@ -9055,7 +9063,7 @@ const Client = struct {
             self.allocator,
             &self.dbus_session.?,
             keysym,
-            self.config.hotkey.modifiers,
+            modifiers,
             codepoint,
             onKGlobalAccelPressed,
             self,
@@ -9108,17 +9116,13 @@ const Client = struct {
             }
         }
         if (self.kglobalaccel_client) |client| {
-            // #496 1-c — 위치 표기는 `hotkey.keysym` 이 sentinel 0 이라 그대로 넘기면
-            // 재등록이 실패한다. 우리가 풀어 둔 값을 준다.
-            const keysym = if (self.config.hotkey.code == null)
-                self.config.hotkey.keysym
-            else
-                self.kde_position_keysym;
-            const codepoint: ?u21 = if (self.config.hotkey.code == null)
-                null
-            else
-                self.keyboard.keysymToUtf32(keysym);
-            client.drainOwnerRestart(keysym, self.config.hotkey.modifiers, codepoint);
+            // #496 1-c · #760 — keymap 으로 푼 hotkey (위치 표기 · Shift+기호) 는 config 값을
+            // 그대로 넘기면 안 맞는다. 우리가 풀어 둔 값을 준다.
+            if (self.kdeNeedsKeymap()) {
+                client.drainOwnerRestart(self.kde_keymap_keysym, self.kde_keymap_modifiers, self.keyboard.keysymToUtf32(self.kde_keymap_keysym));
+            } else {
+                client.drainOwnerRestart(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
+            }
         }
         if (self.kglobalaccel_toggle_pending) {
             self.kglobalaccel_toggle_pending = false;
@@ -9201,20 +9205,65 @@ const Client = struct {
         self.cosmic_position_keysym = keysym;
     }
 
-    /// #496 1-c — 위치 표기 hotkey 를 KDE 에 등록한다 (`keyboard ready` 직후).
-    fn registerKdePositionHotkey(self: *Client) void {
-        if (self.config.hotkey.code == null) return;
+    /// #760 — KDE 에 등록하려면 keymap 이 필요한 hotkey 인가. 위치 표기 (`[KeyW]`, #496 1-c) 와
+    /// **Shift + 기호 · 숫자** (`ctrl+shift+]`) 다.
+    ///
+    /// KDE 는 Shift 를 글자에 접어 본다. `Ctrl+Shift+]` 로 등록하면 실제 키를 눌러도 안 맞고,
+    /// `Ctrl+}` 로 등록해야 맞았다 (2026-10-18 KDE Plasma 실측 — `dbus-monitor` 의
+    /// `globalShortcutPressed`). 같은 측정에서 sway · Hyprland · GNOME · Cinnamon · COSMIC ·
+    /// Windows · macOS 는 그대로 맞아서 보정은 KDE 등록에만 둔다 (#760 3단계 댓글). 글자 키
+    /// (`ctrl+shift+t`) 는 Qt 도 Shift 를 따로 쳐서 보정하지 않는다 — 알파벳은 Qt 키가 대문자
+    /// 하나라 접을 것이 없다.
+    fn kdeNeedsKeymap(self: *const Client) bool {
+        if (self.config.hotkey.code != null) return true;
+        if ((self.config.hotkey.modifiers & config_mod.Hotkey.MOD_SHIFT) == 0) return false;
+        const k = self.config.hotkey.keysym;
+        const printable = k >= 0x21 and k <= 0x7e;
+        const letter = (k >= 'a' and k <= 'z') or (k >= 'A' and k <= 'Z');
+        return printable and !letter;
+    }
+
+    const KdeRegistration = struct { keysym: u32, modifiers: u32 };
+
+    /// #760 — `kdeNeedsKeymap` 인 hotkey 를 **지금 layout** 으로 풀어 KDE 에 등록할 값.
+    /// 위치 표기는 그 자리가 내는 글자 (#496 1-c), Shift + 기호 · 숫자는 그 키를 Shift 로 누른
+    /// 글자에서 Shift 를 뺀 것이다 (US 의 `ctrl+shift+]` → `Ctrl+}`). null 은 풀 수 없다는 뜻이다.
+    fn kdeKeymapRegistration(self: *Client) ?KdeRegistration {
+        if (self.config.hotkey.code != null) {
+            const keysym = self.positionHotkeyKeysym() orelse return null;
+            return .{ .keysym = keysym, .modifiers = self.config.hotkey.modifiers };
+        }
+        const shifted = self.keyboard.shiftedKeysymFor(self.config.hotkey.keysym) orelse return null;
+        return .{ .keysym = shifted, .modifiers = self.config.hotkey.modifiers & ~config_mod.Hotkey.MOD_SHIFT };
+    }
+
+    /// #496 1-c · #760 — keymap 이 필요한 hotkey 를 KDE 에 등록한다 (`keyboard ready` 직후).
+    fn registerKdeKeymapHotkey(self: *Client) void {
+        if (!self.kdeNeedsKeymap()) return;
         if (!kglobalaccel.isCurrentDesktop(self.rt)) return;
-        const keysym = self.positionHotkeyKeysym() orelse {
-            log.appendLine("kglobalaccel", "position hotkey unresolved -- keymap has no keysym at that spot, hotkey disabled", .{});
+        const reg = self.kdeKeymapRegistration() orelse {
+            if (self.config.hotkey.code != null) {
+                log.appendLine("kglobalaccel", "position hotkey unresolved -- keymap has no keysym at that spot, hotkey disabled", .{});
+                return;
+            }
+            // Shift 단계를 못 찾으면 (그 글자를 기본 단계로 내는 키가 이 배열에 없다) 적힌 대로
+            // 등록한다. 보정 전과 같은 동작이다.
+            log.appendLine("kglobalaccel", "shifted symbol hotkey -- no shifted keysym on this layout, registered as written", .{});
+            self.kde_keymap_keysym = self.config.hotkey.keysym;
+            self.kde_keymap_modifiers = self.config.hotkey.modifiers;
+            self.tryConnectKGlobalAccel(self.config.hotkey.keysym, self.config.hotkey.modifiers, null);
             return;
         };
-        if (isDeadKeysym(keysym)) {
+        if (isDeadKeysym(reg.keysym)) {
             log.appendLine("kglobalaccel", "position hotkey is a dead key on this layout -- not registered (use a function key)", .{});
             return;
         }
-        self.kde_position_keysym = keysym;
-        self.tryConnectKGlobalAccel(keysym, self.keyboard.keysymToUtf32(keysym));
+        if (self.config.hotkey.code == null) {
+            log.appendLine("kglobalaccel", "shifted symbol hotkey -- registering keysym=0x{x} without Shift (KDE folds Shift into the character)", .{reg.keysym});
+        }
+        self.kde_keymap_keysym = reg.keysym;
+        self.kde_keymap_modifiers = reg.modifiers;
+        self.tryConnectKGlobalAccel(reg.keysym, reg.modifiers, self.keyboard.keysymToUtf32(reg.keysym));
     }
 
     /// #496 1-c — KDE 가 D-Bus 로 알려 준 layout 전환을 처리한다.
@@ -9229,21 +9278,24 @@ const Client = struct {
     fn drainKdeLayoutChange(self: *Client) void {
         const client = self.kglobalaccel_client orelse return;
         const index = client.takeLayoutChange() orelse return;
-        if (self.config.hotkey.code == null) return;
+        if (!self.kdeNeedsKeymap()) return;
         self.keyboard.active_group = index;
-        self.refreshKdePositionHotkey();
+        self.refreshKdeKeymapHotkey();
     }
 
     /// #496 1-c — layout 이 바뀌면 그 자리가 내는 글자도 바뀌므로 다시 등록한다.
     ///
     /// 자리를 그대로 받는 경로 (sway `bindcode`) 는 이것이 필요 없다 — 한 번 고정하면
     /// 끝이다. KDE 는 글자만 받아서 따라다녀야 한다.
-    fn refreshKdePositionHotkey(self: *Client) void {
+    /// #760 — Shift + 기호 · 숫자도 같다. 그 키를 Shift 로 누른 글자가 배열마다 다르다.
+    fn refreshKdeKeymapHotkey(self: *Client) void {
         const client = self.kglobalaccel_client orelse return;
-        if (self.config.hotkey.code == null) return;
-        const keysym = self.positionHotkeyKeysym() orelse return;
-        if (keysym == self.kde_position_keysym) return;
-        self.kde_position_keysym = keysym;
+        if (!self.kdeNeedsKeymap()) return;
+        const reg = self.kdeKeymapRegistration() orelse return;
+        const keysym = reg.keysym;
+        if (keysym == self.kde_keymap_keysym and reg.modifiers == self.kde_keymap_modifiers) return;
+        self.kde_keymap_keysym = keysym;
+        self.kde_keymap_modifiers = reg.modifiers;
         // **가드가 여기에도 있어야 한다.** 처음엔 등록 경로에만 뒀는데, 실기에서 독일어로
         // 전환하니 dead key 가 그대로 `rebind` 로 흘러 일반 실패
         // (`KGlobalAccelUnsupportedKey`) 로 끝났다 — 결과는 "등록 안 됨" 으로 같지만
@@ -9255,7 +9307,7 @@ const Client = struct {
             log.appendLine("kglobalaccel", "layout changed -- position is a dead key now, hotkey unregistered", .{});
             return;
         }
-        client.rebind(keysym, self.config.hotkey.modifiers, self.keyboard.keysymToUtf32(keysym));
+        client.rebind(keysym, reg.modifiers, self.keyboard.keysymToUtf32(keysym));
     }
 
     fn onKGlobalAccelPressed(user_data: ?*anyopaque, timestamp: i64) void {

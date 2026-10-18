@@ -43,6 +43,9 @@ press_name() {
     local k=${1##*+} mods=${1%+*}
     case "$k" in
         ']') k=bracketright ;; '[') k=bracketleft ;; '`') k=grave ;;
+        # 위치 표기 (`[BracketRight]`) — 회귀 확인용. US 자판의 그 자리 키를 누른다.
+        '[BracketRight]') k=bracketright ;; '[BracketLeft]') k=bracketleft ;;
+        '[Backquote]') k=grave ;; '[Digit1]') k=1 ;; '[KeyT]') k=t ;;
     esac
     echo "$mods+$k"
 }
