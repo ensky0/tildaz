@@ -854,7 +854,16 @@ function Run-Worker {
     if (Test-Path $Cfg9) { throw "config_9.toml 이 이미 있다 — 사용자 설정을 건드리지 않으려고 멈춘다: $Cfg9" }
     $runBefore = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).'tildaz-dev'
     try {
-        Start-App $false
+        # 첫 실행은 앱이 config_9 를 만들게만 한다. 이때는 기본값 `F1` 이라 평소 쓰는 릴리즈
+        # instance 0 이 떠 있으면 `Hotkey Registration Failed` 로 끝나므로 (#799 Windows 회차),
+        # `Start-App` 의 fatal 판정을 거치지 않고 파일이 생기기만 기다린다.
+        Stop-Tz; Start-Sleep -Milliseconds 400
+        $first = Start-Process -FilePath $Bin -PassThru -ArgumentList '--instance', '9'
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path $Cfg9) -and $sw.ElapsedMilliseconds -lt 20000) { Start-Sleep -Milliseconds 150 }
+        Start-Sleep -Milliseconds 800
+        Stop-Tz
+        if (-not (Test-Path $Cfg9)) { throw "앱이 config_9 를 만들지 않았다 (exit=$(if ($first.HasExited) { $first.ExitCode } else { '-' }))" }
         $hot = ((Get-Content $Cfg9 -Encoding UTF8 -ErrorAction SilentlyContinue) | Where-Object { $_ -match '^\s*hotkey\s*=' } | Select-Object -First 1)
         $auto = ((Get-Content $Cfg9 -Encoding UTF8 -ErrorAction SilentlyContinue) | Where-Object { $_ -match '^\s*auto_start\s*=' } | Select-Object -First 1)
         "config_9: $hot · $auto"
