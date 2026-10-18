@@ -95,8 +95,11 @@ run_app() { # <index> [설 시간]
     sleep 0.25; i=$((i + 1))
   done
   sleep 0.5   # 안내 줄이 `config loaded` 보다 앞이지만 flush 여유를 둔다
+  # 띄운 프로세스만 내린다. `env … "$BIN"` 은 exec 이라 이 pid 가 앱이다. 예전에는 여기에
+  # `pkill -f "tildaz --instance $idx"` 가 있었는데, 그 패턴이 사용자의 평소 instance 0
+  # (`/usr/bin/tildaz --instance 0` · `…/TildaZ.app/Contents/MacOS/tildaz --instance 0`) 에도
+  # 맞아 `hotkey` 회차가 그것을 죽였다 (#792).
   kill "$pid" 2>/dev/null
-  pkill -f "tildaz --instance $idx" 2>/dev/null
   wait "$pid" 2>/dev/null
   return 0
 }
@@ -219,15 +222,41 @@ case_clamp() {
     || result clamp FAIL "clamp 줄이 없다 (기본값으로 되돌렸다면 그것도 틀렸다)"
 }
 
-case_first_wins() {
-  env_reset; mkbase "$IDX" >/dev/null || { result first-wins FAIL "준비 실패"; return; }
-  local pair; pair=$(break_all) || { result first-wins FAIL "준비 실패"; return; }
+# #758 규칙 (SPEC §7.3) — 바꾼 키가 기본 키를 이긴다. `break_all` 은 둘째 액션에 첫 액션의 기본
+# 키를 더하므로, 둘째 쪽이 바꾼 키라 이기고 첫 액션이 그 키를 잃는다. 예전 이름 `first-wins` 는
+# #758 이전의 "파일에 먼저 나온 액션이 이긴다" 를 기대해 늘 실패했다 (#792).
+case_changed_wins() {
+  env_reset; mkbase "$IDX" >/dev/null || { result changed-wins FAIL "준비 실패"; return; }
+  local pair; pair=$(break_all) || { result changed-wins FAIL "준비 실패"; return; }
   local first second; first=$(echo "$pair" | awk '{print $1}'); second=$(echo "$pair" | awk '{print $2}')
   rm -f "$(LOG "$IDX")"; run_app "$IDX"
-  # 먼저 나온 액션이 그 조합을 지키고, 뒤엣것이 버려진다.
-  notice_lines | grep -q "keys\.${second} -- .* is already used by ${first}, dropped" \
-    && result first-wins PASS "${first} 가 이기고 ${second} 가 그 키를 잃었다" \
-    || result first-wins FAIL "충돌 안내가 없거나 이긴 쪽이 다르다"
+  notice_lines | grep -q "keys\.${first} -- .* is already used by ${second}, dropped" \
+    && result changed-wins PASS "바꾼 키를 쓴 ${second} 가 이기고 기본 키의 ${first} 가 그 키를 잃었다" \
+    || result changed-wins FAIL "충돌 안내가 없거나 이긴 쪽이 다르다"
+}
+
+# #758 규칙 — 바꾼 키끼리 부딪히면 어느 쪽도 쓰지 않는다. 첫 두 액션에 같은 바꾼 키를 준다.
+case_both_changed() {
+  env_reset; mkbase "$IDX" >/dev/null || { result both-changed FAIL "준비 실패"; return; }
+  local pair; pair=$(python3 - "$(CFG "$IDX")" <<'PY'
+import sys, re
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+k = s.index('\n[keys]\n')
+actions = re.findall(r'^(\w+)\s*=\s*\[', s[k:], flags=re.M)
+a, b = actions[0], actions[1]
+for name in (a, b):
+    s = s[:k] + re.sub(rf'^({name}\s*=\s*)\[[^\]]*\]', r'\1["ctrl+shift+f11"]', s[k:], count=1, flags=re.M)
+open(p, 'w', encoding='utf-8').write(s)
+print(f'{a} {b}')
+PY
+) || { result both-changed FAIL "준비 실패"; return; }
+  local a b; a=$(echo "$pair" | awk '{print $1}'); b=$(echo "$pair" | awk '{print $2}')
+  rm -f "$(LOG "$IDX")"; run_app "$IDX"
+  notice_lines | grep -q "keys\.${a} -- \"ctrl+shift+f11\" is also set for ${b}, so neither uses it" \
+    && notice_lines | grep -q "keys\.${b} -- \"ctrl+shift+f11\" is also set for ${a}, so neither uses it" \
+    && result both-changed PASS "${a} · ${b} 둘 다 그 키를 쓰지 않는다" \
+    || result both-changed FAIL "두 액션 모두에 'so neither uses it' 안내가 없다"
 }
 
 case_drop_one() {
@@ -348,7 +377,7 @@ MKBIG
   fi
 }
 
-CASES="boots order clamp first-wins drop-one unknown font-missing quiet clean hotkey no-cap"
+CASES="boots order clamp changed-wins both-changed drop-one unknown font-missing quiet clean hotkey no-cap"
 
 usage() {
   echo "회차: $CASES"

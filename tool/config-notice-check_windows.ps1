@@ -40,7 +40,7 @@ $work = if ($env:TZCN_WORK) { $env:TZCN_WORK } else { Join-Path $env:TEMP 'tilda
 $idx = 9
 $script:failCount = 0
 
-$allCases = @('boots','order','clamp','first-wins','drop-one','unknown','font-missing','quiet','clean','hotkey','no-cap')
+$allCases = @('boots','order','clamp','changed-wins','both-changed','drop-one','unknown','font-missing','quiet','clean','hotkey','no-cap')
 
 function Show-Usage {
     Write-Host "회차: $($allCases -join ' ')"
@@ -66,8 +66,10 @@ function Reset-Env {
     New-Item -ItemType Directory -Force -Path $run | Out-Null
 }
 
-function Get-Cfg([int]$i) { Join-Path $work "run\tildaz\config_$i.toml" }
-function Get-Log([string]$i) { Join-Path $work "run\tildaz\tildaz_$i.log" }
+# 기본 빌드인 dev 판은 `tildaz-dev` 폴더에 쓴다 (#654). Linux · macOS 판과 같다. 예전에는
+# `run\tildaz\…` 로 고정이라 모든 회차가 준비에서 떨어졌다 (#792).
+function Get-Cfg([int]$i) { Join-Path $work "run\tildaz-dev\config_$i.toml" }
+function Get-Log([string]$i) { Join-Path $work "run\tildaz-dev\tildaz_$i.log" }
 
 # `Start-Process -Environment` 는 PowerShell 7.4+ 라 쓰지 않는다 — Windows 에 기본으로
 # 깔린 5.1 에서도 돌아야 한다. 자식이 물려받도록 `$env:APPDATA` 를 잠시 돌린다.
@@ -79,8 +81,8 @@ function Use-IsolatedAppData([scriptblock]$Body) {
 
 # 평소처럼 띄웠다 내린다. `config loaded` 가 찍힐 때까지 기다린다.
 function Invoke-App([int]$i, [int]$WaitSeconds = 8) {
-    Use-IsolatedAppData {
-        Start-Process -FilePath $Bin -ArgumentList '--instance', "$i" -PassThru -WindowStyle Hidden | Out-Null
+    $proc = Use-IsolatedAppData {
+        Start-Process -FilePath $Bin -ArgumentList '--instance', "$i" -PassThru -WindowStyle Hidden
     }
     $log = Get-Log $i
     for ($n = 0; $n -lt $WaitSeconds * 4; $n++) {
@@ -88,7 +90,9 @@ function Invoke-App([int]$i, [int]$WaitSeconds = 8) {
         Start-Sleep -Milliseconds 250
     }
     Start-Sleep -Milliseconds 500
-    Get-Process -Name tildaz -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # 띄운 프로세스만 내린다. 예전에는 이름이 `tildaz` 인 프로세스를 전부 내려서 사용자의 평소
+    # instance 0 이 첫 회차에서 꺼졌다 (#792).
+    if ($proc) { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 300
 }
 
@@ -231,17 +235,44 @@ function Case-clamp {
     }
 }
 
-function Case-first-wins {
+# #758 규칙 (SPEC §7.3) — 바꾼 키가 기본 키를 이긴다. `Set-BrokenConfig` 는 둘째 액션에 첫 액션의
+# 기본 키를 더하므로, 둘째 쪽이 바꾼 키라 이기고 첫 액션이 그 키를 잃는다. 예전 이름 `first-wins`
+# 는 #758 이전의 "파일에 먼저 나온 액션이 이긴다" 를 기대해 늘 실패했다 (#792).
+function Case-changed-wins {
     Reset-Env
-    if (-not (New-Base $idx)) { Write-Result first-wins FAIL '준비 실패'; return }
+    if (-not (New-Base $idx)) { Write-Result changed-wins FAIL '준비 실패'; return }
     $pair = (Set-BrokenConfig) -split '\s+'
     Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
     Invoke-App $idx
-    # 먼저 나온 액션이 그 조합을 지키고, 뒤엣것이 버려진다.
-    if ((Get-NoticeLines) -match "keys\.$($pair[1]) -- .* is already used by $($pair[0]), dropped") {
-        Write-Result first-wins PASS "$($pair[0]) 가 이기고 $($pair[1]) 가 그 키를 잃었다"
+    if ((Get-NoticeLines) -match "keys\.$($pair[0]) -- .* is already used by $($pair[1]), dropped") {
+        Write-Result changed-wins PASS "바꾼 키를 쓴 $($pair[1]) 가 이기고 기본 키의 $($pair[0]) 가 그 키를 잃었다"
     } else {
-        Write-Result first-wins FAIL '충돌 안내가 없거나 이긴 쪽이 다르다'
+        Write-Result changed-wins FAIL '충돌 안내가 없거나 이긴 쪽이 다르다'
+    }
+}
+
+# #758 규칙 — 바꾼 키끼리 부딪히면 어느 쪽도 쓰지 않는다. 첫 두 액션에 같은 바꾼 키를 준다.
+function Case-both-changed {
+    Reset-Env
+    if (-not (New-Base $idx)) { Write-Result both-changed FAIL '준비 실패'; return }
+    $p = Get-Cfg $idx
+    $s = Read-Toml $p
+    $body = $s.Substring($s.IndexOf("`n[keys]`n"))
+    $actions = @([regex]::Matches($body, '(?m)^(\w+)\s*=\s*\[') | ForEach-Object { $_.Groups[1].Value })
+    $a = $actions[0]; $b = $actions[1]
+    foreach ($name in @($a, $b)) {
+        $s = Replace-Once $s ('^(' + [regex]::Escape($name) + '\s*=\s*)\[[^\]]*\]') '$1["ctrl+shift+f11"]'
+    }
+    Write-Toml $p $s
+    Remove-Item (Get-Log $idx) -ErrorAction SilentlyContinue
+    Invoke-App $idx
+    $lines = @(Get-NoticeLines)
+    $okA = $lines -match "keys\.$a -- `"ctrl\+shift\+f11`" is also set for $b, so neither uses it"
+    $okB = $lines -match "keys\.$b -- `"ctrl\+shift\+f11`" is also set for $a, so neither uses it"
+    if ($okA -and $okB) {
+        Write-Result both-changed PASS "$a · $b 둘 다 그 키를 쓰지 않는다"
+    } else {
+        Write-Result both-changed FAIL "두 액션 모두에 'so neither uses it' 안내가 없다"
     }
 }
 
