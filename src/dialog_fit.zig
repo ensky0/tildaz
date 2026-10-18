@@ -8,7 +8,8 @@
 //! **규칙** (SPEC §2.4, 2026-10-18 사용자 결정 — #795 의 (나)):
 //! 1. 가장 긴 줄이 최대 폭 안에 들면 그 줄이 들어가는 폭이다. 짧으면 최소 폭까지 좁아진다.
 //! 2. 최대 폭으로도 안 들어가는 줄이 있으면 기본 폭에서 접는다.
-//! 3. 접은 본문이 높이 상한을 넘으면 최대 폭으로 넓혀 다시 접는다.
+//! 3. 접은 줄이 있고 본문이 높이 상한을 넘으면 최대 폭으로 넓혀 다시 접는다. 접은 줄이 없으면
+//!    넓혀도 높이가 그대로라 넓히지 않는다.
 //! 4. 그래도 넘치면 본문만 스크롤한다. 스크롤바가 글 영역 안에 서면 그만큼 빼고 다시 접는다.
 //!
 //! **OS 마다 다른 것은 넘겨받는다.** 글자 재기 (`measurer`), 화면 크기로 줄인 폭 · 높이 상한,
@@ -71,9 +72,10 @@ pub fn fit(comptime T: type, measurer: anytype, raw_limits: Limits(T)) Fit(T) {
     var width: T = if (natural <= limits.max_w) @max(natural, limits.min_w) else limits.preferred_w;
     var height = measurer.wrappedHeight(width);
 
-    // 규칙 3.
+    // 규칙 3. 접힌 줄이 있을 때만 넓힌다 — 규칙 1 로 가장 긴 줄 폭을 잡았으면 접힌 줄이 없어서
+    // 넓혀도 높이가 그대로이고 창만 넓어진다 (#795 macOS 권한 안내 창: 629 → 960, 높이 504 그대로).
     var widened = false;
-    if (height > limits.body_max_h and width < limits.max_w) {
+    if (height > limits.body_max_h and width < limits.max_w and natural > width) {
         width = limits.max_w;
         height = measurer.wrappedHeight(width);
         widened = true;
@@ -153,6 +155,17 @@ test "#795 a body taller than the cap widens to the maximum before it scrolls" {
     try std.testing.expect(got.widened_for_height);
     try std.testing.expect(!got.scroll);
     try std.testing.expectEqual(@as(i32, 90), got.height);
+}
+
+test "#795 a tall body with no wrapped line does not widen" {
+    // 가장 긴 줄 (70) 이 최대 폭 안이라 70 폭에서 접는 줄이 없다. 12 줄 (120 > 100) 이라 높이는
+    // 넘치지만, 넓혀도 줄 수가 같으니 70 에 머물러 스크롤한다.
+    const lines = [_]usize{ 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70 };
+    const got = fit(i32, LinesMeasurer{ .lines = &lines }, test_limits);
+    try std.testing.expectEqual(@as(i32, 70), got.width);
+    try std.testing.expect(!got.widened_for_height);
+    try std.testing.expect(got.scroll);
+    try std.testing.expectEqual(@as(i32, 120), got.height);
 }
 
 test "#795 still too tall scrolls and rewraps inside the scrollbar" {
