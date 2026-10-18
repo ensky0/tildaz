@@ -289,6 +289,31 @@ fn dialogForceKeyFn(_: objc.id, _: objc.SEL, alert: objc.id) callconv(.c) void {
     }
 }
 var force_key_instance: objc.id = null;
+
+fn dialogBodyCanBecomeKeyView(_: objc.id, _: objc.SEL) callconv(.c) bool {
+    return false;
+}
+
+var dialog_body_text_view_class: ?objc.Class = null;
+
+/// #794 — 다이얼로그 본문용 NSTextView. 키보드 포커스 대상 (key view) 이 되지 않는다는 것만 다르다.
+///
+/// 모달 창이 뜰 때 macOS 의 포커스 시스템이 첫 key view 에 포커스를 주고 그 보기가 보이게 스크롤한다
+/// (`-[NSApplication _orderFrontModalWindow:]` → `-[NSFocusController initializeKeyViewLoop]` →
+/// `-[NSFocusController _tryToScrollForUpdateContext:]` → `-[NSClipView _scrollRectToVisible:…]`,
+/// 2026-10-19 · macOS 27.0.1 lldb 로 확인). 본문이 스크롤 칸보다 크면 그 보기를 가운데로 맞추느라
+/// 첫 줄이 가려진 채 열렸다 (504pt 본문 · 474.5pt 칸 → 14.5pt 아래). key view 가 아니면 포커스가 OK
+/// 버튼으로 가서 그 스크롤이 일어나지 않는다. 마우스 선택 · 자동 복사는 key view 와 무관하다.
+/// Enter · Esc 는 별도 감시자 (`addDismissMonitor`) 가 처리해 포커스 자리와 상관없다.
+fn dialogBodyTextViewClass() objc.Class {
+    if (dialog_body_text_view_class) |cls| return cls;
+    const NSTextView = objc.getClass("NSTextView");
+    const cls = objc.objc_allocateClassPair(NSTextView, "TildazDialogBodyTextView", 0) orelse return NSTextView;
+    _ = objc.class_addMethod(cls, objc.sel("canBecomeKeyView"), @ptrCast(&dialogBodyCanBecomeKeyView), "B@:");
+    objc.objc_registerClassPair(cls);
+    dialog_body_text_view_class = cls;
+    return cls;
+}
 /// `dialogForceKeyFn` 을 modal 루프 안에서 실행되도록 예약(중앙배치 후). 0 / 0.1s 두 시점에
 /// idempotent 하게 — 비동기 activate 가 한 번에 적용 안 될 때 대비(이미 key 면 둘 다 no-op).
 fn scheduleForceKey(alert: objc.id) void {
@@ -786,10 +811,9 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
     const max_accessory_h = dialogBodyMaxHeight(visible_frame.h, base_alert_h, reserved_h);
 
     const NSScrollView = objc.getClass("NSScrollView");
-    const NSTextView = objc.getClass("NSTextView");
     const alloc = objc.objcSend(fn (objc.Class, objc.SEL) callconv(.c) objc.id);
     const scroll_alloc = alloc(NSScrollView, objc.sel("alloc")) orelse return null;
-    const tv_alloc = alloc(NSTextView, objc.sel("alloc")) orelse return null;
+    const tv_alloc = alloc(dialogBodyTextViewClass(), objc.sel("alloc")) orelse return null;
     const initWithFrame = objc.objcSend(fn (objc.id, objc.SEL, NSAlertRect) callconv(.c) objc.id);
     const initial_body_h: f64 = @floatFromInt(ui_metrics.DIALOG_BODY_FONT_PT + 8);
     const scroll_owned = initWithFrame(scroll_alloc, objc.sel("initWithFrame:"), .{ .x = 0, .y = 0, .w = accessory_w, .h = initial_body_h }) orelse return null;

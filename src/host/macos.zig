@@ -362,6 +362,14 @@ fn applicationDidResignActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) 
 
 fn applicationDidBecomeActive(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     if (!g_visible) return;
+    // #794 — 모달 다이얼로그가 떠 있으면 올리지 않는다. 다이얼로그는 띄우기 전에 터미널을 보통
+    // 높이로 낮추는데 (`dialog/macos.zig` 의 `lowerHostLevel`), 앱이 비활성일 때 뜬 다이얼로그 (권한
+    // 안내 등) 는 모달 안에서 앱을 활성화하고, 그때 여기서 터미널을 팝업 높이로 되올려 다이얼로그를
+    // 덮었다 (2026-10-19 macOS 27.0.1 실측). 다이얼로그가 닫히면 `restoreHostLevel` 이 되올린다.
+    if (g_app) |app| {
+        const getObj = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
+        if (getObj(app, objc.sel("modalWindow")) != null) return;
+    }
     setPopupWindowLevel();
 }
 
