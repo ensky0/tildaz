@@ -53,6 +53,7 @@ pub const Metrics = struct {
     button_w: i32,
     button_h: i32,
     button_gap: i32,
+    /// #793 — **글 영역** 의 기본 · 최대 폭이다. 창은 여기에 여백 · 그림자를 더한 만큼 넓다.
     preferred_w: i32,
     max_w: i32,
     scrollbar_w: i32,
@@ -222,22 +223,26 @@ fn computeWithinSurface(
     std.debug.assert(metrics.preferred_w > 0);
     std.debug.assert(metrics.max_w >= metrics.preferred_w);
 
-    const max_surface = Size{
-        .w = @min(available_surface.w, metrics.max_w),
-        .h = available_surface.h,
-    };
-    const preferred_surface_w = @min(max_surface.w, metrics.preferred_w);
+    // #793 — `preferred_w` · `max_w` 는 **글 영역** 폭이다 (SPEC §2.4, macOS 와 같다). 예전에는
+    // 그림자까지 포함한 창 폭으로 써서 그림자 · 여백만큼 글이 좁았다. 화면 상한은 지금처럼 **창**
+    // (`available_surface`) 기준이다.
     // 기준 advance — 최소 폭을 "글자 몇 개" 로 적기 위한 환산 단위다. 고정폭이던
     // 시절의 `body_cell_w` 자리를 대신한다 (#407).
     const ref_adv = body_measure.refAdvance();
-    const preferred_content_room_w = @max(
-        ref_adv,
-        preferred_surface_w - metrics.shadow_margin * 2 - metrics.padding * 2,
-    );
+    const chrome_w = metrics.shadow_margin * 2 + metrics.padding * 2;
     const max_content_room_w = @max(
         ref_adv,
-        max_surface.w - metrics.shadow_margin * 2 - metrics.padding * 2,
+        @min(metrics.max_w, available_surface.w - chrome_w),
     );
+    const preferred_content_room_w = @max(
+        ref_adv,
+        @min(metrics.preferred_w, max_content_room_w),
+    );
+    const max_surface = Size{
+        .w = @min(available_surface.w, max_content_room_w + chrome_w),
+        .h = available_surface.h,
+    };
+    const preferred_surface_w = @min(max_surface.w, preferred_content_room_w + chrome_w);
     const min_width: i32 = ref_adv * @as(i32, if (kind == .prompt) 42 else 30);
     const natural_width = longestExplicitLineWidth(message, body_measure);
     var wrap_width = @min(@max(natural_width, min_width), preferred_content_room_w);
@@ -616,7 +621,8 @@ test "#721 prompt status widens the box up to the preferred width and wraps beyo
     const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
     const m = testMetrics(100);
     const viewport = Size{ .w = 1280, .h = 800 };
-    const room = m.preferred_w - m.shadow_margin * 2 - m.padding * 2;
+    // #793 — 기본 폭은 글 영역 폭 그대로다.
+    const room = m.preferred_w;
     // 가장 긴 후보 — 문구가 바뀌어도 테스트가 따라가게 후보 목록에서 고른다.
     var longest: []const u8 = "";
     for (hotkey_status.candidates) |c| {
@@ -812,7 +818,8 @@ test "dialogs use common preferred then maximum width in logical points" {
         f.title(),
         .{ .w = 1400, .h = 900 },
     );
-    try std.testing.expect(compact.size.w <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
+    // #793 — 580 · 960 은 글 영역 폭이다. 창은 여백 · 그림자만큼 더 넓다.
+    try std.testing.expect(compact.wrap_width <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
 
     const message = "x" ** 2000;
     const scales = [_]u32{ 100, 170, 200 };
@@ -834,7 +841,23 @@ test "dialogs use common preferred then maximum width in logical points" {
         );
         const preferred = @divTrunc(@as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)) * @as(i32, @intCast(scale_percent)) + 99, 100);
         const maximum = @divTrunc(@as(i32, @intCast(ui_metrics.DIALOG_MAX_WIDTH_PT)) * @as(i32, @intCast(scale_percent)) + 99, 100);
-        try std.testing.expect(layout.size.w > preferred);
-        try std.testing.expect(layout.size.w <= maximum);
+        try std.testing.expect(layout.wrap_width > preferred);
+        try std.testing.expect(layout.wrap_width <= maximum);
+        // 창은 글 폭에 여백 · 그림자를 더한 만큼이다 (예전에는 창이 960 안에 들어야 했다).
+        const m = testMetrics(scale_percent);
+        try std.testing.expect(layout.size.w <= maximum + m.shadow_margin * 2 + m.padding * 2);
     }
+}
+
+test "#793 the preferred width is the text area on an ample screen" {
+    // 기본 폭을 넘는 한 줄 — 창이 화면을 넘지 않으니 기본 폭에서 줄바꿈한다. 그 폭이 글 영역 폭
+    // (`preferred_w`) 그대로여야 한다. 예전에는 그림자 · 여백을 뺀 폭 (580pt 창에 글 약 520) 이었다.
+    const f = testFonts(100);
+    const m = testMetrics(100);
+    const layout = compute("Some Settings Replaced", "x" ** 200, .info, m, f.body(), f.title(), .{ .w = 1920, .h = 1080 });
+    const chrome_w = m.shadow_margin * 2 + m.padding * 2;
+    try std.testing.expectEqual(m.preferred_w, layout.wrap_width);
+    // 창은 글 영역보다 넓다 — 예전 코드는 창 전체가 `preferred_w` 안이었다.
+    try std.testing.expect(layout.size.w > m.preferred_w);
+    try std.testing.expect(layout.size.w <= m.preferred_w + chrome_w);
 }

@@ -321,19 +321,20 @@ const DialogWidths = struct {
     preferred_content_w: c_int,
 };
 
+/// #793 — 580 · 960 은 **글 영역** 폭이다 (SPEC §2.4, macOS 와 같다). 예전에는 창 전체 폭으로 써서
+/// 테두리와 양옆 여백만큼 글이 좁았다 (580pt 창에 글 약 510pt). 화면이 좁을 때의 상한은 지금처럼
+/// **창** 기준이다 — 창이 화면 밖으로 나가면 안 되므로.
 fn dialogWidths(dpi: UINT, work: RECT, frame: FrameMetrics) DialogWidths {
     const screen_w = work.right - work.left;
     const viewport_margin = scaled(16, dpi);
     const margin = dialog_margin_px(dpi);
     const available_window_w = @max(1, screen_w - viewport_margin * 2);
-    const max_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), dpi), available_window_w);
-    const preferred_window_w = @min(scaled(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), dpi), max_window_w);
-    const max_client_w = @max(1, max_window_w - frame.w);
-    const preferred_client_w = @max(1, preferred_window_w - frame.w);
+    const available_content_w = @max(1, available_window_w - frame.w - margin * 2);
+    const max_content_w = @min(scaled(@intCast(ui_metrics.DIALOG_MAX_WIDTH_PT), dpi), available_content_w);
     return .{
         .margin = margin,
-        .max_content_w = @max(1, max_client_w - margin * 2),
-        .preferred_content_w = @max(1, preferred_client_w - margin * 2),
+        .max_content_w = max_content_w,
+        .preferred_content_w = @min(scaled(@intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT), dpi), max_content_w),
     };
 }
 

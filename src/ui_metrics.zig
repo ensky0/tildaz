@@ -494,8 +494,9 @@ pub const TAB_BAR_HEIGHT_PT: u32 = 28;
 /// 터미널 콘텐츠 font와 독립된 탭 제목 logical size. 같은 font family/fallback을
 /// 사용하되 terminal의 `font.size_point` 변경에는 영향받지 않는다.
 pub const TAB_LABEL_FONT_PT: u32 = 13;
-/// Linux custom dialog typography (#306). Family/fallback stays aligned with
-/// the terminal, while size remains independent from terminal font settings.
+/// Dialog typography size (#306). Linux draws dialogs with the system UI font
+/// (`sans-serif`, #407), not the terminal font, and the size stays independent
+/// from terminal font settings.
 pub const DIALOG_BODY_FONT_PT: u32 = 15;
 pub const DIALOG_TITLE_FONT_PT: u32 = 18;
 /// Dialog action controls use logical points. Native backends convert this
@@ -513,8 +514,11 @@ pub const DIALOG_SEPARATOR_COLOR = .{ .r = 0xF7, .g = 0xA4, .b = 0x1D };
 pub const DIALOG_SEPARATOR_THICKNESS_PT: u32 = 2;
 /// Dialog는 preferred 폭 안에서 먼저 실제 wrap 높이를 측정한다. 고정 chrome을
 /// 포함해 현재 screen 높이를 넘을 때만 maximum 폭으로 확장한 뒤 다시 측정한다.
+///
+/// #793 — 두 값은 **글 영역** 폭이다. 창은 여기에 여백 · 테두리 · 그림자를 더한 만큼
+/// 넓다. 예전에는 Windows · Linux 가 창 전체 폭으로 써서 macOS 보다 글이 약 60pt 좁았다.
 pub const DIALOG_PREFERRED_WIDTH_PT: u32 = 580;
-/// 긴 절대경로에서도 screen 전체 폭을 차지하지 않게 하는 logical 최대 폭.
+/// 긴 절대경로에서도 screen 전체 폭을 차지하지 않게 하는 logical 최대 폭 (글 영역).
 pub const DIALOG_MAX_WIDTH_PT: u32 = 960;
 pub const DIALOG_SCROLLBAR_GAP_PT: u32 = 8;
 /// #655 — 모달 안내의 **본문** 이 화면에서 차지할 수 있는 최대 비율. 넘치면 스크롤한다

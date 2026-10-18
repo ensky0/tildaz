@@ -647,7 +647,9 @@ Dialog 본문 폭은 Linux · macOS · Windows 공통으로 preferred 580 logica
 실제 wrap 높이를 먼저 측정한다. 고정 header/action/prompt controls까지 현재 screen
 높이를 넘을 때만 maximum 960pt로 확장해 다시 측정하고, 그래도 넘을 때만 본문을
 scroll한다. macOS는 현재 screen의 좌우에 각각 최소 48pt를 남기도록 더 작은 값을
-선택한다. macOS error는 AppKit의
+선택한다. 580 · 960은 **글 영역** 폭이고, 창은 여백 · 테두리 · 그림자만큼 더 넓다
+([#793](https://github.com/ensky0/tildaz/issues/793) — 예전에는 Windows · Linux가 창 전체 폭으로 썼다).
+macOS error는 AppKit의
 critical style이 만드는 caution icon+app badge 조합을 사용하지 않고 warning style과
 TildaZ icon을 사용한다([Apple `NSCriticalAlertStyle`](https://developer.apple.com/documentation/appkit/nscriticalalertstyle),
 [#237](https://github.com/ensky0/tildaz/issues/237)).
