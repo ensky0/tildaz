@@ -592,6 +592,26 @@ fn dialogLongestLineWidth(body: []const u8, font: objc.id, tv: objc.id, text_con
     return @ceil(longest + padding * 2.0 + inset.w * 2.0);
 }
 
+/// #795 — 스크롤할 때 세로 scroller 가 글 자리를 차지하는 폭. 이 스크롤 보기의 scroller 방식
+/// (`scrollerStyle` — 시스템 설정 "스크롤 막대 보기" 와 입력 장치가 정한다) 으로 AppKit 에 물어,
+/// scroller 가 있을 때와 없을 때의 글 폭 차이를 쓴다
+/// (`+[NSScrollView contentSizeForFrameSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle:]`).
+/// 겹쳐 뜨는 scroller 는 자리를 차지하지 않아 0 이 나온다.
+fn dialogVerticalScrollerWidth(scroll: objc.id) f64 {
+    if (scroll == null) return 0;
+    const getStyle = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) isize);
+    const style = getStyle(scroll, objc.sel("scrollerStyle"));
+    const NSScrollView = objc.getClass("NSScrollView");
+    const NSScroller = objc.getClass("NSScroller");
+    const contentSizeFor = objc.objcSend(fn (objc.Class, objc.SEL, NSAlertSize, ?objc.Class, ?objc.Class, usize, usize, isize) callconv(.c) NSAlertSize);
+    const sel = objc.sel("contentSizeForFrameSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle:");
+    const frame = NSAlertSize{ .w = 1000, .h = 1000 };
+    // NSNoBorder (0) · NSControlSizeRegular (0) — 본문 스크롤 보기 설정과 같다.
+    const with = contentSizeFor(NSScrollView, sel, frame, null, NSScroller, 0, 0, style);
+    const without = contentSizeFor(NSScrollView, sel, frame, null, null, 0, 0, style);
+    return @max(0, without.w - with.w);
+}
+
 /// #795 — 세 OS 공통 하한 (`ui_metrics`). 예전에는 호출부마다 320 · 360 리터럴이었다.
 const dialog_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_MIN_WIDTH_PT);
 const dialog_prompt_min_accessory_w: f64 = @floatFromInt(ui_metrics.DIALOG_PROMPT_MIN_WIDTH_PT);
@@ -873,8 +893,10 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
 
     // #795 — 폭 · 넓히기 · 스크롤 판단은 세 OS 공통 (`dialog_fit.fit`). 여기서는 AppKit 의 값만
     // 넘긴다 — 줄마다 잰 가장 긴 줄 (`dialogLongestLineWidth`, 경계에서 접히지 않게 4pt 여유), 그리고
-    // 그 폭에서 접은 높이. NSScrollView 는 scroller 를 켜면 스스로 content 폭을 줄이므로
-    // `scrollbar_w` 는 0 이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
+    // 그 폭에서 접은 높이 (scroller 없이). 스크롤할 때 scroller 가 글 자리를 차지하는 폭은
+    // `dialogVerticalScrollerWidth` 가 이 스크롤 보기의 scroller 방식으로 재서 넘긴다 — 공통 규칙 4 가
+    // 그만큼 글 영역을 넓혀 접는 폭을 지킨다 (#795). NSScrollView 는 scroller 를 켜면 스스로 content
+    // 폭을 그만큼 줄이고, 아래에서 scroller 를 켠 뒤 다시 잰다.
     const minimum_size = NSAlertSize{ .w = min_accessory_w, .h = initial_body_h };
     const measurer = struct {
         scroll: objc.id,
@@ -916,6 +938,7 @@ fn makeDialogBody(alert: objc.id, body: []const u8, reserved_h: f64, minimum_w: 
         .preferred_w = preferred_accessory_w,
         .max_w = max_accessory_w,
         .body_max_h = max_accessory_h,
+        .scrollbar_w = dialogVerticalScrollerWidth(scroll),
     });
     accessory_w = fitted.width;
     var natural = measureDialogBodyAtWidth(
