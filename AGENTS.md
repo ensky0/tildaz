@@ -1593,6 +1593,18 @@ ls /run/user/$(id -u)/tildaz-dev/run/                                    # insta
 | Windows | **자리** (raw scan code) | `0x29`. `RegisterHotKey` 가 아니라 `WH_KEYBOARD_LL` 훅으로 잡아요 — 아래 |
 | macOS | 자리 (`kVK_*`) | 변화 없음 |
 
+**Shift 와 기호를 함께 적은 hotkey (`ctrl+shift+]`) 도 데스크톱마다 갈려요** ([#760](https://github.com/ensky0/tildaz/issues/760)).
+KDE 는 Shift 를 글자에 접어서 봐요 — `Ctrl+Shift+]` 로 등록하면 실제 키에 안 맞고 `Ctrl+}` 여야 맞았어요 (2026-10-18
+실측). sway 는 키 자리로 등록해서 그대로 맞았어요. 다른 데스크톱은 [`tool/shift-hotkey-check_linux.sh`](tool/shift-hotkey-check_linux.sh)
+를 그 세션에서 돌려 재요 — 실제 dev config 폴더에 `config_9.toml` 하나를 두고 uinput 으로 눌러 앱 로그로 판정한 뒤 다
+지워요. 맨 앞의 대조군 `ctrl+alt+]` 가 토글되지 않으면 나머지 결과는 믿지 않아요.
+
+- **시작 안내 다이얼로그가 회차를 망쳐요.** 키가 빠진 config 로 띄우면 안내 다이얼로그가 layer-shell `exclusive` 로
+  키보드를 독점해서, 누른 키가 데스크톱 단축키에 닿지 않아요. 도구는 격리 폴더에서 worker 를 잠깐 띄워 이번 판의
+  완전한 템플릿을 만들어 써요.
+- **KDE 의 단축키 신호는 D-Bus 로 바로 보여요** — `dbus-monitor --session "interface='org.kde.kglobalaccel.Component',member='globalShortcutPressed'"`.
+  앱 로그보다 먼저 "KDE 가 키를 맞췄는가" 를 갈라요. `setShortcutKeys` 를 `gdbus` 로 불러 Qt 값을 바꿔 가며 재 볼 수 있어요.
+
 **Windows 는 `RegisterHotKey` 로 위치 표기를 담을 수 없어요 — 실측으로 확정.** 그 API 는 VK 만 받는데 VK 는 layout DLL 이 배정하는 값이라 자판마다 자리가 움직여요 (`VK_OEM_3` 이 US `0x29` · 프랑스어 legacy `0x28` · 독일어 `0x27`). 그래서 자리를 VK 로 한 번 풀어 등록하면 그 값은 *그 layout 에서만* 맞아요. 처음 구현은 그 파생값을 캐시하고 `WM_INPUTLANGCHANGE` 에서 다시 풀었는데, **숨은 채 layout 이 바뀌면 핫키가 다른 물리 키로 옮겨갔어요** (실측: `[Backquote]` 로 적었는데 `1` 왼쪽 키는 죽고 `'` 키가 창을 띄웠어요 — [#512 코멘트](https://github.com/ensky0/tildaz/pull/512#issuecomment-5412301433)). 그 메시지가 **스레드별이고 포커스를 얻을 때** 와서, 핫키가 먹어야 포커스를 얻고 포커스를 얻어야 갱신되는 순환이라 그 구조로는 창을 좁힐 수만 있고 닫을 수 없어요.
 
 그래서 **위치 표기만 `WH_KEYBOARD_LL` 훅**으로 잡아요. `KBDLLHOOKSTRUCT.scanCode` 가 layout 이 개입하지 않은 raw 값이고 위치 표기가 뜻하는 것이 정확히 그 값이라, 변환도 캐시도 갱신도 없어져요. **라벨 표기는 계속 `RegisterHotKey`** 예요 — 라벨은 OS 가 keypress 시점에 layout DLL 로 풀어 주는 게 옳은 동작이고, 그래서 훅의 대가는 위치 표기를 쓴 사용자에게만 발생해요.

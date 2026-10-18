@@ -44,6 +44,8 @@ KEYS = {
     "a": 30, "t": 20, "w": 17, "q": 16,
     # #693 — 전역 hotkey 가 받는 글자 아닌 키.
     "PageUp": 104, "PageDown": 109, "Left": 105, "Right": 106, "Up": 103, "Down": 108,
+    # #760 — Shift 와 함께 누른 기호 (`ctrl+shift+]`) 의 데스크톱 등록 실기.
+    "bracketleft": 26, "bracketright": 27, "grave": 41, "1": 2,
 }
 
 SETTLE = 5.0
