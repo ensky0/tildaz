@@ -28,11 +28,24 @@ const font_spec = @import("../spec.zig");
 
 pub const MAX_CHAIN: usize = font_constants.MAX_CHAIN;
 
-/// #289 B5 — system fallback face 의 상한. chain 밖 codepoint 가 요구하는
-/// 스크립트 다양성의 실사용 범위(수 개)를 넉넉히 덮되, 비정상 입력이 face
-/// 를 무한 로드하지 않게 cap. 도달 시 신규 로드만 중단 (placeholder 로 degrade,
+/// #289 B5 — system fallback face 의 상한. 비정상 입력 (유니코드 표 전체 출력 등) 이 face
+/// 를 끝없이 로드하지 않게 막는다. 도달 시 신규 로드만 중단 (placeholder 로 degrade,
 /// 로그 1줄) — 기로드 face 는 계속 동작.
-const MAX_FALLBACK: usize = 8;
+///
+/// #780 — 8 에서 **127** 로 올렸다. 8 은 12 개 문자 묶음 (히브리 · 아랍 · 태국 · 기호 등)
+/// 만으로 다 찼다. face 는 필요할 때만 로드하고 하나에 약 100 KB 라 상한을 올려도 평소
+/// 메모리는 같다. 127 은 `face_idx` (`u8`) 에서 fallback 이 쓸 수 있는 칸 전부다 —
+/// `FALLBACK_FACE_BASE` (`0x80`) 부터 `0xFE` 까지이고, `0xFF` 는 GPU atlas 키가 "codepoint
+/// 경로" 표시로 쓴다 (`renderer/linux/gl_atlas.zig` 의 `codepoint_face`). 유니코드 전체는
+/// 127 로도 못 덮어서 (#780 실측) `face_idx` 를 넓힐 이유가 없다.
+const MAX_FALLBACK: usize = 0xFF - FALLBACK_FACE_BASE;
+
+comptime {
+    // fallback 의 마지막 face_idx 가 `0xFF` (atlas 의 codepoint 표시) 와 겹치지 않는다.
+    std.debug.assert(@as(usize, FALLBACK_FACE_BASE) + MAX_FALLBACK - 1 < 0xFF);
+    // chain 이 fallback 구간을 침범하지 않는다.
+    std.debug.assert(MAX_CHAIN <= FALLBACK_FACE_BASE);
+}
 
 /// #419 — `face_idx` 에서 **system fallback face 를 가리키는 구간**의 시작.
 ///
@@ -263,6 +276,9 @@ pub const Context = struct {
     /// / shape 경로의 face_idx 는 chain 만 가리키므로 index 충돌 없음.
     fallback_faces: [MAX_FALLBACK]?Face,
     fallback_count: usize,
+    /// #780 — 상한 (`MAX_FALLBACK`) 에 닿았다는 로그를 남겼는가. 닿은 뒤에는 새 글자마다
+    /// 같은 줄이 쌓이므로 처음 한 번만 남긴다.
+    fallback_cap_logged: bool,
     /// (cp, 모양 요청) → fallback_faces index. **null = 시스템 전체에 없음** (negative
     /// cache — 없으면 미보유 cp 가 cell 마다 매 frame fontconfig 왕복 유발).
     ///
@@ -327,6 +343,7 @@ pub const Context = struct {
             .styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1),
             .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
             .fallback_count = 0,
+            .fallback_cap_logged = false,
             .system_fallback = std.AutoHashMap(u32, ?u8).init(allocator),
             .resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count,
             .resolved = .{std.AutoHashMap(u21, *const Glyph).init(allocator)} ** font_constants.FaceStyle.count,
@@ -553,6 +570,7 @@ pub const Context = struct {
             slot.* = null;
         }
         self.fallback_count = 0;
+        self.fallback_cap_logged = false;
     }
 
     /// #401 — 합성 비트맵을 전부 버린다. 맵 자체는 남긴다 (`deinit` 이 마지막에 없앤다).
@@ -761,15 +779,7 @@ pub const Context = struct {
     /// #771 — `want` 를 주면 **그 모양의 글리프만** 돌려준다. 후보 글꼴은 fontconfig 가 글꼴
     /// 단위로 고르고 (`loadFallbackForCp`), 여기서 글리프를 그려 본 결과로 확정한다.
     fn systemFallbackGlyph(self: *Context, cp: u21, want: ?Presentation) ?*const Glyph {
-        const key = fallbackKey(cp, want);
-        const idx: u8 = blk: {
-            if (self.system_fallback.get(key)) |entry| {
-                break :blk entry orelse return null; // null = 시스템 전체 미보유 확정
-            }
-            const loaded = self.loadFallbackForCp(cp, want);
-            self.system_fallback.put(key, loaded) catch {};
-            break :blk loaded orelse return null;
-        };
+        const idx = self.systemFallbackIndex(cp, want) orelse return null;
         const face = if (self.fallback_faces[idx]) |*f| f else return null;
         const g = rasterCached(self.allocator, self.ft_api, face, cp) orelse return null;
         if (want) |w| {
@@ -778,25 +788,33 @@ pub const Context = struct {
         return g;
     }
 
-    /// cp 를 보유한 system fallback face 의 index 를 반환 — 필요 시 fontconfig
-    /// charset 매치로 lazy 로드. null = 시스템 전체 미보유 / 로드 실패 (caller
-    /// 가 negative cache 기록).
+    /// #780 — (cp, 모양) 의 system fallback face index. 단일 글자 (`systemFallbackGlyph`) 와
+    /// cluster (`tryClusterOnFallback`) 가 함께 쓴다. fontconfig 왕복은 조합당 처음 한 번이다.
+    /// null = 시스템 전체 미보유 (negative cache — 없으면 미보유 cp 가 cell 마다 매 frame
+    /// fontconfig 왕복을 부른다).
+    fn systemFallbackIndex(self: *Context, cp: u21, want: ?Presentation) ?u8 {
+        const key = fallbackKey(cp, want);
+        if (self.system_fallback.get(key)) |entry| return entry;
+        const loaded = self.loadFallbackForCp(cp, want);
+        self.system_fallback.put(key, loaded) catch {};
+        return loaded;
+    }
+
+    /// cp 를 보유한 system fallback face 의 index 를 반환 — fontconfig charset 매치로 고르고
+    /// 처음이면 로드한다. null = 시스템 전체 미보유 / 로드 실패. caller 는
+    /// `systemFallbackIndex` 하나다 (결과를 캐시한다).
+    ///
+    /// #780 — **언제나 fontconfig 의 답을 쓴다.** 예전에는 묻기 전에 이미 로드한 fallback face
+    /// 중 cp 를 가진 첫 face 를 썼는데 (#289 B5 — 왕복 절약), cp 를 가진 시스템 글꼴이 둘
+    /// 이상이면 **먼저 로드한 쪽**이 이겨서 같은 글자가 그리는 순서에 따라 다른 글꼴로 나왔다.
+    /// kitty 와 같은 방식이다 (`fonts.c` 의 `fallback_font` — 처음 보는 글자마다 fontconfig 에
+    /// 묻고 결과를 캐시). 비용은 처음 보는 (cp, 모양) 마다 fontconfig 질의 하나다 (#780 실측 —
+    /// 글자당 약 0.2 ms 더).
     ///
     /// #771 — `want` 를 주면 **그 모양의 글꼴** (컬러 / 흑백) 만 후보로 본다. 판정은 글꼴
     /// 단위 (`FT_HAS_COLOR` · fontconfig `color`) 다 — fontconfig 가 글꼴 단위로만 물을 수 있어서다.
     /// 글리프 단위의 최종 판정은 caller 가 한다.
     fn loadFallbackForCp(self: *Context, cp: u21, want: ?Presentation) ?u8 {
-        // 기로드 fallback face 가 cp 를 보유하면 재사용 — fontconfig 왕복 회피
-        // (같은 스크립트의 cp 들이 한 face 로 묶이는 일반 케이스).
-        for (self.fallback_faces[0..self.fallback_count], 0..) |slot, idx| {
-            const existing = slot orelse continue;
-            if (self.ft_api.get_char_index(existing.ft_face, cp) == 0) continue;
-            if (want) |w| {
-                if (faceHasColor(existing.ft_face) != (w == .emoji)) continue;
-            }
-            return @intCast(idx);
-        }
-
         const want_color: ?bool = if (want) |w| w == .emoji else null;
         const fc_result = fontconfig.lookupForChar(self.allocator, cp, want_color) catch |err| {
             log.appendLineVerbose("font", "system fallback lookup failed cp=U+{X} want={s} err={s}", .{ cp, presentationName(want), @errorName(err) });
@@ -809,16 +827,26 @@ pub const Context = struct {
             self.allocator.free(fc_result.path);
         };
 
-        // 매치된 face 가 기로드 face 와 같으면 그 face 는 위 pre-scan 에서 이미
-        // cp 미보유 판정 — fontconfig charset metadata 와 cmap 의 불일치 케이스.
+        // #780 — 매치된 face 를 이미 로드했으면 그 face 를 다시 쓴다. 상한 검사보다 먼저라
+        // 상한에 닿은 뒤에도 기로드 face 의 글자는 계속 그려진다. 아래 새 face 와 같은 두
+        // 검사를 거친다 — fontconfig charset 은 metadata 라 cmap 과 어긋날 수 있고, 옛
+        // fontconfig 는 `color` 조건을 무시한다.
         // #428 — `.ttc` 는 한 path 에 face 가 여러 벌이라 index 까지 같아야 같은 face 다.
-        for (self.fallback_faces[0..self.fallback_count]) |slot| {
+        for (self.fallback_faces[0..self.fallback_count], 0..) |slot, idx| {
             const existing = slot orelse continue;
-            if (std.mem.eql(u8, existing.path, fc_result.path) and existing.index == fc_result.index) return null;
+            if (!std.mem.eql(u8, existing.path, fc_result.path) or existing.index != fc_result.index) continue;
+            if (self.ft_api.get_char_index(existing.ft_face, cp) == 0) return null;
+            if (want) |w| {
+                if (faceHasColor(existing.ft_face) != (w == .emoji)) return null;
+            }
+            return @intCast(idx);
         }
 
         if (self.fallback_count >= MAX_FALLBACK) {
-            log.appendLine("font", "system fallback cap ({d}) reached — cp=U+{X} placeholder", .{ MAX_FALLBACK, cp });
+            if (!self.fallback_cap_logged) {
+                self.fallback_cap_logged = true;
+                log.appendLine("font", "system fallback cap ({d}) reached at cp=U+{X} — new fallback fonts are skipped from now on", .{ MAX_FALLBACK, cp });
+            }
             return null;
         }
 
@@ -1445,8 +1473,11 @@ pub const Context = struct {
     ///
     /// #771 — `want` 를 주면 그 모양의 글꼴만 후보로 보고 (`loadFallbackForCp`), shape 결과의
     /// 글리프로 한 번 더 확인한다.
+    ///
+    /// #780 — face 는 단일 글자와 같은 (cp, 모양) 캐시 (`systemFallbackIndex`) 로 고른다. 같은
+    /// base 의 cluster 가 여럿이어도 fontconfig 왕복은 한 번이고, 단일 글자와 같은 face 를 쓴다.
     fn tryClusterOnFallback(self: *Context, cps: []const u21, want: ?Presentation) ?ClusterGlyph {
-        const fb_idx = self.loadFallbackForCp(cps[0], want) orelse return null;
+        const fb_idx = self.systemFallbackIndex(cps[0], want) orelse return null;
         const g = self.tryClusterOnFace(FALLBACK_FACE_BASE + fb_idx, cps) orelse return null;
         if (want) |w| {
             if (self.clusterPresentation(g) != w) return null;
