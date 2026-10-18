@@ -191,6 +191,18 @@ pub extern "CoreText" fn CTFontGetSymbolicTraits(font: CTFontRef) u32;
 pub const kCTFontTraitItalic: u32 = 1 << 0;
 pub const kCTFontTraitBold: u32 = 1 << 1;
 
+/// #759 — 같은 글꼴에 변환 행렬만 바꾼 사본. 합성 기울임에 쓴다 (`size` 0 은 크기 유지 —
+/// Ghostty `face/coretext.zig` 의 `syntheticItalic` 과 같은 호출).
+pub extern "CoreText" fn CTFontCreateCopyWithAttributes(
+    font: CTFontRef,
+    size: CGFloat,
+    matrix: ?*const CGAffineTransform,
+    attributes: ?*anyopaque,
+) ?CTFontRef;
+
+/// #759 — 글꼴 크기 (pt). 합성 굵기의 외곽선 두께를 글꼴 크기에서 구한다.
+pub extern "CoreText" fn CTFontGetSize(font: CTFontRef) CGFloat;
+
 pub extern "CoreText" fn CTFontCreateCopyWithSymbolicTraits(
     font: CTFontRef,
     size: CGFloat,
@@ -307,6 +319,21 @@ pub extern "CoreGraphics" fn CGBitmapContextCreate(
 ) ?CGContextRef;
 
 pub extern "CoreGraphics" fn CGContextRelease(ctx: CGContextRef) void;
+
+/// #759 — 합성 굵기. 글자를 채우면서 외곽선도 그린다 (`kCGTextFillStroke`). 값은 `CGContext.h`
+/// 의 `CGTextDrawingMode` 순서다 (Fill 0 · Stroke 1 · FillStroke 2 — Ghostty
+/// `graphics/context.zig` 의 `TextDrawingMode` 와 같은 순서).
+pub const kCGTextFill: i32 = 0;
+pub const kCGTextFillStroke: i32 = 2;
+pub extern "CoreGraphics" fn CGContextSetTextDrawingMode(ctx: CGContextRef, mode: i32) void;
+pub extern "CoreGraphics" fn CGContextSetLineWidth(ctx: CGContextRef, width: CGFloat) void;
+pub extern "CoreGraphics" fn CGContextSetRGBStrokeColor(
+    ctx: CGContextRef,
+    red: CGFloat,
+    green: CGFloat,
+    blue: CGFloat,
+    alpha: CGFloat,
+) void;
 
 pub extern "CoreGraphics" fn CGContextSetRGBFillColor(
     ctx: CGContextRef,

@@ -22,6 +22,7 @@ const font_constants = @import("../constants.zig");
 const ligature = @import("../ligature.zig");
 const cluster_cache = @import("../cluster_cache.zig");
 const presentation = @import("../presentation.zig");
+const synthetic = @import("../synthetic.zig");
 const Presentation = presentation.Presentation;
 const font_spec = @import("../spec.zig");
 
@@ -182,6 +183,10 @@ pub const Face = struct {
     /// 안 되거나 dlopen 실패 시 null — 그 경우 `shapeRun` 도 fallback (= 단순
     /// codepoint loop).
     hb_font: ?*harfbuzz.hb_font_t = null,
+    /// #759 — 이 face 로 그릴 때 합성할 스타일. fontconfig 가 요청한 스타일의 파일이 없다고
+    /// 알려 준 변종 face 에만 붙는다 ([`loadStyledFace`](#loadStyledFace)). 같은 파일을 regular
+    /// face 와 따로 열어 두므로 글리프 캐시도 따로라, 합성한 그림이 regular 그림과 섞이지 않는다.
+    synthetic: synthetic.Synthetic = .{},
 
     fn deinit(self: *Face, ft_api: freetype.Api, hb_api: ?*const harfbuzz.Api) void {
         var it = self.glyph_cache.valueIterator();
@@ -494,7 +499,7 @@ pub const Context = struct {
                 self.ascent_px,
                 self.descent_px,
             );
-            self.placeholder = rasterOne(self.allocator, self.ft_api, ft_face, '?') catch self.placeholder;
+            self.placeholder = rasterOne(self.allocator, self.ft_api, ft_face, '?', .{}) catch self.placeholder;
         }
     }
 
@@ -649,9 +654,13 @@ pub const Context = struct {
         }
     }
 
-    /// 같은 family 의 변종 face 하나. **fontconfig 가 regular 와 같은 파일을 돌려주면
-    /// `null`** 을 준다 — 그 family 에 해당 변종이 없다는 뜻이고, 같은 파일을 두 번
-    /// 열어 메모리와 atlas 를 낭비할 이유가 없다.
+    /// 같은 family 의 변종 face 하나. **fontconfig 가 regular 와 같은 파일을 돌려주고 합성
+    /// 표시도 없으면 `null`** 을 준다 — 그 family 에 해당 변종이 없다는 뜻이고, 같은 파일을
+    /// 두 번 열어 메모리와 atlas 를 낭비할 이유가 없다.
+    ///
+    /// #759 — fontconfig 가 **합성하라** 고 붙이면 (`MatchResult.synthetic`) 같은 파일이라도
+    /// 그 표시를 단 face 를 만든다. 다른 파일에도 붙을 수 있다 — Bold 파일만 있는 family 에
+    /// bold italic 을 요청하면 Bold 파일에 기울임 표시가 온다.
     fn loadStyledFace(self: *Context, base: Face, style: font_constants.FaceStyle) !?Face {
         const family_z = try self.allocator.allocSentinel(u8, base.family.len, 0);
         defer self.allocator.free(family_z);
@@ -665,7 +674,8 @@ pub const Context = struct {
 
         // #428 — `.ttc` 는 같은 path 에 regular 와 변종이 함께 있을 수 있어 index 까지 봐야
         // "같은 face" 를 바르게 판정한다.
-        if (std.mem.eql(u8, fc_result.path, base.path) and fc_result.index == base.index) return null;
+        if (std.mem.eql(u8, fc_result.path, base.path) and fc_result.index == base.index and
+            !fc_result.synthetic.any()) return null;
 
         const path_z = try self.allocator.allocSentinel(u8, fc_result.path.len, 0);
         defer self.allocator.free(path_z);
@@ -701,6 +711,7 @@ pub const Context = struct {
             .glyph_cache = std.AutoHashMap(u21, *Glyph).init(self.allocator),
             .glyph_by_index = std.AutoHashMap(u32, *Glyph).init(self.allocator),
             .hb_font = hb_font,
+            .synthetic = fc_result.synthetic,
         };
     }
 
@@ -1797,7 +1808,7 @@ pub fn familyInstalled(allocator: std.mem.Allocator, family: []const u8) FamilyA
 /// 경로가 공유.
 fn rasterCached(allocator: std.mem.Allocator, api: freetype.Api, face: *Face, cp: u21) ?*const Glyph {
     if (face.glyph_cache.get(cp)) |cached| return cached;
-    const g = rasterOne(allocator, api, face.ft_face, cp) catch return null;
+    const g = rasterOne(allocator, api, face.ft_face, cp, face.synthetic) catch return null;
     const slot = allocator.create(Glyph) catch {
         if (g.bitmap.len > 0) allocator.free(g.bitmap);
         return null;
@@ -1816,9 +1827,10 @@ fn rasterOne(
     api: freetype.Api,
     face: freetype.FT_Face,
     cp: u21,
+    synth: synthetic.Synthetic,
 ) !Glyph {
     const idx = api.get_char_index(face, cp);
-    return rasterByIndexInner(allocator, api, face, idx);
+    return rasterByIndexInner(allocator, api, face, idx, synth);
 }
 
 /// shape 결과의 glyph_index (codepoint 안 갖는 ligature idx 등) 로 직접 raster.
@@ -1829,7 +1841,7 @@ fn rasterByIndex(
     face: freetype.FT_Face,
     glyph_index: u32,
 ) !Glyph {
-    return rasterByIndexInner(allocator, api, face, glyph_index);
+    return rasterByIndexInner(allocator, api, face, glyph_index, .{});
 }
 
 fn rasterByIndexInner(
@@ -1837,11 +1849,16 @@ fn rasterByIndexInner(
     api: freetype.Api,
     face: freetype.FT_Face,
     idx: u32,
+    synth: synthetic.Synthetic,
 ) !Glyph {
-    // FT_LOAD_COLOR — emoji (BGRA) 도 raster. mono 폰트엔 무시.
-    const load_flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_COLOR;
-    if (api.load_glyph(face, idx, load_flags) != 0) return error.FreetypeLoadGlyphFailed;
-    const slot = face.glyph orelse return error.FreetypeNoGlyphSlot;
+    const slot = if (synth.any() and (face.face_flags & freetype.FT_FACE_FLAG_COLOR) == 0)
+        try loadSynthetic(api, face, idx, synth)
+    else blk: {
+        // FT_LOAD_COLOR — emoji (BGRA) 도 raster. mono 폰트엔 무시.
+        const load_flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_COLOR;
+        if (api.load_glyph(face, idx, load_flags) != 0) return error.FreetypeLoadGlyphFailed;
+        break :blk face.glyph orelse return error.FreetypeNoGlyphSlot;
+    };
     const bm = slot.bitmap;
 
     var bitmap_slice: []u8 = &.{};
@@ -1882,4 +1899,40 @@ fn rasterByIndexInner(
         .advance = advance_clamped,
         .pixel_mode = stored_pixel_mode,
     };
+}
+
+/// #759 — 합성 bold · italic 으로 글리프를 그린다. 외곽선으로 받아 굵히고 (가로 · 세로 em/50) 기울인
+/// (0.2) 뒤 비트맵으로 만든다. 순서는 Wine 의 DirectWrite 재구현과 같다 (굵힌 뒤 기울임 —
+/// `dwrite/freetype.c`). 값은 [`synthetic`](../synthetic.zig) 에 있다.
+///
+/// 컬러 글꼴은 부르지 않는다 (호출부가 거른다). 외곽선이 없는 글리프 (비트맵만 있는 글꼴) 는
+/// 합성하지 않고 평소처럼 그린다 — 비트맵은 기울이거나 굵힐 수 없다.
+fn loadSynthetic(api: freetype.Api, face: freetype.FT_Face, idx: u32, synth: synthetic.Synthetic) !*freetype.FT_GlyphSlotRec {
+    if (api.load_glyph(face, idx, freetype.FT_LOAD_NO_BITMAP) != 0) {
+        if (api.load_glyph(face, idx, freetype.FT_LOAD_RENDER) != 0) return error.FreetypeLoadGlyphFailed;
+        return face.glyph orelse error.FreetypeNoGlyphSlot;
+    }
+    const slot = face.glyph orelse return error.FreetypeNoGlyphSlot;
+    if (slot.format == freetype.FT_GLYPH_FORMAT_OUTLINE) {
+        if (synth.bold) {
+            // 26.6 고정소수 px. `FT_Outline_EmboldenXY` 는 획을 정확히 `xstrength` 만큼 넓힌다
+            // (Wine 의 em/24 를 Wine 위에서 도구로 재 보니 그대로 나왔다 — #759).
+            const ppem: f64 = if (face.size) |sz| @floatFromInt(sz.metrics.x_ppem) else 0;
+            const strength: freetype.FT_Pos = @intFromFloat(@round(synthetic.emboldenPx(ppem) * 64.0));
+            // 세로로도 같은 양 — DirectWrite 가 가로획도 굵힌다 (#759 Windows 측정).
+            if (strength > 0) _ = api.outline_embolden_xy(&slot.outline, strength, strength);
+        }
+        if (synth.italic) {
+            // 외곽선의 y 는 위로 커진다. x' = x + slant·y 라 위가 오른쪽으로 간다.
+            const shear = freetype.FT_Matrix{
+                .xx = 0x10000,
+                .xy = @intFromFloat(@round(synthetic.slant * 0x10000)),
+                .yx = 0,
+                .yy = 0x10000,
+            };
+            api.outline_transform(&slot.outline, &shear);
+        }
+    }
+    if (api.render_glyph(slot, freetype.FT_RENDER_MODE_NORMAL) != 0) return error.FreetypeRenderFailed;
+    return slot;
 }

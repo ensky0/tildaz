@@ -115,6 +115,8 @@ pub const DWRITE_READING_DIRECTION_LEFT_TO_RIGHT: u32 = 0;
 pub const DWRITE_NUMBER_SUBSTITUTION_METHOD_NONE: u32 = 0;
 
 pub const DWRITE_FONT_SIMULATIONS_NONE: u32 = 0;
+pub const DWRITE_FONT_SIMULATIONS_BOLD: u32 = 1;
+pub const DWRITE_FONT_SIMULATIONS_OBLIQUE: u32 = 2;
 
 // --- Structures ---
 
@@ -207,7 +209,8 @@ pub const IDWriteFactory = extern struct {
         UnregisterFontCollectionLoader: *const anyopaque,
         CreateFontFileReference: *const anyopaque,
         CreateCustomFontFileReference: *const anyopaque,
-        CreateFontFace: *const anyopaque,
+        /// #759 — 같은 글꼴 파일로 합성 플래그만 바꾼 face 를 만든다 (`dwrite.h`).
+        CreateFontFace: *const fn (*IDWriteFactory, u32, UINT32, [*]const ?*IUnknown, UINT32, u32, *?*IDWriteFontFace) callconv(.c) HRESULT,
         CreateRenderingParams: *const fn (*IDWriteFactory, *?*IDWriteRenderingParams) callconv(.c) HRESULT,
         CreateMonitorRenderingParams: *const anyopaque,
         CreateCustomRenderingParams: *const fn (*IDWriteFactory, FLOAT, FLOAT, FLOAT, u32, u32, *?*IDWriteRenderingParams) callconv(.c) HRESULT,
@@ -230,6 +233,10 @@ pub const IDWriteFactory = extern struct {
 
     pub fn QueryInterface(self: *IDWriteFactory, riid: *const GUID, ppv: *?*anyopaque) HRESULT {
         return self.vtable.QueryInterface(self, riid, ppv);
+    }
+
+    pub fn CreateFontFace(self: *IDWriteFactory, face_type: u32, files: []const ?*IUnknown, face_index: UINT32, simulations: u32, face: *?*IDWriteFontFace) HRESULT {
+        return self.vtable.CreateFontFace(self, face_type, @intCast(files.len), files.ptr, face_index, simulations, face);
     }
 
     pub fn GetSystemFontCollection(self: *IDWriteFactory, collection: *?*IDWriteFontCollection, check_for_updates: BOOL) HRESULT {
@@ -1176,10 +1183,11 @@ pub const IDWriteFontFace = extern struct {
         AddRef: *const fn (*IDWriteFontFace) callconv(.c) u32,
         Release: *const fn (*IDWriteFontFace) callconv(.c) u32,
         // IDWriteFontFace (15)
-        GetType: *const anyopaque,
-        GetFiles: *const anyopaque,
-        GetIndex: *const anyopaque,
-        GetSimulations: *const anyopaque,
+        // #759 — 합성 플래그만 바꾼 face 를 다시 만들 때 쓴다 (`dwrite.h`).
+        GetType: *const fn (*IDWriteFontFace) callconv(.c) u32,
+        GetFiles: *const fn (*IDWriteFontFace, *UINT32, ?[*]?*IUnknown) callconv(.c) HRESULT,
+        GetIndex: *const fn (*IDWriteFontFace) callconv(.c) UINT32,
+        GetSimulations: *const fn (*IDWriteFontFace) callconv(.c) u32,
         IsSymbolFont: *const anyopaque,
         GetMetrics: *const fn (*IDWriteFontFace, *DWRITE_FONT_METRICS) callconv(.c) void,
         GetGlyphCount: *const anyopaque,
@@ -1192,6 +1200,26 @@ pub const IDWriteFontFace = extern struct {
         GetGdiCompatibleMetrics: *const anyopaque,
         GetGdiCompatibleGlyphMetrics: *const anyopaque,
     };
+
+    pub fn GetType(self: *IDWriteFontFace) u32 {
+        return self.vtable.GetType(self);
+    }
+
+    pub fn GetIndex(self: *IDWriteFontFace) UINT32 {
+        return self.vtable.GetIndex(self);
+    }
+
+    pub fn GetSimulations(self: *IDWriteFontFace) u32 {
+        return self.vtable.GetSimulations(self);
+    }
+
+    /// 파일 개수를 먼저 묻고 `buf` 에 받는다. 받은 파일은 호출자가 `Release` 한다.
+    pub fn GetFiles(self: *IDWriteFontFace, buf: []?*IUnknown) ?[]?*IUnknown {
+        var n: UINT32 = 0;
+        if (self.vtable.GetFiles(self, &n, null) < 0 or n == 0 or n > buf.len) return null;
+        if (self.vtable.GetFiles(self, &n, buf.ptr) < 0) return null;
+        return buf[0..n];
+    }
 
     pub fn Release(self: *IDWriteFontFace) u32 {
         return self.vtable.Release(self);

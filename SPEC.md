@@ -2334,13 +2334,13 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 ### 12.5 SGR 1 · 3 — bold 굵기 · italic ([#375](https://github.com/ensky0/tildaz/issues/375))
 
-`\e[1m` 은 굵은 face, `\e[3m` 은 기울어진 face 로 그린다. 그 family 에 해당 face 가 없으면 **합성한다** (굵게 · 비스듬히). 지금은 Windows 만 합성하고 macOS · Linux 는 regular 로 그린다 — 아래 표.
+`\e[1m` 은 굵은 face, `\e[3m` 은 기울어진 face 로 그린다. 그 family 에 해당 face 가 없으면 **합성한다** (굵게 · 비스듬히). 세 OS 가 **같은 값**으로 합성한다 ([#759](https://github.com/ensky0/tildaz/issues/759)) — 아래 표.
 
 | 항목 | 사양 |
 |---|---|
 | face 선택 | **같은 family 에서 자동 style-match** — 각 OS 폰트 매칭 API 에 위임 |
 | config 키 | **없다.** `font.family_bold` 류를 두지 않는다 |
-| face 가 없는 family | **합성한다** — 굵게 · 비스듬히. Ghostty 의 `font-synthetic-style` 기본값 (*"By default, synthetic styles are enabled."*) 과 같다. Windows 는 DirectWrite 의 합성을 그대로 쓴다 ([#749](https://github.com/ensky0/tildaz/issues/749)). **macOS · Linux 는 미구현이라 아직 regular 로 그린다** ([#759](https://github.com/ensky0/tildaz/issues/759)) |
+| face 가 없는 family | **합성한다** — 굵게 · 비스듬히. Ghostty 의 `font-synthetic-style` 기본값 (*"By default, synthetic styles are enabled."*) 과 같다. 값은 세 OS 공통이고 [`font/synthetic.zig`](src/font/synthetic.zig) 한 곳에 있다 — **기울기 0.2 (11.3°)** (fontconfig `90-synthetic.conf` · WezTerm · iTerm2 와 같다), **굵기는 획을 가로 · 세로로 em/50** (DirectWrite 합성 bold 의 실측값 — 세로획 em/50, 가로획도 약 em/50. DirectWrite 는 양을 바꿀 수 없어 macOS · Linux 가 맞춘다). 글자 간격은 넓히지 않는다 (2026-10-17 결정 · [#759](https://github.com/ensky0/tildaz/issues/759)) |
 | 적용 범위 | **셀 본문 글리프만.** grapheme cluster (emoji) · ligature · IME preedit · 탭 제목 · system fallback 은 regular |
 | `bold_is_bright` | 그대로 유지 — 굵기와 색 승격은 독립이다 |
 
@@ -2348,9 +2348,9 @@ cache: 각 platform 이 `AutoHashMap(u64 또는 u128, ?LigatureMatch)` 보관 (k
 
 | platform | face 획득 | 없는 family 처리 |
 |---|---|---|
-| macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. regular 를 `CFRetain` 해 소유권을 통일 |
-| Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 실패하지 않는다. 변종 파일이 없으면 regular 를 굵게 · 비스듬히 **합성한 font** 를 준다 (`GetSimulations` ≠ 0) → 그대로 쓴다 ([#749](https://github.com/ensky0/tildaz/issues/749)) |
-| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치 → **regular 와 (파일, index) 가 같으면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 ([#428](https://github.com/ensky0/tildaz/issues/428) — `.ttc` 는 한 파일에 face 가 여러 벌이라 path 만 보면 다른 face 를 같은 것으로 오인한다) |
+| macOS | `CTFontCreateCopyWithSymbolicTraits` | 함수가 **null 을 준다** → 그 결과가 곧 "이 family 에 bold 가 있나" 의 답. 없는 스타일만 합성한다 (`styledCopy`) — 기울임은 기울임 행렬을 준 사본 글꼴 (`CTFontCreateCopyWithAttributes`), 굵기는 그릴 때 외곽선을 덧그린다 (`kCGTextFillStroke`, 두께 = 글꼴 크기 × 1/50). Bold+Italic 은 Bold 파일이 있으면 그 위에 기울임만 합성한다 |
+| Windows | `GetFirstMatchingFont` 의 weight / style 인자 | 함수가 실패하지 않는다. 변종 파일이 없으면 regular 를 굵게 · 비스듬히 **합성한 font** 를 준다 (`GetSimulations` ≠ 0). **굵기 합성은 그대로 쓰고, 기울임 합성 (0.340) 은 빼서** 같은 파일로 face 를 다시 만든 뒤 그릴 때 `CreateGlyphRunAnalysis` 의 변환으로 0.2 를 준다 |
+| Linux | fontconfig `lookupStyled` (weight / slant) | fontconfig 도 근접 매치. 기본 설정 (`90-synthetic.conf`) 이 없는 스타일에 `embolden` · 기울임 행렬을 붙여 주면 그 표시로 합성한다 — 값은 fontconfig 것이 아니라 공통 값이다. 표시도 없고 **regular 와 (파일, index) 가 같으면 `null`** 로 두어 같은 face 를 두 번 열지 않는다 ([#428](https://github.com/ensky0/tildaz/issues/428) — `.ttc` 는 한 파일에 face 가 여러 벌이라 path 만 보면 다른 face 를 같은 것으로 오인한다). 사용자가 fontconfig 로 그 규칙을 끄면 합성하지 않는다 |
 
 **Linux · Windows 는 변종 조회에 *해석된 정식 family* 를 쓴다** — 사용자가 적은 원문이 아니다 ([#409](https://github.com/ensky0/tildaz/issues/409)). `font.family` 에 PostScript 이름이나 다른 표기를 적었을 때 원문으로 조회하면 **엉뚱한 폰트의 변종**이 온다: Linux 실측에서 `DejaVuSansMono-Bold` 의 bold 조회가 `NotoSansCJK-Bold.ttc` 로 갔고, `NotoSerifKannada-Light` 는 `NotoSerifCJK-Bold.ttc` 로 갔다. 그래서 Linux 는 `Face.family` 에 §7 의 이름 해석 결과 (정식 family) 를 담고 변종 조회는 그 이름으로 한다.
 
@@ -2387,7 +2387,7 @@ glyph index 는 폰트 안에서만 뜻이 있어서 cluster 키에는 폰트 �
 
 **family 이름이 아니라 PostScript 이름이다.** `Menlo-Bold` 와 `Menlo-Regular` 는 family 가 둘 다 `"Menlo"` 라, family 로 묶으면 굵기가 다른 그림이 한 칸을 나눠 쓴다 — [#529](https://github.com/ensky0/tildaz/issues/529) 가 그것이었다.
 
-**Windows 는 합성 변종을 PostScript 이름과 함께 갈라야 한다** ([#749](https://github.com/ensky0/tildaz/issues/749)). 변종 파일이 없는 폰트에 `GetFirstMatchingFont` 이 주는 것은 regular 를 비스듬히 · 굵게 **합성한** font 인데, PostScript 이름은 regular 와 같다. 실측에서 `Malgun Gothic` 의 italic (`GetSimulations` = 2) 이 regular 와 같은 id `7af3d9b85a9464a3` 였고, 같은 글리프 번호의 똑바른 그림과 기울인 그림이 한 칸을 나눠 써 **한글 일부가 기울어져** 나왔다. 그래서 Windows 는 합성 비트가 0 이 아니면 그것을 id 에 섞는다 (`withSimulations`). 합성이 없는 폰트는 id 가 그대로다. macOS · Linux 는 합성 변종을 만들지 않아 해당이 없다.
+**Windows 는 합성 변종을 PostScript 이름과 함께 갈라야 한다** ([#749](https://github.com/ensky0/tildaz/issues/749)). 변종 파일이 없는 폰트에 `GetFirstMatchingFont` 이 주는 것은 regular 를 비스듬히 · 굵게 **합성한** font 인데, PostScript 이름은 regular 와 같다. 실측에서 `Malgun Gothic` 의 italic (`GetSimulations` = 2) 이 regular 와 같은 id `7af3d9b85a9464a3` 였고, 같은 글리프 번호의 똑바른 그림과 기울인 그림이 한 칸을 나눠 써 **한글 일부가 기울어져** 나왔다. 그래서 Windows 는 합성 비트가 0 이 아니면 그것을 id 에 섞는다 (`withSimulations`). 합성이 없는 폰트는 id 가 그대로다. macOS 의 합성 사본도 PostScript 이름이 regular 와 같아서 같은 이유로 합성 여부를 id 에 섞는다 (`synthetic.mixId`, [#759](https://github.com/ensky0/tildaz/issues/759)). Linux 는 합성 face 를 regular 와 따로 열고 atlas 키에 스타일이 이미 실려 있어 (§12.5) 해당이 없다.
 
 **단일 글리프 경로도 id 를 반드시 싣는다.** Windows 의 결과 구조체 (`GlyphResult` · `ClusterResult`) 는 `font_id` 에 기본값을 두지 않는다. 기본값 `0` 이 있던 동안 단일 글리프 경로 하나가 그 값을 빠뜨려 **모든 폰트가 id 0 하나를 나눠 썼고**, `Malgun Gothic` 의 `사` (글리프 1740) 자리에 `Cascadia Code` 의 `8` (같은 1740) 이 그려졌다 (#749). 빠뜨리면 컴파일이 실패해야 한다.
 

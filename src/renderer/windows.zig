@@ -1192,7 +1192,7 @@ pub const D3d11Renderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                        const entry = c.self.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                        const entry = c.self.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                             if (result.owned) _ = result.face.vtable.Release(result.face);
                             return;
                         };
@@ -1705,6 +1705,8 @@ pub const D3d11Renderer = struct {
                     .offsets = single_offsets,
                     .count = 1,
                     .owned = single.owned,
+                    // #759 — 빠뜨리면 DirectWrite 합성을 뺀 face 가 기울지 않고 똑바로 그려진다.
+                    .slant = single.slant,
                 };
                 _ = emitClusterInstance(self, text_buf[0..], &text_count, bg_buf[0..], &block_count, single_result, x, fy, cw, x_pad, fg_rgb, if (raw.wide == .wide) 2.0 else 1.0, 0);
                 x += 1;
@@ -1772,7 +1774,7 @@ pub const D3d11Renderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_bg_n >= pre_bg_buf.len) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.insertOrGrow(result.face, result.font_id, result.index, .terminal) orelse {
+                const entry = self.insertOrGrow(result.face, result.font_id, result.index, .terminal, result.slant) orelse {
                     if (result.owned) _ = result.face.vtable.Release(result.face);
                     continue;
                 };
@@ -2076,7 +2078,7 @@ pub const D3d11Renderer = struct {
                         x += adv;
                         continue;
                     };
-                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         x += adv;
                         continue;
@@ -2114,7 +2116,7 @@ pub const D3d11Renderer = struct {
                 fn put(c: @This(), g: search_bar.Glyph) void {
                     if (c.n.* >= c.out.len) return;
                     const result = c.r.tab_font.resolveGlyph(g.cp, .regular) orelse return;
-                    const entry = c.r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = c.r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         return;
                     };
@@ -2233,7 +2235,7 @@ pub const D3d11Renderer = struct {
                 while (iter.nextCodepoint()) |cp| {
                     if (n.* >= out.len) return;
                     const result = r.tab_font.resolveGlyph(cp, .regular) orelse continue;
-                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab) orelse {
+                    const entry = r.insertOrGrow(result.face, result.font_id, result.index, .tab, false) orelse {
                         if (result.owned) _ = result.face.vtable.Release(result.face);
                         continue;
                     };
@@ -2357,10 +2359,11 @@ pub const D3d11Renderer = struct {
     /// #762 — 탭바 · 스트립 · 검색바 · 메뉴 글자도 여기를 지난다 (`source = .tab`). 그 자리들도
     /// 인스턴스를 모았다 한 번에 그리므로 ① 비우기를 하지 않는 이 함수가 맞다. 탭 atlas 가 따로이던
     /// 때는 그쪽이 커지지 않아 차면 글자를 건너뛰었다.
-    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16, source: atlas_common.GlyphSource) ?AtlasEntry {
-        var entry = self.atlas.getOrInsert(face, font_id, index, source);
+    /// #759 — `slant` 는 `GlyphResult.slant` 를 그대로 넘긴다. 탭바 글자는 스타일이 없어 `false` 다.
+    fn insertOrGrow(self: *D3d11Renderer, face: *dw.IDWriteFontFace, font_id: u64, index: u16, source: atlas_common.GlyphSource, slant: bool) ?AtlasEntry {
+        var entry = self.atlas.getOrInsert(face, font_id, index, source, slant);
         while (entry == null and self.atlas.is_full and self.atlas.grow()) {
-            entry = self.atlas.getOrInsert(face, font_id, index, source);
+            entry = self.atlas.getOrInsert(face, font_id, index, source, slant);
         }
         return entry;
     }
@@ -2460,11 +2463,11 @@ pub const D3d11Renderer = struct {
             self.drawTextInstances(text_buf[0..text_count.*]);
             text_count.* = 0;
         }
-        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+        var entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         // #586 — **먼저 키운다** (macOS #584 ② 와 같다). 키우면 프레임 중간에 비우는 상황이 없어 이미
         // emit 한 UV 가 무효화되지 않는다. 상한이면 아래 ① 안전망으로.
         while (entry_opt == null and self.atlas.is_full and self.atlas.grow()) {
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         }
         if (entry_opt == null and self.atlas.is_full) {
             if (text_count.* > 0) {
@@ -2476,7 +2479,7 @@ pub const D3d11Renderer = struct {
                 block_count.* = 0;
             }
             self.atlas.reset();
-            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal);
+            entry_opt = self.atlas.getOrInsertCluster(result.face, result.font_id, result.indices[0..result.count], result.advances[0..result.count], result.offsets[0..result.count], result.overlay_marks, .terminal, result.slant);
         }
         const entry = entry_opt orelse {
             if (result.owned) _ = result.face.vtable.Release(result.face);
@@ -2548,7 +2551,7 @@ pub const D3d11Renderer = struct {
         const base_ink_center = @as(f32, @floatFromInt(base.entry.bearing_x)) + @as(f32, @floatFromInt(base.entry.w)) / 2.0;
 
         for (split.marks[0..split.mark_count]) |m| {
-            const me = self.insertOrGrow(m.face, m.font_id, m.index, .terminal) orelse {
+            const me = self.insertOrGrow(m.face, m.font_id, m.index, .terminal, m.slant) orelse {
                 if (m.owned) _ = m.face.vtable.Release(m.face);
                 continue;
             };

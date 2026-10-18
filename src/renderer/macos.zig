@@ -951,12 +951,13 @@ pub const MetalRenderer = struct {
     ///
     /// #762 — 탭바 · 스트립 · 검색바 · 메뉴 글자도 여기를 지난다 (`source = .tab`). 탭 atlas 가 따로
     /// 이던 때는 그쪽이 커지지도 비우지도 않아 차면 글자를 조용히 버렸다.
-    fn insertGlyphOrRecover(self: *MetalRenderer, font: ct.CTFontRef, font_id: u64, index: ct.CGGlyph, source: atlas_common.GlyphSource) ?macos_glyph_atlas.AtlasEntry {
-        var entry = self.atlas.getOrInsert(font, font_id, index, source);
+    /// #759 — `bold` 는 `GlyphResult.bold` (합성 bold) 를 그대로 넘긴다. 탭바 · 합자 글자는 `false` 다.
+    fn insertGlyphOrRecover(self: *MetalRenderer, font: ct.CTFontRef, font_id: u64, index: ct.CGGlyph, source: atlas_common.GlyphSource, bold: bool) ?macos_glyph_atlas.AtlasEntry {
+        var entry = self.atlas.getOrInsert(font, font_id, index, source, bold);
         var tries: u8 = 0;
         while (entry == null and self.atlas.is_full and tries < 3) : (tries += 1) {
             if (!self.recoverFromAtlasFull()) break;
-            entry = self.atlas.getOrInsert(font, font_id, index, source);
+            entry = self.atlas.getOrInsert(font, font_id, index, source, bold);
         }
         return entry;
     }
@@ -1480,7 +1481,7 @@ pub const MetalRenderer = struct {
                     x += 1;
                     continue;
                 };
-                const single_opt = self.insertGlyphOrRecover(result.font, result.font_id, result.index, .terminal);
+                const single_opt = self.insertGlyphOrRecover(result.font, result.font_id, result.index, .terminal, result.bold);
                 const entry = single_opt orelse {
                     mac_font.releaseCluster(result);
                     x += 1;
@@ -1577,7 +1578,7 @@ pub const MetalRenderer = struct {
             while (utf8_iter.nextCodepoint()) |cp| {
                 if (pre_n >= 16) break;
                 const result = self.font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index), .terminal) orelse {
+                const entry = self.atlas.getOrInsert(result.font, result.font_id, @intCast(result.index), .terminal, false) orelse {
                     mac_font.releaseCluster(result);
                     continue;
                 };
@@ -1714,7 +1715,7 @@ pub const MetalRenderer = struct {
                 tab_layout.iterTabText(title, text_x_start, cw_, max_w, total_text_w > max_w, ctx, struct {
                     fn cb(c: TitleCtx, g: tab_layout.Glyph) void {
                         const result = c.self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-                        const entry = c.self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
+                        const entry = c.self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab, false) orelse {
                             mac_font.releaseCluster(result);
                             return;
                         };
@@ -1882,7 +1883,7 @@ pub const MetalRenderer = struct {
     /// 여기서는 클립을 다시 보지 않는다.
     fn emitFieldGlyph(self: *MetalRenderer, g: search_bar.Glyph, x0: f32, top: f32, color: [4]f32) void {
         const result = self.tab_font.resolveGlyph(@intCast(g.cp), .regular) orelse return;
-        const entry = self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
+        const entry = self.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab, false) orelse {
             mac_font.releaseCluster(result);
             return;
         };
@@ -1962,7 +1963,7 @@ pub const MetalRenderer = struct {
                         x += adv;
                         continue;
                     };
-                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
+                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab, false) orelse {
                         mac_font.releaseCluster(result);
                         x += adv;
                         continue;
@@ -2115,7 +2116,7 @@ pub const MetalRenderer = struct {
                 var iter = std.unicode.Utf8Iterator{ .bytes = bytes, .i = 0 };
                 while (iter.nextCodepoint()) |cp| {
                     const result = r.tab_font.resolveGlyph(@intCast(cp), .regular) orelse continue;
-                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab) orelse {
+                    const entry = r.insertGlyphOrRecover(result.font, result.font_id, @intCast(result.index), .tab, false) orelse {
                         mac_font.releaseCluster(result);
                         continue;
                     };
@@ -2444,13 +2445,13 @@ fn emitLigatureMatch(
 ) void {
     switch (match) {
         .single => |lg| {
-            const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index), .terminal) orelse return;
+            const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(lg.glyph_index), .terminal, false) orelse return;
             if (entry.w == 0 or entry.h == 0) return;
             self.pushText(makeTextInstance(entry, x, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(lg.x_offset)), @as(f32, @floatFromInt(lg.y_offset))));
         },
         .spacer => |sp| {
             for (0..sp.count) |i| {
-                const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i]), .terminal) orelse continue;
+                const entry = self.insertGlyphOrRecover(self.font.primary_font, self.font.primaryFontId(), @intCast(sp.glyph_indices[i]), .terminal, false) orelse continue;
                 if (entry.w == 0 or entry.h == 0) continue;
                 self.pushText(makeTextInstance(entry, x + i, fy, cw, x_pad, self.font.ascent_px, fg_rgb, @as(f32, @floatFromInt(sp.x_offsets[i])), @as(f32, @floatFromInt(sp.y_offsets[i]))));
             }

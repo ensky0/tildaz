@@ -29,3 +29,4 @@ Internal changes belong in neither.
 - On Windows, the Japanese IME candidate list now opens next to the cursor instead of in a corner of the screen ([#772](https://github.com/ensky0/tildaz/issues/772)).
 - Emoji with a color request (like `❤️`) now always draw in color, and text requests draw as plain text — no longer depending on what was drawn before. ([#771](https://github.com/ensky0/tildaz/issues/771))
 - TildaZ now starts even when the config file is not valid TOML or names a font that is not installed. It uses defaults and tells you what it changed, and a key you set now wins over a default it clashes with. ([#758](https://github.com/ensky0/tildaz/issues/758))
+- Italic and bold now show on all three platforms even when the font has no italic or bold file — Korean italic, for example, used to stay upright on Linux and macOS. The slant and weight are the same everywhere. ([#759](https://github.com/ensky0/tildaz/issues/759))

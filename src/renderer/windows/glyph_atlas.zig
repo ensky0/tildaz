@@ -23,6 +23,7 @@ const d3d = @import("d3d11.zig");
 const d2d = @import("direct2d.zig");
 const tab_icons = @import("../../tab_icons.zig");
 const atlas_common = @import("../glyph_atlas_common.zig");
+const synthetic = @import("../../font/synthetic.zig");
 
 /// #586 — 시작 크기와 상한. macOS (`macos/glyph_atlas.zig`) 와 같은 값 · 같은 정책이다 — **차면 두 배로
 /// 키운다** (`grow`) 그리고 상한에서만 ① 안전망 (비우기) 으로 물러선다. 지금 크기는 `size` 필드다.
@@ -412,6 +413,9 @@ pub const GlyphAtlas = struct {
         glyph_index: u16,
         /// #762 — 터미널 폰트인지 탭바 폰트인지. 키를 가르고 em 크기를 고른다.
         source: atlas_common.GlyphSource,
+        /// #759 — 그릴 때 세 OS 공통 기울기로 기울인다 (`GlyphResult.slant`). 키는 `font_id` 가
+        /// 이미 가른다.
+        slant: bool,
     ) ?AtlasEntry {
         const key = GlyphKey{ .font_id = font_id, .index = glyph_index, .source = source };
         if (self.cache.get(key)) |entry| return entry;
@@ -421,7 +425,7 @@ pub const GlyphAtlas = struct {
         const empty_advances = [_]dw.FLOAT{};
         const empty_offsets = [_]dw.DWRITE_GLYPH_OFFSET{};
         var entry = self.rasterizeColor(face, em, &single_indices, &empty_advances, &empty_offsets) orelse
-            self.rasterize(face, em, &single_indices, &empty_advances, &empty_offsets) orelse return null;
+            self.rasterize(face, em, &single_indices, &empty_advances, &empty_offsets, slant) orelse return null;
         entry.advance = self.designAdvancePx(face, em, glyph_index);
         self.cache.put(key, entry) catch return null;
         return entry;
@@ -464,9 +468,11 @@ pub const GlyphAtlas = struct {
         overlay_marks: bool,
         /// #762 — `getOrInsert` 의 같은 인자.
         source: atlas_common.GlyphSource,
+        /// #759 — `getOrInsert` 의 같은 인자 (`ClusterResult.slant`). 키는 `font_id` 가 이미 가른다.
+        slant: bool,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0) return null;
-        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0], source);
+        if (glyph_indices.len == 1) return self.getOrInsert(face, font_id, glyph_indices[0], source, slant);
         if (glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
         // #584 — `font_id` 는 폰트 층이 PostScript 이름에서 만든 **안정된 값**이다 (주소가
@@ -483,7 +489,7 @@ pub const GlyphAtlas = struct {
         const placed_offsets = placeUnplacedMarks(face, em, glyph_indices, advances, offsets, overlay_marks, &fixed_offsets);
 
         var entry = self.rasterizeColor(face, em, glyph_indices, advances, placed_offsets) orelse
-            self.rasterize(face, em, glyph_indices, advances, placed_offsets) orelse return null;
+            self.rasterize(face, em, glyph_indices, advances, placed_offsets, slant) orelse return null;
         // cluster advance = placements 합 (DIP) × DPI scale (#299).
         if (advances.len == glyph_indices.len) {
             var sum: f32 = 0;
@@ -732,6 +738,8 @@ pub const GlyphAtlas = struct {
         glyph_indices: []const u16,
         in_advances: []const dw.FLOAT,
         in_offsets: []const dw.DWRITE_GLYPH_OFFSET,
+        /// #759 — `true` 면 [`synthetic.slant`](../../font/synthetic.zig) 로 기울여 그린다.
+        slant: bool,
     ) ?AtlasEntry {
         if (glyph_indices.len == 0 or glyph_indices.len > MAX_CLUSTER_GLYPHS) return null;
 
@@ -764,11 +772,15 @@ pub const GlyphAtlas = struct {
         else
             dw.DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
 
+        // #759 — 비트맵의 y 는 아래로 커서 위를 오른쪽으로 보내려면 `m21` 이 음수다
+        // (`x' = x + m21·y`). 측정 도구 (`tool/synthetic-style-probe_windows.zig`) 의 대조 줄이
+        // 같은 행렬로 0.200 을 읽었다 (Windows 11 25H2 실측).
+        const shear = dw.DWRITE_MATRIX{ .m11 = 1, .m12 = 0, .m21 = -@as(f32, @floatCast(synthetic.slant)), .m22 = 1, .dx = 0, .dy = 0 };
         var analysis: ?*dw.IDWriteGlyphRunAnalysis = null;
         if (self.dw_factory.CreateGlyphRunAnalysis(
             &glyph_run,
             self.pixels_per_dip,
-            null, // transform
+            if (slant) &shear else null, // transform
             render_mode,
             dw.DWRITE_MEASURING_MODE_NATURAL,
             0, // baselineOriginX

@@ -18,6 +18,9 @@ pub const FT_F26Dot6 = c_long;
 pub const FT_Error = c_int;
 
 pub const FT_LOAD_RENDER: c_int = 0x4;
+/// #759 — 합성 글리프는 외곽선으로 받는다. 내장 비트맵은 기울이거나 굵힐 수 없다
+/// (fontconfig 도 합성 기울임이면 `embeddedbitmap` 을 끈다 — `90-synthetic.conf`).
+pub const FT_LOAD_NO_BITMAP: c_int = 1 << 3;
 /// `( 1L << 20 )` — color emoji (BGRA) raster 활성화. mono 폰트엔 무시됨.
 pub const FT_LOAD_COLOR: c_int = 0x100000;
 
@@ -29,6 +32,18 @@ pub const FT_FACE_FLAG_COLOR: FT_Long = 1 << 14;
 pub const FT_PIXEL_MODE_MONO: u8 = 1;
 pub const FT_PIXEL_MODE_GRAY: u8 = 2;
 pub const FT_PIXEL_MODE_BGRA: u8 = 7;
+
+/// `FT_GLYPH_FORMAT_OUTLINE` = `FT_IMAGE_TAG('o','u','t','l')` (`ftimage.h`).
+pub const FT_GLYPH_FORMAT_OUTLINE: c_uint = (@as(c_uint, 'o') << 24) | (@as(c_uint, 'u') << 16) | (@as(c_uint, 't') << 8) | 'l';
+pub const FT_RENDER_MODE_NORMAL: c_uint = 0;
+
+/// 16.16 고정소수 2x2 행렬 (`fttypes.h`). 외곽선 좌표는 y 가 위로 커진다.
+pub const FT_Matrix = extern struct {
+    xx: FT_Fixed,
+    xy: FT_Fixed,
+    yx: FT_Fixed,
+    yy: FT_Fixed,
+};
 
 pub const FT_Vector = extern struct {
     x: FT_Pos,
@@ -183,6 +198,10 @@ const FtLoadGlyph = *const fn (
     glyph_index: FT_UInt,
     load_flags: c_int,
 ) callconv(.c) FT_Error;
+// #759 — 합성 bold · italic (`ftoutln.h` · `freetype.h`).
+const FtOutlineEmboldenXY = *const fn (outline: *FT_Outline, xstrength: FT_Pos, ystrength: FT_Pos) callconv(.c) FT_Error;
+const FtOutlineTransform = *const fn (outline: *const FT_Outline, matrix: *const FT_Matrix) callconv(.c) void;
+const FtRenderGlyph = *const fn (slot: *FT_GlyphSlotRec, render_mode: c_uint) callconv(.c) FT_Error;
 
 pub const Api = struct {
     handle: *anyopaque,
@@ -194,6 +213,9 @@ pub const Api = struct {
     select_size: FtSelectSize,
     get_char_index: FtGetCharIndex,
     load_glyph: FtLoadGlyph,
+    outline_embolden_xy: FtOutlineEmboldenXY,
+    outline_transform: FtOutlineTransform,
+    render_glyph: FtRenderGlyph,
 
     pub fn load() !Api {
         const handle = std.c.dlopen("libfreetype.so.6", .{ .LAZY = true }) orelse return error.FreetypeLibraryMissing;
@@ -209,6 +231,9 @@ pub const Api = struct {
             .select_size = lookup(handle, FtSelectSize, "FT_Select_Size") orelse return error.FreetypeSymbolMissing,
             .get_char_index = lookup(handle, FtGetCharIndex, "FT_Get_Char_Index") orelse return error.FreetypeSymbolMissing,
             .load_glyph = lookup(handle, FtLoadGlyph, "FT_Load_Glyph") orelse return error.FreetypeSymbolMissing,
+            .outline_embolden_xy = lookup(handle, FtOutlineEmboldenXY, "FT_Outline_EmboldenXY") orelse return error.FreetypeSymbolMissing,
+            .outline_transform = lookup(handle, FtOutlineTransform, "FT_Outline_Transform") orelse return error.FreetypeSymbolMissing,
+            .render_glyph = lookup(handle, FtRenderGlyph, "FT_Render_Glyph") orelse return error.FreetypeSymbolMissing,
         };
     }
 

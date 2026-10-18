@@ -681,11 +681,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "windows-x86_64", .query = .{ .os_tag = .windows, .cpu_arch = .x86_64 } },
         .{ .name = "windows-aarch64", .query = .{ .os_tag = .windows, .cpu_arch = .aarch64 } },
     };
-    const probe_roots = [_]struct { name: []const u8, path: []const u8, os: std.Target.Os.Tag }{
+    const probe_roots = [_]struct { name: []const u8, path: []const u8, os: std.Target.Os.Tag, dwrite: bool = false }{
         .{ .name = "dmabuf", .path = "tool/dmabuf-probe_linux.zig", .os = .linux },
         .{ .name = "osc-title", .path = "tool/osc-title-probe/osc-title-probe_linux.zig", .os = .linux },
         .{ .name = "osc-title", .path = "tool/osc-title-probe/osc-title-probe_windows.zig", .os = .windows },
         .{ .name = "layout", .path = "tool/layout-probe/layout-probe_windows.zig", .os = .windows },
+        // #759 — 본체 DirectWrite 바인딩을 그대로 쓴다 (손 빌드는 `--dep directwrite`).
+        .{ .name = "synthetic-style", .path = "tool/synthetic-style-probe_windows.zig", .os = .windows, .dwrite = true },
     };
     for (probe_check_targets) |c| {
         for (probe_roots) |root| {
@@ -696,7 +698,12 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseSafe,
             });
             addShellExtensionResources(b, probe_mod);
-            // 네 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
+            if (root.dwrite) probe_mod.addImport("directwrite", b.createModule(.{
+                .root_source_file = b.path("src/font/windows/directwrite.zig"),
+                .target = probe_mod.resolved_target,
+                .optimize = .ReleaseSafe,
+            }));
+            // 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
             probe_mod.link_libc = true;
             const probe_obj = b.addObject(.{
                 .name = b.fmt("tildaz-probe-{s}-{s}", .{ root.name, c.name }),
