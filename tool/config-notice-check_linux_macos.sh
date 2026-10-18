@@ -110,9 +110,22 @@ run_app_quiet() { # <index>
 }
 
 # 앱이 자기 손으로 기본 config 를 만들게 한다.
+#
+# #799 — 만든 뒤 전역 hotkey 를 **`shift+f11`** 로 바꾼다. dev 판의 기본값은 표를 거꾸로 읽어
+# instance 9 가 `F1` 이고 (`Defaults.hotkeyFor`), 그러면 평소 쓰는 릴리즈 instance 0 (`F1`) 과
+# 부딪힌다 — macOS 는 event tap 이 둘 다 반응하고, Windows 판 도구는 등록 실패로 회차가 깨졌다.
+# 이 회차들이 재는 것은 config 로드라 hotkey 값은 상관없다. `hotkey` 회차는 그 뒤에 9 번 키를
+# 0 번 키로 다시 덮으니 그대로 성립한다. 처음 만드는 한 번은 기본값으로 뜰 수밖에 없다 —
+# config 를 앱이 만들게 하는 것이 이 도구의 원칙이라서다.
 mkbase() { # <index>
   run_app "$1"
-  [ -f "$(CFG "$1")" ]
+  [ -f "$(CFG "$1")" ] || return 1
+  python3 - "$(CFG "$1")" <<'PY'
+import sys, re
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+open(p, 'w', encoding='utf-8').write(re.sub(r'^hotkey\s*=.*$', 'hotkey           = "shift+f11"', s, count=1, flags=re.M))
+PY
 }
 
 # 로그에서 `[config]` 안내 줄만 (들여쓴 목록 항목) 뽑는다.
