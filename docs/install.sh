@@ -30,14 +30,33 @@ REPO="ensky0/tildaz"
 say() { printf '%s\n' "$*"; }
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+CONNECT_FAILED="could not connect to GitHub. Check your network connection and try again."
+
+# Downloads <url> to <file>. A failure tells apart a missing file (HTTP 404: the
+# version does not exist), another HTTP error, and no answer at all.
 download() { # <url> <file>
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        # No -f: an HTTP error still exits 0 and %{http_code} names it. A non-zero
+        # exit means no answer came back.
+        code=$(curl -sL --retry 3 -o "$2" -w '%{http_code}' "$1") || code=000
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        # wget -S prints the status line of every response; the last one is the answer.
+        if wget -q -S -O "$2" "$1" 2> "$2.headers"; then
+            code=200
+        else
+            code=$(sed -n 's/^ *HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$2.headers" | tail -n 1)
+            [ -n "$code" ] || code=000
+        fi
+        rm -f "$2.headers"
     else
         err "curl or wget is required"
     fi
+    case "$code" in
+        2??) ;;
+        000) err "$CONNECT_FAILED" ;;
+        404) err "TildaZ $TAG was not found. See https://github.com/$REPO/releases for the versions you can install." ;;
+        *) err "download failed (HTTP $code): $1" ;;
+    esac
 }
 
 # Reads the tag from the address GitHub redirects /releases/latest to. This avoids
@@ -45,9 +64,10 @@ download() { # <url> <file>
 latest_tag() {
     url="https://github.com/$REPO/releases/latest"
     if command -v curl >/dev/null 2>&1; then
-        final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$url")
+        final=$(curl -sLI -o /dev/null -w '%{url_effective}' "$url") || err "$CONNECT_FAILED"
     elif command -v wget >/dev/null 2>&1; then
         final=$(wget -q -S --spider "$url" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tail -n 1 | tr -d '\r')
+        [ -n "$final" ] || err "$CONNECT_FAILED"
     else
         err "curl or wget is required"
     fi
@@ -68,8 +88,8 @@ sha256_of() {
 fetch_verified() { # <file name>
     base="https://github.com/$REPO/releases/download/$TAG"
     say "Downloading $1"
-    download "$base/$1" "$TMP/$1" || err "download failed: $base/$1"
-    download "$base/$1.sha256" "$TMP/$1.sha256" || err "download failed: $base/$1.sha256"
+    download "$base/$1" "$TMP/$1"
+    download "$base/$1.sha256" "$TMP/$1.sha256"
     want=$(cut -d ' ' -f 1 < "$TMP/$1.sha256")
     got=$(sha256_of "$TMP/$1")
     [ -n "$want" ] && [ "$want" = "$got" ] || err "SHA-256 mismatch for $1 (expected $want, got $got). Nothing was installed."

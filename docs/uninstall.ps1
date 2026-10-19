@@ -69,5 +69,6 @@ public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName)
     Write-Host "  $config\"
 }
 
-# Print a failure as one line instead of a PowerShell error record.
-try { Uninstall-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red }
+# Print a failure as one line instead of a PowerShell error record, and exit with
+# 1 so a caller can tell it failed (see install.ps1).
+try { Uninstall-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }

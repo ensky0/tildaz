@@ -28,6 +28,30 @@ function Install-TildaZ {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $repo = 'ensky0/tildaz'
+    $releases = "https://github.com/$repo/releases"
+
+    # Turns a failed web request into one English sentence. The exception text is
+    # localized (on a Korean Windows a 404 reads in Korean) and says nothing about
+    # which version was missing, so it is not shown. Windows PowerShell 5.1 throws a
+    # WebException and PowerShell 7 an HttpResponseException; both carry .Response
+    # when the server answered, and nothing when it could not be reached. A .NET
+    # method call (GetResponse) wraps it once more, so look through inner exceptions.
+    function Get-WebFailure($record, $url, $tag) {
+        $resp = $null
+        $ex = $record.Exception
+        while ($ex) {
+            if ($ex.PSObject.Properties['Response'] -and $ex.Response) { $resp = $ex.Response; break }
+            $ex = $ex.InnerException
+        }
+        if (-not $resp) {
+            return 'Could not connect to GitHub. Check your network connection and try again.'
+        }
+        $code = [int]$resp.StatusCode
+        if ($code -eq 404) {
+            return "TildaZ $tag was not found. See $releases for the versions you can install."
+        }
+        return "Download failed (HTTP $code): $url"
+    }
 
     # Same paths as dist\windows\install.bat --release, so uninstall.bat removes them.
     $dest = Join-Path $env:LOCALAPPDATA 'Programs\TildaZ'
@@ -37,9 +61,10 @@ function Install-TildaZ {
     # the GitHub API and its rate limit.
     $tag = $env:TILDAZ_VERSION
     if (-not $tag) {
-        $req = [Net.WebRequest]::Create("https://github.com/$repo/releases/latest")
+        $req = [Net.WebRequest]::Create("$releases/latest")
         $req.Method = 'HEAD'
-        $resp = $req.GetResponse()
+        try { $resp = $req.GetResponse() }
+        catch { throw (Get-WebFailure $_ "$releases/latest" 'latest') }
         $tag = $resp.ResponseUri.AbsoluteUri.Split('/')[-1]
         $resp.Close()
     } elseif (-not $tag.StartsWith('v')) {
@@ -89,8 +114,10 @@ public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName)
     try {
         $zip = Join-Path $tmp $name
         Write-Host "Downloading $name"
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/$name" -OutFile $zip
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/$name.sha256" -OutFile "$zip.sha256"
+        foreach ($pair in @(@("$base/$name", $zip), @("$base/$name.sha256", "$zip.sha256"))) {
+            try { Invoke-WebRequest -UseBasicParsing -Uri $pair[0] -OutFile $pair[1] }
+            catch { throw (Get-WebFailure $_ $pair[0] $tag) }
+        }
         $want = ((Get-Content -Raw "$zip.sha256").Trim() -split '\s+')[0].ToLowerInvariant()
         $got = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
         if ($want -ne $got) {
@@ -142,5 +169,7 @@ public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName)
     Write-Host 'Started TildaZ. Press its hotkey (F1 by default) to show or hide it.'
 }
 
-# Print a failure as one line instead of a PowerShell error record.
-try { Install-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red }
+# Print a failure as one line instead of a PowerShell error record, and exit with
+# 1 so a caller can tell it failed. Same as the uv installer. The documented command
+# runs this in its own "powershell -c" process, so exit ends only that process.
+try { Install-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
