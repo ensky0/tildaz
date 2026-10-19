@@ -348,9 +348,13 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
     # 창을 자동으로 못 내리는 환경에서는 **반드시 알린다.** 배경에서 그리는 앱이 있으면
     # **우리 수치만** 최대 64 % 눌린다 (다른 넷은 +0.7~9 %). 자동화가 일부 환경에만 있다고
     # 해서 나머지에서 이 함정이 사라지는 게 아니다 — 규칙으로만 남기면 잊는다.
-    if ! hygiene_can_minimize; then
+    #
+    # 사람이 직접 내렸으면 `TILDAZ_BENCH_MINIMIZED_BY_HAND=1` 로 알린다 — 그 경고 하나만 넘긴다. GNOME · COSMIC
+    # 회차가 이것 하나로 늘 멈췄다 (#756 · 2026-10-19 COSMIC). `--ignore-hygiene` 는 AC · 주사율 · worker ·
+    # 비교 대상 터미널 검사까지 통째로 끄므로 그 대신 쓰지 않는다. 기록에는 `minimized=manual` 로 남는다.
+    if ! hygiene_can_minimize && [ "${TILDAZ_BENCH_MINIMIZED_BY_HAND:-}" != 1 ]; then
         _warn="$_warn
-배경 앱을 자동으로 못 내려요 (KDE · macOS · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화해요 (우리 수치만 최대 64 % 눌려요)"
+배경 앱을 자동으로 못 내려요 (KDE · macOS · Windows 에서만 해요) — 브라우저 · 에디터를 직접 최소화하고 TILDAZ_BENCH_MINIMIZED_BY_HAND=1 을 줘요 (우리 수치만 최대 64 % 눌려요)"
     fi
 
     # 비교 대상 터미널은 **떠 있으면 안 된다** (#414). 이유는 `hygiene_running_terminals`
@@ -372,7 +376,9 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
 }
 
 hygiene_status() {
-    _min=$([ "$HYG_MINIMIZED" = 1 ] && echo yes || echo no)
+    _min=no
+    [ "${TILDAZ_BENCH_MINIMIZED_BY_HAND:-}" = 1 ] && _min=manual
+    [ "$HYG_MINIMIZED" = 1 ] && _min=yes
     echo "platform=$HYG_PLATFORM  power=$HYG_POWER  refresh=$HYG_REFRESH  cpu_profile=$HYG_PROFILE  minimized=$_min"
 }
 

@@ -184,9 +184,20 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
+    // 띄운 명령의 표준 입출력은 /dev/null 로 돌린다. 런처 (`gio launch`) 가 띄운 터미널은 그 fd 를 물려받고
+    // 측정 프로그램이 끝날 때까지 떠 있다 — 그러면 이 프로그램의 출력을 `$( … )` 로 받는 `compare-startup.sh`
+    // 가 통로가 닫히기를 영원히 기다린다 (#756 · 2026-10-19 COSMIC 실측). 파일 동작은 띄우기 전에 만든다 —
+    // 기준 시각 `t0` 에 그 비용이 섞이지 않게.
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+
     uint64_t t0 = now_ns();
     pid_t pid;
-    int err = posix_spawnp(&pid, argv[cmd], NULL, NULL, &argv[cmd], environ);
+    int err = posix_spawnp(&pid, argv[cmd], &fa, NULL, &argv[cmd], environ);
+    posix_spawn_file_actions_destroy(&fa);
     if (err != 0) { fprintf(stderr, "명령을 못 띄웠어요: %s\n", strerror(err)); return 2; }
 
     double found = -1;
