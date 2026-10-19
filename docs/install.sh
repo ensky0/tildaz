@@ -197,8 +197,10 @@ install_macos() {
         return
     fi
     open "$dest"
-    say "Started TildaZ. macOS asks for Input Monitoring and Accessibility access"
-    say "the first time. Grant both so the hotkey (F1 by default) works."
+    # TildaZ names the permissions itself, in the words of this macOS version
+    # (Accessibility became "Device Control and Data Access" in macOS 27).
+    say "Started TildaZ. If a permission is missing, TildaZ shows which one to turn on."
+    say "Turn it on so the hotkey (F1 by default) works."
 }
 
 cleanup() {
