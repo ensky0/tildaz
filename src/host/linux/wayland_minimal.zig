@@ -1994,6 +1994,8 @@ const Client = struct {
             .show_confirm = Client.dialogShowConfirmCb,
             .show_notice_action = Client.dialogShowNoticeActionCb,
             .prompt_hotkey = Client.dialogPromptHotkeyCb,
+            .is_open = Client.dialogIsOpenCb,
+            .bring_to_front = Client.dialogBringToFrontCb,
         });
         defer dialog_linux.unregisterCallbacks();
 
@@ -9415,6 +9417,13 @@ const Client = struct {
             }
             return;
         }
+        // #801 — 다이얼로그가 떠 있으면 숨기지 않는다. 다이얼로그 펌프 (`runConfirmDialog`) 도
+        // toggle 소켓 · kglobalaccel 을 돌려서 여기로 오고, 예전에는 터미널만 숨고 overlay 가 남았다.
+        if (dialog_mod.isOpen()) {
+            log.logToggleKeptForDialog();
+            dialog_mod.bringToFront();
+            return;
+        }
         // hide 진입 — mac #175 동등 정책: preedit commit (cancel
         // 아님), 다음 show 때 사용자가 이어서 작업 가능.
         log.logToggle(false);
@@ -10845,6 +10854,18 @@ const Client = struct {
     /// 즉 *outer dispatchBuffered 안 호출 X* — inner pump 의 `pollAndDispatch`
     /// + `drainPendingDialogDismiss` 패턴 안전. dismiss 의 xdg-activation
     /// roundtrip 도 main loop 의 drain 시점에서 *outer pump cycle 밖* 에 처리.
+    fn dialogIsOpenCb(ctx: *anyopaque) bool {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        return self.dialog.active();
+    }
+
+    /// #801 — 따로 할 일이 없다. layer-shell 경로의 overlay 는 overlay 층에 있고 키보드를
+    /// 독점해서 (`keyboard_interactivity=exclusive`) 이미 맨 앞이다. xdg_toplevel fallback
+    /// (sway) 은 떠 있는 floating 창이고, GNOME · Cinnamon 은 셸 확장이 hotkey 를 처리한다.
+    fn dialogBringToFrontCb(ctx: *anyopaque) void {
+        _ = ctx;
+    }
+
     fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
         const self: *Client = @ptrCast(@alignCast(ctx));
         self.dialog.secondary_len = 0;

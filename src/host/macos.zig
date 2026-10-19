@@ -5934,6 +5934,13 @@ fn hideWindow() void {
 
 fn toggleWindow() void {
     if (g_visible) {
+        // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. event tap 은
+        // `runModal` 안에서도 불리고 `hideWindow` 는 우리 창만 내려서, 예전에는 alert 만 남았다.
+        if (dialog.isOpen()) {
+            log.logToggleKeptForDialog();
+            dialog.bringToFront();
+            return;
+        }
         // #175/#317 — F1 hide도 공통 shortcut 정책의 focus_loss = commit.
         applyShortcutInputPolicy(.toggle_visibility);
         // #329 — 열린 menu 는 hide 때 닫는다. 다음 show 에 남지 않게.

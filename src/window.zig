@@ -1262,6 +1262,14 @@ pub const Window = struct {
 
     pub fn toggle(self: *Window) void {
         if (self.visible) {
+            // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. 다이얼로그는 모달
+            // 루프 (`GetMessageW(null)`) 안에서도 `WM_HOTKEY` 를 그대로 받아 여기로 온다. 터미널만
+            // 숨으면 (`SW_HIDE` 는 owned window 를 숨기지 않는다) 다이얼로그만 화면에 남았다.
+            if (dialog.isOpen()) {
+                log.logToggleKeptForDialog();
+                dialog.bringToFront();
+                return;
+            }
             // #175 — F1 hide 도 focus_loss = commit. show 분기에선 호출 안 함.
             if (self.before_hide_fn) |f| f(self.userdata);
             // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").

@@ -384,6 +384,12 @@ pub fn logToggle(show: bool) void {
     appendLineVerbose("toggle", "{s}", .{if (show) "show" else "hide"});
 }
 
+/// #801 — 다이얼로그가 떠 있어 hotkey 로 숨기지 않았다. verbose 가 아니다 — "hotkey 가 안
+/// 먹는다" 는 신고에 이 줄이 답이라 늘 남긴다.
+pub fn logToggleKeptForDialog() void {
+    appendLine("toggle", "hide skipped — a dialog is open; brought it to the front", .{});
+}
+
 /// #197 — fatal / 시작 실패처럼 *사용자에게 직접 보여주는* 메시지를 한 번만
 /// 받아 두 채널에 동일하게 보낸다:
 ///   1. stderr — 터미널에서 직접 실행한 사용자가 즉시 본다.

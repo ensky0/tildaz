@@ -388,7 +388,13 @@ minimize/restore.
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([fb775a9](https://github.com/ensky0/tildaz/commit/fb775a9), #198) | ✅ | ✅ | ✅ |
+| 다이얼로그가 떠 있을 때 ([#801](https://github.com/ensky0/tildaz/issues/801)) | 숨기지 않고 다이얼로그를 앞으로 (`SetForegroundWindow`). 숨어 있으면 평소대로 보임 | 같음 (alert 창을 key 로) | 같음 — layer-shell 은 overlay 가 이미 맨 앞이고, GNOME · Cinnamon 은 셸 확장이 다이얼로그를 활성화 | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (`[keys]` 의 `quit` — [#713](https://github.com/ensky0/tildaz/issues/713)) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
+
+**다이얼로그가 떠 있으면 hotkey 는 터미널을 숨기지 않는다 — 세 platform 공통** ([#801](https://github.com/ensky0/tildaz/issues/801)).
+다이얼로그를 앞으로 가져오고 끝낸다. 숨어 있는 터미널을 보이는 것은 막지 않는다 — 숨은 채 다이얼로그가 뜨는 경우에도 터미널을 꺼낼 수 있어야 해서다.
+Guake (`HidePrevention`) · iTerm2 (app-modal 창이 있으면 hotkey 무시) 와 같은 관례다. 예전에는 Windows · macOS · Linux layer-shell 이 터미널만 숨겨 다이얼로그가 홀로 남았고 (코드 판정), GNOME · Cinnamon 은 숨기자마자 터미널이 되살아났다 — 확장이 포커스를 넘긴 다이얼로그를 mutter · muffin 이 활성화하며 최소화된 부모를 되살린다 (`meta_window_activate_full` → `unminimize_window_and_all_transient_parents`, nested Cinnamon 6.6.9 · headless GNOME 51.1 실측).
+OS 가 그리는 fallback (Windows `MessageBoxW` · macOS `osascript`) 은 우리 창이 아니라 이 규칙 밖이다.
 
 **hotkey 를 못 잡으면 기동을 멈춘다 — 세 platform 공통** ([#510](https://github.com/ensky0/tildaz/issues/510)).
 부를 수 없는 드롭다운은 사용자가 도달할 방법이 없는 창이라, 그 상태로 도는 것보다 안내 후

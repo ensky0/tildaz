@@ -716,6 +716,16 @@ export default class TildazExtension extends Extension {
     // 떠 있고 visible → focus 유무와 관계없이 숨김. minimize 의 mutter 기본 애니메이션은 skip
     // (drop-down 은 즉시 사라지는 게 자연스러움; slide 는 Phase 2).
     if (!win.minimized) {
+      // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. 숨기면 아래
+      // _defocusAfterHide 가 다이얼로그를 활성화하고, mutter 는 창을 활성화할 때 조상을 모두
+      // 되살려서 (meta_window_activate_full → unminimize_window_and_all_transient_parents)
+      // 터미널이 바로 다시 나타났다 — hotkey 가 안 먹는 것처럼 보였다.
+      const dialog = this._openDialogOf(win);
+      if (dialog) {
+        console.log(`${LOG_TAG} hide skipped — a dialog is open; brought it to the front`);
+        Main.activateWindow(dialog);
+        return;
+      }
       this._skipEffect(win);
       win.minimize();
       this._defocusAfterHide(win);
@@ -969,6 +979,14 @@ export default class TildazExtension extends Extension {
       ],
       dialogId: win.connect("unmanaged", stop),
     });
+  }
+
+  /** #801 — 부모가 `term` 인, 떠 있는 dialog. `_followDialogParent` 가 dialog 가 사는 동안 기록한다. */
+  _openDialogOf(term) {
+    for (const [dialog, f] of this._dialogFollowers || []) {
+      if (f.term === term) return dialog;
+    }
+    return null;
   }
 
   _stopFollowingDialogParent(win) {
