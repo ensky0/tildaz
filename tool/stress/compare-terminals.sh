@@ -81,6 +81,7 @@ CAPTURE_RETRY_HOLD_MS=15000
 
 # 위생 점검에 걸려도 강행할지 (`--ignore-hygiene`).
 IGNORE_HYGIENE=0
+ONLY=""
 
 # `--capture` 기본 위치를 정하는 데 필요해서 옵션 파싱보다 먼저 구한다.
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -113,6 +114,8 @@ while [ $# -gt 0 ]; do
         # 위생 점검 (worker · AC · 주사율 · 배경 앱) 에 걸려도 강행한다. 동작 확인용이고
         # 기록용 측정에는 쓰지 않는다.
         --ignore-hygiene) IGNORE_HYGIENE=1; shift ;;
+        # 일부 대상만 — 지연 · 메모리 · 시작 시간 도구와 같은 표기 (`--only kitty,foot`).
+        --only) ONLY="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -316,6 +319,9 @@ TILDAZ_STRESS_BYTES=$BYTES"
 #
 # 30 초씩 기다렸다 버리느니 아예 빼고 그 사실을 표에 적는다. 다른 platform 은 영향 없다.
 terminal_skip() {
+    if [ -n "$ONLY" ]; then
+        case ",$ONLY," in *",$1,"*) ;; *) return 0 ;; esac
+    fi
     if [ "$1" = alacritty ] && [ "$IS_WINDOWS" = 1 ] &&
        { [ "$WORKLOAD" = zwj ] || [ "$WORKLOAD" = zwj_varied ]; }
     then

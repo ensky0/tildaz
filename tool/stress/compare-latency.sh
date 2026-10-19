@@ -259,7 +259,9 @@ run_terminal() {
     _cols=0; _rows=0; _miss=0; _bad=0
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
-        rm -f "$_timing"
+        # `.go` 도 지운다 — 앞 회차의 것이 남으면 측정 프로그램이 표식을 칠하자마자 지워 측정기가 못 찾는다
+        # (#756 · 2026-10-19 COSMIC 기록 회차에서 2 회차부터 전부 놓쳤다).
+        rm -f "$_timing" "$_timing.go"
         [ "$IS_MACOS" = 1 ] && "$LISTER" --list 2>/dev/null | awk 'NR > 1 { print $1 }' > "$WORK_DIR/before"
         "$@" >/dev/null 2>&1 &
         _pid=$!
