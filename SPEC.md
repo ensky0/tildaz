@@ -388,11 +388,13 @@ minimize/restore.
 | 동작 | Windows | macOS | Linux | Win | Mac | Linux |
 |---|---|---|---|---|---|---|
 | 윈도우 토글 (drop-down) | config_N별 hotkey (`RegisterHotKey`) | config_N별 hotkey (CGEventTap) | KDE Plasma는 direct KGlobalAccel, 그 외 지원 desktop은 native binding→`tildaz --toggle N` Unix socket IPC ([fb775a9](https://github.com/ensky0/tildaz/commit/fb775a9), #198) | ✅ | ✅ | ✅ |
-| 다이얼로그가 떠 있을 때 ([#801](https://github.com/ensky0/tildaz/issues/801)) | 숨기지 않고 다이얼로그를 앞으로 (`SetForegroundWindow`). 숨어 있으면 평소대로 보임 | 같음 (alert 창을 key 로) | 같음 — layer-shell 은 overlay 가 이미 맨 앞이고, GNOME · Cinnamon 은 셸 확장이 다이얼로그를 활성화 | ✅ | ✅ | ✅ |
+| 다이얼로그가 떠 있을 때 ([#801](https://github.com/ensky0/tildaz/issues/801)) | 숨기지 않고 다이얼로그를 앞으로 (`SetForegroundWindow`). 숨어 있으면 터미널을 띄운 뒤 다이얼로그를 앞으로 | 같음 (host 창을 normal level 로 낮추고 alert 창을 key 로) | 같음 — layer-shell 은 overlay 가 이미 맨 앞이고, GNOME · Cinnamon 은 셸 확장이 다이얼로그를 활성화 | ✅ | ✅ | ✅ |
 | 앱 종료 | Alt+F4 | Cmd+Q (`[keys]` 의 `quit` — [#713](https://github.com/ensky0/tildaz/issues/713)) | Alt+F4 (Win 동등 native — Linux desktop 표준). `self.running = false` 로 main loop break | ✅ | ✅ | ✅ |
 
-**다이얼로그가 떠 있으면 hotkey 는 터미널을 숨기지 않는다 — 세 platform 공통** ([#801](https://github.com/ensky0/tildaz/issues/801)).
-다이얼로그를 앞으로 가져오고 끝낸다. 숨어 있는 터미널을 보이는 것은 막지 않는다 — 숨은 채 다이얼로그가 뜨는 경우에도 터미널을 꺼낼 수 있어야 해서다.
+**다이얼로그가 떠 있으면 터미널은 항상 그 뒤에 보이고, 다이얼로그가 맨 앞이다 — 세 platform 공통** ([#801](https://github.com/ensky0/tildaz/issues/801)).
+- 터미널이 보이면 hotkey 는 숨기지 않고 다이얼로그를 앞으로 가져온다.
+- 터미널이 숨어 있으면 hotkey 는 터미널을 띄우고 다이얼로그를 그 위에 올린다. 숨은 채 다이얼로그가 뜨는 경우에도 터미널을 꺼낼 수 있어야 해서다.
+- 시작 안내 (§11.5) 도 터미널을 띄운 뒤에 나온다. `hidden_start = true` 여도 안내가 있으면 터미널을 띄우고, 안내를 닫은 뒤에도 그대로 둔다 (2026-10-19 사용자 결정 — 다시 숨길 일이 아니다).
 Guake (`HidePrevention`) · iTerm2 (app-modal 창이 있으면 hotkey 무시) 와 같은 관례다. 예전에는 Windows · macOS · Linux layer-shell 이 터미널만 숨겨 다이얼로그가 홀로 남았고 (코드 판정), GNOME · Cinnamon 은 숨기자마자 터미널이 되살아났다 — 확장이 포커스를 넘긴 다이얼로그를 mutter · muffin 이 활성화하며 최소화된 부모를 되살린다 (`meta_window_activate_full` → `unminimize_window_and_all_transient_parents`, nested Cinnamon 6.6.9 · headless GNOME 51.1 실측).
 OS 가 그리는 fallback (Windows `MessageBoxW` · macOS `osascript`) 은 우리 창이 아니라 이 규칙 밖이다.
 
@@ -1484,7 +1486,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | `font.macos_smoothing` | bool — Apple font smoothing (`CGContextSetShouldSmoothFonts`, 획을 굵히는 회색 테두리) | 읽기만 한다 | `false` — iTerm2 (Retina) · ghostty · kitty 의 기본 굵기. `true` 는 Terminal.app · Alacritty 의 기본 굵기 ([#527](https://github.com/ensky0/tildaz/issues/527)) | 읽기만 한다 (FreeType 기본이 stem darkening 꺼짐이라 대응할 스위치가 없다) | — | ✅ | — |
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α. 데스크톱 설정 화면에서 끈 것은 되살리지 않는다 — KDE Plasma `Hidden=true` · Cinnamon `X-GNOME-Autostart-enabled=false` 면 파일을 건드리지 않고, COSMIC 처럼 파일을 지웠으면 다시 만들지 않는다 (만든 사실을 상태 폴더의 `autostart-created` 로 기억한다. `auto_start` 를 모두 끄면 둘 다 지운다, #700) | ✅ | ✅ | ✅ |
-| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`) | ✅ | ✅ | ✅ |
+| `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`). 시작 안내 (§11.5) 가 있으면 세 platform 모두 숨기지 않고 띄운다 ([#801](https://github.com/ensky0/tildaz/issues/801)) | ✅ | ✅ | ✅ |
 | `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래). 기본값은 `config_0` 기준이고 번호마다 다르다 (개발 빌드는 반대 순서 — §7.1) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
 
@@ -2160,8 +2162,10 @@ Error: UnexpectedToken
 | host | 호출 지점 |
 |---|---|
 | Linux | 이벤트 loop 의 `drainConfigNotice` — 다른 다이얼로그가 떠 있으면 다음 iteration 으로 **미룬다** (버리지 않는다) |
-| Windows | `window.init` 직후 |
-| macOS | `NSWindow` 생성 직후 |
+| Windows | 첫 탭을 만들고 창을 띄운 직후 (`app.window.show()` 뒤, 메시지 루프 직전) |
+| macOS | 렌더러 · 첫 탭 · display link · event tap 이 준비된 뒤, `[NSApp run]` 직전 |
+
+**안내 뒤에는 터미널이 보인다** ([#801](https://github.com/ensky0/tildaz/issues/801)). 예전에는 Windows 가 `window.init` 직후, macOS 가 `NSWindow` 생성 직후 — 둘 다 첫 표시 전 — 에 안내해서 안내 뒤에 터미널이 없었다. Windows 에서는 안내 중에 hotkey 를 누르면 아직 그려지지 않은 창이 포커스를 가져갔다 (2026-10-19 실기). `hidden_start = true` 여도 안내가 있으면 세 platform 모두 터미널을 띄운다 (`Config.hasStartupNotice`).
 
 안내 문안은 **"그래서 지금 어떤 상태인가" 를 반드시 말한다.** 오류만 알려 주고 결과를 빼면 사용자는 자기 설정이 적용됐는지 모른 채 쓰게 되고, 그것은 이 이슈가 고치려는 증상 (조용한 기본값 동작) 과 사실상 같다. 형식은 §11.4 와 같다 — 경로가 첫 줄이다.
 

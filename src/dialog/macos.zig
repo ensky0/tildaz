@@ -304,7 +304,13 @@ pub fn isOpen() bool {
 
 /// event tap 은 `kCFRunLoopCommonModes` 라 `runModal` 안에서도 불린다 — 그 자리에서 alert 를
 /// key 로 올린다 (`dialogForceKeyFn` 과 같은 호출).
+///
+/// 숨은 터미널을 띄운 직후에도 불린다 (host 의 `toggleWindow`). `showWindow` 가 창을 popup level
+/// 로 되돌려 alert 를 덮으므로, `runModalOverHost` 처럼 다시 normal 로 낮춘다. 낮춘 level 은 그
+/// 함수의 `restoreHostLevel` 이 모달이 끝날 때 되돌린다.
 pub fn bringToFront() void {
+    if (g_modal_alert == null) return;
+    lowerHostLevel();
     forceAlertKey(g_modal_alert);
 }
 

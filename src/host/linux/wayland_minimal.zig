@@ -2133,12 +2133,18 @@ const Client = struct {
         // 참인 환경 (sway `$SWAYSOCK` · Hyprland · COSMIC) 에서 측정 창이 숨은 채 떴고,
         // 측정 모드는 toggle listener 를 만들지 않으므로 (`runBaselineWindow` 의
         // `listener_fd = -1`) 띄울 경로조차 없다.
+        // #801 — 시작 안내 (`drainConfigNotice`) 가 뜰 차례면 숨기지 않는다. 다이얼로그 뒤에는
+        // 터미널이 보여야 한다. 안내를 닫은 뒤에도 그대로 둔다 (사용자 결정 — 다시 숨길 일이 아니다).
+        const notice_pending = self.pending_config_notice != null or self.pending_config_repair;
         const hidden_at_start = self.config.hidden_start and
             !self.run_opts.isStressRun() and
+            !notice_pending and
             (has_kde_hotkey or has_compositor_hotkey);
         if (self.config.hidden_start and !hidden_at_start) {
             if (self.run_opts.isStressRun()) {
                 log.appendLine("startup", "hidden_start ignored (stress run) — the measurement needs the window rendering, showing on start", .{});
+            } else if (notice_pending) {
+                log.appendLine("startup", "hidden_start ignored — a startup notice needs the window behind it", .{});
             } else {
                 log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/COSMIC/Hyprland/sway), showing on start", .{});
             }
@@ -9361,6 +9367,9 @@ const Client = struct {
             return;
         }
         if (self.surface_hidden) {
+            // #801 — 숨은 채 다이얼로그 (host overlay) 가 떠 있었으면 터미널을 그 뒤에 띄우고
+            // 다이얼로그를 앞에 둔다. 아래 갈래가 모두 여기서 끝나므로 `defer` 로 건다.
+            defer if (dialog_mod.isOpen()) dialog_mod.bringToFront();
             log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서

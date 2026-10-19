@@ -1278,6 +1278,9 @@ pub const Window = struct {
         } else {
             log.logToggle(true);
             self.show();
+            // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 띄우고 다이얼로그를 앞에
+            // 둔다. `show` 가 터미널을 foreground 로 올려서 그대로 두면 다이얼로그가 뒤로 밀린다.
+            if (dialog.isOpen()) dialog.bringToFront();
         }
     }
 

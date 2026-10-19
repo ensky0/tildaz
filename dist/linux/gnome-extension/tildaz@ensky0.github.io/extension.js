@@ -744,6 +744,10 @@ export default class TildazExtension extends Extension {
     if (win.minimized) win.unminimize();
     this._ensurePlacedOnce(win, this._configs.get(index));
     Main.activateWindow(win);
+    // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
+    // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
+    const dialog = this._openDialogOf(win);
+    if (dialog) Main.activateWindow(dialog);
   }
 
   _skipEffect(win) {
