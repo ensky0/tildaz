@@ -312,7 +312,7 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
 | 대상 | 어디서 확인 |
 |---|---|
 | zig 표준 라이브러리 | **레포 안의 기존 사용례를 먼저 grep** 해요 — 0.16 전환을 이미 겪은 코드가 답을 갖고 있어요. 없으면 `$(zig env \| grep lib_dir)` 의 std 소스 |
-| ghostty-vt · 의존 패키지 | `zig-pkg/` 아래 실제 소스. tarball 을 풀어 둔 것이라 그 pin 의 진짜 코드예요 |
+| ghostty-vt · 의존 패키지 | `zig-pkg/` 아래 실제 소스. tarball 을 풀어 둔 것이에요. **ghostty 는 그 pin 에 우리 패치가 얹힌 코드예요** (`vendor/ghostty/patches/` — 아래 `# 의존성 관리`) |
 | 이 저장소의 함수 | 정의로 가서 시그니처와 머리 주석을 읽어요. 주석에 *왜 그렇게 생겼는지* 가 적혀 있는 경우가 많아요 |
 
 **2026-09-11 [#646](https://github.com/ensky0/tildaz/issues/646) 에서 실제로 낭비했어요.**
@@ -3034,6 +3034,23 @@ upstream이 움직이면 CI의 `zig build -Dsimd=true --fetch`가 캐시 불일�
 `.github/workflows/release.yml`에는 rolling URL을 막는 sanity check가 있으니, 실수로 되돌리면 바로 빌드가 깨질 수 있어요.
 
 ghostty 의존성을 갱신하려면 `dist/update-ghostty.sh`를 실행해서 upstream `main` HEAD sha 기준으로 URL과 hash를 함께 업데이트해요.
+
+**ghostty 에는 우리 패치를 얹어요** ([#812](https://github.com/ensky0/tildaz/issues/812)). 패치는
+[`vendor/ghostty/patches/`](vendor/ghostty/patches) 에 두고, `zig build` 가 설정 단계에서 `zig-pkg/ghostty-*` 에 얹어요
+(`build.zig` 의 `ghosttyDependency` · 규칙은 [`build/vendor_patch.zig`](build/vendor_patch.zig)). fork 를 따로 두지 않으려고
+고른 방식이에요 (2026-10-20 사용자 결정). 패치 목록 · 만드는 법 · ghostty 테스트 돌리는 법은
+[`vendor/ghostty/README.md`](vendor/ghostty/README.md) 가 단일 출처예요.
+
+- **ghostty 를 부르는 자리는 `ghosttyDependency` 하나만 써요.** `b.lazyDependency("ghostty", …)` 를 직접 부르면 그 빌드에는
+  패치가 빠질 수 있어요.
+- **`zig-pkg/` 를 손으로 고치지 않아요.** 패치는 원본을 복사한 곳에서 고쳐 만들어요. 2026-10-20 에 에이전트가 `zig-pkg/` 를
+  직접 고치려던 명령이 자동 권한 판정에서 막혔어요.
+- **pin 을 올리면 패치가 안 맞을 수 있어요.** 그러면 빌드가 패치 · 파일 이름과 함께 멈춰요. 그 패치를 새 소스에 맞게 다시
+  만들어요.
+- **패치를 고쳤으면 그 checkout 의 `zig-pkg/ghostty-*` 를 지우고 다시 받아요.** 옛 패치가 얹힌 소스는 새 패치의 원본도
+  적용본도 아니라서 빌드가 멈춰요. CI 는 `pr-verify.yml` 의 캐시 키에 패치 파일을 넣어 같은 일을 해요.
+- 이 문서 곳곳의 "`zig-pkg/` 의 ghostty 소스를 읽어요" 는 **패치가 얹힌 소스**를 읽는 것이에요. upstream 원본과 견줄 때는
+  `vendor/ghostty/patches/` 를 함께 봐요.
 
 **ghostty 를 올렸으면 이모지 모양 표가 맞는지 봐요** ([#771](https://github.com/ensky0/tildaz/issues/771)). 선택자 없는 글자를
 컬러 이모지로 그릴지 정하는 표 (`src/font/emoji_presentation_table.zig`) 는 ghostty 가 셀 폭을 정할 때 쓰는 uucode 판에서

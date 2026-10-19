@@ -13,7 +13,7 @@ Ghostty.
 
 | Component | License | Included |
 |---|---|---|
-| `libghostty-vt` (Ghostty) | MIT | Always |
+| `libghostty-vt` (Ghostty) | MIT | Always — built with TildaZ's patches in `vendor/ghostty/patches/` |
 | `uucode` | MIT | Always — Ghostty's VT module uses it for grapheme break support |
 | `zig-toml` | MIT | Always — parses the TOML config file |
 | Highway | Apache-2.0 (also available under BSD-3-Clause) | Builds with `-Dsimd=true`, which official releases use |

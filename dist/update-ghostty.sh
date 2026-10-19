@@ -42,4 +42,6 @@ fi
 
 echo ""
 echo "완료. 'zig build' 로 검증 후 커밋하세요."
+echo "우리 패치 (vendor/ghostty/patches/) 는 'zig build' 가 새 소스에 얹어요. 안 맞으면 빌드가 멈추니"
+echo "  그 패치를 새 소스에 맞게 고쳐요 — 절차는 vendor/ghostty/README.md (#812)."
 echo "이모지 모양 표도 확인하세요 — 'zig build' 뒤 'python3 tool/emoji-presentation-table.py --check' (#771)."

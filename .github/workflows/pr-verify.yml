@@ -70,11 +70,14 @@ jobs:
       # Zig 0.16 은 의존성을 글로벌 캐시가 아니라 build root 옆 `zig-pkg/` 에 푼다.
       # ghostty tarball 이 커서 이 캐시가 실행 시간을 지배한다. 키는 `build.zig.zon`
       # 내용이다 — 의존성이 바뀌면 (URL / hash) 자동으로 새로 받는다.
+      # #812 — 패치 파일도 키에 넣는다. `zig build` 가 `zig-pkg/` 의 ghostty 에 패치를 얹은 채
+      # 캐시되므로, 패치를 고치면 옛 패치가 얹힌 소스가 되살아나 빌드가 멈춘다
+      # (`build/vendor_patch.zig` 는 원본도 적용본도 아니면 멈춘다).
       - name: Cache fetched dependencies
         uses: actions/cache@v4
         with:
           path: zig-pkg
-          key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ runner.os }}-${{ hashFiles('build.zig.zon', 'vendor/ghostty/patches/**') }}
 
       # zig 의 **빌드 산출물** 캐시 (위 zig-pkg 는 의존성 *소스* 다). ghostty 와 SIMD
       # C++ (highway · simdutf) 재컴파일을 건너뛰는 것이 목적이다 — Windows 의

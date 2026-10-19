@@ -2,6 +2,7 @@ const std = @import("std");
 const manifest = @import("build.zig.zon");
 const versioning = @import("build/version.zig");
 const git_version = @import("build/git_version.zig");
+const vendor_patch = @import("build/vendor_patch.zig");
 
 // Ghostty는 Windows target query의 ABI가 null이면 내부 target만 MSVC로
 // 바꾼다. TildaZ root는 Zig가 이미 resolve한 GNU ABI를 계속 써서 두 module의
@@ -63,6 +64,44 @@ fn addShellExtensionResources(b: *std.Build, mod: *std.Build.Module) void {
     });
     mod.addAnonymousImport("cinnamon_extension_js", .{ .root_source_file = b.path(cinnamon ++ "extension.js") });
     mod.addAnonymousImport("cinnamon_extension_metadata", .{ .root_source_file = b.path(cinnamon ++ "metadata.json") });
+}
+
+/// ghostty 의존성. 받은 소스에 `vendor/ghostty/patches/` 의 패치를 얹은 뒤 돌려준다
+/// ([#812](https://github.com/ensky0/tildaz/issues/812) · 규칙은 `build/vendor_patch.zig`).
+///
+/// ghostty 를 부르는 자리는 모두 이 함수를 거친다. 패치는 설정 단계에서 얹고, 소스는 그 뒤
+/// 실제 빌드 때 컴파일된다. ghostty 의 `build.zig` 는 그보다 먼저 돌아서 패치로 바꿀 수 없다 —
+/// 패치는 컴파일되는 소스 파일만 고친다.
+fn ghosttyDependency(b: *std.Build, args: anytype) ?*std.Build.Dependency {
+    const dep = b.lazyDependency("ghostty", args) orelse return null;
+    applyGhosttyPatches(b, dep);
+    return dep;
+}
+
+/// 한 번의 `zig build` 안에서 패치는 한 번만 본다 (ghostty 를 부르는 자리가 넷이다).
+var ghostty_patches_checked = false;
+
+fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
+    if (ghostty_patches_checked) return;
+    ghostty_patches_checked = true;
+
+    const io = b.graph.io;
+    const patches_path = "vendor/ghostty/patches";
+    var patches = b.build_root.handle.openDir(io, patches_path, .{ .iterate = true }) catch |err|
+        std.debug.panic("cannot open {s}: {s}", .{ patches_path, @errorName(err) });
+    defer patches.close(io);
+
+    var applied: std.ArrayList([]const u8) = .empty;
+    var diag: vendor_patch.Diagnostic = .{};
+    vendor_patch.ensureApplied(io, b.allocator, dep.builder.build_root.handle, patches, &applied, &diag) catch |err|
+        std.debug.panic(
+            \\ghostty patch {s} does not apply to {s} ({s}).
+            \\  The pinned ghostty source no longer matches the patch, or the file was edited.
+            \\  After a pin bump, update the patch. To start from a clean source, delete
+            \\  zig-pkg/ghostty-* and build again. See vendor/ghostty/README.md.
+        , .{ diag.patch, if (diag.file.len > 0) diag.file else "(patch file)", @errorName(err) });
+
+    for (applied.items) |name| std.debug.print("ghostty: applied {s}/{s}\n", .{ patches_path, name });
 }
 
 pub fn build(b: *std.Build) void {
@@ -153,7 +192,7 @@ pub fn build(b: *std.Build) void {
     // 라 Linux 등에서 `fontconfig_freetype` (hasFontconfig=true) 가 된다. `.freetype` 은
     // hasFontconfig=false 라 그 경로를 스킵 → libxml2 를 아예 안 받는다. VT 파서 모듈은
     // 폰트 백엔드를 실제로 쓰지 않으므로 값은 무방하고, 빌드 그래프 평가만 통과하면 된다.
-    if (b.lazyDependency("ghostty", .{
+    if (ghosttyDependency(b, .{
         .target = target,
         .simd = simd,
         .optimize = optimize,
@@ -389,7 +428,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_mod.addOptions("build_options", build_opts);
-    if (b.lazyDependency("ghostty", .{
+    if (ghosttyDependency(b, .{
         .target = target,
         .simd = simd,
         .optimize = optimize,
@@ -481,6 +520,15 @@ pub fn build(b: *std.Build) void {
     const version_tests = b.addTest(.{ .root_module = version_test_mod });
     test_step.dependOn(&b.addRunArtifact(version_tests).step);
 
+    // #812 — 의존성 패치 적용기 (`build/vendor_patch.zig`). 위와 같은 build helper 다.
+    const vendor_patch_test_mod = b.createModule(.{
+        .root_source_file = b.path("build/vendor_patch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const vendor_patch_tests = b.addTest(.{ .root_module = vendor_patch_test_mod });
+    test_step.dependOn(&b.addRunArtifact(vendor_patch_tests).step);
+
     // stress / 처리량 하네스 단계 (#371 · #278).
     //
     //   zig build stress -- throughput --layer parser --mb 64 --workload plain
@@ -500,7 +548,7 @@ pub fn build(b: *std.Build) void {
     });
     addShellExtensionResources(b, stress_mod);
     stress_mod.addOptions("build_options", build_opts);
-    if (b.lazyDependency("ghostty", .{
+    if (ghosttyDependency(b, .{
         .target = target,
         .simd = simd,
         .optimize = optimize,
@@ -641,7 +689,7 @@ pub fn build(b: *std.Build) void {
             });
             addShellExtensionResources(b, check_mod);
             check_mod.addOptions("build_options", build_opts);
-            if (b.lazyDependency("ghostty", .{
+            if (ghosttyDependency(b, .{
                 .target = check_target,
                 .simd = simd,
                 .optimize = .Debug,
