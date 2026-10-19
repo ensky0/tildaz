@@ -327,6 +327,7 @@ export default class TildazExtension extends Extension {
     this._windowCreatedId = 0;
     this._dialogClassWatchers = new Map();
     this._dialogIdleIds = new Set();
+    this._dialogFollowers = new Map(); // #782 dialog → 부모 창 시그널 (_followDialogParent)
     this._managed = new Set();
     this._placed = new Set();
     this._taskbarPatched = new Set();
@@ -494,6 +495,7 @@ export default class TildazExtension extends Extension {
     for (const id of this._dialogIdleIds || []) GLib.source_remove(id);
     this._dialogClassWatchers?.clear();
     this._dialogIdleIds?.clear();
+    for (const win of [...(this._dialogFollowers?.keys() || [])]) this._stopFollowingDialogParent(win);
     for (const win of this._managed || []) {
       try {
         // #676 — 확장을 끌 때 숨겨 둔 터미널을 최소화 상태로 남기면 사용자가
@@ -531,6 +533,7 @@ export default class TildazExtension extends Extension {
     this._accelerators = null;
     this._dialogClassWatchers = null;
     this._dialogIdleIds = null;
+    this._dialogFollowers = null;
   }
 
   // `gnome-extensions enable` 전환 중에는 extension 이 이미 활성인데도
@@ -906,33 +909,80 @@ export default class TildazExtension extends Extension {
   // context가 없다. transient parent가 minimize 상태면 Mutter가 child도 사용자에게
   // 보이지 않게 두므로 parent를 먼저 복원·활성화하고 dialog를 그 위에 올린다.
   _showParentAndPlaceDialog(win) {
-    const dr = win.get_frame_rect();
     const transient =
       typeof win.get_transient_for === "function" ? win.get_transient_for() : null;
     const term = transient || this._managed.values().next().value;
-    let x;
-    let y;
 
     if (term) {
       this._restoreDialogParent(term);
-
-      const tr = term.get_frame_rect();
-      x = tr.x + Math.round((tr.width - dr.width) / 2);
-      y = tr.y + Math.round((tr.height - dr.height) / 2);
       win.move_to_monitor(term.get_monitor());
+      this._centerDialogOn(win, term);
+      this._followDialogParent(win, term);
     } else {
+      const dr = win.get_frame_rect();
       const mi = global.display.get_current_monitor();
       const a = win.get_work_area_for_monitor(mi);
       if (!a) return;
-      x = a.x + Math.round((a.width - dr.width) / 2);
-      y = a.y + Math.round((a.height - dr.height) / 2);
       win.move_to_monitor(mi);
+      win.move_frame(
+        true,
+        a.x + Math.round((a.width - dr.width) / 2),
+        a.y + Math.round((a.height - dr.height) / 2)
+      );
     }
 
-    win.move_frame(true, x, y);
     win.make_above();
     win.stick();
     Main.activateWindow(win);
+  }
+
+  _centerDialogOn(win, term) {
+    const dr = win.get_frame_rect();
+    const tr = term.get_frame_rect();
+    const x = tr.x + Math.round((tr.width - dr.width) / 2);
+    const y = tr.y + Math.round((tr.height - dr.height) / 2);
+    if (dr.x !== x || dr.y !== y) win.move_frame(true, x, y);
+  }
+
+  // #782 — dialog 가 떠 있는 동안 부모를 따라간다. 부모 (worker) 가 map 직후 `_place` 의
+  // `move_resize_frame` 으로 제자리에 가는 중이면, mutter 는 크기가 바뀌는 이동을 앱이 새
+  // 크기로 commit 할 때까지 미룬다 (meta-window-wayland.c `can_move_now = FALSE`). 그 사이에
+  // dialog 가 map 되면 위 계산이 옛 rect 를 써서 화면 밖에 놓였다 (Cinnamon 실기). 부모의
+  // 위치 · 크기가 실제로 바뀔 때마다 다시 가운데로 놓는다 — 해상도 변경으로 부모가 옮겨
+  // 갈 때도 같다 (mutter 의 attach-modal-dialogs 가 modal dialog 를 부모에 붙여 두는 것과 같은 관례).
+  _followDialogParent(win, term) {
+    if (this._dialogFollowers.has(win)) return;
+    const recenter = () => {
+      try {
+        this._centerDialogOn(win, term);
+      } catch (e) {
+        console.log(`${LOG_TAG} dialog recenter failed: ${e}`);
+      }
+    };
+    const stop = () => this._stopFollowingDialogParent(win);
+    this._dialogFollowers.set(win, {
+      term,
+      termIds: [
+        term.connect("position-changed", recenter),
+        term.connect("size-changed", recenter),
+        term.connect("unmanaged", stop),
+      ],
+      dialogId: win.connect("unmanaged", stop),
+    });
+  }
+
+  _stopFollowingDialogParent(win) {
+    const f = this._dialogFollowers?.get(win);
+    if (!f) return;
+    this._dialogFollowers.delete(win);
+    for (const id of f.termIds) {
+      try {
+        f.term.disconnect(id);
+      } catch (_e) {}
+    }
+    try {
+      win.disconnect(f.dialogId);
+    } catch (_e) {}
   }
 
   _restoreDialogParent(term) {

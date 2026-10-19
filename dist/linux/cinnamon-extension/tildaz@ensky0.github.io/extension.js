@@ -255,6 +255,7 @@ function enable() {
     windowCreatedId: 0,
     dialogClassWatchers: new Map(),
     dialogIdleIds: new Set(),
+    dialogFollowers: new Map(), // #782 dialog → 부모 창 시그널 (followDialogParent)
     managed: new Set(),
     taskbarPatched: new Set(),
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
@@ -484,6 +485,7 @@ function disable() {
   for (const id of st?.dialogIdleIds || []) GLib.source_remove(id);
   st?.dialogClassWatchers.clear();
   st?.dialogIdleIds.clear();
+  for (const win of [...(st?.dialogFollowers?.keys() || [])]) stopFollowingDialogParent(win);
   for (const win of st?.managed || []) {
     try {
       // #676 — 확장을 끌 때 숨겨 둔 터미널을 최소화 상태로 남기면 사용자가
@@ -1077,26 +1079,74 @@ function place(win, c) {
 /** dialog(tildaz-dialog)를 managed 터미널 위 중앙에 배치. 터미널이 없으면 커서
  *  모니터 workArea 중앙으로 fallback. 크기는 dialog 자신의 고정 크기 유지. */
 function placeDialog(win) {
-  const dr = win.get_frame_rect();
-  let cx;
-  let cy;
   const term = win.get_transient_for?.() || st.managed.values().next().value;
   if (term) {
     restoreDialogParent(term);
-    const tr = term.get_frame_rect();
-    cx = tr.x + Math.round((tr.width - dr.width) / 2);
-    cy = tr.y + Math.round((tr.height - dr.height) / 2);
+    centerDialogOn(win, term);
+    followDialogParent(win, term);
   } else {
+    const dr = win.get_frame_rect();
     const mi = global.display.get_current_monitor();
     const a = win.get_work_area_for_monitor(mi);
     if (!a) return;
-    cx = a.x + Math.round((a.width - dr.width) / 2);
-    cy = a.y + Math.round((a.height - dr.height) / 2);
+    win.move_frame(
+      true,
+      a.x + Math.round((a.width - dr.width) / 2),
+      a.y + Math.round((a.height - dr.height) / 2)
+    );
   }
-  win.move_frame(true, cx, cy);
   win.make_above();
   win.stick();
   Main.activateWindow(win);
+}
+
+function centerDialogOn(win, term) {
+  const dr = win.get_frame_rect();
+  const tr = term.get_frame_rect();
+  const x = tr.x + Math.round((tr.width - dr.width) / 2);
+  const y = tr.y + Math.round((tr.height - dr.height) / 2);
+  if (dr.x !== x || dr.y !== y) win.move_frame(true, x, y);
+}
+
+// #782 — dialog 가 떠 있는 동안 부모를 따라간다. 부모 (worker) 가 map 직후 `place()` 의
+// `move_resize_frame` 으로 제자리에 가는 중이면, muffin 은 크기가 바뀌는 이동을 앱이 새
+// 크기로 commit 할 때까지 미룬다 (meta-window-wayland.c `can_move_now = FALSE`). 그 사이에
+// dialog 가 map 되면 위 계산이 옛 rect 를 써서 화면 밖에 놓였다. 부모의 위치 · 크기가 실제로
+// 바뀔 때마다 다시 가운데로 놓는다 — 해상도 변경으로 부모가 옮겨 갈 때도 같다
+// (GNOME 의 modal dialog 가 부모를 따라 움직이는 것 — attach-modal-dialogs — 과 같은 관례).
+function followDialogParent(win, term) {
+  if (st.dialogFollowers.has(win)) return;
+  const recenter = () => {
+    try {
+      centerDialogOn(win, term);
+    } catch (e) {
+      global.logError(`${LOG_TAG} dialog recenter failed: ${e}`);
+    }
+  };
+  const stop = () => stopFollowingDialogParent(win);
+  st.dialogFollowers.set(win, {
+    term,
+    termIds: [
+      term.connect("position-changed", recenter),
+      term.connect("size-changed", recenter),
+      term.connect("unmanaged", stop),
+    ],
+    dialogId: win.connect("unmanaged", stop),
+  });
+}
+
+function stopFollowingDialogParent(win) {
+  const f = st?.dialogFollowers.get(win);
+  if (!f) return;
+  st.dialogFollowers.delete(win);
+  for (const id of f.termIds) {
+    try {
+      f.term.disconnect(id);
+    } catch (_e) {}
+  }
+  try {
+    win.disconnect(f.dialogId);
+  } catch (_e) {}
 }
 
 function restoreDialogParent(term) {
