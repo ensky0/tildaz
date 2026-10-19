@@ -85,9 +85,14 @@ done
 
 IS_KDE=0
 IS_GNOME=0
-case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ]; }; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+IS_COSMIC=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; *COSMIC*) IS_COSMIC=1 ;; esac
+# GNOME · COSMIC 은 창 위치를 KWin 스크립트 같은 길로 알려 주지 않는다 — 터미널 안 프로그램이 칠한 마젠타
+# 표식으로 창 영역을 캡처에서 찾는다 (`key-to-screen_linux.c` 의 `--find-marker`).
+USE_MARKER=0
+{ [ "$IS_GNOME" = 1 ] || [ "$IS_COSMIC" = 1 ]; } && USE_MARKER=1
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$USE_MARKER" != 1 ]; }; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
@@ -173,11 +178,13 @@ while IFS= read -r _line; do :; done
 EOF
 chmod +x "$PRODUCER"
 PRODUCER_ENV=""
-[ "$IS_GNOME" = 1 ] && PRODUCER_ENV="TILDAZ_BENCH_MARKER=1"
-# 표식 회차가 쓰는 화면 크기 (물리 px — `tool/gnome-screen_linux.py`).
+[ "$USE_MARKER" = 1 ] && PRODUCER_ENV="TILDAZ_BENCH_MARKER=1"
+# 표식 회차가 쓰는 화면 크기 (물리 px — `tool/gnome-screen_linux.py` · `tool/cosmic-screen_linux.py`).
 SCREEN_GEO=""
 if [ "$IS_GNOME" = 1 ]; then
     SCREEN_GEO=$(python3 "$REPO_ROOT/tool/gnome-screen_linux.py") || { echo "화면 크기를 GNOME 에 못 물었어요." >&2; exit 1; }
+elif [ "$IS_COSMIC" = 1 ]; then
+    SCREEN_GEO=$(python3 "$REPO_ROOT/tool/cosmic-screen_linux.py") || { echo "화면 크기를 COSMIC 에 못 물었어요." >&2; exit 1; }
 fi
 
 # `terminals.sh` 의 훅 — `--only` 에 없는 대상을 건너뛴다.
@@ -203,7 +210,7 @@ wait_ready() {
 #   measure_round_linux <터미널 안 프로그램의 pid> <대상 이름> <회차>
 measure_round_linux() {
     echo "$PRESSES" > "$WORK_DIR/round.miss"
-    if [ "$IS_GNOME" = 1 ]; then
+    if [ "$USE_MARKER" = 1 ]; then
         _outp=$(printf '%s' "$SCREEN_GEO" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
         _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
             --find-marker --go-file "$WORK_DIR/$2.timing.go" --output "$_outp" --dpr 1 --click \
@@ -354,6 +361,10 @@ elif pgrep -x fcitx5 >/dev/null 2>&1; then
     # 나는지는 확인 안 했다 — 안전한 쪽으로 같이 막는다.
     if [ "$IS_KDE" = 1 ]; then
         _layouts=$(sed -n 's/^LayoutList=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/kxkbrc" 2>/dev/null | tr ',' '\n' | grep -c .)
+    elif [ "$IS_COSMIC" = 1 ]; then
+        # `layout: "us,kr",` — cosmic-comp 의 `xkb_config` (AGENTS.md 의 COSMIC layout 절).
+        _layouts=$(sed -n 's/^ *layout: *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/cosmic/com.system76.CosmicComp/v1/xkb_config" 2>/dev/null |
+            tr ',' '\n' | grep -c .)
     else
         # `[('xkb', 'us'), ('xkb', 'fr')]` — 항목마다 `('` 가 하나다.
         _layouts=$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null | grep -o "('" | wc -l)

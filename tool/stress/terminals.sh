@@ -632,9 +632,11 @@ linux_desktop_launch() {
         /^TryExec=/ || /^Actions=/ { next }
         { print }' "$_ld_src" > "$_ld_file"
     chmod +x "$_ld_file"
+    # KDE 는 KDE 런처, 나머지 (GNOME · COSMIC) 는 GLib 런처다 — 둘 다 그 데스크톱의 앱 메뉴가 `.desktop` 을 여는 길과
+    # 같은 일을 한다 (`Exec` 를 펼쳐 실행).
     case "${XDG_CURRENT_DESKTOP:-}" in
-        *GNOME*) run_terminal "$_ld_name" gio launch "$_ld_file" ;;
-        *) run_terminal "$_ld_name" kioclient exec "file:$_ld_file" ;;
+        *KDE*) run_terminal "$_ld_name" kioclient exec "file:$_ld_file" ;;
+        *) run_terminal "$_ld_name" gio launch "$_ld_file" ;;
     esac
 }
 
@@ -651,6 +653,14 @@ terminals_open_all() {
                 if [ -f /usr/share/applications/org.gnome.Terminal.desktop ] && ! terminal_skip gnome-terminal; then
                     linux_desktop_launch gnome-terminal /usr/share/applications/org.gnome.Terminal.desktop \
                         "gnome-terminal -- $PRODUCER"
+                fi
+                ;;
+            *COSMIC*)
+                # `com.system76.CosmicTerm.desktop` 은 `Exec=cosmic-term` 이다 (1.9.0). 그대로 띄우면 스스로 fork 하지만
+                # 자식의 명령줄도 측정 프로그램 경로를 담아서 회차 정리 (`cleanup_terminals`) 가 같이 내린다.
+                if [ -f /usr/share/applications/com.system76.CosmicTerm.desktop ] && ! terminal_skip cosmic-term; then
+                    linux_desktop_launch cosmic-term /usr/share/applications/com.system76.CosmicTerm.desktop \
+                        "cosmic-term -e $PRODUCER"
                 fi
                 ;;
             *)

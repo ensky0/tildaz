@@ -46,9 +46,10 @@ case "$REPEAT" in ''|*[!0-9]*|0) echo "--repeat 은 1 이상의 정수여야 해
 
 IS_KDE=0
 IS_GNOME=0
-case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ]; }; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+IS_COSMIC=0
+case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; *COSMIC*) IS_COSMIC=1 ;; esac
+if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ] && [ "$IS_COSMIC" != 1 ]; }; }; then
+    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
@@ -77,12 +78,14 @@ if [ "$IS_MACOS" != 1 ]; then
     # 화면의 논리 크기 · 배율 — 측정기가 받은 스트림이 화면 전체인지 본다. 이 셸의 조상 창 (VS Code 등) 의 화면이다.
     if [ "$IS_KDE" = 1 ]; then
         _geo=$(python3 "$REPO_ROOT/tool/kwin-window_linux.py" --child-pid $$ 2>/dev/null || true)
+    elif [ "$IS_COSMIC" = 1 ]; then
+        _geo=$(python3 "$REPO_ROOT/tool/cosmic-screen_linux.py" 2>/dev/null || true)
     else
         _geo=$(python3 "$REPO_ROOT/tool/gnome-screen_linux.py" 2>/dev/null || true)
     fi
     SCREEN_OUT=$(printf '%s' "$_geo" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
     SCREEN_DPR=$(printf '%s' "$_geo" | sed -n 's/.*dpr=\([^ ]*\).*/\1/p')
-    [ -n "$SCREEN_OUT" ] && [ -n "$SCREEN_DPR" ] || { echo "화면 크기를 KWin 에 못 물었어요 — 창 안의 셸에서 돌려 주세요." >&2; exit 1; }
+    [ -n "$SCREEN_OUT" ] && [ -n "$SCREEN_DPR" ] || { echo "화면 크기를 데스크톱에 못 물었어요 — 창 안의 셸에서 돌려 주세요." >&2; exit 1; }
 else
 clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMedia -framework CoreVideo \
       -o "$S2S" "$REPO_ROOT/tool/startup-to-screen_macos.m" || { echo "startup-to-screen 컴파일 실패." >&2; exit 1; }

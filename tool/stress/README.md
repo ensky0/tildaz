@@ -2231,7 +2231,7 @@ JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본
 
 ## 다른 터미널과 견주기 — 지연 · 메모리 · 시작 시간 ([#756](https://github.com/ensky0/tildaz/issues/756))
 
-처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **macOS 와 Linux 의 KDE Plasma** 에서 돼요. Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
+처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **macOS 와 Linux 의 KDE Plasma** 에서 돼요 (지연 · 시작 시간은 GNOME · COSMIC 도 — 아래). Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
 [`terminals.sh`](terminals.sh) 예요.
 
 ```sh
@@ -2309,6 +2309,11 @@ kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 �
 `-size` 를 안 줘요 (layer-shell 이 없어 앱이 거부해요) — 그래서 TildaZ 만 격자가 달라요.
 **GNOME 판은 권한 · 스트림 확인까지만 실기로 봤어요** (2026-10-13 GNOME Shell 51.0 — 스트림 2880x1800). 지연 ·
 시작 회차는 아직이에요 ([#761](https://github.com/ensky0/tildaz/issues/761)).
+
+**COSMIC 도 GNOME 과 같은 표식 방식이에요.** 화면 크기는 `cosmic-screen_linux.py` 가 `cosmic-randr list --kdl` 로
+줘요. 시작 시간의 런처는 `gio launch` 이고, 대상은 TildaZ · COSMIC Terminal (`com.system76.CosmicTerm.desktop`) ·
+Alacritty 예요. COSMIC 은 layer-shell 이 있어 TildaZ 에 `-size` 를 줘요. COSMIC Terminal 은 격자 옵션이 없어요.
+위생 절차는 창을 내리지 않아요 (KDE 만) — 다른 창은 직접 최소화해요. **COSMIC 판은 실기 전이에요** (#761).
 
 ### 함정 — Linux 에서 밟은 것 (2026-10-13 · 노트북 AMD Ryzen AI 7 350 · KDE Plasma 6.7.5)
 
