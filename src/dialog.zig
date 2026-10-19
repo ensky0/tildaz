@@ -196,6 +196,19 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
     return impl.promptHotkey(rt, allocator, title, message, validator);
 }
 
+/// #801 — 우리 다이얼로그가 떠 있는가. 떠 있으면 전역 hotkey 는 터미널을 숨기지 않고
+/// `bringToFront` 로 다이얼로그를 앞으로 가져온다 (Guake · iTerm2 와 같은 관례). 숨어 있는
+/// 터미널을 보이는 것은 막지 않는다. OS 가 그리는 fallback (Windows `MessageBoxW` · macOS
+/// `osascript`) 은 우리 창이 아니라 세지 않는다.
+pub fn isOpen() bool {
+    return impl.isOpen();
+}
+
+/// #801 — 떠 있는 다이얼로그를 앞으로 가져와 키보드를 준다. 없으면 아무 일도 안 한다.
+pub fn bringToFront() void {
+    impl.bringToFront();
+}
+
 test "#510 fatal 본문은 로그 한 줄로 접힌다" {
     var buf: [fatal_log_body_max]u8 = undefined;
 

@@ -4072,6 +4072,13 @@ test "#758 일반 파일이 아닌 config 는 오류 이름이 아니라 무엇�
 /// 입력 정책을 모은 것과 같은 이유).
 ///
 /// **fatal 이 아니다** — 보여주고 계속 돈다. `showError` 는 반환한다.
+/// #801 — 시작 안내 (`showLoadNotice` · `showConfigNotice`) 가 뜰 차례인지. 다이얼로그가 떠
+/// 있으면 터미널이 그 뒤에 보여야 해서, `hidden_start` 로 숨긴 채 시작하더라도 안내가 있으면
+/// host 가 터미널을 먼저 띄운다.
+pub fn hasStartupNotice(config: *const Config) bool {
+    return config.load_notice != null or pendingConfigNotice() != null;
+}
+
 pub fn showLoadNotice(rt: Runtime, config: *Config) void {
     const notice = config.load_notice orelse return;
     // 한 번만 보여준다. 소유권은 `deinit` 이 계속 들고 있다 — 여기서 free 하면

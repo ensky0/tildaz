@@ -275,6 +275,10 @@ fn setPromptStatusText(text: []const u8) void {
 /// 된다(이어서 activate 도 호출해 frontmost 확정). `runModal` *전* 이 아니라 modal 루프
 /// (`NSModalPanelRunLoopMode`) 안 = 중앙배치 *후* 라 위치 race 도 없다.
 fn dialogForceKeyFn(_: objc.id, _: objc.SEL, alert: objc.id) callconv(.c) void {
+    forceAlertKey(alert);
+}
+
+fn forceAlertKey(alert: objc.id) void {
     if (alert == null) return;
     const getWin = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) objc.id);
     const w = getWin(alert, objc.sel("window")) orelse return;
@@ -289,6 +293,26 @@ fn dialogForceKeyFn(_: objc.id, _: objc.SEL, alert: objc.id) callconv(.c) void {
     }
 }
 var force_key_instance: objc.id = null;
+
+/// #801 — `runModalOverHost` 가 돌리는 alert. 모든 NSAlert 다이얼로그가 그 함수를 지나므로 이것이
+/// 곧 "다이얼로그가 떠 있는가" 다. `osascript` fallback 은 다른 프로세스라 세지 않는다.
+var g_modal_alert: objc.id = null;
+
+pub fn isOpen() bool {
+    return g_modal_alert != null;
+}
+
+/// event tap 은 `kCFRunLoopCommonModes` 라 `runModal` 안에서도 불린다 — 그 자리에서 alert 를
+/// key 로 올린다 (`dialogForceKeyFn` 과 같은 호출).
+///
+/// 숨은 터미널을 띄운 직후에도 불린다 (host 의 `toggleWindow`). `showWindow` 가 창을 popup level
+/// 로 되돌려 alert 를 덮으므로, `runModalOverHost` 처럼 다시 normal 로 낮춘다. 낮춘 level 은 그
+/// 함수의 `restoreHostLevel` 이 모달이 끝날 때 되돌린다.
+pub fn bringToFront() void {
+    if (g_modal_alert == null) return;
+    lowerHostLevel();
+    forceAlertKey(g_modal_alert);
+}
 
 fn dialogBodyCanBecomeKeyView(_: objc.id, _: objc.SEL) callconv(.c) bool {
     return false;
@@ -477,6 +501,8 @@ test "macOS branded error avoids the critical caution badge" {
 /// responder와 무관하게 Enter/Esc를 정확한 modal response로 변환한다. Prompt는
 /// key capture monitor가 같은 역할을 하므로 none을 사용한다.
 fn runModalOverHost(alert: objc.id, keyboard_mode: KeyboardDismissMode) c_long {
+    g_modal_alert = alert;
+    defer g_modal_alert = null;
     lowerHostLevel();
     defer restoreHostLevel();
     // #249 — alert 가 key 가 아니면(권한창 등) 키보드를 못 받으므로 modal 루프 안에서 key 로

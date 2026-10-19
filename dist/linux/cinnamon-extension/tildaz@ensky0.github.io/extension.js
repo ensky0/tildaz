@@ -962,9 +962,26 @@ function onMap(actor) {
   // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
   if (cfg.hidden) {
-    skipNextEffect(win);
-    win.minimize();
+    // #801 — 다이얼로그 (시작 안내) 가 이미 있으면 숨기지 않는다. 다이얼로그는 뜰 때 부모를
+    // 되살리는데 (restoreDialogParent), 다이얼로그가 이 map 보다 먼저 생기면 그 뒤의 minimize 가
+    // 다이얼로그까지 숨겨 아무것도 안 보였다 (nested Cinnamon 6.6.9 · 4 회 중 3 회).
+    if (dialogChildOf(win)) {
+      global.log(`${LOG_TAG} hidden_start ignored — a dialog needs the window behind it`);
+    } else {
+      skipNextEffect(win);
+      win.minimize();
+    }
   }
+}
+
+/** #801 — `term` 을 부모로 둔 tildaz dialog. 아직 map 되지 않은 것도 창 목록에는 있다. */
+function dialogChildOf(term) {
+  const actors = global.get_window_actors();
+  for (let i = 0; i < actors.length; i++) {
+    const w = metaWindowOf(actors[i]);
+    if (isDialog(w) && w.get_transient_for?.() === term) return w;
+  }
+  return null;
 }
 
 /** #709 — 다음 최소화 · 복원 효과 하나를 건너뛴다 (GNOME `Main.wm.skipNextEffect` 대응). */
@@ -980,6 +997,16 @@ function toggle(index) {
     const win = find(index);
     if (!win) return; // toggle 전용 — 미실행 시 무동작(실행은 autostart/메뉴).
     if (!win.minimized) {
+      // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. 숨기면 아래
+      // defocusAfterHide 가 다이얼로그를 활성화하고, muffin 은 창을 활성화할 때 조상을 모두
+      // 되살려서 (meta_window_activate_full → unminimize_window_and_all_transient_parents)
+      // 터미널이 바로 다시 나타났다 — hotkey 가 안 먹는 것처럼 보였다.
+      const dialog = openDialogOf(win);
+      if (dialog) {
+        global.log(`${LOG_TAG} hide skipped — a dialog is open; brought it to the front`);
+        Main.activateWindow(dialog);
+        return;
+      }
       skipNextEffect(win);
       win.minimize();
       defocusAfterHide(win);
@@ -993,6 +1020,10 @@ function toggle(index) {
     // 다른 모니터로 커서 이동 대비해 위치를 다시 확정(커서 모니터 기준).
     place(win, st.configs.get(index));
     Main.activateWindow(win);
+    // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
+    // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
+    const dialog = openDialogOf(win);
+    if (dialog) Main.activateWindow(dialog);
   } catch (e) {
     global.logError(LOG_TAG + " toggle failed: " + e);
   }
@@ -1133,6 +1164,14 @@ function followDialogParent(win, term) {
     ],
     dialogId: win.connect("unmanaged", stop),
   });
+}
+
+/** #801 — 부모가 `term` 인, 떠 있는 dialog. `followDialogParent` 가 dialog 가 사는 동안 기록한다. */
+function openDialogOf(term) {
+  for (const [dialog, f] of st?.dialogFollowers || []) {
+    if (f.term === term) return dialog;
+  }
+  return null;
 }
 
 function stopFollowingDialogParent(win) {

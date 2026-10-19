@@ -35,3 +35,4 @@ Internal changes belong in neither.
 - On sway, a window started hidden (`hidden_start`) now shows the terminal on the first hotkey press instead of an empty window. ([#788](https://github.com/ensky0/tildaz/issues/788))
 - On KDE Plasma, a global hotkey that combines Shift with a symbol or digit (like `ctrl+shift+]`) now works. ([#760](https://github.com/ensky0/tildaz/issues/760))
 - On GNOME and Cinnamon, dialogs now always open in the middle of the TildaZ window. They sometimes opened partly off-screen. ([#782](https://github.com/ensky0/tildaz/issues/782))
+- While a dialog is open, TildaZ now always stays behind it. The hotkey brings the dialog to the front instead of hiding TildaZ, and the settings notice at startup appears over the terminal. On GNOME and Cinnamon the hotkey used to do nothing. ([#801](https://github.com/ensky0/tildaz/issues/801))

@@ -728,6 +728,26 @@ const ScrollContext = struct {
 
 var scroll_ctx: ?ScrollContext = null;
 
+/// #801 — 지금 떠 있는 우리 다이얼로그 창. 두 ctx 는 모달 루프 동안만 살아서 (`defer
+/// scroll_ctx = null`) 이것이 곧 "다이얼로그가 떠 있는가" 다. `messageBox` fallback 은 OS 창이라
+/// 세지 않는다.
+fn activeDialogWindow() HWND {
+    if (scroll_ctx) |ctx| if (ctx.hwnd != null) return ctx.hwnd;
+    if (prompt_ctx) |ctx| if (ctx.hwnd != null) return ctx.hwnd;
+    return null;
+}
+
+pub fn isOpen() bool {
+    return activeDialogWindow() != null;
+}
+
+/// 전역 hotkey 를 받은 직후라 이 프로세스가 foreground 를 넘겨받을 수 있다 (`WM_HOTKEY`).
+pub fn bringToFront() void {
+    const hwnd = activeDialogWindow();
+    if (hwnd == null) return;
+    _ = SetForegroundWindow(hwnd);
+}
+
 /// #655 — 안내 모드에서 `IDCANCEL` 자리 버튼이 할 일. `null` 이면 그 버튼은 평소대로
 /// 창을 닫는 취소다.
 var scroll_inline_action: ?*const fn () void = null;

@@ -255,19 +255,6 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         app.window.cell_width_px,
         app.window.cell_height_px,
     });
-    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
-    // 아니다** — 기본값으로 계속 돈다. 창이 뜬 뒤인 것은 세 platform 을 같은 시점으로
-    // 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
-    config_mod.showLoadNotice(rt, &config);
-    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
-    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
-    // 멈추면 안 되므로 로그로만 남긴다.
-    // `before_open` 은 `*const fn () void` 라 method 를 그대로 못 넘긴다. 창을 잠깐
-    // 모듈 전역에 걸어 두고 shim 을 넘긴다 — 다이얼로그가 modal 이라 그 사이 다른
-    // 창이 끼어들지 않는다.
-    g_notice_window = &app.window;
-    defer g_notice_window = null;
-    config_mod.showConfigNotice(rt, alloc, opts.isStressRun(), yieldTopmostForNotice);
     defer app.window.deinit();
 
     // Scale tab bar / scrollbar / padding constants by the startup DPI.
@@ -324,9 +311,34 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
 
     // 측정 모드는 `hidden_start` 를 무시한다 (#382) — 숨겨져 있으면 렌더가 일어나지
     // 않아 측정이 무의미하다.
-    if (!config.hidden_start or opts.isStressRun()) {
+    // #801 — 시작 안내가 뜰 차례면 `hidden_start` 여도 띄운다. 다이얼로그 뒤에는 터미널이
+    // 보여야 한다. 안내를 닫은 뒤에도 그대로 둔다 (사용자 결정 — 다시 숨길 일이 아니다).
+    const notice_pending = config_mod.hasStartupNotice(&config);
+    if (!config.hidden_start or opts.isStressRun() or notice_pending) {
+        if (config.hidden_start and !opts.isStressRun() and notice_pending) {
+            log.appendLine("startup", "hidden_start ignored — a startup notice needs the window behind it", .{});
+        }
         log.appendLine("startup", "show window", .{});
         app.window.show();
+    }
+
+    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
+    // 아니다** — 기본값으로 계속 돈다.
+    // #801 — **창을 띄운 뒤**에 알린다. 예전에는 창을 만든 직후 · 첫 표시 전이어서 안내 뒤에
+    // 터미널이 없었고, 안내 중에 hotkey 를 누르면 아직 그려지지 않은 창이 포커스를 가져갔다
+    // (Windows 실기). 모달 루프 (`GetMessageW(null)`) 가 터미널 창의 메시지도 돌려서 안내 뒤의
+    // 터미널은 계속 그려진다. Linux 는 원래 창이 뜬 뒤 이벤트 루프에서 알린다.
+    config_mod.showLoadNotice(rt, &config);
+    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
+    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
+    // 멈추면 안 되므로 로그로만 남긴다.
+    // `before_open` 은 `*const fn () void` 라 method 를 그대로 못 넘긴다. 창을 잠깐
+    // 모듈 전역에 걸어 두고 shim 을 넘긴다 — 다이얼로그가 modal 이라 그 사이 다른
+    // 창이 끼어들지 않는다.
+    {
+        g_notice_window = &app.window;
+        defer g_notice_window = null;
+        config_mod.showConfigNotice(rt, alloc, opts.isStressRun(), yieldTopmostForNotice);
     }
 
     // #304 — HWND 생성만으로는 충분하지 않다. renderer와 첫 tab, 표시 정책을

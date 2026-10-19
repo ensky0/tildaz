@@ -1994,6 +1994,8 @@ const Client = struct {
             .show_confirm = Client.dialogShowConfirmCb,
             .show_notice_action = Client.dialogShowNoticeActionCb,
             .prompt_hotkey = Client.dialogPromptHotkeyCb,
+            .is_open = Client.dialogIsOpenCb,
+            .bring_to_front = Client.dialogBringToFrontCb,
         });
         defer dialog_linux.unregisterCallbacks();
 
@@ -2131,12 +2133,18 @@ const Client = struct {
         // 참인 환경 (sway `$SWAYSOCK` · Hyprland · COSMIC) 에서 측정 창이 숨은 채 떴고,
         // 측정 모드는 toggle listener 를 만들지 않으므로 (`runBaselineWindow` 의
         // `listener_fd = -1`) 띄울 경로조차 없다.
+        // #801 — 시작 안내 (`drainConfigNotice`) 가 뜰 차례면 숨기지 않는다. 다이얼로그 뒤에는
+        // 터미널이 보여야 한다. 안내를 닫은 뒤에도 그대로 둔다 (사용자 결정 — 다시 숨길 일이 아니다).
+        const notice_pending = self.pending_config_notice != null or self.pending_config_repair;
         const hidden_at_start = self.config.hidden_start and
             !self.run_opts.isStressRun() and
+            !notice_pending and
             (has_kde_hotkey or has_compositor_hotkey);
         if (self.config.hidden_start and !hidden_at_start) {
             if (self.run_opts.isStressRun()) {
                 log.appendLine("startup", "hidden_start ignored (stress run) — the measurement needs the window rendering, showing on start", .{});
+            } else if (notice_pending) {
+                log.appendLine("startup", "hidden_start ignored — a startup notice needs the window behind it", .{});
             } else {
                 log.appendLine("startup", "hidden_start ignored — no hotkey path (KGlobalAccel/COSMIC/Hyprland/sway), showing on start", .{});
             }
@@ -9359,6 +9367,9 @@ const Client = struct {
             return;
         }
         if (self.surface_hidden) {
+            // #801 — 숨은 채 다이얼로그 (host overlay) 가 떠 있었으면 터미널을 그 뒤에 띄우고
+            // 다이얼로그를 앞에 둔다. 아래 갈래가 모두 여기서 끝나므로 `defer` 로 건다.
+            defer if (dialog_mod.isOpen()) dialog_mod.bringToFront();
             log.logToggle(true);
             // #205 — show phase elapsed timer. hotkey activation → first frame.
             // configure handler / ensureSessionGrid / redraw 가 후속 호출에서
@@ -9413,6 +9424,13 @@ const Client = struct {
                 // per-toggle — verbose (#197 Option B, 3 플랫폼 공통 category "toggle").
                 log.appendLineVerbose("toggle", "show — remapped shell objects (#205)", .{});
             }
+            return;
+        }
+        // #801 — 다이얼로그가 떠 있으면 숨기지 않는다. 다이얼로그 펌프 (`runConfirmDialog`) 도
+        // toggle 소켓 · kglobalaccel 을 돌려서 여기로 오고, 예전에는 터미널만 숨고 overlay 가 남았다.
+        if (dialog_mod.isOpen()) {
+            log.logToggleKeptForDialog();
+            dialog_mod.bringToFront();
             return;
         }
         // hide 진입 — mac #175 동등 정책: preedit commit (cancel
@@ -10845,6 +10863,18 @@ const Client = struct {
     /// 즉 *outer dispatchBuffered 안 호출 X* — inner pump 의 `pollAndDispatch`
     /// + `drainPendingDialogDismiss` 패턴 안전. dismiss 의 xdg-activation
     /// roundtrip 도 main loop 의 drain 시점에서 *outer pump cycle 밖* 에 처리.
+    fn dialogIsOpenCb(ctx: *anyopaque) bool {
+        const self: *Client = @ptrCast(@alignCast(ctx));
+        return self.dialog.active();
+    }
+
+    /// #801 — 따로 할 일이 없다. layer-shell 경로의 overlay 는 overlay 층에 있고 키보드를
+    /// 독점해서 (`keyboard_interactivity=exclusive`) 이미 맨 앞이다. xdg_toplevel fallback
+    /// (sway) 은 떠 있는 floating 창이고, GNOME · Cinnamon 은 셸 확장이 hotkey 를 처리한다.
+    fn dialogBringToFrontCb(ctx: *anyopaque) void {
+        _ = ctx;
+    }
+
     fn dialogShowConfirmCb(ctx: *anyopaque, title: []const u8, message: []const u8) bool {
         const self: *Client = @ptrCast(@alignCast(ctx));
         self.dialog.secondary_len = 0;

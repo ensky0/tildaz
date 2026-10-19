@@ -27,6 +27,9 @@ pub const Callbacks = struct {
     /// 다르다. 행동 버튼을 눌렀으면 true.
     show_notice_action: *const fn (ctx: *anyopaque, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void,
     prompt_hotkey: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8,
+    /// #801 — overlay 가 떠 있는가 · 앞으로 가져오기.
+    is_open: *const fn (ctx: *anyopaque) bool,
+    bring_to_front: *const fn (ctx: *anyopaque) void,
 };
 
 var g_callbacks: ?Callbacks = null;
@@ -61,6 +64,16 @@ pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8
     if (g_callbacks) |cb| return cb.prompt_hotkey(cb.ctx, allocator, title, message, validator);
     showStderr(.info, title, message);
     return null;
+}
+
+pub fn isOpen() bool {
+    const cb = g_callbacks orelse return false;
+    return cb.is_open(cb.ctx);
+}
+
+pub fn bringToFront() void {
+    const cb = g_callbacks orelse return;
+    cb.bring_to_front(cb.ctx);
 }
 
 /// Host shutdown 직전 호출 — main loop 빠져나간 후 dialog 호출 시 dangling

@@ -4672,14 +4672,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         false,
     ) orelse return error.NSWindowInitFailed;
 
-    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
-    // 아니다** — 기본값으로 계속 돈다. 창이 만들어진 뒤인 것은 세 platform 을 같은
-    // 시점으로 맞추기 위함이다 (Linux 는 그 전에 다이얼로그가 보이지 않는다).
-    config.showLoadNotice(rt, &g_config);
-    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
-    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
-    // 멈추면 안 되므로 로그로만 남긴다.
-    config.showConfigNotice(rt, g_gpa.allocator(), g_run_opts.isStressRun(), yieldTopmostUntilNextShow);
+    // #801 — 시작 안내 (`showLoadNotice` · `showConfigNotice`) 는 터미널이 뜨고 그려질 준비가
+    // 끝난 뒤, 이벤트 루프 직전에 알린다 (아래 "7. 이벤트 루프"). 예전에는 여기 — 창을 만든
+    // 직후 · 표시 전 — 여서 안내 뒤에 터미널이 없었다.
 
     // 사용자 드래그 / 이동 OS 차단.
     const setMovable = objc.objcSend(fn (objc.id, objc.SEL, bool) callconv(.c) void);
@@ -4788,7 +4783,13 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     repositionWindow();
     // 측정 모드는 `hidden_start` 를 무시한다 (#382) — 창이 숨겨져 있으면 렌더가
     // 일어나지 않아 측정이 무의미하다.
-    if (!g_config.hidden_start or g_run_opts.isStressRun()) {
+    // #801 — 시작 안내가 뜰 차례면 `hidden_start` 여도 띄운다. 다이얼로그 뒤에는 터미널이
+    // 보여야 한다. 안내를 닫은 뒤에도 그대로 둔다 (사용자 결정 — 다시 숨길 일이 아니다).
+    const notice_pending = config.hasStartupNotice(&g_config);
+    if (!g_config.hidden_start or g_run_opts.isStressRun() or notice_pending) {
+        if (g_config.hidden_start and !g_run_opts.isStressRun() and notice_pending) {
+            log.appendLine("startup", "hidden_start ignored — a startup notice needs the window behind it", .{});
+        }
         showWindow();
     }
 
@@ -5046,6 +5047,19 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         // observer 가 있어야 뜻이 있으므로 그 뒤에 배선한다.
         g_session.setOutputFull(macOutputFull, null);
     }
+
+    // #501 — config 를 읽지 못했거나 만들지 못했으면 여기서 한 번 알린다. **fatal 이
+    // 아니다** — 기본값으로 계속 돈다.
+    // #801 — 터미널 창 · 렌더러 · 첫 탭 · display link · event tap 이 모두 준비된 **뒤**에
+    // 알린다. 안내 뒤에 터미널이 보이고, `runModal` 의 모달 루프에서도 common modes 로 건
+    // display link 가 그 터미널을 계속 그린다. 전역 hotkey 도 이미 걸려 있어 안내 중에 누르면
+    // 다른 다이얼로그와 똑같이 안내가 앞으로 온다 (`toggleWindow`). Linux 는 원래 창이 뜬 뒤
+    // 이벤트 루프에서 알린다.
+    config.showLoadNotice(rt, &g_config);
+    // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
+    // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
+    // 멈추면 안 되므로 로그로만 남긴다.
+    config.showConfigNotice(rt, g_gpa.allocator(), g_run_opts.isStressRun(), yieldTopmostUntilNextShow);
 
     // 7. 이벤트 루프.
     // #304 — observer뿐 아니라 window, renderer, 첫 tab, display link까지 준비된
@@ -5934,6 +5948,13 @@ fn hideWindow() void {
 
 fn toggleWindow() void {
     if (g_visible) {
+        // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. event tap 은
+        // `runModal` 안에서도 불리고 `hideWindow` 는 우리 창만 내려서, 예전에는 alert 만 남았다.
+        if (dialog.isOpen()) {
+            log.logToggleKeptForDialog();
+            dialog.bringToFront();
+            return;
+        }
         // #175/#317 — F1 hide도 공통 shortcut 정책의 focus_loss = commit.
         applyShortcutInputPolicy(.toggle_visibility);
         // #329 — 열린 menu 는 hide 때 닫는다. 다음 show 에 남지 않게.
@@ -5946,6 +5967,9 @@ fn toggleWindow() void {
         log.logToggle(true);
         repositionWindow();
         showWindow();
+        // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 띄우고 다이얼로그를 앞에
+        // 둔다. `showWindow` 가 터미널을 key window 로 올려서 그대로 두면 다이얼로그가 뒤로 밀린다.
+        if (dialog.isOpen()) dialog.bringToFront();
     }
 }
 

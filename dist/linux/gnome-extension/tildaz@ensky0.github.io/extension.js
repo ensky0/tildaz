@@ -716,6 +716,16 @@ export default class TildazExtension extends Extension {
     // 떠 있고 visible → focus 유무와 관계없이 숨김. minimize 의 mutter 기본 애니메이션은 skip
     // (drop-down 은 즉시 사라지는 게 자연스러움; slide 는 Phase 2).
     if (!win.minimized) {
+      // #801 — 다이얼로그가 떠 있으면 숨기지 않고 다이얼로그를 앞으로. 숨기면 아래
+      // _defocusAfterHide 가 다이얼로그를 활성화하고, mutter 는 창을 활성화할 때 조상을 모두
+      // 되살려서 (meta_window_activate_full → unminimize_window_and_all_transient_parents)
+      // 터미널이 바로 다시 나타났다 — hotkey 가 안 먹는 것처럼 보였다.
+      const dialog = this._openDialogOf(win);
+      if (dialog) {
+        console.log(`${LOG_TAG} hide skipped — a dialog is open; brought it to the front`);
+        Main.activateWindow(dialog);
+        return;
+      }
       this._skipEffect(win);
       win.minimize();
       this._defocusAfterHide(win);
@@ -734,6 +744,10 @@ export default class TildazExtension extends Extension {
     if (win.minimized) win.unminimize();
     this._ensurePlacedOnce(win, this._configs.get(index));
     Main.activateWindow(win);
+    // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
+    // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
+    const dialog = this._openDialogOf(win);
+    if (dialog) Main.activateWindow(dialog);
   }
 
   _skipEffect(win) {
@@ -856,7 +870,12 @@ export default class TildazExtension extends Extension {
       // 숨김 여부는 config(hidden_start)가 단일 기준 — 실행 경로(auto_start preload /
       // 앱 그리드 / 터미널)와 무관하게 일관. hidden_start=true 면 배치 후 minimize
       // (첫 hotkey 로 등장), false 면 우측 드롭다운으로 바로 표시.
-      const hidden = cfg.hiddenStart;
+      // #801 — 다이얼로그 (시작 안내) 가 이미 있으면 숨기지 않는다. 다이얼로그가 이 map 보다
+      // 먼저 생기면 부모 되살리기 (_watchDialogBeforeMap) 가 먼저 끝나고, 그 뒤의 minimize 가
+      // 다이얼로그까지 숨겨 아무것도 안 보였다 (headless GNOME 51.1 · 2 회 중 2 회).
+      const hidden = cfg.hiddenStart && !this._dialogChildOf(win);
+      if (cfg.hiddenStart && !hidden)
+        console.log(`${LOG_TAG} hidden_start ignored — a dialog needs the window behind it`);
 
       // map 직후엔 mutter 의 map 애니메이션(opacity 0→255 ease)이 진행 중이다.
       // kill-window-effects 로 그 애니메이션을 *먼저* 끝낸 뒤(끝나면 opacity 가
@@ -969,6 +988,24 @@ export default class TildazExtension extends Extension {
       ],
       dialogId: win.connect("unmanaged", stop),
     });
+  }
+
+  /** #801 — `term` 을 부모로 둔 tildaz dialog. 아직 map 되지 않은 것도 창 목록에는 있다. */
+  _dialogChildOf(term) {
+    for (const actor of global.get_window_actors()) {
+      const w = actor.meta_window;
+      const c = w?.get_wm_class();
+      if (c && c.toLowerCase() === DIALOG_APP_ID && w.get_transient_for?.() === term) return w;
+    }
+    return null;
+  }
+
+  /** #801 — 부모가 `term` 인, 떠 있는 dialog. `_followDialogParent` 가 dialog 가 사는 동안 기록한다. */
+  _openDialogOf(term) {
+    for (const [dialog, f] of this._dialogFollowers || []) {
+      if (f.term === term) return dialog;
+    }
+    return null;
   }
 
   _stopFollowingDialogParent(win) {
