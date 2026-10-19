@@ -729,8 +729,12 @@ fn readCosmicCustom(rt: Runtime, allocator: std.mem.Allocator, path: []const u8,
 /// #700 — 고친 내용을 쓴다. 바뀐 게 없으면 열지도 않는다 (cosmic-comp 가 파일이 바뀔 때마다
 /// 다시 읽는다). 쓰기 전에 원본을 백업한다 (`writeCosmicBackups`) — 망가지면 되돌리기 어려운
 /// 파일이라서다 (#700 D3).
+///
+/// #803 — 폴더도 여기서, 실제로 쓸 때만 만든다. 예전에는 읽기 전에 만들어서, 지울 항목이 없는
+/// `tildaz --desktop remove` 가 COSMIC 이 없는 기기에도 빈 `cosmic/…/v1` 폴더를 남겼다.
 fn writeCosmicCustom(rt: Runtime, allocator: std.mem.Allocator, path: []const u8, old: []const u8, existed: bool, new: []const u8) !bool {
     if (std.mem.eql(u8, old, new)) return false;
+    if (std.Io.Dir.path.dirname(path)) |dir| try paths.ensureDir(rt, dir);
     if (existed) try writeCosmicBackups(rt, allocator, old);
     return paths.writeFileIfChanged(rt, allocator, path, new);
 }
@@ -840,8 +844,7 @@ test "#700 COSMIC backups are named by date and sequence and only the latest are
 fn syncCosmic(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32) !void {
     const dir_path = try cosmicShortcutsDir(rt, allocator);
     defer allocator.free(dir_path);
-    // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
-    try paths.ensureDir(rt, dir_path);
+    // 폴더는 쓸 때 만든다 (`writeCosmicCustom`) — #803.
     const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
@@ -1205,7 +1208,7 @@ fn rewriteCosmicPositionEntry(
 ) !void {
     const dir_path = try cosmicShortcutsDir(rt, allocator);
     defer allocator.free(dir_path);
-    try paths.ensureDir(rt, dir_path);
+    // 폴더는 쓸 때 만든다 (`writeCosmicCustom`) — #803.
     const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, "custom" });
     defer allocator.free(path);
 
