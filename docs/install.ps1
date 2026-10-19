@@ -19,7 +19,7 @@
 # Keep this file ASCII. "irm | iex" reads it as a string, and Windows
 # PowerShell 5.1 reads a BOM-less non-ASCII file in the local code page.
 #
-# The whole script is one function called on the last line, so a download cut
+# The whole script is one function called on the last lines, so a download cut
 # off halfway runs nothing.
 
 function Install-TildaZ {
@@ -142,4 +142,5 @@ public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName)
     Write-Host 'Started TildaZ. Press its hotkey (F1 by default) to show or hide it.'
 }
 
-Install-TildaZ
+# Print a failure as one line instead of a PowerShell error record.
+try { Install-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red }

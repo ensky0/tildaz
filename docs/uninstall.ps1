@@ -8,12 +8,13 @@
 #   - %LOCALAPPDATA%\Programs\TildaZ
 #   - %LOCALAPPDATA%\tildaz (run-time state)
 #
-# Your config and logs in %APPDATA%\tildaz are kept.
+# Your config and logs in %APPDATA%\tildaz are kept. An unzipped release in
+# another folder is left alone.
 #
 # Source: https://github.com/ensky0/tildaz/blob/main/docs/uninstall.ps1
 #
 # Keep this file ASCII (see install.ps1). The whole script is one function
-# called on the last line, so a download cut off halfway runs nothing.
+# called on the last lines, so a download cut off halfway runs nothing.
 
 function Uninstall-TildaZ {
     $ErrorActionPreference = 'Stop'
@@ -25,14 +26,29 @@ function Uninstall-TildaZ {
     $config = Join-Path $env:APPDATA 'tildaz'
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
-    # Do not stop a running TildaZ here: it may hold open shells.
-    $running = @(Get-Process -Name tildaz, OpenConsole -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith("$dest\", [StringComparison]::OrdinalIgnoreCase) })
-    if ($running.Count -gt 0) {
-        throw 'TildaZ is running. Quit it and run this uninstaller again.'
+    # Nothing to do for a user who only ever unzipped a release. The state folder
+    # below is shared with that copy, so leave it alone too.
+    if (-not (Test-Path -LiteralPath $dest)) {
+        if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
+        Write-Host 'TildaZ is not installed.'
+        return
     }
 
-    $removed = $false
+    # Do not stop a running TildaZ here: it may hold open shells. A release started
+    # from another folder counts too, because it uses the state folder removed below.
+    # See install.ps1 for the window class.
+    if (-not ('TildaZInstall.Win32' -as [type])) {
+        Add-Type -Namespace TildaZInstall -Name Win32 -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+public static extern IntPtr FindWindowW(string lpClassName, string lpWindowName);
+'@
+    }
+    $window = [TildaZInstall.Win32]::FindWindowW('TildaZWindow', [NullString]::Value)
+    $running = @(Get-Process -Name tildaz, OpenConsole -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith("$dest\", [StringComparison]::OrdinalIgnoreCase) })
+    if ($window -ne [IntPtr]::Zero -or $running.Count -gt 0) {
+        throw 'TildaZ is running. Quit it and run this uninstaller again.'
+    }
 
     # The app writes this value on its first run. Value names are case-insensitive,
     # so this also covers "TildaZ" from releases before 0.10. Leave it alone if it
@@ -40,23 +56,18 @@ function Uninstall-TildaZ {
     $run = (Get-ItemProperty -Path $runKey -Name tildaz -ErrorAction SilentlyContinue).tildaz
     if ($run -and $run.IndexOf($dest, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         Remove-ItemProperty -Path $runKey -Name tildaz
-        $removed = $true
     }
 
     foreach ($path in @($shortcut, $dest, $state)) {
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Recurse -Force
-            $removed = $true
         }
     }
 
-    if (-not $removed) {
-        Write-Host 'TildaZ is not installed.'
-        return
-    }
     Write-Host 'Removed TildaZ.'
     Write-Host "Kept your config and logs. Delete them by hand if you do not need them:"
     Write-Host "  $config\"
 }
 
-Uninstall-TildaZ
+# Print a failure as one line instead of a PowerShell error record.
+try { Uninstall-TildaZ } catch { Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red }
