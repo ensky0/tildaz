@@ -575,10 +575,18 @@ win_window_title() {
     esac
 }
 
-# 저장소 빌드본을 찾아 `TILDAZ_BIN` 에 둔다 — 설치본은 버전이 다를 수 있다. `terminals_launch_all` ·
-# `terminals_open_all` 이 같이 쓴다.
+# 잴 TildaZ 를 `TILDAZ_BIN` 에 둔다. `terminals_launch_all` · `terminals_open_all` 이 같이 쓴다.
+#
+# 기본은 저장소 빌드본이다 — 설치본은 버전이 다를 수 있다. 릴리즈 판을 재려면 부를 때 경로를 준다
+# (`TILDAZ_BIN=/usr/bin/tildaz …`). 사이트에 버전을 적으니 사용자가 받는 바이너리로 잰다 (#756 ·
+# 2026-10-19 결정). 이 파일을 불러올 때의 값을 기억해 둔다 — 아래 함수가 `TILDAZ_BIN` 을 다시 쓴다.
+TILDAZ_BIN_GIVEN="${TILDAZ_BIN:-}"
 terminals_find_tildaz() {
     TILDAZ_BIN=""
+    if [ -n "$TILDAZ_BIN_GIVEN" ]; then
+        if [ -x "$TILDAZ_BIN_GIVEN" ]; then TILDAZ_BIN="$TILDAZ_BIN_GIVEN"; fi
+        return 0
+    fi
     for candidate in \
         "$REPO_ROOT/zig-out/TildaZ-dev.app/Contents/MacOS/tildaz" \
         "$REPO_ROOT/zig-out/bin/tildaz" \
@@ -653,10 +661,16 @@ terminals_open_all() {
         esac
         terminals_find_tildaz
         _ld_tz="${XDG_DATA_HOME:-$HOME/.local/share}/applications/tildaz-dev.desktop"
+        # 릴리즈 판 (`TILDAZ_BIN` 을 준 경우) 은 그 판의 메뉴 항목을 띄운다 — 패키지는 시스템 자리에,
+        # tarball 은 사용자 자리에 둔다.
+        if [ -n "$TILDAZ_BIN_GIVEN" ]; then
+            _ld_tz="${XDG_DATA_HOME:-$HOME/.local/share}/applications/tildaz.desktop"
+            [ -f "$_ld_tz" ] || _ld_tz=/usr/share/applications/tildaz.desktop
+        fi
         if [ -z "$TILDAZ_BIN" ]; then
-            echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+            echo "tildaz         잴 바이너리가 없어요 — zig build 로 빌드하거나 TILDAZ_BIN 에 실행 파일 경로를 주세요"
         elif [ ! -f "$_ld_tz" ]; then
-            echo "tildaz         $_ld_tz 가 없어요 — dist/linux/install.sh 로 dev 판을 한 번 설치해 주세요"
+            echo "tildaz         $_ld_tz 가 없어요 — 그 판을 한 번 설치해 주세요 (dev 판은 dist/linux/install.sh)"
         elif ! terminal_skip tildaz; then
             # 설치본 대신 저장소 빌드본을 띄운다 (`terminals_find_tildaz` 주석과 같은 이유).
             linux_desktop_launch tildaz "$_ld_tz" "$TILDAZ_BIN -e $PRODUCER"
@@ -686,7 +700,7 @@ terminals_open_all() {
     fi
     terminals_find_tildaz
     if [ -z "$TILDAZ_BIN" ]; then
-        echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+        echo "tildaz         잴 바이너리가 없어요 — zig build 로 빌드하거나 TILDAZ_BIN 에 실행 파일 경로를 주세요"
     elif ! terminal_skip tildaz; then
         run_terminal tildaz open -na "${TILDAZ_BIN%%.app/*}.app" --args -e "$PRODUCER"
     fi
@@ -958,7 +972,7 @@ fi
 terminals_find_tildaz
 
 if [ -z "$TILDAZ_BIN" ]; then
-    echo "tildaz         빌드본이 없어요 — zig build 로 먼저 빌드해 주세요"
+    echo "tildaz         잴 바이너리가 없어요 — zig build 로 빌드하거나 TILDAZ_BIN 에 실행 파일 경로를 주세요"
 elif ! terminal_skip tildaz; then
     T="$WORK_DIR/tildaz.timing"
     # producer 파라미터는 TildaZ 프로세스의 환경변수로 준다 — 자식(producer)이 상속한다.

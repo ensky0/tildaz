@@ -2243,6 +2243,16 @@ tool/stress/compare-startup.sh --repeat 5                 # 시작 시간 (3 분
 세 스크립트 다 `--only kitty,terminal` 로 일부 대상만 돌릴 수 있어요. 위생 절차 (`hygiene.sh`) 는
 처리량과 같아요 — 끝나면 측정을 시킨 창 (VS Code 등) 하나를 앞으로 올려요.
 
+**TildaZ 는 기본으로 저장소 빌드본을 재요.** 릴리즈 판을 재려면 `TILDAZ_BIN` 에 실행 파일을 줘요
+(처리량 `compare-terminals.sh` 도 같아요). 사이트에 실을 값은 릴리즈 판으로 재요 (#756 · 2026-10-19 결정).
+
+```sh
+TILDAZ_BIN=/usr/bin/tildaz tool/stress/compare-latency.sh --repeat 5 --presses 30           # Linux 패키지
+TILDAZ_BIN=/Applications/TildaZ.app/Contents/MacOS/tildaz tool/stress/compare-startup.sh   # macOS
+```
+
+Linux 시작 시간은 그 판의 메뉴 항목 (`tildaz.desktop` — 사용자 자리, 없으면 `/usr/share/applications`) 을 띄워요.
+
 | 지표 | 무엇을 재나 | 측정기 |
 |---|---|---|
 | 키 → 화면 (macOS) | 합성 키 `a` 를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 **표시 시각**. 유휴 상태 | [`key-to-screen_macos.m`](../key-to-screen_macos.m) `--focus` |
