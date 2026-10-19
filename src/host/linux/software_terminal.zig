@@ -1974,11 +1974,11 @@ pub const Renderer = struct {
         // (1) 박스 영역만 배경 (shadow 영역 제외).
         rect(memory, buffer_w, buffer_h, stride, box_x, box_y, box_w, box_h, bg);
 
-        // (2) 아이콘 — 박스 가로 중앙, 박스 상단 padding 아래.
+        // (2) 아이콘 — 제목 · 본문과 같은 왼쪽 선 (macOS NSAlert 와 같은 자리, #805), 박스 상단 padding 아래.
         const text_x: i32 = box_x + pad;
         var text_y: i32 = box_y + pad;
         if (show_icon) {
-            const icon_x: i32 = box_x + @divTrunc(box_w - icon_size, 2);
+            const icon_x: i32 = text_x;
             const icon_y: i32 = text_y;
             drawDialogIcon(memory, buffer_w, buffer_h, stride, icon_x, icon_y, icon_size);
             text_y += icon_size + scaledPt(dialog_icon_gap_pt, self.scale);
