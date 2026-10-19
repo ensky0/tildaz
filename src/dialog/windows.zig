@@ -893,7 +893,8 @@ fn scrollLayout(
         .win_h = win_h,
         .client_w = client_w,
         .client_h = client_h,
-        .icon = .{ .x = @divTrunc(client_w - icon_size, 2), .y = top, .w = icon_size, .h = icon_size },
+        // #805 — 아이콘은 제목 · 본문과 같은 왼쪽 선 (macOS NSAlert 와 같은 자리).
+        .icon = .{ .x = margin, .y = top, .w = icon_size, .h = icon_size },
         .title = .{ .x = margin, .y = header.title_y, .w = content_w, .h = header.title_h },
         .separator = .{ .x = margin, .y = header.separator_y, .w = content_w, .h = header.separator_h },
         .body = .{ .x = margin, .y = body_y, .w = content_w, .h = body_h },
@@ -1706,7 +1707,8 @@ fn promptLayout(
         .win_h = win_h,
         .client_w = client_w,
         .client_h = client_h,
-        .icon = .{ .x = @divTrunc(client_w - icon_size, 2), .y = icon_y, .w = icon_size, .h = icon_size },
+        // #805 — 아이콘은 제목 · 본문과 같은 왼쪽 선 (macOS NSAlert 와 같은 자리).
+        .icon = .{ .x = margin, .y = icon_y, .w = icon_size, .h = icon_size },
         .title = .{ .x = margin, .y = header.title_y, .w = content_w, .h = header.title_h },
         .separator = .{ .x = margin, .y = header.separator_y, .w = content_w, .h = header.separator_h },
         .message = .{ .x = margin, .y = msg_y, .w = content_w, .h = msg_h },
