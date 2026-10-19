@@ -11,8 +11,9 @@
 # - **warm** 이다 — 회차마다 앱을 완전히 종료하고 다시 띄운다. 디스크 캐시는 데워진 상태다 (cold 는
 #   `sudo purge` 가 필요하고 값이 크게 흔들려서 재지 않는다 — 2026-10-13 사용자 결정).
 # - TildaZ 의 "단축키 → 창 표시" 는 이것과 별도다 (TildaZ 는 보통 떠 있다가 내려온다).
-# - **macOS 와 Linux 의 KDE Plasma · GNOME** 에서 된다. Linux 는 화면 캡처가 portal ScreenCast 라 프레임의 **도착** 시각을
-#   쓴다 (`tool/startup-to-screen_linux.c` 머리 주석) — OS 사이에 절대값을 견주지 않는다.
+# - **macOS · Windows 와 Linux 의 KDE Plasma · GNOME** 에서 된다. Linux 는 화면 캡처가 portal ScreenCast 라 프레임의 **도착**
+#   시각을 쓴다 (`tool/startup-to-screen_linux.c` 머리 주석) — OS 사이에 절대값을 견주지 않는다. Windows 는 `ShellExecuteEx`
+#   (시작 메뉴 · 탐색기가 여는 길) 로 띄우고 프레임의 `LastPresentTime` 을 쓴다 (`tool/startup-to-screen_windows.c`).
 
 set -eu
 
@@ -48,13 +49,15 @@ IS_KDE=0
 IS_GNOME=0
 IS_COSMIC=0
 case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; *COSMIC*) IS_COSMIC=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ] && [ "$IS_COSMIC" != 1 ]; }; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ] && [ "$IS_KDE" != 1 ] && [ "$IS_GNOME" != 1 ] && [ "$IS_COSMIC" != 1 ]; then
+    echo "지금은 macOS · Windows 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
+# Windows 의 표식 판정 넓이는 물리 px 다 — macOS 의 10,000 point² 를 150 % 화면으로 옮긴 값 (= 22,500 px²) 이 기본이다.
+[ "$IS_WINDOWS" = 1 ] && [ "$MIN_PIXELS" = 10000 ] && MIN_PIXELS=22500
 if [ "$IS_MACOS" = 1 ]; then
     command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
-else
+elif [ "$IS_WINDOWS" != 1 ]; then
     pkg-config --exists libpipewire-0.3 || { echo "libpipewire-0.3 개발 헤더가 없어요." >&2; exit 1; }
     python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
     if [ "$IS_KDE" = 1 ]; then
@@ -71,7 +74,11 @@ RESULTS="$WORK_DIR/results"
 S2S="$WORK_DIR/startup-to-screen"
 PROC_USAGE="$WORK_DIR/proc-usage"
 MAC_INPUT="$WORK_DIR/mac-input"
-if [ "$IS_MACOS" != 1 ]; then
+if [ "$IS_WINDOWS" = 1 ]; then
+    win_bench_build startup || exit 1
+    S2S="$WORK_DIR/startup-to-screen.exe"
+    PROC_USAGE="$WORK_DIR/proc-usage.exe"
+elif [ "$IS_MACOS" != 1 ]; then
     # shellcheck disable=SC2046 # pkg-config 출력은 낱말로 갈라야 한다
     cc -O2 -o "$S2S" "$REPO_ROOT/tool/startup-to-screen_linux.c" $(pkg-config --cflags --libs libpipewire-0.3) ||
         { echo "startup-to-screen 컴파일 실패." >&2; exit 1; }
@@ -99,11 +106,13 @@ fi
 # 지연 · 메모리는 측정용 Konsole 에 빈 상태 폴더를 줘서 이 일이 없다 (`terminals.sh` 의 Konsole 절).
 KONSOLE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/konsolestaterc"
 KONSOLE_STATE_BACKUP=""
-if [ "$IS_MACOS" != 1 ] && [ -f "$KONSOLE_STATE" ]; then
+if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ] && [ -f "$KONSOLE_STATE" ]; then
     KONSOLE_STATE_BACKUP="$WORK_DIR/konsolestaterc"
     cp "$KONSOLE_STATE" "$KONSOLE_STATE_BACKUP"
 fi
 cleanup() {
+    [ "$IS_WINDOWS" = 1 ] && { "$PROC_USAGE" kill startup-child.exe \
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     if [ -n "$KONSOLE_STATE_BACKUP" ] && ! cmp -s "$KONSOLE_STATE_BACKUP" "$KONSOLE_STATE"; then
         cp "$KONSOLE_STATE_BACKUP" "$KONSOLE_STATE" && echo "Konsole 상태 파일을 시작 전 내용으로 되돌렸어요."
@@ -123,6 +132,8 @@ while [ "$_i" -lt 60 ]; do printf '%240s\n' ''; _i=$((_i + 1)); done
 while :; do sleep 60; done
 EOF
 chmod +x "$PRODUCER"
+# Windows 는 같은 일을 하는 네이티브 프로그램이다 (`win_bench_build`).
+[ "$IS_WINDOWS" = 1 ] && PRODUCER="$WORK_DIR/startup-child.exe"
 
 terminal_skip() {
     [ -n "$ONLY" ] || return 1
@@ -134,6 +145,11 @@ terminal_skip() {
 stop_target() {
     _st_name="$1"
     cleanup_terminals "$_st_name"
+    # Windows — 측정 프로그램을 품은 터미널을 트리째 끝낸다. 본체가 내려가야 다음 회차가 새 프로세스다 (warm).
+    if [ "$IS_WINDOWS" = 1 ]; then
+        "$PROC_USAGE" kill startup-child.exe "$(win_exe_of "$_st_name")" >/dev/null 2>&1 || true
+        return 0
+    fi
     case "$_st_name" in
         terminal|iterm2)
             mac_app_quit_woken || true
@@ -172,8 +188,8 @@ run_terminal() {
     printf '%-14s ' "$_name"
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
-        ps -axo pid= > "$WORK_DIR/before"
-        if [ "$IS_MACOS" = 1 ]; then
+        [ "$IS_WINDOWS" = 1 ] || ps -axo pid= > "$WORK_DIR/before"
+        if [ "$IS_MACOS" = 1 ] || [ "$IS_WINDOWS" = 1 ]; then
             _out=$("$S2S" --timeout-ms "$TIMEOUT_MS" --min-pixels "$MIN_PIXELS" -- "$@" 2>&1 || true)
         else
             _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$S2S" --pw-fd '{fd}' --node '{node}' \
@@ -200,6 +216,8 @@ run_terminal() {
 echo "=== 터미널 시작 시간 비교 (#756) ==="
 if [ "$IS_MACOS" = 1 ]; then
     echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 LaunchServices (open)"
+elif [ "$IS_WINDOWS" = 1 ]; then
+    echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 ShellExecuteEx"
 else
     if [ "$IS_KDE" = 1 ]; then
         echo "회차       ${REPEAT} 회 (warm · 회차마다 앱 종료) · 실행 경로 KDE 런처 (kioclient exec)"
@@ -241,6 +259,9 @@ done < "$RESULTS"
 echo ""
 if [ "$IS_MACOS" = 1 ]; then
     echo "단위 ms. 실행 (open) → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임의 표시 시각."
+elif [ "$IS_WINDOWS" = 1 ]; then
+    echo "단위 ms. 실행 (ShellExecuteEx) → 터미널 안 프로그램이 칠한 마젠타가 보인 첫 프레임의 LastPresentTime."
+    echo "macOS · Linux 표와 절대값을 견주지 않아요."
 else
     echo "단위 ms. 실행 (런처) → 터미널 안 프로그램이 칠한 마젠타가 보인 첫 프레임이 측정기에 도착한 시각."
     echo "표시 시각이 아니라서 macOS 표와 절대값을 견주지 않아요."

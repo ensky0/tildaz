@@ -486,6 +486,37 @@ win_proc_name() {
     esac
 }
 
+# Windows 에서 그 대상의 **본체** 실행 파일 이름 — 지연 · 메모리 · 시작 시간 측정기가 터미널 안 프로그램에서 조상을
+# 따라 올라가다 멈출 자리다 (`tool/proc-tree_windows.h`). 위 `win_proc_name` 과 달리 conhost · tildaz 도 있다 — 창을
+# 찾는 것이 아니라 프로세스 사슬을 보는 것이라 그 함정 (창 주인이 `cmd.exe` · `MainWindowHandle` 이 0) 에 안 걸린다.
+win_exe_of() {
+    case "$1" in
+        alacritty) printf 'alacritty.exe' ;;
+        wezterm) printf 'wezterm-gui.exe' ;;
+        wt) printf 'WindowsTerminal.exe' ;;
+        conhost) printf 'conhost.exe' ;;
+        tildaz) printf '%s' "$(basename "$TILDAZ_BIN")" ;;
+        *) printf '' ;;
+    esac
+}
+
+# Windows 의 지연 · 메모리 · 시작 시간 측정기를 `WORK_DIR` 에 빌드한다 (#756). 저장소에 바이너리를 두지 않는다
+# (macOS 의 `clang` 빌드와 같은 방식). C 컴파일러는 `zig cc` 다 — 이 저장소를 빌드하는 기기에는 항상 있다.
+#
+#   win_bench_build <터미널 안 프로그램 이름 (latency · memory · startup)>
+#
+# 터미널 안 프로그램은 한 소스를 그 이름으로 빌드한다 — 실행 파일 이름이 모드다 (`bench-child_windows.c` 머리 주석).
+win_bench_build() {
+    command -v zig >/dev/null 2>&1 || { echo "zig 가 없어요 — 측정기를 zig cc 로 빌드해요." >&2; return 1; }
+    _wb_t="$REPO_ROOT/tool"
+    zig cc -O2 -o "$WORK_DIR/$1-child.exe" "$_wb_t/bench-child_windows.c" &&
+        zig cc -O2 -o "$WORK_DIR/proc-usage.exe" "$_wb_t/proc-usage_windows.c" -lpsapi &&
+        zig cc -O2 -o "$WORK_DIR/key-to-screen.exe" "$_wb_t/key-to-screen_windows.c" -ld3d11 -ldxgi -limm32 -luuid &&
+        zig cc -O2 -o "$WORK_DIR/startup-to-screen.exe" "$_wb_t/startup-to-screen_windows.c" \
+            -ld3d11 -ldxgi -lole32 -lshell32 -luuid ||
+        { echo "Windows 측정기 빌드 실패." >&2; return 1; }
+}
+
 # macOS 에서 그 대상의 창을 찾을 **bundle identifier**. 위 `win_proc_name` 과 같은 자리다.
 #
 # **로케일과 무관한 유일한 식별자라서 쓴다** (#414). 앱 이름 (`applicationName`) 은 시스템
@@ -640,8 +671,45 @@ linux_desktop_launch() {
     esac
 }
 
+# Windows 대상은 **`ShellExecuteEx`** 로 띄운다 — 시작 메뉴 · 탐색기가 앱을 여는 길이다 (#761). 실제로 띄우는 것은
+# `tool/startup-to-screen_windows.c` 이고, 여기서는 실행 파일과 인자만 넘긴다 (`run_terminal <이름> <실행 파일> <인자…>`).
+#
+# - 경로는 Windows 형식으로 준다 (`native_path`) — 측정기가 네이티브 프로그램이다.
+# - **격자 · scrollback 은 맞추지 않는다** (macOS · Linux 와 같다 — 각 앱의 기본 설정).
+# - wt 는 `-w new` 로 새 창을 연다 — 사용자의 `windowingBehavior` 가 기존 창에 붙이는 값이어도 새 창이 뜨게
+#   (`terminals_launch_all` 의 wt 절과 같은 이유). 기본 프로필 대신 측정 프로그램을 명령으로 준다.
+# - conhost 는 `conhost.exe <프로그램>` 이다. 사용자가 `cmd` 를 열면 Windows 11 의 기본 터미널 설정에 따라 Windows
+#   Terminal 이 뜰 수 있어서, 그 길 대신 conhost 를 직접 연다.
+terminals_open_all_windows() {
+    _ow_child=$(native_path "$PRODUCER")
+    if command -v alacritty >/dev/null 2>&1 && ! terminal_skip alacritty; then
+        run_terminal alacritty "$(native_path "$(command -v alacritty)")" -e "$_ow_child"
+    fi
+    if command -v wezterm-gui >/dev/null 2>&1 && ! terminal_skip wezterm; then
+        # `-n` — 사용자 설정을 안 읽는다 (`terminals_launch_all` 의 wezterm 절). 빈 설정이 곧 기본 설정이다.
+        run_terminal wezterm "$(native_path "$(command -v wezterm-gui)")" -n start --always-new-process -- "$_ow_child"
+    fi
+    if command -v wt >/dev/null 2>&1 && ! terminal_skip wt; then
+        run_terminal wt "$(native_path "$(command -v wt)")" -w new "$_ow_child"
+    fi
+    if command -v conhost >/dev/null 2>&1 && ! terminal_skip conhost; then
+        run_terminal conhost "$(native_path "$(command -v conhost)")" "$_ow_child"
+    fi
+    terminals_find_tildaz
+    if [ -z "$TILDAZ_BIN" ]; then
+        echo "tildaz         잴 바이너리가 없어요 — zig build 로 빌드하거나 TILDAZ_BIN 에 실행 파일 경로를 주세요"
+    elif ! terminal_skip tildaz; then
+        run_terminal tildaz "$(native_path "$TILDAZ_BIN")" -e "$_ow_child"
+    fi
+    return 0
+}
+
 terminals_open_all() {
-    if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ]; then
+    if [ "$IS_WINDOWS" = 1 ]; then
+        terminals_open_all_windows
+        return 0
+    fi
+    if [ "$IS_MACOS" != 1 ]; then
         # DE 마다 표의 대상 셋이다 (#756 — 그 DE 의 터미널 · TildaZ · Alacritty).
         if [ -f /usr/share/applications/Alacritty.desktop ] && ! terminal_skip alacritty; then
             linux_desktop_launch alacritty /usr/share/applications/Alacritty.desktop "alacritty -e $PRODUCER"
@@ -810,8 +878,13 @@ if command -v wezterm >/dev/null 2>&1 && ! terminal_skip wezterm; then
     if [ "$IS_WINDOWS" = 1 ] && command -v wezterm-gui >/dev/null 2>&1; then
         WEZTERM_BIN=wezterm-gui
     fi
+    # Windows 는 `-n` (`--skip-config`) 으로 사용자 `~/.wezterm.lua` 를 안 읽는다. 이 기기의 그 파일이 `require` 없이
+    # `wezterm.action` 을 써서 **설정 오류**가 났고, 그러면 WezTerm 이 오류 창을 띄우고 아래 `--config` 도 안 먹은 채
+    # 80x24 로 떴다 (2026-10-19 데스크탑 Ryzen 7 5700G — 지연 smoke 의 키 10 개를 모두 놓쳤다). 다른 대상도 사용자
+    # 설정이 아니라 기본값 + 측정 조건으로 띄우므로 같은 조건이다 (Konsole 의 빈 `XDG_STATE_HOME` 과 같은 자리).
+    # macOS · Linux 는 그 파일을 읽은 채로 쟀다 — 그대로 둔다 (확인 필요).
     if [ "$IS_WINDOWS" = 1 ]; then
-        run_terminal_win wezterm "$WEZTERM_BIN" \
+        run_terminal_win wezterm "$WEZTERM_BIN" -n \
             --config "initial_cols=$COLS" \
             --config "initial_rows=$ROWS" \
             --config "scrollback_lines=$SCROLLBACK" \

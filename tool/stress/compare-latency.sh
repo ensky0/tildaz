@@ -9,6 +9,8 @@
 #   - Linux (KDE Plasma): 그 프레임이 측정기에 **도착한** 시각 (`tool/key-to-screen_linux.c` · portal
 #     ScreenCast). KWin 의 스크린캐스트에는 표시 시각이 없다 — 그 파일 머리 주석. 그래서 **OS 사이에
 #     절대값을 견주지 않는다** (2026-10-13 사용자 결정).
+#   - Windows: 그 프레임의 `LastPresentTime` — DWM 이 바탕 화면 그림을 바꾼 시각 (`tool/key-to-screen_windows.c` ·
+#     DXGI Desktop Duplication). 이것도 OS 사이에 절대값을 견주지 않는다.
 #
 #   tool/stress/compare-latency.sh --repeat 5 --presses 30
 #
@@ -18,7 +20,7 @@
 # - **macOS 와 Linux 의 KDE Plasma · GNOME** 에서 된다. KDE 는 창 위치를 KWin 에 묻고
 #   (`tool/kwin-window_linux.py`), GNOME 은 창 위치를 안 알려 줘서 (`Introspect.GetWindows` 가 `AccessDenied`)
 #   측정 프로그램이 처음에 칠한 마젠타를 측정기가 캡처에서 찾는다 (`key-to-screen_linux.c` 의 `--find-marker`).
-#   Windows 측정기는 아직 없다.
+#   Windows 는 Git Bash 에서 돌린다. 터미널 안 프로그램이 셸이 아니라 네이티브 프로그램이다 (`bench-child_windows.c`).
 #
 # 터미널 안에서 도는 프로그램은 아래 `latency-child.sh` 하나다. 모든 대상에서 같다.
 #   1. 커서를 숨긴다 (`CSI ?25l`). **커서가 깜빡이면 그 변화를 키의 결과로 잘못 잰다** — 깜빡임
@@ -91,13 +93,13 @@ case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; *GNOME*) IS_GNOME=1 ;; *CO
 # 표식으로 창 영역을 캡처에서 찾는다 (`key-to-screen_linux.c` 의 `--find-marker`).
 USE_MARKER=0
 { [ "$IS_GNOME" = 1 ] || [ "$IS_COSMIC" = 1 ]; } && USE_MARKER=1
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || { [ "$IS_KDE" != 1 ] && [ "$USE_MARKER" != 1 ]; }; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ] && [ "$IS_KDE" != 1 ] && [ "$USE_MARKER" != 1 ]; then
+    echo "지금은 macOS · Windows 와 Linux 의 KDE Plasma · GNOME · COSMIC 만 돼요 — 다른 데스크톱의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
     command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
-else
+elif [ "$IS_WINDOWS" != 1 ]; then
     pkg-config --exists libpipewire-0.3 || { echo "libpipewire-0.3 개발 헤더가 없어요." >&2; exit 1; }
     python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
 fi
@@ -110,7 +112,10 @@ RESULTS="$WORK_DIR/results"
 K2S="$WORK_DIR/key-to-screen"
 LISTER="$WORK_DIR/color-capture"
 MAC_INPUT="$WORK_DIR/mac-input"
-if [ "$IS_MACOS" != 1 ]; then
+if [ "$IS_WINDOWS" = 1 ]; then
+    win_bench_build latency || exit 1
+    K2S="$WORK_DIR/key-to-screen.exe"
+elif [ "$IS_MACOS" != 1 ]; then
     # shellcheck disable=SC2046 # pkg-config 출력은 낱말로 갈라야 한다
     cc -O2 -o "$K2S" "$REPO_ROOT/tool/key-to-screen_linux.c" $(pkg-config --cflags --libs libpipewire-0.3) ||
         { echo "key-to-screen 컴파일 실패." >&2; exit 1; }
@@ -129,6 +134,9 @@ fi
 IME_RESTORE_ID=""
 FCITX_RESTORE=0
 cleanup() {
+    # Windows — 남은 측정 창을 트리째 끝낸다. 회차 정리 (`run_terminal`) 가 못 끝낸 것만 남는다.
+    [ "$IS_WINDOWS" = 1 ] && { "$WORK_DIR/proc-usage.exe" kill latency-child.exe \
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1 || true
     if [ "$FCITX_RESTORE" = 1 ] && ! pgrep -x fcitx5 >/dev/null 2>&1; then
@@ -143,7 +151,7 @@ trap cleanup EXIT
 # CGEvent 는 권한이 없어도 성공을 반환한다 — 키를 보내는 쪽에서 미리 본다 (`input_macos.m` 머리 주석).
 if [ "$IS_MACOS" = 1 ]; then
     "$MAC_INPUT" check || exit 1
-else
+elif [ "$IS_WINDOWS" != 1 ]; then
     python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK))" 2>/dev/null ||
         { echo "/dev/uinput 을 못 열어요 (권한 · 모듈)." >&2; exit 1; }
 fi
@@ -177,6 +185,8 @@ fi
 while IFS= read -r _line; do :; done
 EOF
 chmod +x "$PRODUCER"
+# Windows 는 같은 일을 하는 네이티브 프로그램이다 (`win_bench_build` 가 빌드했다).
+[ "$IS_WINDOWS" = 1 ] && PRODUCER="$WORK_DIR/latency-child.exe"
 PRODUCER_ENV=""
 [ "$USE_MARKER" = 1 ] && PRODUCER_ENV="TILDAZ_BENCH_MARKER=1"
 # 표식 회차가 쓰는 화면 크기 (물리 px — `tool/gnome-screen_linux.py` · `tool/cosmic-screen_linux.py`).
@@ -237,6 +247,25 @@ measure_round_linux() {
     measure_round_linux_tally "$2"
 }
 
+# Windows 회차 하나 — 측정기가 터미널 안 프로그램의 pid 에서 본체 · 창을 찾아 잰다. 표시 · miss · 표본은 Linux 판과
+# 같은 자리에 둔다. 끝나면 그 터미널을 트리째 끝낸다 — Git Bash 에는 `pkill` 이 없고 `cleanup_terminals` 는 Windows 를
+# 건너뛴다.
+#
+#   measure_round_windows <터미널 안 프로그램의 pid> <대상 이름>
+measure_round_windows() {
+    echo "$PRESSES" > "$WORK_DIR/round.miss"
+    _wexe=$(win_exe_of "$2")
+    # 셸이 뜬 직후의 첫 그림 (프롬프트 · 격자 조정) 이 가라앉을 때까지 (macOS · Linux 판과 같은 대기).
+    sleep 1
+    _vflag=""
+    [ "$VERBOSE" = 1 ] && _vflag=--verbose
+    _out=$("$K2S" --child-pid "$1" --main "$_wexe" --click --presses "$PRESSES" --gap-ms "$GAP_MS" $_vflag \
+        2>"$WORK_DIR/round.err" || true)
+    [ "$VERBOSE" = 1 ] && printf '%s\n' "$_out" | grep '^window' | sed "s/^/  [$2] /" >&2
+    measure_round_linux_tally "$2"
+    "$WORK_DIR/proc-usage.exe" kill latency-child.exe "$_wexe" >/dev/null 2>&1 || true
+}
+
 # 측정기 출력 (`$_out` · `round.err`) 을 회차 표시 · miss · 표본으로 옮긴다.
 measure_round_linux_tally() {
     [ "$VERBOSE" = 1 ] && sed 's/^/    /' "$WORK_DIR/round.err" >&2
@@ -271,7 +300,11 @@ run_terminal() {
         if [ "$_ready" = 1 ] && [ "$IS_MACOS" != 1 ]; then
             _cols=$(sed -n 's/^cols=//p' "$_timing")
             _rows=$(sed -n 's/^rows=//p' "$_timing")
-            _mark=$(measure_round_linux "$(sed -n 's/^pid=//p' "$_timing")" "$_name" "$_run")
+            if [ "$IS_WINDOWS" = 1 ]; then
+                _mark=$(measure_round_windows "$(sed -n 's/^pid=//p' "$_timing")" "$_name")
+            else
+                _mark=$(measure_round_linux "$(sed -n 's/^pid=//p' "$_timing")" "$_name" "$_run")
+            fi
             case "$_mark" in
                 .) ;;
                 !) _bad=$((_bad + 1)) ;;
@@ -381,6 +414,9 @@ elif pgrep -x fcitx5 >/dev/null 2>&1; then
 fi
 echo ""
 
+# wt 의 scrollback 은 측정용 fragment 프로필로 준다 (`terminals.sh` — 처리량과 같다). 다른 OS 에서는 할 일이 없다.
+wt_fragment_apply
+
 terminals_launch_all
 
 # --- 표 ---
@@ -411,6 +447,9 @@ done < "$RESULTS"
 echo ""
 if [ "$IS_MACOS" = 1 ]; then
     echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 표시 시각 (ScreenCaptureKit)."
+elif [ "$IS_WINDOWS" = 1 ]; then
+    echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임의 LastPresentTime (DXGI Desktop Duplication)."
+    echo "macOS · Linux 표와 절대값을 견주지 않아요."
 else
     echo "단위 ms. 키를 보낸 순간 → 그 창의 그림이 처음 바뀐 프레임이 측정기에 도착한 시각 (portal ScreenCast)."
     echo "표시 시각이 아니라서 macOS 표와 절대값을 견주지 않아요."

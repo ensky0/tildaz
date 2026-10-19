@@ -2231,7 +2231,7 @@ JSONC 라 파서 왕복이 사용자 주석을 날려요). 실측으로 **원본
 
 ## 다른 터미널과 견주기 — 지연 · 메모리 · 시작 시간 ([#756](https://github.com/ensky0/tildaz/issues/756))
 
-처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **macOS 와 Linux 의 KDE Plasma** 에서 돼요 (지연 · 시작 시간은 GNOME · COSMIC 도 — 아래). Windows 측정기는 아직 없어요. 대상을 띄우고 닫는 코드는 처리량과 같은
+처리량 (위 절) 말고 세 지표를 같은 대상으로 재요. **macOS · Windows (Git Bash) 와 Linux 의 KDE Plasma** 에서 돼요 (지연 · 시작 시간은 GNOME · COSMIC 도 — 아래). 대상을 띄우고 닫는 코드는 처리량과 같은
 [`terminals.sh`](terminals.sh) 예요.
 
 ```sh
@@ -2262,6 +2262,21 @@ Linux 시작 시간은 그 판의 메뉴 항목 (`tildaz.desktop` — 사용자 
 | 유휴 CPU | 채운 뒤 `--idle-sec` 초 동안 늘어난 CPU 시간 (한 코어 = 100 %) | 〃 |
 | 시작 시간 (macOS) | `open` 으로 실행한 순간 → 터미널 안 프로그램이 칠한 마젠타가 화면에 처음 보인 프레임 | [`startup-to-screen_macos.m`](../startup-to-screen_macos.m) |
 | 시작 시간 (Linux · KDE) | 앱의 `.desktop` 을 `kioclient exec` 로 연 순간 → 마젠타가 보인 첫 프레임이 측정기에 **도착한** 시각 | [`startup-to-screen_linux.c`](../startup-to-screen_linux.c) |
+| 키 → 화면 (Windows) | `SendInput` 으로 `a` 를 보낸 순간 (QPC) → 그 창의 클라이언트 영역이 처음 바뀐 프레임의 `LastPresentTime` (DXGI Desktop Duplication · 같은 QPC 시계). 유휴 상태 | [`key-to-screen_windows.c`](../key-to-screen_windows.c) · [`dxgi-dup_windows.h`](../dxgi-dup_windows.h) |
+| 메모리 (Windows) | **Private Working Set** 합 (작업 관리자의 "메모리" 열). 본체는 터미널 안 프로그램에서 조상을 따라 올라가 찾아요 | [`proc-usage_windows.c`](../proc-usage_windows.c) · [`proc-tree_windows.h`](../proc-tree_windows.h) |
+| 시작 시간 (Windows) | `ShellExecuteEx` 로 연 순간 → 마젠타가 보인 첫 프레임의 `LastPresentTime` | [`startup-to-screen_windows.c`](../startup-to-screen_windows.c) |
+
+**Windows 는 터미널 안 프로그램이 셸이 아니에요** — [`bench-child_windows.c`](../bench-child_windows.c) 하나를 세 이름
+(`latency-child.exe` · `memory-child.exe` · `startup-child.exe`) 으로 빌드해 써요. 실행 파일 이름이 모드예요. Alacritty ·
+WezTerm 이 MSYS `sh` 를 ConPTY 로 못 띄워서예요 (위 처리량 절). 측정기는 스크립트가 `zig cc` 로 그때 빌드해요
+(`terminals.sh` 의 `win_bench_build`).
+
+```sh
+# Git Bash
+TILDAZ_BIN=/c/…/tildaz-v0.10.5/tildaz.exe tool/stress/compare-latency.sh --repeat 5 --presses 30
+TILDAZ_BIN=… tool/stress/compare-memory.sh --repeat 3 --idle-sec 30 --timeout 300
+TILDAZ_BIN=… tool/stress/compare-startup.sh --repeat 5
+```
 
 **"그 터미널의 프로세스"** 는 본체 · 본체의 자손 · 같은 앱 번들 안의 프로세스예요. 셸 쪽
 (`/bin` · `/usr/bin` · `/usr/sbin`, 이름이 셸 · `login`) 은 빼요. 정의와 근거는 `proc-usage_macos.c`
@@ -2340,6 +2355,23 @@ Alacritty 예요. COSMIC 은 layer-shell 이 있어 TildaZ 에 `-size` 를 줘�
   시그니처를 직접 줘요.
 - **WezTerm 은 stable 20240203 으로 재요** (#756 결정). 배포판 패키지가 git 판이면 GitHub 릴리즈의 AppImage 를
   `--appimage-extract` 로 풀고 `PATH` 앞에 두어요 (`wezterm` · `wezterm-gui` 둘 다).
+
+### 함정 — Windows 에서 밟은 것 (2026-10-19 · 데스크탑 Ryzen 7 5700G · Windows 11 26200 · 150 % · 60 Hz)
+
+- **사용자 `~/.wezterm.lua` 에 오류가 있으면 WezTerm 이 오류 창을 띄우고 `--config` 도 안 먹은 채 80x24 로 떠요.**
+  이 기기의 파일은 `require 'wezterm'` 없이 `wezterm.action` 을 써서 그랬어요 — 지연 smoke 의 키 10 개를 모두 놓쳤어요.
+  Windows 는 `-n` (`--skip-config`) 으로 띄워요. 빈 설정이 곧 기본 설정이에요.
+- **conhost 는 창 안을 누르면 출력이 멈춰요.** 빠른 편집 모드 (`HKCU\Console\QuickEdit`, 기본 켜짐) 에서 클라이언트
+  영역을 누르면 선택 모드에 들어가요. 메모리 측정이 300 초를 기다려도 줄을 다 못 냈어요. 콘솔 창은 제목 표시줄을 눌러
+  포커스를 줘요 (`key-to-screen_windows.c`).
+- **wt 의 scrollback 은 지연 · 메모리에서도 fragment 프로필로 줘요** (`wt_fragment_apply`). 처음 판은 처리량 스크립트만 그
+  함수를 불러서 지연 smoke 의 wt 가 기본 프로필로 돌았어요.
+- **이 기기에는 한국어 · 일본어 IME 만 있어요.** 키를 보내기 전에 측정 창의 IME 를 닫아요 (`ImmGetDefaultIMEWnd` 에
+  `WM_IME_CONTROL` · `IMC_SETOPENSTATUS`). 측정 창에만 닿아요.
+- **Git Bash 의 `ps` 는 `-o` 를 몰라요.** 메모리 · 시작 스크립트의 `ps -axo pid=` 는 Windows 에서 건너뛰어요. 회차 정리는
+  `proc-usage kill` 이 측정 프로그램을 품은 터미널만 트리째 끝내요.
+- 키 간격 250 ms 는 60 Hz 의 15 프레임이라 **한 회차 안에서는 키가 vsync 의 같은 위상에 떨어져요.** 회차마다 위상이 달라지니
+  5 회를 모아 봐요 (macOS 120 Hz · Linux 도 250 ms 가 프레임의 배수라 같은 성질이에요).
 
 ### 함정 — 이번에 실제로 밟은 것 (2026-10-13 macOS)
 

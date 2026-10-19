@@ -13,10 +13,12 @@
 #
 # - 메모리 · CPU 시간을 읽는 쪽과 "그 터미널의 프로세스" 의 정의는 `tool/proc-usage_macos.c` ·
 #   `tool/proc-usage_linux.py` 머리 주석에 있다 — 본체 · 자손 (macOS 는 같은 앱 번들 안도), 셸 쪽은 뺀다.
-# - 메모리는 macOS 가 `phys_footprint`, Linux 가 **PSS** 다. 재는 것이 달라 OS 사이에 견주지 않는다.
+# - 메모리는 macOS 가 `phys_footprint`, Linux 가 **PSS**, Windows 가 **Private Working Set** (작업 관리자의 "메모리"
+#   열 — `tool/proc-usage_windows.c`) 다. 재는 것이 달라 OS 사이에 견주지 않는다.
 # - **커서는 숨기지 않는다.** 각 터미널의 기본 동작 (깜빡임 등) 이 사용자가 보는 유휴 상태다.
-# - **macOS 와 Linux 의 KDE Plasma 만** 된다. Linux 는 본체 (창 주인) 와 포커스 클릭을 KWin 에 묻는다
-#   (`tool/kwin-window_linux.py`). Windows 는 아직 없다 (#756).
+# - **macOS · Windows 와 Linux 의 KDE Plasma** 에서 된다. Linux 는 본체 (창 주인) 와 포커스 클릭을 KWin 에 묻는다
+#   (`tool/kwin-window_linux.py`). Windows 는 터미널 안 프로그램의 pid 에서 조상을 따라 본체를 찾는다
+#   (`tool/proc-tree_windows.h`). 포커스 클릭은 `key-to-screen_windows.c --presses 0` 이다.
 # - 대상을 띄우고 닫는 코드는 처리량 · 지연과 같다 (`terminals.sh`).
 
 set -eu
@@ -62,13 +64,13 @@ done
 
 IS_KDE=0
 case "${XDG_CURRENT_DESKTOP:-}" in *KDE*) IS_KDE=1 ;; esac
-if [ "$IS_MACOS" != 1 ] && { [ "$IS_WINDOWS" = 1 ] || [ "$IS_KDE" != 1 ]; }; then
-    echo "지금은 macOS 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱 · Windows 의 측정기는 아직 없어요 (#756)." >&2
+if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ] && [ "$IS_KDE" != 1 ]; then
+    echo "지금은 macOS · Windows 와 Linux 의 KDE Plasma 만 돼요 — 다른 데스크톱의 측정기는 아직 없어요 (#756)." >&2
     exit 2
 fi
 if [ "$IS_MACOS" = 1 ]; then
     command -v clang >/dev/null 2>&1 || { echo "clang 없음 — Xcode Command Line Tools 가 필요해요." >&2; exit 1; }
-else
+elif [ "$IS_WINDOWS" != 1 ]; then
     python3 -c 'import dbus, gi' 2>/dev/null || { echo "python-dbus · python-gobject 가 필요해요." >&2; exit 1; }
 fi
 
@@ -78,7 +80,10 @@ RESULTS="$WORK_DIR/results"
 
 PROC_USAGE="$WORK_DIR/proc-usage"
 MAC_INPUT="$WORK_DIR/mac-input"
-if [ "$IS_MACOS" = 1 ]; then
+if [ "$IS_WINDOWS" = 1 ]; then
+    win_bench_build memory || exit 1
+    PROC_USAGE="$WORK_DIR/proc-usage.exe"
+elif [ "$IS_MACOS" = 1 ]; then
 clang -O2 -o "$PROC_USAGE" "$REPO_ROOT/tool/proc-usage_macos.c" ||
     { echo "proc-usage 컴파일 실패." >&2; exit 1; }
 clang -O2 -Wno-deprecated-declarations -framework ApplicationServices -framework Carbon \
@@ -91,6 +96,9 @@ else
 fi
 
 cleanup() {
+    # Windows — 남은 측정 창을 트리째 끝낸다 (`compare-latency.sh` 의 같은 자리).
+    [ "$IS_WINDOWS" = 1 ] && { "$PROC_USAGE" kill memory-child.exe \
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     hygiene_end || true
     rm -rf "$WORK_DIR"
@@ -100,7 +108,7 @@ trap cleanup EXIT
 # 포커스 클릭에 손쉬운 사용 권한이 필요하다 (`input_macos.m` 머리 주석). Linux 는 /dev/uinput 이다.
 if [ "$IS_MACOS" = 1 ]; then
     "$MAC_INPUT" check || exit 1
-else
+elif [ "$IS_WINDOWS" != 1 ]; then
     python3 -c "import os; os.close(os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK))" 2>/dev/null ||
         { echo "/dev/uinput 을 못 열어요 (권한 · 모듈)." >&2; exit 1; }
 fi
@@ -129,6 +137,11 @@ while :; do sleep 60; done
 EOF
 chmod +x "$PRODUCER"
 PRODUCER_ENV=""
+# Windows 는 같은 일을 하는 네이티브 프로그램이다 (`win_bench_build`). 줄 수는 환경변수로 준다.
+if [ "$IS_WINDOWS" = 1 ]; then
+    PRODUCER="$WORK_DIR/memory-child.exe"
+    PRODUCER_ENV="TILDAZ_BENCH_FILL_LINES=$FILL_LINES"
+fi
 
 terminal_skip() {
     [ -n "$ONLY" ] || return 1
@@ -159,7 +172,8 @@ run_terminal() {
     _run=1
     while [ "$_run" -le "$REPEAT" ]; do
         rm -f "$_timing" "$_timing.go"
-        ps -axo pid= > "$WORK_DIR/before"
+        # Git Bash 의 `ps` 는 `-o` 를 모른다 (`terminals.sh` 의 `cleanup_terminals` 주석). Windows 는 이 목록을 안 쓴다.
+        [ "$IS_WINDOWS" = 1 ] || ps -axo pid= > "$WORK_DIR/before"
         "$@" >/dev/null 2>&1 &
         _pid=$!
         _mark=x
@@ -169,6 +183,13 @@ run_terminal() {
             mac_close_woken_extras "$_name"
             if [ "$IS_MACOS" = 1 ]; then
                 _main=$("$PROC_USAGE" find "$(mac_proc_path_of "$_name")" "$WORK_DIR/before" 2>/dev/null || true)
+            elif [ "$IS_WINDOWS" = 1 ]; then
+                # 터미널 안 프로그램에서 올라가 본체를 찾고, 그 창 가운데를 한 번 눌러 포커스를 준다.
+                _cpid=$(sed -n 's/^pid=//p' "$_timing")
+                _main=$("$PROC_USAGE" main "$_cpid" "$(win_exe_of "$_name")" 2>/dev/null || true)
+                "$WORK_DIR/key-to-screen.exe" --child-pid "$_cpid" --main "$(win_exe_of "$_name")" --click --presses 0 \
+                    >/dev/null 2>&1 || echo "  ⚠ [$_name] 포커스를 못 줬어요" >&2
+                [ "$VERBOSE" = 1 ] && echo "  [$_name] 본체 pid: ${_main:-(없음)}" >&2
             else
                 # 창 주인이 본체다 — 활성화하고 가운데를 한 번 누른다 (포커스는 아래 macOS 의 `focus` 와 같은 자리).
                 _geo=""
@@ -211,6 +232,7 @@ run_terminal() {
         kill "$_pid" 2>/dev/null || true
         wait "$_pid" 2>/dev/null || true
         cleanup_terminals "$_name"
+        [ "$IS_WINDOWS" = 1 ] && { "$PROC_USAGE" kill memory-child.exe "$(win_exe_of "$_name")" >/dev/null 2>&1 || true; }
         # 깨운 Terminal.app · iTerm2 는 **회차마다 종료한다.** 창만 닫으면 앱이 떠 있어서, 다음 회차는
         # 본체가 "측정 전부터 있던 프로세스" 로 걸러져 못 찾고 (2026-10-13 실측 — 2 · 3 회차 `?`),
         # 찾는다 해도 앞 회차의 흔적이 남은 앱을 잰다. 다른 대상은 회차마다 새 프로세스다.
@@ -236,6 +258,9 @@ hygiene_begin
 [ "$IS_MACOS" = 1 ] && HYG_REFRESH=$("$MAC_INPUT" refresh 2>/dev/null || echo "?")
 echo "위생   $(hygiene_status)"
 echo ""
+
+# wt 의 scrollback 은 측정용 fragment 프로필로 준다 (`terminals.sh` — 처리량과 같다). 다른 OS 에서는 할 일이 없다.
+wt_fragment_apply
 
 terminals_launch_all
 
@@ -266,6 +291,9 @@ done < "$RESULTS"
 echo ""
 if [ "$IS_MACOS" = 1 ]; then
     echo "메모리 = phys_footprint 합 (Activity Monitor 의 \"메모리\" 열과 같은 값). 셸 쪽 프로세스는 뺐다."
+elif [ "$IS_WINDOWS" = 1 ]; then
+    echo "메모리 = Private Working Set 합 (작업 관리자의 \"메모리\" 열과 같은 값). 셸 쪽 프로세스는 뺐다."
+    echo "재는 것이 macOS · Linux 와 달라 OS 사이에 견주지 않아요."
 else
     echo "메모리 = PSS 합 (/proc/<pid>/smaps_rollup — 공유 페이지를 나눠 센다). 셸 쪽 프로세스는 뺐다."
     echo "재는 것이 macOS 와 달라 OS 사이에 견주지 않아요."
