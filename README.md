@@ -71,6 +71,21 @@ The script checks the download's SHA-256, adds TildaZ to your app menu, and
 starts it once. TildaZ sets up auto-start on that first run. You can read
 [`install.sh`](docs/install.sh) and [`install.ps1`](docs/install.ps1) first.
 
+To update, quit TildaZ and run the same command again. Your config is kept.
+To uninstall, quit TildaZ and run:
+
+```sh
+# Linux and macOS
+curl -LsSf https://ensky0.github.io/tildaz/uninstall.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/uninstall.ps1 | iex"
+```
+
+The uninstaller keeps your config and logs, and prints where they are.
+
 Or download a package from
 [GitHub Releases](https://github.com/ensky0/tildaz/releases/latest).
 
