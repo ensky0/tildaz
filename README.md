@@ -54,7 +54,24 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 
 ## Install
 
-Download the latest artifact from
+One command installs the latest release into your user account. No sudo or
+admin rights are needed.
+
+```sh
+# Linux and macOS
+curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"
+```
+
+The script checks the download's SHA-256, adds TildaZ to your app menu, and
+starts it once. TildaZ sets up auto-start on that first run. You can read
+[`install.sh`](docs/install.sh) and [`install.ps1`](docs/install.ps1) first.
+
+Or download a package from
 [GitHub Releases](https://github.com/ensky0/tildaz/releases/latest).
 
 | Platform | Artifact | Notes |
