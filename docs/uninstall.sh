@@ -57,6 +57,11 @@ uninstall_linux() {
     say "Kept your config and logs. Delete them by hand if you do not need them:"
     say "  $config_home/tildaz/"
     say "  $state_home/tildaz/"
+    # The removed entries (auto-start, Shell extension, desktop hotkeys) were shared
+    # with a packaged copy installed alongside, if any. It writes them again at start.
+    if [ -e /usr/bin/tildaz ]; then
+        say "The packaged TildaZ (/usr/bin/tildaz) is still installed. Start it once to set up its auto-start and hotkey again."
+    fi
 }
 
 uninstall_macos() {

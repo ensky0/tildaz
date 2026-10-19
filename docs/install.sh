@@ -93,16 +93,35 @@ install_linux() {
     command -v bash >/dev/null 2>&1 || err "bash is required"
     command -v tar >/dev/null 2>&1 || err "tar is required"
 
-    name="tildaz-$TAG-linux-$arch"
-    fetch_verified "$name.tar.gz"
-    tar -xzf "$TMP/$name.tar.gz" -C "$TMP"
-    [ -x "$TMP/$name/tildaz" ] || err "the release tarball has no tildaz binary"
-
     case "${XDG_DATA_HOME:-}" in
         /*) data_home=$XDG_DATA_HOME ;;
         *) data_home=$HOME/.local/share ;;
     esac
+    case "${XDG_CONFIG_HOME:-}" in
+        /*) config_home=$XDG_CONFIG_HOME ;;
+        *) config_home=$HOME/.config ;;
+    esac
     dest=$data_home/tildaz
+
+    # Do not install a second copy next to a package or an AppImage. Both copies
+    # would share the menu entry name, the auto-start entry and the Shell extension,
+    # and whichever ran last would own them.
+    if [ -e /usr/bin/tildaz ]; then
+        err "TildaZ is already installed by your package manager (/usr/bin/tildaz). Update it with your package manager, or remove that package and run this installer again."
+    fi
+    # An AppImage records its own path in the entries it writes on its first run.
+    appimage=$(sed -n 's/^Exec="\([^"]*\.AppImage\)".*/\1/p' \
+        "$config_home/autostart/tildaz.desktop" \
+        "$data_home/applications/tildaz.desktop" \
+        "$data_home"/applications/tildaz.instance*.desktop 2>/dev/null | head -n 1)
+    if [ -n "$appimage" ]; then
+        err "TildaZ is already installed as an AppImage ($appimage). Keep using it, or run \"$appimage\" --desktop remove, delete the AppImage, and run this installer again."
+    fi
+
+    name="tildaz-$TAG-linux-$arch"
+    fetch_verified "$name.tar.gz"
+    tar -xzf "$TMP/$name.tar.gz" -C "$TMP"
+    [ -x "$TMP/$name/tildaz" ] || err "the release tarball has no tildaz binary"
     mkdir -p "$data_home"
     # Copy next to the destination first. $TMP may be on another file system.
     rm -rf "$dest.new"
