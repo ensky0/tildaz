@@ -2775,6 +2775,12 @@ Windows 는 데스크탑 Ryzen 7 5700G (60 Hz) 와 노트북 Ryzen AI 7 350 (120
 
   실패 모드 ("화면이 멈춤") 는 그대로라, host 마다 대조판과 같은 화면을 내는지 실기로 확인하고 넣는다.
   진행은 #770 에 있다.
+- **macOS 는 키 입력 뒤 1 초 동안 멈추지 않는다** ([#811](https://github.com/ensky0/tildaz/issues/811)).
+  display link 가 멈추면 ProMotion 화면이 주사율을 낮춰서, 쉬는 동안 친 키의 에코가 늦게 나갔다
+  (120 Hz ProMotion 에서 21.15 → 안 멈추는 판 17.94 ms. 60 Hz 고정에서는 차이가 1 ms 로 줄었다).
+  그래서 키를 받으면 display link 를 바로 켜고, 마지막 키 뒤 1 초가 지나야 멈춘다. Zed 와 같은 방법이다
+  ([zed.dev/blog/120fps](https://zed.dev/blog/120fps)). 그동안의 쉬는 프레임은 그리지 않는다.
+  Linux · Windows 의 정지는 앱 안의 타이머라 화면 주사율과 무관해서 이 예외가 없다.
 
 > ⚠️ **이전 문서는 Linux 를 *"원래부터 이 사양"* 으로 적었는데 사실이 아니었다**
 > ([#436](https://github.com/ensky0/tildaz/issues/436), 2026-08-10 실측). Linux 는 iteration 마다
