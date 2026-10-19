@@ -69,7 +69,7 @@
         across Linux, macOS, and Windows. No Electron. No telemetry.
       </p>
       <div class="hero-actions">
-        <a class="button primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Download TildaZ</a>
+        <a class="button primary" href="install/">Install TildaZ</a>
         <a class="button secondary" href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">See GitHub</a>
       </div>
 
@@ -252,18 +252,22 @@
     <section id="install" class="section install">
       <div class="section-heading">
         <p class="eyebrow">Get Started</p>
-        <h2>Download, install, press F1.</h2>
+        <h2>Run one command, press F1.</h2>
       </div>
+      <pre class="code-block"><code><span class="code-comment"># Linux and macOS</span>
+<span class="code-prompt">$ </span>curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh</code></pre>
+      <pre class="code-block"><code><span class="code-comment"># Windows</span>
+<span class="code-prompt">&gt; </span>powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"</code></pre>
       <div class="install-grid">
         <article class="install-step">
           <span>1</span>
-          <h3>Download</h3>
-          <p>Grab the latest GitHub Release for your OS: a Linux package (deb / rpm / AppImage / Arch / tar.gz), macOS DMG, or Windows zip.</p>
+          <h3>Install</h3>
+          <p>The command downloads the latest release, checks its SHA-256, and installs it into your user account. No sudo or admin rights. Prefer a package? See <a href="install/">Install</a> for deb, rpm, AppImage, Arch, DMG, and zip.</p>
         </article>
         <article class="install-step">
           <span>2</span>
-          <h3>Install</h3>
-          <p>Linux: install the package or run <code>./install.sh --release</code> from the tarball. macOS: drag the app into Applications. Windows: unzip and run.</p>
+          <h3>First launch</h3>
+          <p>The installer starts TildaZ, and TildaZ adds itself to auto-start. On GNOME, log out and back in first so the Shell extension loads.</p>
         </article>
         <article class="install-step">
           <span>3</span>
@@ -279,7 +283,7 @@
         <h2>Docs when you want to tune it.</h2>
       </div>
       <div class="doc-list">
-        <a href="install/"><strong>Install</strong><span>Download choices and first launch by platform</span></a>
+        <a href="install/"><strong>Install</strong><span>One-command install, packages, update, and uninstall</span></a>
         <a href="config/"><strong>Config</strong><span>One TOML config shape across Linux, macOS, and Windows</span></a>
         <a href="linux-wayland/"><strong>Linux Wayland</strong><span>Desktop coverage, packages, scaling, and IME support</span></a>
         <a href="https://github.com/ensky0/tildaz/blob/main/CONFIG.md" target="_blank" rel="noopener"><strong>CONFIG.md</strong><span>Schema, themes, defaults, and examples</span></a>

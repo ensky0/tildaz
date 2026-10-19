@@ -1919,6 +1919,26 @@ Linux 의 `install.sh` · `uninstall.sh` 는 사용자 데스크톱 설정 파�
 kglobalaccel 이 떠 있으면 D-Bus 로만 지우고 (그 파일을 kglobalaccel 이 메모리에서 다시
 쓴다), 안 떠 있을 때만 `kglobalshortcutsrc` 에서 우리 그룹을 지운다.
 
+**한 줄 설치** ([#803](https://github.com/ensky0/tildaz/issues/803)) — `docs/install.sh` (Linux · macOS) ·
+`docs/install.ps1` (Windows) 가 최신 릴리즈의 tarball · DMG · zip 을 받아 `.sha256` 과 견주고 사용자
+폴더에 깐다. 다시 돌리면 업데이트다. `docs/uninstall.sh` · `uninstall.ps1` 이 지운다. 규칙:
+
+- **사용자 권한만 쓴다.** Linux `$XDG_DATA_HOME/tildaz` (tarball 의 `install.sh --release` 를 부른다) ·
+  macOS `/Applications/TildaZ.app` (쓸 수 없으면 `~/Applications`) · Windows `%LOCALAPPDATA%\Programs\TildaZ`
+  (+ 시작 메뉴 `TildaZ.lnk`, `install.bat --release` 와 같은 경로) 이다.
+- **해시가 다르면 아무것도 바꾸지 않는다.** 새 판은 옆에 복사한 뒤 이름을 바꿔 들인다.
+- **TildaZ 가 떠 있으면 Windows · macOS 는 멈춘다** (셸을 지키려고 끄지 않는다). Windows 는 어느 폴더에서 떴든
+  릴리즈 창 클래스 `TildaZWindow` 로 알아본다 — zip 판이 떠 있는 채로 새 판을 띄우면 launcher 가 그 판에
+  새-instance 요청만 보낸다. Linux 는 깔고 실행만 건너뛴다.
+- **두 벌을 깔지 않는다.** Linux 는 패키지 (`/usr/bin/tildaz`) 나 AppImage (자동 실행 · 메뉴 항목의
+  `Exec="….AppImage"`) 가 있으면 멈춘다 — 메뉴 항목 이름 · 자동 실행 · Shell 확장 · 단축키를 같이 쓰고
+  마지막에 실행된 쪽이 차지하기 때문이다.
+- **자동 실행은 앱이 건다.** 스크립트는 마지막에 앱을 한 번 띄울 뿐이다 (GNOME 은 확장이 로그인 때
+  올라오므로 띄우지 않고 다시 로그인하라고 알린다). Windows 의 옛 zip 판 자동 실행 값은 이름이 같아
+  첫 실행이 덮어쓴다.
+- **제거는 자기가 깐 것만 지운다.** 설정 · 로그는 남긴다. Windows 는 설치 폴더가 없으면 아무것도 건드리지
+  않고, 자동 실행 값은 설치 폴더를 가리킬 때만 지운다.
+
 | 항목 | Windows | macOS | Linux |
 |---|---|---|---|
 | **config** | `%APPDATA%\<앱이름>\config_N.toml` (Microsoft 표준) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`; ghostty/alacritty 패턴) | `$XDG_CONFIG_HOME/<앱이름>/config_N.toml` (fallback `~/.config`) |

@@ -2981,6 +2981,23 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
 
 5. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
 
+## 한 줄 설치 스크립트 — 릴리즈마다 고칠 필요는 없어요 ([#803](https://github.com/ensky0/tildaz/issues/803))
+
+`docs/install.sh` · `install.ps1` · `uninstall.sh` · `uninstall.ps1` 은 실행할 때마다 `/releases/latest` 로
+최신 태그를 찾고, 파일 이름을 그 태그로 만들어요. 그래서 버전을 올릴 때는 손댈 것이 없어요.
+
+- **배포 파일의 이름 규칙이나 안의 구성을 바꾸면 스크립트를 같은 PR 에서 고쳐요.** tarball 이름 ·
+  압축 안의 `install.sh` · `uninstall.sh` · zip 안의 `tildaz.exe` · `_internal\` · DMG 안의 `TildaZ.app` 에 기대요.
+- `/releases/latest` 는 prerelease 를 건너뛰어요. 시험 태그 (`-dev.N` 등) 는 `release.yml` 이 prerelease 로
+  표시하니 사용자에게 가지 않아요.
+- 실기 때 알아 둘 함정이에요.
+  - 이 저장소 기기에는 패키지 판 (`/usr/bin/tildaz`) 이 깔린 경우가 많아요. 그러면 `install.sh` 가 멈춰요 —
+    격리 `HOME` 에서 그 경로만 바꾼 사본으로 재요. 실행 중 판정도 사용자의 TildaZ 에 걸리니 가짜 `pgrep` 을 둬요.
+  - 앱을 실제로 띄워 볼 때는 `WAYLAND_DISPLAY` 를 그 세션의 실제 소켓으로 줘요 (이 미니PC 의 KDE 는
+    `wayland-1` 이었어요 — `wayland-0` 으로 줘서 회차 하나를 버렸어요).
+  - Windows 에서 `pwsh -c "irm …/uninstall.ps1 | iex"` (PowerShell 7 을 새로 띄우는 모양) 를 Microsoft Defender 가
+    `Trojan:Win32/Commando.A!ml` 로 막은 적이 있어요. 문서 명령 (`powershell -c …`, 5.1) 은 통과했어요 (#803).
+
 ## 릴리즈 노트는 사람이 읽는 글이에요 — 본문 5줄 이내
 
 2026-08-09 사용자 지시예요: *"릴리즈 노트는 사람이 읽는거야. 5줄 이내의 짧은 문장으로 하자."*
