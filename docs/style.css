@@ -731,8 +731,20 @@ td {
   border-radius: 8px;
   border: 1px solid var(--line-dark);
   background: var(--terminal);
-  color: var(--mint);
+  color: var(--ink);
   font-size: 0.98rem;
+}
+
+/* The comment names the OS and the prompt marks the command. Neither is part of
+   the command, so neither is copied with it. */
+.code-block .code-comment {
+  color: var(--amber);
+  user-select: none;
+}
+
+.code-block .code-prompt {
+  color: var(--mint);
+  user-select: none;
 }
 
 .docs {
