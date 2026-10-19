@@ -870,7 +870,12 @@ export default class TildazExtension extends Extension {
       // 숨김 여부는 config(hidden_start)가 단일 기준 — 실행 경로(auto_start preload /
       // 앱 그리드 / 터미널)와 무관하게 일관. hidden_start=true 면 배치 후 minimize
       // (첫 hotkey 로 등장), false 면 우측 드롭다운으로 바로 표시.
-      const hidden = cfg.hiddenStart;
+      // #801 — 다이얼로그 (시작 안내) 가 이미 있으면 숨기지 않는다. 다이얼로그가 이 map 보다
+      // 먼저 생기면 부모 되살리기 (_watchDialogBeforeMap) 가 먼저 끝나고, 그 뒤의 minimize 가
+      // 다이얼로그까지 숨겨 아무것도 안 보였다 (headless GNOME 51.1 · 2 회 중 2 회).
+      const hidden = cfg.hiddenStart && !this._dialogChildOf(win);
+      if (cfg.hiddenStart && !hidden)
+        console.log(`${LOG_TAG} hidden_start ignored — a dialog needs the window behind it`);
 
       // map 직후엔 mutter 의 map 애니메이션(opacity 0→255 ease)이 진행 중이다.
       // kill-window-effects 로 그 애니메이션을 *먼저* 끝낸 뒤(끝나면 opacity 가
@@ -983,6 +988,16 @@ export default class TildazExtension extends Extension {
       ],
       dialogId: win.connect("unmanaged", stop),
     });
+  }
+
+  /** #801 — `term` 을 부모로 둔 tildaz dialog. 아직 map 되지 않은 것도 창 목록에는 있다. */
+  _dialogChildOf(term) {
+    for (const actor of global.get_window_actors()) {
+      const w = actor.meta_window;
+      const c = w?.get_wm_class();
+      if (c && c.toLowerCase() === DIALOG_APP_ID && w.get_transient_for?.() === term) return w;
+    }
+    return null;
   }
 
   /** #801 — 부모가 `term` 인, 떠 있는 dialog. `_followDialogParent` 가 dialog 가 사는 동안 기록한다. */

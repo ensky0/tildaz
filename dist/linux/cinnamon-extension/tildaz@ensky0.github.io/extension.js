@@ -962,9 +962,26 @@ function onMap(actor) {
   // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
   if (cfg.hidden) {
-    skipNextEffect(win);
-    win.minimize();
+    // #801 — 다이얼로그 (시작 안내) 가 이미 있으면 숨기지 않는다. 다이얼로그는 뜰 때 부모를
+    // 되살리는데 (restoreDialogParent), 다이얼로그가 이 map 보다 먼저 생기면 그 뒤의 minimize 가
+    // 다이얼로그까지 숨겨 아무것도 안 보였다 (nested Cinnamon 6.6.9 · 4 회 중 3 회).
+    if (dialogChildOf(win)) {
+      global.log(`${LOG_TAG} hidden_start ignored — a dialog needs the window behind it`);
+    } else {
+      skipNextEffect(win);
+      win.minimize();
+    }
   }
+}
+
+/** #801 — `term` 을 부모로 둔 tildaz dialog. 아직 map 되지 않은 것도 창 목록에는 있다. */
+function dialogChildOf(term) {
+  const actors = global.get_window_actors();
+  for (let i = 0; i < actors.length; i++) {
+    const w = metaWindowOf(actors[i]);
+    if (isDialog(w) && w.get_transient_for?.() === term) return w;
+  }
+  return null;
 }
 
 /** #709 — 다음 최소화 · 복원 효과 하나를 건너뛴다 (GNOME `Main.wm.skipNextEffect` 대응). */
