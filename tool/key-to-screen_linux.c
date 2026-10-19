@@ -330,12 +330,20 @@ int main(int argc, char *argv[]) {
     if (find_marker) {
         // 표식 (창 넓이의 대부분) 이 보일 때까지 최대 5 초. 문턱은 화면의 1 % — 작은 마젠타 조각 (아이콘 등) 을
         // 창으로 잡지 않게.
-        int W = (int)d.info.size.width, H = (int)d.info.size.height, found = 0;
+        int W = (int)d.info.size.width, H = (int)d.info.size.height, found = 0, seen = 0;
         for (int i = 0; i < 500 && !found; i++) {
             sleep_ms(10);
-            found = atomic_load(&d.mk_n) >= W * H / 100;
+            int n = atomic_load(&d.mk_n);
+            if (n > seen) seen = n;
+            found = n >= W * H / 100;
         }
-        if (!found) { fprintf(stderr, "마젠타 표식을 못 찾았어요 — 창이 가려졌는지 봐요\n"); return 2; }
+        // 본 최대 픽셀 수와 경계를 함께 낸다 — 0 이면 창이 안 보였고, 문턱 아래면 칠해진 넓이가 모자라다
+        // (#756 · 2026-10-19 GNOME — 작은 창을 이것으로 갈랐다).
+        if (!found) {
+            fprintf(stderr, "마젠타 표식을 못 찾았어요 — 창이 가려졌는지 봐요 (본 최대 %d px · 문턱 %d px · 경계 %d,%d~%d,%d)\n",
+                    seen, W * H / 100, atomic_load(&d.mk_x0), atomic_load(&d.mk_y0), atomic_load(&d.mk_x1), atomic_load(&d.mk_y1));
+            return 2;
+        }
         sleep_ms(200); // 창이 자리를 잡고 다 칠해질 때까지
         // 두 칸마다 본 경계라 안쪽으로 4 px 줄인다.
         int x0 = atomic_load(&d.mk_x0) + 4, y0 = atomic_load(&d.mk_y0) + 4;
