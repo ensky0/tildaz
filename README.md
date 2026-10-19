@@ -14,6 +14,7 @@ dependency — just a terminal that appears when you need it and disappears when
 you do not.
 
 **Website**: https://ensky0.github.io/tildaz/ ·
+**Install**: [one command](#install) ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
 ## Who is TildaZ for?
@@ -54,6 +55,8 @@ echo -e "\n🎉❤️🌈🎨🌞🍎🚀💎✨\n👋🏻👋🏼👋🏽👋�
 
 ## Install
 
+### One command
+
 One command installs the latest release into your user account. No sudo or
 admin rights are needed.
 
@@ -68,11 +71,28 @@ powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/insta
 ```
 
 The script checks the download's SHA-256, adds TildaZ to your app menu, and
-starts it once. TildaZ sets up auto-start on that first run. You can read
+starts it once. TildaZ sets up auto-start on that first run. On GNOME, log out
+and back in first so the Shell extension loads. You can read
 [`install.sh`](docs/install.sh) and [`install.ps1`](docs/install.ps1) first.
 
-To update, quit TildaZ and run the same command again. Your config is kept.
-To uninstall, quit TildaZ and run:
+| Platform | Installs to |
+|---|---|
+| Linux | `~/.local/share/tildaz`, plus the app menu entry and `~/.local/bin/tildaz` |
+| macOS | `/Applications/TildaZ.app` (`~/Applications` if `/Applications` is not writable) |
+| Windows | `%LOCALAPPDATA%\Programs\TildaZ`, plus a Start Menu shortcut |
+
+- **Already installed a Linux package or AppImage?** Keep updating it that way.
+  The script stops instead of installing a second copy next to it.
+- **Used the Windows zip before?** Quit it first. The script tells you where
+  the old folder is, and your config carries over.
+
+### Update
+
+Quit TildaZ and run the same command again. Your config is kept.
+
+### Uninstall
+
+Quit TildaZ and run:
 
 ```sh
 # Linux and macOS
@@ -85,6 +105,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/unins
 ```
 
 The uninstaller keeps your config and logs, and prints where they are.
+
+### Packages
 
 Or download a package from
 [GitHub Releases](https://github.com/ensky0/tildaz/releases/latest).

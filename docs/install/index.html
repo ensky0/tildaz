@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Install TildaZ - Drop-down Terminal for Linux, macOS, and Windows</title>
-  <meta name="description" content="Install TildaZ, a native Quake-style drop-down terminal for Linux, macOS, and Windows. Download Linux deb, rpm, AppImage, tar.gz, Arch pkg, macOS DMG, or Windows zip builds.">
+  <meta name="description" content="Install TildaZ, a native Quake-style drop-down terminal for Linux, macOS, and Windows, with one command. Or download Linux deb, rpm, AppImage, tar.gz, Arch pkg, macOS DMG, or Windows zip builds.">
   <link rel="canonical" href="https://ensky0.github.io/tildaz/install/">
   <meta property="og:title" content="Install TildaZ">
-  <meta property="og:description" content="Download TildaZ for Linux, macOS, and Windows: deb, rpm, AppImage, tar.gz, Arch pkg, DMG, and zip builds.">
+  <meta property="og:description" content="Install TildaZ on Linux, macOS, and Windows with one command, or download deb, rpm, AppImage, tar.gz, Arch pkg, DMG, and zip builds.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ensky0.github.io/tildaz/install/">
   <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
@@ -45,15 +45,15 @@
   <main>
     <section class="page-hero">
       <p class="eyebrow">Install TildaZ</p>
-      <h1>Download the native drop-down terminal for your OS.</h1>
-      <p>TildaZ ships release builds for Linux, macOS, and Windows. Pick the package that matches how you normally install tools, launch it, then press <kbd>F1</kbd>.</p>
+      <h1>Install the native drop-down terminal with one command.</h1>
+      <p>One command installs TildaZ on Linux, macOS, and Windows, then starts it. Press <kbd>F1</kbd> and your terminal drops down. Prefer a package? Every release also ships deb, rpm, AppImage, Arch pkg, DMG, and zip builds.</p>
       <div class="hero-actions">
-        <a class="button primary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">Download Latest</a>
-        <a class="button secondary" href="../config/">Configure</a>
+        <a class="button primary" href="#quick-install">Quick Install</a>
+        <a class="button secondary" href="https://github.com/ensky0/tildaz/releases/latest" target="_blank" rel="noopener">All Downloads</a>
       </div>
     </section>
 
-    <section class="section compact-section">
+    <section id="quick-install" class="section compact-section">
       <div class="section-heading">
         <p class="eyebrow">Quick Install</p>
         <h2>One command installs and starts TildaZ.</h2>
@@ -63,7 +63,30 @@ curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh</code></pre>
       <pre class="code-block"><code># Windows
 powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"</code></pre>
       <p>The script downloads the latest release, checks its SHA-256, installs it into your user account, and adds TildaZ to your app menu. No sudo or admin rights are needed. It then starts TildaZ once, and TildaZ sets up auto-start on that first run. On GNOME, log out and back in first so the Shell extension loads. Read the scripts first: <a href="https://github.com/ensky0/tildaz/blob/main/docs/install.sh" target="_blank" rel="noopener">install.sh</a>, <a href="https://github.com/ensky0/tildaz/blob/main/docs/install.ps1" target="_blank" rel="noopener">install.ps1</a>.</p>
-      <p>To update, quit TildaZ and run the same command again. Your config is kept. To uninstall, quit TildaZ and run the uninstaller. It keeps your config and logs, and prints where they are.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Platform</th><th>Installs to</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Linux</td><td><code>~/.local/share/tildaz</code>, plus the app menu entry and <code>~/.local/bin/tildaz</code></td></tr>
+            <tr><td>macOS</td><td><code>/Applications/TildaZ.app</code> (<code>~/Applications</code> if <code>/Applications</code> is not writable)</td></tr>
+            <tr><td>Windows</td><td><code>%LOCALAPPDATA%\Programs\TildaZ</code>, plus a Start Menu shortcut</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li><strong>Already installed a Linux package or AppImage?</strong> Keep updating it that way. The script stops instead of installing a second copy next to it.</li>
+        <li><strong>Used the Windows zip before?</strong> Quit it first. The script tells you where the old folder is, and your config carries over.</li>
+      </ul>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">Update and Uninstall</p>
+        <h2>Run the same command to update.</h2>
+      </div>
+      <p>To update, quit TildaZ and run the install command again. Your config is kept. To uninstall, quit TildaZ and run the uninstaller. It keeps your config and logs, and prints where they are.</p>
       <pre class="code-block"><code># Linux and macOS
 curl -LsSf https://ensky0.github.io/tildaz/uninstall.sh | sh</code></pre>
       <pre class="code-block"><code># Windows

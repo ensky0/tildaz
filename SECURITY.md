@@ -36,6 +36,7 @@ availability.
 
 - The `tildaz.exe` (Windows), `TildaZ.app` (macOS), and Linux `tildaz` binaries (tar.gz / deb / rpm / AppImage / Arch pkg) as shipped in GitHub Releases
 - Source code under `src/`
+- The install and uninstall scripts under `docs/` (`install.sh`, `install.ps1`, `uninstall.sh`, `uninstall.ps1`)
 - Release pipeline under `.github/workflows/`
 
 **Out of scope** — report these upstream:

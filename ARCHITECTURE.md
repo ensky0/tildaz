@@ -281,6 +281,14 @@ while adapting it to each platform's native constraints:
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
 
+The one-command installers in `docs/` (served by GitHub Pages as
+`https://ensky0.github.io/tildaz/install.sh` · `install.ps1`, with matching
+`uninstall.sh` · `uninstall.ps1`) download the tarball, DMG, or zip above from
+the latest release and check it against its `.sha256`
+([#803](https://github.com/ensky0/tildaz/issues/803)). They find the latest
+release through the `/releases/latest` redirect, which skips prereleases, and
+build each file name from the tag. Renaming an artifact therefore breaks them.
+
 The release workflow checks that:
 
 - the complete tag version matches `build.zig.zon`'s `.version`;
