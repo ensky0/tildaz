@@ -395,7 +395,8 @@ minimize/restore.
 - 터미널이 보이면 hotkey 는 숨기지 않고 다이얼로그를 앞으로 가져온다.
 - 터미널이 숨어 있으면 hotkey 는 터미널을 띄우고 다이얼로그를 그 위에 올린다. 숨은 채 다이얼로그가 뜨는 경우에도 터미널을 꺼낼 수 있어야 해서다.
 - 시작 안내 (§11.5) 도 터미널을 띄운 뒤에 나온다. `hidden_start = true` 여도 안내가 있으면 터미널을 띄우고, 안내를 닫은 뒤에도 그대로 둔다 (2026-10-19 사용자 결정 — 다시 숨길 일이 아니다).
-Guake (`HidePrevention`) · iTerm2 (app-modal 창이 있으면 hotkey 무시) 와 같은 관례다. 예전에는 Windows · macOS · Linux layer-shell 이 터미널만 숨겨 다이얼로그가 홀로 남았고 (코드 판정), GNOME · Cinnamon 은 숨기자마자 터미널이 되살아났다 — 확장이 포커스를 넘긴 다이얼로그를 mutter · muffin 이 활성화하며 최소화된 부모를 되살린다 (`meta_window_activate_full` → `unminimize_window_and_all_transient_parents`, nested Cinnamon 6.6.9 · headless GNOME 51.1 실측).
+- GNOME · Cinnamon 은 확장이 `hidden_start` 로 worker 를 숨기기 직전에, 그 worker 를 부모로 둔 다이얼로그가 이미 있는지 본다. 다이얼로그가 worker 의 map 보다 먼저 생기면 minimize 가 다이얼로그까지 숨겨 아무것도 안 보였다 (headless GNOME 51.1 2/2 · nested Cinnamon 6.6.9 3/4).
+Guake (`HidePrevention`) · iTerm2 (app-modal 창이 있으면 hotkey 무시) 와 같은 관례다. 예전에는 Windows · macOS · Linux layer-shell 이 터미널만 숨겨 다이얼로그가 홀로 남았고 (Windows · headless sway 실측, macOS 코드 판정), GNOME · Cinnamon 은 숨기자마자 터미널이 되살아났다 — 확장이 포커스를 넘긴 다이얼로그를 mutter · muffin 이 활성화하며 최소화된 부모를 되살린다 (`meta_window_activate_full` → `unminimize_window_and_all_transient_parents`, nested Cinnamon 6.6.9 · headless GNOME 51.1 실측).
 OS 가 그리는 fallback (Windows `MessageBoxW` · macOS `osascript`) 은 우리 창이 아니라 이 규칙 밖이다.
 
 **hotkey 를 못 잡으면 기동을 멈춘다 — 세 platform 공통** ([#510](https://github.com/ensky0/tildaz/issues/510)).
