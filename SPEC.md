@@ -1489,7 +1489,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 | `shell` | string (셸 경로) | `cmd.exe` | 첫 실행 시 host 의 `resolveShell` 이 `$SHELL` env (있으면) / `/bin/bash` (없으면) 을 disk 명시값으로 작성. 이후 실행은 disk 명시값 그대로. | 첫 실행 시 `$SHELL` env / `/bin/bash` fallback (mac 동등) | ✅ | ✅ | ✅ |
 | `auto_start` | bool | `true` | LaunchAgent (`~/Library/LaunchAgents/<bundle id>.plist`). plist 는 바이너리가 아니라 `/usr/bin/open -a <bundle> --args --autostart` 를 지목한다 — 직접 지목하면 단명 launcher 가 job 본체가 되어 launchd 가 job 을 닫을 때 worker 까지 거둔다 (#442) | XDG autostart (`$XDG_CONFIG_HOME/autostart/<앱이름>.desktop`, fallback `~/.config`), L11-α. 데스크톱 설정 화면에서 끈 것은 되살리지 않는다 — KDE Plasma `Hidden=true` · Cinnamon `X-GNOME-Autostart-enabled=false` 면 파일을 건드리지 않고, COSMIC 처럼 파일을 지웠으면 다시 만들지 않는다 (만든 사실을 상태 폴더의 `autostart-created` 로 기억한다. `auto_start` 를 모두 끄면 둘 다 지운다, #700) | ✅ | ✅ | ✅ |
 | `hidden_start` | bool | `false` | 첫 hotkey 까지 윈도우 unmapped | 첫 hotkey toggle 까지 layer-surface 생성 skip (L11-β). 확인된 hotkey 전달 경로 — direct KGlobalAccel(KDE Plasma) 또는 compositor keybind→`--toggle`(COSMIC/Hyprland/sway, `compositorHotkeyEnv`) — 가 있으면 존중하고, 없으면 warning + 즉시 show fallback으로 영구 숨김을 막는다. GNOME/Cinnamon + extension 환경은 항상 `false`로 override — 숨김은 extension이 map 직후 minimize로 처리 (`host/linux_wayland.zig`). 시작 안내 (§11.5) 가 있으면 세 platform 모두 숨기지 않고 띄운다 ([#801](https://github.com/ensky0/tildaz/issues/801)) | ✅ | ✅ | ✅ |
-| `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty `max_scrollback_lines` 에 **줄 수를 그대로** 넘기고 byte 제한 (`max_scrollback_bytes`) 은 `null` 로 끈다 — 두 제한은 독립 판정이라 켜 두면 10 KB 에서 먼저 잘린다 ([#451](https://github.com/ensky0/tildaz/issues/451)). **정확한 상한이 아니라 heuristic 이다** — ghostty 가 *complete historical page* 단위로만 prune 하고 (`PageList.Limits.exceeded` 주석: *"complete historical pages are the smallest unit that enforcement removes"*), active 영역을 걸친 경계 page 는 통째로 남긴다. 그래서 실제 줄 수는 page 한 장만큼 톱니로 오르내리고, page 한 장보다 작은 값을 주면 **page 한 장이 하한**이 된다. 실측 (Linux, 80x24, #451): 제한 100 → 최대 588 · 500 → 최대 603 · 2000 → 최대 2013. | 동일 | ✅ | ✅ | ✅ |
+| `max_scroll_lines` | integer 100..10_000_000 | 10_000 | 10_000 default. ghostty 에는 **byte 한도** (`max_scrollback_bytes`) 로 환산해 넘기고 줄 수 한도 (`max_scrollback_lines`) 는 끈다 ([#812](https://github.com/ensky0/tildaz/issues/812) — `session_core.scrollbackByteBudget`). page 수 = ⌈(줄 수 + 화면 줄 수) / page 당 줄 수⌉ + 1 이고, 한도 = page 수 × page 한 장 크기다. **줄 수 한도를 쓰지 않는 이유** — ghostty 는 줄 수 한도를 넘으면 오래된 page 를 지우며 물리 메모리를 OS 에 돌려주고 (Linux `MADV_DONTNEED`), 다음 page 를 4 KiB 마다 페이지 폴트로 다시 받는다. byte 한도는 맨 앞 page 를 지워 맨 뒤에서 다시 쓴다. #451 이 줄 수 한도로 바꾼 뒤 출력 처리량이 크게 떨어졌다 (해석기만 · `plain` · 미니PC Ryzen 7 8845HS: 페이지 폴트 4,226 → 657,965 번). **남는 줄은 설정값 이상이고, 넘는 것은 page 두 장 이내다** (단위 테스트가 지킨다). page 당 줄 수는 열 수에 따라 달라서 크기가 바뀌면 한도를 다시 넣는다 (`resizeTerminal`). 묶음 글자 (이모지 등) 가 많아 커진 page 는 실제 크기로 세어지므로, 그런 page 가 많으면 남는 줄이 설정보다 적을 수 있다. [#451](https://github.com/ensky0/tildaz/issues/451) 부터 #812 전까지는 줄 수 한도였다. | 동일 | ✅ | ✅ | ✅ |
 | `hotkey` | 상세 spec 은 §7.1 (테이블 아래). 기본값은 `config_0` 기준이고 번호마다 다르다 (개발 빌드는 반대 순서 — §7.1) | `F1` | `F1` | `F1` — `LinuxHotkey.fromString` + desktop별 native backend. KDE Plasma는 direct KGlobalAccel 충돌 owner 진단 + confirm + takeover. 자세한 알고리즘 §7.1 | ✅ | ✅ | ✅ (#207, #244) |
 
 > **glyph fallback chain** (#135, v0.4.1 schema breaking): chain = `font.family` (primary, single string) + `font.glyph_fallback` (array of strings). codepoint 별로 chain 순회 → 글리프 가진 첫 폰트 사용. chain 에 없는 codepoint 는 양쪽 OS 모두 system fallback 이 자동 처리 — Windows DirectWrite `IDWriteFontFallback.MapCharacters`, macOS CoreText `CTFontCreateForString`. 사용자가 별도 폰트를 추가하고 싶으면 `glyph_fallback` 끝에 append.
@@ -2745,7 +2745,15 @@ host 는 그 통보에서 **잠든 UI 를 깨우되 할 일을 큐에 넣지 않
 |---|---|
 | macOS | source 를 signal 하지 않고 `CFRunLoopWakeUp` 만 부른다. run loop 이 한 바퀴 돌며 `BeforeWaiting` 의 드레인을 다시 태운다 |
 | Windows | auto-reset 이벤트를 켠다 (`SetEvent`). `messageLoop` 가 `WaitMessage` 대신 `MsgWaitForMultipleObjectsEx` 로 메시지와 그 이벤트를 함께 기다리고, 깨어나면 빈 큐를 보고 `idle_drain_fn` 으로 간다 |
-| Linux | 따로 없다 — 출력마다 `eventfd` 로 깨우므로 *"read thread 가 막혀 있다"* 와 *"UI 가 잔다"* 가 동시에 생기지 않는다 (코드 판정 · 이 조건의 실측은 없다) |
+| Linux | `eventfd` 를 **무조건** 쓴다 (`linuxOutputFull`, 출력 통보의 coalescing 플래그를 보지 않는다). 처음에는 *"출력마다 `eventfd` 로 깨우니 두 상황이 동시에 생기지 않는다"* 고 보고 두지 않았는데 (코드 판정), 실제로는 생겼다 — 아래 [#814](https://github.com/ensky0/tildaz/issues/814) |
+
+**Linux — 통보를 꺼낸 뒤에 플래그를 내린다 ([#814](https://github.com/ensky0/tildaz/issues/814)).** 메인 루프는
+`eventfd` 를 **먼저 읽고** 출력 통보의 coalescing 플래그 (`output_wake_pending`) 를 내린다. 예전에는 반대였다.
+플래그를 내린 직후 read thread 가 다시 세우고 `eventfd` 에 쓰면, 뒤따른 읽기가 그 통보를 지웠다. 그러면 플래그는
+서 있는데 `eventfd` 는 비어 그 뒤 통보가 모두 건너뛰어졌고, 메인 루프는 다음 Wayland 사건 (프레임 콜백) 까지 잤다.
+ring 이 차면 read thread 도 함께 자서, 해석이 빠른 판의 `plain` 처리량이 반 아래로 떨어졌다 (노트북 Ryzen AI 7 350
+· KDE Plasma · 120 Hz: #812 판 58.8 MiB/s → 고친 뒤 148.5 MiB/s. 같은 기기의 #812 이전 판은 105.7~127.7). macOS (run loop 이 신호를 푼 뒤) · Windows (메시지를 큐에서
+꺼낸 뒤) 는 처음부터 이 순서다. libuv 의 `uv__async_io` 도 먼저 읽고 플래그를 내린다.
 
 macOS 는 수정 뒤 같은 조건이 4 MiB 대비 +6 % · +3 % 이고, 폭포 중 입력 지연은 나빠지지 않았다
 (나빠진 쪽 최대 +0.75 ms) ([결과 댓글](https://github.com/ensky0/tildaz/issues/728#issuecomment-6102155976)).

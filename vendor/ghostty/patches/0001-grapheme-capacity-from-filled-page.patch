@@ -1,0 +1,153 @@
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -4031,7 +4031,13 @@
+ 
+     // Get the layout first so our failable work is done early.
+     // We'll need this for both paths.
+-    const cap = initialCapacity(self.cols);
++    //
++    // TildaZ #812: size the new page's grapheme storage from what the page
++    // that just filled up actually used, instead of always starting from the
++    // standard default and re-cloning the page several times as it grows.
++    const std_cap = initialCapacity(self.cols);
++    const grapheme_need = carriedGraphemeNeed(last.page(), std_cap);
++    const cap = capacityWithGrapheme(std_cap, grapheme_need);
+ 
+     // If allocation would exceed our max size, we prune the first page.
+     // We don't need to reallocate because we can simply reuse that first
+@@ -4089,26 +4095,40 @@
+         }
+         self.viewport_pin.garbage = false;
+ 
+-        switch (first.owned) {
+-            // Pool-owned pages are reused below.
+-            .pool => {},
+-
+-            // Heap-owned pages can't be reused because they may be
+-            // any size (larger or smaller than a standard page), so
+-            // just destroy them.
+-            .heap => {
++        // TildaZ #812: reuse the popped page when its memory fits the
++        // capacity we want. A pool page holds any layout up to std_size. A
++        // heap page is reused with its own capacity (its memory is exactly
++        // that layout) only while the new page wants more grapheme room than
++        // a standard page, and only when that capacity covers the need
++        // without being far larger than what we want. Once grapheme output
++        // stops, heap pages are destroyed and pages return to the pool.
++        const reuse_cap: Capacity = switch (first.owned) {
++            .pool => if (Page.layout(cap).total_size <= std_size) cap else {
+                 self.destroyNode(first);
+                 break :prune;
+             },
+-        }
++            .heap => heap: {
++                const fc = first.capacity();
++                if (cap.grapheme_bytes > std_cap.grapheme_bytes and
++                    fc.cols == cap.cols and
++                    fc.rows == cap.rows and
++                    fc.grapheme_bytes >= grapheme_need and
++                    fc.grapheme_bytes <= @as(usize, cap.grapheme_bytes) * 2 and
++                    fc.styles >= std_cap.styles)
++                    break :heap fc;
++                self.destroyNode(first);
++                break :prune;
++            },
++        };
+ 
+         // Reset our memory
+         const buf = first.restore(.discard).memory;
+         @memset(buf, 0);
+-        assert(buf.len <= std_size);
++        assert(buf.len == Page.layout(reuse_cap).total_size or
++            (first.owned == .pool and buf.len <= std_size));
+ 
+         // Initialize our new page and reinsert it as the last
+-        first.data = .{ .resident = .initBuf(.init(buf), Page.layout(cap)) };
++        first.data = .{ .resident = .initBuf(.init(buf), Page.layout(reuse_cap)) };
+         const page = first.page();
+         page.size.rows = 1;
+         self.pages.insertAfter(last, first);
+@@ -4153,6 +4173,30 @@
+     return next_node;
+ }
+ 
++/// TildaZ #812: the grapheme bytes a new page of `std_cap` needs at the
++/// density of `last`, the page that just filled up. Zero when `last` used
++/// no grapheme memory or has a different width.
++fn carriedGraphemeNeed(last: *const Page, std_cap: Capacity) usize {
++    if (last.capacity.cols != std_cap.cols) return 0;
++    if (last.size.rows == 0) return 0;
++    const used = last.grapheme_alloc.usedBytes(last.memory);
++    if (used == 0) return 0;
++    return used * std_cap.rows / last.size.rows;
++}
++
++/// TildaZ #812: `std_cap` with room for `need` grapheme bytes plus the same
++/// 25% headroom `increaseCapacity` projects with. Falls back to `std_cap`
++/// when the result would not fit a page.
++fn capacityWithGrapheme(std_cap: Capacity, need: usize) Capacity {
++    const want = need + need / 4;
++    if (want <= std_cap.grapheme_bytes) return std_cap;
++    const Int = @FieldType(Capacity, "grapheme_bytes");
++    var cap = std_cap;
++    cap.grapheme_bytes = @intCast(@min(want, std.math.maxInt(Int)));
++    if (Page.layout(cap).total_size > size.max_page_size) return std_cap;
++    return cap;
++}
++
+ /// Possible dimensions to increase capacity for.
+ pub const IncreaseCapacity = enum {
+     styles,
+@@ -12217,6 +12261,52 @@
+     }
+ }
+ 
++test "PageList grow sizes the next page's graphemes from the filled page (TildaZ #812)" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, .{ .cols = 80, .rows = 24, .max_size = null });
++    defer s.deinit();
++
++    const std_graphemes = initialCapacity(80).grapheme_bytes;
++
++    // Use 600 one-chunk graphemes (9600 bytes), more than a standard page
++    // holds, growing the page the way Screen does when it runs out.
++    for (0..600) |i| {
++        while (true) {
++            const page = s.pages.first.?.page();
++            const rac = page.getRowAndCell(i % 80, i / 80);
++            rac.cell.* = .{
++                .content_tag = .codepoint,
++                .content = .{ .codepoint = .{ .data = 'e' } },
++            };
++            page.appendGrapheme(rac.row, rac.cell, 0x0301) catch |err| switch (err) {
++                error.OutOfMemory => {
++                    _ = try s.increaseCapacity(s.pages.first.?, .grapheme_bytes);
++                    continue;
++                },
++            };
++            break;
++        }
++    }
++    const used = s.pages.first.?.page().grapheme_alloc.usedBytes(s.pages.first.?.page().memory);
++    try testing.expect(used > std_graphemes);
++
++    // Fill the first page and start the next one.
++    while (s.pages.last.?.rows() < s.pages.last.?.capacity().rows) _ = try s.grow();
++    _ = try s.grow();
++    try testing.expect(s.pages.first != s.pages.last);
++
++    // The new page starts with the filled page's need plus 25% headroom
++    // instead of the standard default.
++    try testing.expect(s.pages.last.?.capacity().grapheme_bytes >= used + used / 4);
++
++    // A page without graphemes sends the next page back to the default.
++    while (s.pages.last.?.rows() < s.pages.last.?.capacity().rows) _ = try s.grow();
++    _ = try s.grow();
++    try testing.expectEqual(std_graphemes, s.pages.last.?.capacity().grapheme_bytes);
++}
++
+ test "PageList increaseCapacity graphemes projects capacity from page density" {
+     const testing = std.testing;
+     const alloc = testing.allocator;

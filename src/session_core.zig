@@ -813,9 +813,54 @@ fn clipboardTarget(location: ghostty.clipboard.Location) SessionCore.ClipboardTa
     };
 }
 
-/// #451 — scrollback 은 이제 **줄 수로 직접** 건넨다. 예전에는 ghostty 가 byte 예산만
-/// 받아서 우리 config 의 줄 수를 cols 에 따른 page 용량으로 환산했는데, upstream 이
-/// `max_scrollback_lines` 를 추가해 그 환산이 필요 없어졌다.
+/// #812 — config 의 scrollback 줄 수를 ghostty 의 **byte 한도**로 바꾼다. 결과는 page 의
+/// 수 × page 한 장 크기다.
+///
+/// **왜 줄 수 한도 (`max_scrollback_lines`) 를 쓰지 않나.** ghostty 는 두 한도가 오래된
+/// page 를 다르게 치운다.
+///
+/// - byte 한도 — `PageList.grow` 가 맨 앞 page 를 꺼내 `@memset` 으로 지우고 맨 뒤에서
+///   **다시 쓴다** (`grow` 의 `prune:`).
+/// - 줄 수 한도 — `Limits.enforce` 가 page 를 지우고 `destroyNodeExt` 가
+///   `terminal_mem.decommit` 으로 물리 메모리를 OS 에 돌려준다 (Linux `MADV_DONTNEED`).
+///   다음 page 는 4 KiB 마다 페이지 폴트로 다시 받는다.
+///
+/// #451 이 줄 수 한도로 바꾼 뒤 파서만 돈 `plain` 64 MiB 가 페이지 폴트 4,226 → 657,965 번,
+/// 553 → 91 MiB/s 가 됐다 (미니PC Ryzen 7 8845HS). byte 한도로 되돌리면 폴트 16,072 번 ·
+/// 284 MiB/s 였다.
+///
+/// **page 수 = ⌈(줄 수 + 화면 줄 수) / page 당 줄 수⌉ + 1.** `grow` 는 page 를 하나 더 붙이면
+/// 한도를 넘을 때만 맨 앞 page 를 다시 쓴다. 그래서 page 는 많아야 이 수만큼이고, 맨 앞을
+/// 다시 쓴 직후에도 (마지막 page 에 한 줄) 앞의 page 들이 `줄 수 + 화면 줄 수` 를 덮는다.
+/// 즉 scrollback 은 **설정한 줄 수 아래로 내려가지 않고**, 넘는 것은 page 두 장 이내다.
+///
+/// - page 당 줄 수는 **열 수에 따라 달라진다** (한 줄 = row 머리 + 셀 × 열). 그래서 열이
+///   바뀌면 이 값을 다시 넣는다 (`resizeTerminal`).
+/// - 묶음 글자가 많아 커진 page (heap page) 는 한 장이 실제 크기만큼 세어진다. 그런 page 가
+///   많으면 남는 줄이 설정보다 적어질 수 있다.
+pub fn scrollbackByteBudget(cols: u16, rows: u16, max_scroll_lines: usize) usize {
+    const page_bytes = ghostty.Page.layout(ghostty.page.std_capacity).total_size;
+    // `adjust` 는 열이 너무 많아 page 한 장에 한 줄도 안 들어갈 때만 실패한다. 그때 ghostty
+    // (`PageList.initialCapacity`) 도 page 당 한 줄로 떨어진다.
+    const rows_per_page: usize = if (ghostty.page.std_capacity.adjust(.{ .cols = cols })) |cap|
+        @max(cap.rows, 1)
+    else |_|
+        1;
+    const lines = std.math.add(usize, max_scroll_lines, rows) catch return std.math.maxInt(usize);
+    const pages = std.math.divCeil(usize, lines, rows_per_page) catch unreachable;
+    return std.math.mul(usize, pages + 1, page_bytes) catch std.math.maxInt(usize);
+}
+
+/// 크기를 바꾸고 scrollback byte 한도를 새 열 수로 다시 넣는다 (#812 — `scrollbackByteBudget`).
+fn resizeTerminal(term: *ghostty.Terminal, alloc: std.mem.Allocator, cols: u16, rows: u16, max_scroll_lines: usize) void {
+    const old_cols = term.cols;
+    const old_rows = term.rows;
+    // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
+    term.resize(alloc, .{ .cols = cols, .rows = rows }) catch return;
+    if (term.cols == old_cols and term.rows == old_rows) return;
+    term.setScrollbackMaxBytes(scrollbackByteBudget(cols, rows, max_scroll_lines));
+}
+
 pub fn initVtTerminal(
     rt: Runtime,
     alloc: std.mem.Allocator,
@@ -840,15 +885,10 @@ pub fn initVtTerminal(
     var term = ghostty.Terminal.init(rt.io, alloc, .{
         .cols = cols,
         .rows = rows,
-        // #451 — 우리 config 의 `max_scroll_lines` 와 **단위가 같다** (물리 줄 수).
-        // 예전의 page 용량 환산 (`page.std_capacity.adjust` + `Page.layout`) 은 ghostty 가
-        // byte 예산만 받던 시절의 우회였고, 이제 그 계산이 통째로 사라졌다.
-        .max_scrollback_lines = max_scroll_lines,
-        // **byte 제한은 명시로 끈다.** `Terminal.Options.max_scrollback_bytes` 의 기본값이
-        // `10_000` (10 KB) 이고, `PageList.Limits.exceeded` 는 bytes 와 lines 를 **독립적으로**
-        // 판정해 각각 page 를 prune 한다 (`PageList.zig` 의 `Limits`). 그대로 두면 10 KB 에서
-        // 먼저 잘려 줄 수 제한이 무의미해진다. `null` = 무제한이고, 상한은 줄 수가 정한다.
-        .max_scrollback_bytes = null,
+        // #812 — 한도는 byte 하나로 건다 (`scrollbackByteBudget` 의 주석). 줄 수 한도는 끈다 —
+        // 두 한도는 따로 판정되고 (`PageList.Limits`), 줄 수 한도가 걸리면 page 를 버리는 길을 탄다.
+        .max_scrollback_lines = null,
+        .max_scrollback_bytes = scrollbackByteBudget(cols, rows, max_scroll_lines),
         .colors = term_colors,
     }) catch |err| {
         term_colors.palette.deinit(alloc);
@@ -975,6 +1015,71 @@ test "#639 — 잠들고 깨우는 동안 byte 를 잃거나 순서가 바뀌지
     thread.join();
     try std.testing.expectEqual(@as(?usize, null), mismatch);
     try std.testing.expect(state.ring.isEmpty());
+}
+
+/// 화면 위로 남은 scrollback 줄 수 (primary screen).
+fn testHistoryRows(term: *ghostty.Terminal) usize {
+    const pages = &term.screens.get(.primary).?.pages;
+    return pages.total_rows - pages.rows;
+}
+
+/// page 한 장에 들어가는 줄 수 — `scrollbackByteBudget` 과 같은 계산이다.
+fn testRowsPerPage(cols: u16) usize {
+    return (ghostty.page.std_capacity.adjust(.{ .cols = cols }) catch unreachable).rows;
+}
+
+test "#812 — scrollback 은 설정한 줄 수 아래로 내려가지 않고, 넘는 것은 page 두 장 이내다" {
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const lines = 1000;
+    var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, lines, null);
+    defer term.deinit(std.testing.allocator);
+    var stream = term.vtStream();
+    defer stream.deinit();
+
+    // 한도를 여러 번 돌 만큼 쏟는다. 매 줄 뒤에 범위를 보면 맨 앞 page 를 다시 쓴 직후
+    // (가장 적을 때) 와 다시 쓰기 직전 (가장 많을 때) 이 모두 지나간다.
+    var min_seen: usize = std.math.maxInt(usize);
+    var max_seen: usize = 0;
+    for (0..20 * lines) |i| {
+        stream.nextSlice("line\r\n");
+        if (i < 2 * lines) continue;
+        const h = testHistoryRows(&term);
+        min_seen = @min(min_seen, h);
+        max_seen = @max(max_seen, h);
+    }
+    try std.testing.expect(min_seen >= lines);
+    try std.testing.expect(max_seen <= lines + 2 * testRowsPerPage(80));
+}
+
+test "#812 — 열이 바뀌면 그 열의 page 크기로 한도를 다시 넣는다" {
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const lines = 1000;
+    var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, lines, null);
+    defer term.deinit(std.testing.allocator);
+
+    // 넓은 열은 page 당 줄 수가 적다. 한도를 다시 넣지 않으면 80 열의 byte 예산이 그대로라
+    // 남는 줄이 설정보다 크게 줄어든다.
+    resizeTerminal(&term, std.testing.allocator, 400, 24, lines);
+    try std.testing.expect(testRowsPerPage(400) < testRowsPerPage(80));
+
+    var stream = term.vtStream();
+    defer stream.deinit();
+    var min_seen: usize = std.math.maxInt(usize);
+    for (0..20 * lines) |i| {
+        stream.nextSlice("line\r\n");
+        if (i < 2 * lines) continue;
+        min_seen = @min(min_seen, testHistoryRows(&term));
+    }
+    try std.testing.expect(min_seen >= lines);
+}
+
+test "#812 — 줄 수 한도는 걸지 않는다 (page 를 버리는 길을 타지 않게)" {
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 1000, null);
+    defer term.deinit(std.testing.allocator);
+    const limits = &term.screens.get(.primary).?.pages.limits;
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), limits.lines.explicit);
+    try std.testing.expectEqual(scrollbackByteBudget(80, 24, 1000), limits.bytes.explicit);
 }
 
 test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled" {
@@ -1905,8 +2010,7 @@ pub const SessionCore = struct {
         for (lay) |pr| {
             const tab = group.panes[pr.pane] orelse continue;
             if (tab.terminal.cols == pr.cols and tab.terminal.rows == pr.rows) continue;
-            // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
-            tab.terminal.resize(self.allocator, .{ .cols = pr.cols, .rows = pr.rows }) catch {};
+            resizeTerminal(&tab.terminal, self.allocator, pr.cols, pr.rows, self.max_scroll_lines);
             tab.backend.resize(pr.cols, pr.rows) catch {};
         }
     }
@@ -2146,8 +2250,7 @@ pub const SessionCore = struct {
         for (self.tabs.items) |group| {
             for (group.panes) |p| {
                 const tab = p orelse continue;
-                // #451 — `Terminal.resize` 가 `Resize` 구조체를 받는다 (cell_size_px 가 추가됐다).
-                tab.terminal.resize(self.allocator, .{ .cols = cols, .rows = rows }) catch {};
+                resizeTerminal(&tab.terminal, self.allocator, cols, rows, self.max_scroll_lines);
                 tab.backend.resize(cols, rows) catch {};
             }
         }
