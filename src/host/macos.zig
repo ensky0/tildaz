@@ -696,6 +696,15 @@ var g_display_link: objc.id = null;
 /// #770 — display link 를 `paused` 로 둔 상태인가. 그릴 것도, 가까운 마감도 없는 유휴 프레임이
 /// 세우고 (`sleepFrameClock`), 할 일이 생기면 `wakeFrameClock` 이 내린다.
 var g_frame_clock_paused: bool = false;
+/// #811 — 마지막 키 입력 뒤 이 시간 동안은 쉬어도 display link 를 멈추지 않는다.
+///
+/// display link 가 멈추면 ProMotion 화면이 주사율을 낮춰서, 그 뒤 키의 에코가 화면에 늦게 나간다
+/// (#811 실측: 120 Hz ProMotion 에서 멈추는 판 21.15 · 안 멈추는 판 17.94 ms, 60 Hz 고정에서는
+/// 차이가 1 ms 로 줄었다). Zed 도 같은 이유로 마지막 입력 뒤 1 초 동안 계속 돈다
+/// (zed.dev/blog/120fps). 쉬는 프레임은 그대로 그리지 않는다 — 돌기만 해도 빨랐다.
+const FRAME_CLOCK_INPUT_HOLD_MS: i64 = 1000;
+/// #811 — 이 시각 (`g_rt.nowMs`) 까지는 `sleepFrameClock` 이 멈추지 않는다.
+var g_frame_clock_hold_until_ms: i64 = 0;
 /// #770 — 시간에 걸린 일 (제목 · 검색 debounce, blink, 드래그 자동 스크롤) 의 다음 마감에
 /// display link 를 다시 켜는 타이머. 하나를 만들어 두고 `CFRunLoopTimerSetNextFireDate` 로
 /// 다시 맞춰 쓴다 — 불규칙한 시각에 여러 번 쏘는 타이머에 Apple 문서가 권하는 방식이다.
@@ -1678,6 +1687,7 @@ fn tildazFlagsChanged(_: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void
 
 fn tildazKeyDown(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) void {
     perf.markInput(); // #441 축 ② — 응답 지연은 여기서 시작한다.
+    holdFrameClockForInput();
     // #763 — 여기서 무조건 그리지 않는다. 키가 화면을 바꾸는 자리 (맨 아래로 스크롤 · 조합 표시가
     // 사라짐 · Shift+PgUp/PgDn · 메뉴 · 검색바) 가 각자 요청한다. 무조건 그리면 바뀐 것 없는 빈 프레임이
     // 나가 곧 온 에코의 출력 통보를 막고, 그 키는 한 프레임 늦는다 (#763 ⑥).
@@ -5235,6 +5245,8 @@ fn wakeFrameClock() void {
 /// 다시 켤 길이 없어서다. 그때는 예전처럼 vsync 마다 돈다.
 fn sleepFrameClock(wake_in_ns: ?u64) void {
     if (g_output_source == null or g_wake_timer == null or g_display_link == null) return;
+    // #811 — 키 입력 직후다. 계속 돌면 vsync 마다 마감도 집으니 타이머를 맞출 필요가 없다.
+    if (g_rt.nowMs() < g_frame_clock_hold_until_ms) return;
     if (wake_in_ns) |ns| {
         if (ns == 0) return;
         const secs = @as(f64, @floatFromInt(ns)) / @as(f64, std.time.ns_per_s);
@@ -5245,6 +5257,14 @@ fn sleepFrameClock(wake_in_ns: ?u64) void {
     if (g_frame_clock_paused) return;
     g_frame_clock_paused = true;
     setDisplayLinkPaused(true);
+}
+
+/// #811 — 키 입력이 왔다. display link 를 바로 켜고 `FRAME_CLOCK_INPUT_HOLD_MS` 동안 멈추지 않게
+/// 한다. 에코보다 먼저 켜서, 오래 쉰 뒤 첫 키도 에코가 오는 동안 화면이 깨어날 시간을 번다.
+/// 그리기는 요청하지 않는다 — 바뀐 것 없는 빈 프레임은 에코를 한 프레임 막는다 (#763).
+fn holdFrameClockForInput() void {
+    g_frame_clock_hold_until_ms = g_rt.nowMs() + FRAME_CLOCK_INPUT_HOLD_MS;
+    wakeFrameClock();
 }
 
 fn setDisplayLinkPaused(paused: bool) void {
