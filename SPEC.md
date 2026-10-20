@@ -2745,7 +2745,15 @@ host 는 그 통보에서 **잠든 UI 를 깨우되 할 일을 큐에 넣지 않
 |---|---|
 | macOS | source 를 signal 하지 않고 `CFRunLoopWakeUp` 만 부른다. run loop 이 한 바퀴 돌며 `BeforeWaiting` 의 드레인을 다시 태운다 |
 | Windows | auto-reset 이벤트를 켠다 (`SetEvent`). `messageLoop` 가 `WaitMessage` 대신 `MsgWaitForMultipleObjectsEx` 로 메시지와 그 이벤트를 함께 기다리고, 깨어나면 빈 큐를 보고 `idle_drain_fn` 으로 간다 |
-| Linux | 따로 없다 — 출력마다 `eventfd` 로 깨우므로 *"read thread 가 막혀 있다"* 와 *"UI 가 잔다"* 가 동시에 생기지 않는다 (코드 판정 · 이 조건의 실측은 없다) |
+| Linux | `eventfd` 를 **무조건** 쓴다 (`linuxOutputFull`, 출력 통보의 coalescing 플래그를 보지 않는다). 처음에는 *"출력마다 `eventfd` 로 깨우니 두 상황이 동시에 생기지 않는다"* 고 보고 두지 않았는데 (코드 판정), 실제로는 생겼다 — 아래 [#814](https://github.com/ensky0/tildaz/issues/814) |
+
+**Linux — 통보를 꺼낸 뒤에 플래그를 내린다 ([#814](https://github.com/ensky0/tildaz/issues/814)).** 메인 루프는
+`eventfd` 를 **먼저 읽고** 출력 통보의 coalescing 플래그 (`output_wake_pending`) 를 내린다. 예전에는 반대였다.
+플래그를 내린 직후 read thread 가 다시 세우고 `eventfd` 에 쓰면, 뒤따른 읽기가 그 통보를 지웠다. 그러면 플래그는
+서 있는데 `eventfd` 는 비어 그 뒤 통보가 모두 건너뛰어졌고, 메인 루프는 다음 Wayland 사건 (프레임 콜백) 까지 잤다.
+ring 이 차면 read thread 도 함께 자서, 해석이 빠른 판의 `plain` 처리량이 반 아래로 떨어졌다 (노트북 Ryzen AI 7 350
+· KDE Plasma · 120 Hz: #812 판 58.8 MiB/s → 고친 뒤 148.5 MiB/s. 같은 기기의 #812 이전 판은 105.7~127.7). macOS (run loop 이 신호를 푼 뒤) · Windows (메시지를 큐에서
+꺼낸 뒤) 는 처음부터 이 순서다. libuv 의 `uv__async_io` 도 먼저 읽고 플래그를 내린다.
 
 macOS 는 수정 뒤 같은 조건이 4 MiB 대비 +6 % · +3 % 이고, 폭포 중 입력 지연은 나빠지지 않았다
 (나빠진 쪽 최대 +0.75 ms) ([결과 댓글](https://github.com/ensky0/tildaz/issues/728#issuecomment-6102155976)).

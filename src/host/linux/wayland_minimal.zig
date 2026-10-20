@@ -4163,6 +4163,8 @@ const Client = struct {
         // #439 — 첫 탭을 만들기 전에 배선한다 (`setOutputWake` 는 이미 있는 탭에도
         // 전파하지만, 여기서 먼저 걸면 첫 탭이 태어날 때부터 통보가 붙는다).
         self.session.?.setOutputWake(linuxOutputWake, self);
+        // #814 — ring 이 차면 무조건 깨운다 (`linuxOutputFull`). 같은 이유로 첫 탭 전에 건다.
+        self.session.?.setOutputFull(linuxOutputFull, self);
         // #266 — OSC 52 복사. 같은 이유로 첫 탭 전에 건다.
         self.session.?.setClipboardWrite(linuxClipboardWrite, self);
         if (self.output_eventfd >= 0) {
@@ -5558,11 +5560,18 @@ const Client = struct {
         // 렌더 경로를 건드리지 않는다 (Windows · macOS 는 렌더가 프레임 tick 에만 묶여 있어
         // 사정이 다르다).
         if (self.output_eventfd >= 0 and (fds[2].revents & posix.POLL.IN) != 0) {
-            // coalescing 해제는 **비우기 전** 에 한다 — 이 사이에 도착한 출력이 다음 통보를
-            // 만들 수 있어야 한다. 반대로 두면 그 창에 들어온 출력이 통보를 잃는다.
-            self.output_wake_pending.store(false, .release);
+            // #814 — **비운 뒤에** coalescing 을 푼다. 반대로 (풀고 비우면) 그 사이에 read thread
+            // 가 쓴 통보를 이 `read` 가 지운다. 그러면 플래그는 서 있는데 eventfd 는 비어, 그 뒤
+            // 통보가 전부 건너뛰어지고 메인 루프는 다음 Wayland 사건까지 잔다. 폭포에서 ring 이
+            // 차 read thread 도 함께 자서 `plain` 처리량이 반 아래로 떨어졌다 (#812 ⑰ 계측).
+            //
+            // 비운 뒤 풀기 전에 온 출력은 통보를 건너뛰지만 이미 ring 에 있어 이 바퀴의 드레인이
+            // 처리한다. 그래서 `swap` (acq_rel) 으로 푼다 — read thread 가 플래그를 세운 RMW 와
+            // 동기화돼야 그 앞의 ring 쓰기가 드레인에 보인다. libuv `uv__async_io` 도 먼저 읽고
+            // 그다음 플래그를 내린다.
             var counter: u64 = undefined;
             _ = posix.read(self.output_eventfd, std.mem.asBytes(&counter)) catch {};
+            _ = self.output_wake_pending.swap(false, .acq_rel);
         }
         if (self.sway_reload_fd >= 0 and (fds[3].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP)) != 0) {
             self.handleSwayReloadEvent();
@@ -11180,6 +11189,20 @@ fn linuxOutputWake(userdata: ?*anyopaque) void {
     // #451 — `posix.write` 가 없어져 raw syscall 을 쓴다 (같은 파일의 clipboard 쓰기와
     // 같은 처리). `eventfd` 는 8 byte 를 원자적으로 더하므로 부분 쓰기가 없고, 실패해도
     // (`EAGAIN` = 카운터 포화) 이미 통보가 밀려 있다는 뜻이라 잃을 것이 없다.
+    const one: u64 = 1;
+    _ = posix.system.write(client.output_eventfd, std.mem.asBytes(&one), @sizeOf(u64));
+}
+
+/// #814 — ring 이 차서 read thread 가 잠들기 직전의 통보. **PTY read thread 에서 불린다.**
+///
+/// coalescing 플래그를 보지 않고 eventfd 를 **무조건** 쓴다. 메인 루프가 자는 채로 ring 이
+/// 차면 두 스레드가 서로를 기다리며 다음 Wayland 사건까지 멈추는데, 이 통보가 그 멈춤을
+/// 끊는다. `linuxOutputWake` 의 플래그가 어떤 이유로 어긋나도 (#814 의 원인이 그것이었다)
+/// 폭포가 멈추지 않게 하는 안전망이다. macOS (`macOutputFull`) · Windows (`onOutputFull`)
+/// 와 같은 역할이다 (#728).
+fn linuxOutputFull(userdata: ?*anyopaque) void {
+    const client: *Client = @ptrCast(@alignCast(userdata.?));
+    if (client.output_eventfd < 0) return;
     const one: u64 = 1;
     _ = posix.system.write(client.output_eventfd, std.mem.asBytes(&one), @sizeOf(u64));
 }
