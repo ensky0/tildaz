@@ -2469,6 +2469,12 @@ ANSI (한국어 환경은 cp949) 로 읽어 **그 뒤 줄들의 앞 글자가 �
 **사용자 프로필 경로에 괄호가 있으면 우리 이름과 무관하게 같은 일이 나니** 그 파일의 블록은 전부
 풀어 둬요.
 
+**⚠️ push 는 언제나 브랜치 이름을 적어요 — `git push --force-with-lease origin <브랜치>`.** 이 기기의
+`push.default` 가 `matching` 이라, 이름 없이 부르면 **원격과 이름이 같은 로컬 브랜치를 모두** 올려요. 2026-10-20
+[#812](https://github.com/ensky0/tildaz/issues/812) rebase 뒤 `git push --force-with-lease` 가 원격보다 뒤처진 **로컬 `main` 까지
+강제로 올리려 했어요.** GitHub 보호 규칙 (`GH006 … Cannot force-push`) 이 막아서 main 이 무사했어요. 보호 규칙이 없는 브랜치였다면
+남의 커밋이 조용히 사라졌을 거예요.
+
 **Bash 도구의 작업 디렉터리는 앞 호출의 `cd` 가 그대로 남아요 — 검증 명령은 저장소 경로를 명시해요.**
 2026-09-03 에 문서용 worktree 로 `cd` 한 호출 뒤에 `zig build check` · `zig build test` 를 돌렸는데, 그것이
 **검증하려던 브랜치가 아니라 그 worktree (다른 브랜치) 에서 돌았어요.** 출력만 보면 통과라 알아채지 못했고,
