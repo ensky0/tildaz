@@ -984,6 +984,9 @@ clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMed
     ```
 
   띄운 뒤 `⌥⌘→` 로 오른쪽에 pane 을 만들면 포커스가 `cat` pane 으로 가요. 두 판을 **번갈아** 띄워요.
+- **다른 터미널과 견줄 때는 [`tool/stress/compare-latency.sh`](tool/stress/compare-latency.sh) 를 써요** ([#756](https://github.com/ensky0/tildaz/issues/756)).
+  대상을 띄우고 이 도구를 `--focus` (창 가운데를 눌러 포커스) 로 불러요. 함정 (커서 깜빡임 · 입력 소스 ·
+  Terminal.app · iTerm2 의 기본 창) 은 [`tool/stress/README.md`](tool/stress/README.md) 의 "다른 터미널과 견주기" 절에 있어요.
 - **절대값은 다른 계측과 견주지 않아요.** 같은 유휴에서 `presentedTime` 기준 (위 `TEMPpres`) 은 present 뒤
   23.5 ms 였는데 이 도구는 키부터 19 ms 였어요 — 두 시각이 가리키는 지점이 다른 것으로 보여요 (추정). 판정은
   같은 도구 안의 **두 판 차이**로 해요.

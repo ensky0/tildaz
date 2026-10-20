@@ -20,7 +20,12 @@
 //
 //   clang -fobjc-arc -framework Cocoa -framework ScreenCaptureKit -framework CoreMedia \
 //         -framework CoreVideo -o /tmp/key-to-screen tool/key-to-screen_macos.m
-//   /tmp/key-to-screen --window <id> [--presses 30] [--gap-ms 250] [--x0 0.55 --x1 1.0]
+//   /tmp/key-to-screen --window <id> [--presses 30] [--gap-ms 250] [--x0 0.55 --x1 1.0] [--focus]
+//
+// `--focus` 는 재기 전에 **그 창의 가운데를 한 번 누른다** — 키가 그 창으로 가게 하려는 것이다.
+// 다른 터미널과 견줄 때 (`tool/stress/compare-latency.sh`, #756) 창을 pid 가 아니라 창 id 로 고르므로
+// `tool/input_macos.m` 의 `focus <pid>` 와 같은 클릭을 여기서 한다. 키가 그 창에 안 닿으면 화면이
+// 안 바뀌어 `miss` 로 드러난다.
 //
 // 화면 기록 권한 (ScreenCaptureKit) 과 손쉬운 사용 권한 (CGEventPost) 은 **실행한 터미널** 의 것을 쓴다.
 
@@ -90,6 +95,29 @@ static double machToMs(uint64_t d) {
     return (double)d * tb.numer / tb.denom / 1e6;
 }
 
+// `tool/input_macos.m` 의 `focusWindowOfPid` 와 같은 순서다 — 이동 이벤트가 없으면 클릭이 안
+// 걸리고 (`CGWarpMouseCursorPosition` 만으로는 부족), 끝나면 사용자의 포인터를 원래 자리로 돌린다.
+// 창 가운데는 터미널 본문이라 같은 자리에서 떼면 빈 selection 이어서 화면이 안 바뀐다.
+static void clickCenter(CGRect frame) {
+    CGPoint target = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    CGEventRef probe = CGEventCreate(NULL);
+    CGPoint origin = (probe != NULL) ? CGEventGetLocation(probe) : target;
+    if (probe != NULL) CFRelease(probe);
+    CGEventRef move = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, target, kCGMouseButtonLeft);
+    CGEventPost(kCGHIDEventTap, move);
+    CFRelease(move);
+    usleep(50 * 1000);
+    CGEventRef down = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, target, kCGMouseButtonLeft);
+    CGEventPost(kCGHIDEventTap, down);
+    CFRelease(down);
+    usleep(30 * 1000);
+    CGEventRef up = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, target, kCGMouseButtonLeft);
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(up);
+    usleep(50 * 1000);
+    CGWarpMouseCursorPosition(origin);
+}
+
 static void sendKey(CGKeyCode code) {
     CGEventRef down = CGEventCreateKeyboardEvent(NULL, code, true);
     CGEventRef up = CGEventCreateKeyboardEvent(NULL, code, false);
@@ -107,13 +135,14 @@ int main(int argc, const char *argv[]) {
         // (한 장만 찍는 `color-capture` 는 필요 없었다).
         [NSApplication sharedApplication];
         uint32_t want = 0;
-        int presses = 30, gap_ms = 250;
+        int presses = 30, gap_ms = 250, focus = 0;
         for (int i = 1; i < argc; i++) {
             if (!strcmp(argv[i], "--window") && i + 1 < argc) want = (uint32_t)strtoul(argv[++i], NULL, 10);
             else if (!strcmp(argv[i], "--presses") && i + 1 < argc) presses = atoi(argv[++i]);
             else if (!strcmp(argv[i], "--gap-ms") && i + 1 < argc) gap_ms = atoi(argv[++i]);
             else if (!strcmp(argv[i], "--x0") && i + 1 < argc) g_x0 = atof(argv[++i]);
             else if (!strcmp(argv[i], "--x1") && i + 1 < argc) g_x1 = atof(argv[++i]);
+            else if (!strcmp(argv[i], "--focus")) focus = 1;
         }
         if (want == 0) {
             fprintf(stderr, "쓰는 법: key-to-screen --window <id> [--presses N] [--gap-ms MS]\n");
@@ -135,6 +164,11 @@ int main(int argc, const char *argv[]) {
         if (!win) {
             fprintf(stderr, "windowID %u 를 찾지 못했습니다\n", want);
             return 2;
+        }
+
+        if (focus) {
+            clickCenter(win.frame);
+            usleep(300 * 1000); // 포커스가 옮겨 가고 클릭이 그린 것이 가라앉을 때까지
         }
 
         SCContentFilter *filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:win];

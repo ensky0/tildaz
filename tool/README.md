@@ -39,8 +39,10 @@
 `stress/` 안쪽도 같은 규칙이에요 — `check-input-loss_linux_macos.sh` (Windows 는 `-e` 에 러너를
 넘길 수 없어요) · `measure-idle-cstates_linux.sh` (cpuidle sysfs) · `measure-idle-power_linux.sh`
 (turbostat · RAPL) · `pane-runner_windows.ps1` · `split-panes_windows.ps1` 만 OS 에 매여 있고,
-나머지 (`hygiene.sh` · `compare-terminals.sh` · `measure-repeat.sh` · `measure-input-latency.sh` ·
-`measure-idle-latency.sh`) 는 세 platform 다 돌아요.
+나머지 (`hygiene.sh` · `terminals.sh` · `compare-terminals.sh` · `measure-repeat.sh` · `measure-input-latency.sh` ·
+`measure-idle-latency.sh`) 는 세 platform 다 돌아요. `compare-latency.sh` · `compare-memory.sh` ·
+`compare-startup.sh` 는 세 platform 용으로 만들었지만 **지금은 macOS 만** 돼요 — Linux · Windows 의
+측정기가 아직 없어요 ([#756](https://github.com/ensky0/tildaz/issues/756)).
 
 ## 파일 하나짜리 도구
 
@@ -52,6 +54,7 @@
 | [`color-capture_macos.m`](color-capture_macos.m) | macOS | 출력 색공간을 sRGB 로 지정해 창을 캡처 (`--list` 는 창 목록 · 위치) | `# macOS — 색 실측 방법` |
 | [`conpty-check_windows.ps1`](conpty-check_windows.ps1) | Windows | 번들 ConPTY 를 바꾼 뒤 TildaZ 가 기대는 동작이 그대로인지 — 첫 출력 지연 · 셸에 새는 입력 · 셸 종료 → 앱 종료 · WSL ([#757](https://github.com/ensky0/tildaz/issues/757)) | [`vendor/conpty/README.md`](../vendor/conpty/README.md) 의 "업데이트 후 확인" |
 | [`conpty-update_windows.ps1`](conpty-update_windows.ps1) | Windows | 번들 ConPTY 새 판 목록 · 그 사이 ConPTY 변경 (Terminal 릴리즈 노트) · 바이너리와 판 번호 교체 ([#757](https://github.com/ensky0/tildaz/issues/757)) | [`vendor/conpty/README.md`](../vendor/conpty/README.md) 의 "업데이트 방법" |
+| [`cosmic-screen_linux.py`](cosmic-screen_linux.py) | Linux | COSMIC 의 지금 화면 물리 크기 (`cosmic-randr list --kdl`) — `gnome-screen_linux.py` 의 COSMIC 판 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
 | [`dmabuf-probe_linux.zig`](dmabuf-probe_linux.zig) | Linux | dma-buf 경로 독립 진단 (`zig build probe-check`) | — (도구 머리 주석) |
 | [`emoji-presentation-probe_macos.m`](emoji-presentation-probe_macos.m) | macOS | CoreText 가 이모지 모양 (컬러 / 흑백) 을 어떻게 고르는지 앱 밖에서 잼 — `render-test` (M) 절 · VS16 · VS15 시퀀스 전부 · 이모지가 기본인 글자 전부 ([#771](https://github.com/ensky0/tildaz/issues/771)) | `# macOS — CoreText 가 이모지 모양을 …` |
 | [`emoji-presentation-table.py`](emoji-presentation-table.py) | 무관 | 선택자 없는 글자의 기본 모양 (Unicode `Emoji_Presentation`) 표 `src/font/emoji_presentation_table.zig` 를 ghostty 의 uucode 판에서 만듦 · `--check` 는 지금 pin 과 맞는지만 ([#771](https://github.com/ensky0/tildaz/issues/771)) | `# 의존성 관리` |
@@ -76,8 +79,21 @@
 | [`render-process-check_macos.sh`](render-process-check_macos.sh) | macOS | 기동 직후부터 촘촘히 찍어 **그리는 과정**을 봄 | `# macOS — 렌더 결과와 …` |
 | [`repeat-render-check_macos.sh`](repeat-render-check_macos.sh) | macOS | 같은 바이너리를 여러 번 띄워 **실행 간 비결정**을 봄 | `# macOS — 실행마다 화면이 흔들리는지 보는 법` |
 | [`present-latency-probe_macos.patch`](present-latency-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — `nextDrawable` 대기 · present → 화면 표시 지연 · 대조 실험 스위치 ([#476](https://github.com/ensky0/tildaz/issues/476)). **#732 이전 판에만 들어가요** | `# macOS — 표시 대기열을 재는 법` |
-| [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)) | `# macOS — 표시 대기열을 재는 법` |
+| [`key-to-screen_macos.m`](key-to-screen_macos.m) | macOS | 앱 밖에서 재는 키 → 화면 지연 — 합성 키 시각과 ScreenCaptureKit 프레임의 `displayTime` 차이 ([#732](https://github.com/ensky0/tildaz/issues/732)). `--focus` 로 창 가운데를 눌러 포커스를 줌 — `stress/compare-latency.sh` 가 부름 | `# macOS — 표시 대기열을 재는 법` |
 | [`present-check_macos.sh`](present-check_macos.sh) | macOS | 여러 앱 판을 번갈아 띄워 표시 경로를 견줌 — 키 → 화면 (`latency` · `--flood`) · Metal HUD 의 Direct / Composited 와 전체화면 전환 영상 (`mode`) · 찢김 눈 시험 (`tearing`) ([#766](https://github.com/ensky0/tildaz/issues/766)) | `# macOS — 표시 대기열을 재는 법` |
+| [`proc-usage_macos.c`](proc-usage_macos.c) | macOS | 터미널 하나의 프로세스 집합 (본체 · 자손 · 같은 번들, 셸 쪽 제외) 의 `phys_footprint` · CPU 시간 — `stress/compare-memory.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`key-to-screen_linux.c`](key-to-screen_linux.c) | Linux | 앱 밖에서 재는 키 → 화면 지연 — uinput 키 시각과 portal ScreenCast 프레임의 **도착** 시각 차이 (KDE Plasma). `stress/compare-latency.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`screencast-portal_linux.py`](screencast-portal_linux.py) | Linux | xdg-desktop-portal ScreenCast 를 열고 (화면 하나 · 커서 숨김 · 권한 토큰 재사용) PipeWire fd 를 넘겨 명령을 실행 | 〃 |
+| [`startup-to-screen_linux.c`](startup-to-screen_linux.c) | Linux | 명령을 스스로 띄우고 portal 화면 스트림에 마젠타 표식이 처음 보인 프레임이 도착할 때까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`proc-usage_linux.py`](proc-usage_linux.py) | Linux | 터미널 하나의 프로세스 집합 (창 주인 · 자손, 셸 쪽 제외) 의 PSS · CPU 시간 — `stress/compare-memory.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`key-to-screen_windows.c`](key-to-screen_windows.c) | Windows | 앱 밖에서 재는 키 → 화면 지연 — `SendInput` 시각과 DXGI Desktop Duplication 프레임의 `LastPresentTime` 차이. 창은 터미널 안 프로그램의 조상 사슬로 찾음 — `stress/compare-latency.sh` · `compare-memory.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
+| [`proc-usage_windows.c`](proc-usage_windows.c) | Windows | 터미널 하나 (본체 · 자손, 셸 쪽 제외) 의 Private Working Set · CPU 시간, 회차 정리 (`kill`) — `stress/compare-memory.sh` · `compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
+| [`startup-to-screen_windows.c`](startup-to-screen_windows.c) | Windows | `ShellExecuteEx` 로 띄우고 화면에 마젠타 표식이 처음 보인 프레임의 `LastPresentTime` 까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
+| [`bench-child_windows.c`](bench-child_windows.c) | Windows | 지연 · 메모리 · 시작 시간 측정 때 터미널 안에서 도는 프로그램. 실행 파일 이름이 모드 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
+| [`dxgi-dup_windows.h`](dxgi-dup_windows.h) · [`proc-tree_windows.h`](proc-tree_windows.h) | Windows | 위 측정기가 함께 쓰는 화면 캡처 · 프로세스 트리 도우미 | 〃 |
+| [`gnome-screen_linux.py`](gnome-screen_linux.py) | Linux | GNOME 의 지금 화면 물리 크기 (`Mutter.DisplayConfig`) — GNOME 은 창 위치를 안 알려 줘서 측정기가 표식으로 창을 찾을 때 씀 ([#756](https://github.com/ensky0/tildaz/issues/756)) | [`stress/README.md`](stress/README.md) 의 "다른 터미널과 견주기" |
+| [`kwin-window_linux.py`](kwin-window_linux.py) | Linux | KWin 스크립트로 프로세스의 창 위치를 찾고 (조상 pid) 활성화 · 클릭 — KDE Plasma 전용 | 〃 |
+| [`startup-to-screen_macos.m`](startup-to-screen_macos.m) | macOS | 명령을 스스로 띄우고 화면에 마젠타 표식이 처음 보인 프레임까지 — `stress/compare-startup.sh` 가 부름 ([#756](https://github.com/ensky0/tildaz/issues/756)) | 〃 |
 | [`send-keys_windows.ps1`](send-keys_windows.ps1) | Windows | `SendInput` 합성 키 — Windows 에서 `stress/measure-input-latency.sh` 가 부름. 다른 Windows 도구는 이 파일의 규칙 (키마다 포커스 확인 · scan code 채움) 을 따라 자기 안에 구현 | `# Windows — 합성 입력으로 …` · [`stress/README.md`](stress/README.md) |
 | [`shift-hotkey-check_linux.sh`](shift-hotkey-check_linux.sh) | Linux | Shift 와 기호를 함께 적은 전역 hotkey (`ctrl+shift+]`) 가 이 데스크톱에서 실제 키로 토글되는지 (대조군 `ctrl+alt+]` 포함) | `# 전역 hotkey 의 위치 표기 검증` |
 | [`surface-inuse-probe_macos.patch`](surface-inuse-probe_macos.patch) | macOS | 측정할 때만 얹는 진단 패치 — 그릴 표시 버퍼 (IOSurface) 를 고를 때 창 서버가 잡고 있던 횟수 ([#769](https://github.com/ensky0/tildaz/issues/769)) | `# macOS — 그릴 표시 버퍼가 창 서버에 잡혀 있는지 재는 법` |
