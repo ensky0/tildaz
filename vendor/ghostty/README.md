@@ -46,6 +46,9 @@ diff -u --label a/src/terminal/PageList.zig --label b/src/terminal/PageList.zig 
 
 - 원본이 이미 패치된 상태면 (한 번 빌드한 checkout) `zig-pkg/ghostty-*` 를 지우고 `zig build --fetch` 로 다시 받아요.
 - hunk 의 문맥이 파일 안에서 한 곳만 맞아야 해요. 같은 글이 두 곳에 있으면 적용기가 멈춰요.
+- **같은 줄을 고치는 변경은 한 패치 파일에 합쳐요.** 적용기는 패치마다 글 내용으로 "적용 전 / 적용됨" 을 가려요.
+  뒤 패치가 앞 패치가 고친 줄을 다시 고치면, 다 얹힌 소스에서 앞 패치가 "적용됨" 으로 보이지 않아 빌드가 멈춰요
+  (2026-10-20 #812 ⑫ 실험에서 실제로 그랬어요). 패치 파일을 나누는 것은 서로 다른 곳을 고치는 변경끼리만이에요.
 - 패치에 그 동작을 지키는 ghostty 쪽 테스트를 함께 넣어요. 0001 은 `PageList grow sizes the next page's graphemes from the filled page (TildaZ #812)` 예요.
 
 ### ghostty 테스트 돌리기
