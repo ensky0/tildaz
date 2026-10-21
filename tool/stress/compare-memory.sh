@@ -98,7 +98,7 @@ fi
 cleanup() {
     # Windows — 남은 측정 창을 트리째 끝낸다 (`compare-latency.sh` 의 같은 자리).
     [ "$IS_WINDOWS" = 1 ] && { "$PROC_USAGE" kill memory-child.exe \
-        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(win_exe_of tildaz)" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     hygiene_end || true
     rm -rf "$WORK_DIR"

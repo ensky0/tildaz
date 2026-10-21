@@ -495,7 +495,13 @@ win_exe_of() {
         wezterm) printf 'wezterm-gui.exe' ;;
         wt) printf 'WindowsTerminal.exe' ;;
         conhost) printf 'conhost.exe' ;;
-        tildaz) printf '%s' "$(basename "$TILDAZ_BIN")" ;;
+        tildaz)
+            # 프로세스 이름에는 늘 `.exe` 가 붙는다. Git Bash 는 `.exe` 를 뺀 경로도 실행 파일로 봐서
+            # (`[ -x zig-out/bin/tildaz ]` 가 참) `terminals_find_tildaz` 가 그 경로를 고르면 이름이 `tildaz` 가
+            # 되고, 측정기가 사슬에서 본체를 못 찾는다 (#816 ⑦ — 저장소 빌드본의 지연 · 메모리가 측정 실패).
+            _we=$(basename "${TILDAZ_BIN:-tildaz.exe}")
+            case "$_we" in *.[eE][xX][eE]) ;; *) _we="$_we.exe" ;; esac
+            printf '%s' "$_we" ;;
         *) printf '' ;;
     esac
 }
