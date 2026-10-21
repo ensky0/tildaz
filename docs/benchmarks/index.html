@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TildaZ Benchmarks - Throughput, Latency, Memory, and Startup on Linux, macOS, and Windows</title>
+  <meta name="description" content="TildaZ measured next to foot, Alacritty, kitty, Ghostty, WezTerm, iTerm2, Windows Terminal, and each OS's default terminal: throughput, key-to-screen latency, memory, and startup time.">
+  <link rel="canonical" href="https://ensky0.github.io/tildaz/benchmarks/">
+  <meta property="og:title" content="TildaZ Benchmarks">
+  <meta property="og:description" content="Throughput, key-to-screen latency, memory, and startup time next to the terminals people use on Linux, macOS, and Windows.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ensky0.github.io/tildaz/benchmarks/">
+  <meta property="og:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://ensky0.github.io/tildaz/social-preview.png">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="../fonts/JetBrainsMono-subset.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "TildaZ", "item": "https://ensky0.github.io/tildaz/" },
+      { "@type": "ListItem", "position": 2, "name": "Benchmarks", "item": "https://ensky0.github.io/tildaz/benchmarks/" }
+    ]
+  }
+  </script>
+</head>
+<body class="subpage">
+  <nav class="nav" aria-label="Primary navigation">
+    <a class="brand" href="../">
+      <img src="../favicon.svg" alt="" class="brand-icon">
+      <span>TildaZ</span>
+    </a>
+    <div class="nav-links">
+      <a href="../">Overview</a>
+      <a href="../install/">Install</a>
+      <a href="../config/">Config</a>
+      <a href="../linux-wayland/">Linux</a>
+      <a href="../benchmarks/">Benchmarks</a>
+      <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="page-hero">
+      <p class="eyebrow">Benchmarks</p>
+      <h1>TildaZ next to the terminals you know.</h1>
+      <p>TildaZ v0.10.6, measured with the terminals people use on each OS: throughput, key-to-screen latency, memory, and startup time. The weak spots are in the tables too.</p>
+      <div class="hero-actions">
+        <a class="button secondary" href="#linux">Linux</a>
+        <a class="button secondary" href="#macos">macOS</a>
+        <a class="button secondary" href="#windows">Windows</a>
+      </div>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">How to read</p>
+        <h2>Each OS stands on its own.</h2>
+      </div>
+      <ul class="perf-notes bench-rules">
+        <li><strong>Compare terminals within one OS, not across OSes.</strong> The machines differ, and each OS reports latency and memory in its own way.</li>
+        <li>Linux and Windows ran on the same laptop. macOS ran on a MacBook Pro. All three displays ran at 120 Hz.</li>
+        <li><strong>Bold</strong> is the best value in a row or column. The TildaZ column and row are highlighted.</li>
+        <li><sup class="bench-mark">†</sup> marks a terminal whose scrollback or grid could not be matched. It is left out when picking the best value for throughput and memory. Each OS lists the reasons below its tables.</li>
+      </ul>
+      <div class="table-wrap bench-defs">
+        <table>
+          <thead>
+            <tr><th scope="col">Metric</th><th scope="col">What it measures</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Throughput</td><td>How fast the terminal takes in and draws 64 MiB of output in a 120x40 grid with 32,767 lines of scrollback. Mean of five runs, without the fastest and the slowest.</td></tr>
+            <tr><td>Key-to-screen latency</td><td>From a synthetic key press to the first frame that changes, with the terminal idle. 150 presses per terminal. The 95th percentile (p95) shows the slow tail.</td></tr>
+            <tr><td>Memory</td><td>All of the terminal's own processes, on an empty screen and after printing 40,000 lines. Idle CPU is the CPU time used over the next 30 seconds, where one core is 100%. Median of three runs.</td></tr>
+            <tr><td>Startup</td><td>From launch to the first frame that shows the program running inside the terminal. Each app had been launched before (warm start). Median of five runs.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap bench-defs">
+        <table>
+          <thead>
+            <tr><th scope="col">Workload</th><th scope="col">Each line holds</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Plain ASCII</td><td>80 characters of ASCII</td></tr>
+            <tr><td>ANSI color escapes</td><td>A build log with color codes</td></tr>
+            <tr><td>Hangul, wide cells</td><td>Korean Hangul only, two cells each</td></tr>
+            <tr><td>Mixed CJK and emoji</td><td>Hangul, emoji, skin tones, ZWJ sequences, and block elements</td></tr>
+            <tr><td>Emoji with VS-16</td><td><code>❤️</code> only: a symbol plus a selector that makes it an emoji</td></tr>
+            <tr><td>ZWJ emoji sequences</td><td><code>👨‍👩‍👧</code> only: five code points joined into one emoji</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="linux" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
+        <h2>Linux</h2>
+      </div>
+      <p class="perf-lede">TildaZ is first on Hangul and CJK output and second to foot on plain text and ANSI color. Emoji is its weak spot: with VS-16 emoji it is fourth, at 77% of Alacritty. It starts first on each desktop, and once scrollback is full it uses the least memory of the terminals with matching settings. On KDE Plasma, foot has clearly lower latency, and TildaZ sits with kitty, Alacritty, and WezTerm. On GNOME and COSMIC, TildaZ has the lowest latency, tied with Alacritty on COSMIC.</p>
+      <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.0, GNOME Shell 51.1, COSMIC (cosmic-comp 1.0.0) · October 20–21, 2026<br>foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
+      <h3>Throughput · MiB/s, higher is better · KDE Plasma</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Linux throughput on KDE Plasma, MiB/s</caption>
+          <thead>
+            <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">foot</th><th scope="col">kitty</th><th scope="col">Alacritty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">GNOME Terminal<sup class="bench-mark">†</sup></th><th scope="col">Konsole</th><th scope="col">COSMIC Terminal<sup class="bench-mark">†</sup></th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Plain ASCII</th><td class="tz">141.6</td><td><strong>148.3</strong></td><td>141.4</td><td>110.2</td><td>110.0</td><td>29.8</td><td>45.6</td><td>16.6</td><td>(98.7)</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">133.6</td><td><strong>172.5</strong></td><td>126.9</td><td>123.8</td><td>56.0</td><td>29.9</td><td>38.7</td><td>20.9</td><td>(109.6)</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>112.6</strong></td><td>110.9</td><td>107.8</td><td>111.2</td><td>87.0</td><td>39.3</td><td>34.0</td><td>13.6</td><td>(101.3)</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>138.2</strong></td><td>128.1</td><td>115.0</td><td>118.4</td><td>62.4</td><td>40.3</td><td>31.2</td><td>17.4</td><td>(105.8)</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">94.9</td><td>105.0</td><td>121.8</td><td><strong>123.4</strong></td><td>26.1</td><td>56.4</td><td>27.9</td><td>21.5</td><td>(105.1)</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">109.5</td><td><strong>130.6</strong></td><td>119.2</td><td>108.0</td><td>33.8</td><td>58.0</td><td>45.9</td><td>39.1</td><td>(95.1)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Key-to-screen latency · ms, lower is better</h3>
+      <div class="bench-grid">
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>KDE Plasma</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">foot</th><td><strong>8.13</strong></td><td><strong>14.02</strong></td></tr>
+              <tr><th scope="row">kitty</th><td>11.93</td><td>15.64</td></tr>
+              <tr><th scope="row">Alacritty</th><td>12.57</td><td>15.30</td></tr>
+              <tr><th scope="row">WezTerm</th><td>12.73</td><td>18.36</td></tr>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">12.74</td><td class="tz">14.60</td></tr>
+              <tr><th scope="row">COSMIC Terminal</th><td>13.00</td><td>14.54</td></tr>
+              <tr><th scope="row">GNOME Terminal</th><td>13.37</td><td>15.20</td></tr>
+              <tr><th scope="row">Ghostty</th><td>21.12</td><td>23.32</td></tr>
+              <tr><th scope="row">Konsole</th><td>21.77</td><td>24.76</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>GNOME</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+            </thead>
+            <tbody>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>7.32</strong></td><td class="tz"><strong>11.99</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>7.89</td><td>13.83</td></tr>
+              <tr><th scope="row">GNOME Terminal</th><td>10.32</td><td>19.26</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>COSMIC</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+            </thead>
+            <tbody>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>46.12</strong></td><td class="tz"><strong>67.25</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>46.43</td><td>67.98</td></tr>
+              <tr><th scope="row">COSMIC Terminal</th><td>66.97</td><td>73.85</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      </div>
+      <h3>Memory · lower is better · KDE Plasma</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Linux memory (PSS) on KDE Plasma</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">foot</th><td><strong>26.5</strong></td><td>83.4</td><td><strong>0.00</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">39.3</td><td class="tz"><strong>72.4</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">GNOME Terminal<sup class="bench-mark">†</sup></th><td>43.8</td><td>47.5</td><td>0.03</td></tr>
+            <tr><th scope="row">Alacritty</th><td>44.6</td><td>137.1</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Konsole</th><td>52.3</td><td>107.5</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>74.7</td><td>103.8</td><td>0.03</td></tr>
+            <tr><th scope="row">Ghostty</th><td>84.6</td><td>88.1</td><td>0.47</td></tr>
+            <tr><th scope="row">kitty</th><td>112.2</td><td>233.6</td><td>0.07</td></tr>
+            <tr><th scope="row">COSMIC Terminal<sup class="bench-mark">†</sup></th><td>(56.6)</td><td>(167.1)</td><td>(0.00)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Startup · ms, lower is better</h3>
+      <div class="bench-grid">
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>KDE Plasma</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+            </thead>
+            <tbody>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>107.4</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>118.6</td></tr>
+              <tr><th scope="row">Konsole</th><td>156.4</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>GNOME</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+            </thead>
+            <tbody>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>90.6</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>96.8</td></tr>
+              <tr><th scope="row">GNOME Terminal</th><td>240.4</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="bench-cell">
+        <div class="table-wrap">
+          <table class="perf-table bench-table">
+            <caption>COSMIC</caption>
+            <thead>
+              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+            </thead>
+            <tbody>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>79.3</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>80.6</td></tr>
+              <tr><th scope="row">COSMIC Terminal</th><td>121.1</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      </div>
+      <ul class="perf-notes">
+        <li><strong>Throughput and memory come from KDE Plasma only.</strong> On its own desktop, GNOME Terminal was 32% faster with plain text (60.2 vs 45.6 MiB/s). COSMIC Terminal was about the same on both.</li>
+        <li><strong>Latency and startup were measured on each desktop. Do not compare them across desktops.</strong> On Linux, both end when the frame reaches the capture tool, and that path differs by desktop. On COSMIC, every terminal is slow, which points to the desktop's screen capture rather than the terminals (not confirmed).</li>
+        <li><sup class="bench-mark">†</sup> GNOME Terminal uses the scrollback from your profile (10,000 lines here). It cannot be set from the command line.</li>
+        <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency and startup.</li>
+        <li>On GNOME, TildaZ cannot be given a grid size, so it ran at 43x13 instead of 120x40 for latency.</li>
+        <li>Startup opens each terminal's desktop entry: <code>kioclient exec</code> on KDE Plasma, <code>gio launch</code> on GNOME and COSMIC.</li>
+      </ul>
+    </section>
+
+    <section id="macos" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">MacBook Pro M5 Pro · 120 Hz</p>
+        <h2>macOS</h2>
+      </div>
+      <p class="perf-lede">TildaZ is first on Hangul and emoji output. It is second to Alacritty on ANSI color and CJK, and third on plain text, behind Alacritty and Ghostty. It starts fastest and uses the least memory of the terminals with matching settings. Latency is its weak spot: fourth of seven, about 7 ms behind Alacritty and kitty.</p>
+      <p class="bench-machine">MacBook Pro · Apple M5 Pro · macOS 27.0.1 · built-in display, 3024x1964 at 120 Hz · AC power · October 21, 2026<br>Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.3.1 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
+      <h3>Throughput · MiB/s, higher is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>macOS throughput, MiB/s</caption>
+          <thead>
+            <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Alacritty</th><th scope="col">kitty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">iTerm2</th><th scope="col">Terminal.app<sup class="bench-mark">†</sup></th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Plain ASCII</th><td class="tz">128.5</td><td><strong>146.4</strong></td><td>126.4</td><td>133.7</td><td>45.3</td><td>87.6</td><td>45.8</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">128.1</td><td><strong>132.1</strong></td><td>106.8</td><td>87.7</td><td>49.3</td><td>18.9</td><td>31.8</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>124.0</strong></td><td>114.0</td><td>92.4</td><td>122.5</td><td>45.7</td><td>15.0</td><td>39.7</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz">119.3</td><td><strong>141.2</strong></td><td>96.6</td><td>84.7</td><td>46.4</td><td>7.4</td><td>39.4</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz"><strong>130.3</strong></td><td>98.3</td><td>102.8</td><td>33.3</td><td>67.1</td><td>13.9</td><td>42.4</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz"><strong>135.0</strong></td><td>134.5</td><td>107.3</td><td>43.2</td><td>70.3</td><td>22.8</td><td>43.9</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Key-to-screen latency · ms, lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>macOS key-to-screen latency</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Alacritty</th><td><strong>12.03</strong></td><td><strong>18.57</strong></td></tr>
+            <tr><th scope="row">kitty</th><td>12.40</td><td>18.82</td></tr>
+            <tr><th scope="row">iTerm2</th><td>17.48</td><td>22.89</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">19.51</td><td class="tz">25.58</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>21.34</td><td>27.49</td></tr>
+            <tr><th scope="row">Ghostty</th><td>23.40</td><td>29.54</td></tr>
+            <tr><th scope="row">WezTerm</th><td>32.58</td><td>36.49</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Memory · lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>macOS memory (phys_footprint)</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
+          </thead>
+          <tbody>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>54.5</strong></td><td class="tz"><strong>102.6</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Terminal.app<sup class="bench-mark">†</sup></th><td>59.0</td><td>61.3</td><td>0.27</td></tr>
+            <tr><th scope="row">Alacritty</th><td>65.0</td><td>176.3</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>85.9</td><td>111.9</td><td>0.04</td></tr>
+            <tr><th scope="row">Ghostty</th><td>158.7</td><td>184.4</td><td>0.76</td></tr>
+            <tr><th scope="row">kitty</th><td>204.5</td><td>325.2</td><td>0.20</td></tr>
+            <tr><th scope="row">iTerm2</th><td>212.1</td><td>250.2</td><td>0.92</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Startup · ms, lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>macOS startup</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+          </thead>
+          <tbody>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>185.5</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>239.6</td></tr>
+            <tr><th scope="row">Ghostty</th><td>259.3</td></tr>
+            <tr><th scope="row">WezTerm</th><td>302.3</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>392.6</td></tr>
+            <tr><th scope="row">kitty</th><td>475.1</td></tr>
+            <tr><th scope="row">iTerm2</th><td>751.1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="perf-notes">
+        <li><sup class="bench-mark">†</sup> Terminal.app uses the scrollback from your profile. It cannot be set by script.</li>
+        <li>Latency ends at the time macOS reports the frame was shown. Startup opens each app with <code>open</code>, the same path as the Dock or Spotlight.</li>
+      </ul>
+    </section>
+
+    <section id="windows" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
+        <h2>Windows</h2>
+      </div>
+      <p class="perf-lede">TildaZ is first on plain text, Hangul, and CJK output. Windows Terminal is about twice as fast with emoji, and slightly faster with ANSI color. The two tie on latency. Leaving conhost aside, TildaZ uses the least memory on an empty screen, and Windows Terminal uses less once scrollback is full. Only conhost starts faster.</p>
+      <p class="bench-machine">Same laptop as Linux · Windows 11 Pro 25H2 · built-in display, 2880x1800 at 120 Hz, 150% scale · AC power, Best performance mode · October 21, 2026<br>Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
+      <h3>Throughput · MiB/s, higher is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Windows throughput, MiB/s</caption>
+          <thead>
+            <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Windows Terminal</th><th scope="col">conhost<sup class="bench-mark">†</sup></th><th scope="col">WezTerm</th><th scope="col">Alacritty</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>296.1</strong></td><td>237.7</td><td>177.9</td><td>12.9</td><td>11.1</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">80.4</td><td><strong>83.3</strong></td><td>15.8</td><td>12.1</td><td>10.6</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>157.7</strong></td><td>107.5</td><td>62.6</td><td>6.8</td><td>6.0</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>128.4</strong></td><td>102.1</td><td>90.7</td><td>9.2</td><td>7.8</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">80.3</td><td><strong>171.2</strong></td><td>83.0</td><td>13.9</td><td>11.7</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">93.6</td><td><strong>164.4</strong></td><td>121.5</td><td>27.8</td><td>n/a</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Key-to-screen latency · ms, lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Windows key-to-screen latency</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+          </thead>
+          <tbody>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>10.52</strong></td><td class="tz">15.15</td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>10.54</td><td><strong>14.85</strong></td></tr>
+            <tr><th scope="row">conhost</th><td>19.89</td><td>23.32</td></tr>
+            <tr><th scope="row">WezTerm</th><td>26.71</td><td>46.10</td></tr>
+            <tr><th scope="row">Alacritty</th><td>28.30</td><td>31.79</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Memory · lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Windows memory (Private Working Set)</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">conhost<sup class="bench-mark">†</sup></th><td>3.7</td><td>3.8</td><td>0.16</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>34.2</strong></td><td class="tz">80.5</td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>42.5</td><td><strong>65.0</strong></td><td>0.52</td></tr>
+            <tr><th scope="row">Alacritty</th><td>87.7</td><td>189.5</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>258.0</td><td>253.2</td><td>0.16</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Startup · ms, lower is better</h3>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Windows startup</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">conhost</th><td><strong>183.0</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">304.0</td></tr>
+            <tr><th scope="row">Alacritty</th><td>373.5</td></tr>
+            <tr><th scope="row">WezTerm</th><td>624.1</td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>731.7</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="perf-notes">
+        <li><sup class="bench-mark">†</sup> conhost has no scrollback: its buffer is the window.</li>
+        <li>Alacritty cannot run the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
+        <li><strong>The runs were pinned to the four fast CPU cores.</strong> This CPU mixes fast and small cores, and unpinned runs varied a lot. On Linux, pinned and unpinned runs gave the same results, so Linux was not pinned.</li>
+        <li>Latency and startup end at the time Windows reports the frame was presented (DXGI <code>LastPresentTime</code>).</li>
+      </ul>
+    </section>
+
+    <section id="method" class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">Method</p>
+        <h2>Run it yourself.</h2>
+      </div>
+      <ul class="perf-notes">
+        <li>TildaZ was built from source at the code released as v0.10.6. The versions of the other terminals are listed under each OS.</li>
+        <li>Every run used AC power, with other windows minimized.</li>
+        <li>The scripts are <code>compare-terminals.sh</code> (throughput), <code>compare-latency.sh</code>, <code>compare-memory.sh</code>, and <code>compare-startup.sh</code> in <a href="https://github.com/ensky0/tildaz/blob/main/tool/stress/README.md" target="_blank" rel="noopener">tool/stress</a>. Its README covers the setup and the pitfalls on each OS.</li>
+        <li>Full results, including min, max, and grid sizes: <a href="https://github.com/ensky0/tildaz/issues/809" target="_blank" rel="noopener">#809</a>. Earlier rounds: <a href="https://github.com/ensky0/tildaz/issues/756" target="_blank" rel="noopener">#756</a>.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div>
+      <img src="../favicon.svg" alt="" class="footer-icon">
+      <span>TildaZ</span>
+    </div>
+    <p><a href="../">Home</a> · <a href="../install/">Install</a> · <a href="../config/">Config</a> · <a href="../linux-wayland/">Linux Wayland</a></p>
+  </footer>
+</body>
+</html>

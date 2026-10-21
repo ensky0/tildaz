@@ -9,6 +9,9 @@
 }
 
 :root {
+  /* Wide tables and code blocks scroll sideways on phones. The site is
+     dark-only, so their scrollbars should be dark too (this inherits). */
+  scrollbar-color: #30382f transparent;
   --ink: #eef7ee;
   --muted: #a6b0a8;
   --paper: #0b0f0d;
@@ -634,6 +637,88 @@ td {
   text-decoration: underline;
 }
 
+/* Benchmarks page: one section per OS. TildaZ's column and row get a faint
+   tint, and the best value in a row or column is bold amber. */
+.bench-os h3 {
+  margin: 40px 0 14px;
+  color: var(--ink);
+  font-size: 1.05rem;
+}
+
+.bench-machine {
+  max-width: 900px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.bench-table caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.bench-grid .bench-table caption {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  padding: 12px 18px 0;
+  color: var(--forest);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  text-align: left;
+}
+
+.bench-table th[scope="row"] {
+  white-space: nowrap;
+}
+
+.bench-table .tz,
+.bench-table .tz-row th,
+.bench-table .tz-row td {
+  background: rgba(126, 231, 135, 0.08);
+}
+
+.bench-table thead th.tz {
+  color: var(--brand-green);
+}
+
+.bench-table td strong {
+  color: var(--amber);
+  font-weight: 800;
+}
+
+.bench-mark {
+  margin-left: 2px;
+  color: var(--amber);
+  font-size: 0.75em;
+}
+
+.bench-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.bench-rules {
+  margin-bottom: 24px;
+}
+
+.bench-defs + .bench-defs {
+  margin-top: 18px;
+}
+
+.bench-defs td:first-child {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
 .screenshot-frame {
   margin: 0;
   overflow: hidden;
@@ -863,7 +948,8 @@ td {
   .info-grid.two,
   .info-grid.three,
   .path-list,
-  .platforms {
+  .platforms,
+  .bench-grid {
     grid-template-columns: 1fr;
   }
 
