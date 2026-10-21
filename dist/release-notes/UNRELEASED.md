@@ -23,3 +23,5 @@ Internal changes belong in neither.
 
 - Install with one command: `curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh` on Linux and macOS, `powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"` on Windows. Run it again to update; `uninstall.sh` / `uninstall.ps1` remove it. ([#803](https://github.com/ensky0/tildaz/issues/803))
 - Linux: heavy output no longer pauses between frames, so large outputs finish faster. ([#814](https://github.com/ensky0/tildaz/issues/814))
+- CJK and emoji-heavy output is processed up to twice as fast on all platforms. ([#812](https://github.com/ensky0/tildaz/issues/812))
+- macOS: typing is responsive again; the extra key-to-screen delay added in v0.10.5 is gone. ([#811](https://github.com/ensky0/tildaz/issues/811))
