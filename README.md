@@ -14,6 +14,7 @@ dependency — just a terminal that appears when you need it and disappears when
 you do not.
 
 **Website**: https://ensky0.github.io/tildaz/ ·
+**Benchmarks**: https://ensky0.github.io/tildaz/benchmarks/ ·
 **Install**: [one command](#install) ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 

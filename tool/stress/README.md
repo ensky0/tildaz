@@ -2247,6 +2247,8 @@ tool/stress/compare-startup.sh --repeat 5                 # 시작 시간 (3 분
 
 **TildaZ 는 기본으로 저장소 빌드본을 재요.** 릴리즈 판을 재려면 `TILDAZ_BIN` 에 실행 파일을 줘요
 (처리량 `compare-terminals.sh` 도 같아요). 사이트에 실을 값은 릴리즈 판으로 재요 (#756 · 2026-10-19 결정).
+그대로 릴리즈할 커밋을 측정 뒤 코드를 바꾸지 않는 조건으로 잴 때는 저장소 빌드본도 같은 뜻이에요
+([#809](https://github.com/ensky0/tildaz/issues/809) — v0.10.6 사이트 값이 `ecf7052` 저장소 빌드로 잰 값이에요).
 
 ```sh
 TILDAZ_BIN=/usr/bin/tildaz tool/stress/compare-latency.sh --repeat 5 --presses 30           # Linux 패키지
@@ -2324,13 +2326,16 @@ kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 �
 써요 (`key-to-screen_linux.c` 의 `--find-marker`). 찾으면 `.go` 파일로 알리고, 프로그램이 화면을 지운 뒤 키를
 받아요. 화면 크기는 `gnome-screen_linux.py` 가 줘요. 시작 시간의 런처는 `gio launch` 예요. GNOME 에서는 TildaZ 에
 `-size` 를 안 줘요 (layer-shell 이 없어 앱이 거부해요) — 그래서 TildaZ 만 격자가 달라요.
-**GNOME 판은 권한 · 스트림 확인까지만 실기로 봤어요** (2026-10-13 GNOME Shell 51.0 — 스트림 2880x1800). 지연 ·
-시작 회차는 아직이에요 ([#761](https://github.com/ensky0/tildaz/issues/761)).
+위생 절차가 GNOME 에서는 창을 못 내려요. 다른 창을 직접 최소화하고 `TILDAZ_BENCH_MINIMIZED_BY_HAND=1` 을 줘요
+(`hygiene.sh`). GNOME 실기 결과는 [#756 ⑨](https://github.com/ensky0/tildaz/issues/756#issuecomment-6262848252) (미니PC) ·
+[#809 ②](https://github.com/ensky0/tildaz/issues/809#issuecomment-6305115322) (노트북) 예요.
 
 **COSMIC 도 GNOME 과 같은 표식 방식이에요.** 화면 크기는 `cosmic-screen_linux.py` 가 `cosmic-randr list --kdl` 로
 줘요. 시작 시간의 런처는 `gio launch` 이고, 대상은 TildaZ · COSMIC Terminal (`com.system76.CosmicTerm.desktop`) ·
 Alacritty 예요. COSMIC 은 layer-shell 이 있어 TildaZ 에 `-size` 를 줘요. COSMIC Terminal 은 격자 옵션이 없어요.
-위생 절차는 창을 내리지 않아요 (KDE 만) — 다른 창은 직접 최소화해요. **COSMIC 판은 실기 전이에요** (#761).
+위생 절차는 창을 내리지 않아요 (KDE 만) — 다른 창은 직접 최소화하고 `TILDAZ_BENCH_MINIMIZED_BY_HAND=1` 을 줘요.
+COSMIC 실기 결과는 [#756 ⑧](https://github.com/ensky0/tildaz/issues/756#issuecomment-6261961905) (미니PC) ·
+[#809 ③](https://github.com/ensky0/tildaz/issues/809#issuecomment-6305294980) (노트북) 예요.
 
 ### 함정 — Linux 에서 밟은 것 (2026-10-13 · 노트북 AMD Ryzen AI 7 350 · KDE Plasma 6.7.5)
 
