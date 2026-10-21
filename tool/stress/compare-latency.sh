@@ -136,7 +136,7 @@ FCITX_RESTORE=0
 cleanup() {
     # Windows — 남은 측정 창을 트리째 끝낸다. 회차 정리 (`run_terminal`) 가 못 끝낸 것만 남는다.
     [ "$IS_WINDOWS" = 1 ] && { "$WORK_DIR/proc-usage.exe" kill latency-child.exe \
-        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(win_exe_of tildaz)" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1 || true
     if [ "$FCITX_RESTORE" = 1 ] && ! pgrep -x fcitx5 >/dev/null 2>&1; then

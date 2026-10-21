@@ -112,7 +112,7 @@ if [ "$IS_MACOS" != 1 ] && [ "$IS_WINDOWS" != 1 ] && [ -f "$KONSOLE_STATE" ]; th
 fi
 cleanup() {
     [ "$IS_WINDOWS" = 1 ] && { "$PROC_USAGE" kill startup-child.exe \
-        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(basename "${TILDAZ_BIN:-tildaz.exe}")" >/dev/null 2>&1 || true; }
+        "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(win_exe_of tildaz)" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     if [ -n "$KONSOLE_STATE_BACKUP" ] && ! cmp -s "$KONSOLE_STATE_BACKUP" "$KONSOLE_STATE"; then
         cp "$KONSOLE_STATE_BACKUP" "$KONSOLE_STATE" && echo "Konsole 상태 파일을 시작 전 내용으로 되돌렸어요."
