@@ -53,6 +53,8 @@ HYG_RAISED=0
 HYG_POWER="?"
 HYG_REFRESH="?"
 HYG_PROFILE="?"
+# Windows 만 묶는다 (`hygiene_affinity_windows`). 다른 platform 은 묶지 않고 `n/a` 로 찍는다.
+HYG_AFFINITY="n/a"
 
 # Windows 의 "최고 성능" 전원 모드 (overlay) GUID. 아래 `hygiene_overlay_set` 주석 참고.
 HYG_OVERLAY_MAX=ded574b5-45a0-4f42-8737-46345c09c238
@@ -115,6 +117,78 @@ hygiene_overlay_get() {
 
 hygiene_overlay_set() {
     powershell -NoProfile -Command "Add-Type -Namespace H -Name S -MemberDefinition '[DllImport(\"powrprof.dll\")] public static extern uint PowerSetActiveOverlayScheme(System.Guid g);'; exit ([int][H.S]::PowerSetActiveOverlayScheme([System.Guid]'$1'))" >/dev/null 2>&1
+}
+
+# 측정 셸을 **빠른 코어** 에만 묶는다 (Windows). `"<마스크> <빠른 코어 수>/<코어 수>"` 를 내고, 코어가
+# 한 종류면 아무것도 안 바꾸고 `all` 을 낸다. 못 하면 빈 문자열.
+#
+# - **왜** — 빠른 코어와 작은 코어가 섞인 CPU 에서는 Windows 가 회차마다 스레드를 다르게 앉혀 값이 두 값
+#   사이에서 흔들린다. 노트북 Ryzen AI 7 350 에서 TildaZ `emoji_vs16` 이 빠른 코어만 87 · 작은 코어만
+#   59 MiB/s 였고, 묶지 않은 회차는 74~87 로 흔들려 없는 퇴행을 만들었다 (#816 ⑧). 2026-10-21 사용자
+#   결정으로 Windows 측정은 모두 빠른 코어에서 잰다.
+# - **빠른 코어는 `EfficiencyClass` 가 가장 높은 코어다** (`GetLogicalProcessorInformationEx` 의
+#   `PROCESSOR_RELATIONSHIP`). 그 노트북은 `1` 이 4 코어 (`0x3333`) · `0` 이 4 코어 (`0xCCCC`) 다.
+# - **셸 하나만 묶으면 된다** — 자식 프로세스는 부모의 affinity 를 물려받는다. 다섯 대상 (TildaZ · Windows
+#   Terminal · conhost · Alacritty · WezTerm) 과 그 안의 ConPTY · producer 가 모두 물려받는 것을 실측했다
+#   (#816 ⑨). `wt.exe` 가 띄우는 `WindowsTerminal.exe` 도 물려받았다.
+# - 묶는 대상은 이 셸의 **Windows** pid 다 (`/proc/$$/winpid`) — MSYS pid 와 다르다. 셸이 끝나면 묶음도
+#   사라지니 되돌릴 것이 없다.
+# - 프로세서 그룹 0 만 본다 (논리 CPU 64 개까지). 그보다 많은 기기는 아직 없다.
+hygiene_affinity_windows() {
+    _wpid=$(cat "/proc/$$/winpid" 2>/dev/null) || return 0
+    [ -n "$_wpid" ] || return 0
+    _ps=$(mktemp --suffix=.ps1) || return 0
+    cat > "$_ps" <<'PS1'
+param([int]$TargetPid)
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class TzCores {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetLogicalProcessorInformationEx(int rel, IntPtr buf, ref int len);
+    const int RelationProcessorCore = 0;
+
+    // 빠른 코어 (EfficiencyClass 가 가장 높은 코어) 의 그룹 0 마스크와 코어 수. 못 읽으면 mask 0.
+    public static ulong FastMask(out int fast, out int total) {
+        fast = 0; total = 0;
+        int len = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, IntPtr.Zero, ref len);
+        if (len <= 0) return 0;
+        IntPtr buf = Marshal.AllocHGlobal(len);
+        try {
+            if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, ref len)) return 0;
+            byte best = 0; ulong mask = 0;
+            for (int pass = 0; pass < 2; pass++) {
+                int off = 0;
+                while (off < len) {
+                    IntPtr p = buf + off;
+                    int size = Marshal.ReadInt32(p, 4);
+                    // SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship(4) Size(4) 뒤에
+                    // PROCESSOR_RELATIONSHIP: Flags(8) EfficiencyClass(9) Reserved[20] GroupCount(30) GroupMask[](32)
+                    byte eff = Marshal.ReadByte(p, 9);
+                    ulong m = (ulong)Marshal.ReadInt64(p, 32);
+                    ushort group = (ushort)Marshal.ReadInt16(p, 40);
+                    if (pass == 0) { if (eff > best) best = eff; total++; }
+                    else if (eff == best && group == 0) { mask |= m; fast++; }
+                    off += size;
+                }
+            }
+            return mask;
+        } finally { Marshal.FreeHGlobal(buf); }
+    }
+}
+'@
+$fast = 0; $total = 0
+$mask = [TzCores]::FastMask([ref] $fast, [ref] $total)
+if ($mask -eq 0) { exit 0 }
+if ($fast -eq $total) { 'all'; exit 0 }
+$p = Get-Process -Id $TargetPid -ErrorAction Stop
+$p.ProcessorAffinity = [IntPtr][long]$mask
+$p.Refresh()
+('0x{0:X} {1}/{2}' -f $p.ProcessorAffinity.ToInt64(), $fast, $total)
+PS1
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$_ps")" "$_wpid" 2>/dev/null | tr -d '\r'
+    rm -f "$_ps"
 }
 
 # Windows 의 `현재 최대` 주사율을 `"<현재> <최대>"` 로 낸다 (#729). 못 읽으면 빈 문자열.
@@ -379,7 +453,7 @@ hygiene_status() {
     _min=no
     [ "${TILDAZ_BENCH_MINIMIZED_BY_HAND:-}" = 1 ] && _min=manual
     [ "$HYG_MINIMIZED" = 1 ] && _min=yes
-    echo "platform=$HYG_PLATFORM  power=$HYG_POWER  refresh=$HYG_REFRESH  cpu_profile=$HYG_PROFILE  minimized=$_min"
+    echo "platform=$HYG_PLATFORM  power=$HYG_POWER  refresh=$HYG_REFRESH  cpu_profile=$HYG_PROFILE  minimized=$_min  affinity=$HYG_AFFINITY"
 }
 
 # --- 준비 -----------------------------------------------------------------
@@ -458,6 +532,13 @@ hygiene_begin() {
                 HYG_OVERLAY_SAVED=""
                 echo "⚠ 전원 모드를 최고 성능으로 못 바꿨어요 — 설정 → 시스템 → 전원 및 배터리 → 전원 모드 에서 직접 골라요" >&2
             fi
+            # 빠른 코어에만 묶는다 (`hygiene_affinity_windows`). 이 뒤에 띄우는 프로세스가 모두 물려받는다.
+            _aff=$(hygiene_affinity_windows)
+            case "$_aff" in
+                "") HYG_AFFINITY="?"
+                    echo "⚠ 측정 셸을 빠른 코어에 못 묶었어요 — 코어 배치에 따라 회차가 흔들릴 수 있어요" >&2 ;;
+                *) HYG_AFFINITY="${_aff%% *}" ;;
+            esac
             ;;
         # macOS 에는 대응 경로가 없다. `?` 가 아니라 `n/a` 로 찍어서 **못 읽은 것**과
         # **원래 없는 것**을 구분한다.
