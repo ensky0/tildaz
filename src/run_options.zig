@@ -88,7 +88,7 @@ pub fn parseGrid(text: []const u8) ?Grid {
 /// 행이 화면 밖이면 그 회차의 숫자는 틀렸는데, 그 사실이 timing 파일에는 남지 않는다.
 pub fn exitSizeDoesNotFit(want: Grid, needed_w: i64, needed_h: i64, screen_w: i64, screen_h: i64) noreturn {
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.size_does_not_fit_format, .{
+    const msg = std.mem.print(&buf, messages.size_does_not_fit_format, .{
         want.cols,
         want.rows,
         needed_w,

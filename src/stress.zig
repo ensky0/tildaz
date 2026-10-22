@@ -232,11 +232,11 @@ fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
 }
 
 fn paneBarrierPath(buf: []u8, base: []const u8, id: pane_layout.PaneId, suffix: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}.{d}.{s}", .{ base, id, suffix });
+    return std.mem.print(buf, "{s}.{d}.{s}", .{ base, id, suffix });
 }
 
 fn globalBarrierPath(buf: []u8, base: []const u8, suffix: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}.{s}", .{ base, suffix });
+    return std.mem.print(buf, "{s}.{s}", .{ base, suffix });
 }
 
 fn createBarrierFile(rt: Runtime, path: []const u8) !void {
@@ -270,14 +270,14 @@ fn waitForProducerStart(rt: Runtime, base: []const u8, id: pane_layout.PaneId) !
 }
 
 fn doneTitle(buf: []u8, id: pane_layout.PaneId) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}-stress-done-{d}", .{ app_id.name, id });
+    return std.mem.print(buf, "{s}-stress-done-{d}", .{ app_id.name, id });
 }
 
 fn writeDoneMarker(rt: Runtime, out: std.Io.File, id: pane_layout.PaneId) !void {
     var title_buf: [48]u8 = undefined;
     const title = try doneTitle(&title_buf, id);
     var marker_buf: [64]u8 = undefined;
-    const marker = try std.fmt.bufPrint(&marker_buf, "\x1b]0;{s}\x07", .{title});
+    const marker = try std.mem.print(&marker_buf, "\x1b]0;{s}\x07", .{title});
     try out.writeStreamingAll(rt.io, marker);
 }
 
@@ -320,7 +320,7 @@ fn waitForGrid(rt: Runtime, target: Grid) u64 {
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
 /// thread (또는 우리를 띄운 다른 터미널) 가 그대로 받는다.
 fn produce(rt: Runtime, req: ProducerRequest) !void {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         // producer 의 stdout 은 ConPTY 콘솔이다. 출력 코드페이지를 UTF-8 로 맞춰 cjk 가
         // 콘솔 기본 CP (CP949 등) 로 깨지지 않게 한다 (위 SetConsoleOutputCP 주석).
         _ = SetConsoleOutputCP(65001);
@@ -408,7 +408,7 @@ extern "kernel32" fn GetConsoleScreenBufferInfo(
 /// 두었을 때는 `cols=0 rows=0` 이 적혀서, 그 확인 절차 자체가 Windows 에서 성립하지
 /// 않았다 (실기 검증에서 창 크기를 밖에서 재는 우회가 필요했다).
 fn producerGrid() ?Grid {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         // producer 의 stdout 은 우리 ConPTY 의 콘솔이라 console API 가 그대로 동작한다.
         // **`dwSize` 가 아니라 `srWindow` 를 쓴다** — `dwSize` 는 스크롤백을 포함한 버퍼
         // 크기이고, 우리가 재려는 것은 *보이는* 격자다. 우리는
@@ -427,7 +427,7 @@ fn producerGrid() ?Grid {
 
     var ws: std.posix.winsize = undefined;
     const fd = std.Io.File.stdout().handle;
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         const linux = std.os.linux;
         if (std.posix.errno(linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
             return null;
@@ -776,7 +776,7 @@ fn onTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
 }
 
 fn stressCurrentPid() u32 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => std.os.windows.GetCurrentProcessId(),
         .linux => @intCast(std.os.linux.getpid()),
         else => @intCast(std.c.getpid()),
@@ -811,7 +811,7 @@ const ProducerSession = struct {
         self.shell_command = try toShellCommand(alloc, exe_buf[0..exe_len]);
         errdefer freeShellCommand(alloc, self.shell_command);
 
-        const bytes_text = try std.fmt.bufPrint(&self.bytes_text, "{d}", .{opts.bytes});
+        const bytes_text = try std.mem.print(&self.bytes_text, "{d}", .{opts.bytes});
         self.extra_env = .{
             .{ .name = env_workload, .value = @tagName(opts.workload_kind) },
             .{ .name = env_bytes, .value = bytes_text },
@@ -880,13 +880,13 @@ const ProducerSession = struct {
     }
 
     fn prepareBarrierPath(self: *ProducerSession) !void {
-        const env_name = if (builtin.os.tag == .windows) "TEMP" else "TMPDIR";
-        const fallback = if (builtin.os.tag == .windows) "." else "/tmp";
+        const env_name = if (builtin.target.os.tag == .windows) "TEMP" else "TMPDIR";
+        const fallback = if (builtin.target.os.tag == .windows) "." else "/tmp";
         const temp_dir = self.rt.envAlloc(self.alloc, env_name) catch try self.alloc.dupe(u8, fallback);
         defer self.alloc.free(temp_dir);
 
         var name_buf: [96]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buf, "{s}-stress-{d}-{d}", .{ app_id.name, stressCurrentPid(), perf.now() orelse 0 });
+        const name = try std.mem.print(&name_buf, "{s}-stress-{d}-{d}", .{ app_id.name, stressCurrentPid(), perf.now() orelse 0 });
         const path = try std.Io.Dir.path.join(self.alloc, &.{ temp_dir, name });
         defer self.alloc.free(path);
         if (path.len > self.barrier_path.len) return error.NameTooLong;
@@ -899,7 +899,7 @@ const ProducerSession = struct {
     }
 
     fn setProducerPaneId(self: *ProducerSession, id: anytype) void {
-        const text = std.fmt.bufPrint(&self.pane_id_text, "{d}", .{id}) catch unreachable;
+        const text = std.mem.print(&self.pane_id_text, "{d}", .{id}) catch unreachable;
         self.extra_env[3] = .{ .name = env_pane_id, .value = text };
     }
 
@@ -1187,14 +1187,14 @@ fn expectedPtyBytes(opts: Options) ?u64 {
 /// 자기 실행파일 경로를 platform 별 `ShellCommand` 표현으로. Windows 는
 /// `CreateProcessW` 가 UTF-16 을 받고, POSIX 는 `execve` 가 UTF-8 을 받는다.
 fn toShellCommand(alloc: std.mem.Allocator, exe_path: []const u8) !terminal.ShellCommand {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         return try std.unicode.utf8ToUtf16LeAllocZ(alloc, exe_path);
     }
     return try alloc.dupe(u8, exe_path);
 }
 
 fn freeShellCommand(alloc: std.mem.Allocator, cmd: terminal.ShellCommand) void {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         alloc.free(std.mem.span(cmd));
     } else {
         alloc.free(cmd);
@@ -1305,11 +1305,11 @@ fn scrollbackLines(tab: *session_core.Tab) usize {
 /// Windows 실기에서 확인됐으므로 (#371) 이제 붙일 수 있는 조건이지만, 이 커밋의 범위가
 /// 아니라 후속으로 둔다. 리포트는 그 자리에 `(unavailable)` 을 찍는다.
 fn peakRssBytes() ?u64 {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.target.os.tag == .windows) return null;
     const usage = std.posix.getrusage(std.posix.rusage.SELF);
     if (usage.maxrss <= 0) return null;
     const raw: u64 = @intCast(usage.maxrss);
-    return if (builtin.os.tag == .macos) raw else raw * 1024;
+    return if (builtin.target.os.tag == .macos) raw else raw * 1024;
 }
 
 fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void {
@@ -1326,11 +1326,11 @@ fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void
         @as(f64, @floatFromInt(opts.bytes)) / mib,
     });
     w.print("build         {s} simd={} version={s}\n", .{
-        @tagName(builtin.mode),
+        @tagName(builtin.optimize),
         build_options.simd,
         build_options.version,
     });
-    w.print("platform      {s} {s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
+    w.print("platform      {s} {s}\n", .{ @tagName(builtin.target.os.tag), @tagName(builtin.target.cpu.arch) });
     w.print("\n", .{});
 
     w.print("segment  consumed      MiB/s    scrollback lines   peak RSS\n", .{});
@@ -1393,13 +1393,13 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
         @as(f64, @floatFromInt(opts.bytes)) / mib,
     });
     w.print("build         {s} simd={} version={s}\n", .{
-        @tagName(builtin.mode),
+        @tagName(builtin.optimize),
         build_options.simd,
         build_options.version,
     });
     w.print("platform      {s} {s}\n", .{
-        @tagName(builtin.os.tag),
-        @tagName(builtin.cpu.arch),
+        @tagName(builtin.target.os.tag),
+        @tagName(builtin.target.cpu.arch),
     });
     w.print("\n", .{});
 
@@ -1549,7 +1549,7 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
         // `bytes` 는 남고 `ns` 만 빠진다 — 같은 범위이되 Windows 가 과소 계상이다.
         // 어느 쪽인지 옆에 적어 둔다.
         writeCounter(&w, "readloop", counters.readloop, .{
-            .note = if (builtin.os.tag == .windows)
+            .note = if (builtin.target.os.tag == .windows)
                 "read 복사만 · pending 분은 커널이 복사해 미계상"
             else
                 "read 복사만",
@@ -1595,7 +1595,7 @@ const Report = struct {
     len: usize = 0,
 
     fn print(self: *Report, comptime fmt: []const u8, args: anytype) void {
-        const out = std.fmt.bufPrint(self.buf[self.len..], fmt, args) catch return;
+        const out = std.mem.print(self.buf[self.len..], fmt, args) catch return;
         self.len += out.len;
     }
 

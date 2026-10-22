@@ -56,7 +56,7 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
     defer allocator.free(indices);
 
     var prompt_buf: [256]u8 = undefined;
-    const input_prompt = std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
+    const input_prompt = std.mem.print(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{indices.len + 1}) catch return;
     var validation_context = ValidationContext{ .rt = rt, .allocator = allocator };
     const input_owned = blk: {
         var capture = hotkey_capture.begin(indices) catch |err| {
@@ -117,6 +117,6 @@ pub fn handle(rt: Runtime, allocator: std.mem.Allocator) void {
 
 fn showCreateError(rt: Runtime, err: anyerror) void {
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch messages.new_instance_create_failed_fallback_msg;
+    const msg = std.mem.print(&buf, messages.new_instance_create_failed_format, .{@errorName(err)}) catch messages.new_instance_create_failed_fallback_msg;
     dialog.showError(rt, messages.new_instance_title, msg);
 }

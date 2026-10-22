@@ -480,7 +480,7 @@ pub fn macAlias(code: PhysicalCode) ?PhysicalCode {
 /// 이 platform 에서 쓸 수 있는 자리인가. false 면 config 파싱이 거부해야 한다 —
 /// 조용히 미동작으로 두면 사용자가 이유를 알 수 없다.
 pub fn availableOnThisPlatform(code: PhysicalCode) bool {
-    if (builtin.os.tag == .macos) return entry(code).mac != null;
+    if (builtin.target.os.tag == .macos) return entry(code).mac != null;
     return true;
 }
 
@@ -710,7 +710,7 @@ test "#496 1-c the Shell extension position tables match physical_key" {
             var needle_buf: [64]u8 = undefined;
             // JS 는 xkb keycode (= evdev + 8) 를 두 자리 hex 로 적는다 — GTK 의
             // `is_keycode()` 가 그 형태만 인정하기 때문이다.
-            const needle = try std.fmt.bufPrint(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
+            const needle = try std.mem.print(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
             if (std.mem.indexOf(u8, block, needle) == null) {
                 std.debug.print("{s} extension 의 위치 표에 없다: {s}\n", .{ source.label, needle });
                 return error.PositionTableOutOfSync;

@@ -355,7 +355,7 @@ pub const ConPty = struct {
         const pid = GetCurrentProcessId();
         const seq = @atomicRmw(u32, &S.counter, .Add, 1, .monotonic);
         var pipe_name_u8: [256]u8 = undefined;
-        const pipe_name_str = std.fmt.bufPrint(
+        const pipe_name_str = std.mem.print(
             &pipe_name_u8,
             "\\\\.\\pipe\\tildaz_{d}_{d}",
             .{ pid, seq },

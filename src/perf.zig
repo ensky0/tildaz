@@ -7,7 +7,7 @@ const log = @import("log.zig");
 const instance_context = @import("instance_context.zig");
 const Runtime = @import("runtime.zig").Runtime;
 
-const win32 = if (builtin.os.tag == .windows) struct {
+const win32 = if (builtin.target.os.tag == .windows) struct {
     const QueryUnbiasedInterruptTimePreciseFn = *const fn (*u64) callconv(.c) void;
 
     extern "kernel32" fn LoadLibraryW([*:0]const u16) callconv(.c) ?*anyopaque;
@@ -316,7 +316,7 @@ fn echoMarker() []const u8 {
 /// `dumpOnExit` 와 같다 (무할당 조회 — 그쪽 주석).
 pub fn loadEchoMarker(rt: Runtime) void {
     var buf: [echo_marker_max * 3]u8 = undefined;
-    const val: []const u8 = if (builtin.os.tag == .windows) blk: {
+    const val: []const u8 = if (builtin.target.os.tag == .windows) blk: {
         const key_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral("TILDAZ_ECHO_MARKER");
         const val_w = rt.environ.getWindows(key_w) orelse return;
         if (val_w.len * 3 > buf.len) return;
@@ -397,7 +397,7 @@ pub fn completeEcho() void {
 pub const Timestamp = ?u64;
 
 pub fn now() Timestamp {
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime builtin.target.os.tag == .windows) {
         var ticks_100ns: u64 = 0;
         if (!win32.queryUnbiasedInterruptTimePrecise(&ticks_100ns)) return null;
         return ticks100nsToNs(ticks_100ns);
@@ -407,9 +407,9 @@ pub fn now() Timestamp {
     // 요구하는데 이 함수는 **계측 hot path** 라 인자를 늘릴 수 없다 (호출부가 프레임마다
     // 돈다). 릴리즈 노트가 남긴 다른 길 *"go lower"* 로 libc 를 직접 부른다 — Windows 가
     // 위에서 이미 kernel32 를 직접 쓰고 있어 방식이 일관된다.
-    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return null;
+    if (comptime builtin.target.os.tag != .linux and builtin.target.os.tag != .macos) return null;
     var ts: posix_time.timespec = undefined;
-    const clock_id: c_int = if (comptime builtin.os.tag == .linux)
+    const clock_id: c_int = if (comptime builtin.target.os.tag == .linux)
         posix_time.CLOCK_MONOTONIC
     else
         posix_time.CLOCK_UPTIME_RAW;
@@ -418,7 +418,7 @@ pub fn now() Timestamp {
 }
 
 /// POSIX 단조 시계 — `now()` 전용 (위 주석 참고).
-const posix_time = if (builtin.os.tag == .linux or builtin.os.tag == .macos) struct {
+const posix_time = if (builtin.target.os.tag == .linux or builtin.target.os.tag == .macos) struct {
     pub const timespec = extern struct {
         tv_sec: i64,
         tv_nsec: c_long,
@@ -520,7 +520,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     echo_tail_len = 0;
 
     var buf: [4096]u8 = undefined;
-    const text = std.fmt.bufPrint(
+    const text = std.mem.print(
         &buf,
         "\n=== {s} @ ts={d}ms ===\n" ++
             "readloop calls={d} bytes={d} ms={d:.3}\n" ++
@@ -582,7 +582,7 @@ pub fn dumpAndReset(rt: Runtime, label: []const u8) void {
     // (`std.Io.Writer` 가 호출당 32 개까지인데 위 표만으로 이미 30 개다). 같은 버퍼에 이어
     // 써서 로그에는 **한 블록**으로 나간다 — `appendBlock` 을 두 번 하면 다른 스레드의
     // 블록이 사이에 끼어 표가 갈라진다.
-    const tail = std.fmt.bufPrint(
+    const tail = std.mem.print(
         buf[text.len..],
         // 위 둘에서 **깨우기 몫만** 떼어 낸 값 (도착 → 프레임 진입). `input − in_gate` 가
         // 깨어난 뒤 몫이다. Linux 는 tick 을 안 기다리므로 0 에 가까워야 한다 — 그렇지
@@ -660,7 +660,7 @@ pub fn dumpOnExit(rt: Runtime) void {
     // (#451 재검토에서 실측. `envHas` 를 `containsConstant` 로 고친 96b2a9e 과 같은 패턴).
     // 실패하면 그냥 `"stress"` — 라벨 하나 때문에 덤프 자체를 거르지 않는다.
     var label_buf: [256]u8 = undefined;
-    const label: []const u8 = if (builtin.os.tag == .windows) blk: {
+    const label: []const u8 = if (builtin.target.os.tag == .windows) blk: {
         // `containsConstant` 와 같은 방식 — key 는 comptime 에 WTF-16 으로, 값은 스택
         // 버퍼에 WTF-8 로 변환한다 (code unit 당 최대 3 바이트).
         const key_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral("TILDAZ_STRESS_WORKLOAD");

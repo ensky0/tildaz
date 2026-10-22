@@ -32,7 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         @compileError("layout-probe 는 Windows 전용이다. macOS 는 tool/layout-probe/layout-probe_macos.m 를 쓴다.");
     }
 }
@@ -174,7 +174,7 @@ fn writeHandle(h: HANDLE, bytes: []const u8) void {
 }
 
 fn p(comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.allocPrint(out_alloc, fmt, args) catch return;
+    const s = out_alloc.print(fmt, args) catch return;
     dump.appendSlice(out_alloc, s) catch {};
     // STD_OUTPUT_HANDLE = -11
     writeHandle(GetStdHandle(@bitCast(@as(i32, -11))), s);
@@ -219,9 +219,9 @@ const Label = struct {
         const tag = if (self.rc < 0) "dead" else "";
         // 글자와 코드포인트를 함께 적는다 — 콘솔이 글리프를 못 그려도 표를 읽을 수 있어야 한다.
         if (self.len == 1) {
-            return std.fmt.bufPrint(buf, "{s}'{s}' U+{X:0>4}", .{ tag, utf8[0..n], self.chars[0] }) catch "?";
+            return std.mem.print(buf, "{s}'{s}' U+{X:0>4}", .{ tag, utf8[0..n], self.chars[0] }) catch "?";
         }
-        return std.fmt.bufPrint(buf, "{s}\"{s}\" ({d}자)", .{ tag, utf8[0..n], self.len }) catch "?";
+        return std.mem.print(buf, "{s}\"{s}\" ({d}자)", .{ tag, utf8[0..n], self.len }) catch "?";
     }
 };
 
@@ -500,7 +500,7 @@ fn sectionTables(flags: UINT) void {
                 const rv: UINT = bits & 0xFF;
                 const sh: u16 = (bits >> 8) & 0xFF;
                 const mark = if (rv == vk) "=" else "!=";
-                break :blk std.fmt.bufPrint(&rev, "vk=0x{X:0>2} sh={d} {s}", .{ rv, sh, mark }) catch "?";
+                break :blk std.mem.print(&rev, "vk=0x{X:0>2} sh={d} {s}", .{ rv, sh, mark }) catch "?";
             } else "-";
             p("  {X:0>2}  {s:<6} 0x{X:0>2}  {s:<13} {s:<19} {s:<19} {s:<19} {s}\n", .{
                 sc, usCap(sc), vk, vkName(vk), base.fmtTo(&b1), shift.fmtTo(&b2), altgr.fmtTo(&b3), rev_s,
@@ -530,7 +530,7 @@ fn sectionVerdicts(flags: UINT) void {
             const vk = MapVirtualKeyExW(sc, MAPVK_VSC_TO_VK_EX, hkl);
             const lab = translate(vk, sc, hkl, false, false, flags);
             var lb: [48]u8 = undefined;
-            cells[k] = std.fmt.bufPrint(&cell[k], "0x{X:0>2} {s:<8} {s}", .{ vk, vkName(vk), lab.fmtTo(&lb) }) catch "?";
+            cells[k] = std.mem.print(&cell[k], "0x{X:0>2} {s:<8} {s}", .{ vk, vkName(vk), lab.fmtTo(&lb) }) catch "?";
         }
         p("    {s:<22} {s:<28} {s:<28} {s}\n", .{ spec.name, cells[0], cells[1], cells[2] });
     }
@@ -565,7 +565,7 @@ fn sectionVerdicts(flags: UINT) void {
         var b1: [48]u8 = undefined;
         var b2: [48]u8 = undefined;
         var scb: [16]u8 = undefined;
-        const scs = std.fmt.bufPrint(&scb, "0x{X:0>2}", .{sc}) catch "?";
+        const scs = std.mem.print(&scb, "0x{X:0>2}", .{sc}) catch "?";
         p("    {s:<22} {s:<8} {s:<8} {s:<24} {s}\n", .{ spec.name, scs, usCap(sc), base.fmtTo(&b1), shift.fmtTo(&b2) });
     }
 
@@ -593,7 +593,7 @@ fn sectionVerdicts(flags: UINT) void {
                 const sh: u16 = (bits >> 8) & 0xFF;
                 const sc = MapVirtualKeyExW(rv, MAPVK_VK_TO_VSC_EX, hkl) & 0xFF;
                 var b: [48]u8 = undefined;
-                const s = std.fmt.bufPrint(&b, "0x{X:0>2}/{s} sh{d} sc{X:0>2}", .{ rv, vkName(rv), sh, sc }) catch "?";
+                const s = std.mem.print(&b, "0x{X:0>2}/{s} sh{d} sc{X:0>2}", .{ rv, vkName(rv), sh, sc }) catch "?";
                 p(" {s:<22}", .{s});
             }
         }
@@ -656,9 +656,9 @@ fn sectionEdge() void {
             const r = VkKeyScanExW(c, hkl);
             var b: [40]u8 = undefined;
             const s = if (r == -1)
-                (std.fmt.bufPrint(&b, "{s}=없음", .{nm}) catch "?")
+                (std.mem.print(&b, "{s}=없음", .{nm}) catch "?")
             else
-                (std.fmt.bufPrint(&b, "{s}=0x{X:0>4}", .{ nm, @as(u16, @bitCast(r)) }) catch "?");
+                (std.mem.print(&b, "{s}=0x{X:0>4}", .{ nm, @as(u16, @bitCast(r)) }) catch "?");
             p(" {s:<16}", .{s});
         }
         p("\n", .{});
@@ -737,14 +737,14 @@ fn sectionActiveCompare(flags: UINT, when: []const u8) void {
         var c0: [40]u8 = undefined;
         var c1: [40]u8 = undefined;
         var c3: [72]u8 = undefined;
-        const s0 = std.fmt.bufPrint(&c0, "0x{X:0>2} {s}", .{ vk_null, vkName(vk_null) }) catch "?";
-        const s1 = std.fmt.bufPrint(&c1, "0x{X:0>2} {s}", .{ vk_cur, vkName(vk_cur) }) catch "?";
+        const s0 = std.mem.print(&c0, "0x{X:0>2} {s}", .{ vk_null, vkName(vk_null) }) catch "?";
+        const s1 = std.mem.print(&c1, "0x{X:0>2} {s}", .{ vk_cur, vkName(vk_cur) }) catch "?";
         const s3 = if (matched) |mi| blk: {
             const hkl = loaded[mi];
             const vk = MapVirtualKeyExW(sc, MAPVK_VSC_TO_VK_EX, hkl);
             const lab = translate(vk, sc, hkl, false, false, flags);
             var b3: [48]u8 = undefined;
-            break :blk std.fmt.bufPrint(&c3, "0x{X:0>2} {s:<8} {s}", .{ vk, vkName(vk), lab.fmtTo(&b3) }) catch "?";
+            break :blk std.mem.print(&c3, "0x{X:0>2} {s:<8} {s}", .{ vk, vkName(vk), lab.fmtTo(&b3) }) catch "?";
         } else "-";
         p("    0x{X:0>2}   {s:<7} {s:<22} {s:<22} {s:<20} {s:<20} {s}\n", .{
             sc, usCap(sc), s0, s1, l_null.fmtTo(&b1), l_cur.fmtTo(&b2), s3,
@@ -767,7 +767,7 @@ fn elapsed() f64 {
 fn updateTitle(hwnd: HWND, note: []const u8) void {
     const cur = GetKeyboardLayout(0);
     var utf8: [256]u8 = undefined;
-    const s = std.fmt.bufPrint(&utf8, "layout-probe — 활성 KLID 0x{X:0>4} — {s}", .{ klidOf(cur), note }) catch return;
+    const s = std.mem.print(&utf8, "layout-probe — 활성 KLID 0x{X:0>4} — {s}", .{ klidOf(cur), note }) catch return;
     var w16: [256]WCHAR = @splat(0);
     const n = std.unicode.utf8ToUtf16Le(w16[0 .. w16.len - 1], s) catch return;
     w16[n] = 0;
@@ -829,7 +829,7 @@ fn wndProc(hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) L
                 base.fmtTo(&b),
             });
             var note: [96]u8 = undefined;
-            const ns = std.fmt.bufPrint(&note, "vk=0x{X:0>2} sc=0x{X:0>2}", .{ vk, sc }) catch "";
+            const ns = std.mem.print(&note, "vk=0x{X:0>2} sc=0x{X:0>2}", .{ vk, sc }) catch "";
             updateTitle(hwnd, ns);
         },
         WM_CHAR, WM_SYSCHAR => {

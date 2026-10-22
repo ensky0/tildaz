@@ -128,7 +128,7 @@ pub const Hints = struct {
     len: [command_count + 1]u8 = @splat(0),
 
     pub fn setCommand(self: *Hints, command: Command, text: []const u8) void {
-        self.setSlot(@intFromEnum(command), text);
+        self.setSlot(@backingInt(command), text);
     }
 
     pub fn setFullscreenWorkarea(self: *Hints, text: []const u8) void {
@@ -146,7 +146,7 @@ pub const Hints = struct {
     }
 
     pub fn get(self: *const Hints, command: Command, fullscreen_workarea: bool) []const u8 {
-        const slot = if (command == .fullscreen and fullscreen_workarea) workarea_slot else @intFromEnum(command);
+        const slot = if (command == .fullscreen and fullscreen_workarea) workarea_slot else @backingInt(command);
         return self.buf[slot][0..self.len[slot]];
     }
 };

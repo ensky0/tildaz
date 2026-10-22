@@ -44,7 +44,7 @@ fn allocMessageOrFallback(
     args: anytype,
     fallback: []const u8,
 ) ValidationMessage {
-    const owned = std.fmt.allocPrint(allocator, fmt, args) catch
+    const owned = allocator.print(fmt, args) catch
         return .{ .text = fallback };
     return .{ .text = owned, .owned = owned };
 }
@@ -143,7 +143,7 @@ pub fn checkForNewTab(rt: Runtime, allocator: std.mem.Allocator, shell: []const 
 /// 양쪽으로 strip (사용자가 `"\"...\""` 로 적었을 때 보호).
 fn firstShellToken(shell: []const u8) []const u8 {
     if (shell.len == 0) return shell;
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         if (shell[0] == '"') {
             const close = std.mem.findScalarPos(u8, shell, 1, '"') orelse return shell[1..];
             return shell[1..close];
@@ -158,14 +158,14 @@ fn firstShellToken(shell: []const u8) []const u8 {
 }
 
 fn executableExists(allocator: std.mem.Allocator, token: []const u8) bool {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => existsWindows(token),
         else => existsPosix(allocator, token),
     };
 }
 
 fn examples() []const u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => messages.shell_examples_windows,
         else => messages.shell_examples_posix,
     };
@@ -271,7 +271,7 @@ test "new tab failure message preserves long shell and final config path" {
 
 test "valid shell returns null without preparing an error message" {
     const allocator = std.testing.allocator;
-    const shell = if (builtin.os.tag == .windows) "cmd.exe" else "/bin/sh";
+    const shell = if (builtin.target.os.tag == .windows) "cmd.exe" else "/bin/sh";
     if (!executableExists(allocator, shell)) return error.SkipZigTest;
     // #451 — 유효한 셸이면 config 경로를 읽기 전에 `null` 로 빠져나오므로 환경변수가
     // 필요 없다. `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.

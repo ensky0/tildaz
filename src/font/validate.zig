@@ -128,7 +128,7 @@ test "#577 남은 config fatal 도 다른 config 오류와 같은 첫 줄을 쓴
     //
     // #758 — TOML 구문 오류도 기본값 안내가 되어, 남은 fatal 은 전역 hotkey 중복 하나다.
     var buf: [512]u8 = undefined;
-    const message = try std.fmt.bufPrint(
+    const message = try std.mem.print(
         &buf,
         messages.config_error_with_path_format,
         .{ "/tmp/config_3.toml", messages.config_hotkey_duplicate_fallback_msg },

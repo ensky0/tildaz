@@ -32,7 +32,7 @@ pub const Tail = struct {
 fn eventSocketPath(rt: Runtime, buf: []u8) ?[]const u8 {
     const runtime_dir = rt.environ.getPosix("XDG_RUNTIME_DIR") orelse return null;
     const signature = rt.environ.getPosix("HYPRLAND_INSTANCE_SIGNATURE") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/hypr/{s}/.socket2.sock", .{ runtime_dir, signature }) catch null;
+    return std.mem.print(buf, "{s}/hypr/{s}/.socket2.sock", .{ runtime_dir, signature }) catch null;
 }
 
 /// #701 — 지금 그리기로 연결한 compositor 가 Hyprland 인가. `sway_ipc.isSwayCompositor` 와

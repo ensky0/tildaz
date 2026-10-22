@@ -88,7 +88,7 @@ pub fn derive(allocator: std.mem.Allocator, text: []const u8) Error!Derived {
     }
 
     const prerelease = if (semantic.pre) |pre| try parsePrerelease(pre) else null;
-    const core = try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{
+    const core = try allocator.print("{d}.{d}.{d}", .{
         semantic.major,
         semantic.minor,
         semantic.patch,
@@ -96,7 +96,7 @@ pub fn derive(allocator: std.mem.Allocator, text: []const u8) Error!Derived {
     errdefer allocator.free(core);
 
     const macos_build = if (prerelease) |pre|
-        try std.fmt.allocPrint(allocator, "{d}.{d}.{d}{s}{d}", .{
+        try allocator.print("{d}.{d}.{d}{s}{d}", .{
             semantic.major + 1,
             semantic.minor,
             semantic.patch,
@@ -104,7 +104,7 @@ pub fn derive(allocator: std.mem.Allocator, text: []const u8) Error!Derived {
             pre.number,
         })
     else
-        try std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{
+        try allocator.print("{d}.{d}.{d}", .{
             semantic.major + 1,
             semantic.minor,
             semantic.patch,
@@ -112,13 +112,13 @@ pub fn derive(allocator: std.mem.Allocator, text: []const u8) Error!Derived {
     errdefer allocator.free(macos_build);
 
     const debian_package = if (semantic.pre) |pre|
-        try std.fmt.allocPrint(allocator, "{s}~{s}-1", .{ core, pre })
+        try allocator.print("{s}~{s}-1", .{ core, pre })
     else
-        try std.fmt.allocPrint(allocator, "{s}-1", .{core});
+        try allocator.print("{s}-1", .{core});
     errdefer allocator.free(debian_package);
 
     const rpm_package = if (semantic.pre) |pre|
-        try std.fmt.allocPrint(allocator, "{s}~{s}", .{ core, pre })
+        try allocator.print("{s}~{s}", .{ core, pre })
     else
         try allocator.dupe(u8, core);
     errdefer allocator.free(rpm_package);
@@ -126,7 +126,7 @@ pub fn derive(allocator: std.mem.Allocator, text: []const u8) Error!Derived {
     // Arch pkgver는 '-'를 허용하지 않는다. prerelease 식별자를 core 뒤에
     // 바로 붙이면 vercmp의 `1.0rc < 1.0` 규칙과 같은 순서를 유지한다.
     const arch_package = if (semantic.pre) |pre|
-        try std.fmt.allocPrint(allocator, "{s}{s}", .{ core, pre })
+        try allocator.print("{s}{s}", .{ core, pre })
     else
         try allocator.dupe(u8, core);
     errdefer allocator.free(arch_package);

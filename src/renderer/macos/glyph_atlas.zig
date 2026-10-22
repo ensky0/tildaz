@@ -215,7 +215,7 @@ pub const GlyphAtlas = struct {
     /// 셰이더 tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @backingInt(icon), .source = .tab };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 

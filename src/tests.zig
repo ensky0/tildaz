@@ -73,7 +73,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("version.zig");
     _ = @import("windows_input_adapter.zig");
 
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => {
             // Linux native modules (23 files).
             _ = @import("autostart/linux.zig");

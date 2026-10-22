@@ -393,7 +393,7 @@ const Writer = struct {
 
     fn print(self: *Writer, comptime fmt: []const u8, args: anytype) void {
         const rest = self.buf[self.len..];
-        const out = std.fmt.bufPrint(rest, fmt, args) catch return;
+        const out = std.mem.print(rest, fmt, args) catch return;
         self.len += out.len;
     }
 };

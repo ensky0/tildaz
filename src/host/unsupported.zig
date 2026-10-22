@@ -2,7 +2,7 @@ const std = @import("std");
 const run_options = @import("../run_options.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 
-pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.lang.StackTrace) noreturn {
     std.debug.print("panic: {s}\nreturn address: 0x{x}\n", .{ msg, addr });
     std.process.exit(1);
 }

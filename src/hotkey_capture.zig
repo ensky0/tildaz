@@ -3,7 +3,7 @@
 
 const builtin = @import("builtin");
 
-const impl = switch (builtin.os.tag) {
+const impl = switch (builtin.target.os.tag) {
     .windows => @import("hotkey_capture/windows.zig"),
     .macos => @import("hotkey_capture/macos.zig"),
     .linux => @import("hotkey_capture/linux.zig"),

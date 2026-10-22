@@ -675,9 +675,9 @@ test "#646 실제 스크롤백을 step 으로 끝까지 검색한다" {
     for (0..200) |i| {
         var buf: [64]u8 = undefined;
         const line = if (i % 50 == 0)
-            try std.fmt.bufPrint(&buf, "row {d} FINDME\r\n", .{i})
+            try std.mem.print(&buf, "row {d} FINDME\r\n", .{i})
         else
-            try std.fmt.bufPrint(&buf, "row {d} plain\r\n", .{i});
+            try std.mem.print(&buf, "row {d} plain\r\n", .{i});
         try term.printString(line);
     }
 
@@ -713,7 +713,7 @@ test "#646 화면 밖 매치를 고르면 화면이 따라간다" {
     try term.printString("top FINDME\r\n");
     for (0..200) |i| {
         var buf: [64]u8 = undefined;
-        try term.printString(try std.fmt.bufPrint(&buf, "filler {d}\r\n", .{i}));
+        try term.printString(try std.mem.print(&buf, "filler {d}\r\n", .{i}));
     }
     try term.printString("bottom FINDME\r\n");
 
@@ -755,9 +755,9 @@ test "#646 첫 선택은 보이는 화면 맨 위에서 가장 가까운 매치�
     for (0..60) |i| {
         var buf: [64]u8 = undefined;
         const line = if (i % 10 == 0)
-            try std.fmt.bufPrint(&buf, "row {d} FINDME\r\n", .{i})
+            try std.mem.print(&buf, "row {d} FINDME\r\n", .{i})
         else
-            try std.fmt.bufPrint(&buf, "row {d} plain\r\n", .{i});
+            try std.mem.print(&buf, "row {d} plain\r\n", .{i});
         try term.printString(line);
     }
 
@@ -806,7 +806,7 @@ test "#646 화면 아래에 매치가 없으면 버퍼 맨 위로 돌아간다 (
     try term.printString("old FINDME\r\n");
     for (0..100) |i| {
         var buf: [64]u8 = undefined;
-        try term.printString(try std.fmt.bufPrint(&buf, "filler {d}\r\n", .{i}));
+        try term.printString(try std.mem.print(&buf, "filler {d}\r\n", .{i}));
     }
 
     var s: PaneSearch = .{};
@@ -841,7 +841,7 @@ test "#646 Shift+Enter 의 첫 선택은 Enter 와 대칭이다 — 위로, 없�
     try term.printString("second FINDME\r\n");
     for (0..100) |i| {
         var buf: [64]u8 = undefined;
-        try term.printString(try std.fmt.bufPrint(&buf, "filler {d}\r\n", .{i}));
+        try term.printString(try std.mem.print(&buf, "filler {d}\r\n", .{i}));
     }
 
     const screen = term.screens.active;
@@ -885,10 +885,10 @@ test "#646 매치를 놓는 자리는 가는 방향이 정한다" {
     // 매치를 화면 높이보다 훨씬 멀리 떼어 놓는다 — 그래야 매번 화면이 움직인다.
     for (0..8) |m| {
         var buf: [64]u8 = undefined;
-        try term.printString(try std.fmt.bufPrint(&buf, "mark {d} FINDME\r\n", .{m}));
+        try term.printString(try std.mem.print(&buf, "mark {d} FINDME\r\n", .{m}));
         for (0..100) |i| {
             var b2: [64]u8 = undefined;
-            try term.printString(try std.fmt.bufPrint(&b2, "filler {d}\r\n", .{i}));
+            try term.printString(try std.mem.print(&b2, "filler {d}\r\n", .{i}));
         }
     }
 
@@ -937,7 +937,7 @@ test "#646 버퍼 끝 줄의 매치도 화면 안에 남는다" {
     try term.printString("head FINDME\r\n");
     for (0..200) |i| {
         var b: [64]u8 = undefined;
-        try term.printString(try std.fmt.bufPrint(&b, "filler {d}\r\n", .{i}));
+        try term.printString(try std.mem.print(&b, "filler {d}\r\n", .{i}));
     }
     try term.printString("tail FINDME"); // 마지막 줄 — 이 아래로는 스크롤할 것이 없다
 

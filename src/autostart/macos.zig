@@ -56,12 +56,12 @@ const PROGRAM_ARGS_DIRECT =
 fn plistPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
-    const dir = try std.fmt.allocPrint(allocator, "{s}/Library/LaunchAgents", .{home});
+    const dir = try allocator.print("{s}/Library/LaunchAgents", .{home});
     defer allocator.free(dir);
     // #451 — `fs.makeDirAbsolute` ➡️ `Io.Dir.createDirAbsolute`. 공용 helper 를 쓴다
     // (`paths.ensureDir` = `createDirPath`) — 이미 있으면 성공이라 분기가 사라진다.
     try paths.ensureDir(rt, dir);
-    return std.fmt.allocPrint(allocator, "{s}/{s}.plist", .{ dir, LABEL });
+    return allocator.print("{s}/{s}.plist", .{ dir, LABEL });
 }
 
 /// 현재 .app 번들의 main 바이너리 절대경로 (`.../TildaZ.app/Contents/MacOS/tildaz`).
@@ -90,12 +90,12 @@ fn appBundlePath(exe: []const u8) ?[]const u8 {
 /// 조용히 무시한다.
 fn renderPlist(allocator: std.mem.Allocator, exe: []const u8) ![]u8 {
     const program_args = if (appBundlePath(exe)) |bundle|
-        try std.fmt.allocPrint(allocator, PROGRAM_ARGS_VIA_OPEN, .{bundle})
+        try allocator.print(PROGRAM_ARGS_VIA_OPEN, .{bundle})
     else
-        try std.fmt.allocPrint(allocator, PROGRAM_ARGS_DIRECT, .{exe});
+        try allocator.print(PROGRAM_ARGS_DIRECT, .{exe});
     defer allocator.free(program_args);
 
-    return std.fmt.allocPrint(allocator,
+    return allocator.print(
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
@@ -167,7 +167,7 @@ test "renderPlist 는 번들 실행을 open 경유로 적는다" {
     const plist = try renderPlist(allocator, "/Applications/TildaZ.app/Contents/MacOS/tildaz");
     defer allocator.free(plist);
     // label 은 빌드마다 다르므로 (`-Drelease`) 기대값도 `LABEL` 로 만든다.
-    const expected = try std.fmt.allocPrint(allocator,
+    const expected = try allocator.print(
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
@@ -196,7 +196,7 @@ test "renderPlist 는 번들 밖 실행이면 바이너리를 직접 적는다" 
     const allocator = std.testing.allocator;
     const plist = try renderPlist(allocator, "/usr/local/bin/tildaz");
     defer allocator.free(plist);
-    const expected = try std.fmt.allocPrint(allocator,
+    const expected = try allocator.print(
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">

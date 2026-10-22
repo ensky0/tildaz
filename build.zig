@@ -138,7 +138,7 @@ pub fn build(b: *std.Build) void {
     // 우선. 빌드 시간 손해는 dev 경험에서 회복. 릴리즈는 GitHub Actions가
     // `-Doptimize=ReleaseFast`를 명시한다.
     const optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "optimize",
         "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택 (default: Debug)",
     ) orelse .debug;

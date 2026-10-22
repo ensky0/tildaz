@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const host = switch (builtin.os.tag) {
+const host = switch (builtin.target.os.tag) {
     .windows => @import("host/windows.zig"),
     .macos => @import("host/macos.zig"),
     .linux => @import("host/linux_wayland.zig"),
@@ -45,7 +45,7 @@ fn tildazLogFn(
 }
 
 /// ReleaseFast에서도 crash 원인을 표시하는 panic handler
-pub fn panic(msg: []const u8, st: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+pub fn panic(msg: []const u8, st: ?*std.lang.StackTrace, ret_addr: ?usize) noreturn {
     const addr = ret_addr orelse @returnAddress();
     host.showPanic(msg, addr, st);
 }
@@ -68,7 +68,7 @@ fn printOptionError(io: std.Io, comptime fmt: []const u8, args: anytype) noretur
     // 인자는 사용자가 준 문자열이라 길이 상한이 없다. 버퍼를 넘기면 (예: 아주 긴 경로를
     // 옵션 자리에 넣은 경우) 값을 뺀 일반 안내로 떨어뜨린다 — 안내가 사라지는 것보다 낫다.
     var buf: [1024]u8 = undefined;
-    console.errLine(io, std.fmt.bufPrint(&buf, fmt, args) catch messages.option_error_fallback_msg);
+    console.errLine(io, std.mem.print(&buf, fmt, args) catch messages.option_error_fallback_msg);
     std.process.exit(2);
 }
 
@@ -122,7 +122,7 @@ pub fn main(init: std.process.Init) void {
         var buf: [256]u8 = undefined;
         // 버전 문자열은 `app_version.string` 하나에서 온다 — About 다이얼로그 · 로그의
         // `[boot]` 줄과 같은 값이라야 사용자가 어디서 읽어 오든 같은 것을 말한다.
-        const line = std.fmt.bufPrint(&buf, messages.version_line_format, .{app_version.string}) catch
+        const line = std.mem.print(&buf, messages.version_line_format, .{app_version.string}) catch
             app_version.string;
         console.outLine(rt.io, line);
         std.process.exit(0);
@@ -169,7 +169,7 @@ pub fn main(init: std.process.Init) void {
                     i += 1;
                 } else |_| {}
             }
-        } else if (builtin.os.tag == .macos and std.mem.startsWith(u8, arg, "-psn_")) {
+        } else if (builtin.target.os.tag == .macos and std.mem.startsWith(u8, arg, "-psn_")) {
             // macOS LaunchServices 가 앱을 띄우며 붙일 수 있는 process serial number.
             // 우리가 준 인자가 아니라서 아래 unknown 처리에 걸리면 `open TildaZ.app` 이
             // 통째로 실패한다. Qt (`QCoreApplication`) · Chromium 도 같은 접두사로
@@ -193,7 +193,7 @@ pub fn main(init: std.process.Init) void {
         desktop_setup.run(rt, init.gpa, action) catch |err| {
             log.appendLine("desktop", "--desktop {s} failed: {s}", .{ @tagName(action), @errorName(err) });
             var buf: [256]u8 = undefined;
-            console.errLine(rt.io, std.fmt.bufPrint(&buf, messages.desktop_failed_format, .{ @tagName(action), @errorName(err) }) catch @errorName(err));
+            console.errLine(rt.io, std.mem.print(&buf, messages.desktop_failed_format, .{ @tagName(action), @errorName(err) }) catch @errorName(err));
             std.process.exit(1);
         };
         std.process.exit(0);
@@ -204,7 +204,7 @@ pub fn main(init: std.process.Init) void {
     // 자기 DE 의 keyboard shortcut 설정에서 이 명령에 단축키 binding —
     // desktop/compositor binding에서 worker의 hotkey toggle을 전달한다.
     if (toggle_index) |index| {
-        if (builtin.os.tag == .linux) {
+        if (builtin.target.os.tag == .linux) {
             instance_context.setWorkerIndex(index);
             initLogging(rt, arena);
             const si = @import("host/linux/single_instance.zig");
@@ -341,7 +341,7 @@ fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool
 
         // config index별 TildaZ worker가 모두 실행 중일 때만 worker 0에 새 instance
         // 요청을 보낸다. 하나라도 빠졌다면 위 loop가 누락 worker를 전부 시작했다.
-        if (comptime builtin.os.tag == .windows) break :launcher true;
+        if (comptime builtin.target.os.tag == .windows) break :launcher true;
         try requestNewInstance(rt, allocator);
         break :launcher false;
     };

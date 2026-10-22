@@ -28,7 +28,7 @@ pub const max_index: u32 = 9;
 pub fn message(buf: []u8, result: HotkeyValidation) []const u8 {
     return switch (result) {
         .available => "",
-        .duplicate => |index| std.fmt.bufPrint(buf, messages.new_instance_hotkey_duplicate_format, .{index}) catch messages.new_instance_hotkey_duplicate_fallback,
+        .duplicate => |index| std.mem.print(buf, messages.new_instance_hotkey_duplicate_format, .{index}) catch messages.new_instance_hotkey_duplicate_fallback,
         .check_failed => messages.new_instance_hotkey_check_failed_msg,
     };
 }

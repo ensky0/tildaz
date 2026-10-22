@@ -58,7 +58,7 @@ const Key = struct {
     value: u32,
 
     fn fromItem(item: *const software_terminal.GlyphItem) Key {
-        const source: u8 = @intFromEnum(item.font);
+        const source: u8 = @backingInt(item.font);
         return switch (item.ref) {
             // #375 — codepoint 경로는 `face` 가 `codepoint_face` 로 고정이라 face 정보가
             // 키에 없다. 변종을 `value` 의 상위 비트에 실어 bold `A` 와 regular `A` 가
@@ -82,7 +82,7 @@ const Key = struct {
         const stroke_q: u32 = @round(@max(0.0, stroke * 16.0));
         return .{
             .source = icon_source,
-            .face = @intFromEnum(kind),
+            .face = @backingInt(kind),
             .value = (size & 0xFFFF) | (stroke_q << 16),
         };
     }

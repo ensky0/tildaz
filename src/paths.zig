@@ -42,8 +42,8 @@ pub fn configPathFor(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u
     const dir = try configDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}config_{d}.toml", .{ dir, sep, index });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}config_{d}.toml", .{ dir, sep, index });
 }
 
 pub fn logPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
@@ -68,7 +68,7 @@ pub fn logPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 /// 진단된 사안인데 그 진단 채널이 측정으로 오염된다 (macOS 실기 검증에서 실제로 겪었다).
 pub fn logFileName(buf: []u8, role: instance_context.Role, index: u32) ![]const u8 {
     return switch (role) {
-        .worker => try std.fmt.bufPrint(buf, "tildaz_{d}.log", .{index}),
+        .worker => try std.mem.print(buf, "tildaz_{d}.log", .{index}),
         // index 를 붙이지 않는다 — 창 타이틀 (`instances.stress_window_title`) 과 같은
         // 이유다. 측정은 한 번에 하나만 돌리고, 어떤 index 로 실행하든 worker 의 파일에서
         // 빠지는 것이 목적이다.
@@ -77,38 +77,38 @@ pub fn logFileName(buf: []u8, role: instance_context.Role, index: u32) ![]const 
 }
 
 fn logDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const appdata = try rt.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ appdata, app_id.name });
-    } else if (builtin.os.tag == .macos) {
+        return allocator.print("{s}\\{s}", .{ appdata, app_id.name });
+    } else if (builtin.target.os.tag == .macos) {
         // `~/Library/Logs/<name>/` — 예전에는 `~/Library/Logs/` 바로 아래에 파일을 두어
         // 세 OS 중 여기만 앱 디렉터리가 없었다 (#654 ⓓ). Apple HIG 는 앱 디렉터리도
         // 표준으로 인정하고, 이 자리가 갈려야 dev 와 릴리즈 로그가 섞이지 않는다.
         const home = try rt.envAlloc(allocator, "HOME");
         defer allocator.free(home);
-        return std.fmt.allocPrint(allocator, "{s}/Library/Logs/{s}", .{ home, app_id.name });
+        return allocator.print("{s}/Library/Logs/{s}", .{ home, app_id.name });
     } else {
         const base = try stateHome(rt, allocator);
         defer allocator.free(base);
-        return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
+        return allocator.print("{s}/{s}", .{ base, app_id.name });
     }
 }
 
 fn logPathFromDir(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ dir, sep, name });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}{s}", .{ dir, sep, name });
 }
 
 pub fn configDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const appdata = try rt.envAlloc(allocator, "APPDATA");
         defer allocator.free(appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ appdata, app_id.name });
+        return allocator.print("{s}\\{s}", .{ appdata, app_id.name });
     }
     const base = try configHome(rt, allocator);
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
+    return allocator.print("{s}/{s}", .{ base, app_id.name });
 }
 
 /// Linux · macOS 사용자 config base. 유효한 절대 XDG_CONFIG_HOME을 우선하고
@@ -131,7 +131,7 @@ pub fn dataHome(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 pub fn backupDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const base = try stateDir(rt, allocator);
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/backup", .{base});
+    return allocator.print("{s}/backup", .{base});
 }
 
 /// #700 — Linux 상태 폴더 `$XDG_STATE_HOME/<id>` (로그와 같은 곳). 사용자 설정이 아니라 앱이
@@ -139,7 +139,7 @@ pub fn backupDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 pub fn stateDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const base = try stateHome(rt, allocator);
     defer allocator.free(base);
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, app_id.name });
+    return allocator.print("{s}/{s}", .{ base, app_id.name });
 }
 
 /// Linux 사용자 state base. log가 여기에 tildaz/를 붙인다.
@@ -167,7 +167,7 @@ fn resolveXdgHome(
     if (candidate) |dir| {
         if (dir.len != 0 and std.Io.Dir.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
     }
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ home, fallback_suffix });
+    return allocator.print("{s}{s}", .{ home, fallback_suffix });
 }
 
 pub fn ensureConfigDir(rt: Runtime, allocator: std.mem.Allocator) !void {
@@ -185,16 +185,16 @@ pub fn ensureConfigDir(rt: Runtime, allocator: std.mem.Allocator) !void {
 /// 예전에는 macOS 만 `TildaZ` (대문자) 였고 (ⓐ), `/run` 이 Windows · Linux cache 에는
 /// 붙고 macOS · Linux runtime 에는 없었다 (ⓑ). 이제 전부 `<base>/<name>/run` 이다.
 pub fn lockDir(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const local_appdata = try rt.envAlloc(allocator, "LOCALAPPDATA");
         defer allocator.free(local_appdata);
-        return std.fmt.allocPrint(allocator, "{s}\\{s}\\run", .{ local_appdata, app_id.name });
+        return allocator.print("{s}\\{s}\\run", .{ local_appdata, app_id.name });
     }
 
-    if (builtin.os.tag == .macos) {
+    if (builtin.target.os.tag == .macos) {
         const home = try rt.envAlloc(allocator, "HOME");
         defer allocator.free(home);
-        return std.fmt.allocPrint(allocator, "{s}/Library/Caches/{s}/run", .{ home, app_id.name });
+        return allocator.print("{s}/Library/Caches/{s}/run", .{ home, app_id.name });
     }
 
     if (rt.envAlloc(allocator, "XDG_RUNTIME_DIR") catch null) |runtime_dir| {
@@ -219,25 +219,25 @@ fn linuxLockDir(
     cache_dir: ?[]const u8,
     home: []const u8,
 ) ![]u8 {
-    if (runtime_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/{s}/run", .{ dir, app_id.name });
-    if (cache_dir) |dir| return std.fmt.allocPrint(allocator, "{s}/{s}/run", .{ dir, app_id.name });
-    return std.fmt.allocPrint(allocator, "{s}/.cache/{s}/run", .{ home, app_id.name });
+    if (runtime_dir) |dir| return allocator.print("{s}/{s}/run", .{ dir, app_id.name });
+    if (cache_dir) |dir| return allocator.print("{s}/{s}/run", .{ dir, app_id.name });
+    return allocator.print("{s}/.cache/{s}/run", .{ home, app_id.name });
 }
 
 pub fn instanceLockPath(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.lock", .{ dir, sep, index });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}instance{d}.lock", .{ dir, sep, index });
 }
 
 pub fn instanceEndpointStatePath(rt: Runtime, allocator: std.mem.Allocator, index: u32) ![]u8 {
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.endpoint", .{ dir, sep, index });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}instance{d}.endpoint", .{ dir, sep, index });
 }
 
 /// #510 — GNOME · Cinnamon Shell extension 이 전역 hotkey grab 결과를 남기는 자리.
@@ -260,8 +260,8 @@ pub fn instanceHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index:
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.hotkey", .{ dir, sep, index });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}instance{d}.hotkey", .{ dir, sep, index });
 }
 
 /// #758 — worker 가 **config 내용을 무시하고 기본값으로 시작했다** 는 표시를 남기는 자리
@@ -273,8 +273,8 @@ pub fn instanceIgnoredConfigPath(rt: Runtime, allocator: std.mem.Allocator, inde
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}instance{d}.config-ignored", .{ dir, sep, index });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}instance{d}.config-ignored", .{ dir, sep, index });
 }
 
 /// #708 — 업그레이드 넘어가는 동안 옛 확장이 쓰는 자리. v0.10.1 까지의 확장은 runtime
@@ -285,7 +285,7 @@ pub fn instanceIgnoredConfigPath(rt: Runtime, allocator: std.mem.Allocator, inde
 /// 그때도 `/run` 이 있어서 바뀌지 않았다. 새 확장은 켜질 때 이 파일을 지운다.
 /// 몇 릴리즈 뒤 (옛 확장이 남은 사용자가 없을 때) 이 함수와 그 호출을 지운다.
 pub fn legacyHotkeyStatePath(rt: Runtime, allocator: std.mem.Allocator, index: u32) !?[]u8 {
-    if (builtin.os.tag != .linux) return null;
+    if (builtin.target.os.tag != .linux) return null;
     return legacyHotkeyStatePathFor(allocator, app_id.is_dev, rt.environ.getPosix("XDG_RUNTIME_DIR"), index);
 }
 
@@ -293,7 +293,7 @@ fn legacyHotkeyStatePathFor(allocator: std.mem.Allocator, is_dev: bool, runtime_
     if (is_dev) return null;
     const dir = runtime_dir orelse return null;
     if (dir.len == 0 or !std.Io.Dir.path.isAbsolute(dir)) return null;
-    return try std.fmt.allocPrint(allocator, "{s}/tildaz/instance{d}.hotkey", .{ dir, index });
+    return try allocator.print("{s}/tildaz/instance{d}.hotkey", .{ dir, index });
 }
 
 test "#708 the old extension's hotkey state path is the release runtime path without /run" {
@@ -312,8 +312,8 @@ pub fn launcherLockPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const dir = try lockDir(rt, allocator);
     defer allocator.free(dir);
     try ensureDir(rt, dir);
-    const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
-    return std.fmt.allocPrint(allocator, "{s}{c}launcher.lock", .{ dir, sep });
+    const sep: u8 = if (builtin.target.os.tag == .windows) '\\' else '/';
+    return allocator.print("{s}{c}launcher.lock", .{ dir, sep });
 }
 
 /// 중간 단계 포함 재귀 디렉토리 생성 (`~/.local/state/tildaz` 같이 깊은 경로용).
@@ -325,7 +325,7 @@ pub fn ensureDir(rt: Runtime, dir: []const u8) !void {
 }
 
 fn currentPid() u32 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => std.os.windows.GetCurrentProcessId(),
         .linux => @intCast(std.os.linux.getpid()),
         else => @intCast(std.c.getpid()),
@@ -348,7 +348,7 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
     // 대상이 없으면 `realPathFileAbsoluteAlloc` 이 실패하고 `path` 그대로 새로 만든다.
     // std 문서가 이 함수의 플랫폼 지원이 제한적이라고 적어서 Windows 는 쓰지 않는다 —
     // 거기서 이 함수가 쓰는 것은 우리 config 뿐이고 링크로 관리하는 관례도 드물다.
-    const resolved: ?[:0]u8 = if (builtin.os.tag == .windows)
+    const resolved: ?[:0]u8 = if (builtin.target.os.tag == .windows)
         null
     else
         std.Io.Dir.realPathFileAbsoluteAlloc(rt.io, path, allocator) catch null;
@@ -359,7 +359,7 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
     // `Permissions.default_file` (POSIX 0o666 + umask) 로 바꾸면 umask 에 따라
     // 결과가 갈리므로 명시값을 유지한다. Windows 는 mode 개념이 없어 기본값.
     var permissions: std.Io.File.Permissions =
-        if (builtin.os.tag == .windows) .default_file else .fromMode(0o644);
+        if (builtin.target.os.tag == .windows) .default_file else .fromMode(0o644);
     var keep_permissions = false;
 
     // #451 — 파일 IO 가 전부 `Io` 를 받는다. `readToEndAlloc` 은 `File.Reader` 의
@@ -367,7 +367,7 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
     // `permissions` 로 이름과 타입이 바뀌었다 (`fs.File.Mode` ➡️ `Io.File.Permissions`).
     if (std.Io.Dir.openFileAbsolute(rt.io, target, .{})) |existing| {
         defer existing.close(rt.io);
-        if (builtin.os.tag != .windows) {
+        if (builtin.target.os.tag != .windows) {
             if (existing.stat(rt.io)) |stat| {
                 permissions = stat.permissions;
                 keep_permissions = true;
@@ -380,7 +380,7 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
         } else |_| {}
     } else |_| {}
 
-    const temp_path = try std.fmt.allocPrint(allocator, "{s}.tildaz-{d}.tmp", .{ target, currentPid() });
+    const temp_path = try allocator.print("{s}.tildaz-{d}.tmp", .{ target, currentPid() });
     defer allocator.free(temp_path);
     errdefer std.Io.Dir.deleteFileAbsolute(rt.io, temp_path) catch {};
     {
@@ -407,7 +407,7 @@ pub fn writeFileIfChanged(rt: Runtime, allocator: std.mem.Allocator, path: []con
 fn testRuntime() Runtime {
     return .{
         .io = std.testing.io,
-        .environ = if (builtin.os.tag == .windows)
+        .environ = if (builtin.target.os.tag == .windows)
             .{ .block = .global }
         else
             .{ .block = .{ .slice = &[_:null]?[*:0]const u8{"HOME=/home/test"} } },
@@ -415,7 +415,7 @@ fn testRuntime() Runtime {
 }
 
 test "#700 writeFileIfChanged keeps links and permissions of a user's file" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const allocator = std.testing.allocator;
@@ -470,10 +470,10 @@ test "로그 경로가 OS 표준 위치와 worker index 를 따른다" {
 
     // 기대값은 `app_id.name` 으로 만든다 — `-Drelease` 로 이름이 갈리므로 리터럴로 박으면
     // 한쪽 빌드에서만 통과한다 (#654). macOS 도 이제 앱 디렉터리를 거친다 (ⓓ).
-    const expected = switch (builtin.os.tag) {
-        .windows => try std.fmt.allocPrint(allocator, "\\{s}\\tildaz_7.log", .{app_id.name}),
-        .macos => try std.fmt.allocPrint(allocator, "/Library/Logs/{s}/tildaz_7.log", .{app_id.name}),
-        else => try std.fmt.allocPrint(allocator, "/{s}/tildaz_7.log", .{app_id.name}),
+    const expected = switch (builtin.target.os.tag) {
+        .windows => try allocator.print("\\{s}\\tildaz_7.log", .{app_id.name}),
+        .macos => try allocator.print("/Library/Logs/{s}/tildaz_7.log", .{app_id.name}),
+        else => try allocator.print("/{s}/tildaz_7.log", .{app_id.name}),
     };
     defer allocator.free(expected);
     try std.testing.expect(std.mem.endsWith(u8, path, expected));
@@ -503,7 +503,7 @@ test "log path builder preserves paths beyond the old fixed limit" {
 
     try std.testing.expect(path.len > 1024);
     try std.testing.expect(std.mem.startsWith(u8, path, long_dir));
-    try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.os.tag) {
+    try std.testing.expect(std.mem.endsWith(u8, path, switch (builtin.target.os.tag) {
         .windows => "\\tildaz_42.log",
         else => "/tildaz_42.log",
     }));
@@ -517,19 +517,19 @@ test "Linux lock directory follows runtime then cache fallback order" {
     // 이름이 갈리므로 리터럴로 박으면 한쪽 빌드에서만 통과한다.
     const runtime = try linuxLockDir(allocator, "/run/user/1000", "/cache", "/home/test");
     defer allocator.free(runtime);
-    const expect_runtime = try std.fmt.allocPrint(allocator, "/run/user/1000/{s}/run", .{app_id.name});
+    const expect_runtime = try allocator.print("/run/user/1000/{s}/run", .{app_id.name});
     defer allocator.free(expect_runtime);
     try std.testing.expectEqualStrings(expect_runtime, runtime);
 
     const cache = try linuxLockDir(allocator, null, "/cache", "/home/test");
     defer allocator.free(cache);
-    const expect_cache = try std.fmt.allocPrint(allocator, "/cache/{s}/run", .{app_id.name});
+    const expect_cache = try allocator.print("/cache/{s}/run", .{app_id.name});
     defer allocator.free(expect_cache);
     try std.testing.expectEqualStrings(expect_cache, cache);
 
     const home = try linuxLockDir(allocator, null, null, "/home/test");
     defer allocator.free(home);
-    const expect_home = try std.fmt.allocPrint(allocator, "/home/test/.cache/{s}/run", .{app_id.name});
+    const expect_home = try allocator.print("/home/test/.cache/{s}/run", .{app_id.name});
     defer allocator.free(expect_home);
     try std.testing.expectEqualStrings(expect_home, home);
 }

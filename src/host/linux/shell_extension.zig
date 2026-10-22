@@ -146,7 +146,7 @@ fn syncFile(rt: Runtime, allocator: std.mem.Allocator, source_path: []const u8, 
 fn compileGnomeSchemas(rt: Runtime, allocator: std.mem.Allocator, extension_dir: []const u8) !void {
     const schemas_dir = try std.Io.Dir.path.join(allocator, &.{ extension_dir, "schemas" });
     defer allocator.free(schemas_dir);
-    const temp_name = try std.fmt.allocPrint(allocator, ".tildaz-compile-{d}", .{std.c.getpid()});
+    const temp_name = try allocator.print(".tildaz-compile-{d}", .{std.c.getpid()});
     defer allocator.free(temp_name);
     const temp_dir = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, temp_name });
     defer allocator.free(temp_dir);
@@ -198,7 +198,7 @@ test "#719 확장의 기본 키 표는 앱의 Defaults.hotkeyFor 와 같다" {
         const rendered = try render(std.testing.allocator, js);
         defer std.testing.allocator.free(rendered);
         var app_line_buf: [64]u8 = undefined;
-        const app_line = try std.fmt.bufPrint(&app_line_buf, "const APP = \"{s}\";", .{app_id.name});
+        const app_line = try std.mem.print(&app_line_buf, "const APP = \"{s}\";", .{app_id.name});
         try std.testing.expect(std.mem.indexOf(u8, rendered, app_line) != null);
         try std.testing.expectEqual(app_id.is_dev, std.mem.endsWith(u8, app_id.name, "-dev"));
     }

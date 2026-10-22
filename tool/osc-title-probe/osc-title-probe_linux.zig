@@ -37,7 +37,7 @@ const posix = std.posix;
 const linux = std.os.linux;
 
 comptime {
-    if (builtin.os.tag != .linux) {
+    if (builtin.target.os.tag != .linux) {
         @compileError("osc-title-probe 는 Linux 전용 (POSIX PTY). Windows 는 ConPTY 용 별도 도구가 필요하다.");
     }
 }
@@ -237,12 +237,12 @@ const Parser = struct {
         switch (code) {
             0, 2 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
                 rec.add(.title, line[0..n]);
             },
             1 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
                 rec.add(.icon, line[0..n]);
             },
             // 색 질의 — ghostty-vt 가 terminal 의 현재 색으로 답한다.
@@ -250,10 +250,10 @@ const Parser = struct {
                 if (std.mem.eql(u8, payload, "?")) {
                     const color = if (code == 11) theme_bg else theme_fg;
                     var out: [64]u8 = undefined;
-                    const resp = std.fmt.bufPrint(&out, "\x1b]{d};{s}\x1b\\", .{ code, color }) catch return;
+                    const resp = std.mem.print(&out, "\x1b]{d};{s}\x1b\\", .{ code, color }) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query -> {s}", .{ code, color }) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC {d} color query -> {s}", .{ code, color }) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -263,14 +263,14 @@ const Parser = struct {
                 if (std.mem.endsWith(u8, payload, "?")) {
                     const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
                     var out: [64]u8 = undefined;
-                    const resp = std.fmt.bufPrint(
+                    const resp = std.mem.print(
                         &out,
                         "\x1b]4;{s};rgb:8080/8080/8080\x1b\\",
                         .{payload[0..idx_end]},
                     ) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -344,7 +344,7 @@ const Parser = struct {
                     // 2027 (grapheme cluster) 은 tildaz 가 켠다 → set(1).
                     // 나머지는 recognized-but-reset(2) 로 답한다 (근사).
                     const value: u8 = if (first_param == 2027) 1 else 2;
-                    const resp = std.fmt.bufPrint(&out, "\x1b[?{d};{d}$y", .{ first_param, value }) catch return;
+                    const resp = std.mem.print(&out, "\x1b[?{d};{d}$y", .{ first_param, value }) catch return;
                     rec.respond(resp);
                     const n = render(&line, "CSI ", s);
                     rec.add(.answered, line[0..n]);
@@ -380,7 +380,7 @@ fn render(out: []u8, prefix: []const u8, s: []const u8) usize {
                 n += 1;
             }
         } else {
-            const hex = std.fmt.bufPrint(out[n..], "\\x{x:0>2}", .{c}) catch break;
+            const hex = std.mem.print(out[n..], "\\x{x:0>2}", .{c}) catch break;
             n += hex.len;
         }
     }
@@ -399,7 +399,7 @@ fn buildEnvp(
 ) ![*:null]const ?[*:0]const u8 {
     const buf = try arena.allocSentinel(?[*:0]const u8, map.count(), null);
     for (map.keys(), map.values(), 0..) |key, value, i| {
-        buf[i] = (try std.fmt.allocPrintSentinel(arena, "{s}={s}", .{ key, value }, 0)).ptr;
+        buf[i] = (try arena.printSentinel("{s}={s}", .{ key, value }, 0)).ptr;
     }
     return buf.ptr;
 }

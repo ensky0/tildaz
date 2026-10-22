@@ -31,7 +31,7 @@ pub const Tag = enum(u8) {
     search_match = 2,
 
     pub fn value(self: Tag) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

@@ -896,13 +896,13 @@ pub const Window = struct {
             // 두 경로의 실패 원인이 겹치지 않으므로 안내도 갈라야 한다 — 위치 표기는
             // 훅 설치가 막힌 것이고, 라벨은 OS hotkey 표가 이미 차 있는 것이다.
             const msg = if (self.hotkey_code) |code|
-                std.fmt.bufPrint(
+                std.mem.print(
                     &msg_buf,
                     messages.hotkey_hook_failed_format,
                     .{ physical_key.name(code), self.hotkey_modifiers, cfg_path },
                 ) catch messages.hotkey_hook_failed_fallback_msg
             else
-                std.fmt.bufPrint(
+                std.mem.print(
                     &msg_buf,
                     messages.hotkey_registration_failed_format,
                     .{ self.hotkey_vkey, self.hotkey_modifiers, cfg_path },

@@ -36,11 +36,11 @@ const builtin = @import("builtin");
 /// #451 — Linux 경로의 `readlink` 가 `Io` 를 받는다. macOS 는 `proc_pidinfo` 라 안 쓰고,
 /// Windows 는 항상 `null` 이라 역시 안 쓴다 — 세 platform 시그니처를 맞추려고 받는다.
 pub fn ofPid(io: std.Io, pid: i32, buf: []u8) ?[]const u8 {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .linux => {
             // `/proc/<pid>/cwd` 는 실제 디렉토리를 가리키는 심볼릭 링크다.
             var link_buf: [64]u8 = undefined;
-            const link = std.fmt.bufPrint(&link_buf, "/proc/{d}/cwd", .{pid}) catch return null;
+            const link = std.mem.print(&link_buf, "/proc/{d}/cwd", .{pid}) catch return null;
             // #451 — `fs.readLinkAbsolute` ➡️ `Io.Dir.readLinkAbsolute`. **길이를 돌려준다**
             // (예전에는 슬라이스였다). 버퍼는 그대로 따로 받아서 옮긴다 — 호출자 버퍼가
             // `max_path_bytes` 보다 작을 수 있고, 그 경우를 `null` 로 걸러야 한다.
@@ -112,7 +112,7 @@ extern "c" fn proc_pidinfo(
 test "process_cwd — 자기 프로세스의 cwd 를 조회한다 (Windows 는 미지원)" {
     var buf: [4200]u8 = undefined;
 
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime builtin.target.os.tag == .windows) {
         // Windows 는 OSC 7 주입으로 간다 — 조회는 항상 null.
         try std.testing.expect(ofPid(std.testing.io, 0, &buf) == null);
         return;
@@ -127,7 +127,7 @@ test "process_cwd — 자기 프로세스의 cwd 를 조회한다 (Windows 는 �
 }
 
 test "process_cwd — 없는 pid 는 null" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     var buf: [4200]u8 = undefined;
     // pid 1 은 macOS 에서 EPERM (실측), Linux 에서도 readlink 가 막힌다. 어느 쪽이든
     // 조회 실패는 null 로 나와야 한다 (호출자가 홈으로 열화).
@@ -135,7 +135,7 @@ test "process_cwd — 없는 pid 는 null" {
 }
 
 test "process_cwd — 버퍼가 모자라면 null" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     var small: [4]u8 = undefined;
     try std.testing.expect(ofPid(std.testing.io, std.c.getpid(), &small) == null);
 }

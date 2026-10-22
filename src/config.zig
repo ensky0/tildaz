@@ -40,8 +40,8 @@ const WCHAR = u16;
 pub const MAX_FONT_FAMILIES = font_constants.MAX_CHAIN;
 
 // Linux 는 이 둘이 아닌 `else` 분기 — 별 술어를 두지 않는다.
-const is_windows = builtin.os.tag == .windows;
-const is_macos = builtin.os.tag == .macos;
+const is_windows = builtin.target.os.tag == .windows;
+const is_macos = builtin.target.os.tag == .macos;
 
 // --- DockPosition (cross-platform) ---
 
@@ -440,7 +440,7 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
     const cinnamon_js = @embedFile("cinnamon_extension_js");
     for (keys) |key| {
         var text_buf: [32]u8 = undefined;
-        const text = try std.fmt.bufPrint(&text_buf, "ctrl+{s}", .{key});
+        const text = try std.mem.print(&text_buf, "ctrl+{s}", .{key});
         // ① Linux 등록 이름 (sway · Hyprland · COSMIC · GNOME/Cinnamon 의 앱 쪽).
         const linux = LinuxHotkey.fromString(text) orelse return error.TestUnexpectedResult;
         const name = linuxKeysymName(linux.keysym) orelse {
@@ -451,7 +451,7 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
         //    한 글자 키와 F 키는 규칙으로 만들므로 이름 문자열이 없다.
         if (name.len > 1 and !(name[0] == 'F' and name.len <= 3)) {
             var quoted_buf: [32]u8 = undefined;
-            const quoted = try std.fmt.bufPrint(&quoted_buf, "key = \"{s}\"", .{name});
+            const quoted = try std.mem.print(&quoted_buf, "key = \"{s}\"", .{name});
             for ([_][]const u8{ gnome_js, cinnamon_js }) |js| {
                 if (std.mem.indexOf(u8, js, quoted) == null) {
                     std.debug.print("확장 JS 에 없음: {s}\n", .{quoted});
@@ -461,7 +461,7 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
         }
         // ③ 이 OS 의 캡처 — 캡처한 글자가 다시 같은 hotkey 로 읽혀야 한다.
         const native = Hotkey.fromString(text) orelse return error.TestUnexpectedResult;
-        const code: u32 = switch (builtin.os.tag) {
+        const code: u32 = switch (builtin.target.os.tag) {
             .linux => native.keysym,
             .windows => native.vkey,
             .macos => native.keycode,
@@ -558,7 +558,7 @@ fn configKeyName(key: HotkeyNamedKey) []const u8 {
 /// 캡처 (`capturedHotkeyText`) 에는 영향이 없다.
 fn tokenFromNativeKey(native_key: u32) ?HotkeyKeyToken {
     // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다. 파서의 글자는 소문자다.
-    const key = if (builtin.os.tag == .linux and native_key >= 'A' and native_key <= 'Z') native_key + 0x20 else native_key;
+    const key = if (builtin.target.os.tag == .linux and native_key >= 'A' and native_key <= 'Z') native_key + 0x20 else native_key;
     for (std.enums.values(HotkeyNamedKey)) |named| {
         const token: HotkeyKeyToken = .{ .named = named };
         if (nativeKeyOf(token) == key) return token;
@@ -572,7 +572,7 @@ fn tokenFromNativeKey(native_key: u32) ?HotkeyKeyToken {
 
 fn nativeKeyOf(token: HotkeyKeyToken) u32 {
     const hotkey = Hotkey.fromParsed(.{ .ctrl = false, .shift = false, .alt = false, .super = false, .key = token });
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => hotkey.keysym,
         .windows => hotkey.vkey,
         .macos => hotkey.keycode,
@@ -605,7 +605,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
 /// config 가 source of truth 이며 F1 을 별도로 hardcode 하지 않는다. 모양은 `[keys]` 의 메뉴
 /// 글자와 같다 (`bindingDisplay` — 글자는 대문자, macOS 는 `Control` `Option` `Shift` `Cmd`).
 pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
-    const native_key: u32 = switch (builtin.os.tag) {
+    const native_key: u32 = switch (builtin.target.os.tag) {
         .linux => hotkey.keysym,
         .windows => hotkey.vkey,
         .macos => hotkey.keycode,
@@ -626,7 +626,7 @@ pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
 test "configured hotkey display is derived from the parsed native value" {
     var buf: [64]u8 = undefined;
     const parsed = Hotkey.fromString("ctrl+shift+t").?;
-    const expected = if (builtin.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
+    const expected = if (builtin.target.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
     try std.testing.expectEqualStrings(expected, hotkeyDisplay(&buf, parsed));
     // #760 — 화면 글자는 `[keys]` 메뉴와 같은 모양이다. 예전에는 캡처 글자를 그대로 써서
     // Linux 가 `Ctrl+Page_Up`, macOS 가 `Command+` 로 보였다.
@@ -815,7 +815,7 @@ test "#760 — 캡처는 세 OS 가 같은 글자로 적는다" {
         try std.testing.expectEqualStrings(if (is_macos) c.mac else c.pc, text);
     }
     // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다.
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         var buf: [64]u8 = undefined;
         try std.testing.expectEqualStrings("ctrl+shift+t", capturedHotkeyText(&buf, 'T', ctrl | CAPTURE_MOD_SHIFT).?);
     }
@@ -868,7 +868,7 @@ test "modifier-free capture only accepts function keys" {
 }
 
 test "config parser rejects unsafe global hotkeys" {
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         try std.testing.expect(Hotkey.fromString("f3") != null);
         try std.testing.expect(Hotkey.fromString("t") == null);
         try std.testing.expect(Hotkey.fromString("shift+t") == null);
@@ -1127,7 +1127,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
 
     for ('a'..'z' + 1) |c| {
         const letter: u8 = @intCast(c);
-        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(letter)}) catch unreachable;
+        const name = std.mem.print(&name_buf, "Key{c}", .{std.ascii.toUpper(letter)}) catch unreachable;
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = letter }),
@@ -1136,7 +1136,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
     for ('0'..'9' + 1) |c| {
         const digit: u8 = @intCast(c);
-        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{digit}) catch unreachable;
+        const name = std.mem.print(&name_buf, "Digit{c}", .{digit}) catch unreachable;
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = digit }),
@@ -1909,7 +1909,7 @@ pub fn defaultConfigToml(
     try fw.writeAll("]");
     const glyph_fallback_toml = fb_fbs.buffered();
 
-    const head = try std.fmt.allocPrint(allocator,
+    const head = try allocator.print(
         \\# TildaZ config. CONFIG.md explains every setting.
         \\
         \\# Global hotkey. Works even when TildaZ is not focused.
@@ -2575,11 +2575,11 @@ pub fn fallbackCandidate(hotkey: Hotkey) ?FallbackCandidate {
 fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
     var name_buf: [8]u8 = undefined;
     if (keysym >= 'a' and keysym <= 'z') {
-        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(@intCast(keysym))}) catch return null;
+        const name = std.mem.print(&name_buf, "Key{c}", .{std.ascii.toUpper(@intCast(keysym))}) catch return null;
         return physical_key.fromName(name);
     }
     if (keysym >= '0' and keysym <= '9') {
-        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{@as(u8, @intCast(keysym))}) catch return null;
+        const name = std.mem.print(&name_buf, "Digit{c}", .{@as(u8, @intCast(keysym))}) catch return null;
         return physical_key.fromName(name);
     }
     return switch (keysym) {
@@ -3092,9 +3092,9 @@ fn pairBindingDisplay(buf: []u8, bindings: []const KeyBinding, a: KeyAction, b: 
     const a_split = if (std.mem.lastIndexOfScalar(u8, a_text, '+')) |i| i + 1 else 0;
     const b_split = if (std.mem.lastIndexOfScalar(u8, b_text, '+')) |i| i + 1 else 0;
     if (std.mem.eql(u8, a_text[0..a_split], b_text[0..b_split])) {
-        return std.fmt.bufPrint(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
+        return std.mem.print(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
     }
-    return std.fmt.bufPrint(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
+    return std.mem.print(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
 }
 
 fn copyInto(buf: []u8, text: []const u8) []const u8 {
@@ -3323,7 +3323,7 @@ pub const Config = struct {
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;
         var msg_buf: [384]u8 = undefined;
-        const msg = std.fmt.bufPrint(
+        const msg = std.mem.print(
             &msg_buf,
             messages.config_hotkey_duplicate_format,
             .{ hotkeyDisplay(&key_buf, config.hotkey), owner },
@@ -3508,13 +3508,13 @@ pub const Config = struct {
                 // 받게 하면서 깨졌고, ReleaseFast 는 안전 검사가 없어 엉뚱한 안내로 떨어졌다.
                 var buf: [768]u8 = undefined;
                 const why = switch (hotkeyFailure(v.string).?) {
-                    .unknown_key => std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
+                    .unknown_key => std.mem.print(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
                         messages.config_hotkey_unknown_key_fallback_msg,
-                    .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
+                    .modifier_required => std.mem.print(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
-                    .position_aliased_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
+                    .position_aliased_on_macos => std.mem.print(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
                         messages.config_hotkey_position_aliased_fallback_msg,
-                    .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
+                    .position_absent_on_macos => std.mem.print(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
                         messages.config_hotkey_position_absent_fallback_msg,
                 };
                 log.appendLine("config", "{s}", .{why});
@@ -3667,7 +3667,7 @@ pub const Config = struct {
                         // 여기서 죽어서, 액션 하나를 `"ctrl+t"` 로 적은 (대괄호를 빠뜨린)
                         // 사용자가 터미널 전체를 잃었다.
                         var buf: [128]u8 = undefined;
-                        const path = std.fmt.bufPrint(&buf, "keys.{s}", .{name}) catch "keys";
+                        const path = std.mem.print(&buf, "keys.{s}", .{name}) catch "keys";
                         noticeBadValue(path, messages.config_notice_used_default);
                     }
                 }
@@ -4020,7 +4020,7 @@ fn parseFloat(v: toml.Value) ?f32 {
 /// 예전엔 파싱 오류가 이 함수를 지나지 않고 자기 본문에 `Path:` 를 직접 넣어,
 /// 오류 종류에 따라 경로 위치가 달랐다 (파싱은 셋째 줄, 의미 오류는 맨 끝).
 fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, config_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ config_path, message });
+    return allocator.print(messages.config_error_with_path_format, .{ config_path, message });
 }
 
 /// #501 — 로드 실패 안내 한 줄을 조립한다. 실패해도 null 을 주고 넘어간다 — 안내를
@@ -4033,7 +4033,7 @@ fn loadNoticeAlloc(
     err: anyerror,
 ) ?[]const u8 {
     var buf: [512]u8 = undefined;
-    const body = std.fmt.bufPrint(&buf, fmt, .{@errorName(err)}) catch return null;
+    const body = std.mem.print(&buf, fmt, .{@errorName(err)}) catch return null;
     return configErrorMessageAlloc(allocator, body, config_path) catch null;
 }
 
@@ -4171,7 +4171,7 @@ const config_notice_overhead: usize = 1024;
 ///
 /// 자리가 모자라면 **본문을 살린다** — 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
 fn configNoticeWithPath(buf: []u8, path: []const u8, body: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
+    return std.mem.print(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
 }
 
 test "#655 안내는 경로를 첫 줄에 붙인다 — 어느 파일을 지울지 알려 준다" {
@@ -4304,7 +4304,7 @@ pub fn showFatalNoticeIfAny(rt: Runtime) void {
     // fatal 문구는 `fatal_notice_capacity` 로 상한이 있다 (그쪽은 담을 때 이미 잘린다).
     // 꼬리를 붙일 자리만 더 잡으면 여기서 다시 잘릴 일이 없다.
     var buf: [fatal_notice_capacity + messages.config_notice_reset_hint.len + 8]u8 = undefined;
-    const body = std.fmt.bufPrint(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
+    const body = std.mem.print(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
 
     // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
     dialog.showFatal(rt, messages.config_error_title, body);
@@ -4410,7 +4410,7 @@ fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytyp
     var line_buf: [512]u8 = undefined;
     // 조립 실패는 **조용히 넘기지 않는다.** 줄은 잃어도 "다 못 담았다" 는 사실은
     // 남아야 사용자가 로그를 본다.
-    const line = std.fmt.bufPrint(&line_buf, fmt, args) catch {
+    const line = std.mem.print(&line_buf, fmt, args) catch {
         notice_count += 1;
         notice_truncated = true;
         return;
@@ -4450,7 +4450,7 @@ fn noticeBadValue(path: []const u8, used: []const u8) void {
 /// 사용자의 의도에 경계값이 기본값보다 가깝다 (SPEC §7.3).
 fn noticeClamped(path: []const u8, limit: anytype) void {
     var buf: [64]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
+    const text = std.mem.print(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
     appendNotice(&repaired_list, messages.config_notice_clamped_format, .{ path, text });
 }
 
@@ -4540,7 +4540,7 @@ fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u
     _ = rt;
     if (fatal_notice_len != 0) return error.InvalidConfig;
 
-    const written = std.fmt.bufPrint(
+    const written = std.mem.print(
         &fatal_notice_buf,
         messages.config_error_with_path_format,
         .{ config_path, message },
@@ -4564,19 +4564,19 @@ fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u
 /// (`Config.load`). 예전에는 fatal 로 담아 host 가 안내 후 종료했다.
 pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err: anyerror) []const u8 {
     return if (parser.error_info) |info| switch (info) {
-        .parse => |pos| std.fmt.bufPrint(
+        .parse => |pos| std.mem.print(
             buf,
             messages.config_parse_failed_at_format,
             .{ pos.line, pos.pos, @errorName(err) },
         ) catch messages.config_parse_failed_fallback_msg,
         // #820 — `unknown_fields` 는 구조체 매핑에서 `disallow_unknown_fields` 를 켰을 때만 온다.
         // 우리는 `Table` 로 받고 그 옵션도 안 켜서 오지 않지만, 같은 갈래로 둔다.
-        .struct_mapping, .unknown_fields => std.fmt.bufPrint(
+        .struct_mapping, .unknown_fields => std.mem.print(
             buf,
             messages.config_parse_failed_format,
             .{@errorName(err)},
         ) catch messages.config_parse_failed_fallback_msg,
-    } else std.fmt.bufPrint(
+    } else std.mem.print(
         buf,
         messages.config_parse_failed_format,
         .{@errorName(err)},
@@ -4586,7 +4586,7 @@ pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err
 /// 로그 한 줄용 — 위치와 오류 이름만 (`line 3, column 5: UnexpectedToken`).
 fn tomlParseErrorBrief(buf: []u8, parser: *const toml.Parser(toml.Table), err: anyerror) []const u8 {
     if (parser.error_info) |info| switch (info) {
-        .parse => |pos| return std.fmt.bufPrint(buf, "line {d}, column {d}: {s}", .{ pos.line, pos.pos, @errorName(err) }) catch @errorName(err),
+        .parse => |pos| return std.mem.print(buf, "line {d}, column {d}: {s}", .{ pos.line, pos.pos, @errorName(err) }) catch @errorName(err),
         .struct_mapping, .unknown_fields => {},
     };
     return @errorName(err);
@@ -4631,7 +4631,7 @@ const ParseFallbackSeen = struct {
 
     fn firstTime(self: *ParseFallbackSeen, kind: Kind, config_path: []const u8, detail: []const u8) bool {
         var h = std.hash.Wyhash.init(0x75_8F_A1_1B);
-        h.update(&[_]u8{@intFromEnum(kind)});
+        h.update(&[_]u8{@backingInt(kind)});
         h.update(config_path);
         h.update(&[_]u8{0});
         h.update(detail);
@@ -4666,7 +4666,7 @@ test "#758 기본값 로그 지문 자리가 다 차면 그냥 적는다" {
     var seen: ParseFallbackSeen = .{};
     var path_buf: [32]u8 = undefined;
     for (0..seen.keys.len) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, "/c/config_{d}.toml", .{i});
+        const path = try std.mem.print(&path_buf, "/c/config_{d}.toml", .{i});
         try std.testing.expect(seen.firstTime(.parse, path, "E"));
     }
     // 자리를 넘긴 파일은 기억하지 못해 매번 적는다 — 적지 않는 것보다 낫다.
@@ -4693,7 +4693,7 @@ fn recordTomlParseError(config_path: []const u8, parser: *const toml.Parser(toml
 
 fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) LoadError {
     var buf: [1024]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
+    const msg = std.mem.print(&buf, fmt, args) catch messages.config_error_fallback_msg;
     return recordConfigFatalMsg(rt, config_path, msg);
 }
 
@@ -4946,7 +4946,7 @@ fn fileKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const
 /// `ctx.key` 를 만든다. 최상위면 `key` 그대로다.
 fn joinPath(buf: []u8, ctx: []const u8, key: []const u8) []const u8 {
     if (std.mem.eql(u8, ctx, "(top-level)")) return key;
-    return std.fmt.bufPrint(buf, "{s}.{s}", .{ ctx, key }) catch key;
+    return std.mem.print(buf, "{s}.{s}", .{ ctx, key }) catch key;
 }
 
 // --- Tests ---
@@ -4975,7 +4975,7 @@ test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 �
 
 test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는 가리키던 자리에 기본 config 를 쓴다" {
     // 권한 · 링크를 쓰는 test 라 POSIX 만 돈다.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4983,7 +4983,7 @@ test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는
     const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
     // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
-    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
     const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } } };
@@ -5375,7 +5375,7 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
 
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
-    const with_junk = try std.fmt.allocPrint(allocator, "{s}\nbogus_key = 1\n", .{full});
+    const with_junk = try allocator.print("{s}\nbogus_key = 1\n", .{full});
     defer allocator.free(with_junk);
 
     var config = try Config.parse(allocator, with_junk, "/home/user/.config/tildaz/config_0.toml");
@@ -5405,7 +5405,7 @@ test "#796 모르는 키 · 섹션은 파일에 적힌 차례대로 안내한다
     defer top.deinit(allocator);
     for (&names, &name_bufs, 0..) |*name, *buf, i| {
         // 23, 0, 17, 6, 11, … — 7 씩 건너뛴 차례 (24 와 서로소라 모두 한 번씩 나온다).
-        name.* = try std.fmt.bufPrint(buf, "zz_{d:0>2}", .{(i * 7 + 23) % 24});
+        name.* = try std.mem.print(buf, "zz_{d:0>2}", .{(i * 7 + 23) % 24});
         try top.print(allocator, "{s} = 1\n", .{name.*});
     }
     const text = try std.mem.concat(allocator, u8, &.{
@@ -5425,7 +5425,7 @@ test "#796 모르는 키 · 섹션은 파일에 적힌 차례대로 안내한다
     var pos: usize = 0;
     for (names) |name| {
         var line_buf: [32]u8 = undefined;
-        const line = try std.fmt.bufPrint(&line_buf, "  {s}\n", .{name});
+        const line = try std.mem.print(&line_buf, "  {s}\n", .{name});
         const at = std.mem.indexOfPos(u8, notice.removable, pos, line) orelse return error.TestUnexpectedResult;
         pos = at + line.len;
     }
@@ -5839,7 +5839,7 @@ test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된�
     // 기준 문서의 hotkey 는 `Defaults.hotkeyFor(0)` 파생이다 — 개발 빌드는 표를 거꾸로
     // 읽어 `F10` 이므로 (#654) 리터럴 `"F1"` 로 찾으면 그 빌드에서만 못 찾는다.
     var needle_buf: [32]u8 = undefined;
-    const needle = try std.fmt.bufPrint(&needle_buf, "hotkey           = \"{s}\"", .{Defaults.hotkeyFor(0)});
+    const needle = try std.mem.print(&needle_buf, "hotkey           = \"{s}\"", .{Defaults.hotkeyFor(0)});
     var c = try parseWithReplaced(needle, "hotkey           = \"nosuchkey\"");
     defer c.deinit();
     try std.testing.expect(pendingFatalNotice() == null);
@@ -5956,7 +5956,7 @@ test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무
 
         // 생성기가 쓰는 모양처럼 **진 쪽도 파일에 기본 키 그대로** 적혀 있다.
         const victim_key = defaultBindings(c.victim)[0];
-        const doc = try std.fmt.allocPrint(a,
+        const doc = try a.print(
             \\shell = "/bin/sh"
             \\[keys]
             \\{s} = ["{s}"]
@@ -5970,7 +5970,7 @@ test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무
         try std.testing.expectEqual(@as(?KeyAction, c.changed), owner.action);
         // 진 쪽은 그 키를 잃고, 안내는 **한 줄**이다 — 기본 키로 다시 채우며 같은 키로 한 번 더 지지 않는다.
         const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        const line = try std.fmt.allocPrint(a, "keys.{s}" ++ messages.config_notice_item_sep ++ "\"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
+        const line = try a.print("keys.{s}" ++ messages.config_notice_item_sep ++ "\"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
         try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, n.repaired, line));
     }
 }

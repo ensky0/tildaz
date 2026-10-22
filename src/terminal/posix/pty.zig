@@ -63,7 +63,7 @@ fn buildEnvp(
 ) ![*:null]const ?[*:0]const u8 {
     const buf = try arena.allocSentinel(?[*:0]const u8, map.count(), null);
     for (map.keys(), map.values(), 0..) |k, v, i| {
-        buf[i] = (try std.fmt.allocPrintSentinel(arena, "{s}={s}", .{ k, v }, 0)).ptr;
+        buf[i] = (try arena.printSentinel("{s}={s}", .{ k, v }, 0)).ptr;
     }
     return buf.ptr;
 }
@@ -263,7 +263,7 @@ pub const Pty = struct {
 const PtyPair = struct { master: posix.fd_t, slave: posix.fd_t };
 
 fn openPtyPair(cols: u16, rows: u16) !PtyPair {
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         const master_rc = posix.system.open(
             "/dev/ptmx",
             .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true },
@@ -316,7 +316,7 @@ fn openPtyPair(cols: u16, rows: u16) !PtyPair {
 /// Linux 계열에만 있어 (macOS 는 `else => {}` 로 `void`) 그 fallback 을 여기서 한다.
 fn openShutdownPipe() !([2]posix.fd_t) {
     var fds: [2]posix.fd_t = undefined;
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         if (sysFailed(posix.system.pipe2(&fds, .{ .CLOEXEC = true }))) return error.OpenPtyFailed;
     } else {
         if (sysFailed(posix.system.pipe(&fds))) return error.OpenPtyFailed;
@@ -344,7 +344,7 @@ fn childExec(
 ) noreturn {
     closeFd(master_fd);
 
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         // 새 세션 + controlling terminal 등록 + stdio redirect 수동.
         if (linux.setsid() < 0) posix.system._exit(127);
         if (sysFailed(linux.ioctl(slave_fd, linux.T.IOCSCTTY, 0))) posix.system._exit(127);
@@ -375,7 +375,7 @@ fn childExec(
 
     // macOS 만 login shell (`-l`) — "Last login" + ~/.zprofile 로드,
     // Terminal.app 관례. Linux 터미널 관례는 비-login (#282 D5, SPEC §9).
-    if (builtin.os.tag == .macos) {
+    if (builtin.target.os.tag == .macos) {
         const argv = [_:null]?[*:0]const u8{ shell, "-l", null };
         _ = posix.system.execve(shell, &argv, envp);
         posix.system._exit(127);
@@ -402,7 +402,7 @@ fn resizeFd(fd: posix.fd_t, cols: u16, rows: u16) !void {
         .xpixel = 0,
         .ypixel = 0,
     };
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         if (posix.errno(linux.ioctl(fd, linux.T.IOCSWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
             return error.ResizeFailed;
         }

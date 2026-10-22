@@ -21,7 +21,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 
-const is_posix = builtin.os.tag != .windows;
+const is_posix = builtin.target.os.tag != .windows;
 
 /// 핸들러가 세우고 main loop 가 읽는다. 시그널 문맥에서 만질 수 있는 것은 이 정도뿐이다
 /// (async-signal-safe) — 로그도 정리도 여기서 하지 않는다.

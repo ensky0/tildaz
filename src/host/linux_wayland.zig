@@ -43,7 +43,7 @@ pub fn config() *const config_mod.Config {
     return &g_config.?;
 }
 
-pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.lang.StackTrace) noreturn {
     log.logPanic(msg, addr);
     // zig default panic — stderr 에 자동으로 file:line + backtrace dump.
     // 시연 시 `./zig-out/bin/tildaz 2>&1 | tee /tmp/run.log` 처럼 stderr 도

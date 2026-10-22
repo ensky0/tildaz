@@ -450,7 +450,7 @@ pub const Tab = struct {
         // 판에서는 클립보드가 바뀌지 않았다 (2026-10-10 Windows 실기).
         var vt_handler = tab.terminal.vtHandler();
         vt_handler.effects.clipboard_write = &vtClipboardWrite;
-        if (comptime builtin.os.tag != .windows) {
+        if (comptime builtin.target.os.tag != .windows) {
             vt_handler.effects.write_pty = &vtWritePty;
             vt_handler.effects.device_attributes = &vtDeviceAttributes;
             vt_handler.effects.xtversion = &vtXtversion;
@@ -635,7 +635,7 @@ pub const Tab = struct {
         // #269 — Windows 는 #266 의 ConPTY 응답 누출을 막기 위해 응답 effect 를
         // 걸지 않는다 (OSC 52 쓰기만 건다). effect 가 없어도 OSC 0/2 는
         // Terminal.title 에 저장되므로 parse 직후 공통 제목 상태만 읽어 동기화한다.
-        if (comptime builtin.os.tag == .windows) tab.syncTerminalTitle();
+        if (comptime builtin.target.os.tag == .windows) tab.syncTerminalTitle();
         perf.addTimed(&perf.parse, parse_t0);
         perf.addTimedBytes(&perf.drain, drain_t0, @intCast(n));
         // 평소 앱의 hot path에는 측정용 누적 연산도 넣지 않는다.
@@ -1254,7 +1254,7 @@ fn copyValidUtf8Title(dest: []u8, source: []const u8) usize {
 }
 
 fn writeDefaultTitle(dest: []u8, len: *usize, title_id: usize) void {
-    const result = std.fmt.bufPrint(dest, "Tab {d}", .{title_id}) catch "Tab";
+    const result = std.mem.print(dest, "Tab {d}", .{title_id}) catch "Tab";
     len.* = result.len;
 }
 
@@ -1707,7 +1707,7 @@ pub const SessionCore = struct {
 
         // 경로 표기는 **탭의 셸 기준** — WSL 탭은 host 가 Windows 여도 Linux 경로다.
         const wsl = terminal.isWslShell(self.shell_command);
-        const style: pwd_uri.Style = if (builtin.os.tag == .windows and !wsl) .windows else .posix;
+        const style: pwd_uri.Style = if (builtin.target.os.tag == .windows and !wsl) .windows else .posix;
 
         // ① 셸이 OSC 7 로 알린 위치. 셸의 논리 경로 (`$PWD`) 라 symlink 를 따라 들어간
         //    사용자의 기대에 맞으므로 ② 보다 우선한다.
@@ -1750,7 +1750,7 @@ pub const SessionCore = struct {
     /// 방법이 없어서 `wsl --cd` 에 위임한다. 그 경로가 없으면 wsl 이 에러 한 줄을 찍고
     /// 셸은 정상적으로 뜬다 (Windows 실기 확인, #366).
     fn usableDir(io: std.Io, path: []const u8, wsl: bool) bool {
-        if (builtin.os.tag == .windows and wsl) return true;
+        if (builtin.target.os.tag == .windows and wsl) return true;
         // #451 — `fs.openDirAbsolute` ➡️ `std.Io.Dir.openDirAbsolute` · `close(io)`.
         var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
         dir.close(io);
@@ -2920,7 +2920,7 @@ fn expectSplitPaneKeepsTabNumber(session: *SessionCore) !void {
 }
 
 test "POSIX: new tab shows Tab N from creation, before any shell output" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -2963,7 +2963,7 @@ test "POSIX: new tab shows Tab N from creation, before any shell output" {
 }
 
 test "POSIX: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -2985,7 +2985,7 @@ test "POSIX: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
 }
 
 test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 같다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3031,7 +3031,7 @@ test "POSIX: #483 3단계 — 탭은 pane 그룹이고 leaf 하나면 이전과 
 }
 
 test "POSIX: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 한다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3053,7 +3053,7 @@ test "POSIX: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 
 }
 
 test "POSIX: #741 — stress 에서 출력이 쏟아지는 중에 사용자가 닫아도 바로 끝나고, 쌓인 것은 파싱한다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3126,7 +3126,7 @@ fn shellExitsBeforeOutput(role: instance_context.Role) ![2]u32 {
 }
 
 test "POSIX: #744 — 측정 역할은 셸이 끝나도 출력이 끝날 때까지 탭을 닫지 않는다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const got = try shellExitsBeforeOutput(.stress);
     // 셸이 끝난 직후의 닫기 요청 수는 OS 마다 다르다.
     //
@@ -3134,21 +3134,21 @@ test "POSIX: #744 — 측정 역할은 셸이 끝나도 출력이 끝날 때까�
     // - macOS: 셸 (세션 리더) 이 끝나면 배경 writer 의 터미널도 막혀서 EOF 가 셸 종료와 함께
     //   온다. 남은 출력이 생기지 않으니 바로 닫는 것이 맞다. macOS 27.0.1 에서 python
     //   `pty.fork()` 로 같은 명령을 돌려 EOF 9 ms · 배경 `echo` 종료 코드 1 을 쟀다 (#744).
-    const closed_at_shell_exit: u32 = if (comptime builtin.os.tag.isDarwin()) 1 else 0;
+    const closed_at_shell_exit: u32 = if (comptime builtin.target.os.tag.isDarwin()) 1 else 0;
     try std.testing.expectEqual(closed_at_shell_exit, got[0]);
     // 어느 쪽이든 결국 한 번만 닫는다 — 두 신호 (셸 종료 · 출력 EOF) 가 함께 와도 두 번 닫지 않는다.
     try std.testing.expectEqual(@as(u32, 1), got[1]);
 }
 
 test "POSIX: #744 — 일반 역할은 지금처럼 셸이 끝나면 바로 닫는다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const got = try shellExitsBeforeOutput(.worker);
     try std.testing.expectEqual(@as(u32, 1), got[0]);
     try std.testing.expectEqual(@as(u32, 1), got[1]);
 }
 
 test "POSIX: #745 — 닫힌 ring 이 버린 byte 는 push 가 아니라 dropped 로 센다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3172,7 +3172,7 @@ test "POSIX: #745 — 닫힌 ring 이 버린 byte 는 push 가 아니라 dropped
 }
 
 test "POSIX: #483 4단계 — 분할 · 포커스 · 클릭 · 크기 · 최대화 · 분할선 드래그 · 닫기가 격자를 맞춘다" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3308,7 +3308,7 @@ fn expectGridMatchesLayout(group: *TabGroup, rect: pane_layout.Rect, m: pane_lay
 }
 
 test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내려간다 (#366)" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3347,11 +3347,11 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
 
     // 셸이 알린 위치가 있으면 그것이 조회보다 우선한다. `/` 를 쓰는 이유는 어느 OS
     // 에서도 심볼릭 링크가 아니고 항상 있기 때문이다.
-    tab.stream.nextSlice(try std.fmt.bufPrint(&payload, "\x1b]7;file://{s}/\x1b\\", .{host}));
+    tab.stream.nextSlice(try std.mem.print(&payload, "\x1b]7;file://{s}/\x1b\\", .{host}));
     try std.testing.expectEqualStrings("/", session.inheritedCwd(&cwd_buf).?);
 
     // 파싱은 되지만 열 수 없는 경로 → 조회로 내려간다 (그 경로를 그대로 쓰지 않는다).
-    tab.stream.nextSlice(try std.fmt.bufPrint(
+    tab.stream.nextSlice(try std.mem.print(
         &payload,
         "\x1b]7;file://{s}/tz366-does-not-exist\x1b\\",
         .{host},
@@ -3371,7 +3371,7 @@ test "POSIX: OSC 7 이 우선하고 쓸 수 없으면 프로세스 조회로 내
 }
 
 test "Windows ConPTY updates active and inactive tab titles without switching" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
     // GitHub Actions 의 windows-2022 러너에서는 `cmd.exe /c title …` 의 제목이 ConPTY 를 지나 OSC 로 오지 않는다 —
     // 3 초 · 30 초 폴링 둘 다 두 탭 모두 `Tab N` 그대로였다 (#607 ① 첫 · 둘째 native 실행, 375 개 중 이것 하나).
     // 바로 아래 "without OSC keeps default title" 은 그 환경에서도 통과한다 — ConPTY 자체는 산다. 로컬 Windows
@@ -3380,7 +3380,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
     //
     // `testRuntime().environ` 은 `.empty` 다 (테스트는 환경을 안 본다 — #451) — 그래서 처음 넣은
     // `testRuntime().envHas(...)` 는 러너에서도 늘 false 였다. 실제 환경은 Windows 의 전역 블록 (PEB) 으로 읽는다.
-    const os_env: std.process.Environ = .{ .block = if (builtin.os.tag == .windows) .global else .empty };
+    const os_env: std.process.Environ = .{ .block = if (builtin.target.os.tag == .windows) .global else .empty };
     if (os_env.containsConstant("GITHUB_ACTIONS")) return error.SkipZigTest;
 
     const Exit = struct {
@@ -3441,7 +3441,7 @@ test "Windows ConPTY updates active and inactive tab titles without switching" {
 }
 
 test "Windows ConPTY without OSC keeps default title from tab creation" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3484,7 +3484,7 @@ test "Windows ConPTY without OSC keeps default title from tab creation" {
 }
 
 test "Windows: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -3512,7 +3512,7 @@ test "Windows: #696 — 분할한 pane 은 탭 번호를 물려받는다" {
 }
 
 test "Windows: #572 — stress 중간 pane 종료는 unread ring 을 마저 drain 한다" {
-    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}

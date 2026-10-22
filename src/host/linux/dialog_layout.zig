@@ -440,16 +440,16 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
 
     // #483 — 가장 긴 종료 확인은 pane 을 함께 적는 쪽이고, 최악은 상한끼리 (`MAX_TABS` 32 × `MAX_PANES_PER_TAB` 16).
     var quit_buf: [128]u8 = undefined;
-    const quit_msg = try std.fmt.bufPrint(&quit_buf, messages.quit_confirm_panes_format, .{ 32, "s", 32 * 16 });
+    const quit_msg = try std.mem.print(&quit_buf, messages.quit_confirm_panes_format, .{ 32, "s", 32 * 16 });
 
     var tab_limit_buf: [128]u8 = undefined;
-    const tab_limit_msg = try std.fmt.bufPrint(&tab_limit_buf, messages.tab_limit_format, .{32});
+    const tab_limit_msg = try std.mem.print(&tab_limit_buf, messages.tab_limit_format, .{32});
 
     // #682 — Tip 블록은 따로 조립된다. 가장 긴 쪽 (두 줄) 으로 잰다.
     var about_tip_buf: [256]u8 = undefined;
-    const about_tip = try std.fmt.bufPrint(&about_tip_buf, messages.about_tip_both_format, .{ "Ctrl+Shift+P", "Ctrl+Shift+L" });
+    const about_tip = try std.mem.print(&about_tip_buf, messages.about_tip_both_format, .{ "Ctrl+Shift+P", "Ctrl+Shift+L" });
     var about_buf: [2048]u8 = undefined;
-    const about_msg = try std.fmt.bufPrint(&about_buf, messages.about_format, .{
+    const about_msg = try std.mem.print(&about_buf, messages.about_format, .{
         "0.6.1",
         "/home/example/.local/bin/tildaz",
         123456,
@@ -465,15 +465,15 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     // `config_not_loaded_title` 이고, 파서가 위치를 주는 흔한 경우는 줄 · 열이 든 판이라 한 줄
     // 길다. 둘 중 긴 쪽으로 잰다.
     var parse_buf: [512]u8 = undefined;
-    const parse_body = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_at_format, .{ 12345, 678, "UnexpectedToken" });
+    const parse_body = try std.mem.print(&parse_buf, messages.config_parse_failed_at_format, .{ 12345, 678, "UnexpectedToken" });
     var parse_full_buf: [640]u8 = undefined;
-    const parse_msg = try std.fmt.bufPrint(&parse_full_buf, messages.config_error_with_path_format, .{
+    const parse_msg = try std.mem.print(&parse_full_buf, messages.config_error_with_path_format, .{
         "/home/example/.config/tildaz/config_0.toml",
         parse_body,
     });
 
     var hotkey_invalid_buf: [384]u8 = undefined;
-    const hotkey_invalid_msg = try std.fmt.bufPrint(
+    const hotkey_invalid_msg = try std.mem.print(
         &hotkey_invalid_buf,
         messages.config_hotkey_invalid_format,
         .{"shift+t"},
@@ -490,7 +490,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     const theme_msg = theme_stream.buffered();
 
     var shell_buf: [1024]u8 = undefined;
-    const shell_msg = try std.fmt.bufPrint(&shell_buf, messages.shell_executable_not_found_format, .{
+    const shell_msg = try std.mem.print(&shell_buf, messages.shell_executable_not_found_format, .{
         "/opt/example/TildaZ Shell/bin/example-shell",
         "/opt/example/TildaZ Shell/bin/example-shell",
         messages.shell_examples_posix,
@@ -498,7 +498,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     });
 
     var new_tab_buf: [1024]u8 = undefined;
-    const new_tab_msg = try std.fmt.bufPrint(&new_tab_buf, messages.shell_new_tab_not_found_format, .{
+    const new_tab_msg = try std.mem.print(&new_tab_buf, messages.shell_new_tab_not_found_format, .{
         "/opt/example/TildaZ Shell/bin/example-shell",
         "/home/example/.config/tildaz/config_98.json",
     });
@@ -523,17 +523,17 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     );
 
     var takeover_buf: [512]u8 = undefined;
-    const takeover_msg = try std.fmt.bufPrint(&takeover_buf, messages.hotkey_takeover_format, .{
+    const takeover_msg = try std.mem.print(&takeover_buf, messages.hotkey_takeover_format, .{
         "Ctrl+Shift+Space",
         "KWin",
         "Show Desktop Grid",
     });
 
     var prompt_buf: [256]u8 = undefined;
-    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
+    const prompt_msg = try std.mem.print(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
 
     var create_error_buf: [512]u8 = undefined;
-    const create_error_msg = try std.fmt.bufPrint(
+    const create_error_msg = try std.mem.print(
         &create_error_buf,
         messages.new_instance_create_failed_format,
         .{"RequestEndpointReadyTimeout"},
@@ -560,7 +560,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
 
     // #758 — 일반 파일이 아닌 config 의 안내 (`config.readFailedNoticeAlloc`). 경로가 첫 줄이다.
     var odd_full_buf: [768]u8 = undefined;
-    const odd_msg = try std.fmt.bufPrint(&odd_full_buf, messages.config_error_with_path_format, .{
+    const odd_msg = try std.mem.print(&odd_full_buf, messages.config_error_with_path_format, .{
         "/home/example/.config/tildaz/config_0.toml",
         messages.config_not_a_file_msg,
     });
@@ -624,7 +624,7 @@ test "#758 the title limit (messages.dialog_title_max_width) fits the 640x480 lo
 
 test "#721 prompt status widens the box up to the preferred width and wraps beyond it" {
     var prompt_buf: [256]u8 = undefined;
-    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
+    const prompt_msg = try std.mem.print(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
     const m = testMetrics(100);
     const viewport = Size{ .w = 1280, .h = 800 };
     // #793 — 기본 폭은 글 영역 폭 그대로다.

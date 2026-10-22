@@ -63,7 +63,7 @@ pub const Runtime = struct {
     ///
     /// 같은 성질 때문에 `envHas` 는 아래처럼 `containsConstant` 를 쓴다.
     pub fn envAlloc(rt: Runtime, allocator: std.mem.Allocator, key: []const u8) ![]u8 {
-        if (builtin.os.tag != .windows) {
+        if (builtin.target.os.tag != .windows) {
             const value = rt.environ.getPosix(key) orelse return error.EnvironmentVariableMissing;
             return allocator.dupe(u8, value);
         }
@@ -142,7 +142,7 @@ pub const Timer = struct {
 test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
     // Windows 는 `Block` 이 global 아니면 empty 뿐이라 (`GlobalBlock`) 합성 환경을 만들 수
     // 없다. 그쪽 경로는 `zig build check` 의 컴파일과 실기 검증이 덮는다.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     // 환경 블록을 일부러 크게 만든다 — 예전 구현 (`Environ.getAlloc` → `createMap`) 은 값
     // 하나를 얻으려고 **이 전체**를 복사했다. 그래서 아래 64 바이트 버퍼로는 실패했다.

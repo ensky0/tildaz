@@ -364,7 +364,7 @@ pub fn runFailureMessage(buf: []u8, err: anyerror, config_notice: ?[]const u8) [
         error.RequestEndpointReadyTimeout => request_endpoint_ready_timeout_msg,
         // #577 — 첫 기동이 화면 없이 끝난 경우. generic `WorkerStartTimeout` 대신.
         error.WorkerExitedDuringStartup => worker_exited_during_startup_msg,
-        else => std.fmt.bufPrint(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
+        else => std.mem.print(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
     };
 }
 

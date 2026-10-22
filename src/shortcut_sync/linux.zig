@@ -97,7 +97,7 @@ fn syncHyprland(rt: Runtime, allocator: std.mem.Allocator, indices: []const u32)
         const accel = try hyprlandBindKeys(&accel_buf, hotkey, parser);
         const owned_accel = try allocator.dupe(u8, accel);
         errdefer allocator.free(owned_accel);
-        const command = try std.fmt.allocPrint(allocator, "{s} --toggle {d}", .{ exe, index });
+        const command = try allocator.print("{s} --toggle {d}", .{ exe, index });
         errdefer allocator.free(command);
         try desired.append(allocator, .{
             .accel = owned_accel,
@@ -305,7 +305,7 @@ fn parserFromStatusJson(allocator: std.mem.Allocator, json: []const u8) Hyprland
 fn bindHyprland(rt: Runtime, allocator: std.mem.Allocator, parser: HyprlandParser, keys: []const u8, command: []const u8) !bool {
     switch (parser) {
         .legacy => {
-            const value = try std.fmt.allocPrint(allocator, "{s},exec,{s}", .{ keys, command });
+            const value = try allocator.print("{s},exec,{s}", .{ keys, command });
             defer allocator.free(value);
             return runHyprctl(rt, allocator, &.{ "hyprctl", "keyword", "bind", value });
         },
@@ -358,7 +358,7 @@ fn isHyprctlOk(reply: []const u8) bool {
 /// 객체를 돌려받아 나중에 `remove()` 하는 길은 쓰지 않는다. 같은 객체를 두 번 지우면
 /// Hyprland 0.56.2 가 죽는다 (#695 조사 중 실측 — compositor 가 SIGABRT 로 내려갔다).
 fn luaBindCode(allocator: std.mem.Allocator, keys: []const u8, command: []const u8) ![]u8 {
-    const description = try std.fmt.allocPrint(allocator, "{s}" ++ lua_description_separator ++ "{s}", .{ command, keys });
+    const description = try allocator.print("{s}" ++ lua_description_separator ++ "{s}", .{ command, keys });
     defer allocator.free(description);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -803,7 +803,7 @@ fn writeCosmicBackups(rt: Runtime, allocator: std.mem.Allocator, old: []const u8
         if (b.date == today and b.seq >= seq) seq = b.seq + 1;
     }
     var name_buf: [96]u8 = undefined;
-    const name = try std.fmt.bufPrint(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ today, seq });
+    const name = try std.mem.print(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ today, seq });
     const path = try std.Io.Dir.path.join(allocator, &.{ dir_path, name });
     defer allocator.free(path);
     _ = try paths.writeFileIfChanged(rt, allocator, path, old);
@@ -811,7 +811,7 @@ fn writeCosmicBackups(rt: Runtime, allocator: std.mem.Allocator, old: []const u8
 
     std.mem.sort(CosmicBackup, backups.items, {}, CosmicBackup.less);
     for (cosmicBackupsToDrop(backups.items, cosmic_backup_keep)) |b| {
-        const drop = try std.fmt.bufPrint(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ b.date, b.seq });
+        const drop = try std.mem.print(&name_buf, cosmic_backup_base ++ ".{d:0>8}-{d}", .{ b.date, b.seq });
         dir.deleteFile(rt.io, drop) catch |err| log.appendLine("cosmic", "old backup {s} not removed: {s}", .{ drop, @errorName(err) });
     }
 }
@@ -1154,11 +1154,11 @@ fn appendCosmicEntryTail(
     exe: []const u8,
     index: u32,
 ) !void {
-    const description = try std.fmt.allocPrint(allocator, "\", " ++ cosmic_entry_marker ++ "{d}\")): Spawn(\"", .{index});
+    const description = try allocator.print("\", " ++ cosmic_entry_marker ++ "{d}\")): Spawn(\"", .{index});
     defer allocator.free(description);
     try output.appendSlice(allocator, description);
     try appendRonString(output, allocator, exe);
-    const suffix = try std.fmt.allocPrint(allocator, " --toggle {d}\"),\n", .{index});
+    const suffix = try allocator.print(" --toggle {d}\"),\n", .{index});
     defer allocator.free(suffix);
     try output.appendSlice(allocator, suffix);
 }
@@ -1411,11 +1411,11 @@ pub fn hyprlandForeignBinding(
         // Lua binding 의 `arg` 는 registry 번호라 읽는 사람에게 뜻이 없다. 설명이 있으면 그것을 보인다.
         if (std.mem.eql(u8, binding.dispatcher, "__lua")) {
             const what = if (binding.description.len != 0) binding.description else "Lua binding";
-            return std.fmt.bufPrint(out_buf, "{s} → {s}", .{ want, what }) catch
-                std.fmt.bufPrint(out_buf, "{s} → Lua binding", .{want}) catch null;
+            return std.mem.print(out_buf, "{s} → {s}", .{ want, what }) catch
+                std.mem.print(out_buf, "{s} → Lua binding", .{want}) catch null;
         }
-        return std.fmt.bufPrint(out_buf, "{s} → {s} {s}", .{ want, binding.dispatcher, binding.arg }) catch
-            std.fmt.bufPrint(out_buf, "{s} → {s}", .{ want, binding.dispatcher }) catch null;
+        return std.mem.print(out_buf, "{s} → {s} {s}", .{ want, binding.dispatcher, binding.arg }) catch
+            std.mem.print(out_buf, "{s} → {s}", .{ want, binding.dispatcher }) catch null;
     }
     return null;
 }
@@ -1519,7 +1519,7 @@ pub fn cosmicSystemDefaultOverride(
         defer allocator.free(content);
 
         if (findCosmicAccelEntry(allocator, content, want)) |text| {
-            return compactInto(out_buf, text) orelse std.fmt.bufPrint(out_buf, "{s}", .{want.key()}) catch null;
+            return compactInto(out_buf, text) orelse std.mem.print(out_buf, "{s}", .{want.key()}) catch null;
         }
     }
     return null;
@@ -1584,7 +1584,7 @@ pub fn cosmicForeignBinding(
         if (!std.mem.eql(u8, got.key(), want.key())) continue;
 
         return compactInto(out_buf, content[entry.start..entry.end]) orelse
-            std.fmt.bufPrint(out_buf, "{s}", .{got.key()}) catch null;
+            std.mem.print(out_buf, "{s}", .{got.key()}) catch null;
     }
     return null;
 }

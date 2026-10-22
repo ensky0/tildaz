@@ -13,7 +13,7 @@
 
 const builtin = @import("builtin");
 
-pub const RendererBackend = switch (builtin.os.tag) {
+pub const RendererBackend = switch (builtin.target.os.tag) {
     .windows => @import("renderer/windows.zig").D3d11Renderer,
     .macos => @import("renderer/macos.zig").MetalRenderer,
     else => UnsupportedRendererBackend,

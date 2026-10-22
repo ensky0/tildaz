@@ -65,7 +65,7 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
 // 가드가 없으면 Linux 전용 Wayland/GBM 타입에서 연쇄 오류가 나와 원인을 짐작하기
 // 어렵다. 진단 대상이 아닌 OS는 첫 오류에서 용도를 바로 알 수 있게 한다.
 comptime {
-    if (builtin.os.tag != .linux) @compileError(
+    if (builtin.target.os.tag != .linux) @compileError(
         "dmabuf-probe 는 Linux 전용 진단 도구다 (Wayland + GBM + dma-buf). " ++
             "Intel 그래픽을 확인하려면 Intel GPU 가 달린 **Linux** 시스템에서 빌드해야 한다.",
     );
@@ -768,7 +768,7 @@ pub fn main(init: std.process.Init) !u8 {
     const sock_path: []const u8 = if (std.Io.Dir.path.isAbsolute(wl_display))
         wl_display
     else
-        try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ runtime_dir, wl_display });
+        try std.mem.print(&path_buf, "{s}/{s}", .{ runtime_dir, wl_display });
 
     const address = std.Io.net.UnixAddress.init(sock_path) catch |err| {
         std.debug.print("Wayland 소켓 주소 실패 ({s}): {s}\n", .{ sock_path, @errorName(err) });

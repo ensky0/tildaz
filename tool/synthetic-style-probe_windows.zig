@@ -38,7 +38,7 @@ const builtin = @import("builtin");
 const dw = @import("directwrite");
 
 comptime {
-    if (builtin.os.tag != .windows) @compileError("synthetic-style-probe 는 Windows 전용이에요.");
+    if (builtin.target.os.tag != .windows) @compileError("synthetic-style-probe 는 Windows 전용이에요.");
 }
 
 const BOOL = dw.BOOL;
@@ -60,7 +60,7 @@ var out_alloc: std.mem.Allocator = undefined;
 var dump: std.ArrayList(u8) = .empty;
 
 fn p(comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.allocPrint(out_alloc, fmt, args) catch return;
+    const s = out_alloc.print(fmt, args) catch return;
     dump.appendSlice(out_alloc, s) catch {};
     var written: u32 = 0;
     // STD_OUTPUT_HANDLE = -11

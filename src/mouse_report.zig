@@ -142,7 +142,7 @@ pub fn encode(
         .x10 => blk: {
             // 1 byte 에 `32 + 좌표 + 1` 를 담아야 해서 222 가 상한.
             if (ev.cell.col > 222 or ev.cell.row > 222) break :blk null;
-            const out = std.fmt.bufPrint(buf, "\x1b[M{c}{c}{c}", .{
+            const out = std.mem.print(buf, "\x1b[M{c}{c}{c}", .{
                 32 + code,
                 @as(u8, @intCast(32 + ev.cell.col + 1)),
                 @as(u8, @intCast(32 + ev.cell.row + 1)),
@@ -163,7 +163,7 @@ pub fn encode(
             break :blk buf[0..n];
         },
 
-        .sgr => std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}{c}", .{
+        .sgr => std.mem.print(buf, "\x1b[<{d};{d};{d}{c}", .{
             code,
             ev.cell.col + 1,
             ev.cell.row + 1,
@@ -171,13 +171,13 @@ pub fn encode(
         }) catch null,
 
         // urxvt 는 뗌도 `M` 으로 끝난다 — 그래서 뗌의 버튼을 구분할 수 없다.
-        .urxvt => std.fmt.bufPrint(buf, "\x1b[{d};{d};{d}M", .{
+        .urxvt => std.mem.print(buf, "\x1b[{d};{d};{d}M", .{
             32 + @as(u16, code),
             ev.cell.col + 1,
             ev.cell.row + 1,
         }) catch null,
 
-        .sgr_pixels => std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}{c}", .{
+        .sgr_pixels => std.mem.print(buf, "\x1b[<{d};{d};{d}{c}", .{
             code,
             ev.pixel.x,
             ev.pixel.y,

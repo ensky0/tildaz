@@ -56,10 +56,10 @@ const frame_wake = @import("../frame_wake.zig");
 const instance_context = @import("../instance_context.zig");
 const instances = @import("../instances.zig");
 
-pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.lang.StackTrace) noreturn {
     log.logPanic(msg, addr);
     var buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
+    const text = std.mem.print(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
@@ -5545,7 +5545,7 @@ fn installEventTap() !void {
         const hotkey = config.hotkeyDisplay(&hotkey_buf, g_config.hotkey);
         const ax_label = accessibilityPermissionLabel();
         var msg_buf: [2048]u8 = undefined;
-        const msg = std.fmt.bufPrint(
+        const msg = std.mem.print(
             &msg_buf,
             messages.macos_permission_required_format,
             .{

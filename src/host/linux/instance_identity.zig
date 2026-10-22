@@ -12,7 +12,7 @@ pub const max_index = @import("../../instances.zig").max_config_index;
 /// 창의 `app_id` 로 desktop 항목을 찾는다. 한쪽만 `app_id.name` 을 타면 그 연결이
 /// 끊어진다 (#654).
 pub fn appId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "{s}.instance{d}", .{ app_id.name, index }, 0);
+    return std.mem.printSentinel(buf, "{s}.instance{d}", .{ app_id.name, index }, 0);
 }
 
 /// 측정 인스턴스의 app_id ([#382](https://github.com/ensky0/tildaz/issues/382)).
@@ -43,7 +43,7 @@ pub fn appIdForCurrentRole(buf: []u8) ![:0]const u8 {
 /// (`stress_app_id` 를 가른 것과 같은 이유다). 확장 경로 자체를 시연할 때는
 /// `-Drelease=true` 로 빌드한다.
 pub fn displayName(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
+    return std.mem.printSentinel(buf, "{s}_{d}", .{ app_id.window_base, index }, 0);
 }
 
 /// wlr-layer-shell surface 의 namespace. compositor 가 **창 규칙을 거는 키**라 개발
@@ -58,11 +58,11 @@ pub const layer_namespace: [:0]const u8 = app_id.name;
 pub const dialog_app_id: [:0]const u8 = app_id.name ++ "-dialog";
 
 pub fn shortcutId(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "toggle-{d}", .{index}, 0);
+    return std.mem.printSentinel(buf, "toggle-{d}", .{index}, 0);
 }
 
 pub fn shortcutDescription(buf: []u8, index: u32) ![:0]u8 {
-    return std.fmt.bufPrintSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
+    return std.mem.printSentinel(buf, "Show / hide TildaZ {d}", .{index}, 0);
 }
 
 /// 이름 앞부분은 `app_id.name` 을 탄다 (#654) — 개발 빌드가 만든 항목과 릴리즈가 만든
@@ -96,7 +96,7 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     // #451 — `fs.Dir.makePath` ➡️ 공용 helper (`paths.ensureDir` = `createDirPath`).
     try paths.ensureDir(rt, dir);
 
-    const file_name = try std.fmt.allocPrint(allocator, "{s}.instance{d}.desktop", .{ app_id.name, index });
+    const file_name = try allocator.print("{s}.instance{d}.desktop", .{ app_id.name, index });
     defer allocator.free(file_name);
     const path = try std.Io.Dir.path.join(allocator, &.{ dir, file_name });
     defer allocator.free(path);
@@ -110,7 +110,7 @@ pub fn ensureDesktopEntry(rt: Runtime, allocator: std.mem.Allocator, index: u32)
     // `StartupWMClass` 는 데스크톱 · portal 이 창과 이 항목을 묶는 열쇠라 위 `appId` 와
     // 글자 단위로 같아야 하고, `Name` 은 창 제목 (`displayName`) 과, `Icon` 은
     // `install.sh` 가 까는 아이콘 파일 이름 (`<name>.svg`) 과 짝이다.
-    const content = try std.fmt.allocPrint(allocator,
+    const content = try allocator.print(
         \\[Desktop Entry]
         \\Type=Application
         \\Name={s}_{d}

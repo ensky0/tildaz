@@ -39,15 +39,15 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
     const cfg = details.open_config_key;
     const lg = details.open_log_key;
     const tip = if (cfg.len > 0 and lg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_both_format, .{ cfg, lg })
+        try allocator.print(messages.about_tip_both_format, .{ cfg, lg })
     else if (cfg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_config_format, .{cfg})
+        try allocator.print(messages.about_tip_config_format, .{cfg})
     else if (lg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_log_format, .{lg})
+        try allocator.print(messages.about_tip_log_format, .{lg})
     else
         try allocator.alloc(u8, 0);
     defer allocator.free(tip);
-    return std.fmt.allocPrint(allocator, messages.about_format, .{
+    return allocator.print(messages.about_format, .{
         details.version,
         details.exe_path,
         details.pid,
@@ -73,7 +73,7 @@ pub fn showAboutDialog(rt: Runtime, hints: *const command_menu.Hints) void {
     defer if (exe_path_owned) |path| allocator.free(path);
     const exe_path = exe_path_owned orelse messages.unknown_path_msg;
 
-    const pid: u64 = @intCast(switch (builtin.os.tag) {
+    const pid: u64 = @intCast(switch (builtin.target.os.tag) {
         .windows => getCurrentProcessIdWindows(),
         else => std.c.getpid(),
     });
@@ -113,7 +113,7 @@ pub fn showAboutDialog(rt: Runtime, hints: *const command_menu.Hints) void {
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
 
 fn getCurrentProcessIdWindows() u32 {
-    if (builtin.os.tag != .windows) return 0;
+    if (builtin.target.os.tag != .windows) return 0;
     return GetCurrentProcessId();
 }
 
@@ -132,7 +132,7 @@ test "#383 About 첫 줄은 `--version` · 로그와 같은 버전 문자열이�
     defer std.testing.allocator.free(msg);
 
     var expected_buf: [256]u8 = undefined;
-    const expected_first_line = try std.fmt.bufPrint(&expected_buf, "TildaZ v{s}", .{app_version.string});
+    const expected_first_line = try std.mem.print(&expected_buf, "TildaZ v{s}", .{app_version.string});
     try std.testing.expect(std.mem.startsWith(u8, msg, expected_first_line));
 }
 

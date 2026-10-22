@@ -60,10 +60,10 @@ pub const Command = enum { toggle, new_instance };
 /// 블록을 그대로 훑어 **할당이 없다** — 이 함수가 고정 버퍼만 쓰는 성질이 유지된다.
 fn socketPath(rt: Runtime, buf: []u8, index: u32) ![:0]const u8 {
     if (rt.environ.getPosix("XDG_RUNTIME_DIR")) |runtime_dir| {
-        return std.fmt.bufPrintSentinel(buf, "{s}/{s}/run/instance{d}.sock", .{ runtime_dir, app_id.name, index }, 0);
+        return std.mem.printSentinel(buf, "{s}/{s}/run/instance{d}.sock", .{ runtime_dir, app_id.name, index }, 0);
     }
     const uid = linux.getuid();
-    return std.fmt.bufPrintSentinel(buf, "/tmp/{s}-{d}-{d}.sock", .{ app_id.name, uid, index }, 0);
+    return std.mem.printSentinel(buf, "/tmp/{s}-{d}-{d}.sock", .{ app_id.name, uid, index }, 0);
 }
 
 /// bind 전에 소켓 디렉터리를 만든다. 예전 경로는 `$XDG_RUNTIME_DIR` 바로 아래라 만들 것이
@@ -74,10 +74,10 @@ fn ensureSocketDir(rt: Runtime) void {
     const runtime_dir = rt.environ.getPosix("XDG_RUNTIME_DIR") orelse return; // `/tmp` fallback 은 이미 있다
     var buf: [256]u8 = undefined;
     // `mkdir` 은 한 단계씩만 만든다 — 부모부터 차례로.
-    const parent = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ runtime_dir, app_id.name }, 0) catch return;
+    const parent = std.mem.printSentinel(&buf, "{s}/{s}", .{ runtime_dir, app_id.name }, 0) catch return;
     _ = posix.system.mkdir(parent.ptr, 0o700);
     var run_buf: [256]u8 = undefined;
-    const dir = std.fmt.bufPrintSentinel(&run_buf, "{s}/{s}/run", .{ runtime_dir, app_id.name }, 0) catch return;
+    const dir = std.mem.printSentinel(&run_buf, "{s}/{s}/run", .{ runtime_dir, app_id.name }, 0) catch return;
     _ = posix.system.mkdir(dir.ptr, 0o700);
 }
 

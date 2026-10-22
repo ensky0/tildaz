@@ -64,7 +64,7 @@ pub const Host = struct {
 pub fn checkAtLimitAndDialog(rt: Runtime, host: *const Host) bool {
     if (host.session.count() < session_core.MAX_TABS) return false;
     var buf: [128]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
+    const msg = std.mem.print(&buf, messages.tab_limit_format, .{session_core.MAX_TABS}) catch
         messages.tab_limit_format;
     dialog.showInfo(rt, messages.tab_limit_title, msg);
     return true;
@@ -256,7 +256,7 @@ fn testCloseHost(session: *SessionCore, override: *bool) Host {
 }
 
 test "POSIX: #544 — closeActive 는 탭 통째로, closeActivePane 은 pane 하나" {
-    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     const pane_layout = @import("pane_layout.zig");
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}
@@ -316,7 +316,7 @@ test "POSIX: #544 — closeActive 는 탭 통째로, closeActivePane 은 pane �
 }
 
 test "POSIX: #544 — 마지막 탭의 closeActive 는 pane 이 여럿이어도 앱을 종료한다" {
-    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (comptime @import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     const pane_layout = @import("pane_layout.zig");
     const Exit = struct {
         fn notify(_: usize, _: ?*anyopaque) void {}

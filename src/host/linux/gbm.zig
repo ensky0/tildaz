@@ -226,7 +226,7 @@ pub fn openRenderNode() ?posix.fd_t {
         // #451 — `posix.open` 도 없어졌다. `Io.Dir.openFileAbsolute` 는 `O_RDWR` 를 표현하지
         // 못하고 (읽기 전용 / 쓰기 전용만) 여기서 필요한 것은 DRM ioctl 용 raw fd 라
         // *"Go lower"* 로 간다 — `posix.openat` 은 0.16 에도 남아 있다.
-        const path_z = std.fmt.bufPrintSentinel(&buf, "/dev/dri/renderD{d}", .{index}, 0) catch continue;
+        const path_z = std.mem.printSentinel(&buf, "/dev/dri/renderD{d}", .{index}, 0) catch continue;
         const fd = posix.openat(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0) catch continue;
         return fd;
     }
