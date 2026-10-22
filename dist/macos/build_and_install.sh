@@ -54,6 +54,7 @@ cd "$REPO_ROOT"
 # zig 가 번들로 들고 있는 float.h 가 macOS 27 SDK 의 __need_infinity_nan 규약을 모르면
 # -Dsimd=true 가 libc++ sub-compilation 에서 깨진다 (#665). 위 서명 identity 와 마찬가지로
 # "기기마다 한 번 고쳐 두면 되는 것" 이라 같은 자리에서 자동으로 처리한다.
+# Zig 0.17 부터는 --check 가 "패치 불필요" 를 내서 이 블록은 아무것도 안 한다 (#820). 걷어내는 일은 #665.
 FLOATH_PATCH="$REPO_ROOT/tool/zig-floath-patch_macos.sh"
 if [ -x "$FLOATH_PATCH" ] && ! "$FLOATH_PATCH" --check >/dev/null 2>&1; then
     echo "--- zig's bundled float.h predates the macOS 27 SDK protocol (#665) ---"

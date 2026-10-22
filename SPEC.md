@@ -1336,7 +1336,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
 
 같은 nested schema, default 만 OS-specific. *Single source of truth* 패턴 — [`src/config.zig`](src/config.zig) 의 `Defaults` struct (Win/Mac 분기, 같은 필드 순서로 나란히) 한 곳에 모든 default 값. 이로부터:
 
-1. **`defaultConfigToml(allocator, shell_resolved, hotkey)`** 이 runtime `allocPrint` 로 default TOML 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.toml`에 저장. 그 결과가 parse() 의 ground truth 이고, 이제는 거부가 아니라 빠진 키 · 틀린 값을 가려 기본값으로 바꾸는 기준이다 (§7.3 · [#655](https://github.com/ensky0/tildaz/issues/655) — 예전의 `validateStructure` 는 없어졌다).
+1. **`defaultConfigToml(allocator, shell_resolved, hotkey)`** 이 runtime `allocator.print` 로 default TOML 을 생성 (shell 은 host 가 runtime 에 결정한 값이라 comptime 생성 불가 — 과거 `DEFAULT_CONFIG_JSON` + `comptimePrint` 에서 전환) — 첫 실행 시 디스크의 `config_0.toml`에 저장. 그 결과가 parse() 의 ground truth 이고, 이제는 거부가 아니라 빠진 키 · 틀린 값을 가려 기본값으로 바꾸는 기준이다 (§7.3 · [#655](https://github.com/ensky0/tildaz/issues/655) — 예전의 `validateStructure` 는 없어졌다).
 2. **`Config` struct field initializer** 가 참조하는 `default_*` const 모두 같은 `Defaults` 에서 derive — 디스크 default 와 메모리 fallback 자동 sync.
 
 이전엔 default 값이 6+ 곳 (config literal + 별도 const 들 + Config struct hardcoded literal) 에 흩어져 있어 한쪽만 고치면 어긋남 — 시연 중 발견 (#135). 이제 `Defaults` 한 곳만 고치면 양쪽 자동 sync.
@@ -1470,7 +1470,7 @@ macOS 의 조합 (과 조합 중 표시) 은 2026-08-27 실기로 확인했다 (
   config transaction을 위해 다시 획득한다. launcher가 lock을 쥔 채 worker의 처리를
   기다리는 순환 대기는 허용하지 않는다.
 
-> 방향은 **Zig `Defaults` struct → TOML** 이고 그 반대가 아니다. shell 이 runtime 결정값(`resolveShell`)이라 comptime 생성이 불가능하므로 `comptimePrint` 대신 `defaultConfigToml` 의 runtime `allocPrint` 로 만든다. 파싱은 `sam701/zig-toml` 의 value tree (`toml.Table` / `toml.Value`) 를 쓰고 struct 매핑은 쓰지 않는다 — `repairStructure` 가 default 문서와 user 문서를 같은 표현으로 비교해야 하기 때문이다 (#655 전 이름은 `validateStructure`).
+> 방향은 **Zig `Defaults` struct → TOML** 이고 그 반대가 아니다. shell 이 runtime 결정값(`resolveShell`)이라 comptime 생성이 불가능하므로 `comptimePrint` 대신 `defaultConfigToml` 의 runtime `allocator.print` 로 만든다. 파싱은 `sam701/zig-toml` 의 value tree (`toml.Table` / `toml.Value`) 를 쓰고 struct 매핑은 쓰지 않는다 — `repairStructure` 가 default 문서와 user 문서를 같은 표현으로 비교해야 하기 때문이다 (#655 전 이름은 `validateStructure`).
 
 | 필드 | 의미 | Windows default | macOS default | Linux default / 구현 | Win | Mac | Linux |
 |---|---|---|---|---|---|---|---|
@@ -2160,7 +2160,7 @@ Error: UnexpectedToken
 
 런타임 새 탭 실패 알림 (`shell_new_tab_not_found_format`, [#248](https://github.com/ensky0/tildaz/issues/248)) 은 **이 통일에서 제외한다.** startup config fatal 이 아니라 종료하지 않는 알림이고, 문구가 경로를 오류 헤더가 아니라 *다음 행동 안내* 로 제시한다 (`Check "shell" in this instance's config file:`).
 
-`allocPrint` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
+`allocator.print` 실패 시 fallback 도 **경로 자리를 비우지 않는다** (`Config: (unknown)`). 예전 파싱 쪽 fallback 은 경로를 아예 잃어서, 정작 가장 도움이 필요한 상황에서 가장 적은 정보를 줬다.
 
 ### 11.5 config 를 읽지 못하거나 만들지 못했을 때 ([#501](https://github.com/ensky0/tildaz/issues/501))
 

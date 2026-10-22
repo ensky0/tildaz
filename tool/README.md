@@ -102,4 +102,4 @@
 | [`ukbd_linux.py`](ukbd_linux.py) | Linux | **실제 세션**의 전역 hotkey 를 사람 손 없이 누르는 uinput 가상 키보드 데몬 (`/dev/uinput` · FIFO 로 `key F10`) — GNOME 처럼 `zwp_virtual_keyboard_v1` 을 안 내주는 데스크톱용 | `# 전역 hotkey 의 위치 표기 검증 …` |
 | [`vkbd_linux.py`](vkbd_linux.py) | Linux | headless sway 안의 가상 키보드 데몬 (`zwp_virtual_keyboard_v1`) | `# Linux — headless sway …` |
 | [`vptr_linux.py`](vptr_linux.py) | Linux | headless sway 안의 가상 포인터 데몬 (`zwlr_virtual_pointer_v1`) — 절대좌표 hover · 클릭 · 드래그 | `# Linux — headless sway …` |
-| [`zig-floath-patch_macos.sh`](zig-floath-patch_macos.sh) | macOS | zig 번들 `float.h` 에 SDK 27 의 `__need_infinity_nan` 규약을 넣어 `-Dsimd=true` 를 살림 (`--check` · `--revert`) | `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` |
+| [`zig-floath-patch_macos.sh`](zig-floath-patch_macos.sh) | macOS | zig 번들 `float.h` 에 SDK 27 의 `__need_infinity_nan` 규약을 넣어 `-Dsimd=true` 를 살림 (`--check` · `--revert`). Zig 0.17 부터는 필요 없어요 — 걷어낼 대상 (#665) | `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` |

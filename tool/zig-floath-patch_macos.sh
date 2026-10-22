@@ -6,9 +6,12 @@
 #   tool/zig-floath-patch_macos.sh --check    # 상태만 보고 끝 (패치 필요 = 종료 코드 1)
 #   tool/zig-floath-patch_macos.sh --revert   # 백업에서 원본으로 되돌린다
 #
+# ⚠️ Zig 0.17.0 부터는 필요 없다 (#820). 0.17 의 float.h 가 규약을 스스로 구현해 이 스크립트는
+# "패치 불필요" 로 끝난다. 이 스크립트를 걷어내는 일은 #665 에서 한다. 아래는 0.16 때의 설명이다.
+#
 # 왜 필요한가: macOS 27 SDK 의 <math.h> 는 clang modules 가 켜지면 INFINITY · NAN 을
 # 컴파일러의 <float.h> 에 위임한다 (__need_infinity_nan — LLVM 22 · Apple clang 21).
-# zig 0.16.0 이 들고 있는 float.h 는 그 규약이 없고, 자체 INFINITY 정의도
+# zig 0.16.0 이 들고 있던 float.h 는 그 규약이 없고, 자체 INFINITY 정의도
 # !defined(__STRICT_ANSI__) 안에 있어서 -std=c++23 에서는 나오지 않는다. zig 는 번들
 # libc++ 를 정확히 그 -std=c++23 으로 빌드하므로 아무도 INFINITY 를 정의하지 않는다.
 #

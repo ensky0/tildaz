@@ -176,8 +176,9 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addOptions("build_options", build_opts);
 
-    // #19 — 현재 Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
-    // compile/link와 representative corpus 이득을 검증했다. 공식 ReleaseFast
+    // #19 — Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
+    // compile/link와 representative corpus 이득을 검증했다. #820 (Zig 0.17.0)
+    // 에서 SIMD ReleaseFast 빌드를 세 OS 에서 다시 링크한다. 공식 ReleaseFast
     // pipeline은 `-Dsimd=true`를 명시한다. 기본 false는 Debug 개발 빌드와
     // 6-target cross-host check가 C++ toolchain/SDK까지 요구하지 않게 보존한다.
     const simd = b.option(bool, "simd", "ghostty VT stream SIMD 가속 활성화 (default: false; official release callers pass true)") orelse false;
