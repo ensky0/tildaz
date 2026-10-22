@@ -8,6 +8,7 @@
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const toml = @import("toml");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
@@ -1172,12 +1173,12 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
     // `pairs` 가 named 라벨을 **빠짐없이** 덮어야 한다. 라벨을 하나 더하면 여기서
     // 걸리고, 그때 위 표에 대응 위치를 적어야 한다.
-    try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".fields.len, pairs.len);
+    try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".field_names.len, pairs.len);
     // 방향은 한쪽뿐이다 — **모든 라벨에는 위치가 있지만 그 반대는 아니다.** 위치
     // 집합이 더 넓다: 라벨이 거부하는 ASCII 기호 자리와 ISO 추가 키를 담는다
     // (`physical_key.zig` 의 정책 문단 참고). 그래서 등호가 아니라 부등호다.
     try std.testing.expect(
-        @typeInfo(PhysicalCode).@"enum".fields.len >= pairs.len + 26 + 10,
+        @typeInfo(PhysicalCode).@"enum".field_names.len >= pairs.len + 26 + 10,
     );
 }
 
@@ -3039,7 +3040,7 @@ test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은
         .{ .command = .keyboard_shortcuts, .mac = "Shift+Cmd+/", .pc = "Ctrl+Shift+/" },
         .{ .command = .about, .mac = "Shift+Cmd+I", .pc = "Ctrl+Shift+I" },
     };
-    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".fields.len, expected.len);
+    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".field_names.len, expected.len);
     for (expected) |e| {
         try std.testing.expectEqualStrings(if (is_macos) e.mac else e.pc, hints.get(e.command, false));
     }
@@ -3651,7 +3652,7 @@ pub const Config = struct {
         var n: usize = 0;
         // 파일에 키를 하나 이상 적은 액션. 그 키가 하나도 안 남으면 기본 키로 채운다 (아래).
         // 빈 목록 (`[]`) 은 "이 액션에 키를 두지 않겠다" 는 뜻이라 여기 넣지 않는다.
-        var listed = std.EnumSet(KeyAction).initEmpty();
+        var listed = std.EnumSet(KeyAction).empty;
         for (std.enums.values(KeyAction)) |action| {
             const name = action.configName();
 
@@ -4568,7 +4569,9 @@ pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err
             messages.config_parse_failed_at_format,
             .{ pos.line, pos.pos, @errorName(err) },
         ) catch messages.config_parse_failed_fallback_msg,
-        .struct_mapping => std.fmt.bufPrint(
+        // #820 — `unknown_fields` 는 구조체 매핑에서 `disallow_unknown_fields` 를 켰을 때만 온다.
+        // 우리는 `Table` 로 받고 그 옵션도 안 켜서 오지 않지만, 같은 갈래로 둔다.
+        .struct_mapping, .unknown_fields => std.fmt.bufPrint(
             buf,
             messages.config_parse_failed_format,
             .{@errorName(err)},
@@ -4584,7 +4587,7 @@ pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err
 fn tomlParseErrorBrief(buf: []u8, parser: *const toml.Parser(toml.Table), err: anyerror) []const u8 {
     if (parser.error_info) |info| switch (info) {
         .parse => |pos| return std.fmt.bufPrint(buf, "line {d}, column {d}: {s}", .{ pos.line, pos.pos, @errorName(err) }) catch @errorName(err),
-        .struct_mapping => {},
+        .struct_mapping, .unknown_fields => {},
     };
     return @errorName(err);
 }
@@ -5259,7 +5262,7 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
     @memset(&long_path, 'x');
     const long_message = try configErrorMessageAlloc(std.testing.allocator, messages.config_error_fallback_msg, &long_path);
     defer std.testing.allocator.free(long_message);
-    try std.testing.expect(std.mem.startsWith(u8, long_message, "Config: " ++ ("x" ** 5000)));
+    try std.testing.expect(std.mem.startsWith(u8, long_message, "Config: " ++ test_text.repeat("x", 5000)));
     try std.testing.expect(std.mem.endsWith(u8, long_message, messages.config_error_fallback_msg));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, long_message, &long_path));
 }

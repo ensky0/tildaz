@@ -1691,10 +1691,10 @@ pub const D3d11Renderer = struct {
                     x += 1;
                     continue;
                 };
-                var single_indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                var single_indices: [dwrite_font.MAX_CLUSTER_GLYPHS]u16 = @splat(0);
                 single_indices[0] = single.index;
-                const single_advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
-                const single_offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+                const single_advances: [dwrite_font.MAX_CLUSTER_GLYPHS]dw.FLOAT = @splat(0);
+                const single_offsets: [dwrite_font.MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = @splat(.{ .advanceOffset = 0, .ascenderOffset = 0 });
                 const single_result = dwrite_font.ClusterResult{
                     .face = single.face,
                     // #749 — 빠뜨리면 모든 폰트가 id 하나를 나눠 써서 남의 글리프가 그려진다
@@ -2642,10 +2642,10 @@ pub const D3d11Renderer = struct {
         fg_rgb: ghostty.color.RGB,
         dx: f32,
     ) void {
-        var indices = [_]u16{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+        var indices: [dwrite_font.MAX_CLUSTER_GLYPHS]u16 = @splat(0);
         indices[0] = glyph_index;
-        const advances = [_]dw.FLOAT{0} ** dwrite_font.MAX_CLUSTER_GLYPHS;
-        const offsets = [_]dw.DWRITE_GLYPH_OFFSET{.{ .advanceOffset = 0, .ascenderOffset = 0 }} ** dwrite_font.MAX_CLUSTER_GLYPHS;
+        const advances: [dwrite_font.MAX_CLUSTER_GLYPHS]dw.FLOAT = @splat(0);
+        const offsets: [dwrite_font.MAX_CLUSTER_GLYPHS]dw.DWRITE_GLYPH_OFFSET = @splat(.{ .advanceOffset = 0, .ascenderOffset = 0 });
         const result = dwrite_font.ClusterResult{
             .face = face,
             .font_id = font_id,

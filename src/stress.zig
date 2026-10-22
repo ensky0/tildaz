@@ -618,20 +618,20 @@ const FrameSplit = struct {
     /// drain 통계. process 종료 순번 대신 `PaneId` index로 보존한다.
     panes: u32 = 1,
     parsed_done: u32 = 0,
-    parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     exited: u32 = 0,
-    exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     max_chunk_skew: u64 = 0,
     max_drain_ns: u64 = 0,
 };
 
 const FramePaneProgress = struct {
-    last_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    last_service_frame: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    last_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    last_service_frame: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     max_chunk_skew: u64 = 0,
 
     fn observe(
@@ -748,7 +748,7 @@ const ExitState = struct {
     /// #483 6단계 — pane 마다 producer 가 하나라 마지막 pane 이 끝날 때 `exited`.
     exited_count: std.atomic.Value(u32) = .init(0),
     exited_panes: std.atomic.Value(VisiblePaneMask) = .init(0),
-    tab_ptrs: [pane_layout.MAX_PANES_PER_TAB]usize = [_]usize{0} ** pane_layout.MAX_PANES_PER_TAB,
+    tab_ptrs: [pane_layout.MAX_PANES_PER_TAB]usize = @splat(0),
     total: u32 = 1,
 
     const VisiblePaneMask = u16;
@@ -1043,9 +1043,9 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
     var max_drain_ns: u64 = 0;
-    var parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     var parsed_done: u32 = 0;
-    var exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     var exited: u32 = 0;
     var stop_sent = false;
     var pane_progress: FramePaneProgress = .{};
@@ -1105,8 +1105,8 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
     const counters = takeCounters();
     const start_ns = first_data_ns orelse return error.NoOutput;
-    var drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
-    var drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
+    var drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     for (group.panes[0..opts.panes], 0..) |pane, i| {
         const tab = pane orelse continue;
         drain_chunks[i] = tab.stress_drain_chunks;

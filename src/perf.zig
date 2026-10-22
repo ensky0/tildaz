@@ -304,7 +304,7 @@ pub const default_echo_marker = "\u{e9}";
 const echo_marker_max = 8;
 
 /// 지금 쓰는 표식. `loadEchoMarker` 가 시작할 때 한 번 바꿀 수 있다 — 그 뒤로는 읽기만 한다.
-var echo_marker_buf: [echo_marker_max]u8 = default_echo_marker.* ++ .{0} ** (echo_marker_max - default_echo_marker.len);
+var echo_marker_buf: [echo_marker_max]u8 = default_echo_marker.* ++ @as([echo_marker_max - default_echo_marker.len]u8, @splat(0));
 var echo_marker_len: usize = default_echo_marker.len;
 
 fn echoMarker() []const u8 {

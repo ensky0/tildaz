@@ -19,13 +19,13 @@ pub const dialog_title_max_width: usize = 28;
 // 테스트에 케이스가 없어 아무도 몰랐다.
 comptime {
     @setEvalBranchQuota(100_000);
-    for (@typeInfo(@This()).@"struct".decls) |decl| {
-        if (!std.mem.endsWith(u8, decl.name, "_title")) continue;
-        const title: []const u8 = @field(@This(), decl.name);
+    for (@typeInfo(@This()).@"struct".decl_names) |decl_name| {
+        if (!std.mem.endsWith(u8, decl_name, "_title")) continue;
+        const title: []const u8 = @field(@This(), decl_name);
         const width = display_width.stringWidth(title);
         if (width > dialog_title_max_width) @compileError(std.fmt.comptimePrint(
             "messages.{s} is {d} columns wide (\"{s}\"); dialog titles must be at most {d}",
-            .{ decl.name, width, title, dialog_title_max_width },
+            .{ decl_name, width, title, dialog_title_max_width },
         ));
     }
 }
@@ -40,9 +40,9 @@ pub const dialog_indent_step: usize = 2;
 // 아니라 터미널에 찍히고, 고정폭이라 옵션 설명을 열로 맞추는 CLI 관례가 실제로 맞는다.
 comptime {
     @setEvalBranchQuota(1_000_000);
-    for (@typeInfo(@This()).@"struct".decls) |decl| {
-        if (std.mem.eql(u8, decl.name, "help_text")) continue;
-        const T = @TypeOf(@field(@This(), decl.name));
+    for (@typeInfo(@This()).@"struct".decl_names) |decl_name| {
+        if (std.mem.eql(u8, decl_name, "help_text")) continue;
+        const T = @TypeOf(@field(@This(), decl_name));
         const info = @typeInfo(T);
         if (info != .pointer) continue;
         const is_text = switch (@typeInfo(info.pointer.child)) {
@@ -51,14 +51,14 @@ comptime {
             else => false,
         };
         if (!is_text) continue;
-        const text: []const u8 = @field(@This(), decl.name);
+        const text: []const u8 = @field(@This(), decl_name);
         var i: usize = 0;
         while (std.mem.indexOfScalarPos(u8, text, i, '\n')) |nl| : (i = nl + 1) {
             var spaces: usize = 0;
             while (nl + 1 + spaces < text.len and text[nl + 1 + spaces] == ' ') spaces += 1;
             if (spaces % dialog_indent_step != 0) @compileError(std.fmt.comptimePrint(
                 "messages.{s} indents a line by {d} spaces; dialog text indents in steps of {d}",
-                .{ decl.name, spaces, dialog_indent_step },
+                .{ decl_name, spaces, dialog_indent_step },
             ));
         }
     }

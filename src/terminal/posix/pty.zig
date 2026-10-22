@@ -127,7 +127,7 @@ pub const Pty = struct {
 
         setIutf8(pair.slave);
 
-        const shell_z = try allocator.dupeZ(u8, shell);
+        const shell_z = try allocator.dupeSentinel(u8, shell, 0);
         defer allocator.free(shell_z);
 
         // 자식 환경 — 부모 environ 에 extra_env 를 *override* 로 머지 (map put).
@@ -152,7 +152,7 @@ pub const Pty = struct {
         // fork 후 자식은 allocator 를 쓸 수 없으니 (#366) 시작 디렉토리도 미리
         // NUL-term 으로 만들어 둔다 — `shell_z` 와 같은 패턴.
         const cwd_z: ?[:0]u8 = if (cwd) |dir|
-            allocator.dupeZ(u8, dir) catch return error.EnvBuildFailed
+            allocator.dupeSentinel(u8, dir, 0) catch return error.EnvBuildFailed
         else
             null;
         defer if (cwd_z) |z| allocator.free(z);

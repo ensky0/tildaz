@@ -81,7 +81,7 @@ pub const GlyphResult = struct {
 };
 
 /// #759 — regular chain 의 합성 bold 표시 (늘 거짓). 조각을 돌려주므로 파일 수준에 둔다.
-const no_bold = [_]bool{false} ** MAX_FALLBACK_FONTS;
+const no_bold: [MAX_FALLBACK_FONTS]bool = @splat(false);
 
 /// #399 (B) — cluster 캐시가 값을 버릴 때 (퇴출 · 무효화 · 덮어쓰기) 부르는 해제다.
 ///
@@ -262,7 +262,7 @@ pub const CoreTextFontContext = struct {
     /// #584 — chain 폰트의 `atlas_common.fontId`. **`init` 에서 한 번만** 구한다 (이름 조회가
     /// `CFStringGetBytes` 를 타므로 셀마다 부를 수 없다). atlas 키가 폰트를 주소가 아니라 이
     /// 값으로 식별한다.
-    fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS,
+    fallback_font_id: [MAX_FALLBACK_FONTS]u64 = @splat(0),
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `fallback_fonts` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -273,10 +273,10 @@ pub const CoreTextFontContext = struct {
     /// #584 — `styled_fonts` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Menlo-Bold` vs
     /// `Menlo-Regular`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
     styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
-        .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
+        @splat(@splat(0)),
     /// #759 — `styled_fonts` 를 그릴 때 합성 bold 로 굵힐지. `chainFor` 와 같은 순서다.
     styled_bold: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]bool =
-        .{.{false} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1),
+        @splat(@splat(false)),
     ligature_cache: ligature.Cache,
     /// #399 (B) — grapheme cluster shaping 결과 cache. 세 platform 공용 모듈이고 값만
     /// platform 별이다.
@@ -492,11 +492,11 @@ pub const CoreTextFontContext = struct {
         // 답이다. 없으면 합성한다 (#759 — `styledCopy`). 조회가 언제나 성공한다.
         var styled_fonts: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]ct.CTFontRef = undefined;
         // #584 — 폰트 id 도 여기서 한 번만 구한다. atlas 키가 주소 대신 이 값을 쓴다.
-        var fallback_font_id: [MAX_FALLBACK_FONTS]u64 = [_]u64{0} ** MAX_FALLBACK_FONTS;
+        var fallback_font_id: [MAX_FALLBACK_FONTS]u64 = @splat(0);
         var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]u64 =
-            .{.{0} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
+            @splat(@splat(0));
         var styled_bold: [font_constants.FaceStyle.count - 1][MAX_FALLBACK_FONTS]bool =
-            .{.{false} ** MAX_FALLBACK_FONTS} ** (font_constants.FaceStyle.count - 1);
+            @splat(@splat(false));
         for (fallback_fonts[0..fallback_count], 0..) |base, i| {
             fallback_font_id[i] = fontIdOf(base);
         }
@@ -748,11 +748,11 @@ pub const CoreTextFontContext = struct {
         // 호출부는 그 셋을 읽는다. 그래서 **미정의 값으로 그렸고, 그 결과가 캐시에까지 들어가**
         // 한 번 배칭을 탄 cluster 는 이후 개별 경로에서도 계속 깨졌다 (실기: `[áéíóú]` 가
         // 두부 하나로). 개별 경로만 multi-glyph 로 옮기고 여기를 빠뜨린 회귀였다.
-        var filled = [_]bool{false} ** MAX_RUN_CLUSTERS;
+        var filled: [MAX_RUN_CLUSTERS]bool = @splat(false);
         // 각 cluster 가 run 안에서 차지한 글리프 구간. 폭을 재고 (`CTRunGetTypographicBounds`)
         // 구간이 연속인지 확인하는 데 쓴다.
-        var g_lo = [_]usize{0} ** MAX_RUN_CLUSTERS;
-        var g_hi = [_]usize{0} ** MAX_RUN_CLUSTERS;
+        var g_lo: [MAX_RUN_CLUSTERS]usize = @splat(0);
+        var g_hi: [MAX_RUN_CLUSTERS]usize = @splat(0);
         var count: usize = 0;
 
         const runs = ct.CTLineGetGlyphRuns(line);
@@ -794,7 +794,7 @@ pub const CoreTextFontContext = struct {
             };
 
             // 이 run 에서 채운 cluster 만 아래 후처리 대상이다 (run 이 여럿일 수 있다).
-            var touched = [_]bool{false} ** MAX_RUN_CLUSTERS;
+            var touched: [MAX_RUN_CLUSTERS]bool = @splat(false);
 
             var g: usize = 0;
             while (g < take) : (g += 1) {
@@ -1277,7 +1277,7 @@ pub const CoreTextFontContext = struct {
             var glyphs: [2]ct.CGGlyph = .{ 0, 0 };
             if (ct.CTFontGetGlyphsForCharacters(f, &utf16_buf, &glyphs, @intCast(utf16_len))) {
                 if (glyphs[0] != 0) {
-                    const r: GlyphResult = .{ .font = f, .index = glyphs[0], .owned = false, .fonts = .{f} ** MAX_CLUSTER_GLYPHS, .font_id = chain_ids[ci], .bold = chain_bold[ci] };
+                    const r: GlyphResult = .{ .font = f, .index = glyphs[0], .owned = false, .fonts = @splat(f), .font_id = chain_ids[ci], .bold = chain_bold[ci] };
                     const w = want orelse return r;
                     if (fontPresentation(f) == w) return r;
                     if (first == null) first = r;
@@ -1334,7 +1334,7 @@ pub const CoreTextFontContext = struct {
                 // atlas 키에 실으면 같은 글리프가 주소마다 새로 담긴다. macOS 는 codepoint 캐시가
                 // 없어 이 경로가 셀마다 돌지만, 그 자리에서 이미 `CTFontCreateForString` (폰트
                 // 매칭) 을 부르고 있어 이름 조회 하나가 더해지는 비용은 그에 비해 작다.
-                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = .{fallback_font.?} ** MAX_CLUSTER_GLYPHS, .font_id = fontIdOf(fallback_font.?) };
+                return .{ .font = fallback_font.?, .index = fb_glyphs[0], .owned = true, .fonts = @splat(fallback_font.?), .font_id = fontIdOf(fallback_font.?) };
             }
         }
 

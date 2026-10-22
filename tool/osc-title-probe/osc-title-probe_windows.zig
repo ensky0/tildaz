@@ -601,7 +601,7 @@ const ExtraEnv = struct {
     names: [max][:0]const WCHAR = undefined,
     values: [max][:0]const WCHAR = undefined,
     count: usize = 0,
-    saved: [max]?[]WCHAR = .{null} ** max,
+    saved: [max]?[]WCHAR = @splat(null),
     wslenv_storage: [1024]WCHAR = undefined,
 
     fn build(self: *ExtraEnv) void {

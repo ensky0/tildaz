@@ -260,7 +260,7 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
         return;
     }
 
-    var fbuf: [8]?*dw.IUnknown = .{null} ** 8;
+    var fbuf: [8]?*dw.IUnknown = @splat(null);
     const files = base.?.GetFiles(&fbuf) orelse {
         p("  GetFiles 실패\n", .{});
         return;

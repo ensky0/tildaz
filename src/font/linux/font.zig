@@ -337,16 +337,16 @@ pub const Context = struct {
             .ligature_cache = ligature.Cache.init(allocator),
             .cluster_cache = cluster_cache.ClusterCache(ClusterGlyph, null).init(allocator),
             .composed_glyphs = std.AutoHashMap(u64, *Glyph).init(allocator),
-            .faces = [_]?Face{null} ** MAX_CHAIN,
+            .faces = @splat(null),
             .face_count = 0,
-            .styled_faces = .{[_]?Face{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
-            .styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1),
-            .fallback_faces = [_]?Face{null} ** MAX_FALLBACK,
+            .styled_faces = @splat(@splat(null)),
+            .styled_loaded = @splat(false),
+            .fallback_faces = @splat(null),
             .fallback_count = 0,
             .fallback_cap_logged = false,
             .system_fallback = std.AutoHashMap(u32, ?u8).init(allocator),
-            .resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count,
-            .resolved = .{std.AutoHashMap(u21, *const Glyph).init(allocator)} ** font_constants.FaceStyle.count,
+            .resolved_ascii = @splat(@splat(null)),
+            .resolved = @splat(std.AutoHashMap(u21, *const Glyph).init(allocator)),
             .pixel_height = pixel_height,
             .cell_width_px = pixel_height / 2,
             .cell_height_px = pixel_height,
@@ -541,7 +541,7 @@ pub const Context = struct {
     fn freeFaces(self: *Context) void {
         // face 를 버리면 그 안의 글리프도 사라진다 — 해석 캐시가 죽은 포인터를
         // 들고 있으면 안 된다 (#362).
-        self.resolved_ascii = .{[_]?*const Glyph{null} ** ASCII_SPAN} ** font_constants.FaceStyle.count;
+        self.resolved_ascii = @splat(@splat(null));
         for (&self.resolved) |*m| m.clearRetainingCapacity();
         // #399 — cluster 캐시도 같은 이유로 비운다. face 를 버리면 담아 둔 `face_idx` ·
         // `glyph_index` 가 다른 폰트를 가리키게 된다.
@@ -564,7 +564,7 @@ pub const Context = struct {
                 slot.* = null;
             }
         }
-        self.styled_loaded = .{false} ** (font_constants.FaceStyle.count - 1);
+        self.styled_loaded = @splat(false);
         for (&self.fallback_faces) |*slot| {
             if (slot.*) |*face| face.deinit(self.ft_api, hb_api_ptr);
             slot.* = null;
@@ -1149,7 +1149,7 @@ pub const Context = struct {
         var xs: [MAX_CLUSTER_GLYPHS]i32 = undefined;
         var ys: [MAX_CLUSTER_GLYPHS]i32 = undefined;
         // #418 — 세로 보정 단계에서 다시 봐야 해서 배치 루프의 판정을 남겨 둔다.
-        var marks: [MAX_CLUSTER_GLYPHS]bool = .{false} ** MAX_CLUSTER_GLYPHS;
+        var marks: [MAX_CLUSTER_GLYPHS]bool = @splat(false);
         var overlay_only = true; // 결합 기호가 **전부** 관통 류인가
         var has_mark = false;
 
@@ -1745,7 +1745,7 @@ fn resolveRequested(allocator: std.mem.Allocator, name: []const u8) !Resolved {
     };
     if (canonical) |canon| {
         if (!std.mem.eql(u8, canon, name)) {
-            const canon_z = try allocator.dupeZ(u8, canon);
+            const canon_z = try allocator.dupeSentinel(u8, canon, 0);
             defer allocator.free(canon_z);
             if (fontconfig.lookup(allocator, canon_z.ptr)) |again| {
                 if (matchResolvesFamily(canon, again.family, again.additional_families)) {

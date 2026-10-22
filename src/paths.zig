@@ -28,6 +28,7 @@
 // 거치게 됐다. 이 모듈은 그 둘을 가장 많이 쓰는 자리라 `Runtime` 을 인자로 받는다
 // (릴리즈 노트가 지정한 두 길 중 "context struct" — `runtime.zig` 주석 참고).
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const builtin = @import("builtin");
 const app_id = @import("app_id.zig");
 const instance_context = @import("instance_context.zig");
@@ -496,7 +497,7 @@ test "측정 인스턴스는 worker 의 로그 파일에 쓰지 않는다" {
 
 test "log path builder preserves paths beyond the old fixed limit" {
     const allocator = std.testing.allocator;
-    const long_dir = "/base/" ++ ("가" ** 1200);
+    const long_dir = "/base/" ++ test_text.repeat("가", 1200);
     const path = try logPathFromDir(allocator, long_dir, "tildaz_42.log");
     defer allocator.free(path);
 

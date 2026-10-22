@@ -29,8 +29,13 @@ pub const Info = struct {
 };
 
 pub fn detect(b: *std.Build) Info {
+    // #820 — Zig 0.17 은 설정 결과를 캐시하고 같은 설정이면 build.zig 를 건너뛴다. git 조회는
+    // 캐시가 추적하지 못하는 입력이라, 그대로 두면 커밋해도 옛 commit 이 찍힌다. 매번 다시
+    // 돌게 알린다 (`runFallible` 은 스스로 캐시를 무효로 하지 않는다).
+    b.graph.poisonCache();
+
     // build root 를 명시한다. `zig build` 를 어느 cwd 에서 부르든 같은 저장소를 본다.
-    const root = b.build_root.path orelse ".";
+    const root = b.root.toString(b.allocator) catch @panic("OOM");
     var code: u8 = 0;
 
     const hash_raw = b.runAllowFail(

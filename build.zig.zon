@@ -25,7 +25,7 @@
     .fingerprint = 0x474b12cb1baafe59, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -35,21 +35,21 @@
         .ghostty = .{
             // 특정 커밋으로 고정. `refs/heads/main.tar.gz` 는 upstream main 이
             // 움직이면 CI 프리페치가 해시 불일치로 실패 (c41a9ef 참고).
-            .url = "https://github.com/ghostty-org/ghostty/archive/b58ef1d678be2747c830bc1b1e6c0a086afecf9a.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBCxFpfAWYAzbzLBh2XerT5JLrXxuv1Q0h1bSjJrqj",
+            .url = "https://github.com/ghostty-org/ghostty/archive/f54340ad77814fe319d136e5e915d6a48de8dd23.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBCwB2hQVxHcUiN4kYlsRDu1qcBPAbNJb35Kkyx752",
         },
         // TOML config 파서 (#493). MIT.
         //
-        // **`zig-0.16` 브랜치 커밋으로 고정한다.** upstream `main` 은 Zig 0.16 에서
-        // 컴파일이 깨진다 — `struct_mapping.zig` 의 `@fromBackingInt` builtin 이
-        // 0.16 에 없다. 이 브랜치는 `parseFile` 이 `std.Io` 를 받는 등 0.16 의 새
-        // 인터페이스에 맞춰져 있다. upstream 이 main 에 병합하면 그때 옮긴다.
+        // **upstream `main` 커밋으로 고정한다** (#820). zig-toml 은 `main` 이 최신 Zig
+        // (지금 0.17) 를 따르고, 옛 Zig 는 브랜치 (`zig-0.16` · `zig-0.15`) 로 남긴다
+        // (README). 0.16 동안은 `zig-0.16` 브랜치에 고정했다 — `main` 이 0.17 전용
+        // builtin (`@fromBackingInt`) 을 써서 0.16 에서 깨졌다.
         //
         // ghostty 와 같은 이유로 커밋 고정 — 브랜치 tarball 은 움직이면 CI
         // 프리페치가 해시 불일치로 실패한다.
         .toml = .{
-            .url = "https://github.com/sam701/zig-toml/archive/8685923e32e8b8a795eb2715684236975a70faed.tar.gz",
-            .hash = "toml-0.3.0-bV14BRmKAQAWR0FT0KUKFwVJTImaFhWjSe6HfSMtNZOH",
+            .url = "https://github.com/sam701/zig-toml/archive/c661327bd9f02f774426c4fe78f60621411b7173.tar.gz",
+            .hash = "toml-0.3.0-bV14BRmkAQDSILPPyXc31aAXPtJa1Uh8Frug3i6InAUc",
         },
     },
     .paths = .{

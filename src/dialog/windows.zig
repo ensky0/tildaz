@@ -4,6 +4,7 @@
 //! `dialog.zig` 에서 comptime 으로 select.
 
 const std = @import("std");
+const test_text = @import("../test_text.zig");
 const Runtime = @import("../runtime.zig").Runtime;
 const config = @import("../config.zig");
 const dialog = @import("../dialog.zig");
@@ -1113,7 +1114,7 @@ fn dialogEditTextAlloc(allocator: std.mem.Allocator, body: []const u8) ![:0]WCHA
 }
 
 test "#314 Windows About conversion preserves long UTF-8 and normalizes line endings" {
-    const body = "첫째 줄\n" ++ ("경로" ** 800) ++ "\n마지막 줄";
+    const body = "첫째 줄\n" ++ test_text.repeat("경로", 800) ++ "\n마지막 줄";
     const wide = try dialogEditTextAlloc(std.testing.allocator, body);
     defer std.testing.allocator.free(wide);
     const round_trip = try std.unicode.utf16LeToUtf8Alloc(std.testing.allocator, wide);

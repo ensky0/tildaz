@@ -182,7 +182,7 @@ pub const D3D11_RENDER_TARGET_BLEND_DESC = extern struct {
 pub const D3D11_BLEND_DESC = extern struct {
     AlphaToCoverageEnable: BOOL = .FALSE,
     IndependentBlendEnable: BOOL = .FALSE,
-    RenderTarget: [8]D3D11_RENDER_TARGET_BLEND_DESC = [_]D3D11_RENDER_TARGET_BLEND_DESC{.{}} ** 8,
+    RenderTarget: [8]D3D11_RENDER_TARGET_BLEND_DESC = @splat(.{}),
 };
 
 pub const D3D11_SAMPLER_DESC = extern struct {

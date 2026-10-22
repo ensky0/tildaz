@@ -347,7 +347,7 @@ fn withSimulations(id: u64, simulations: u32) u64 {
 /// DirectWrite 는 굵기 양을 바꿀 수 없어서 그 값 (em/50) 이 곧 세 OS 공통 값이다
 /// ([`synthetic`](../synthetic.zig)). 실패하면 `null`.
 fn withoutObliqueSimulation(factory: *dw.IDWriteFactory, face: *dw.IDWriteFontFace) ?*dw.IDWriteFontFace {
-    var buf: [8]?*dw.IUnknown = .{null} ** 8;
+    var buf: [8]?*dw.IUnknown = @splat(null);
     const files = face.GetFiles(&buf) orelse return null;
     defer {
         for (files) |f| {
@@ -698,15 +698,15 @@ pub const DWriteFontContext = struct {
     /// 순회해서 글리프 가진 첫 face 반환. 모든 face 는 process 전체 lifetime
     /// 안정 (deinit 까지 Release 안 함) — atlas cache key 가 face 포인터라
     /// 안정성 필수.
-    chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN,
+    chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = @splat(null),
     /// #584 — chain face 의 `atlas_common.fontId`. **init 에서 한 번만 구한다** — 이름 조회가
     /// COM 왕복 셋 (`GetFontFromFontFace` → `GetInformationalStrings` → `GetString`) 이라
     /// cluster 마다 부를 수 없다. chain face 는 process lifetime 동안 안 바뀌므로 캐시가 맞다.
-    chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN,
+    chain_font_id: [MAX_CHAIN]u64 = @splat(0),
     /// #584 — `styled_faces` 의 폰트 id. 변종은 PostScript 이름이 달라 (`Cascadia Code Bold`
     /// vs `Cascadia Code`) id 도 갈린다 — 그래야 굵기가 다른 그림이 한 칸을 안 나눠 쓴다 (#529).
     styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
-        .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
+        @splat(@splat(0)),
     /// #375 — bold · italic · bold_italic chain. regular 는 위 `chain_faces` 가
     /// 담당하므로 3 벌만 둔다 (`FaceStyle.index() - 1` 로 색인).
     ///
@@ -714,11 +714,11 @@ pub const DWriteFontContext = struct {
     /// 않는다) bold face 가 없는 family 는 자연히 regular 가 들어온다 — "없으면
     /// regular" 를 우리가 따로 판정하지 않아도 된다.
     styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
-        .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
+        @splat(@splat(null)),
     /// #759 — `styled_faces` 를 그릴 때 우리가 기울일지. DirectWrite 가 기울임을 합성한 변종은
     /// 그 합성을 뺀 face 로 바꿔 두고 여기를 `true` 로 한다 (`withoutObliqueSimulation`).
     styled_slant: [font_constants.FaceStyle.count - 1][MAX_CHAIN]bool =
-        .{.{false} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1),
+        @splat(@splat(false)),
     chain_count: u8 = 0,
     rendering_params: ?*dw.IDWriteRenderingParams = null,
     number_sub: ?*dw.IUnknown = null,
@@ -777,15 +777,15 @@ pub const DWriteFontContext = struct {
         // 3. chain entry 마다 face 생성. caller 가 사전에 없는 폰트를 바꾸거나 뺐지만
         //    (`Config.resolveFonts`, #758) race 방지 위해 여기서도 missing 시 error.
         //    중간 실패 시 errdefer 가 이미 만든 faces 모두 release.
-        var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = .{null} ** MAX_CHAIN;
+        var chain_faces: [MAX_CHAIN]?*dw.IDWriteFontFace = @splat(null);
         // #584 — chain face 의 PostScript 이름 id. 여기서 한 번만 구한다.
-        var chain_font_id: [MAX_CHAIN]u64 = .{0} ** MAX_CHAIN;
+        var chain_font_id: [MAX_CHAIN]u64 = @splat(0);
         var styled_font_id: [font_constants.FaceStyle.count - 1][MAX_CHAIN]u64 =
-            .{.{0} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
+            @splat(@splat(0));
         var styled_faces: [font_constants.FaceStyle.count - 1][MAX_CHAIN]?*dw.IDWriteFontFace =
-            .{.{null} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
+            @splat(@splat(null));
         var styled_slant: [font_constants.FaceStyle.count - 1][MAX_CHAIN]bool =
-            .{.{false} ** MAX_CHAIN} ** (font_constants.FaceStyle.count - 1);
+            @splat(@splat(false));
         var chain_count: u8 = 0;
         errdefer {
             for (chain_faces[0..chain_count]) |maybe_face| {

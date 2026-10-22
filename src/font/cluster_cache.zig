@@ -68,7 +68,7 @@ const Key = struct {
 
 fn makeKey(cps: []const u21) ?Key {
     if (cps.len == 0 or cps.len > MAX_KEY_CPS) return null;
-    var k = Key{ .cps = [_]u21{0} ** MAX_KEY_CPS, .len = @intCast(cps.len) };
+    var k = Key{ .cps = @splat(0), .len = @intCast(cps.len) };
     @memcpy(k.cps[0..cps.len], cps);
     return k;
 }
@@ -159,7 +159,7 @@ test "키 상한을 넘는 cluster 는 캐시하지 않는다" {
     var c = ClusterCache(V, null).init(std.testing.allocator);
     defer c.deinit();
 
-    const long = [_]u21{'a'} ** (MAX_KEY_CPS + 1);
+    const long: [MAX_KEY_CPS + 1]u21 = @splat('a');
     c.put(&long, .{ .idx = 1 });
     // 담기지 않았으므로 계속 miss 다 — caller 는 그냥 shape 한다.
     try std.testing.expect(c.get(&long) == null);
@@ -201,7 +201,7 @@ test "release 는 버릴 때마다 정확히 한 번 불린다" {
     try std.testing.expectEqual(@as(u32, 1), S.freed);
 
     // 키에 안 들어가는 cluster 는 담지 않으므로 그 자리에서 해제된다.
-    const long = [_]u21{'a'} ** (MAX_KEY_CPS + 1);
+    const long: [MAX_KEY_CPS + 1]u21 = @splat('a');
     c.put(&long, .{ .idx = 3 });
     try std.testing.expectEqual(@as(u32, 2), S.freed);
 

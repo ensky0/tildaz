@@ -568,7 +568,7 @@ pub const ConPty = struct {
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
-        var saved_vals: [MAX_EXTRA_ENV]?[]u16 = .{null} ** MAX_EXTRA_ENV;
+        var saved_vals: [MAX_EXTRA_ENV]?[]u16 = @splat(null);
         errdefer {
             for (&saved_vals) |*maybe_buf| {
                 if (maybe_buf.*) |buf| {

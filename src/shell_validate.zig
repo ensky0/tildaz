@@ -16,6 +16,7 @@
 //!   host 가 default config 생성 전에 끝내고, 이후 disk config 의 명시값만 사용.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
@@ -213,8 +214,8 @@ fn existsPosix(allocator: std.mem.Allocator, token: []const u8) bool {
 
 test "shell validation preserves long and multibyte failure details beyond 1024 bytes" {
     const allocator = std.testing.allocator;
-    const shell = "/missing/" ++ ("셸" ** 600);
-    const config_path = "/tmp/" ++ ("경로/" ** 400) ++ "config_998.json";
+    const shell = "/missing/" ++ test_text.repeat("셸", 600);
+    const config_path = "/tmp/" ++ test_text.repeat("경로/", 400) ++ "config_998.json";
     const message = formatValidationFailure(
         allocator,
         .executable_not_found,
@@ -252,8 +253,8 @@ test "shell validation uses the specific static fallback only when allocation fa
 
 test "new tab failure message preserves long shell and final config path" {
     const allocator = std.testing.allocator;
-    const shell = "/missing/" ++ ("x" ** 1600);
-    const config_path = "/tmp/" ++ ("y/" ** 900) ++ "config_998.json";
+    const shell = "/missing/" ++ test_text.repeat("x", 1600);
+    const config_path = "/tmp/" ++ test_text.repeat("y/", 900) ++ "config_998.json";
     const message = allocMessageOrFallback(
         allocator,
         messages.shell_new_tab_not_found_format,

@@ -85,15 +85,25 @@ fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
     if (ghostty_patches_checked) return;
     ghostty_patches_checked = true;
 
+    // #820 — Zig 0.17 은 build.zig 의 설정 결과를 캐시하고, 같은 설정이면 build.zig 를 건너뛴다.
+    // 캐시의 입력은 build.zig 소스와 각 패키지의 build.zig.zon 이라 (`compiler/Maker.zig`),
+    // 패치 파일 (`vendor/ghostty/patches/`) 이나 패치가 고친 ghostty 소스가 바뀌어도 이 함수가
+    // 안 돈다. 얹힌 파일을 원본으로 되돌리고 빌드하니 패치 없는 ghostty 가 조용히 컴파일됐다
+    // (macOS 실측). 그래서 캐시를 쓰지 않게 알린다.
+    b.graph.poisonCache();
+
     const io = b.graph.io;
     const patches_path = "vendor/ghostty/patches";
-    var patches = b.build_root.handle.openDir(io, patches_path, .{ .iterate = true }) catch |err|
+    var patches = b.root.openDir(io, patches_path, .{ .iterate = true }) catch |err|
         std.debug.panic("cannot open {s}: {s}", .{ patches_path, @errorName(err) });
     defer patches.close(io);
+    var ghostty_root = dep.builder.root.openDir(io, ".", .{}) catch |err|
+        std.debug.panic("cannot open the ghostty source: {s}", .{@errorName(err)});
+    defer ghostty_root.close(io);
 
     var applied: std.ArrayList([]const u8) = .empty;
     var diag: vendor_patch.Diagnostic = .{};
-    vendor_patch.ensureApplied(io, b.allocator, dep.builder.build_root.handle, patches, &applied, &diag) catch |err|
+    vendor_patch.ensureApplied(io, b.allocator, ghostty_root, patches, &applied, &diag) catch |err|
         std.debug.panic(
             \\ghostty patch {s} does not apply to {s} ({s}).
             \\  The pinned ghostty source no longer matches the patch, or the file was edited.
@@ -131,7 +141,7 @@ pub fn build(b: *std.Build) void {
         std.builtin.OptimizeMode,
         "optimize",
         "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택 (default: Debug)",
-    ) orelse .Debug;
+    ) orelse .debug;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -283,7 +293,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     if (is_windows_target) {
-        exe.subsystem = .Windows;
+        exe.subsystem = .windows;
     }
 
     if (is_linux_target) {
@@ -341,14 +351,19 @@ pub fn build(b: *std.Build) void {
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
         // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
-        const app_path = b.fmt("{s}/{s}", .{ b.install_path, macosBundleDir(dev) });
+        //
+        // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.install_path` 가 없어졌다).
+        // 경로는 실행할 때 정해지는 `install_prefix` 기준 LazyPath 로 넘긴다.
         const sign = b.addSystemCommand(&.{
             "codesign",
             "--force",
             "--sign",
             macos_sign_identity,
-            app_path,
         });
+        sign.addDirectoryArg2(b.graph.path(.install_prefix, macosBundleDir(dev)), .{});
+        // 번들 내용이 같아도 매번 서명한다. 설치가 바이너리를 다시 쓰면 서명이 떨어지므로,
+        // 캐시로 건너뛰면 서명 없는 번들이 남는다.
+        sign.has_side_effects = true;
         sign.step.dependOn(&install_macos_exe.step);
         sign.step.dependOn(&install_macos_plist.step);
         sign.step.dependOn(&install_macos_icon.step);
@@ -415,7 +430,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "TildaZ 실행");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     run_step.dependOn(&run_cmd.step);
 
     // 테스트 단계 — `main.zig`를 test root로 재사용하면 runtime main의 lazy
@@ -494,9 +509,8 @@ pub fn build(b: *std.Build) void {
             b.path(b.fmt("{s}/OpenConsole.exe", .{arch_dir})),
             b.fmt("{s}/_internal/OpenConsole.exe", .{test_dir}),
         );
-        const test_run = b.addSystemCommand(&.{
-            b.getInstallPath(.{ .custom = test_dir }, exe_tests.out_filename),
-        });
+        // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.getInstallPath` 가 없어졌다).
+        const test_run = b.addRunFile(b.graph.path(.install_prefix, b.fmt("{s}/{s}", .{ test_dir, exe_tests.out_filename })));
         test_run.step.dependOn(&test_install.step);
         test_run.step.dependOn(&test_dll_install.step);
         test_run.step.dependOn(&test_open_console_install.step);
@@ -605,7 +619,8 @@ pub fn build(b: *std.Build) void {
     // producer 자식도 `std.process.executablePath` 로 자기 경로를 띄우므로 (`stress.zig` 의
     // `ProducerSession.start`) 자식 역시 같은 디렉토리에서 돈다.
     const stress_install = b.addInstallArtifact(stress_exe, .{});
-    const stress_run = b.addSystemCommand(&.{b.getInstallPath(.bin, stress_exe.out_filename)});
+    // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.getInstallPath` 가 없어졌다).
+    const stress_run = b.addRunFile(b.graph.path(.install_bin, stress_exe.out_filename));
     stress_run.step.dependOn(&stress_install.step);
     if (conpty_dll_install) |s| stress_run.step.dependOn(&s.step);
     if (conpty_open_console_install) |s| stress_run.step.dependOn(&s.step);
@@ -614,7 +629,7 @@ pub fn build(b: *std.Build) void {
     // 동시에 stdout 을 그대로 흘려 리포트가 보이게 하고, non-zero exit 을 실패로
     // 만든다 — 잘못된 인자에 usage + exit 2 를 내는 동작이 그대로 유지된다).
     stress_run.stdio = .inherit;
-    if (b.args) |args| stress_run.addArgs(args);
+    stress_run.addPassthruArgs();
     stress_step.dependOn(&stress_run.step);
 
     // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418 · #771).
@@ -685,14 +700,14 @@ pub fn build(b: *std.Build) void {
                 .target = check_target,
                 // Debug — safety check 활성. ReleaseFast 와의 codegen 차이로 일부
                 // type error 가 안 surface 되는 케이스 회피.
-                .optimize = .Debug,
+                .optimize = .debug,
             });
             addShellExtensionResources(b, check_mod);
             check_mod.addOptions("build_options", build_opts);
             if (ghosttyDependency(b, .{
                 .target = check_target,
                 .simd = simd,
-                .optimize = .Debug,
+                .optimize = .debug,
                 .@"emit-lib-vt" = true,
                 // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
                 // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
@@ -743,13 +758,13 @@ pub fn build(b: *std.Build) void {
             const probe_mod = b.createModule(.{
                 .root_source_file = b.path(root.path),
                 .target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query)),
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
             });
             addShellExtensionResources(b, probe_mod);
             if (root.dwrite) probe_mod.addImport("directwrite", b.createModule(.{
                 .root_source_file = b.path("src/font/windows/directwrite.zig"),
                 .target = probe_mod.resolved_target,
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
             }));
             // 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
             probe_mod.link_libc = true;

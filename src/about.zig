@@ -12,6 +12,7 @@
 //! Tip 의 단축키는 실제 `[keys]` 바인딩이다 (#682 — 명령 메뉴 hint 와 같은 표).
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
@@ -136,7 +137,7 @@ test "#383 About 첫 줄은 `--version` · 로그와 같은 버전 문자열이�
 }
 
 test "#314 About formatter preserves content beyond the old 2048-byte limit" {
-    const long_path = "/home/" ++ ("x" ** 2300) ++ "/tildaz";
+    const long_path = "/home/" ++ test_text.repeat("x", 2300) ++ "/tildaz";
     const msg = try formatMessageAlloc(std.testing.allocator, .{
         .version = "test",
         .exe_path = long_path,

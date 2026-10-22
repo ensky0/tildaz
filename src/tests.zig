@@ -67,6 +67,7 @@ test "aggregate root imports every common and native-host test module" {
     _ = @import("tab_interaction.zig");
     _ = @import("tab_layout.zig");
     _ = @import("terminal_interaction.zig");
+    _ = @import("test_text.zig");
     _ = @import("ui_metrics.zig");
     _ = @import("url_scan.zig");
     _ = @import("version.zig");

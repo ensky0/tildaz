@@ -1373,7 +1373,7 @@ const Client = struct {
     /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
     /// 로드 시점에 한 번 굳히면 사용자가 layout 을 바꾼 뒤 틀린다.
     binding_fallbacks: [config_mod.MAX_KEY_BINDINGS]?config_mod.PhysicalCode =
-        [_]?config_mod.PhysicalCode{null} ** config_mod.MAX_KEY_BINDINGS,
+        @splat(null),
     /// #496 1-b — sway 전역 핫키 등록을 **keymap 이 온 뒤로** 미룬다. 등록을 위치
     /// (`bindcode`) 로 하려면 "이 문자를 내는 키가 어디인가" 를 알아야 하는데,
     /// `client.run()` 앞에서는 `wl_keyboard.keymap` 이 아직 오지 않았다.
@@ -1435,7 +1435,7 @@ const Client = struct {
     //      실제 layout 의 크기를 work-area 로 오인 latch 하게 된다). 보류한 송신은
     //      latch 직후 configure 핸들러가 이어서 보낸다 (continuation) — 유실이 아니다.
     initial_safe_pending: bool = false,
-    outputs: [max_tracked_outputs]OutputSlot = [_]OutputSlot{.{}} ** max_tracked_outputs,
+    outputs: [max_tracked_outputs]OutputSlot = @splat(.{}),
     // #295 — 현재 basis 로 쓰는 output 의 object id. 0 = 아직 미확정 (startup /
     // 재생성 직후) → 첫 bind output 이 기준. `wl_surface.enter`/`leave` 로 갱신되는
     // OutputSlot.entered 집합에서 batch 종료 후 안정적으로 선택 (drainSurfaceOutputs):

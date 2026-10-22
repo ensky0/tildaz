@@ -516,10 +516,10 @@ fn entry(code: PhysicalCode) Entry {
 }
 
 test "표가 enum 을 빠짐없이 정확히 한 번씩 덮는다" {
-    const fields = @typeInfo(PhysicalCode).@"enum".fields;
-    try std.testing.expectEqual(fields.len, table.len);
-    inline for (fields) |f| {
-        const code = @field(PhysicalCode, f.name);
+    const code_names = @typeInfo(PhysicalCode).@"enum".field_names;
+    try std.testing.expectEqual(code_names.len, table.len);
+    inline for (code_names) |code_name| {
+        const code = @field(PhysicalCode, code_name);
         var seen: usize = 0;
         for (table) |e| {
             if (e.code == code) seen += 1;

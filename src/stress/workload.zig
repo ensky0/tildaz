@@ -504,7 +504,7 @@ test "varied 워크로드는 한 화면에 여러 종류를 올린다" {
             for (0..attr_items) |i| {
                 // 항목이 고정 byte 라 앞머리 10 부터 잘라내면 된다. 짧은 항목은
                 // 0 으로 채워 키 길이를 맞춘다 (가장 긴 항목이 18 byte).
-                var key = [_]u8{0} ** 18;
+                var key: [18]u8 = @splat(0);
                 @memcpy(key[0..c.item_bytes], buf[10 + i * c.item_bytes ..][0..c.item_bytes]);
                 try seen.put(key, {});
             }

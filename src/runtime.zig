@@ -28,6 +28,7 @@
 //! 덕분에 `appendLine` 계열 297 자리가 시그니처를 안 바꾼다.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const builtin = @import("builtin");
 
 /// `Io` 와 환경변수 묶음. 복사가 싸다 (`Io` 는 vtable + userdata 포인터 쌍,
@@ -145,7 +146,7 @@ test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
 
     // 환경 블록을 일부러 크게 만든다 — 예전 구현 (`Environ.getAlloc` → `createMap`) 은 값
     // 하나를 얻으려고 **이 전체**를 복사했다. 그래서 아래 64 바이트 버퍼로는 실패했다.
-    const filler = "PAD=" ++ ("x" ** 512);
+    const filler = "PAD=" ++ test_text.repeat("x", 512);
     const entries = [_:null]?[*:0]const u8{
         "TILDAZ_519=ok",
         filler,

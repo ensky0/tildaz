@@ -446,7 +446,7 @@ fn spawnShell(
         posix.tcsetattr(slave_fd, .NOW, tio) catch {};
     } else |_| {}
 
-    const shell_z = try alloc.dupeZ(u8, shell);
+    const shell_z = try alloc.dupeSentinel(u8, shell, 0);
     defer alloc.free(shell_z);
 
     var env_map = try environ.createMap(alloc);
@@ -467,7 +467,7 @@ fn spawnShell(
     defer env_arena.deinit();
     const envp = try buildEnvp(env_arena.allocator(), &env_map);
 
-    const home_z_owned: ?[:0]u8 = if (home_override) |h| try alloc.dupeZ(u8, h) else null;
+    const home_z_owned: ?[:0]u8 = if (home_override) |h| try alloc.dupeSentinel(u8, h, 0) else null;
     defer if (home_z_owned) |h| alloc.free(h);
     // fork 뒤에는 환경 조회나 할당을 하지 않는다. 부모의 환경 블록은 프로세스 수명이고
     // `getPosix` 반환값은 이미 NUL-종단이라 그대로 `chdir`에 쓸 수 있다.

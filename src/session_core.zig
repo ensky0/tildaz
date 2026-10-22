@@ -593,7 +593,7 @@ pub const Tab = struct {
         const text = clipboardWriteText(req.contents) orelse return req.reply(.unsupported);
         const alloc = handler.terminal.gpa();
         // host 의 복사 함수가 `[:0]` 을 받는다 (Windows 클립보드 API 가 널 종단을 요구).
-        const owned = alloc.dupeZ(u8, text) catch return req.reply(.io_error);
+        const owned = alloc.dupeSentinel(u8, text, 0) catch return req.reply(.io_error);
         defer alloc.free(owned);
         notify(tab.clipboard_write_userdata, clipboardTarget(req.location), owned);
         req.reply(.{ .success = .{} });
@@ -1444,7 +1444,7 @@ const VisibleDrainRound = struct {
 pub const TabGroup = struct {
     /// leaf id 가 `panes` 의 index 다. host 가 아니라 이 struct 가 id 를 정한다.
     tree: pane_layout.Tree,
-    panes: [pane_layout.MAX_PANES_PER_TAB]?*Tab = [_]?*Tab{null} ** pane_layout.MAX_PANES_PER_TAB,
+    panes: [pane_layout.MAX_PANES_PER_TAB]?*Tab = @splat(null),
     /// 키보드 · 붙여넣기 · 스크롤이 가는 pane. 탭바 제목도 이 pane 의 것이다.
     active_pane: pane_layout.PaneId = 0,
     /// #483 4c — 최대화된 pane. 있으면 `layout` 은 이 pane 하나가 영역 전체를 쓰고 다른 pane 은 그리지

@@ -536,11 +536,11 @@ var g_layout_table_built: bool = false;
 
 /// 지금 layout 이 낼 수 있는 라벨 (인쇄 가능 ASCII, 소문자 정규화). **Shift 를 눌러야
 /// 나오는 글자도 담는다** — AZERTY 숫자열이 그렇다 (무시프트는 `&é"'(-è_çà`).
-var g_layout_labels: [128]bool = [_]bool{false} ** 128;
+var g_layout_labels: [128]bool = @splat(false);
 
 /// binding 별 라틴 fallback 자리. `null` = fallback 없음 (= 그 라벨을 낼 수 있는 layout).
 var g_binding_fallbacks: [config.MAX_KEY_BINDINGS]?config.PhysicalCode =
-    [_]?config.PhysicalCode{null} ** config.MAX_KEY_BINDINGS;
+    @splat(null);
 /// #451 — 진입점이 만든 `Io` · 환경변수. macOS host 는 Cocoa 콜백이 전역에서 도는
 /// 구조라 (`g_host` · `g_config` 와 같은 자리) 여기 보관한다. `run(rt, …)` 이 심는다.
 var g_rt: Runtime = undefined;
@@ -1475,7 +1475,7 @@ fn macLabelForKeycode(source: ?*anyopaque, kc: u16, shift: c_ulong) u32 {
 /// 담는 것이 중요하다 — AZERTY 는 숫자열이 그렇고, 안 담으면 `cmd+1` 이 그 layout
 /// 에서 "낼 수 없는 라벨" 로 잘못 판정돼 쓸데없는 fallback 이 생긴다.
 fn macRebuildLayoutLabels() void {
-    g_layout_labels = [_]bool{false} ** 128;
+    g_layout_labels = @splat(false);
 
     const source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
     defer if (source) |src| CFRelease(src);
@@ -2585,7 +2585,7 @@ fn utf8CodepointCount(bytes: []const u8) usize {
 
 fn queueBackspaces(tab: anytype, count: usize) void {
     var remaining = count;
-    const chunk = [_]u8{0x7f} ** 32;
+    const chunk: [32]u8 = @splat(0x7f);
     while (remaining > 0) {
         const n = @min(remaining, chunk.len);
         tab.queueWrite(chunk[0..n]);

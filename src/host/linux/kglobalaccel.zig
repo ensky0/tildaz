@@ -144,7 +144,7 @@ fn unregisterOthers(allocator: std.mem.Allocator, bus: *dbus.SessionBus, paths: 
             continue;
         }
 
-        const component_z = allocator.dupeZ(u8, unique_name) catch continue;
+        const component_z = allocator.dupeSentinel(u8, unique_name, 0) catch continue;
         defer allocator.free(component_z);
         var stale_action_buf: [32]u8 = undefined;
         const stale_action = std.fmt.bufPrintSentinel(&stale_action_buf, "toggle-{d}", .{index}, 0) catch continue;
@@ -297,7 +297,7 @@ fn allComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus, auto_s
 }
 
 fn componentUniqueName(allocator: std.mem.Allocator, bus: *dbus.SessionBus, path: []const u8) ![]u8 {
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     const call = bus.api.message_new_method_call(destination, path_z.ptr, "org.freedesktop.DBus.Properties", "Get") orelse return error.KGlobalAccelMessageAllocFailed;
     defer bus.api.message_unref(call);
@@ -694,9 +694,10 @@ pub const Client = struct {
         callback: PressedCallback,
         user_data: ?*anyopaque,
     ) !*Client {
-        const owner_rule = try allocator.dupeZ(
+        const owner_rule = try allocator.dupeSentinel(
             u8,
             "type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.kde.kglobalaccel'",
+            0,
         );
         errdefer allocator.free(owner_rule);
 

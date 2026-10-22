@@ -4,6 +4,7 @@
 //! viewport와 현재 scale에서 만든 physical pixel metrics를 전달한다.
 
 const std = @import("std");
+const test_text = @import("../../test_text.zig");
 const display_width = @import("../../font/display_width.zig");
 const font_validate = @import("../../font/validate.zig");
 const hotkey_status = @import("../../hotkey_status.zig");
@@ -394,7 +395,7 @@ test "same logical viewport fits at 1x 1.7x and 2x" {
 }
 
 test "wide viewport is not limited to 72 cells" {
-    const message = "x" ** 100;
+    const message = test_text.repeat("x", 100);
     // preferred 폭에서는 2행이라 화면을 넘고, maximum 폭의 100열 1행은
     // 들어오는 높이다. 과거 72-cell 상한이 되살아나면 이 경계가 실패한다.
     const f = testFonts(100);
@@ -616,7 +617,7 @@ test "#758 the title limit (messages.dialog_title_max_width) fits the 640x480 lo
     // `messages.zig` 의 컴파일 가드가 제목을 이 한도로 막는다. 이 테스트는 그 한도의 **근거**다 —
     // 다이얼로그 치수 (여백 · 그림자 · 글꼴) 가 바뀌어 한도만큼의 제목이 더는 안 들어가면 여기서 실패한다.
     // 측정기가 `칸 폭 × 글자 폭` 이라 어느 한 칸 글자로 채워도 같다. 버튼이 둘인 confirm 도 함께 본다.
-    const title = "W" ** messages.dialog_title_max_width;
+    const title = test_text.repeat("W", messages.dialog_title_max_width);
     try expectFitsLogicalMinimum(title, "x", .info, .{ 0, 0, 0 });
     try expectFitsLogicalMinimum(title, "x", .confirm, .{ 0, 0, 0 });
 }
@@ -794,7 +795,7 @@ test "dialogs use overflow rows only when content exceeds viewport" {
     try std.testing.expectEqual(@as(usize, 0), ordinary_layout.message_scroll_max);
     try std.testing.expectEqual(ordinary_layout.message_rows, ordinary_layout.visible_message_rows);
 
-    const long_message = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const long_message = test_text.repeat("/home/" ++ test_text.repeat("x", 500) ++ "\n", 4);
     const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(overflow.fits);
     try std.testing.expect(overflow.show_icon);
@@ -828,7 +829,7 @@ test "dialogs use common preferred then maximum width in logical points" {
     // #793 — 580 · 960 은 글 영역 폭이다. 창은 여백 · 그림자만큼 더 넓다.
     try std.testing.expect(compact.wrap_width <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
 
-    const message = "x" ** 2000;
+    const message = test_text.repeat("x", 2000);
     const scales = [_]u32{ 100, 170, 200 };
     for (scales) |scale_percent| {
         const sf = testFonts(scale_percent);
@@ -861,7 +862,7 @@ test "#793 the preferred width is the text area on an ample screen" {
     // (`preferred_w`) 그대로여야 한다. 예전에는 그림자 · 여백을 뺀 폭 (580pt 창에 글 약 520) 이었다.
     const f = testFonts(100);
     const m = testMetrics(100);
-    const layout = compute("Some Settings Replaced", "x" ** 200, .info, m, f.body(), f.title(), .{ .w = 1920, .h = 1080 });
+    const layout = compute("Some Settings Replaced", test_text.repeat("x", 200), .info, m, f.body(), f.title(), .{ .w = 1920, .h = 1080 });
     const chrome_w = m.shadow_margin * 2 + m.padding * 2;
     try std.testing.expectEqual(m.preferred_w, layout.wrap_width);
     // 창은 글 영역보다 넓다 — 예전 코드는 창 전체가 `preferred_w` 안이었다.

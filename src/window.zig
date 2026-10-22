@@ -3371,7 +3371,7 @@ pub const Window = struct {
     /// codepoint 만 넘기면 Shift 가 반영되지 않아 `Shift+Alt+n` 이 `^[n` 이 된다 (실측).
     fn winCharWithoutCtrlAlt(vk: UINT, scan: UINT, shift: bool, buf: []u8) []const u8 {
         // 256 항목 키보드 상태. Shift 만 켜고 나머지는 눌리지 않은 것으로 둔다.
-        var state = [_]u8{0} ** 256;
+        var state: [256]u8 = @splat(0);
         if (shift) {
             state[@intCast(VK_SHIFT)] = 0x80;
         }

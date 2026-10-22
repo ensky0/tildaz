@@ -5,6 +5,7 @@
 //! Glyph 는 fontconfig + FreeType 으로 raster (ASCII 만 pre-cached, [font/linux/font.zig](../../font/linux/font.zig)).
 
 const std = @import("std");
+const test_text = @import("../../test_text.zig");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
@@ -3245,7 +3246,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
     defer r.deinit(allocator);
 
     const title = "About TildaZ";
-    const msg = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const msg = test_text.repeat("/home/" ++ test_text.repeat("x", 500) ++ "\n", 4);
     const layout = r.computeDialogLayout(title, msg, .about, 1088, 816);
     try std.testing.expect(layout.message_scroll_max > 0);
     try std.testing.expect(layout.visible_message_rows < layout.message_rows);

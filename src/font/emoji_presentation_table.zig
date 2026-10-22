@@ -5,7 +5,7 @@
 //! 판이 같아야 두 칸 글자와 이모지 모양이 맞는다.
 
 pub const unicode_version = "18.0.0";
-pub const uucode = "uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7";
+pub const uucode = "uucode-0.2.0-ZZjBPoGFVgCiflJNFc6Io8xzC67B6PA5bUkk4LT0kCxg";
 
 pub const Range = struct { lo: u21, hi: u21 };
 

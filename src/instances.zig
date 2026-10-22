@@ -1153,7 +1153,7 @@ const FakeEndpointProbe = struct {
 };
 
 test "endpoint ready wait succeeds after more than fixed 200ms" {
-    const starting = [_]EndpointProbeResult{.starting} ** 22;
+    const starting: [22]EndpointProbeResult = @splat(.starting);
     const results = starting ++ .{.ready};
     var probe = FakeEndpointProbe{ .results = &results };
     try waitUntilEndpointReadyWithProbe(&probe, std.time.ns_per_s);
