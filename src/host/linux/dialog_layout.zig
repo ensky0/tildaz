@@ -123,7 +123,17 @@ pub const WrappedLines = struct {
             }
             const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
             const end = @min(i + seq, self.msg.len);
-            const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
+            // #820 — `utf8Decode` 는 0.17 에서 deprecated (길이를 맞춰 넘겨야 하는 API). 예전에는
+            // 글이 글자 중간에서 끝나면 짧은 조각을 넘겨, 길이별 함수의 첫 바이트 단언에 걸릴 수
+            // 있었다. 잘린 글자는 U+FFFD 로 센다.
+            const chunk = self.msg[i..end];
+            const cp: u21 = if (chunk.len != seq) 0xFFFD else switch (seq) {
+                1 => b,
+                2 => std.unicode.utf8Decode2(chunk[0..2].*) catch 0xFFFD,
+                3 => std.unicode.utf8Decode3(chunk[0..3].*) catch 0xFFFD,
+                4 => std.unicode.utf8Decode4(chunk[0..4].*) catch 0xFFFD,
+                else => unreachable,
+            };
             const w: i32 = self.measure.advance(cp);
             if (cp == ' ') {
                 last_space = i;
@@ -855,6 +865,16 @@ test "dialogs use common preferred then maximum width in logical points" {
         const m = testMetrics(scale_percent);
         try std.testing.expect(layout.size.w <= maximum + m.shadow_margin * 2 + m.padding * 2);
     }
+}
+
+test "#820 a message cut inside a character wraps without decoding a short sequence" {
+    // 글이 글자 중간에서 끝나면 (`가` 의 앞 두 바이트) 예전에는 짧은 조각을 `utf8Decode` 에 넘겨
+    // 길이별 함수의 첫 바이트 단언에 걸릴 수 있었다. 이제 잘린 글자는 U+FFFD 한 칸으로 센다.
+    const f = testFonts(100);
+    const msg = "abc" ++ "가"[0..2];
+    var lines: WrappedLines = .{ .msg = msg, .max_width = 10_000, .measure = f.body() };
+    try std.testing.expectEqualStrings(msg, lines.next().?);
+    try std.testing.expect(lines.next() == null);
 }
 
 test "#793 the preferred width is the text area on an ample screen" {

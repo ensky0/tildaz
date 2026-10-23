@@ -561,7 +561,17 @@ fn encodeTruncated(dst: []WCHAR, src: []const u8) usize {
             continue;
         };
         if (i + seq_len > src.len) break;
-        const cp = std.unicode.utf8Decode(src[i .. i + seq_len]) catch {
+        // #820 — `utf8Decode` (길이를 맞춰 넘겨야 하는 API) 는 0.17 에서 deprecated. 길이는 위에서
+        // 확인했으니 그 길이의 함수를 고른다.
+        const seq = src[i..];
+        const decoded = switch (seq_len) {
+            1 => seq[0],
+            2 => std.unicode.utf8Decode2(seq[0..2].*),
+            3 => std.unicode.utf8Decode3(seq[0..3].*),
+            4 => std.unicode.utf8Decode4(seq[0..4].*),
+            else => unreachable,
+        };
+        const cp = decoded catch {
             dst[out] = 0xFFFD;
             out += 1;
             i += 1;
