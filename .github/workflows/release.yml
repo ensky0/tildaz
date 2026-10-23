@@ -153,9 +153,9 @@ jobs:
 
       - name: Build + package (${{ matrix.arch }})
         shell: bash
-        # ReleaseFast + SIMD 명시 — Debug/scalar인 build.zig 기본값과 분리
+        # `fast` + SIMD 명시 — debug/scalar인 build.zig 기본값과 분리
         # (#200, #19).
-        run: zig build package -Dtarget=${{ matrix.zig_target }} -Doptimize=ReleaseFast -Dsimd=true -Drelease=true
+        run: zig build package -Dtarget=${{ matrix.zig_target }} -Doptimize=fast -Dsimd=true -Drelease=true
 
       - name: Verify artifacts
         id: verify
@@ -294,10 +294,10 @@ jobs:
         run: ./dist/macos/ci-signing.sh install
 
       - name: Build + package
-        # ReleaseFast + SIMD 명시 (#200, #19). build.zig가 SIMD와 self-signed
+        # `fast` + SIMD 명시 (#200, #19). build.zig가 SIMD와 self-signed
         # identity를 package.sh의 두 architecture build에 전달하고, lipo 후
         # 최종 app도 같은 identity로 재서명한다 (#109).
-        run: zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
+        run: zig build package -Doptimize=fast -Dsimd=true -Drelease=true -Dmacos-sign-identity="$MACOS_SIGN_IDENTITY"
 
       - name: Verify artifacts
         id: verify
@@ -483,9 +483,9 @@ jobs:
           done
 
       - name: Build + package (${{ matrix.arch }} / ${{ matrix.format }})
-        # ReleaseFast + SIMD 명시 — Debug/scalar인 build.zig 기본값과 분리
+        # `fast` + SIMD 명시 — debug/scalar인 build.zig 기본값과 분리
         # (#200, #19).
-        run: zig build package -Dtarget=${{ matrix.zig_target }} -Dformat=${{ matrix.format }} -Doptimize=ReleaseFast -Dsimd=true -Drelease=true
+        run: zig build package -Dtarget=${{ matrix.zig_target }} -Dformat=${{ matrix.format }} -Doptimize=fast -Dsimd=true -Drelease=true
 
       - name: Resolve artifact name
         id: artifact

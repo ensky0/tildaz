@@ -86,7 +86,7 @@ rm -rf "$ARM_PREFIX"
 # `TildaZ-dev.app` 이 만들어지고 아래 `lipo` 가 `TildaZ.app` 을 못 찾는다.
 zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
-    -Doptimize=ReleaseFast \
+    -Doptimize=fast \
     "-Dsimd=$SIMD" \
     -Drelease=true \
     -p "$ARM_PREFIX"
@@ -95,7 +95,7 @@ echo "--- 2. Build x86_64-macos (Intel) ---"
 rm -rf "$X86_PREFIX"
 zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
-    -Doptimize=ReleaseFast \
+    -Doptimize=fast \
     "-Dsimd=$SIMD" \
     -Drelease=true \
     -p "$X86_PREFIX"

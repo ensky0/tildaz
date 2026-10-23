@@ -3165,7 +3165,7 @@ test "#309 tab clipping keeps a high-index drag source reachable" {
 // #213 재현 — About dialog paint 경로 (compositor 무관). KDE Plasma 1.7x 에서
 // Ctrl+Shift+I crash 가 layer-shell dialog paint (`handleDialogConfigure` →
 // `drawDialogContent`) 에 있는지 격리. layer-shell 미지원 DE (Cinnamon 등) 에선
-// dialog 가 안 떠 GUI 재현 불가하므로 paint 만 직접 호출. ReleaseSafe 로 돌리면
+// dialog 가 안 떠 GUI 재현 불가하므로 paint 만 직접 호출. `safe` 로 돌리면
 // safety panic 의 정확한 source line 확보.
 test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const allocator = std.testing.allocator;

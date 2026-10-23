@@ -20,8 +20,8 @@
 //!
 //! 빌드 · 실행 (본체 빌드에는 들어가지 않아요):
 //! ```powershell
-//! zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
-//!     -O ReleaseSafe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
+//! zig build-exe -O safe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
+//!     -O safe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
 //! ```
 //! PowerShell 에서는 `-M…=…` 인자를 따옴표로 감싸요. 감싸지 않으면 PowerShell 5.1 이 `=` 에서 나눠
 //! `found another zig file '.zig'` 로 빌드가 실패해요.

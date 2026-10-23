@@ -444,7 +444,7 @@ fn hyprland(ctx: Ctx) !bool {
 fn removeConfOwn(ctx: Ctx, main_conf: []const u8, own_conf: []const u8) !void {
     if (try ctx.read(main_conf)) |text| {
         defer ctx.allocator.free(text);
-        if (std.mem.indexOf(u8, text, own_conf) != null) {
+        if (std.mem.find(u8, text, own_conf) != null) {
             log.appendLine("desktop", "{s} still sources {s} — emptying it instead of deleting", .{ main_conf, own_conf });
             try ctx.write(own_conf, "# " ++ file_header ++ "\n", true);
             return;

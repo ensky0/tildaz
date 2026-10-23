@@ -605,10 +605,7 @@ pub const Tab = struct {
     const VtAttributes = @typeInfo(
         @typeInfo(
             @typeInfo(
-                std.meta.fieldInfo(
-                    ghostty.TerminalStream.Handler.Effects,
-                    .device_attributes,
-                ).type,
+                @FieldType(ghostty.TerminalStream.Handler.Effects, "device_attributes"),
             ).optional.child,
         ).pointer.child,
     ).@"fn".return_type.?;

@@ -24,7 +24,7 @@
 //!
 //! 빌드 / 실행 (`-lc` 필수 — 빼면 dlopen 대신 Zig 자체 ELF 로더가 잡혀 죽는다):
 //! ```sh
-//! zig build-exe tool/dmabuf-probe_linux.zig -O ReleaseSafe -lc
+//! zig build-exe tool/dmabuf-probe_linux.zig -O safe -lc
 //! ./dmabuf-probe
 //! ```
 //!

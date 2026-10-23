@@ -566,15 +566,15 @@ test "#496 1-c the Shell extensions read the same config filename we write" {
     for (sources) |source| {
         // 한 파일을 열 때 (`config_9.toml`) 와 디렉터리를 훑을 때 (`^config_N\.toml$`)
         // 두 자리가 있고, 둘 다 이 확장자여야 한다.
-        if (std.mem.indexOf(u8, source.js, "config_${index}.toml") == null) {
+        if (std.mem.find(u8, source.js, "config_${index}.toml") == null) {
             std.debug.print("{s} extension 이 config_{{index}}.toml 을 안 읽는다\n", .{source.label});
             return error.ExtensionConfigNameOutOfSync;
         }
-        if (std.mem.indexOf(u8, source.js, "config_(0|[1-9][0-9]*)\\.toml$") == null) {
+        if (std.mem.find(u8, source.js, "config_(0|[1-9][0-9]*)\\.toml$") == null) {
             std.debug.print("{s} extension 의 디렉터리 훑기가 .toml 이 아니다\n", .{source.label});
             return error.ExtensionConfigNameOutOfSync;
         }
-        try std.testing.expect(std.mem.indexOf(u8, source.js, "config_${index}.json") == null);
+        try std.testing.expect(std.mem.find(u8, source.js, "config_${index}.json") == null);
     }
 }
 
@@ -595,7 +595,7 @@ test "#616 the Cinnamon extension checks for a conflicting accelerator before re
         "scheduleHotkeyResync",
     };
     for (required) |needle| {
-        if (std.mem.indexOf(u8, js, needle) == null) {
+        if (std.mem.find(u8, js, needle) == null) {
             std.debug.print("cinnamon extension 에 \"{s}\" 가 없다 — #616 겹침 판정이 빠졌다\n", .{needle});
             return error.ExtensionHotkeyConflictCheckMissing;
         }
@@ -621,7 +621,7 @@ test "#758 the Shell extensions read the ignored-config marker where the worker 
             // 일반 파일만 읽는다 — `config.readConfigFile` 과 같은 규칙.
             "if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR)) return out;",
         }) |needle| {
-            if (std.mem.indexOf(u8, source.js, needle) == null) {
+            if (std.mem.find(u8, source.js, needle) == null) {
                 std.debug.print("{s} extension 의 config 무시 표시 규칙이 앱과 다르다: {s}\n", .{ source.label, needle });
                 return error.ExtensionIgnoredConfigOutOfSync;
             }
@@ -639,13 +639,13 @@ test "#510 the Shell extensions record hotkey state where the worker reads it" {
     };
     for (sources) |source| {
         // 파일 이름 — `instanceHotkeyStatePath` 가 만드는 것과 같아야 한다.
-        if (std.mem.indexOf(u8, source.js, "instance${index}.hotkey") == null) {
+        if (std.mem.find(u8, source.js, "instance${index}.hotkey") == null) {
             std.debug.print("{s} extension 이 instance_{{index}}.hotkey 를 안 쓴다\n", .{source.label});
             return error.ExtensionHotkeyStateOutOfSync;
         }
         // 디렉터리 규칙 3 단 — `lockDir` 의 fallback 순서와 같아야 한다.
         for ([_][]const u8{ "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", ".cache" }) |needle| {
-            if (std.mem.indexOf(u8, source.js, needle) == null) {
+            if (std.mem.find(u8, source.js, needle) == null) {
                 std.debug.print("{s} extension 의 상태 디렉터리 규칙에 {s} 가 없다\n", .{ source.label, needle });
                 return error.ExtensionHotkeyStateOutOfSync;
             }
@@ -658,18 +658,18 @@ test "#510 the Shell extensions record hotkey state where the worker reads it" {
             "GLib.build_filenamev([cache, APP, \"run\"])",
             "GLib.build_filenamev([GLib.get_home_dir(), \".cache\", APP, \"run\"])",
         }) |needle| {
-            if (std.mem.indexOf(u8, source.js, needle) == null) {
+            if (std.mem.find(u8, source.js, needle) == null) {
                 std.debug.print("{s} extension 의 상태 디렉터리가 <base>/<앱>/run 모양이 아니다: {s}\n", .{ source.label, needle });
                 return error.ExtensionHotkeyStateOutOfSync;
             }
         }
         // 줄 형식 — `shellExtensionHotkeyState` 가 읽는 판별자와 두 상태.
-        if (std.mem.indexOf(u8, source.js, "v1 ${ok ? \"ok\" : \"failed\"}") == null) {
+        if (std.mem.find(u8, source.js, "v1 ${ok ? \"ok\" : \"failed\"}") == null) {
             std.debug.print("{s} extension 의 상태 줄 형식이 v1 <ok|failed> 가 아니다\n", .{source.label});
             return error.ExtensionHotkeyStateOutOfSync;
         }
         // **config 디렉터리에 쓰면 자가 루프가 된다** — 그 경로 helper 를 쓰지 않는지 본다.
-        if (std.mem.indexOf(u8, source.js, "configDirPath(), `instance") != null) {
+        if (std.mem.find(u8, source.js, "configDirPath(), `instance") != null) {
             std.debug.print("{s} extension 이 상태 파일을 config 디렉터리에 쓴다\n", .{source.label});
             return error.ExtensionHotkeyStateOutOfSync;
         }

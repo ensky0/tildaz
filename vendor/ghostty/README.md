@@ -70,7 +70,7 @@ zig build test-lib-vt -Demit-lib-vt=true -Dtest-filter=PageList --summary all
   그 수정은 Zig 0.17.0 에 들어 있어요 (#820). GCC 16 기기에서 다시 보기 전까지는 아래 우회를 그대로 둬요.
   복사본의 `build.zig` 에서 lib-vt 테스트 (`b.addTest(.{ .root_module = mod.vt, … })` 두 곳) 에 `.use_llvm = true` · `.use_lld = true` 를
   더해 돌려요. 이 수정은 패치에 넣지 않아요.
-- `-Doptimize=ReleaseSafe` 로는 일부 테스트가 Debug 전용 검사를 요구해 컴파일되지 않아요.
+- `-Doptimize=safe` 로는 일부 테스트가 Debug 전용 검사를 요구해 컴파일되지 않아요.
 - 2026-10-20 미니PC 에서 `kitty.graphics_image` 의 *"temporary file outside directory prefix is rejected"* 는 **원본에서도** 실패했어요.
   패치와 무관한 환경 문제로 봐요.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stable local signing identity로 ReleaseFast app을 빌드해 /Applications에 설치.
+# Stable local signing identity로 `fast` app을 빌드해 /Applications에 설치.
 
 set -euo pipefail
 
@@ -62,11 +62,11 @@ if [ -x "$FLOATH_PATCH" ] && ! "$FLOATH_PATCH" --check >/dev/null 2>&1; then
     "$FLOATH_PATCH" || echo "WARNING: the float.h patch did not apply; continuing." >&2
 fi
 
-echo "--- Build $BUNDLE_NAME (ReleaseFast + SIMD, identity: $SIGN_IDENTITY) ---"
+echo "--- Build $BUNDLE_NAME (fast + SIMD, identity: $SIGN_IDENTITY) ---"
 if ! zig build \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     "$RELEASE_FLAG" \
-    -Doptimize=ReleaseFast \
+    -Doptimize=fast \
     -Dsimd=true; then
     # 폴백 — 로컬 설치는 릴리즈 아티팩트가 아니므로 (릴리즈는 GitHub Actions 가 만든다)
     # SIMD 없이라도 설치까지 끝낸다. 잃는 것은 이 기기에서의 SIMD 성능 측정뿐이다.
@@ -76,7 +76,7 @@ if ! zig build \
     zig build \
         "-Dmacos-sign-identity=$SIGN_IDENTITY" \
         "$RELEASE_FLAG" \
-        -Doptimize=ReleaseFast
+        -Doptimize=fast
 fi
 
 echo "--- Install $INSTALL_PATH ---"

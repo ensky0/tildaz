@@ -1910,7 +1910,7 @@ launcher 가 config 를 따로 읽는 세 곳 (`instances.configAutoStart` · `c
 저장소의 Linux · macOS · Windows 빌드·설치는 기본 dev이며, 릴리즈를 선택할 때만
 `--release`를 명시한다. 종류별 설치 스크립트를 따로 두지 않는다. 저장소에서는 선택한
 종류로 빌드한 뒤 설치한다. Linux tarball의 같은 `install.sh`도 `--release`로 실행하며,
-옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`ReleaseFast` 등)은 앱 신원과 별개다.
+옵션을 생략하면 설치 전에 거부한다. 빌드 최적화 수준 (`fast` 등)은 앱 신원과 별개다.
 Linux 의 `install.sh` · `uninstall.sh` 는 사용자 데스크톱 설정 파일을 직접 고치지 않는다
 ([#700](https://github.com/ensky0/tildaz/issues/700)). sway · Hyprland 자동 실행은 launcher 가 넣으므로
 `install.sh` 는 아무것도 부르지 않고 ([#701](https://github.com/ensky0/tildaz/issues/701)), `uninstall.sh` 는

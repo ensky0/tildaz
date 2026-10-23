@@ -14,7 +14,7 @@
 //!
 //! 빌드 / 실행 (본체 빌드에는 들어가지 않는다):
 //! ```powershell
-//! zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
+//! zig build-exe tool/layout-probe/layout-probe_windows.zig -O safe --cache-dir C:/ziglang/tildaz-cache
 //! .\layout-probe.exe                      # 전체 표 + 판정 + 경계값. 덤프 파일도 쓴다
 //! .\layout-probe.exe --out C:\tmp\a.txt   # 덤프 경로 지정
 //! .\layout-probe.exe --dirty-state        # ToUnicodeEx 의 dead key 오염 방지 flag 를 빼고 다시

@@ -18,22 +18,22 @@
 
 ```sh
 # 파서 상한 — PTY 도 프로세스도 없이 VT 파서만
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser --mb 64
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer parser --mb 64
 
 # PTY 전체 — 자식 프로세스 → PTY → read thread → ring → VT 파서
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --mb 64
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer pty --mb 64
 
 # 프레임에 묶인 드레인 — 프레임마다 예산이 걸린다 (앱의 하한, 아래 주의 참고)
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --mb 64
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer frame --mb 64
 
 # 워크로드 바꾸기
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --workload cjk
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer frame --workload cjk
 
 # 화면 분할 — 활성 탭을 N 개 pane 으로 갈라 pane 마다 producer 하나 (#483 6단계, 드레인 예산의 pane 수 축)
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer frame --mb 32 --fps 120 --panes 4
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer frame --mb 32 --fps 120 --panes 4
 
 # scrollback 이 쌓이는 동안 속도가 유지되는지 (#278 ①)
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- scrollback --mb 256
+zig build stress -Doptimize=fast -Dsimd=true -- scrollback --mb 256
 ```
 
 ## 도구 — 무엇을 재느냐가 달라요
@@ -73,8 +73,8 @@ Linux 는 `kscreen-doctor`). 절전 · 잠금은 `SetThreadExecutionState` / `sy
 요구하고 그건 Git for Windows 에 항상 들어 있어서, 한 벌로 합치는 값이 더 컸어요.
 
 ```sh
-zig build -Doptimize=ReleaseFast -Dsimd=true
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser --mb 1
+zig build -Doptimize=fast -Dsimd=true
+zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer parser --mb 1
 tool/stress/measure-repeat.sh --phase before
 tool/stress/measure-repeat.sh --phase after --workloads zwj,plain
 tool/stress/measure-repeat.sh --phase win-pane8 --panes 8 --workloads plain   # 실제 앱 8 pane (Windows · 아래)
@@ -280,7 +280,7 @@ producer 파라미터는 인자가 아니라 환경변수 (`TILDAZ_STRESS_WORKLO
 
 | 항목 | 왜 |
 |---|---|
-| 빌드 조합 (`optimize` · `simd`) | Debug 와 ReleaseFast 가 수천 배 차이나요 (실측: 같은 워크로드가 0.1 MiB/s ↔ 550 MiB/s). `-Dsimd` 는 정확히 ghostty-vt 의 VT stream 파서를 켜는 옵션이에요 |
+| 빌드 조합 (`optimize` · `simd`) | `debug` 와 `fast` 가 수천 배 차이나요 (실측: 같은 워크로드가 0.1 MiB/s ↔ 550 MiB/s). `-Dsimd` 는 정확히 ghostty-vt 의 VT stream 파서를 켜는 옵션이에요 |
 | 그리드 (`--cols` × `--rows`) | 열 수가 줄바꿈 횟수를 바꿔서 파서 부하가 달라져요 |
 | 워크로드 | ASCII 와 CJK 가 5~6 배 차이나요 |
 | 머신 (CPU · 메모리 · OS 버전) | 절대값은 머신마다 달라요 |
@@ -1249,7 +1249,7 @@ render/present** 예요. 같은 회차 덤프의 `render` · `present` 가 합�
 (`~/Library/Logs/tildaz-dev/tildaz_stress.log`) · EXE 후보 (`zig-out/TildaZ-dev.app/Contents/MacOS/tildaz`) ·
 `hygiene_minimize_macos` 가 이미 다 있어요. 위 Windows 절 같은 platform 분기가 필요 없어요.
 
-빌드는 `zig build -Doptimize=ReleaseFast -Dsimd=true` 예요 (Linux · Windows 회차와 같은 조합).
+빌드는 `zig build -Doptimize=fast -Dsimd=true` 예요 (Linux · Windows 회차와 같은 조합).
 **서명 설치 (`build_and_install.sh`) 는 필요 없어요** — 이 측정은 합성 입력을 안 보내서
 *Input Monitoring* 권한을 아예 안 쓰거든요. 회차당 표본 20 · 간격 2 초, 전 회차 `input` 표본 0.
 
@@ -2034,8 +2034,8 @@ CP949). 스크립트가 만드는 `capture.ps1` 은 UTF-8 이라 한글 주석�
 
 ```sh
 # Git Bash
-zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
-zig build stress -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache -- throughput --layer parser --mb 1
+zig build -Doptimize=fast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache
+zig build stress -Doptimize=fast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache -- throughput --layer parser --mb 1
 tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 ```
 

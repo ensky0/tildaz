@@ -352,14 +352,14 @@ pub fn noteEchoBytes(bytes: []const u8) void {
     }
     if (bytes.len == 0) return;
     const m = echoMarker();
-    var hit = std.mem.indexOf(u8, bytes, m) != null;
+    var hit = std.mem.find(u8, bytes, m) != null;
     if (!hit and echo_tail_len > 0) {
         // 앞 조각의 끝과 이 조각의 앞을 이어 붙여 경계에 걸친 표식을 찾는다.
         var stitch: [2 * (echo_marker_max - 1)]u8 = undefined;
         const head_n = @min(bytes.len, m.len - 1);
         @memcpy(stitch[0..echo_tail_len], echo_tail[0..echo_tail_len]);
         @memcpy(stitch[echo_tail_len..][0..head_n], bytes[0..head_n]);
-        hit = std.mem.indexOf(u8, stitch[0 .. echo_tail_len + head_n], m) != null;
+        hit = std.mem.find(u8, stitch[0 .. echo_tail_len + head_n], m) != null;
     }
     // 다음 조각을 위해 (앞 끝 ++ 이 조각) 의 마지막 `표식 길이 − 1` 바이트를 남긴다.
     const keep = m.len - 1;

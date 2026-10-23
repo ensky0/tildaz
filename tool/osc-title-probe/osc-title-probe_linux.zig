@@ -22,7 +22,7 @@
 //!
 //! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```sh
-//! zig build-exe tool/osc-title-probe/osc-title-probe_linux.zig -O ReleaseSafe -lc
+//! zig build-exe tool/osc-title-probe/osc-title-probe_linux.zig -O safe -lc
 //! ./osc-title-probe --shell /bin/bash --runs 10 --verbose
 //! ./osc-title-probe --shell /usr/bin/fish --runs 10 --no-reply   # 질의 응답 없이 비교
 //! ./osc-title-probe --shell /usr/bin/zsh --runs 5 --home /tmp/empty  # 사용자 rc 없는 셸
@@ -229,7 +229,7 @@ const Parser = struct {
 
     fn dispatchOsc(self: *Parser, rec: *Recorder, s: []const u8) void {
         _ = self;
-        const semi = std.mem.indexOfScalar(u8, s, ';');
+        const semi = std.mem.findScalar(u8, s, ';');
         const code_str = if (semi) |i| s[0..i] else s;
         const payload = if (semi) |i| s[i + 1 ..] else "";
         const code = std.fmt.parseInt(u32, code_str, 10) catch return;
@@ -261,7 +261,7 @@ const Parser = struct {
                 // OSC 4 ; n ; ? — palette 질의. 값은 테마 palette 이지만 시점
                 // 측정에는 무관하므로 회색으로 답하고 기록한다.
                 if (std.mem.endsWith(u8, payload, "?")) {
-                    const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+                    const idx_end = std.mem.findScalar(u8, payload, ';') orelse return;
                     var out: [64]u8 = undefined;
                     const resp = std.mem.print(
                         &out,
@@ -360,7 +360,7 @@ const Parser = struct {
 };
 
 fn firstParam(body: []const u8) []const u8 {
-    const semi = std.mem.indexOfScalar(u8, body, ';') orelse return body;
+    const semi = std.mem.findScalar(u8, body, ';') orelse return body;
     return body[0..semi];
 }
 
@@ -603,8 +603,8 @@ fn runOnce(
 
 /// `OSC 0 title="..."` 형태에서 제목만 뽑는다.
 fn titlePayload(line: []const u8) []const u8 {
-    const start = std.mem.indexOfScalar(u8, line, '"') orelse return "";
-    const end = std.mem.lastIndexOfScalar(u8, line, '"') orelse return "";
+    const start = std.mem.findScalar(u8, line, '"') orelse return "";
+    const end = std.mem.findScalarLast(u8, line, '"') orelse return "";
     if (end <= start) return "";
     return line[start + 1 .. end];
 }

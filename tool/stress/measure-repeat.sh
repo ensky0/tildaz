@@ -5,8 +5,8 @@
 # 재고, 이쪽은 **우리 앱 하나**를 반복해 띄워 종료 시 자동 덤프 (#396) 로 남는
 # `parse` · `render` · `shape` 배분을 모은다.
 #
-#   zig build -Doptimize=ReleaseFast -Dsimd=true
-#   zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer parser --mb 1
+#   zig build -Doptimize=fast -Dsimd=true
+#   zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer parser --mb 1
 #   tool/stress/measure-repeat.sh --phase before
 #   tool/stress/measure-repeat.sh --phase after --workloads zwj,plain
 #

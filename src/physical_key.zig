@@ -696,8 +696,8 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
     };
     for (sources) |source| {
-        const open = std.mem.indexOf(u8, source.js, "const POSITION_KEYCODES = {").?;
-        const close = std.mem.indexOfPos(u8, source.js, open, "\n};").?;
+        const open = std.mem.find(u8, source.js, "const POSITION_KEYCODES = {").?;
+        const close = std.mem.findPos(u8, source.js, open, "\n};").?;
         const block = source.js[open..close];
 
         var bindable_rows: usize = 0;
@@ -711,7 +711,7 @@ test "#496 1-c the Shell extension position tables match physical_key" {
             // JS 는 xkb keycode (= evdev + 8) 를 두 자리 hex 로 적는다 — GTK 의
             // `is_keycode()` 가 그 형태만 인정하기 때문이다.
             const needle = try std.mem.print(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
-            if (std.mem.indexOf(u8, block, needle) == null) {
+            if (std.mem.find(u8, block, needle) == null) {
                 std.debug.print("{s} extension 의 위치 표에 없다: {s}\n", .{ source.label, needle });
                 return error.PositionTableOutOfSync;
             }
@@ -721,7 +721,7 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         // 살아 있다는 뜻이다. 개수로 잡는다.
         var js_rows: usize = 0;
         var offset: usize = 0;
-        while (std.mem.indexOfPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
+        while (std.mem.findPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
         try std.testing.expectEqual(bindable_rows, js_rows);
     }
 }

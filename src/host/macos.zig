@@ -280,7 +280,7 @@ fn macosMajorVersion() u32 {
     if (std.c.sysctlbyname("kern.osproductversion", &buf, &len, null, 0) != 0) return 0;
     if (len == 0) return 0;
     const text = buf[0 .. len - 1]; // 끝의 NUL 제외
-    const dot = std.mem.indexOfScalar(u8, text, '.') orelse text.len;
+    const dot = std.mem.findScalar(u8, text, '.') orelse text.len;
     return std.fmt.parseInt(u32, text[0..dot], 10) catch 0;
 }
 

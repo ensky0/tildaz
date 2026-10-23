@@ -257,7 +257,7 @@ fn managedHyprlandAccel(buf: []u8, binding: HyprlandBind, exe: []const u8) ?[]co
 const lua_description_separator = " · ";
 
 fn parseLuaDescription(description: []const u8, exe: []const u8) ?ManagedHyprlandBind {
-    const at = std.mem.lastIndexOf(u8, description, lua_description_separator) orelse return null;
+    const at = std.mem.findLast(u8, description, lua_description_separator) orelse return null;
     const command = description[0..at];
     const keys = description[at + lua_description_separator.len ..];
     if (keys.len == 0) return null;
@@ -549,7 +549,7 @@ test "#695 Lua bind and unbind code quote their strings" {
     // 경로의 따옴표 · 역슬래시가 Lua 문자열을 깨지 않는다.
     const odd = try luaBindCode(a, "F3", "/opt/a\"b\\c/tildaz --toggle 0");
     defer a.free(odd);
-    try std.testing.expect(std.mem.indexOf(u8, odd, "exec_cmd(\"/opt/a\\\"b\\\\c/tildaz --toggle 0\")") != null);
+    try std.testing.expect(std.mem.find(u8, odd, "exec_cmd(\"/opt/a\\\"b\\\\c/tildaz --toggle 0\")") != null);
 
     const unbind = try luaUnbindCode(a, "CTRL + code:113");
     defer a.free(unbind);

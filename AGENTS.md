@@ -878,8 +878,8 @@ tool/repeat-render-check_macos.sh 24 6 /path/show.sh    # 다른 화면으로
 
 ```sh
 python3 tool/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
-git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=ReleaseFast -Dsimd=true)   # 기준판
-zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true                             # 수정판
+git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=fast -Dsimd=true)   # 기준판
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=fast -Dsimd=true                             # 수정판
 tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ-dev.app zig-out/TildaZ-dev.app      # 정적 → 0 px
 tool/render-process-check_macos.sh zig-out/TildaZ-dev.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
 ```
@@ -930,7 +930,7 @@ IOSurface + `CALayer.contents` 로 바꾼 뒤로는 이 패치가 고치는 자�
 
 ```sh
 git apply tool/present-latency-probe_macos.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+zig build -Doptimize=fast -Dsimd=true -Dmacos-sign-identity=TildazLocal
 tool/stress/measure-input-latency.sh --mode both --presses 30            # 10 회 연속이 기본
 TILDAZ_TEMP476=drawables2 tool/stress/measure-input-latency.sh …         # 대조 실험 (아래)
 git apply -R tool/present-latency-probe_macos.patch
@@ -1040,7 +1040,7 @@ tool/present-check_macos.sh tearing --seconds 5  old-nosync=…@TILDAZ_TEMP476=n
 
 ```sh
 git apply tool/key-redraw-probe.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true          # macOS 는 -Dmacos-sign-identity=TildazLocal 도
+zig build -Doptimize=fast -Dsimd=true          # macOS 는 -Dmacos-sign-identity=TildazLocal 도
 tool/stress/measure-input-latency.sh --mode idle --echo --presses 30
 git apply -R tool/key-redraw-probe.patch
 ```
@@ -1072,8 +1072,8 @@ macOS 는 표시 버퍼 (IOSurface — 앱과 창 서버가 함께 보는 그림
 
 ```sh
 git apply tool/surface-inuse-probe_macos.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- --help   # tildaz-stress 설치 — 사용법을 내고 실패로 끝나도 설치는 돼요
+zig build -Doptimize=fast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+zig build stress -Doptimize=fast -Dsimd=true -- --help   # tildaz-stress 설치 — 사용법을 내고 실패로 끝나도 설치는 돼요
 tool/stress/measure-input-latency.sh --mode both --presses 100
 git apply -R tool/surface-inuse-probe_macos.patch
 ```
@@ -1454,8 +1454,8 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
 (`|`) 을 aliased 로 크게 그려 기울기 · 획 폭을, `GetDesignGlyphMetrics` 로 글자 간격을 재요.
 
 ```powershell
-zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
-    -O ReleaseSafe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
+zig build-exe -O safe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
+    -O safe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
 .\synthetic-style-probe_windows.exe                       # 기본 글꼴 넷 (없는 글꼴은 건너뜀)
 .\synthetic-style-probe_windows.exe --family "D2Coding" --char l --em 300
 ```
@@ -1489,7 +1489,7 @@ zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-prob
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`tool/layout-probe/layout-probe_windows.zig`](tool/layout-probe/layout-probe_windows.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
 
 ```powershell
-zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
+zig build-exe tool/layout-probe/layout-probe_windows.zig -O safe --cache-dir C:/ziglang/tildaz-cache
 .\layout-probe_windows.exe               # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
 .\layout-probe_windows.exe --watch 60    # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
 .\layout-probe_windows.exe --only 0000040c   # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
@@ -2230,11 +2230,11 @@ freetype · harfbuzz 를 전부 `dlopen` 하고 나머지 import 는 순수 모�
 
 ```sh
 cp <scratchpad>/probe.zig src/probe.zig          # 상대 import 가 맞아야 해서 src/ 아래에 둬요
-zig run src/probe.zig -lc -O ReleaseSafe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
+zig run src/probe.zig -lc -O safe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
 rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 clean 확인
 ```
 
-- **`-O ReleaseSafe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
+- **`-O safe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
   타겟에 LLVM/LLD 를 강제하니 `zig build` · `zig build test` 는 Debug 로도 링크돼요. `zig run` 은
   그 강제 밖이라 self-hosted 링커가 GCC16 의 `crt1.o:.sframe` 에서 죽어요 ([#232](https://github.com/ensky0/tildaz/issues/232)).
   upstream 픽스는 Zig 0.17.0 에 실렸어요 ([#820](https://github.com/ensky0/tildaz/issues/820) — Codeberg 비교로 확인).
@@ -2336,7 +2336,7 @@ Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`I
 ```sh
 python3 tool/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
 git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 512/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/glyph_atlas_common.zig
-(cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
+(cd /tmp/wt && zig build -Doptimize=fast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
 tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
 ```
 
@@ -2370,7 +2370,7 @@ DejaVu Sans Mono · Noto Sans CJK KR · Noto Color Emoji). `limactl start tildaz
 (예전에 memory 에만 있던 내용을 여기로 옮겼어요 — 2026-09-03.)
 
 ```sh
-zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe          # 크로스빌드 (macOS 에서)
+zig build -Dtarget=aarch64-linux-gnu -Doptimize=safe          # 크로스빌드 (macOS 에서)
 limactl copy zig-out/bin/tildaz tildaz-linux:/tmp/tildaz-test
 limactl shell tildaz-linux -- bash -c '
   cat > /tmp/tz-sway.conf <<EOF
@@ -2644,7 +2644,7 @@ open /Applications/TildaZ-dev.app   # ✅ 실행
 - **stable self-signed identity** (`TildazLocal`, `TILDAZ_SIGN_IDENTITY` 로 변경) 로 서명해요.
   ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
   ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
-- `-Doptimize=ReleaseFast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
+- `-Doptimize=fast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
 - `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
 - **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절. Zig 0.17 부터는 이 단계가 할 일이 없어요 (#820).
@@ -2691,8 +2691,8 @@ open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
   로 초기화하고 다시 허용해요.
 
 **빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`--release` / `--clean` / `--optimize` / `--check` / `--test` / `--no-simd` 지원). 직접 호출 시:
-- 전체 빌드: `zig build -Doptimize=ReleaseFast -Dsimd=true`
-- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true`
+- 전체 빌드: `zig build -Doptimize=fast -Dsimd=true`
+- Windows 릴리즈 package: `zig build package -Doptimize=fast -Dsimd=true -Drelease=true`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
 - 단위 테스트: `zig build test`.
@@ -2743,7 +2743,7 @@ open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
 - Windows `build.ps1`도 기본 dev예요. 릴리즈는 `--release`, 나머지도 `--clean` · `--optimize` ·
   `--cache-dir` · `--check` · `--test` · `--no-simd` 표기를 써요.
 - macOS 설치 경로를 바꿔도 번들 이름은 `TildaZ-dev.app` / `TildaZ.app` 중 선택한 종류와 같아야 해요.
-- `ReleaseFast`는 최적화 수준이에요. dev도 ReleaseFast로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
+- `fast`는 최적화 수준이에요. dev도 `fast`로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
 
 **빌드는 기본 dev예요. 릴리즈만 `-Drelease=true`를 명시해요 (기본값 `false`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
 `config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
@@ -2894,7 +2894,7 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   **셸 로그의 접두어로 어느 판이 낸 줄인지 갈라요** — 두 확장 다 `LOG_TAG` (`[tildaz]` · `[tildaz-dev]`) 를 써요.
   처음엔 리터럴 `[tildaz]` 여서 dev 확장의 줄이 릴리즈 것으로 읽혔어요 (2026-09-21 사용자 결정으로 고쳤어요).
 
-**SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
+**SIMD 정책 (#19):** 공식 Linux · macOS · Windows `fast` 빌드와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
 C++ toolchain/SDK를 모든 cross target에 요구하지 않도록 기본 false를 유지해요. scalar 비교
 진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 --no-simd`를 사용해요. macOS package는

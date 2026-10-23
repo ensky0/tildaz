@@ -44,7 +44,7 @@ fn tildazLogFn(
     @import("log.zig").appendLine(cat, fmt, args);
 }
 
-/// ReleaseFast에서도 crash 원인을 표시하는 panic handler
+/// `fast` 빌드에서도 crash 원인을 표시하는 panic handler
 pub fn panic(msg: []const u8, st: ?*std.lang.StackTrace, ret_addr: ?usize) noreturn {
     const addr = ret_addr orelse @returnAddress();
     host.showPanic(msg, addr, st);

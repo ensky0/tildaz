@@ -18,7 +18,7 @@
 # 이후 빌드:
 #   ./dist/macos/build_and_install.sh
 #   # 또는 설치 없이 dev 루프:
-#   zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app
+#   zig build -Dmacos-sign-identity=TildazLocal -Doptimize=safe && open zig-out/TildaZ-dev.app
 
 set -euo pipefail
 
@@ -32,7 +32,7 @@ trap "rm -rf $TMPDIR" EXIT
 # 이미 유효(trusted) codesigning identity 가 있으면 아무것도 안 함 (idempotent).
 if has_valid_identity; then
     echo "'$CERT_NAME' codesigning identity 가 이미 유효합니다 — 할 일 없음."
-    echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app"
+    echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=safe && open zig-out/TildaZ-dev.app"
     exit 0
 fi
 
@@ -101,7 +101,7 @@ fi
 
 report_identity || true
 echo ""
-echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=ReleaseSafe && open zig-out/TildaZ-dev.app"
+echo "빌드:  zig build -Dmacos-sign-identity=$CERT_NAME -Doptimize=safe && open zig-out/TildaZ-dev.app"
 echo "       (codesign dialog 뜨면 '항상 허용'. 첫 실행 후 손쉬운 사용 (macOS 27: 기기 제어 및 데이터 접근) / 입력 모니터링 권한 한 번.)"
 echo ""
 echo "새 인증서라면 아래도 갱신해야 해요 (#444):"

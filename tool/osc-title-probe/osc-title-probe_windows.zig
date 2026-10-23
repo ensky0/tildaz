@@ -32,7 +32,7 @@
 //!
 //! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```powershell
-//! zig build-exe tool/osc-title-probe/osc-title-probe_windows.zig -O ReleaseSafe -lc --cache-dir C:/ziglang/tildaz-cache
+//! zig build-exe tool/osc-title-probe/osc-title-probe_windows.zig -O safe -lc --cache-dir C:/ziglang/tildaz-cache
 //! .\osc-title-probe.exe --shell "cmd.exe" --runs 10 --verbose
 //! .\osc-title-probe.exe --shell "powershell.exe -NoProfile" --runs 10
 //! .\osc-title-probe.exe --shell "wsl.exe" --runs 10          # ` --cd ~` 자동 삽입
@@ -338,7 +338,7 @@ const Parser = struct {
 
     fn dispatchOsc(self: *Parser, rec: *Recorder, s: []const u8) void {
         _ = self;
-        const semi = std.mem.indexOfScalar(u8, s, ';');
+        const semi = std.mem.findScalar(u8, s, ';');
         const code_str = if (semi) |i| s[0..i] else s;
         const payload = if (semi) |i| s[i + 1 ..] else "";
         const code = std.fmt.parseInt(u32, code_str, 10) catch return;
@@ -364,7 +364,7 @@ const Parser = struct {
             },
             4 => {
                 if (std.mem.endsWith(u8, payload, "?")) {
-                    const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+                    const idx_end = std.mem.findScalar(u8, payload, ';') orelse return;
                     var line: [180]u8 = undefined;
                     const n = (std.mem.print(&line, "OSC 4;{s} palette query (무응답)", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.ignored, line[0..n]);
@@ -559,9 +559,9 @@ fn wslCdInsertion(cmd: []const WCHAR) struct { is_wsl: bool, insert: bool, inser
     if (!is_wsl) return .{ .is_wsl = false, .insert = false, .insert_at = insert_at };
 
     const args = cmd[@min(insert_at, cmd.len)..];
-    if (std.mem.indexOf(WCHAR, args, L("--cd")) != null)
+    if (std.mem.find(WCHAR, args, L("--cd")) != null)
         return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
-    if (std.mem.indexOfScalar(WCHAR, args, '~')) |ti| {
+    if (std.mem.findScalar(WCHAR, args, '~')) |ti| {
         if (ti + 1 == args.len or args[ti + 1] == ' ')
             return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
     }
@@ -939,8 +939,8 @@ fn runOnce(
 
 /// `OSC 0 title="..."` 형태에서 제목만 뽑는다.
 fn titlePayload(line: []const u8) []const u8 {
-    const start = std.mem.indexOfScalar(u8, line, '"') orelse return "";
-    const end = std.mem.lastIndexOfScalar(u8, line, '"') orelse return "";
+    const start = std.mem.findScalar(u8, line, '"') orelse return "";
+    const end = std.mem.findScalarLast(u8, line, '"') orelse return "";
     if (end <= start) return "";
     return line[start + 1 .. end];
 }

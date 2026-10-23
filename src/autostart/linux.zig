@@ -110,7 +110,7 @@ fn userDisabled(text: []const u8) bool {
             continue;
         }
         if (!in_entry) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, key, "Hidden") and std.ascii.eqlIgnoreCase(value, "true")) return true;

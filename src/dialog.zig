@@ -234,10 +234,10 @@ test "#510 실제 hotkey 실패 본문이 통째로 한 줄에 들어간다" {
     var buf: [fatal_log_body_max]u8 = undefined;
     const line = collapseForLog(&buf, message);
     try std.testing.expect(!std.mem.endsWith(u8, line, fatal_log_truncated_suffix));
-    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfScalar(u8, line, '\n'));
+    try std.testing.expectEqual(@as(?usize, null), std.mem.findScalar(u8, line, '\n'));
     // 잘리지 않았다면 F12 예약 안내가 그대로 살아 있어야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, line, "kernel debugger") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "config_9.toml") != null);
+    try std.testing.expect(std.mem.find(u8, line, "kernel debugger") != null);
+    try std.testing.expect(std.mem.find(u8, line, "config_9.toml") != null);
 }
 
 test "#510 넘치면 잘리고 표시가 붙는다 — multi-byte 글자를 반토막 내지 않는다" {
