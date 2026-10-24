@@ -793,7 +793,7 @@ test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
     const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
 
     try tmp.dir.createDirPath(std.testing.io, app_id.name);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real.toml", .data = "auto_start = false\n" });
@@ -823,7 +823,7 @@ test "#758 launcher 는 열지 못한 config (끊어진 링크 · 읽기 권한 
     const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
 
     try tmp.dir.createDirPath(std.testing.io, app_id.name);
     var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
@@ -997,7 +997,7 @@ test "current process id is available for lock diagnostics" {
 /// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (여기 함수들은 경로를
 /// 인자로 받는다). `paths.zig` 처럼 합성 환경변수가 필요한 경우가 아니라 `.empty` 로 족하다.
 fn testRuntime() Runtime {
-    return .{ .io = std.testing.io, .environ = .empty };
+    return .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
 }
 
 test "spawn 전 정리는 강제 종료가 남긴 owner PID 를 비운다 (#760)" {

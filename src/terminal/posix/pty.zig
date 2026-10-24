@@ -469,6 +469,7 @@ fn testRuntime() Runtime {
     return .{
         .io = std.testing.io,
         .environ = .{ .block = .{ .slice = &[_:null]?[*:0]const u8{"HOME=/"} } },
+        .gpa = std.testing.allocator,
     };
 }
 

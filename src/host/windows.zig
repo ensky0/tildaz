@@ -79,9 +79,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    // #821 — 본체 할당자 (`Runtime.gpa` — std 시작 코드가 모드에 맞게 고른 `init.gpa`).
+    const alloc = rt.gpa;
 
     // Load configuration. parse() 가 schema (validateStructure) + 각 필드
     // range 모두 fatal 처리 — 별도 validate() 호출 불필요.

@@ -4953,7 +4953,7 @@ fn joinPath(buf: []u8, ctx: []const u8, key: []const u8) []const u8 {
 
 test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 않는다" {
     const allocator = std.testing.allocator;
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
 
     // 존재하지 않는 디렉터리 아래 — `createFileAbsolute` 가 실패한다. 실제 config
     // 경로를 건드리지 않으므로 이 test 는 사용자 파일에 영향이 없다.
@@ -4986,7 +4986,7 @@ test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는
     const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
     try tmp.dir.createDirPath(io, app_id.name);
     var cfg_dir = try tmp.dir.openDir(io, app_id.name, .{});
     defer cfg_dir.close(io);

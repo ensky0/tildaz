@@ -190,7 +190,7 @@ pub fn main(init: std.process.Init) void {
             std.process.exit(2);
         }
         initLogging(rt, arena);
-        desktop_setup.run(rt, init.gpa, action) catch |err| {
+        desktop_setup.run(rt, rt.gpa, action) catch |err| {
             log.appendLine("desktop", "--desktop {s} failed: {s}", .{ @tagName(action), @errorName(err) });
             var buf: [256]u8 = undefined;
             console.errLine(rt.io, std.mem.print(&buf, messages.desktop_failed_format, .{ @tagName(action), @errorName(err) }) catch @errorName(err));
@@ -216,7 +216,7 @@ pub fn main(init: std.process.Init) void {
                 // `connect` 실패는 두 경우를 모두 포함하므로 (socket 만 보면 영원히
                 // 못 가른다) **lock 파일** 로 가른다 — `flock` 신호는 socket 과
                 // 독립이다 (#484 조사에서 실측).
-                const running = instances.isRunning(rt, init.gpa, index) catch |probe_err| {
+                const running = instances.isRunning(rt, rt.gpa, index) catch |probe_err| {
                     // lock 을 못 읽으면 워커 생존을 단정할 수 없다. 띄우는 쪽이 더
                     // 위험하므로 (중복 창) 아무것도 하지 않고 알린다.
                     log.appendLine("toggle-ipc", "--toggle send failed: {s}, and the instance lock could not be read: {s}", .{ @errorName(err), @errorName(probe_err) });
@@ -237,7 +237,7 @@ pub fn main(init: std.process.Init) void {
                 // 않는다.
                 log.appendLine("toggle-ipc", "--toggle found no running instance {d} — starting it", .{index});
                 initLogging(rt, arena);
-                runLauncher(rt, init.gpa, autostart_launch) catch |launch_err| host.showFatalRunError(rt, init.gpa, launch_err);
+                runLauncher(rt, rt.gpa, autostart_launch) catch |launch_err| host.showFatalRunError(rt, rt.gpa, launch_err);
                 return;
             };
             log.appendLine("toggle-ipc", "--toggle sent to running instance", .{});
@@ -266,24 +266,24 @@ pub fn main(init: std.process.Init) void {
         instance_context.setRole(.stress);
         instance_context.setWorkerIndex(worker_index orelse 0);
         initLogging(rt, arena);
-        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, init.gpa, err);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, rt.gpa, err);
         return;
     }
 
     if (worker_index) |index| {
         instance_context.setWorkerIndex(index);
         initLogging(rt, arena);
-        var worker_lock = (instances.acquireWorkerLock(rt, init.gpa, index) catch |err| {
-            host.showFatalRunError(rt, init.gpa, err);
+        var worker_lock = (instances.acquireWorkerLock(rt, rt.gpa, index) catch |err| {
+            host.showFatalRunError(rt, rt.gpa, err);
             return;
         }) orelse return;
         defer worker_lock.deinit(rt);
-        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, init.gpa, err);
+        host.run(rt, run_opts) catch |err| host.showFatalRunError(rt, rt.gpa, err);
         return;
     }
 
     initLogging(rt, arena);
-    runLauncher(rt, init.gpa, autostart_launch) catch |err| host.showFatalRunError(rt, init.gpa, err);
+    runLauncher(rt, rt.gpa, autostart_launch) catch |err| host.showFatalRunError(rt, rt.gpa, err);
 }
 
 fn runLauncher(rt: Runtime, allocator: std.mem.Allocator, autostart_launch: bool) !void {

@@ -1026,7 +1026,7 @@ fn testRowsPerPage(cols: u16) usize {
 }
 
 test "#812 — scrollback 은 설정한 줄 수 아래로 내려가지 않고, 넘는 것은 page 두 장 이내다" {
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     const lines = 1000;
     var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, lines, null);
     defer term.deinit(std.testing.allocator);
@@ -1049,7 +1049,7 @@ test "#812 — scrollback 은 설정한 줄 수 아래로 내려가지 않고, �
 }
 
 test "#812 — 열이 바뀌면 그 열의 page 크기로 한도를 다시 넣는다" {
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     const lines = 1000;
     var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, lines, null);
     defer term.deinit(std.testing.allocator);
@@ -1071,7 +1071,7 @@ test "#812 — 열이 바뀌면 그 열의 page 크기로 한도를 다시 넣�
 }
 
 test "#812 — 줄 수 한도는 걸지 않는다 (page 를 버리는 길을 타지 않게)" {
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 1000, null);
     defer term.deinit(std.testing.allocator);
     const limits = &term.screens.get(.primary).?.pages.limits;
@@ -1080,7 +1080,7 @@ test "#812 — 줄 수 한도는 걸지 않는다 (page 를 버리는 길을 타
 }
 
 test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled" {
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 10_000, null);
     defer term.deinit(std.testing.allocator);
     try std.testing.expect(term.modes.get(.grapheme_cluster));
@@ -1130,7 +1130,7 @@ test "#451 ghostty pin answers DECRQSS and XTGETTCAP with grapheme mode enabled"
 }
 
 test "#266 — OSC 52 쓰기는 대상과 글자를 넘기고, 읽기는 아무것도 안 한다" {
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     var term = try initVtTerminal(rt, std.testing.allocator, 80, 24, 10_000, null);
     defer term.deinit(std.testing.allocator);
 
@@ -1214,7 +1214,7 @@ test "#723 — reflow 없이 줄여 wide char 꼬리가 잘려도 ICH · EL1 이
     // upstream e6db5b63 의 재현이다. DECAWM 을 끈 primary (와 alt screen) 는 reflow 없이
     // 줄인다. 그때 꼬리가 잘린 wide char 의 머리가 새 마지막 열에 남아, 머리와 다음 칸을
     // 짝짓는 동작 (ICH · EL1) 이 행 끝을 넘었다 — 옛 pin 의 Debug 에서는 panic 이다.
-    const rt = Runtime{ .io = std.testing.io, .environ = .empty };
+    const rt = Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     const alloc = std.testing.allocator;
     var term = try initVtTerminal(rt, alloc, 3, 1, 100, null);
     defer term.deinit(alloc);
@@ -2851,7 +2851,7 @@ test "automatic title debounce supports default reset" {
 /// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (세션은 셸 경로를
 /// 인자로 받는다). 값이 고정되니 기계마다 결과가 갈리지도 않는다.
 fn testRuntime() Runtime {
-    return .{ .io = std.testing.io, .environ = .empty };
+    return .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
 }
 
 fn expectStressCloseDrainsUnreadPane(session: *SessionCore) !void {

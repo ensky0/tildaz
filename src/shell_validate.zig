@@ -275,6 +275,6 @@ test "valid shell returns null without preparing an error message" {
     if (!executableExists(allocator, shell)) return error.SkipZigTest;
     // #451 — 유효한 셸이면 config 경로를 읽기 전에 `null` 로 빠져나오므로 환경변수가
     // 필요 없다. `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     try std.testing.expect(validationMessage(rt, allocator, shell) == null);
 }

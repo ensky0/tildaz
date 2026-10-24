@@ -36,11 +36,17 @@ const builtin = @import("builtin");
 pub const Runtime = struct {
     io: std.Io,
     environ: std.process.Environ,
+    /// #821 — 앱의 본체 할당자. std 시작 코드가 모드에 맞게 고른 `init.gpa` 다 (zig 0.17
+    /// `lib/std/start.zig`): `debug` · `safe` 는 `SafeAllocator` (`main` 이 끝나면 누수를 보고),
+    /// `fast` · `small` 은 libc 가 있으면 `c_allocator` (Linux · macOS), 없으면 `smp_allocator`
+    /// (Windows). host · 다이얼로그 · Windows 창이 모두 `rt` 를 받으므로 여기 둔다. 예전에는
+    /// host 마다 `DebugAllocator` 를 따로 만들었다 (0.17 에서 deprecated).
+    gpa: std.mem.Allocator,
 
     /// 진입점에서 한 번 만든다. `std.process.Init` 은 Zig 0.16 이 `main` 의 첫 인자로
     /// 넘겨주는 묶음이다 (릴리즈 노트 *"Juicy Main"*).
     pub fn fromInit(init: std.process.Init) Runtime {
-        return .{ .io = init.io, .environ = init.minimal.environ };
+        return .{ .io = init.io, .environ = init.minimal.environ, .gpa = init.gpa };
     }
 
     /// `std.process.getEnvVarOwned` 자리. 호출부가 `rt.environ` 을 매번 꺼내지 않게 감싼다.
@@ -158,7 +164,7 @@ test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
         filler,
         filler,
     };
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } }, .gpa = std.testing.allocator };
 
     // 값이 2 바이트니 버퍼도 그만큼만 있으면 된다. 이 크기가 통과의 요점이다 — 환경 블록
     // (약 4.6 KB) 에 비례하지 않는다는 뜻이다.

@@ -263,7 +263,7 @@ test "POSIX: #544 — closeActive 는 탭 통째로, closeActivePane 은 pane �
     };
 
     var session = SessionCore.init(
-        .{ .io = std.testing.io, .environ = .empty },
+        .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator },
         std.testing.allocator,
         "/bin/sh",
         100,
@@ -323,7 +323,7 @@ test "POSIX: #544 — 마지막 탭의 closeActive 는 pane 이 여럿이어도 
     };
 
     var session = SessionCore.init(
-        .{ .io = std.testing.io, .environ = .empty },
+        .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator },
         std.testing.allocator,
         "/bin/sh",
         100,

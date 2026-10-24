@@ -676,7 +676,7 @@ test "working-time duration rejects reversed samples" {
     const start = now() orelse return error.SkipZigTest;
     // #451 — `Thread.sleep` ➡️ `Io.sleep` (`Runtime.sleepNs`). `.awake` 는 절전 구간을
     // 세지 않는 단조 시계로, 위 `now()` 가 재는 working-time 과 같은 성질이다.
-    (Runtime{ .io = std.testing.io, .environ = .empty }).sleepNs(5 * std.time.ns_per_ms);
+    (Runtime{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator }).sleepNs(5 * std.time.ns_per_ms);
     const end = now() orelse return error.SkipZigTest;
 
     try std.testing.expectEqual(@as(?u64, 0), elapsedNs(start, start));

@@ -411,6 +411,7 @@ fn testRuntime() Runtime {
             .{ .block = .global }
         else
             .{ .block = .{ .slice = &[_:null]?[*:0]const u8{"HOME=/home/test"} } },
+        .gpa = std.testing.allocator,
     };
 }
 

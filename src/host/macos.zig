@@ -391,7 +391,7 @@ fn createNewInstance() void {
     if (@import("../instance_context.zig").requireWorkerIndex() == 0) {
         repositionWindow();
         showWindow();
-        @import("../new_instance.zig").handle(g_rt, g_gpa.allocator());
+        @import("../new_instance.zig").handle(g_rt, g_rt.gpa);
     } else {
         @import("../instance_request.zig").send(g_rt) catch {};
     }
@@ -544,7 +544,6 @@ var g_binding_fallbacks: [config.MAX_KEY_BINDINGS]?config.PhysicalCode =
 /// #451 — 진입점이 만든 `Io` · 환경변수. macOS host 는 Cocoa 콜백이 전역에서 도는
 /// 구조라 (`g_host` · `g_config` 와 같은 자리) 여기 보관한다. `run(rt, …)` 이 심는다.
 var g_rt: Runtime = undefined;
-var g_gpa: std.heap.DebugAllocator(.{}) = .init;
 /// 멀티탭 컬렉션 (#111 M11.1). 현재 단계는 데이터 모델만 도입 — 실제로는
 /// 단일 탭만 생성. PTY / Terminal / Stream / 마우스 selection 은 모두 활성
 /// 탭의 필드. host 코드는 `g_session.activeTab().?.{pty,terminal,...}` 로 access.
@@ -1271,7 +1270,7 @@ fn searchBarMouseDown(px: f64, py: f64) bool {
     const tab = g_session.activeTab() orelse return true;
     if (search_bar.hit(v, x, y)) |c| {
         // 버튼은 같은 이름의 키와 **같은 함수**를 탄다 (`search_input.control`).
-        const eff = search_input.control(&tab.search, g_gpa.allocator(), c, tab.title_clock.read()) catch return true;
+        const eff = search_input.control(&tab.search, g_rt.gpa, c, tab.title_clock.read()) catch return true;
         applySearchEffect(eff);
         return true;
     }
@@ -1311,7 +1310,7 @@ fn searchFocused() bool {
 /// pane 과 시계를 붙이기만 한다.
 fn searchApplyKey(k: search_input.Key) void {
     const tab = g_session.activeTab() orelse return;
-    const eff = search_input.key(&tab.search, g_gpa.allocator(), k, tab.title_clock.read()) catch return;
+    const eff = search_input.key(&tab.search, g_rt.gpa, k, tab.title_clock.read()) catch return;
     applySearchEffect(eff);
 }
 
@@ -1347,7 +1346,7 @@ fn searchSpliceText(from: usize, to: usize, text: []const u8) void {
 /// 이리로 온다.
 fn searchInsertText(text: []const u8) void {
     const tab = g_session.activeTab() orelse return;
-    const eff = search_input.insertText(&tab.search, g_gpa.allocator(), text, tab.title_clock.read()) catch return;
+    const eff = search_input.insertText(&tab.search, g_rt.gpa, text, tab.title_clock.read()) catch return;
     if (eff.redraw) requestRender();
 }
 
@@ -2281,8 +2280,8 @@ fn appendPendingHanjaCommitToSnapshot(
 }
 
 fn beginHanjaReconversionTarget() bool {
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return false;
-    defer snap.deinit(g_gpa.allocator());
+    var snap = buildImeSnapshot(g_rt.gpa) orelse return false;
+    defer snap.deinit(g_rt.gpa);
 
     const cursor = @min(snap.selected.location + snap.selected.length, snap.utf16Len());
     const range = hangulRunBeforeCursor(snap.text.items, cursor) orelse return false;
@@ -2547,8 +2546,8 @@ fn buildImeSnapshot(allocator: std.mem.Allocator) ?ImeSnapshot {
 }
 
 fn markedRangeStart() usize {
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return 0;
-    defer snap.deinit(g_gpa.allocator());
+    var snap = buildImeSnapshot(g_rt.gpa) orelse return 0;
+    defer snap.deinit(g_rt.gpa);
     return @min(snap.selected.location, snap.utf16Len());
 }
 
@@ -2658,8 +2657,8 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
         var from = caret_before;
         var to = caret_before;
         if (replacement.location != NSNotFound) {
-            var dsnap = buildImeSnapshot(g_gpa.allocator());
-            defer if (dsnap) |*sn| sn.deinit(g_gpa.allocator());
+            var dsnap = buildImeSnapshot(g_rt.gpa);
+            defer if (dsnap) |*sn| sn.deinit(g_rt.gpa);
             if (dsnap) |*sn| {
                 if (replacementByteRange(sn, replacement)) |r| {
                     from = searchDocToNeedleByte(r.byte_start, caret_before, preedit_len_before);
@@ -2674,8 +2673,8 @@ fn imeInsertText(_: objc.id, _: objc.SEL, text: objc.id, replacement: NSRange) c
         return;
     }
 
-    var snap = buildImeSnapshot(g_gpa.allocator());
-    defer if (snap) |*s| s.deinit(g_gpa.allocator());
+    var snap = buildImeSnapshot(g_rt.gpa);
+    defer if (snap) |*s| s.deinit(g_rt.gpa);
     const should_reconvert_committed_preedit = g_hanja_preedit_commit_requested and isOnlyHangulSyllables(commit);
     const pending_range_start = if (snap) |*s| @min(s.selected.location, s.utf16Len()) else 0;
     const candidate_delete_count = if (g_hanja_candidate_active) g_hanja_candidate_delete_count else 0;
@@ -2732,8 +2731,8 @@ fn imeSetMarkedText(_: objc.id, _: objc.SEL, text: objc.id, selected_range: NSRa
         if (g_session.activeTab()) |tab_m| {
             const caret_now = @min(tab_m.search.caret, tab_m.search.needle.items.len);
             const pre_now = g_preedit_len;
-            var msnap = buildImeSnapshot(g_gpa.allocator());
-            defer if (msnap) |*sn| sn.deinit(g_gpa.allocator());
+            var msnap = buildImeSnapshot(g_rt.gpa);
+            defer if (msnap) |*sn| sn.deinit(g_rt.gpa);
             if (msnap) |*sn| {
                 if (replacementByteRange(sn, replacement_range)) |rr| {
                     const from = searchDocToNeedleByte(rr.byte_start, caret_now, pre_now);
@@ -2810,8 +2809,8 @@ fn imeMarkedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
 }
 
 fn imeSelectedRange(_: objc.id, _: objc.SEL) callconv(.c) NSRange {
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return .{ .location = 0, .length = 0 };
-    defer snap.deinit(g_gpa.allocator());
+    var snap = buildImeSnapshot(g_rt.gpa) orelse return .{ .location = 0, .length = 0 };
+    defer snap.deinit(g_rt.gpa);
     const base = @min(snap.selected.location, snap.utf16Len());
     if (g_marked_len == 0 and g_hanja_reconversion_active) {
         return snap.clampRange(g_hanja_reconversion_range);
@@ -2838,11 +2837,11 @@ fn imeValidAttributes(_: objc.id, _: objc.SEL) callconv(.c) objc.id {
 }
 
 fn imeAttrSubstring(_: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRange) callconv(.c) objc.id {
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
+    var snap = buildImeSnapshot(g_rt.gpa) orelse {
         if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
         return null;
     };
-    defer snap.deinit(g_gpa.allocator());
+    defer snap.deinit(g_rt.gpa);
 
     const range = snap.clampRange(proposed);
     if (actual) |a| a.* = range;
@@ -2852,8 +2851,8 @@ fn imeAttrSubstring(_: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NSRang
 }
 
 fn imeCharIndex(self_view: objc.id, _: objc.SEL, point: NSPoint) callconv(.c) usize {
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse return NSNotFound;
-    defer snap.deinit(g_gpa.allocator());
+    var snap = buildImeSnapshot(g_rt.gpa) orelse return NSNotFound;
+    defer snap.deinit(g_rt.gpa);
     const local = screenPointToLocalTopDownPx(self_view, point) orelse return NSNotFound;
     const len = snap.utf16Len();
     if (snap.positions.items.len == 0) return NSNotFound;
@@ -2878,11 +2877,11 @@ fn imeFirstRect(self_view: objc.id, _: objc.SEL, proposed: NSRange, actual: ?*NS
     // #646 — 검색 중에도 여기를 그대로 탄다. 스냅숏이 이미 **입력칸**을 가리키므로
     // (`fillSearchImeSnapshot`) 자리가 저절로 검색바 caret 이 된다 — 특수 분기를 두면
     // 그 하나만 맞고 나머지 표면 (`markedRange` 등) 은 어긋난 채로 남는다.
-    var snap = buildImeSnapshot(g_gpa.allocator()) orelse {
+    var snap = buildImeSnapshot(g_rt.gpa) orelse {
         if (actual) |a| a.* = .{ .location = NSNotFound, .length = 0 };
         return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     };
-    defer snap.deinit(g_gpa.allocator());
+    defer snap.deinit(g_rt.gpa);
 
     const range = snap.clampRange(proposed);
     if (actual) |a| a.* = range;
@@ -3188,7 +3187,7 @@ fn refreshLinkHoverMac() void {
     };
     if (!g_link_hover.needsUpdate(probe)) return;
 
-    const allocator = g_gpa.allocator();
+    const allocator = g_rt.gpa;
     tab.render_state.update(allocator, &tab.terminal) catch return;
     const changed = g_link_hover.update(allocator, &tab.render_state, probe) catch return;
     if (changed) requestRender();
@@ -3245,7 +3244,7 @@ fn updateLinkHoverMac(self_view: objc.id, event: objc.id) void {
         return;
     }
 
-    const allocator = g_gpa.allocator();
+    const allocator = g_rt.gpa;
     tab.render_state.update(allocator, &tab.terminal) catch return;
     const changed = g_link_hover.update(allocator, &tab.render_state, probe) catch return;
     if (changed) {
@@ -4043,7 +4042,7 @@ fn tildazMouseUp(self_view: objc.id, _: objc.SEL, event: objc.id) callconv(.c) v
         if (plain_click) {
             if (linkUrlMac(self_view, event)) |url| {
                 _ = tab.interaction.selection.finish();
-                link.open(g_rt, g_gpa.allocator(), url);
+                link.open(g_rt, g_rt.gpa, url);
                 return;
             }
         }
@@ -4140,7 +4139,7 @@ fn tildazMouseExited(_: objc.id, _: objc.SEL, _: objc.id) callconv(.c) void {
     }
     // #647 — 포인터가 나가면 링크 hover 도 푼다 (탭바 hover 와 같은 이유 — 안 그러면 밑줄이 남는다).
     g_link_pointer_valid = false;
-    if (g_link_hover.clear(g_gpa.allocator())) requestRender();
+    if (g_link_hover.clear(g_rt.gpa)) requestRender();
     // #334 재감사 — 메뉴 항목 hover 도 창 이탈 시 해제 (keyboard focus 는
     // 유지 — 표준 메뉴의 마지막 selection 기억과 동일).
     if (g_command_menu_hover != null) {
@@ -4171,7 +4170,7 @@ fn tildazRightMouseDown(self_view: objc.id, _: objc.SEL, event: objc.id) callcon
         if (focusPaneUnderPointer(xy.x, xy.y)) return;
     }
     // #656 — `copy_on_select` 가 꺼져 있고 선택이 있으면 붙여넣지 않고 복사한다 (Windows Terminal 과 같다).
-    if (tab_actions.rightClickCopiesSelection(&g_host, g_gpa.allocator(), g_config.copy_on_select)) return;
+    if (tab_actions.rightClickCopiesSelection(&g_host, g_rt.gpa, g_config.copy_on_select)) return;
     handlePaste();
 }
 
@@ -4241,7 +4240,7 @@ const MacActionHost = struct {
         return g_rt;
     }
     pub fn allocator(_: MacActionHost) std.mem.Allocator {
-        return g_gpa.allocator();
+        return g_rt.gpa;
     }
     pub fn shell(_: MacActionHost) []const u8 {
         return g_config.shell;
@@ -4357,7 +4356,7 @@ fn finishSeparatorDrag(d: SepDrag) void {
 
 /// #656 — 마우스 선택이 끝났을 때. macOS 에는 PRIMARY 가 없어 `copy_on_select` 만 본다.
 fn handleSelectionFinished() void {
-    tab_actions.selectionFinished(&g_host, g_gpa.allocator(), g_config.copy_on_select);
+    tab_actions.selectionFinished(&g_host, g_rt.gpa, g_config.copy_on_select);
 }
 
 fn handlePaste() void {
@@ -4600,8 +4599,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // shell_resolved: 첫 실행 시 disk 에 명시될 shell path. `$SHELL` env 가
     // 있으면 사용자 환경값을 그대로, 없으면 `Defaults.shell` (= `/bin/bash`).
     // 이후 실행은 disk 의 명시값만 사용 — runtime fallback 분기 없음.
-    const shell_resolved = resolveShell(rt, g_gpa.allocator());
-    g_config = config.Config.load(rt, g_gpa.allocator(), shell_resolved);
+    const shell_resolved = resolveShell(rt, g_rt.gpa);
+    g_config = config.Config.load(rt, g_rt.gpa, shell_resolved);
     log.logConfigLoaded(g_config);
     {
         var hotkey_buf: [64]u8 = undefined;
@@ -4623,12 +4622,12 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // shell executable 이 실제 존재하고 실행 가능한지 검증. PTY 단계까지 가서
     // execve 실패하면 generic 에러로 끝나 사용자에게 어디 고쳐야 할지 안내 안
     // 됨 — config 로드 직후 fatal 로 종료. Windows host 와 같은 정책.
-    @import("../shell_validate.zig").validateOrFatal(g_rt, g_gpa.allocator(), g_config.shell);
+    @import("../shell_validate.zig").validateOrFatal(g_rt, g_rt.gpa, g_config.shell);
 
     // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 Menlo 로 바꾸고 대체 폰트는 뺀다
     // (`Config.resolveFonts` — 세 OS 공통 규칙). Menlo 마저 못 쓸 때만 안내 후 종료한다.
     // 아래 `showLoadNotice` · `showConfigNotice` 보다 **먼저** 불러야 바꾼 내용이 시작 안내에 담긴다.
-    g_config.resolveFonts(g_gpa.allocator(), {}, macosFontAvailability);
+    g_config.resolveFonts(g_rt.gpa, {}, macosFontAvailability);
     if (g_config.font_unusable) {
         @import("../font/validate.zig").showNotFoundFatal(
             g_rt,
@@ -4853,7 +4852,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // 겹쳐 두 프로세스가 같은 키에 반응한다.
     if (!g_run_opts.isStressRun()) try installEventTap();
 
-    const allocator = g_gpa.allocator();
+    const allocator = g_rt.gpa;
 
     // 6. Metal 렌더러 (font 측정 포함). terminal Font Spec 의 logical size와
     //    ratio로 cell_width/height 자동 계산 — Windows / Linux 와 동일 계약.
@@ -5069,7 +5068,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #655 — config 에서 고친 자리가 있으면 여기서 **한 번** 알린다. 위 안내와 같은
     // 시점인 것도 같은 이유다. `-e` 로 명령을 실행하는 인스턴스는 다이얼로그 앞에서
     // 멈추면 안 되므로 로그로만 남긴다.
-    config.showConfigNotice(rt, g_gpa.allocator(), g_run_opts.isStressRun(), yieldTopmostUntilNextShow);
+    config.showConfigNotice(rt, g_rt.gpa, g_run_opts.isStressRun(), yieldTopmostUntilNextShow);
 
     // 7. 이벤트 루프.
     // #304 — observer뿐 아니라 window, renderer, 첫 tab, display link까지 준비된
@@ -5101,7 +5100,7 @@ fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
     {
         g_pending_close_mutex.lockUncancelable(g_rt.io);
         defer g_pending_close_mutex.unlock(g_rt.io);
-        g_pending_close_buf.append(g_gpa.allocator(), tab_ptr) catch {};
+        g_pending_close_buf.append(g_rt.gpa, tab_ptr) catch {};
     }
     // #770 — display link 가 멈춰 있어도 (유휴 · 창 숨김) 탭을 닫게 main thread 를 깨운다.
     // 출력 통보 source 를 그대로 쓴다 — `outputWakePerform` 이 `renderFrameTick` 을 부르고, 그
@@ -5118,9 +5117,9 @@ fn onSessionTabExit(tab_ptr: usize, _: ?*anyopaque) void {
 /// — 호출처는 .changed 만 분기.
 fn drainExitedTabs() bool {
     g_pending_close_mutex.lockUncancelable(g_rt.io);
-    const closes = g_pending_close_buf.toOwnedSlice(g_gpa.allocator()) catch &.{};
+    const closes = g_pending_close_buf.toOwnedSlice(g_rt.gpa) catch &.{};
     g_pending_close_mutex.unlock(g_rt.io);
-    defer g_gpa.allocator().free(closes);
+    defer g_rt.gpa.free(closes);
 
     var any_changed = false;
     for (closes) |ptr| switch (tab_actions.closeByPtr(&g_host, ptr) orelse continue) {

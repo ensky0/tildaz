@@ -110,9 +110,8 @@ pub fn main(init: std.process.Init) !void {
     // producer 모드 판정보다 앞에 둔다 — producer 자식도 같은 실행파일이다.
     instance_context.setRole(.stress);
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    // #821 — 앱과 같은 본체 할당자 (`Runtime.gpa`). 처리량을 앱과 같은 조건에서 잰다.
+    const alloc = rt.gpa;
 
     // producer 모드는 argv 가 아니라 환경변수로 판정한다 (위 문서 주석).
     if (try producerRequest(rt, alloc)) |req| return produce(rt, req);
