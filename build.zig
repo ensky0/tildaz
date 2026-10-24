@@ -319,20 +319,6 @@ pub fn build(b: *std.Build) void {
         exe.subsystem = .windows;
     }
 
-    if (is_linux_target) {
-        // Zig 0.15 는 x86_64-linux Debug 에서 self-hosted backend + self-hosted ELF
-        // 링커를 기본 쓰는데, 이 링커가 최신 GNU toolchain(예: GCC 16)이 crt1.o 에
-        // 넣는 `.sframe` 섹션의 R_X86_64_PC64 relocation 을 처리하지 못해 링크가
-        // fatal 로 실패한다. `safe` · `fast` 는 기본 LLVM backend + LLD 라 정상인데
-        // (그 차이가 원인 단서였다), self-hosted backend + LLD 조합도 불안정해서
-        // (link command terminated unexpectedly) backend·linker 를 모두 LLVM/LLD 로
-        // 맞춘다 = `safe` 와 동일 toolchain. optimize 모드(`debug`)는 그대로 둬
-        // 디버그 정보/safety check 는 유지된다. (Debug codegen 이 self-hosted 보다
-        // 느려지는 게 유일한 trade-off.)
-        exe.use_llvm = true;
-        exe.use_lld = true;
-    }
-
     if (is_macos_target) {
         // macOS 는 일반 zig-out/bin/tildaz CLI 가 아니라 .app 번들 형태로 install.
         // unsigned CLI binary 가 macOS Tahoe (26+) 의 정식 앱 라이프사이클에 안
@@ -504,10 +490,6 @@ pub fn build(b: *std.Build) void {
         }
     }
     const exe_tests = b.addTest(.{ .root_module = test_mod });
-    if (is_linux_target) {
-        exe_tests.use_llvm = true;
-        exe_tests.use_lld = true;
-    }
     if (conpty_arch_dir) |arch_dir| {
         // Windows — 테스트도 **install 된 경로에서** 실행한다 (#459). `addRunArtifact`
         // 는 테스트 바이너리를 zig 캐시의 output 디렉토리에서 바로 띄우는데, ConPTY
@@ -623,11 +605,6 @@ pub fn build(b: *std.Build) void {
         .name = "tildaz-stress",
         .root_module = stress_mod,
     });
-    if (is_linux_target) {
-        // 메인 exe 와 같은 이유 (self-hosted ELF 링커의 `.sframe` relocation 미지원).
-        stress_exe.use_llvm = true;
-        stress_exe.use_lld = true;
-    }
     // 실행은 `addRunArtifact` 가 아니라 **install 된 `zig-out/bin` 경로**에서 한다.
     // `addRunArtifact` 는 zig 캐시의 output 디렉토리에서 바로 띄우는데, Windows 의
     // ConPTY 는 실행파일 옆 `_internal\conpty.dll` 이 필수라 (#339 에서 kernel32
@@ -678,11 +655,6 @@ pub fn build(b: *std.Build) void {
         .name = "render-test",
         .root_module = render_test_mod,
     });
-    if (is_linux_target) {
-        // 메인 exe 와 같은 이유 (self-hosted ELF 링커의 `.sframe` relocation 미지원).
-        render_test_exe.use_llvm = true;
-        render_test_exe.use_lld = true;
-    }
     const render_test_step = b.step("render-test", "결합 기호 · cluster 렌더 검증 화면 빌드 (tildaz -e 로 띄운다)");
     render_test_step.dependOn(&b.addInstallArtifact(render_test_exe, .{}).step);
 

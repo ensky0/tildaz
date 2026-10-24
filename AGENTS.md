@@ -2245,15 +2245,10 @@ freetype · harfbuzz 를 전부 `dlopen` 하고 나머지 import 는 순수 모�
 
 ```sh
 cp <scratchpad>/probe.zig src/probe.zig          # 상대 import 가 맞아야 해서 src/ 아래에 둬요
-zig run src/probe.zig -lc -O safe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
+zig run src/probe.zig -lc
 rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 clean 확인
 ```
 
-- **`-O safe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
-  타겟에 LLVM/LLD 를 강제하니 `zig build` · `zig build test` 는 Debug 로도 링크돼요. `zig run` 은
-  그 강제 밖이라 self-hosted 링커가 GCC16 의 `crt1.o:.sframe` 에서 죽어요 ([#232](https://github.com/ensky0/tildaz/issues/232)).
-  upstream 픽스는 Zig 0.17.0 에 실렸어요 ([#820](https://github.com/ensky0/tildaz/issues/820) — Codeberg 비교로 확인).
-  다만 GCC16 Linux 기기에서 Debug 로 돌려 보기 전이라 이 한 줄과 `build.zig` 의 강제는 그대로 둬요 — 걷어내는 일은 #232 예요.
 - chain 은 **실기 config 와 같게** 만들어요 — `Context.init(alloc, &.{"DejaVu Sans Mono",
   "Noto Sans CJK KR", "Noto Color Emoji"}, 20, 1.0, 1.1)`. 기본값 (`config.zig` 의 `Defaults`) 과
   같은 값이에요.
