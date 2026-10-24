@@ -656,8 +656,7 @@ test "Windows native and custom dialog icon metrics are branded and DPI-aware" {
 }
 
 pub fn show(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
-    _ = rt;
-    if (showScrollableText(title, message, false) == null) {
+    if (showScrollableText(rt.gpa, title, message, false) == null) {
         showNative(severity, title, message);
     }
 }
@@ -1191,13 +1190,15 @@ fn dialogOwner() HWND {
 /// null이면 본문이 화면 안에 들어오거나 custom window 준비에 실패해 caller가
 /// native 경로를 사용해야 한다. 값이 있으면 window를 표시했으며 confirm 여부에
 /// 따라 OK(true) / Cancel(false) 결과를 돌려준다.
-fn showScrollableText(title: []const u8, body: []const u8, confirm: bool) ?bool {
-    return showScrollableTextLabeled(title, body, confirm, null);
+fn showScrollableText(gpa: std.mem.Allocator, title: []const u8, body: []const u8, confirm: bool) ?bool {
+    return showScrollableTextLabeled(gpa, title, body, confirm, null);
 }
 
 /// #655 — `secondary_label` 은 Cancel 자리의 글자. `null` 이면 표준 `Cancel`.
-fn showScrollableTextLabeled(title: []const u8, body: []const u8, confirm: bool, secondary_label: ?[]const u8) ?bool {
-    const allocator = std.heap.page_allocator;
+fn showScrollableTextLabeled(gpa: std.mem.Allocator, title: []const u8, body: []const u8, confirm: bool, secondary_label: ?[]const u8) ?bool {
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const allocator = gpa;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, title) catch return null;
     defer allocator.free(title_w);
     const body_w = dialogEditTextAlloc(allocator, body) catch return null;
@@ -1375,15 +1376,13 @@ fn showScrollableTextLabeled(title: []const u8, body: []const u8, confirm: bool,
 /// About은 본문 선택·복사를 위해 항상 custom text window를 사용한다. 짧으면
 /// 본문 자연 높이만 쓰고, 화면을 넘을 때만 OS scrollbar가 나타난다.
 pub fn showAboutAlert(rt: Runtime, title: []const u8, message: []const u8) void {
-    _ = rt;
-    if (showScrollableText(title, message, false) == null) showNative(.info, title, message);
+    if (showScrollableText(rt.gpa, title, message, false) == null) showNative(.info, title, message);
 }
 
 /// 모든 정상 fatal은 branded custom layout을 사용한다. custom window 생성 자체가
 /// 실패할 때만 native MessageBoxIndirectW로 메시지를 보존한다.
 pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
-    _ = rt;
-    if (showScrollableText(title, message, false) == null) showNative(.err, title, message);
+    if (showScrollableText(rt.gpa, title, message, false) == null) showNative(.err, title, message);
 }
 
 /// OK / Cancel 두 버튼 확인 다이얼로그. #250 — 표준 매핑(Enter=OK, Esc=Cancel)
@@ -1397,17 +1396,15 @@ pub fn showFatal(rt: Runtime, title: []const u8, message: []const u8) void {
 /// OS 가 정하고 바꿀 방법이 없다. 그 경우 안내만 내고 false 를 준다: 안내를 잃는 것보다
 /// 행동 하나를 잃는 쪽이 낫고, 그 경로는 커스텀 창을 못 띄운 예외 상황이다.
 pub fn showNoticeWithAction(rt: Runtime, title: []const u8, message: []const u8, action_label: []const u8, on_action: *const fn () void) void {
-    _ = rt;
     scroll_inline_action = on_action;
     defer scroll_inline_action = null;
-    if (showScrollableTextLabeled(title, message, true, action_label)) |_| return;
+    if (showScrollableTextLabeled(rt.gpa, title, message, true, action_label)) |_| return;
     log.appendLine("dialog", "custom window unavailable — notice shown without its action button", .{});
     _ = messageBox(title, message, MB_OK | MB_TOPMOST);
 }
 
 pub fn showConfirm(rt: Runtime, title: []const u8, message: []const u8) bool {
-    _ = rt;
-    if (showScrollableText(title, message, true)) |result| return result;
+    if (showScrollableText(rt.gpa, title, message, true)) |result| return result;
     // MessageBoxIndirectW 자체 실패(0 반환) 시 result != IDOK → false (안전 default).
     const result = messageBox(
         title,
@@ -1863,10 +1860,11 @@ fn relayoutPromptForDpi(ctx: *PromptContext, new_dpi: UINT, suggested: RECT) voi
 }
 
 pub fn promptHotkey(rt: Runtime, allocator: std.mem.Allocator, title: []const u8, message: []const u8, validator: dialog.HotkeyValidator) ?[]u8 {
-    _ = rt;
     const hinstance = GetModuleHandleW(null);
     if (!ensurePromptClass(hinstance)) return null;
-    const temp_allocator = std.heap.page_allocator;
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const temp_allocator = rt.gpa;
     const title_w = std.unicode.utf8ToUtf16LeAllocZ(temp_allocator, title) catch return null;
     defer temp_allocator.free(title_w);
     const message_w = dialogEditTextAlloc(temp_allocator, message) catch return null;

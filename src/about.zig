@@ -66,7 +66,9 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
 /// `hints` — host 가 명령 메뉴용으로 만든 단축키 표 (`config.commandMenuHints`). Tip 이
 /// 메뉴의 Open Config · Open Log 와 같은 글자를 보이게 한다 (#682).
 pub fn showAboutDialog(rt: Runtime, hints: *const command_menu.Hints) void {
-    const allocator = std.heap.page_allocator;
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const allocator = rt.gpa;
 
     // #451 — `fs.selfExePathAlloc` ➡️ `std.process.executablePathAlloc` (릴리즈 노트).
     const exe_path_owned = std.process.executablePathAlloc(rt.io, allocator) catch null;

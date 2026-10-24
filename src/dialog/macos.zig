@@ -1403,7 +1403,9 @@ fn noticeActionOsascript(rt: Runtime, title: []const u8, message: []const u8, ac
 /// osascript 2-버튼 confirm — OK → true, Cancel/닫기 → false (#282 C6).
 /// `display dialog` 는 Cancel 시 exit code 1 (user canceled -128), OK 시 0.
 fn confirmOsascript(rt: Runtime, title: []const u8, message: []const u8) bool {
-    const allocator = std.heap.page_allocator;
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const allocator = rt.gpa;
     // #451 — `ArrayList.writer` 가 없어졌다. 늘어나는 버퍼에 쓰는 자리는
     // `Io.Writer.Allocating` 이다 (릴리즈 노트 *Io.Writer.Allocating Alignment Field*).
     var script_buf: std.Io.Writer.Allocating = .init(allocator);
@@ -1573,7 +1575,9 @@ fn setButtonEsc(alert: objc.id, index: u64) void {
 /// 전체가 진입점이 만든 `Io` 하나를 쓴다.
 fn showOsascript(rt: Runtime, severity: dialog.Severity, title: []const u8, message: []const u8) void {
     _ = severity;
-    const allocator = std.heap.page_allocator;
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const allocator = rt.gpa;
     var script_buf: std.Io.Writer.Allocating = .init(allocator);
     defer script_buf.deinit();
     const w = &script_buf.writer;
