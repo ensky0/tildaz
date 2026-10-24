@@ -2645,6 +2645,10 @@ open /Applications/TildaZ-dev.app   # ✅ 실행
   ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
   ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
 - `-Doptimize=fast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
+- **CPU 는 이 기기 것이 아니라 일반 CPU (baseline) 예요** — `build.zig` 의 `matchGhosttyMacosCpu` 가 macOS 에서 늘
+  그렇게 맞춰요 ([#820](https://github.com/ensky0/tildaz/issues/820)). ghostty 가 macOS 에서 자기 모듈을 일반 CPU 로
+  바꿔서, 우리 코드만 이 기기 CPU 면 둘 사이 인라인이 막혀요. Zig 0.17 이 M5 를 알게 되며 parser cjk 가 15 % 느려진 원인이
+  이것이었어요. 그래서 `-Dcpu=…` 를 줘도 macOS 에서는 효과가 없어요. 릴리즈 (`package.sh` 의 `-Dtarget`) 와 같은 조건이에요.
 - `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
 - **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절. Zig 0.17 부터는 이 단계가 할 일이 없어요 (#820).

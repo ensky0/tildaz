@@ -17,6 +17,25 @@ fn preserveResolvedWindowsAbi(target: std.Build.ResolvedTarget) std.Build.Resolv
     return explicit_target;
 }
 
+// macOS 에서는 우리 코드도 ghostty 와 같은 일반 CPU 로 컴파일한다 (#820).
+// ghostty 는 Darwin host 에서 macOS 로 빌드하면 자기 모듈을 늘 일반 target 으로 바꾼다
+// (`src/build/Config.zig` 의 `genericMacOSTarget` — CPU 는 baseline). 우리 root 가 native
+// 로 남으면 `std` 도 root 를 따라 native 가 되고, LLVM 은 CPU 기능이 더 많은 함수를 적은
+// 함수 안에 인라인하지 않는다. 그래서 ghostty 가 부르는 `std.debug.assert` 같은 작은 함수가
+// 호출로 남고, `assert(!containsContext(...))` 의 해시 계산이 fast 빌드에서도 돈다.
+// Zig 0.17 (LLVM 22) 이 M5 를 알게 되며 드러났다 — 그 기기에서 parser cjk 가 15 % 느렸다.
+// 릴리즈 (`dist/macos/package.sh`) 는 `-Dtarget` 을 명시해 이미 baseline 이라, 이렇게 하면
+// 로컬 빌드가 릴리즈와 같아진다. 조건은 ghostty 와 같게 둔다 — 그쪽이 강제하지 않는 cross
+// 빌드는 건드리지 않는다. 인라인을 막는 것은 CPU 뿐이라 OS 최소 판은 그대로 둔다.
+fn matchGhosttyMacosCpu(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .macos or !@import("builtin").target.os.tag.isDarwin()) return target;
+    var query = target.query;
+    query.cpu_model = .baseline;
+    query.cpu_features_add = .empty;
+    query.cpu_features_sub = .empty;
+    return b.resolveTargetQuery(query);
+}
+
 /// ghostty-vt 에서 끄는 기능 (#554). 네 곳의 의존성 선언이 **같은 값을 써야** 하므로
 /// 상수 하나로 둔다 — 인라인으로 네 번 적으면 어긋난다 (#534 에서 실제로 겪었다).
 ///
@@ -118,7 +137,7 @@ fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
 }
 
 pub fn build(b: *std.Build) void {
-    const target = preserveResolvedWindowsAbi(b.standardTargetOptions(.{}));
+    const target = matchGhosttyMacosCpu(b, preserveResolvedWindowsAbi(b.standardTargetOptions(.{})));
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
