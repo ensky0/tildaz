@@ -84,7 +84,10 @@ rm -rf "$ARM_PREFIX"
 # `-Drelease=true` 는 고정이다 — package 는 늘 릴리즈 산출물이라 `TildaZ.app` ·
 # `me.ensky0.tildaz` 로 나가야 한다 (#654). 이 인자를 빠뜨리면 기본값이 dev 라
 # `TildaZ-dev.app` 이 만들어지고 아래 `lipo` 가 `TildaZ.app` 을 못 찾는다.
-zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
+# 최소 판 `.15.0` 도 고정이다 (#825). 판을 빼면 Zig 기본값을 따르는데, 그 값이 0.16 의
+# 13.0 에서 0.17 의 15.0 으로 조용히 움직였다. `Info.plist.in` 의 LSMinimumSystemVersion 과
+# 같은 값이어야 한다.
+zig build -Dtarget=aarch64-macos.15.0 "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=fast \
     "-Dsimd=$SIMD" \
@@ -93,7 +96,7 @@ zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
 
 echo "--- 2. Build x86_64-macos (Intel) ---"
 rm -rf "$X86_PREFIX"
-zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
+zig build -Dtarget=x86_64-macos.15.0 "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=fast \
     "-Dsimd=$SIMD" \
