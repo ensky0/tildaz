@@ -84,7 +84,10 @@ rm -rf "$ARM_PREFIX"
 # `-Drelease=true` 는 고정이다 — package 는 늘 릴리즈 산출물이라 `TildaZ.app` ·
 # `me.ensky0.tildaz` 로 나가야 한다 (#654). 이 인자를 빠뜨리면 기본값이 dev 라
 # `TildaZ-dev.app` 이 만들어지고 아래 `lipo` 가 `TildaZ.app` 을 못 찾는다.
-zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
+# 최소 판 `.15.0` 도 고정이다 (#825). 판을 빼면 Zig 기본값을 따르는데, 그 값이 0.16 의
+# 13.0 에서 0.17 의 15.0 으로 조용히 움직였다. `Info.plist.in` 의 LSMinimumSystemVersion 과
+# 같은 값이어야 한다.
+zig build -Dtarget=aarch64-macos.15.0 "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=fast \
     "-Dsimd=$SIMD" \
@@ -93,7 +96,7 @@ zig build -Dtarget=aarch64-macos "-Dmacos-sdk=$SDK" \
 
 echo "--- 2. Build x86_64-macos (Intel) ---"
 rm -rf "$X86_PREFIX"
-zig build -Dtarget=x86_64-macos "-Dmacos-sdk=$SDK" \
+zig build -Dtarget=x86_64-macos.15.0 "-Dmacos-sdk=$SDK" \
     "-Dmacos-sign-identity=$SIGN_IDENTITY" \
     -Doptimize=fast \
     "-Dsimd=$SIMD" \
@@ -112,6 +115,19 @@ mkdir -p "$UNIVERSAL_APP/Contents/Resources"
 cp "$ARM_PREFIX/$APP_NAME/Contents/Resources/AppIcon.icns" "$UNIVERSAL_APP/Contents/Resources/AppIcon.icns"
 echo "Universal binary architectures:"
 lipo -info "$UNIVERSAL_APP/Contents/MacOS/tildaz"
+
+# 바이너리의 최소 판 (LC_BUILD_VERSION minos) 이 Info.plist 의 LSMinimumSystemVersion 과
+# 같아야 한다 (#825). 다르면 낮은 쪽 판의 macOS 가 앱을 받아 놓고 띄우지 못하거나, 띄울 수
+# 있는 판을 막는다. Zig 0.17 이 기본값을 13.0 에서 15.0 으로 올렸을 때 이 둘이 조용히 갈렸다.
+PLIST_MIN=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$UNIVERSAL_APP/Contents/Info.plist")
+for arch in arm64 x86_64; do
+    BIN_MIN=$(vtool -arch "$arch" -show-build "$UNIVERSAL_APP/Contents/MacOS/tildaz" | awk '$1 == "minos" { print $2 }')
+    echo "minos $arch=$BIN_MIN (LSMinimumSystemVersion=$PLIST_MIN)"
+    if [[ "$BIN_MIN" != "$PLIST_MIN" ]]; then
+        echo "ERROR: $arch binary minos ($BIN_MIN) differs from LSMinimumSystemVersion ($PLIST_MIN)" >&2
+        exit 1
+    fi
+done
 
 echo "--- 4. Re-codesign universal .app (lipo 후 서명 다시) ---"
 codesign --force --sign "$SIGN_IDENTITY" "$UNIVERSAL_APP"

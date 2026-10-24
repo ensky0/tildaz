@@ -99,7 +99,9 @@ if ($Check) {
     Invoke-Zig @("check")
     Write-Host "--- check OK ---"
 } elseif ($Test) {
-    # 단위 테스트. debug .sframe 링커 에러 회피 위해 safe.
+    # 단위 테스트 (safe). 예전 주석은 이유로 #232 의 .sframe 링크 오류를 들었는데, 그건
+    # Linux GNU 툴체인 (crt1.o) 문제라 Windows 와 무관하고 Zig 0.17 에서 풀렸어요.
+    # debug 로 바꿀지는 따로 볼 일이라 safe 를 그대로 둬요.
     Write-Host "--- zig build test -Doptimize=safe ---"
     Invoke-Zig @("test", "-Doptimize=safe")
     Write-Host "--- test OK ---"

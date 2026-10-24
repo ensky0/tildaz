@@ -186,7 +186,8 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 아래 스크립트가 `fast` 빌드와 `/Applications/TildaZ-dev.app` 설치를 한 번에
 수행해요. `TildazLocal` identity가 없으면 스크립트가 `setup-cert.sh`를 먼저 부르고,
 그래도 유효한 identity가 없으면 (system trust 명령이 끝나지 않은 경우) 안전하게
-중단해요. SIMD 빌드가 실패하면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 (#665).
+중단해요. SIMD 빌드가 실패하면 그 자리에서 멈춰요 — 예전에는 SIMD 없이 한 번 더 빌드했는데
+로컬 측정이 SIMD 없는 판으로 조용히 돌 수 있어서 뺐어요 (#665).
 
 ```bash
 ./dist/macos/build_and_install.sh
