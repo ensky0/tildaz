@@ -23,7 +23,7 @@ zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer parser --mb 6
 # PTY 전체 — 자식 프로세스 → PTY → read thread → ring → VT 파서
 zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer pty --mb 64
 
-# 프레임에 묶인 드레인 — 프레임마다 예산이 걸린다 (앱의 하한, 아래 주의 참고)
+# 프레임에 묶인 드레인 — 프레임마다 예산이 걸리고, ring 이 차면 프레임 밖에서도 비운다 (앱의 하한, 아래 주의 참고)
 zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer frame --mb 64
 
 # 워크로드 바꾸기
@@ -129,7 +129,7 @@ Linux · macOS 는 아직 손 절차예요 (합성 키 도구가 platform 별이
 |---|---|---|
 | `parser` | 워크로드 → VT 파서 → grid | PTY · 자식 프로세스 · ring · 프레임 예산 |
 | `pty` | 자식 → PTY → read thread → ring → VT 파서 → grid | 렌더 · 프레임 예산 |
-| `frame` | 위와 같지만 **프레임마다 드레인 예산**을 지킨다 | 렌더 · 프레임 사이 드레인 |
+| `frame` | 위와 같지만 **프레임마다 드레인 예산**을 지키고, ring 이 차면 프레임 밖에서 한 번 더 비운다 | 렌더 · ring 이 차지 않은 동안의 프레임 사이 드레인 |
 
 `pty − parser` 가 PTY read 와 ring 층의 몫이에요. `perf` 를 쓸 수 없는 환경에서도
 시간이 어디서 가는지 가를 수 있어요.
@@ -137,18 +137,28 @@ Linux · macOS 는 아직 손 절차예요 (합성 키 도구가 platform 별이
 `frame` 층은 `drainOutputForRender` 를 `--fps` 주기로 **한 번씩** 부르고, 그 안의 `drainFrame`
 이 `SessionCore.DRAIN_FRAME_BUDGET_NS` (현재 **4 ms**) 만 파싱해요.
 
+프레임 사이에 ring (256 KiB) 이 차면 **앱처럼 깨어 한 번 더 비워요** ([#822](https://github.com/ensky0/tildaz/issues/822)).
+앱은 read thread 의 ring full 통보 (`output_full_fn`) 로 잠든 UI 를 깨워요 (SPEC §13.1.1 · #728). 예전 이 층은
+그 통보 없이 프레임마다 한 번만 비워서, 처리량이 *ring 크기 × fps* 근처에 묶였어요. 그러면 파싱이 빠른 판이
+일찍 비우고 끝나 **오히려 느리게** 나왔어요 — Zig 0.17 판이 parser 층에서 두 배 빠른데 frame `plain` 은 −10 %
+였어요 ([#820 Linux 원인 댓글](https://github.com/ensky0/tildaz/issues/820#issuecomment-6379281878)).
+리포트의 `wake drains` 가 그렇게 깨운 횟수이고, `over budget` 은 프레임 드레인과 깨운 드레인을 모두 세요
+(예산은 호출마다의 상한이에요).
+
 `--panes N`이면 N producer가 각 준비 파일을 만든 뒤 하나의 start barrier에서 함께 풀려요. 각 producer는
 payload 끝에 pane별 OSC title marker를 쓰고, 하네스가 그 marker를 해당 `PaneId`의 `Terminal`에서 확인할 때까지
 process를 살려 둬요. 그래서 리포트의 `parsed done`은 process 종료나 PTY read 완료가 아니라 **마지막 marker를 VT
 parser가 실제 반영한 시점**이에요. 함께 나오는 pane별 drain 청크·바이트, 최장 service gap, 청크 수 skew와 완료
 퍼짐으로 스케줄러 공정성을 봐요. process 종료 시점은 marker 확인 뒤의 보조 진단일 뿐이에요 ([#574](https://github.com/ensky0/tildaz/issues/574)).
 
-⚠️ **이 층은 더 이상 앱과 같지 않아요.** 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387),
-SPEC §13) 이후 세 host 는 **프레임 사이에도** 드레인해서 실제 앱의 duty 가 훨씬 높아요 — Windows ②
-60 Hz 실측으로 이 층에 해당하는 구조가 duty 50.6~51.4 % 인데 실제 앱은 **91.5~92.2 %** 였어요.
+⚠️ **이 층은 그래도 앱과 같지 않아요.** 사양 A ([#387](https://github.com/ensky0/tildaz/issues/387),
+SPEC §13) 이후 세 host 는 밀린 출력이 있는 동안 **프레임 사이에 계속** 드레인하는데, 이 층은 프레임 시각과
+ring 이 찬 순간에만 비워요. Windows ② 60 Hz 실측으로 ring full 깨우기 이전의 이 층이 duty 50.6~51.4 % 인데
+실제 앱은 **91.5~92.2 %** 였어요.
 그러니 이 층 숫자는 **"프레임에 묶였을 때의 하한"** 으로 읽고, 앱의 실제 배분은 perf 덤프
 (`Ctrl+Shift+F12` / `Shift+Cmd+F12`) 로 봐요. 아래 "실제 앱" 열도 사양 A 이전 값이에요.
-(이 갭은 후속 이슈로 다뤄요.)
+(이 갭은 후속 이슈로 다뤄요.) 이 문서와 SPEC §13 의 다른 절에 있는 `frame` 층 숫자는 #822 이전 (ring full
+깨우기가 없던) 하네스로 잰 값이에요.
 
 ⚠️ **`--fps` 를 재는 화면의 재생률로 반드시 지정해요.** 기본값 60 을 고주사율 화면에서
 그대로 쓰면 숫자가 크게 어긋나요. 예산이 프레임 간격에서 차지하는 비율 (`예산 / 프레임간격`) 이
@@ -173,8 +183,10 @@ SPEC §13) 이후 세 host 는 **프레임 사이에도** 드레인해서 실제
 macOS 에서 재생률을 확인하는 법: `CGDisplayModeGetRefreshRate` 를 부르거나, 시스템 설정의
 디스플레이 항목을 봐요 (`system_profiler SPDisplaysDataType` 에는 안 나와요).
 
-리포트의 `over budget` 이 예산을 넘긴 프레임 수예요. 실제 앱에서는 그 프레임마다
-vsync 를 놓쳐요 — 즉 이 숫자가 사용자가 보는 "멈칫" 의 빈도예요.
+리포트의 `over budget` 은 예산을 넘긴 **드레인 호출** 수예요 (`N / M drains` — 프레임 드레인과
+ring 이 차서 깨운 드레인을 모두 세요, [#822](https://github.com/ensky0/tildaz/issues/822)). 예산을 넘긴
+드레인 동안에는 UI 스레드가 입력도 그리기도 못 하므로, 이 숫자가 사용자가 보는 "멈칫" 의 빈도예요.
+#822 이전 리포트는 같은 자리에 예산을 넘긴 **프레임** 수를 찍었어요 (`over budget N frames`).
 
 ### 워크로드
 

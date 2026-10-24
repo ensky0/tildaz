@@ -2889,6 +2889,8 @@ AC · CPU `performance` · 64 MiB · 120x40 · scrollback 32,767 · `ReleaseFast
 `plain` · pane 마다 producer 하나 · **64 MiB/pane** · 합계 격자를 **120×40 으로 고정** · 조건별 5 회 절사평균).
 회차별 값과 실제 앱 `perf.render` 까지 담은 전체 표는 [#551](https://github.com/ensky0/tildaz/issues/551) 에 있다.
 이전 판은 macOS 한 대에서만 쟀고 8 · 16 pane 만 격자가 240×80 이라 pane 수와 격자가 함께 움직였다.
+이 표는 `frame` 층이 ring full 에 깨지 않던 하네스로 쟀다 — 지금 하네스는 프레임 사이에 ring 이 차면 한 번 더
+비우므로 ([#822](https://github.com/ensky0/tildaz/issues/822)) 처리량 열을 그대로 견주지 않는다.
 
 | platform · 기기 | 최장 드레인 1 → 16 pane | 합계 처리량 1 → 16 pane (120 fps) |
 |---|---|---|
