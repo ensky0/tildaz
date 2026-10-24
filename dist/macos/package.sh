@@ -116,6 +116,19 @@ cp "$ARM_PREFIX/$APP_NAME/Contents/Resources/AppIcon.icns" "$UNIVERSAL_APP/Conte
 echo "Universal binary architectures:"
 lipo -info "$UNIVERSAL_APP/Contents/MacOS/tildaz"
 
+# 바이너리의 최소 판 (LC_BUILD_VERSION minos) 이 Info.plist 의 LSMinimumSystemVersion 과
+# 같아야 한다 (#825). 다르면 낮은 쪽 판의 macOS 가 앱을 받아 놓고 띄우지 못하거나, 띄울 수
+# 있는 판을 막는다. Zig 0.17 이 기본값을 13.0 에서 15.0 으로 올렸을 때 이 둘이 조용히 갈렸다.
+PLIST_MIN=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$UNIVERSAL_APP/Contents/Info.plist")
+for arch in arm64 x86_64; do
+    BIN_MIN=$(vtool -arch "$arch" -show-build "$UNIVERSAL_APP/Contents/MacOS/tildaz" | awk '$1 == "minos" { print $2 }')
+    echo "minos $arch=$BIN_MIN (LSMinimumSystemVersion=$PLIST_MIN)"
+    if [[ "$BIN_MIN" != "$PLIST_MIN" ]]; then
+        echo "ERROR: $arch binary minos ($BIN_MIN) differs from LSMinimumSystemVersion ($PLIST_MIN)" >&2
+        exit 1
+    fi
+done
+
 echo "--- 4. Re-codesign universal .app (lipo 후 서명 다시) ---"
 codesign --force --sign "$SIGN_IDENTITY" "$UNIVERSAL_APP"
 codesign -dv "$UNIVERSAL_APP" 2>&1 | grep -i 'authority\|identifier' || true
