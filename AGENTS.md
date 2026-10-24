@@ -736,71 +736,6 @@ TildaZ 라 이름을 대신해요.
 담은 색인이에요. **절차는 그 색인이 아니라 이 문서가 단일 출처예요** — 새 도구를 더하면 색인에
 한 줄, 쓰는 법은 이 문서의 해당 절에 적어요.
 
-# macOS — zig 번들 float.h 가 SDK 와 어긋날 때
-
-**⚠️ Zig 0.17.0 부터는 해당 없어요** ([#820](https://github.com/ensky0/tildaz/issues/820)). 0.17 의 번들 `float.h` 가
-`__need_infinity_nan` 을 스스로 구현해서, 아래 스크립트는 *"패치 불필요"* 로 끝나고 `-Dsimd=true` 가 SDK 27.0 에서
-그대로 빌드돼요 (MacBook Pro M5 Pro 실측). 이 절과 스크립트를 걷어내는 일은 [#665](https://github.com/ensky0/tildaz/issues/665)
-에서 해요. 아래는 0.16 때의 기록이에요.
-
-**증상은 `-Dsimd=true` 가 `error: sub-compilation of libcxx failed` 로 죽는 것이에요**
-([#665](https://github.com/ensky0/tildaz/issues/665)). 실제 원인 줄은 그 아래에 있어요 —
-`libcxx/include/__random/clamp_to_integral.h` 의 `use of undeclared identifier 'INFINITY'`.
-
-**원인은 우리 코드도 brew 판도 아니에요.** macOS **27** SDK 의 `<math.h>` 는 clang modules 가
-켜지면 `INFINITY` · `NAN` 을 **컴파일러의 `<float.h>` 에 위임**해요 (`__need_infinity_nan` —
-LLVM 22 · Apple clang 21 에 들어간 규약). zig 0.16.0 이 번들로 들고 있던 `float.h` 는 그 규약이
-없고, 자체 `INFINITY` 정의도 `!defined(__STRICT_ANSI__)` 안에 있어서 `-std=c++23` 에서는 안 나와요.
-zig 는 번들 libc++ 를 정확히 그 `-std=c++23` 으로 빌드하니 **아무도 `INFINITY` 를 정의하지 않아요.**
-
-| `-std` | `__has_feature(modules)` | `INFINITY` |
-|---|---|---|
-| `c++17` · `gnu++17` | OFF | 정의됨 |
-| **`c++23`** | **ON** | **정의 안 됨** ← libc++ 빌드 조건 |
-| `gnu++23` | ON | 정의됨 |
-
-**SDK 버전이 갈라요 — 26 계열은 해당 없어요** (2026-09-18 실측).
-
-| SDK | `<math.h>` 의 `INFINITY` | 결과 |
-|---|---|---|
-| 26.5 (`MacOSX26.sdk` 는 이것의 심링크) | 무조건 정의 | 안 깨져요 |
-| **27.0** | **`<float.h>` 에 위임** | **깨져요** |
-
-26.0~26.4 는 이 기기에 없어 확인 못 했어요 — *26.5 가 아니었다* 까지가 잰 것이에요.
-
-**15 초짜리 최소 재현이에요 — 전체 빌드를 돌리지 말아요.** 링크 단계가 libc++ sub-compilation 을
-태우므로 이 한 줄로 갈려요.
-
-```sh
-printf '#include <random>\nint main(){std::mt19937 g(1);std::poisson_distribution<int> d(4.0);return d(g);}\n' > /tmp/m.cpp
-zig c++ -std=c++17 /tmp/m.cpp -o /tmp/m
-```
-
-**고치는 것은 [`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) 예요** — 번들
-`float.h` 의 **헤더 가드 바깥**에 그 규약을 최소 구현해요 (가드 안에 넣으면 SDK 가 다시 include
-할 때 막혀요). 멱등이라 여러 번 돌려도 돼요.
-
-```sh
-tool/zig-floath-patch_macos.sh --check    # 상태만 (패치 필요 = 종료 코드 1)
-tool/zig-floath-patch_macos.sh            # 필요하면 패치하고 최소 재현으로 검증까지
-tool/zig-floath-patch_macos.sh --revert   # 백업에서 되돌리기
-```
-
-- **`build_and_install.sh` 가 이것을 자동으로 불러요.** 서명 identity 가 없을 때
-  `setup-cert.sh` 를 부르는 것과 같은 자리예요 — 기기마다 한 번 고쳐 두면 되는 것이라서요.
-  그래도 SIMD 가 깨지면 **SIMD 없이 한 번 더 빌드해** 설치까지는 끝내요 (로컬 설치는 릴리즈
-  아티팩트가 아니에요 — 릴리즈는 Actions 가 만들어요).
-- **⚠️ zig 를 업그레이드하면 패치가 사라져요.** zig 설치본을 고치는 것이니까요. 업그레이드 뒤에는
-  스크립트를 한 번 돌려요 — 새 zig 가 규약을 스스로 구현하면 *"패치 불필요"* 로 끝나고, 그러면
-  이 절과 스크립트를 **걷어낼 때**예요.
-- **CI 는 `macos-26` 으로 핀 고정이고 이 결함에 안 걸려요** — SDK 26.5 는 `INFINITY` 를 무조건
-  정의하거든요 (실측). `release.yml` · `macos-signing-check.yml` · `pr-verify.yml` 셋 다 라벨을
-  고정하고 `macos-latest` 를 안 써요 (위 `# 릴리즈` 의 runner 고정 정책). **`xcode-27` (Beta) 로는
-  가지 않아요** — 그게 SDK 27 이라 0.16 에서는 정확히 이 결함을 불렀어요. 0.17 부터는 이 이유가 없어요 (#820) —
-  라벨을 올리는 일은 runner 고정 정책대로 따로 검증하고 해요.
-- **SDK 를 낮춰 물리는 우회는 안 먹어요** — `SDKROOT=…MacOSX26.5.sdk` 도 `--sysroot` 도 결과가
-  같았어요 (2026-09-18 실측).
-
 # macOS — emoji 입력 테스트 방법
 
 macOS 의 Show Emoji & Symbols (Apple default `Ctrl+Cmd+Space`) 는 tildaz 안에서
@@ -2661,7 +2596,6 @@ open /Applications/TildaZ-dev.app   # ✅ 실행
   이것이었어요. 그래서 `-Dcpu=…` 를 줘도 macOS 에서는 효과가 없어요. 릴리즈 (`package.sh` 의 `-Dtarget`) 와 같은 조건이에요.
 - `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
-- **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절. Zig 0.17 부터는 이 단계가 할 일이 없어요 (#820).
 
 **identity 가 사라졌으면 새로 만들지 말고 백업에서 되살려요** ([#444](https://github.com/ensky0/tildaz/issues/444)).
 login keychain 이 밀리면 (`login_renamed_N.keychain-db` 가 생기는 경우 — 2026-08-10 에 실제로
@@ -2974,7 +2908,7 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들어요.
 | | 지금 쓰는 라벨 |
 |---|---|
 | Linux | `ubuntu-26.04` (ARM 은 `ubuntu-26.04-arm`) |
-| macOS | `macos-26` — **`xcode-27` 로 가지 않았어요** (0.16 에서는 SDK 27 이 위 `# macOS — zig 번들 float.h …` 절의 결함에 걸렸어요. 0.17 부터는 그 이유가 없어요 — #820) |
+| macOS | `macos-26` |
 | Windows | `windows-2025-vs2026` — VS 판을 라벨에 명시해 기본값이 또 움직여도 안 흔들려요 |
 
 GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 만료돼요. 올릴 때는 `pr-verify`
