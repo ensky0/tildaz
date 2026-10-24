@@ -2102,7 +2102,7 @@ pub const Window = struct {
             WM_NEW_INSTANCE_REQUEST => {
                 if (@import("instance_context.zig").requireWorkerIndex() == 0) {
                     self.show();
-                    @import("new_instance.zig").handle(self.rt, std.heap.page_allocator);
+                    @import("new_instance.zig").handle(self.rt, self.rt.gpa);
                 }
                 // SendMessageW caller가 동기 처리 성공을 판별하는 protocol result.
                 return 1;
@@ -2235,7 +2235,7 @@ pub const Window = struct {
                         // complete caller는 action을 보류하므로 target이 바뀌지 않는다.
                         return DefWindowProcW(hwnd, msg, wParam, lParam);
                     };
-                    defer std.heap.page_allocator.free(result);
+                    defer self.rt.gpa.free(result);
 
                     // MS-IME는 Ctrl keydown만으로도 실제 shortcut key보다 먼저
                     // result/end를 queue할 수 있다. Ctrl chord 중이면 다음
@@ -3135,7 +3135,8 @@ pub const Window = struct {
     }
 
     /// GCS_RESULTSTR를 UTF-16으로 읽고 소유 UTF-8 slice로 변환한다. caller가
-    /// page_allocator로 해제한다.
+    /// `self.rt.gpa` 로 해제한다 (#821 — 예전에는 한글 한 음절을 확정할 때마다
+    /// `page_allocator` 가 OS 페이지를 받았다).
     fn imeReadCompositionResult(self: *Window) ?[]u8 {
         const hwnd = self.requireHwnd();
         const himc = ImmGetContext(hwnd);
@@ -3146,7 +3147,7 @@ pub const Window = struct {
         if (len_bytes_raw <= 0 or @mod(len_bytes_raw, 2) != 0) return null;
         const len_bytes: usize = @intCast(len_bytes_raw);
         const len_units = len_bytes / 2;
-        const alloc = std.heap.page_allocator;
+        const alloc = self.rt.gpa;
         const w16_buf = alloc.alloc(u16, len_units) catch return null;
         defer alloc.free(w16_buf);
         const got_raw = ImmGetCompositionStringW(himc, GCS_RESULTSTR, w16_buf.ptr, @intCast(len_bytes));
@@ -3182,7 +3183,7 @@ pub const Window = struct {
     }
 
     fn imeStoreDeferredResult(self: *Window, utf8: []const u8) bool {
-        const alloc = std.heap.page_allocator;
+        const alloc = self.rt.gpa;
         if (self.ime_deferred_result) |previous| {
             const joined = alloc.alloc(u8, previous.len + utf8.len) catch {
                 // 극단적인 allocation 실패에서도 먼저 도착한 결과를 먼저
@@ -3211,7 +3212,7 @@ pub const Window = struct {
     }
 
     fn imeClearDeferredResult(self: *Window, clear_preedit: bool) void {
-        if (self.ime_deferred_result) |result| std.heap.page_allocator.free(result);
+        if (self.ime_deferred_result) |result| self.rt.gpa.free(result);
         self.ime_deferred_result = null;
         self.ime_preserve_requested = false;
         if (clear_preedit) self.preedit_len = 0;
@@ -3231,7 +3232,7 @@ pub const Window = struct {
     fn imeSetCompositionString(self: *Window, utf8: []const u8) bool {
         const utf16_len = std.unicode.calcUtf16LeLen(utf8) catch return false;
         if (utf16_len == 0) return false;
-        const alloc = std.heap.page_allocator;
+        const alloc = self.rt.gpa;
         const utf16 = alloc.alloc(u16, utf16_len) catch return false;
         defer alloc.free(utf16);
         const written = std.unicode.utf8ToUtf16Le(utf16, utf8) catch return false;
@@ -3487,7 +3488,7 @@ pub const Window = struct {
         // dispatch — app_controller 가 PTY 로 한 번에 write.
         // #298 — UTF-16 surrogate 수동 디코딩 → std.unicode.utf16LeToUtf8
         // (BMP=3B, surrogate pair=4B 라 len*3+4 로 충분).
-        const alloc = std.heap.page_allocator;
+        const alloc = self.rt.gpa;
         const u8_buf = alloc.alloc(u8, len * 3 + 4) catch return;
         defer alloc.free(u8_buf);
         const u8_len = std.unicode.utf16LeToUtf8(u8_buf, wide_ptr[0..len]) catch return;
