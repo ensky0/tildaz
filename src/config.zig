@@ -5270,8 +5270,13 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
 /// 기본 template 의 한 줄을 바꿔 파싱한다 — 값 폴백 test 의 공통 뼈대.
 ///
 /// 부분 할당이 남을 수 있어 (`load` 의 catch 주석) arena 로 감싼다.
+///
+/// #820 — arena 는 **힙에 둔다.** `parse` 가 `arena.allocator()` (= arena 의 주소) 를 전역
+/// `notice_allocator` 에 심는다. 지역 변수로 두고 값으로 복사해 돌려주면 그 주소는 끝난
+/// 스택 자리를 가리키고, `deinit` 의 `clearConfigNotice` 가 그 자리를 arena 로 읽는다.
+/// Zig 0.17 Windows 에서 그 자리가 덮여 `ArenaAllocator.free` 의 `.?` 가 panic 했다.
 const ValueCase = struct {
-    arena: std.heap.ArenaAllocator,
+    arena: *std.heap.ArenaAllocator,
     config: Config,
 
     fn deinit(self: *ValueCase) void {
@@ -5279,6 +5284,7 @@ const ValueCase = struct {
         // arena 를 먼저 내리면 죽은 allocator 로 해제하게 된다.
         clearConfigNotice();
         self.arena.deinit();
+        std.testing.allocator.destroy(self.arena);
         resetFatalNoticeForTest();
     }
 
@@ -5290,7 +5296,9 @@ const ValueCase = struct {
 fn parseWithReplaced(needle: []const u8, with: []const u8) !ValueCase {
     clearConfigNotice();
     resetFatalNoticeForTest();
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    const arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    errdefer std.testing.allocator.destroy(arena);
+    arena.* = .init(std.testing.allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
