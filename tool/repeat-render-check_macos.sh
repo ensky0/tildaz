@@ -39,7 +39,7 @@ CAP="$OUT/color-capture"
 
 if [ ! -x "$APP" ]; then
   echo "앱이 없다: $APP" >&2
-  echo "  zig build -Doptimize=ReleaseFast -Dsimd=true" >&2
+  echo "  zig build -Doptimize=fast -Dsimd=true" >&2
   exit 1
 fi
 if [ ! -x "$TARGET" ]; then

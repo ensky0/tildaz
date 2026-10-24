@@ -13,9 +13,10 @@
 //!
 //! ## 이 조회는 `zig build` 를 부를 때마다 다시 돈다
 //!
-//! `runAllowFail` 은 build graph 를 만드는 시점 (= configure) 에 실행된다. 그래서 커밋을
+//! `runFallible` 은 build graph 를 만드는 시점 (= configure) 에 실행된다. Zig 0.17 은 그 설정
+//! 결과를 캐시하므로 `detect` 가 `poisonCache` 로 매번 다시 돌게 한다 (#820). 그래서 커밋을
 //! 하거나 작업 트리를 더럽히면 다음 `zig build` 에서 값이 갱신되고, 값이 그대로면
-//! `addOptions` 가 만드는 파일 내용도 같아서 캐시가 그대로 맞는다.
+//! `addOptions` 가 만드는 파일 내용도 같아서 컴파일 캐시는 그대로 맞는다.
 
 const std = @import("std");
 
@@ -29,15 +30,20 @@ pub const Info = struct {
 };
 
 pub fn detect(b: *std.Build) Info {
-    // build root 를 명시한다. `zig build` 를 어느 cwd 에서 부르든 같은 저장소를 본다.
-    const root = b.build_root.path orelse ".";
-    var code: u8 = 0;
+    // #820 — Zig 0.17 은 설정 결과를 캐시하고 같은 설정이면 build.zig 를 건너뛴다. git 조회는
+    // 캐시가 추적하지 못하는 입력이라, 그대로 두면 커밋해도 옛 commit 이 찍힌다. 매번 다시
+    // 돌게 알린다 (`runFallible` 은 스스로 캐시를 무효로 하지 않는다).
+    b.graph.poisonCache();
 
-    const hash_raw = b.runAllowFail(
+    // build root 를 명시한다. `zig build` 를 어느 cwd 에서 부르든 같은 저장소를 본다.
+    const root = b.root.toString(b.allocator) catch @panic("OOM");
+    const hash_raw = switch (b.runFallible(
         &.{ "git", "-C", root, "rev-parse", "--short", "HEAD" },
-        &code,
-        .ignore,
-    ) catch return .{};
+        .{ .stderr_behavior = .ignore },
+    )) {
+        .success => |stdout| stdout,
+        .spawn_failed, .bad_exit_code, .crashed => return .{},
+    };
     const commit = std.mem.trim(u8, hash_raw, " \t\r\n");
     // 커밋이 하나도 없는 저장소 (`git init` 직후) 는 위에서 실패하지만, 방어적으로 본다.
     if (commit.len == 0) return .{};
@@ -49,11 +55,13 @@ pub fn detect(b: *std.Build) Info {
     // `git diff --quiet` 를 쓰지 않는 이유: staged 변경을 못 본다 (`git add` 만 한 상태가
     // clean 으로 읽힌다). `status` 는 그것까지 보고, 덤으로 index 를 refresh 해서 내용은
     // 같은데 mtime 만 바뀐 파일이 dirty 로 오탐되는 것도 막는다.
-    const status = b.runAllowFail(
+    const status = switch (b.runFallible(
         &.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=no" },
-        &code,
-        .ignore,
-    ) catch return .{ .commit = commit };
+        .{ .stderr_behavior = .ignore },
+    )) {
+        .success => |stdout| stdout,
+        .spawn_failed, .bad_exit_code, .crashed => return .{ .commit = commit },
+    };
 
     return .{
         .commit = commit,

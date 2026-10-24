@@ -17,7 +17,7 @@ pub const max_len = 256;
 /// 만 수락하므로, 원격 경로를 잘못 받아들이는 쪽이 아니라 상속을 포기하는 쪽으로
 /// 열화한다.
 pub fn get(buf: *[max_len]u8) []const u8 {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .windows => {
             var wbuf: [max_len]u16 = undefined;
             // nSize 는 in/out — 들어갈 때 버퍼 크기, 나올 때 NUL 을 뺀 실제 길이.

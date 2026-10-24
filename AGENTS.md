@@ -109,6 +109,17 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 멈춰요. 그리고 세션이 하나뿐이어도 **커밋 직전에 `git diff --cached` 로 검증한 내용과 담는 내용이
 같은지** 봐요 — 검증과 커밋 사이에 파일이 바뀌면 검증은 무효예요.
 
+**단계마다 원격이 바뀌었는지 확인해요 — 세션 시작 때 한 번으로는 부족해요** (2026-10-24 사용자 지시:
+*"소스 바뀐거 있는지 항상 확인해"*). 다른 기기 · 다른 세션이 같은 브랜치와 같은 이슈에서 동시에 일해요.
+`ListAgents` 는 이 기기의 세션만 보여 주니, 다른 기기의 움직임은 git 과 이슈로만 알 수 있어요.
+
+- **측정 · 커밋 · push · 댓글 전에** `git fetch origin` 으로 작업 브랜치와 `main` 의 새 커밋을 보고, 관련 이슈의 새
+  댓글을 봐요.
+- 바뀐 것이 있으면 **읽고, 지금 하는 일에 닿는지 본 뒤에** 이어 가요. 같은 자리를 고쳤으면 이슈에 적어 맞춰요.
+- 2026-10-24 [#820](https://github.com/ensky0/tildaz/issues/820) Linux 회차에서 macOS 세션이 같은 브랜치에 커밋 셋
+  (`6ad90ce` · `b83903d` · `42f7395`) 을 올리고 [#822](https://github.com/ensky0/tildaz/issues/822) 에 분석 둘을
+  이어 올렸어요. 사용자가 두 번 짚어 준 뒤에야 받았고, 그사이 두 세션이 같은 현상을 따로 팠어요.
+
 **실기 측정을 시작하기 직전에도 다른 세션에 알리고, 끝나면 다시 알려요** (2026-10-15 사용자 지시).
 세션 시작 때의 확인만으로는 부족해요 — 다른 세션이 중간에 측정을 시작할 수 있어요. 그날
 [#766](https://github.com/ensky0/tildaz/issues/766) 측정과 #762 의 `render-ab-shot` 이 같은 시각에 TildaZ 창을
@@ -278,6 +289,10 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
 - 한 번에 여러 hypothesis 를 hack 으로 시도하지 말고, 진단으로 사실을 좁히고
   진짜 원인을 좁힌 뒤에 1 발에 끝내요.
 - 막히면 "이 부분에서 원인 모름. 진단 더 필요" 라고 솔직하게 사용자에게 보고.
+- **분석은 항상 끝까지 파요** (2026-10-24 사용자 지시: *"항상 끝까지 파본다"*). 가설 하나를 세운 데서
+  멈추고 "더 팔지 멈출지" 를 묻지 않아요. 원인이 확정될 때까지 다음 실험을 이어 가요. 사용자에게 묻는 것은
+  방향이 갈리는 결정 (아래 `# 의사결정`) 과, 사람 손이 필요한 일 (sudo · 실기 조작) 뿐이에요.
+  [#822](https://github.com/ensky0/tildaz/issues/822) 에서 "스레드 배치" 가설을 세우고 멈출지 물었다가 들은 말이에요.
 - **변경 전 정확 분석 후 적용**. "일단 해보고 시연으로 확인" 절대 금지.
   시연은 검증 단계지 가설 발견 단계가 아니에요. 변경할 코드의 입력 / 출력 /
   경계 케이스 (정확 경계, 부동소수점 오차, max/min) 모두 분석해서 동작이
@@ -311,7 +326,7 @@ README / 사이트 / SPEC / 이슈 / 답변 / 커밋 / 코드 주석 모두 적�
 
 | 대상 | 어디서 확인 |
 |---|---|
-| zig 표준 라이브러리 | **레포 안의 기존 사용례를 먼저 grep** 해요 — 0.16 전환을 이미 겪은 코드가 답을 갖고 있어요. 없으면 `$(zig env \| grep lib_dir)` 의 std 소스 |
+| zig 표준 라이브러리 | **레포 안의 기존 사용례를 먼저 grep** 해요 — 0.16 · 0.17 전환을 이미 겪은 코드가 답을 갖고 있어요. 없으면 `$(zig env \| grep lib_dir)` 의 std 소스 |
 | ghostty-vt · 의존 패키지 | `zig-pkg/` 아래 실제 소스. tarball 을 풀어 둔 것이에요. **ghostty 는 그 pin 에 우리 패치가 얹힌 코드예요** (`vendor/ghostty/patches/` — 아래 `# 의존성 관리`) |
 | 이 저장소의 함수 | 정의로 가서 시그니처와 머리 주석을 읽어요. 주석에 *왜 그렇게 생겼는지* 가 적혀 있는 경우가 많아요 |
 
@@ -723,13 +738,18 @@ TildaZ 라 이름을 대신해요.
 
 # macOS — zig 번들 float.h 가 SDK 와 어긋날 때
 
+**⚠️ Zig 0.17.0 부터는 해당 없어요** ([#820](https://github.com/ensky0/tildaz/issues/820)). 0.17 의 번들 `float.h` 가
+`__need_infinity_nan` 을 스스로 구현해서, 아래 스크립트는 *"패치 불필요"* 로 끝나고 `-Dsimd=true` 가 SDK 27.0 에서
+그대로 빌드돼요 (MacBook Pro M5 Pro 실측). 이 절과 스크립트를 걷어내는 일은 [#665](https://github.com/ensky0/tildaz/issues/665)
+에서 해요. 아래는 0.16 때의 기록이에요.
+
 **증상은 `-Dsimd=true` 가 `error: sub-compilation of libcxx failed` 로 죽는 것이에요**
 ([#665](https://github.com/ensky0/tildaz/issues/665)). 실제 원인 줄은 그 아래에 있어요 —
 `libcxx/include/__random/clamp_to_integral.h` 의 `use of undeclared identifier 'INFINITY'`.
 
 **원인은 우리 코드도 brew 판도 아니에요.** macOS **27** SDK 의 `<math.h>` 는 clang modules 가
 켜지면 `INFINITY` · `NAN` 을 **컴파일러의 `<float.h>` 에 위임**해요 (`__need_infinity_nan` —
-LLVM 22 · Apple clang 21 에 들어간 규약). zig 0.16.0 이 번들로 들고 있는 `float.h` 는 그 규약이
+LLVM 22 · Apple clang 21 에 들어간 규약). zig 0.16.0 이 번들로 들고 있던 `float.h` 는 그 규약이
 없고, 자체 `INFINITY` 정의도 `!defined(__STRICT_ANSI__)` 안에 있어서 `-std=c++23` 에서는 안 나와요.
 zig 는 번들 libc++ 를 정확히 그 `-std=c++23` 으로 빌드하니 **아무도 `INFINITY` 를 정의하지 않아요.**
 
@@ -776,7 +796,8 @@ tool/zig-floath-patch_macos.sh --revert   # 백업에서 되돌리기
 - **CI 는 `macos-26` 으로 핀 고정이고 이 결함에 안 걸려요** — SDK 26.5 는 `INFINITY` 를 무조건
   정의하거든요 (실측). `release.yml` · `macos-signing-check.yml` · `pr-verify.yml` 셋 다 라벨을
   고정하고 `macos-latest` 를 안 써요 (위 `# 릴리즈` 의 runner 고정 정책). **`xcode-27` (Beta) 로는
-  가지 않아요** — 그게 SDK 27 이라 정확히 이 결함을 부릅니다.
+  가지 않아요** — 그게 SDK 27 이라 0.16 에서는 정확히 이 결함을 불렀어요. 0.17 부터는 이 이유가 없어요 (#820) —
+  라벨을 올리는 일은 runner 고정 정책대로 따로 검증하고 해요.
 - **SDK 를 낮춰 물리는 우회는 안 먹어요** — `SDKROOT=…MacOSX26.5.sdk` 도 `--sysroot` 도 결과가
   같았어요 (2026-09-18 실측).
 
@@ -872,8 +893,8 @@ tool/repeat-render-check_macos.sh 24 6 /path/show.sh    # 다른 화면으로
 
 ```sh
 python3 tool/clusters.py many > /tmp/many.sh && chmod +x /tmp/many.sh
-git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=ReleaseFast -Dsimd=true)   # 기준판
-zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true                             # 수정판
+git worktree add /tmp/wt-main main && (cd /tmp/wt-main && zig build -Doptimize=fast -Dsimd=true)   # 기준판
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=fast -Dsimd=true                             # 수정판
 tool/render-ab-shot/render-ab-shot_macos.sh /tmp/many.sh 88x33 5 /tmp/wt-main/zig-out/TildaZ-dev.app zig-out/TildaZ-dev.app      # 정적 → 0 px
 tool/render-process-check_macos.sh zig-out/TildaZ-dev.app /tmp/many.sh 88x33 30 0.03                          # 과정 → 전부 0
 ```
@@ -924,7 +945,7 @@ IOSurface + `CALayer.contents` 로 바꾼 뒤로는 이 패치가 고치는 자�
 
 ```sh
 git apply tool/present-latency-probe_macos.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+zig build -Doptimize=fast -Dsimd=true -Dmacos-sign-identity=TildazLocal
 tool/stress/measure-input-latency.sh --mode both --presses 30            # 10 회 연속이 기본
 TILDAZ_TEMP476=drawables2 tool/stress/measure-input-latency.sh …         # 대조 실험 (아래)
 git apply -R tool/present-latency-probe_macos.patch
@@ -1034,7 +1055,7 @@ tool/present-check_macos.sh tearing --seconds 5  old-nosync=…@TILDAZ_TEMP476=n
 
 ```sh
 git apply tool/key-redraw-probe.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true          # macOS 는 -Dmacos-sign-identity=TildazLocal 도
+zig build -Doptimize=fast -Dsimd=true          # macOS 는 -Dmacos-sign-identity=TildazLocal 도
 tool/stress/measure-input-latency.sh --mode idle --echo --presses 30
 git apply -R tool/key-redraw-probe.patch
 ```
@@ -1066,8 +1087,8 @@ macOS 는 표시 버퍼 (IOSurface — 앱과 창 서버가 함께 보는 그림
 
 ```sh
 git apply tool/surface-inuse-probe_macos.patch
-zig build -Doptimize=ReleaseFast -Dsimd=true -Dmacos-sign-identity=TildazLocal
-zig build stress -Doptimize=ReleaseFast -Dsimd=true -- --help   # tildaz-stress 설치 — 사용법을 내고 실패로 끝나도 설치는 돼요
+zig build -Doptimize=fast -Dsimd=true -Dmacos-sign-identity=TildazLocal
+zig build stress -Doptimize=fast -Dsimd=true -- --help   # tildaz-stress 설치 — 사용법을 내고 실패로 끝나도 설치는 돼요
 tool/stress/measure-input-latency.sh --mode both --presses 100
 git apply -R tool/surface-inuse-probe_macos.patch
 ```
@@ -1448,8 +1469,8 @@ powershell.exe -NoProfile -STA -File tool\key-redraw-check_windows.ps1   # 창 1
 (`|`) 을 aliased 로 크게 그려 기울기 · 획 폭을, `GetDesignGlyphMetrics` 로 글자 간격을 재요.
 
 ```powershell
-zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
-    -O ReleaseSafe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
+zig build-exe -O safe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
+    -O safe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
 .\synthetic-style-probe_windows.exe                       # 기본 글꼴 넷 (없는 글꼴은 건너뜀)
 .\synthetic-style-probe_windows.exe --family "D2Coding" --char l --em 300
 ```
@@ -1483,7 +1504,7 @@ zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-prob
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`tool/layout-probe/layout-probe_windows.zig`](tool/layout-probe/layout-probe_windows.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
 
 ```powershell
-zig build-exe tool/layout-probe/layout-probe_windows.zig -O ReleaseSafe --cache-dir C:/ziglang/tildaz-cache
+zig build-exe tool/layout-probe/layout-probe_windows.zig -O safe --cache-dir C:/ziglang/tildaz-cache
 .\layout-probe_windows.exe               # 전체 표 + 판정 + 경계값. 덤프 파일도 함께 써요
 .\layout-probe_windows.exe --watch 60    # 창을 띄우고 60 초 — 그 사이 입력 언어를 바꿔요
 .\layout-probe_windows.exe --only 0000040c   # 한 layout 만 올려서 hkl=NULL 의 뜻을 가려요
@@ -2224,14 +2245,15 @@ freetype · harfbuzz 를 전부 `dlopen` 하고 나머지 import 는 순수 모�
 
 ```sh
 cp <scratchpad>/probe.zig src/probe.zig          # 상대 import 가 맞아야 해서 src/ 아래에 둬요
-zig run src/probe.zig -lc -O ReleaseSafe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
+zig run src/probe.zig -lc -O safe          # Debug 는 GCC16 머신에서 .sframe 링커 에러 (#232)
 rm -f src/probe.zig && git status --short         # 끝나면 지우고 트리 clean 확인
 ```
 
-- **`-O ReleaseSafe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
+- **`-O safe` 는 `build.zig` 를 안 거치는 직접 호출이라 필요해요.** `build.zig` 는 Linux
   타겟에 LLVM/LLD 를 강제하니 `zig build` · `zig build test` 는 Debug 로도 링크돼요. `zig run` 은
   그 강제 밖이라 self-hosted 링커가 GCC16 의 `crt1.o:.sframe` 에서 죽어요 ([#232](https://github.com/ensky0/tildaz/issues/232)).
-  upstream 픽스는 Zig 0.17.0 에 실려요 — 그때 이 한 줄도 같이 없어져요.
+  upstream 픽스는 Zig 0.17.0 에 실렸어요 ([#820](https://github.com/ensky0/tildaz/issues/820) — Codeberg 비교로 확인).
+  다만 GCC16 Linux 기기에서 Debug 로 돌려 보기 전이라 이 한 줄과 `build.zig` 의 강제는 그대로 둬요 — 걷어내는 일은 #232 예요.
 - chain 은 **실기 config 와 같게** 만들어요 — `Context.init(alloc, &.{"DejaVu Sans Mono",
   "Noto Sans CJK KR", "Noto Color Emoji"}, 20, 1.0, 1.1)`. 기본값 (`config.zig` 의 `Defaults`) 과
   같은 값이에요.
@@ -2329,7 +2351,7 @@ Linux atlas `grow` 실기 (2026-09-03) 에서 만들었어요. 판은 상수 (`I
 ```sh
 python3 tool/clusters.py stack2 > /tmp/stack2.sh && chmod +x /tmp/stack2.sh
 git worktree add --detach /tmp/wt HEAD && sed -i 's/INITIAL_ATLAS_SIZE: u32 = 512/INITIAL_ATLAS_SIZE: u32 = 4096/' /tmp/wt/src/renderer/glyph_atlas_common.zig
-(cd /tmp/wt && zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
+(cd /tmp/wt && zig build -Doptimize=fast -Dsimd=true --cache-dir "$PWD/../tildaz/.zig-cache") && cp /tmp/wt/zig-out/bin/tildaz /tmp/tildaz-4096
 tool/render-ab-shot/render-ab-shot_linux.sh /tmp/stack2.sh 150x40 8 stack2 /tmp/tildaz-4096 zig-out/bin/tildaz      # 판 1 이 기준
 ```
 
@@ -2363,7 +2385,7 @@ DejaVu Sans Mono · Noto Sans CJK KR · Noto Color Emoji). `limactl start tildaz
 (예전에 memory 에만 있던 내용을 여기로 옮겼어요 — 2026-09-03.)
 
 ```sh
-zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe          # 크로스빌드 (macOS 에서)
+zig build -Dtarget=aarch64-linux-gnu -Doptimize=safe          # 크로스빌드 (macOS 에서)
 limactl copy zig-out/bin/tildaz tildaz-linux:/tmp/tildaz-test
 limactl shell tildaz-linux -- bash -c '
   cat > /tmp/tz-sway.conf <<EOF
@@ -2637,10 +2659,14 @@ open /Applications/TildaZ-dev.app   # ✅ 실행
 - **stable self-signed identity** (`TildazLocal`, `TILDAZ_SIGN_IDENTITY` 로 변경) 로 서명해요.
   ad-hoc (`-`) 서명은 매 빌드마다 바이너리 해시가 바뀌어 *Input Monitoring* 권한이 stale 해지는데
   ([#109](https://github.com/ensky0/tildaz/issues/109)), stable identity 는 그 문제가 없어요.
-- `-Doptimize=ReleaseFast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
+- `-Doptimize=fast -Dsimd=true` 로 빌드해요 (공식 릴리즈와 같은 옵션).
+- **CPU 는 이 기기 것이 아니라 일반 CPU (baseline) 예요** — `build.zig` 의 `matchGhosttyMacosCpu` 가 macOS 에서 늘
+  그렇게 맞춰요 ([#820](https://github.com/ensky0/tildaz/issues/820)). ghostty 가 macOS 에서 자기 모듈을 일반 CPU 로
+  바꿔서, 우리 코드만 이 기기 CPU 면 둘 사이 인라인이 막혀요. Zig 0.17 이 M5 를 알게 되며 parser cjk 가 15 % 느려진 원인이
+  이것이었어요. 그래서 `-Dcpu=…` 를 줘도 macOS 에서는 효과가 없어요. 릴리즈 (`package.sh` 의 `-Dtarget`) 와 같은 조건이에요.
 - `/Applications/TildaZ-dev.app` 에 `ditto` 로 설치하고 `codesign --verify` 로 검증해요.
 - identity 가 없으면 [`setup-cert.sh`](dist/macos/setup-cert.sh) 를 한 번 실행해 안내해요.
-- **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절.
+- **zig 번들 `float.h` 가 SDK 27 규약을 모르면 먼저 고쳐요** ([`tool/zig-floath-patch_macos.sh`](tool/zig-floath-patch_macos.sh) · [#665](https://github.com/ensky0/tildaz/issues/665)). 그래도 SIMD 가 깨지면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 — 위 `# macOS — zig 번들 float.h 가 SDK 와 어긋날 때` 절. Zig 0.17 부터는 이 단계가 할 일이 없어요 (#820).
 
 **identity 가 사라졌으면 새로 만들지 말고 백업에서 되살려요** ([#444](https://github.com/ensky0/tildaz/issues/444)).
 login keychain 이 밀리면 (`login_renamed_N.keychain-db` 가 생기는 경우 — 2026-08-10 에 실제로
@@ -2684,8 +2710,8 @@ open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
   로 초기화하고 다시 허용해요.
 
 **빌드 / 검증 명령** (Windows 셸, 캐시는 `--cache-dir C:/ziglang/tildaz-cache`). 한 스크립트로는 [`dist/windows/build.ps1`](dist/windows/build.ps1) (`--release` / `--clean` / `--optimize` / `--check` / `--test` / `--no-simd` 지원). 직접 호출 시:
-- 전체 빌드: `zig build -Doptimize=ReleaseFast -Dsimd=true`
-- Windows 릴리즈 package: `zig build package -Doptimize=ReleaseFast -Dsimd=true -Drelease=true`
+- 전체 빌드: `zig build -Doptimize=fast -Dsimd=true`
+- Windows 릴리즈 package: `zig build package -Doptimize=fast -Dsimd=true -Drelease=true`
 - **컴파일 검증**: `zig build check` — Linux · macOS · Windows × (x86_64 / aarch64) 6 타겟을 *compile-only* (link 없이 `.o` 만) 로 돌려, mac / Linux host 코드의 type / 컴파일 에러를 Windows 한 머신에서 한 번에 잡아요 (#201). cross-platform 변경 후 필수.
 - **독립 진단 도구 검증**: `zig build probe-check` — 본체 빌드에 들어가지 않는 Linux dma-buf / Linux OSC title / Windows OSC title 도구를 각 지원 OS × (x86_64 / aarch64) 로 *compile-only* 검증해요. Zig 버전 이전처럼 저장소 전체 API가 바뀌는 작업 후 필수 (#451).
 - 단위 테스트: `zig build test`.
@@ -2736,7 +2762,7 @@ open /Applications/TildaZ-dev.app                        # ✅ 이걸 써요
 - Windows `build.ps1`도 기본 dev예요. 릴리즈는 `--release`, 나머지도 `--clean` · `--optimize` ·
   `--cache-dir` · `--check` · `--test` · `--no-simd` 표기를 써요.
 - macOS 설치 경로를 바꿔도 번들 이름은 `TildaZ-dev.app` / `TildaZ.app` 중 선택한 종류와 같아야 해요.
-- `ReleaseFast`는 최적화 수준이에요. dev도 ReleaseFast로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
+- `fast`는 최적화 수준이에요. dev도 `fast`로 빌드하며, 앱 신원은 `-Drelease`가 정해요.
 
 **빌드는 기본 dev예요. 릴리즈만 `-Drelease=true`를 명시해요 (기본값 `false`)** ([#654](https://github.com/ensky0/tildaz/issues/654)).
 `config_N.toml` · 로그 · lock · 소켓 · desktop 항목 · autostart · 전역 단축키 등록 ·
@@ -2887,7 +2913,7 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   **셸 로그의 접두어로 어느 판이 낸 줄인지 갈라요** — 두 확장 다 `LOG_TAG` (`[tildaz]` · `[tildaz-dev]`) 를 써요.
   처음엔 리터럴 `[tildaz]` 여서 dev 확장의 줄이 릴리즈 것으로 읽혔어요 (2026-09-21 사용자 결정으로 고쳤어요).
 
-**SIMD 정책 (#19):** 공식 Linux · macOS · Windows ReleaseFast와 Windows
+**SIMD 정책 (#19):** 공식 Linux · macOS · Windows `fast` 빌드와 Windows
 `dist/windows/build.ps1` 기본 빌드는 SIMD를 활성화해요. 일반 Debug와 `zig build check`는
 C++ toolchain/SDK를 모든 cross target에 요구하지 않도록 기본 false를 유지해요. scalar 비교
 진단은 `-Dsimd=false` 또는 `dist/windows/build.ps1 --no-simd`를 사용해요. macOS package는
@@ -2901,9 +2927,9 @@ Ghostty는 target query의 ABI가 null이면 [내부 target을 MSVC로
 `preserveResolvedWindowsAbi`가 이미 resolve된 ABI를 dependency query에도 명시해요.
 명시적으로 요청한 ABI는 건드리지 않아요.
 
-**캐시 두 종류와 `zig-pkg/` — 헷갈리지 않기.** Zig 0.16 은 빌드에 쓰는 것을 세 곳에 둬요. (1) **로컬 캐시** = 빌드 산출물 · 중간물. `--cache-dir` 로 지정하고 (위 명령의 `C:/ziglang/tildaz-cache`), 기본은 build root 의 `.zig-cache/` 예요. (2) **`zig-pkg/`** = 받아온 의존성을 **푼 트리**. build root (`build.zig` 옆) 에 생기고, `.gitignore` 가 막아요 (#451). 직접 의존성은 `ghostty` · `toml` 이고, ghostty 가 끌어오는 패키지도 여기 풀려요. (3) **글로벌 캐시** = 받은 패키지를 다시 압축한 `p/<hash>.tar.gz`. 다음에 네트워크 없이 다시 풀려고 둬요. `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고, 기본은 Windows `%LocalAppData%\zig` · Linux `~/.cache/zig` 예요. **0.15 까지는 의존성을 (3) 의 `p/<hash>/` 에 바로 풀었어요** — [Zig 0.16 릴리즈 노트](https://ziglang.org/download/0.16.0/release-notes.html)의 "Fetch Packages Into Project-Local Directory": *"Instead of being fetched into $GLOBAL_ZIG_CACHE/p/$HASH, package dependencies are now fetched into a "zig-pkg" directory relative to the build root"*. 그래서 의존성 tarball 을 푸는 문제 (아래 심볼릭 링크 · libxml2) 는 이제 `zig-pkg/` 에서 일어나요. 셋은 **별개라** `--cache-dir` 만 바꿔도 `zig-pkg/` 와 글로벌 캐시는 그대로예요.
+**캐시 두 종류와 `zig-pkg/` — 헷갈리지 않기.** Zig 0.16 부터 빌드에 쓰는 것을 세 곳에 둬요. (1) **로컬 캐시** = 빌드 산출물 · 중간물. `--cache-dir` 로 지정하고 (위 명령의 `C:/ziglang/tildaz-cache`), 기본은 build root 의 `.zig-cache/` 예요. (2) **`zig-pkg/`** = 받아온 의존성을 **푼 트리**. build root (`build.zig` 옆) 에 생기고, `.gitignore` 가 막아요 (#451). 직접 의존성은 `ghostty` · `toml` 이고, ghostty 가 끌어오는 패키지도 여기 풀려요. (3) **글로벌 캐시** = 받은 패키지를 다시 압축한 `p/<hash>.tar.gz`. 다음에 네트워크 없이 다시 풀려고 둬요. `--global-cache-dir` 또는 `ZIG_GLOBAL_CACHE_DIR` 로 지정하고, 기본은 Windows `%LocalAppData%\zig` · Linux `~/.cache/zig` 예요. **0.15 까지는 의존성을 (3) 의 `p/<hash>/` 에 바로 풀었어요** — [Zig 0.16 릴리즈 노트](https://ziglang.org/download/0.16.0/release-notes.html)의 "Fetch Packages Into Project-Local Directory": *"Instead of being fetched into $GLOBAL_ZIG_CACHE/p/$HASH, package dependencies are now fetched into a "zig-pkg" directory relative to the build root"*. 그래서 의존성 tarball 을 푸는 문제 (아래 심볼릭 링크 · libxml2) 는 이제 `zig-pkg/` 에서 일어나요. 셋은 **별개라** `--cache-dir` 만 바꿔도 `zig-pkg/` 와 글로벌 캐시는 그대로예요.
 
-**새 컴퓨터 첫 빌드 — Windows 는 개발자 모드 필수.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.16.0**) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, **Windows 에서는 먼저 개발자 모드 (Developer Mode) 를 켜야 해요**:
+**새 컴퓨터 첫 빌드 — Windows 는 개발자 모드 필수.** zig 는 `build.zig.zon` 의 `minimum_zig_version` (현재 **0.17.0**, [#820](https://github.com/ensky0/tildaz/issues/820)) 이상이 필요해요. 첫 빌드는 의존성을 자동 fetch 하는데, **Windows 에서는 먼저 개발자 모드 (Developer Mode) 를 켜야 해요**:
 
 - 켜는 법 (Windows 11): **설정 → 시스템 → 개발자용 (고급) → 개발자 모드 ON**. 재부팅 없이 바로 적용.
 - 이유: ghostty tarball 이 upstream [c09ade22](https://github.com/ghostty-org/ghostty/commit/c09ade22) (2026-05-29) 부터 `CLAUDE.md → AGENTS.md` **심볼릭 링크**를 담고 있어요. 우리 pin 은 [ad692f1](https://github.com/ghostty-org/ghostty/commit/ad692f1e858b8c6475aec4539934526a8d783e6d) (#266, 2026-07-08) 부터 해당. 심볼릭 링크 생성 권한이 없으면 fetch 가 `error: unable to unpack tarball ... unable to create symlink from 'CLAUDE.md' to 'AGENTS.md': AccessDenied` 로 실패해요 (Windows 실기에서 실측, 개발자 모드 ON 으로 해결 확인).
@@ -2953,7 +2979,7 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들어요.
 | | 지금 쓰는 라벨 |
 |---|---|
 | Linux | `ubuntu-26.04` (ARM 은 `ubuntu-26.04-arm`) |
-| macOS | `macos-26` — **`xcode-27` 로 가지 않아요** (SDK 27 은 위 `# macOS — zig 번들 float.h …` 절의 결함에 걸려요) |
+| macOS | `macos-26` — **`xcode-27` 로 가지 않았어요** (0.16 에서는 SDK 27 이 위 `# macOS — zig 번들 float.h …` 절의 결함에 걸렸어요. 0.17 부터는 그 이유가 없어요 — #820) |
 | Windows | `windows-2025-vs2026` — VS 판을 라벨에 명시해 기본값이 또 움직여도 안 흔들려요 |
 
 GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 만료돼요. 올릴 때는 `pr-verify`
@@ -3049,6 +3075,10 @@ ghostty 의존성을 갱신하려면 `dist/update-ghostty.sh`를 실행해서 up
 
 - **ghostty 를 부르는 자리는 `ghosttyDependency` 하나만 써요.** `b.lazyDependency("ghostty", …)` 를 직접 부르면 그 빌드에는
   패치가 빠질 수 있어요.
+- **설정 단계의 부작용은 `b.graph.poisonCache()` 로 알려요** ([#820](https://github.com/ensky0/tildaz/issues/820)). Zig 0.17 은
+  `build.zig` 결과를 캐시해 같은 설정이면 `build.zig` 를 건너뛰어요. 그래서 `build.zig` 가 설정 때 바깥을 보거나 고치면
+  (패치 적용 · `build/git_version.zig` 의 `git` 조회) 캐시가 낡은 값을 써요. 두 자리가 그래서 `poisonCache` 를 불러요.
+  새로 그런 일을 넣으면 같이 불러요 — `runFallible` · `runAllowFail` 은 스스로 부르지 않아요 (`findProgram` 은 불러요).
 - **`zig-pkg/` 를 손으로 고치지 않아요.** 패치는 원본을 복사한 곳에서 고쳐 만들어요. 2026-10-20 에 에이전트가 `zig-pkg/` 를
   직접 고치려던 명령이 자동 권한 판정에서 막혔어요.
 - **pin 을 올리면 패치가 안 맞을 수 있어요.** 그러면 빌드가 패치 · 파일 이름과 함께 멈춰요. 그 패치를 새 소스에 맞게 다시

@@ -19,4 +19,7 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- Building from source now requires Zig 0.17.0.
+  ([#820](https://github.com/ensky0/tildaz/issues/820))
+
 ## Body candidates

@@ -46,7 +46,16 @@ pub fn copyMessage(dest: []u8, source: []const u8) usize {
     while (len < source.len and len < dest.len) {
         const seq_len: usize = std.unicode.utf8ByteSequenceLength(source[len]) catch break;
         if (seq_len > source.len - len or seq_len > dest.len - len) break;
-        _ = std.unicode.utf8Decode(source[len..][0..seq_len]) catch break;
+        // #820 — `utf8Decode` (길이를 맞춰 넘겨야 하는 API) 는 0.17 에서 deprecated. 길이는 위에서
+        // 확인했으니 그 길이의 함수를 고른다.
+        const seq = source[len..];
+        switch (seq_len) {
+            1 => {},
+            2 => _ = std.unicode.utf8Decode2(seq[0..2].*) catch break,
+            3 => _ = std.unicode.utf8Decode3(seq[0..3].*) catch break,
+            4 => _ = std.unicode.utf8Decode4(seq[0..4].*) catch break,
+            else => unreachable,
+        }
         len += seq_len;
     }
     @memcpy(dest[0..len], source[0..len]);

@@ -15,7 +15,7 @@ const posix = std.posix;
 const log = @import("log.zig");
 
 pub fn openInDefaultApp(rt: Runtime, allocator: std.mem.Allocator, path: []const u8) void {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         // Windows 는 `ShellExecuteW` 라 `Io` 를 안 탄다.
         .windows => openWindows(allocator, path),
         .macos => openSpawn(rt, "/usr/bin/open", path),
@@ -24,7 +24,7 @@ pub fn openInDefaultApp(rt: Runtime, allocator: std.mem.Allocator, path: []const
 }
 
 fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
     const wpath = std.unicode.utf8ToUtf16LeAllocZ(allocator, path) catch return;
     defer allocator.free(wpath);
     const verb_w = std.unicode.utf8ToUtf16LeStringLiteral("open");
@@ -49,7 +49,7 @@ fn openWindows(allocator: std.mem.Allocator, path: []const u8) void {
     if (!hasUriScheme(path) and !hasOpenAssociation(allocator, path)) {
         log.appendLine("open", "no file association for '{s}'; opening with notepad instead", .{extensionOf(path)});
         // 경로에 공백이 있어도 한 인자로 가도록 따옴표로 감싼다.
-        const params = std.fmt.allocPrint(allocator, "\"{s}\"", .{path}) catch return;
+        const params = allocator.print("\"{s}\"", .{path}) catch return;
         defer allocator.free(params);
         const wparams = std.unicode.utf8ToUtf16LeAllocZ(allocator, params) catch return;
         defer allocator.free(wparams);
@@ -183,9 +183,9 @@ extern "advapi32" fn RegGetValueW(
 
 /// 경로의 확장자 (`.json` 처럼 점 포함). 없으면 빈 문자열.
 fn extensionOf(path: []const u8) []const u8 {
-    const name_start = if (std.mem.lastIndexOfAny(u8, path, "\\/")) |i| i + 1 else 0;
+    const name_start = if (std.mem.findLastAny(u8, path, "\\/")) |i| i + 1 else 0;
     const name = path[name_start..];
-    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
+    const dot = std.mem.findScalarLast(u8, name, '.') orelse return "";
     if (dot == 0) return ""; // `.gitignore` 같은 이름은 확장자가 아니다
     return name[dot..];
 }
@@ -203,7 +203,7 @@ fn extensionOf(path: []const u8) []const u8 {
 /// (터미널에 출력된 임의 바이트가 입력이다), 여기는 *파일 연결을 조회할 대상인지* 를 가른다.
 /// scheme 화이트리스트를 두지 않는 것도 같다: 실제로 열리는지는 OS 의 handler 등록이 정한다.
 fn hasUriScheme(path: []const u8) bool {
-    const colon = std.mem.indexOfScalar(u8, path, ':') orelse return false;
+    const colon = std.mem.findScalar(u8, path, ':') orelse return false;
     if (colon < 2) return false; // 빈 scheme 과 드라이브 문자 (`C:`)
     if (!std.ascii.isAlphabetic(path[0])) return false;
     for (path[1..colon]) |c| {
@@ -255,8 +255,7 @@ fn hasOpenAssociation(allocator: std.mem.Allocator, path: []const u8) bool {
     var buf: [512]u16 = undefined;
 
     // ① 사용자가 고른 기본 앱. Store 앱 (`AppX…`) 도 여기엔 ProgId 로 남는다.
-    const user_choice = std.fmt.allocPrint(
-        allocator,
+    const user_choice = allocator.print(
         "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{s}\\UserChoice",
         .{ext},
     ) catch return true;
@@ -268,7 +267,7 @@ fn hasOpenAssociation(allocator: std.mem.Allocator, path: []const u8) bool {
     const prog_id_w = regReadString(allocator, HKEY_CLASSES_ROOT, ext, null, &buf) orelse return false;
     const prog_id = std.unicode.utf16LeToUtf8Alloc(allocator, prog_id_w) catch return true;
     defer allocator.free(prog_id);
-    const command_key = std.fmt.allocPrint(allocator, "{s}\\shell\\open\\command", .{prog_id}) catch return true;
+    const command_key = allocator.print("{s}\\shell\\open\\command", .{prog_id}) catch return true;
     defer allocator.free(command_key);
 
     var command_buf: [512]u16 = undefined;
@@ -282,7 +281,7 @@ fn hasOpenAssociation(allocator: std.mem.Allocator, path: []const u8) bool {
 // (실제 실행은 OS 상태에 달려 있어 test 대상이 아니다).
 
 test "systemFilePath — 시스템 디렉터리 아래의 절대 경로를 만든다" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
     var buf: [max_notepad_path]u16 = undefined;
     const p = systemFilePath(&buf, "notepad.exe") orelse return error.TestUnexpectedResult;
 
@@ -292,12 +291,12 @@ test "systemFilePath — 시스템 디렉터리 아래의 절대 경로를 만�
 
     // 이름만이 아니라 **절대 경로** 여야 한다 — 그것이 이 함수의 존재 이유다.
     try std.testing.expect(std.mem.endsWith(u8, got, "\\notepad.exe"));
-    try std.testing.expect(std.mem.indexOf(u8, got, ":\\") != null);
+    try std.testing.expect(std.mem.find(u8, got, ":\\") != null);
     try std.testing.expect(got.len > "notepad.exe".len);
 }
 
 test "systemFilePath — 버퍼가 모자라면 null (잘린 경로를 실행하지 않는다)" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
     var tiny: [8]u16 = undefined;
     try std.testing.expect(systemFilePath(&tiny, "notepad.exe") == null);
 }

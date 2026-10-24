@@ -43,7 +43,7 @@ pub fn config() *const config_mod.Config {
     return &g_config.?;
 }
 
-pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.lang.StackTrace) noreturn {
     log.logPanic(msg, addr);
     // zig default panic — stderr 에 자동으로 file:line + backtrace dump.
     // 시연 시 `./zig-out/bin/tildaz 2>&1 | tee /tmp/run.log` 처럼 stderr 도
@@ -110,29 +110,27 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
+    // #821 — 본체 할당자 (`Runtime.gpa` — std 시작 코드가 모드에 맞게 고른 `init.gpa`).
+    const alloc = rt.gpa;
+
     if (rt.envHas("TILDAZ_LINUX_PTY_SMOKE")) {
-        var gpa: std.heap.DebugAllocator(.{}) = .init;
-        defer _ = gpa.deinit();
-        try runPtySmoke(rt, gpa.allocator());
+        try runPtySmoke(rt, alloc);
         return;
     }
-
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
 
     // L13-α — `Config.load` (cross-platform). 첫 실행 시 XDG config 아래
     // `tildaz/config_N.json` template 생성, 이후 실행은 disk 값 그대로. shell_resolved
     // 는 macOS / Windows host 와 같은 의미 — 첫 실행 시 disk JSON 에 명시될
     // shell path 결정.
-    const shell_resolved = resolveShell(rt, gpa.allocator());
-    g_config = config_mod.Config.load(rt, gpa.allocator(), shell_resolved);
-    defer if (g_config) |*c| c.deinit(gpa.allocator());
+    const shell_resolved = resolveShell(rt, alloc);
+    g_config = config_mod.Config.load(rt, alloc, shell_resolved);
+    defer if (g_config) |*c| c.deinit(alloc);
     const cfg = &g_config.?;
     log.logConfigLoaded(cfg.*);
     // #758 — 없는 폰트는 시작을 막지 않는다. 주 폰트는 fontconfig 의 `monospace` 로 바꾸고 대체
     // 폰트는 뺀다 (`Config.resolveFonts` — 세 OS 공통 규칙). **렌더러가 폰트를 만들기 전**
     // (`Client.init`) 이어야 해서 여기서 부른다.
-    cfg.resolveFonts(gpa.allocator(), gpa.allocator(), linuxFontAvailability);
+    cfg.resolveFonts(alloc, alloc, linuxFontAvailability);
     // #758 — `monospace` 마저 못 쓰면 폰트가 하나도 없는 기기다 (fontconfig 의 `monospace` 는 폰트가
     // 하나라도 있으면 무언가로 풀린다). Linux 는 다이얼로그 글자도 앱이 직접 그려서 안내를 화면에
     // 그릴 수 없고, 렌더러를 만들면 그 자리에서 `NoFaceLoaded` 로 실패해 원인 없는 문구만 남는다
@@ -147,12 +145,12 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // deb/rpm/pkg/AppImage resources are installed below <prefix>/share/tildaz.
     // GNOME · Cinnamon은 Shell extension이 drop-down lifecycle과 hotkey를 함께
     // 맡는다 (#676). 처음 준비한 확장만 활성화하고, 사용자가 꺼 둔 상태는 보존한다.
-    const shell_extension_status = gsettings_hotkey.prepareShellExtension(rt, gpa.allocator());
+    const shell_extension_status = gsettings_hotkey.prepareShellExtension(rt, alloc);
     // #758 — 확장이 config 를 직접 읽는 데스크톱이면, 이 worker 가 그 내용을 무시했는지를 남긴다
     // (`recordIgnoredConfig` 주석). hotkey 상태를 기다리기 전이어야 한다.
     if (shell_extension_status != .not_applicable) {
         if (instance_context.workerIndex()) |index| {
-            gsettings_hotkey.recordIgnoredConfig(rt, gpa.allocator(), index, cfg.ignored_content_sha256);
+            gsettings_hotkey.recordIgnoredConfig(rt, alloc, index, cfg.ignored_content_sha256);
         }
     }
 
@@ -170,7 +168,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
         else => {},
     }
 
-    try wayland.runBaselineWindow(rt, gpa.allocator(), &g_config.?, opts, shell_extension_status);
+    try wayland.runBaselineWindow(rt, alloc, &g_config.?, opts, shell_extension_status);
 }
 
 fn runPtySmoke(rt: Runtime, allocator: std.mem.Allocator) !void {

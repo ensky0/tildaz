@@ -112,7 +112,7 @@ platform it:
    SHAs (no rolling branch/tag URLs).
 3. Prefetches the top-level release dependency graph
    (`zig build -Dsimd=true --fetch`).
-4. Builds ReleaseFast artifacts with SIMD enabled, resolving selected nested
+4. Builds `fast`-optimized artifacts with SIMD enabled, resolving selected nested
    lazy dependencies as needed, and packages them in the platform's supported
    formats.
 5. Uploads each artifact and its SHA256 sidecar as a workflow artifact.

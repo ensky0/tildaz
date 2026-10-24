@@ -91,7 +91,7 @@ if [[ -f "$REPO_ROOT/build.zig" && -f "$REPO_ROOT/src/main.zig" ]]; then
     if [[ "$IS_DEV" -eq 0 ]]; then RELEASE_VALUE=true; BUILD_KIND=release; fi
     # symlink 대상이 다음 릴리즈 빌드로 바뀌지 않게 설치용 산출물을 판별로 나눈다.
     INSTALL_PREFIX="$REPO_ROOT/zig-out/install-$BUILD_KIND"
-    (cd "$REPO_ROOT" && zig build "-Drelease=$RELEASE_VALUE" -Doptimize=ReleaseFast -Dsimd=true -p "$INSTALL_PREFIX")
+    (cd "$REPO_ROOT" && zig build "-Drelease=$RELEASE_VALUE" -Doptimize=fast -Dsimd=true -p "$INSTALL_PREFIX")
     TILDAZ_EXE="$INSTALL_PREFIX/bin/tildaz"
 else
     if [[ "$IS_DEV" -eq 1 ]]; then

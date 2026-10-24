@@ -28,6 +28,7 @@
 //! 덕분에 `appendLine` 계열 297 자리가 시그니처를 안 바꾼다.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const builtin = @import("builtin");
 
 /// `Io` 와 환경변수 묶음. 복사가 싸다 (`Io` 는 vtable + userdata 포인터 쌍,
@@ -35,11 +36,17 @@ const builtin = @import("builtin");
 pub const Runtime = struct {
     io: std.Io,
     environ: std.process.Environ,
+    /// #821 — 앱의 본체 할당자. std 시작 코드가 모드에 맞게 고른 `init.gpa` 다 (zig 0.17
+    /// `lib/std/start.zig`): `debug` · `safe` 는 `SafeAllocator` (`main` 이 끝나면 누수를 보고),
+    /// `fast` · `small` 은 libc 가 있으면 `c_allocator` (Linux · macOS), 없으면 `smp_allocator`
+    /// (Windows). host · 다이얼로그 · Windows 창이 모두 `rt` 를 받으므로 여기 둔다. 예전에는
+    /// host 마다 `DebugAllocator` 를 따로 만들었다 (0.17 에서 deprecated).
+    gpa: std.mem.Allocator,
 
     /// 진입점에서 한 번 만든다. `std.process.Init` 은 Zig 0.16 이 `main` 의 첫 인자로
     /// 넘겨주는 묶음이다 (릴리즈 노트 *"Juicy Main"*).
     pub fn fromInit(init: std.process.Init) Runtime {
-        return .{ .io = init.io, .environ = init.minimal.environ };
+        return .{ .io = init.io, .environ = init.minimal.environ, .gpa = init.gpa };
     }
 
     /// `std.process.getEnvVarOwned` 자리. 호출부가 `rt.environ` 을 매번 꺼내지 않게 감싼다.
@@ -62,7 +69,7 @@ pub const Runtime = struct {
     ///
     /// 같은 성질 때문에 `envHas` 는 아래처럼 `containsConstant` 를 쓴다.
     pub fn envAlloc(rt: Runtime, allocator: std.mem.Allocator, key: []const u8) ![]u8 {
-        if (builtin.os.tag != .windows) {
+        if (builtin.target.os.tag != .windows) {
             const value = rt.environ.getPosix(key) orelse return error.EnvironmentVariableMissing;
             return allocator.dupe(u8, value);
         }
@@ -141,11 +148,11 @@ pub const Timer = struct {
 test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
     // Windows 는 `Block` 이 global 아니면 empty 뿐이라 (`GlobalBlock`) 합성 환경을 만들 수
     // 없다. 그쪽 경로는 `zig build check` 의 컴파일과 실기 검증이 덮는다.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     // 환경 블록을 일부러 크게 만든다 — 예전 구현 (`Environ.getAlloc` → `createMap`) 은 값
     // 하나를 얻으려고 **이 전체**를 복사했다. 그래서 아래 64 바이트 버퍼로는 실패했다.
-    const filler = "PAD=" ++ ("x" ** 512);
+    const filler = "PAD=" ++ test_text.repeat("x", 512);
     const entries = [_:null]?[*:0]const u8{
         "TILDAZ_519=ok",
         filler,
@@ -157,7 +164,7 @@ test "#519 envAlloc 은 환경 전체가 아니라 값 하나만 할당한다" {
         filler,
         filler,
     };
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &entries } }, .gpa = std.testing.allocator };
 
     // 값이 2 바이트니 버퍼도 그만큼만 있으면 된다. 이 크기가 통과의 요점이다 — 환경 블록
     // (약 4.6 KB) 에 비례하지 않는다는 뜻이다.

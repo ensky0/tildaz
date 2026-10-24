@@ -316,7 +316,7 @@ pub const MetalRenderer = struct {
     /// `endFrame` 이 atlas 를 올린 뒤 한다 — 그래서 **이번 프레임에 담은 글리프가 같은 프레임에
     /// 보인다** (Windows · Linux 와 같은 시점). 전에는 encoder 를 연 채 셀 루프를 돌아 blit 을
     /// 끼울 수 없었고, 프레임 시작에 지난 프레임 것을 올리는 2-frame 구조였다.
-    draw_ranges: std.ArrayListUnmanaged(DrawRange) = .empty,
+    draw_ranges: std.ArrayList(DrawRange) = .empty,
     /// 열려 있는 구간의 시작 offset (null = 안 열림). `openRange` / `closeRange`.
     open_bg_start: ?u32 = null,
     /// text 구간은 **한 번에 하나만** 열린다 — 본문은 `drawPane` 안에서 닫히고 탭 · 메뉴는

@@ -17,6 +17,25 @@ fn preserveResolvedWindowsAbi(target: std.Build.ResolvedTarget) std.Build.Resolv
     return explicit_target;
 }
 
+// macOS 에서는 우리 코드도 ghostty 와 같은 일반 CPU 로 컴파일한다 (#820).
+// ghostty 는 Darwin host 에서 macOS 로 빌드하면 자기 모듈을 늘 일반 target 으로 바꾼다
+// (`src/build/Config.zig` 의 `genericMacOSTarget` — CPU 는 baseline). 우리 root 가 native
+// 로 남으면 `std` 도 root 를 따라 native 가 되고, LLVM 은 CPU 기능이 더 많은 함수를 적은
+// 함수 안에 인라인하지 않는다. 그래서 ghostty 가 부르는 `std.debug.assert` 같은 작은 함수가
+// 호출로 남고, `assert(!containsContext(...))` 의 해시 계산이 fast 빌드에서도 돈다.
+// Zig 0.17 (LLVM 22) 이 M5 를 알게 되며 드러났다 — 그 기기에서 parser cjk 가 15 % 느렸다.
+// 릴리즈 (`dist/macos/package.sh`) 는 `-Dtarget` 을 명시해 이미 baseline 이라, 이렇게 하면
+// 로컬 빌드가 릴리즈와 같아진다. 조건은 ghostty 와 같게 둔다 — 그쪽이 강제하지 않는 cross
+// 빌드는 건드리지 않는다. 인라인을 막는 것은 CPU 뿐이라 OS 최소 판은 그대로 둔다.
+fn matchGhosttyMacosCpu(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
+    if (target.result.os.tag != .macos or !@import("builtin").target.os.tag.isDarwin()) return target;
+    var query = target.query;
+    query.cpu_model = .baseline;
+    query.cpu_features_add = .empty;
+    query.cpu_features_sub = .empty;
+    return b.resolveTargetQuery(query);
+}
+
 /// ghostty-vt 에서 끄는 기능 (#554). 네 곳의 의존성 선언이 **같은 값을 써야** 하므로
 /// 상수 하나로 둔다 — 인라인으로 네 번 적으면 어긋난다 (#534 에서 실제로 겪었다).
 ///
@@ -40,8 +59,8 @@ const vt_features_disabled = "-kitty-graphics,-glyph-protocol";
 
 // 빌드:
 //   zig build                       -- 기본 빌드 (Debug, SIMD 비활성, #200)
-//   zig build -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 최적화 + SIMD (#19)
-//   zig build package -Doptimize=ReleaseFast -Dsimd=true -- 릴리즈 package + SHA256
+//   zig build -Doptimize=fast -Dsimd=true -- 릴리즈 최적화 + SIMD (#19)
+//   zig build package -Doptimize=fast -Dsimd=true -- 릴리즈 package + SHA256
 //   zig build check                 -- 6-target compile-only verify (#201)
 //
 /// #520 후속 (#583 B8) — **Shell extension 리소스를 바이너리에 embed 한다.**
@@ -73,7 +92,10 @@ fn addShellExtensionResources(b: *std.Build, mod: *std.Build.Module) void {
 /// 실제 빌드 때 컴파일된다. ghostty 의 `build.zig` 는 그보다 먼저 돌아서 패치로 바꿀 수 없다 —
 /// 패치는 컴파일되는 소스 파일만 고친다.
 fn ghosttyDependency(b: *std.Build, args: anytype) ?*std.Build.Dependency {
-    const dep = b.lazyDependency("ghostty", args) orelse return null;
+    const dep = b.dependencyLazy("ghostty", args) catch |err| switch (err) {
+        // 아직 안 받은 lazy 의존성 — 빌드 실행기가 받은 뒤 설정 단계를 다시 돌린다.
+        error.LazyDependencyNeeded => return null,
+    };
     applyGhosttyPatches(b, dep);
     return dep;
 }
@@ -85,15 +107,25 @@ fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
     if (ghostty_patches_checked) return;
     ghostty_patches_checked = true;
 
+    // #820 — Zig 0.17 은 build.zig 의 설정 결과를 캐시하고, 같은 설정이면 build.zig 를 건너뛴다.
+    // 캐시의 입력은 build.zig 소스와 각 패키지의 build.zig.zon 이라 (`compiler/Maker.zig`),
+    // 패치 파일 (`vendor/ghostty/patches/`) 이나 패치가 고친 ghostty 소스가 바뀌어도 이 함수가
+    // 안 돈다. 얹힌 파일을 원본으로 되돌리고 빌드하니 패치 없는 ghostty 가 조용히 컴파일됐다
+    // (macOS 실측). 그래서 캐시를 쓰지 않게 알린다.
+    b.graph.poisonCache();
+
     const io = b.graph.io;
     const patches_path = "vendor/ghostty/patches";
-    var patches = b.build_root.handle.openDir(io, patches_path, .{ .iterate = true }) catch |err|
+    var patches = b.root.openDir(io, patches_path, .{ .iterate = true }) catch |err|
         std.debug.panic("cannot open {s}: {s}", .{ patches_path, @errorName(err) });
     defer patches.close(io);
+    var ghostty_root = dep.builder.root.openDir(io, ".", .{}) catch |err|
+        std.debug.panic("cannot open the ghostty source: {s}", .{@errorName(err)});
+    defer ghostty_root.close(io);
 
     var applied: std.ArrayList([]const u8) = .empty;
     var diag: vendor_patch.Diagnostic = .{};
-    vendor_patch.ensureApplied(io, b.allocator, dep.builder.build_root.handle, patches, &applied, &diag) catch |err|
+    vendor_patch.ensureApplied(io, b.allocator, ghostty_root, patches, &applied, &diag) catch |err|
         std.debug.panic(
             \\ghostty patch {s} does not apply to {s} ({s}).
             \\  The pinned ghostty source no longer matches the patch, or the file was edited.
@@ -105,7 +137,7 @@ fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
 }
 
 pub fn build(b: *std.Build) void {
-    const target = preserveResolvedWindowsAbi(b.standardTargetOptions(.{}));
+    const target = matchGhosttyMacosCpu(b, preserveResolvedWindowsAbi(b.standardTargetOptions(.{})));
     const target_os = target.result.os.tag;
     const is_windows_target = target_os == .windows;
     const is_linux_target = target_os == .linux;
@@ -122,16 +154,16 @@ pub fn build(b: *std.Build) void {
         "macos-sign-identity",
         "macOS codesign identity. default `-` (ad-hoc). stable self-signed cert 사용 시 그 이름 (예: \"TildazLocal\").",
     ) orelse "-";
-    // #200 — default 가 ReleaseFast 면 runtime safety check 모두 비활성
+    // #200 — default 가 `fast` 면 runtime safety check 모두 비활성
     // (overflow / null deref / array bounds 등 silently 통과) → 개발 사이클의
     // 버그가 production 까지 새어 나감. Debug 가 default — 안전성 + 진단 가능성
     // 우선. 빌드 시간 손해는 dev 경험에서 회복. 릴리즈는 GitHub Actions가
-    // `-Doptimize=ReleaseFast`를 명시한다.
+    // `-Doptimize=fast`를 명시한다.
     const optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.lang.Optimize,
         "optimize",
-        "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택 (default: Debug)",
-    ) orelse .Debug;
+        "성능, 안전성, 바이너리 크기 중 무엇을 우선할지 선택 (default: debug)",
+    ) orelse .debug;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -155,7 +187,7 @@ pub fn build(b: *std.Build) void {
     // v0.9.3 이 떠 v0.9.0 스키마 config 로 아무 안내 없이 죽었다.
     //
     // 옵션을 생략하면 dev다. 릴리즈 CI와 패키징만 `-Drelease=true`를 명시한다.
-    // 최적화 수준과 앱 신원은 별개다. ReleaseFast도 이 옵션 없이는 dev다.
+    // 최적화 수준과 앱 신원은 별개다. `fast` 도 이 옵션 없이는 dev다.
     const release = b.option(
         bool,
         "release",
@@ -166,8 +198,9 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addOptions("build_options", build_opts);
 
-    // #19 — 현재 Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
-    // compile/link와 representative corpus 이득을 검증했다. 공식 ReleaseFast
+    // #19 — Ghostty pin + Zig 0.16.0에서 Linux · macOS · Windows native
+    // compile/link와 representative corpus 이득을 검증했다. #820 (Zig 0.17.0)
+    // 에서 SIMD `fast` 빌드를 세 OS 에서 다시 링크한다. 공식 `fast`
     // pipeline은 `-Dsimd=true`를 명시한다. 기본 false는 Debug 개발 빌드와
     // 6-target cross-host check가 C++ toolchain/SDK까지 요구하지 않게 보존한다.
     const simd = b.option(bool, "simd", "ghostty VT stream SIMD 가속 활성화 (default: false; official release callers pass true)") orelse false;
@@ -283,17 +316,17 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     if (is_windows_target) {
-        exe.subsystem = .Windows;
+        exe.subsystem = .windows;
     }
 
     if (is_linux_target) {
         // Zig 0.15 는 x86_64-linux Debug 에서 self-hosted backend + self-hosted ELF
         // 링커를 기본 쓰는데, 이 링커가 최신 GNU toolchain(예: GCC 16)이 crt1.o 에
         // 넣는 `.sframe` 섹션의 R_X86_64_PC64 relocation 을 처리하지 못해 링크가
-        // fatal 로 실패한다. ReleaseSafe/Fast 는 기본 LLVM backend + LLD 라 정상인데
+        // fatal 로 실패한다. `safe` · `fast` 는 기본 LLVM backend + LLD 라 정상인데
         // (그 차이가 원인 단서였다), self-hosted backend + LLD 조합도 불안정해서
         // (link command terminated unexpectedly) backend·linker 를 모두 LLVM/LLD 로
-        // 맞춘다 = ReleaseSafe 와 동일 toolchain. optimize 모드(Debug)는 그대로 둬
+        // 맞춘다 = `safe` 와 동일 toolchain. optimize 모드(`debug`)는 그대로 둬
         // 디버그 정보/safety check 는 유지된다. (Debug codegen 이 self-hosted 보다
         // 느려지는 게 유일한 trade-off.)
         exe.use_llvm = true;
@@ -341,14 +374,19 @@ pub fn build(b: *std.Build) void {
         // codesign 대상은 install prefix 기준 (`zig build -p <dir>` 으로 prefix
         // 바꿔도 그 dir 의 .app 을 서명). 하드코딩된 `zig-out/TildaZ.app` 은 #133
         // universal 작업 중 두 prefix 로 install 할 때 mismatch 원인.
-        const app_path = b.fmt("{s}/{s}", .{ b.install_path, macosBundleDir(dev) });
+        //
+        // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.install_path` 가 없어졌다).
+        // 경로는 실행할 때 정해지는 `install_prefix` 기준 LazyPath 로 넘긴다.
         const sign = b.addSystemCommand(&.{
             "codesign",
             "--force",
             "--sign",
             macos_sign_identity,
-            app_path,
         });
+        sign.addDirectoryArg2(b.graph.path(.install_prefix, macosBundleDir(dev)), .{});
+        // 번들 내용이 같아도 매번 서명한다. 설치가 바이너리를 다시 쓰면 서명이 떨어지므로,
+        // 캐시로 건너뛰면 서명 없는 번들이 남는다.
+        sign.has_side_effects = true;
         sign.step.dependOn(&install_macos_exe.step);
         sign.step.dependOn(&install_macos_plist.step);
         sign.step.dependOn(&install_macos_icon.step);
@@ -415,7 +453,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "TildaZ 실행");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     run_step.dependOn(&run_cmd.step);
 
     // 테스트 단계 — `main.zig`를 test root로 재사용하면 runtime main의 lazy
@@ -494,9 +532,8 @@ pub fn build(b: *std.Build) void {
             b.path(b.fmt("{s}/OpenConsole.exe", .{arch_dir})),
             b.fmt("{s}/_internal/OpenConsole.exe", .{test_dir}),
         );
-        const test_run = b.addSystemCommand(&.{
-            b.getInstallPath(.{ .custom = test_dir }, exe_tests.out_filename),
-        });
+        // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.getInstallPath` 가 없어졌다).
+        const test_run = b.addRunFile(b.graph.path(.install_prefix, b.fmt("{s}/{s}", .{ test_dir, exe_tests.out_filename })));
         test_run.step.dependOn(&test_install.step);
         test_run.step.dependOn(&test_dll_install.step);
         test_run.step.dependOn(&test_open_console_install.step);
@@ -539,7 +576,7 @@ pub fn build(b: *std.Build) void {
     // `src/stress.zig` 문서 주석과 #371 코멘트에 있다.
     //
     // 측정은 공식 릴리즈와 같은 조합으로 한다:
-    //   zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty
+    //   zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer pty
     const stress_step = b.step("stress", "stress / 처리량 하네스 실행 (#371 · #278)");
     const stress_mod = b.createModule(.{
         .root_source_file = b.path("src/stress.zig"),
@@ -605,7 +642,8 @@ pub fn build(b: *std.Build) void {
     // producer 자식도 `std.process.executablePath` 로 자기 경로를 띄우므로 (`stress.zig` 의
     // `ProducerSession.start`) 자식 역시 같은 디렉토리에서 돈다.
     const stress_install = b.addInstallArtifact(stress_exe, .{});
-    const stress_run = b.addSystemCommand(&.{b.getInstallPath(.bin, stress_exe.out_filename)});
+    // #820 — Zig 0.17 은 설치 경로를 문자열로 주지 않는다 (`b.getInstallPath` 가 없어졌다).
+    const stress_run = b.addRunFile(b.graph.path(.install_bin, stress_exe.out_filename));
     stress_run.step.dependOn(&stress_install.step);
     if (conpty_dll_install) |s| stress_run.step.dependOn(&s.step);
     if (conpty_open_console_install) |s| stress_run.step.dependOn(&s.step);
@@ -614,7 +652,7 @@ pub fn build(b: *std.Build) void {
     // 동시에 stdout 을 그대로 흘려 리포트가 보이게 하고, non-zero exit 을 실패로
     // 만든다 — 잘못된 인자에 usage + exit 2 를 내는 동작이 그대로 유지된다).
     stress_run.stdio = .inherit;
-    if (b.args) |args| stress_run.addArgs(args);
+    stress_run.addPassthruArgs();
     stress_step.dependOn(&stress_run.step);
 
     // 렌더 검증 화면 (#401 · #415 · #416 · #417 · #418 · #771).
@@ -683,16 +721,16 @@ pub fn build(b: *std.Build) void {
             const check_mod = b.createModule(.{
                 .root_source_file = b.path(root.path),
                 .target = check_target,
-                // Debug — safety check 활성. ReleaseFast 와의 codegen 차이로 일부
+                // debug — safety check 활성. `fast` 와의 codegen 차이로 일부
                 // type error 가 안 surface 되는 케이스 회피.
-                .optimize = .Debug,
+                .optimize = .debug,
             });
             addShellExtensionResources(b, check_mod);
             check_mod.addOptions("build_options", build_opts);
             if (ghosttyDependency(b, .{
                 .target = check_target,
                 .simd = simd,
-                .optimize = .Debug,
+                .optimize = .debug,
                 .@"emit-lib-vt" = true,
                 // libxml2 회피 — 위 메인 빌드의 `font-backend` 주석 참고. check 는 linux
                 // 타겟도 도는데, linux 기본 font_backend 는 fontconfig_freetype 이라 더더욱 필요.
@@ -743,13 +781,13 @@ pub fn build(b: *std.Build) void {
             const probe_mod = b.createModule(.{
                 .root_source_file = b.path(root.path),
                 .target = preserveResolvedWindowsAbi(b.resolveTargetQuery(c.query)),
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
             });
             addShellExtensionResources(b, probe_mod);
             if (root.dwrite) probe_mod.addImport("directwrite", b.createModule(.{
                 .root_source_file = b.path("src/font/windows/directwrite.zig"),
                 .target = probe_mod.resolved_target,
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
             }));
             // 도구 모두 libc ABI의 PTY/Win32/DynLib 경로를 직접 쓴다.
             probe_mod.link_libc = true;
@@ -763,8 +801,8 @@ pub fn build(b: *std.Build) void {
 
     // 패키지 단계: 릴리즈용 번들 zip + SHA256 sidecar 생성.
     //
-    //   zig build package -Drelease=true -Doptimize=ReleaseFast -Dsimd=true                          → native Windows arch
-    //   zig build package -Drelease=true -Dtarget=aarch64-windows -Doptimize=ReleaseFast -Dsimd=true → arm64
+    //   zig build package -Drelease=true -Doptimize=fast -Dsimd=true                          → native Windows arch
+    //   zig build package -Drelease=true -Dtarget=aarch64-windows -Doptimize=fast -Dsimd=true → arm64
     //     → 먼저 install 단계로 zig-out/bin/ 에 tildaz.exe + _internal/{conpty.dll,OpenConsole.exe}
     //     → PowerShell dist/windows/package.ps1 -Version <full-version>
     //        (세 PE header에서 x64/arm64를 판정하고 서로 일치하는지 검증)

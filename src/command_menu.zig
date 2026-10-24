@@ -119,16 +119,16 @@ pub fn label(command: Command) []const u8 {
 /// (순수 모듈로 남기려고).
 pub const Hints = struct {
     pub const MAX_LEN = 48;
-    const command_count = @typeInfo(Command).@"enum".fields.len;
+    const command_count = @typeInfo(Command).@"enum".field_names.len;
     /// 마지막 칸은 workarea 전체화면 상태의 Toggle Full Screen — 그 상태에서 누를 것은
     /// 해제 키다 (#334 사용자 결정).
     const workarea_slot = command_count;
 
     buf: [command_count + 1][MAX_LEN]u8 = undefined,
-    len: [command_count + 1]u8 = [_]u8{0} ** (command_count + 1),
+    len: [command_count + 1]u8 = @splat(0),
 
     pub fn setCommand(self: *Hints, command: Command, text: []const u8) void {
-        self.setSlot(@intFromEnum(command), text);
+        self.setSlot(@backingInt(command), text);
     }
 
     pub fn setFullscreenWorkarea(self: *Hints, text: []const u8) void {
@@ -146,7 +146,7 @@ pub const Hints = struct {
     }
 
     pub fn get(self: *const Hints, command: Command, fullscreen_workarea: bool) []const u8 {
-        const slot = if (command == .fullscreen and fullscreen_workarea) workarea_slot else @intFromEnum(command);
+        const slot = if (command == .fullscreen and fullscreen_workarea) workarea_slot else @backingInt(command);
         return self.buf[slot][0..self.len[slot]];
     }
 };
@@ -400,7 +400,7 @@ pub const KeyOutcome = union(enum) {
 /// 갈려, *New Tab* 에서 `↓` 를 누르면 바로 아래 *Close Tab* 을 건너뛰었다. 차례를 여기
 /// 한 곳에서 `entries` 로 만들어 두면 다시 갈릴 수 없다.
 const key_order = blk: {
-    var out: [@typeInfo(Command).@"enum".fields.len]Command = undefined;
+    var out: [@typeInfo(Command).@"enum".field_names.len]Command = undefined;
     var n: usize = 0;
     for (entries) |entry| {
         const command = entry orelse continue;
@@ -566,7 +566,7 @@ test "#329 menu keyboard focus cycles, activates, and consumes unknown keys" {
 test "#712 ↓ · ↑ 는 화면 차례대로 모든 항목을 지나고 구분선을 건너뛴다" {
     // 화면에 그리는 차례 (구분선 제외). 양 끝만 보면 #646 의 갈림을 못 잡는다 — 그 끝은
     // enum 차례와 같았다. 그래서 항목마다 다음 칸을 본다.
-    var shown: [@typeInfo(Command).@"enum".fields.len]Command = undefined;
+    var shown: [@typeInfo(Command).@"enum".field_names.len]Command = undefined;
     var n: usize = 0;
     for (entries) |entry| {
         if (entry) |command| {

@@ -12,6 +12,7 @@
 //! Tip 의 단축키는 실제 `[keys]` 바인딩이다 (#682 — 명령 메뉴 hint 와 같은 표).
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
@@ -38,15 +39,15 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
     const cfg = details.open_config_key;
     const lg = details.open_log_key;
     const tip = if (cfg.len > 0 and lg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_both_format, .{ cfg, lg })
+        try allocator.print(messages.about_tip_both_format, .{ cfg, lg })
     else if (cfg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_config_format, .{cfg})
+        try allocator.print(messages.about_tip_config_format, .{cfg})
     else if (lg.len > 0)
-        try std.fmt.allocPrint(allocator, messages.about_tip_log_format, .{lg})
+        try allocator.print(messages.about_tip_log_format, .{lg})
     else
         try allocator.alloc(u8, 0);
     defer allocator.free(tip);
-    return std.fmt.allocPrint(allocator, messages.about_format, .{
+    return allocator.print(messages.about_format, .{
         details.version,
         details.exe_path,
         details.pid,
@@ -65,14 +66,16 @@ pub fn formatMessageAlloc(allocator: std.mem.Allocator, details: Details) ![]u8 
 /// `hints` — host 가 명령 메뉴용으로 만든 단축키 표 (`config.commandMenuHints`). Tip 이
 /// 메뉴의 Open Config · Open Log 와 같은 글자를 보이게 한다 (#682).
 pub fn showAboutDialog(rt: Runtime, hints: *const command_menu.Hints) void {
-    const allocator = std.heap.page_allocator;
+    // #821 — 본체 할당자 (`Runtime.gpa`). 예전에는 `page_allocator` 를 직접 썼다 —
+    // 할당마다 OS 페이지를 받고, 개발 빌드의 누수 검사 밖이었다.
+    const allocator = rt.gpa;
 
     // #451 — `fs.selfExePathAlloc` ➡️ `std.process.executablePathAlloc` (릴리즈 노트).
     const exe_path_owned = std.process.executablePathAlloc(rt.io, allocator) catch null;
     defer if (exe_path_owned) |path| allocator.free(path);
     const exe_path = exe_path_owned orelse messages.unknown_path_msg;
 
-    const pid: u64 = @intCast(switch (builtin.os.tag) {
+    const pid: u64 = @intCast(switch (builtin.target.os.tag) {
         .windows => getCurrentProcessIdWindows(),
         else => std.c.getpid(),
     });
@@ -112,7 +115,7 @@ pub fn showAboutDialog(rt: Runtime, hints: *const command_menu.Hints) void {
 extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
 
 fn getCurrentProcessIdWindows() u32 {
-    if (builtin.os.tag != .windows) return 0;
+    if (builtin.target.os.tag != .windows) return 0;
     return GetCurrentProcessId();
 }
 
@@ -131,12 +134,12 @@ test "#383 About 첫 줄은 `--version` · 로그와 같은 버전 문자열이�
     defer std.testing.allocator.free(msg);
 
     var expected_buf: [256]u8 = undefined;
-    const expected_first_line = try std.fmt.bufPrint(&expected_buf, "TildaZ v{s}", .{app_version.string});
+    const expected_first_line = try std.mem.print(&expected_buf, "TildaZ v{s}", .{app_version.string});
     try std.testing.expect(std.mem.startsWith(u8, msg, expected_first_line));
 }
 
 test "#314 About formatter preserves content beyond the old 2048-byte limit" {
-    const long_path = "/home/" ++ ("x" ** 2300) ++ "/tildaz";
+    const long_path = "/home/" ++ test_text.repeat("x", 2300) ++ "/tildaz";
     const msg = try formatMessageAlloc(std.testing.allocator, .{
         .version = "test",
         .exe_path = long_path,

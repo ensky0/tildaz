@@ -348,7 +348,7 @@ pub const Keyboard = struct {
             self.context = api.context_new(XKB_CONTEXT_NO_FLAGS) orelse return error.XkbContextCreateFailed;
         }
 
-        const keymap_text = try allocator.dupeZ(u8, text);
+        const keymap_text = try allocator.dupeSentinel(u8, text, 0);
         defer allocator.free(keymap_text);
 
         const keymap = api.keymap_new_from_string(

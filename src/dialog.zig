@@ -36,7 +36,7 @@ pub const HotkeyValidator = struct {
 
 pub const hotkeyValidationMessage = hotkey_status.message;
 
-const impl = switch (builtin.os.tag) {
+const impl = switch (builtin.target.os.tag) {
     .windows => @import("dialog/windows.zig"),
     .macos => @import("dialog/macos.zig"),
     .linux => @import("dialog/linux.zig"),
@@ -52,9 +52,9 @@ const impl = switch (builtin.os.tag) {
 pub fn quitConfirmMessage(buf: []u8, tab_count: usize, pane_count: usize) ?[]const u8 {
     const plural: []const u8 = if (tab_count == 1) "" else "s";
     if (pane_count > tab_count) {
-        return std.fmt.bufPrint(buf, messages.quit_confirm_panes_format, .{ tab_count, plural, pane_count }) catch null;
+        return std.mem.print(buf, messages.quit_confirm_panes_format, .{ tab_count, plural, pane_count }) catch null;
     }
-    return std.fmt.bufPrint(buf, messages.quit_confirm_format, .{ tab_count, plural }) catch null;
+    return std.mem.print(buf, messages.quit_confirm_format, .{ tab_count, plural }) catch null;
 }
 
 test "quit confirm message handles singular plural and small buffers" {
@@ -225,7 +225,7 @@ test "#510 실제 hotkey 실패 본문이 통째로 한 줄에 들어간다" {
     // 이 메시지가 접히다 잘리면 진단이 안 되므로, 상한이 실제 본문보다 넉넉한지를
     // 표본이 아니라 **그 본문 자체**로 확인한다.
     var msg_buf: [1024]u8 = undefined;
-    const message = try std.fmt.bufPrint(
+    const message = try std.mem.print(
         &msg_buf,
         messages.hotkey_registration_failed_format,
         .{ @as(u32, 0x7B), @as(u32, 0), "/home/me/.config/tildaz/config_9.toml" },
@@ -234,10 +234,10 @@ test "#510 실제 hotkey 실패 본문이 통째로 한 줄에 들어간다" {
     var buf: [fatal_log_body_max]u8 = undefined;
     const line = collapseForLog(&buf, message);
     try std.testing.expect(!std.mem.endsWith(u8, line, fatal_log_truncated_suffix));
-    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfScalar(u8, line, '\n'));
+    try std.testing.expectEqual(@as(?usize, null), std.mem.findScalar(u8, line, '\n'));
     // 잘리지 않았다면 F12 예약 안내가 그대로 살아 있어야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, line, "kernel debugger") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "config_9.toml") != null);
+    try std.testing.expect(std.mem.find(u8, line, "kernel debugger") != null);
+    try std.testing.expect(std.mem.find(u8, line, "config_9.toml") != null);
 }
 
 test "#510 넘치면 잘리고 표시가 붙는다 — multi-byte 글자를 반토막 내지 않는다" {

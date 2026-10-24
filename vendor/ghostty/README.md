@@ -10,6 +10,12 @@ TildaZ 는 터미널 해석기로 ghostty 의 `libghostty-vt` 를 써요 (`build
   규칙은 [`build/vendor_patch.zig`](../../build/vendor_patch.zig)). 모든 빌드 (`test` · `check` · CI · 릴리즈) 가
   그 자리를 거쳐서 패치가 빠진 판이 나가지 않아요.
 - 처음 한 번만 실제로 고치고 `ghostty: applied …` 한 줄을 찍어요. 그 뒤로는 이미 적용됐는지만 봐요.
+- **설정 단계는 매번 돌아요** ([#820](https://github.com/ensky0/tildaz/issues/820)). Zig 0.17 은 `build.zig` 의 결과를
+  캐시해 같은 설정이면 `build.zig` 를 건너뛰어요. 캐시는 `build.zig` 와 각 패키지의 `build.zig.zon` 만 보고, 이 폴더의
+  패치나 패치가 고친 ghostty 소스는 몰라요. 그래서 패치를 더하거나 고쳐도, 얹힌 파일이 원본으로 돌아가도 적용기가
+  안 돌아요 — 얹힌 파일을 되돌리고 빌드하니 패치 없이 컴파일됐어요 (macOS 실측). 그래서 `applyGhosttyPatches` 가
+  `b.graph.poisonCache()` 를 불러요. 이 호출을 지우지 않아요. (`zig-pkg/ghostty-*` 를 지우고 다시 받는 경우는
+  `build.zig.zon` 이 새로 생겨 캐시가 빗나가므로 이 호출 없이도 다시 얹혀요.)
 - 패치는 줄 번호가 아니라 **글 내용**으로 맞춰요. 원본도 적용본도 아니면 빌드를 멈춰요.
 - 이름 순서로 적용해요 (`0001-…`, `0002-…`).
 - 패치가 고칠 수 있는 것은 **컴파일되는 소스 파일**뿐이에요. ghostty 의 `build.zig` 는 패치보다 먼저 돌아서 못 고쳐요.
@@ -61,9 +67,10 @@ zig build test-lib-vt -Demit-lib-vt=true -Dtest-filter=PageList --summary all
 ```
 
 - Linux 에서 GCC 16 이 깔린 기기는 Debug 테스트가 링크 단계에서 실패해요 (`R_X86_64_PC64` — zig 자체 링커 문제, #232).
+  그 수정은 Zig 0.17.0 에 들어 있어요 (#820). GCC 16 기기에서 다시 보기 전까지는 아래 우회를 그대로 둬요.
   복사본의 `build.zig` 에서 lib-vt 테스트 (`b.addTest(.{ .root_module = mod.vt, … })` 두 곳) 에 `.use_llvm = true` · `.use_lld = true` 를
   더해 돌려요. 이 수정은 패치에 넣지 않아요.
-- `-Doptimize=ReleaseSafe` 로는 일부 테스트가 Debug 전용 검사를 요구해 컴파일되지 않아요.
+- `-Doptimize=safe` 로는 일부 테스트가 Debug 전용 검사를 요구해 컴파일되지 않아요.
 - 2026-10-20 미니PC 에서 `kitty.graphics_image` 의 *"temporary file outside directory prefix is rejected"* 는 **원본에서도** 실패했어요.
   패치와 무관한 환경 문제로 봐요.
 

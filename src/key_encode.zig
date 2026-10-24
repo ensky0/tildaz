@@ -434,7 +434,7 @@ test "② Alt+문자 앞에 ESC 가 붙는다 — #533 의 신고 그 자체" {
 test "④ macOS 기본값에서는 Option 이 문자로 남는다" {
     // Linux · Windows 에는 이 갈림이 없다 (`Alt+a` 가 만드는 문자가 없음). macOS 만
     // OS 가 `å` 같은 문자를 만들어 주므로, 기본값에서는 그 문자를 그대로 보낸다.
-    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    if (comptime builtin.target.os.tag != .macos) return error.SkipZigTest;
 
     var buf: [16]u8 = undefined;
     const out = try encodeToBuf(&buf, .{

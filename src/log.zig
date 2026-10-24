@@ -30,7 +30,7 @@ const messages = @import("messages.zig");
 // (릴리즈 노트 *Completed Migration to NtDll*). 그래서 파일 열기도 여기서 직접
 // 선언한다 — 이 파일이 이미 `WriteFile` · `CloseHandle` 을 그렇게 쓰고 있었고,
 // 레포 전체가 같은 방식으로 kernel32 를 53 자리 선언한다.
-const win32 = if (builtin.os.tag == .windows) struct {
+const win32 = if (builtin.target.os.tag == .windows) struct {
     const w = std.os.windows;
 
     /// 매 write 를 OS 가 원자적으로 EOF 에 붙인다 — 이 파일의 존재 이유 (#282 D1).
@@ -62,7 +62,7 @@ const win32 = if (builtin.os.tag == .windows) struct {
 
 pub const TimeFields = log_time.TimeFields;
 
-const impl = switch (builtin.os.tag) {
+const impl = switch (builtin.target.os.tag) {
     .windows => @import("log/windows.zig"),
     .macos => @import("log/macos.zig"),
     .linux => @import("log/linux.zig"),
@@ -87,8 +87,8 @@ pub fn currentLocalTime() TimeFields {
 /// 준비도 실패하면 같은 결과였다.
 var g_path: ?[]const u8 = null;
 /// Windows 전용 — `CreateFileW` 에 넘길 WTF-16 경로. `init` 에서 한 번 만든다.
-var g_path_w: if (builtin.os.tag == .windows) ?[:0]const u16 else void =
-    if (builtin.os.tag == .windows) null else {};
+var g_path_w: if (builtin.target.os.tag == .windows) ?[:0]const u16 else void =
+    if (builtin.target.os.tag == .windows) null else {};
 
 /// 로그 파일 경로를 프로세스에 한 번 심는다 ([#451](https://github.com/ensky0/tildaz/issues/451)).
 ///
@@ -106,11 +106,11 @@ var g_path_w: if (builtin.os.tag == .windows) ?[:0]const u16 else void =
 /// 준비 실패는 로그 자체에 쓸 수 없으므로 stderr 에 한 번 명시한다.
 pub fn init(allocator: std.mem.Allocator, path: []const u8) void {
     g_path = path;
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime builtin.target.os.tag == .windows) {
         // `\\?\` 접두사 — Win32 `MAX_PATH` (260) 를 넘는 경로도 열린다. 예전
         // `sliceToPrefixedFileW` 가 해 주던 일이고 (Zig 0.16 에서 `std.os.windows`
         // 밖으로 나갔다), 우리 경로는 항상 drive 절대경로라 접두사 조건을 만족한다.
-        const prefixed = std.fmt.allocPrint(allocator, "\\\\?\\{s}", .{path}) catch |err| {
+        const prefixed = allocator.print("\\\\?\\{s}", .{path}) catch |err| {
             std.debug.print(messages.log_path_prepare_failed_format ++ "\n", .{@errorName(err)});
             return;
         };
@@ -129,7 +129,7 @@ pub fn filePath() ?[]const u8 {
 }
 
 fn writeRaw(text: []const u8) void {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         // #282 D1 — POSIX 는 O_APPEND(아래)로 고쳤으나 Windows 는 createFile+seekFromEnd+
         // writeAll race 였다 (seek 와 write 사이 동시 writer 시 torn line). FILE_APPEND_DATA
         // 로 열면 OS 가 매 write 를 원자적으로 EOF 에 append — ConPty wait_thread(onPtyExit)
@@ -178,13 +178,13 @@ pub fn appendLine(category: []const u8, comptime fmt: []const u8, args: anytype)
     const t = impl.currentLocalTime();
 
     var buf: [2048]u8 = undefined;
-    const prefix = std.fmt.bufPrint(
+    const prefix = std.mem.print(
         &buf,
         "[{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}] [{s}] ",
         .{ t.year, t.month, t.day, t.hour, t.min, t.sec, t.ms, category },
     ) catch return;
 
-    const body = std.fmt.bufPrint(buf[prefix.len..], fmt, args) catch return;
+    const body = std.mem.print(buf[prefix.len..], fmt, args) catch return;
 
     const total = prefix.len + body.len;
     if (total + 1 > buf.len) return;

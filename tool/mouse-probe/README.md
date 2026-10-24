@@ -33,9 +33,9 @@ git fetch origin && git checkout <브랜치>
 
 | platform | 빌드 | 실행 |
 |---|---|---|
-| Linux | `zig build -Doptimize=ReleaseFast -Dsimd=true` | `./zig-out/bin/tildaz --instance 1 -size 88x33 &` |
+| Linux | `zig build -Doptimize=fast -Dsimd=true` | `./zig-out/bin/tildaz --instance 1 -size 88x33 &` |
 | macOS | `dist/macos/build_and_install.sh` (서명 필수) | `/Applications/TildaZ-dev.app/Contents/MacOS/tildaz --instance 1 -size 88x33 &` |
-| Windows | `zig build -Doptimize=ReleaseFast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache` | `.\zig-out\bin\tildaz.exe --instance 1 -size 88x33` |
+| Windows | `zig build -Doptimize=fast -Dsimd=true --cache-dir C:/ziglang/tildaz-cache` | `.\zig-out\bin\tildaz.exe --instance 1 -size 88x33` |
 
 macOS 는 마우스 검증에 권한이 필요 없어서 (Input Monitoring 은 전역 핫키용) 번들 안
 바이너리를 직접 띄워도 돼요.

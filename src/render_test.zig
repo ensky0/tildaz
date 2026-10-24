@@ -53,7 +53,7 @@ const Out = struct {
     }
 
     fn print(self: *Out, comptime fmt: []const u8, args: anytype) void {
-        const s = std.fmt.bufPrint(self.buf[self.len..], fmt, args) catch return;
+        const s = std.mem.print(self.buf[self.len..], fmt, args) catch return;
         self.len += s.len;
     }
 
@@ -453,7 +453,7 @@ pub fn main(init: std.process.Init) !void {
     // #451 — 진입점이 `Io` 를 받는다 (릴리즈 노트 *"Juicy Main"*). 이 하네스는 stdout 쓰기와
     // 대기밖에 하지 않으므로 `Runtime` 하나면 충분하다.
     const rt: Runtime = .fromInit(init);
-    if (builtin.os.tag == .windows) _ = SetConsoleOutputCP(65001);
+    if (builtin.target.os.tag == .windows) _ = SetConsoleOutputCP(65001);
 
     var storage: [1 << 16]u8 = undefined;
     var o = Out{ .buf = &storage };

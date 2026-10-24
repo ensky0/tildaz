@@ -1373,7 +1373,7 @@ const Client = struct {
     /// (`wl_keyboard.keymap` 은 layout 을 바꿔도 다시 온다) — layout 종속 판정이라
     /// 로드 시점에 한 번 굳히면 사용자가 layout 을 바꾼 뒤 틀린다.
     binding_fallbacks: [config_mod.MAX_KEY_BINDINGS]?config_mod.PhysicalCode =
-        [_]?config_mod.PhysicalCode{null} ** config_mod.MAX_KEY_BINDINGS,
+        @splat(null),
     /// #496 1-b — sway 전역 핫키 등록을 **keymap 이 온 뒤로** 미룬다. 등록을 위치
     /// (`bindcode`) 로 하려면 "이 문자를 내는 키가 어디인가" 를 알아야 하는데,
     /// `client.run()` 앞에서는 `wl_keyboard.keymap` 이 아직 오지 않았다.
@@ -1435,7 +1435,7 @@ const Client = struct {
     //      실제 layout 의 크기를 work-area 로 오인 latch 하게 된다). 보류한 송신은
     //      latch 직후 configure 핸들러가 이어서 보낸다 (continuation) — 유실이 아니다.
     initial_safe_pending: bool = false,
-    outputs: [max_tracked_outputs]OutputSlot = [_]OutputSlot{.{}} ** max_tracked_outputs,
+    outputs: [max_tracked_outputs]OutputSlot = @splat(.{}),
     // #295 — 현재 basis 로 쓰는 output 의 object id. 0 = 아직 미확정 (startup /
     // 재생성 직후) → 첫 bind output 이 기준. `wl_surface.enter`/`leave` 로 갱신되는
     // OutputSlot.entered 집합에서 batch 종료 후 안정적으로 선택 (drainSurfaceOutputs):
@@ -3561,7 +3561,7 @@ const Client = struct {
         var w: usize = 0;
         for (&self.outputs) |*s| {
             if (s.object_id != 0 and s.entered) {
-                if (std.fmt.bufPrint(entered_buf[w..], "{} ", .{s.object_id})) |written| {
+                if (std.mem.print(entered_buf[w..], "{} ", .{s.object_id})) |written| {
                     w += written.len;
                 } else |_| {}
             }
@@ -8929,7 +8929,7 @@ const Client = struct {
     fn recordHotkeyClaimFailure(self: *Client, owner: []const u8, comptime fmt: []const u8, args: anytype) void {
         if (self.hotkey_claim_failure != null) return;
         var failure: HotkeyClaimFailure = .{ .owner = owner, .reason_buf = undefined, .reason_len = 0 };
-        const text = std.fmt.bufPrint(&failure.reason_buf, fmt, args) catch blk: {
+        const text = std.mem.print(&failure.reason_buf, fmt, args) catch blk: {
             const fallback = messages.hotkey_reason_taken_unnamed_msg;
             const n = @min(fallback.len, failure.reason_buf.len);
             @memcpy(failure.reason_buf[0..n], fallback[0..n]);
@@ -9028,7 +9028,7 @@ const Client = struct {
     fn fatalIfHotkeyClaimFailed(self: *Client) void {
         if (self.shell_extension_required) |owner| {
             var msg_buf: [1536]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, messages.linux_shell_extension_required_format, .{
+            const msg = std.mem.print(&msg_buf, messages.linux_shell_extension_required_format, .{
                 owner.displayName(),
             }) catch messages.linux_shell_extension_required_fallback_msg;
             log.userFacing("fatal", msg);
@@ -9048,7 +9048,7 @@ const Client = struct {
         defer if (cfg_path) |p| self.allocator.free(p);
 
         var msg_buf: [2048]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, messages.linux_hotkey_failed_format, .{
+        const msg = std.mem.print(&msg_buf, messages.linux_hotkey_failed_format, .{
             key,
             failure.owner,
             failure.reason(),
@@ -10832,7 +10832,7 @@ const Client = struct {
             const notice = autostart_notice.take(self.rt, self.allocator) orelse return;
             defer notice.deinit(self.allocator);
             var buf: [2048]u8 = undefined;
-            const text = std.fmt.bufPrint(&buf, messages.desktop_autostart_added_format, .{ notice.desktop, notice.path, notice.line }) catch return;
+            const text = std.mem.print(&buf, messages.desktop_autostart_added_format, .{ notice.desktop, notice.path, notice.line }) catch return;
             log.appendLine("desktop", "autostart notice shown ({s})", .{notice.desktop});
             dialog_mod.showInfo(self.rt, messages.desktop_autostart_added_title, text);
         }
@@ -11530,7 +11530,7 @@ fn reportWaylandSocketFailure(
     // 한 번 렌더해 stderr + 로그 양쪽에 동일하게. 이전엔 compact 진단 한 줄을
     // 따로 log 하고 friendly 본문을 따로 print 해 같은 데이터를 두 번 포맷했음.
     var buf: [1536]u8 = undefined;
-    const text = std.fmt.bufPrint(
+    const text = std.mem.print(
         &buf,
         messages.linux_wayland_socket_unavailable_format,
         .{ path, @errorName(err), display_str, session_str, runtime_str },
@@ -11546,13 +11546,13 @@ pub fn waylandSocketPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
         errdefer allocator.free(display);
         const runtime = try rt.envAlloc(allocator, "XDG_RUNTIME_DIR");
         defer allocator.free(runtime);
-        const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ runtime, display });
+        const path = try allocator.print("{s}/{s}", .{ runtime, display });
         allocator.free(display);
         return path;
     } else |_| {
         const runtime = try rt.envAlloc(allocator, "XDG_RUNTIME_DIR");
         defer allocator.free(runtime);
-        return std.fmt.allocPrint(allocator, "{s}/wayland-0", .{runtime});
+        return allocator.print("{s}/wayland-0", .{runtime});
     }
 }
 

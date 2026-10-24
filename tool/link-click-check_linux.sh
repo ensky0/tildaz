@@ -45,7 +45,7 @@ OUTW=1600
 OUTH=1000
 
 die() { echo "$*" >&2; exit 1; }
-[ -x "$TILDAZ" ] || die "빌드가 없다: $TILDAZ  (zig build -Doptimize=ReleaseFast -Dsimd=true)"
+[ -x "$TILDAZ" ] || die "빌드가 없다: $TILDAZ  (zig build -Doptimize=fast -Dsimd=true)"
 
 env_sway() {
     export XDG_RUNTIME_DIR=$R WAYLAND_DISPLAY=wayland-1 XDG_CURRENT_DESKTOP=sway

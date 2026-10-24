@@ -303,7 +303,7 @@ pub fn split(host: anytype, dir: pane_layout.Direction) void {
             // 검증 회차에서는 *거부* 와 *액션 미발동* 이 구분되지 않았다 (2026-08-29 macOS 회차).
             log.logPaneSplitTooSmall(@tagName(dir), pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS);
             var buf: [160]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
+            const msg = std.mem.print(&buf, messages.pane_too_small_format, .{ pane_layout.MIN_PANE_COLS, pane_layout.MIN_PANE_ROWS }) catch
                 messages.pane_too_small_format;
             dialog.showInfo(host.rt(), messages.pane_too_small_title, msg);
             return;
@@ -311,7 +311,7 @@ pub fn split(host: anytype, dir: pane_layout.Direction) void {
         error.TooManyPanes => {
             log.logPaneSplitTooMany(@tagName(dir), pane_layout.MAX_PANES_PER_TAB);
             var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
+            const msg = std.mem.print(&buf, messages.pane_limit_format, .{pane_layout.MAX_PANES_PER_TAB}) catch
                 messages.pane_limit_format;
             dialog.showInfo(host.rt(), messages.pane_limit_title, msg);
             return;

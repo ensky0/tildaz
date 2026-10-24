@@ -45,7 +45,7 @@ pub fn errLine(io: std.Io, text: []const u8) void {
 
 fn writeLine(io: std.Io, stream: Stream, text: []const u8) void {
     var buf: [2048]u8 = undefined;
-    const joined = std.fmt.bufPrint(&buf, "{s}\n", .{text}) catch {
+    const joined = std.mem.print(&buf, "{s}\n", .{text}) catch {
         // 버퍼를 넘기는 긴 텍스트는 두 번에 나눠 쓴다. 줄이 갈릴 수 있지만 내용을
         // 버리지는 않는다.
         write(io, stream, text);
@@ -56,7 +56,7 @@ fn writeLine(io: std.Io, stream: Stream, text: []const u8) void {
 }
 
 fn write(io: std.Io, stream: Stream, text: []const u8) void {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         // Windows 는 아래 이유 (GUI subsystem) 로 콘솔 핸들을 직접 다뤄서 `io` 를 안 쓴다.
         .windows => writeWindows(stream, text),
         else => {

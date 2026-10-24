@@ -43,13 +43,13 @@ const ENTRY_NAME = app_id.name ++ ".desktop";
 fn entryPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const config_home = try paths.configHome(rt, allocator);
     defer allocator.free(config_home);
-    const dir = try std.fmt.allocPrint(allocator, "{s}/autostart", .{config_home});
+    const dir = try allocator.print("{s}/autostart", .{config_home});
     defer allocator.free(dir);
     paths.ensureDir(rt, dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, ENTRY_NAME });
+    return allocator.print("{s}/{s}", .{ dir, ENTRY_NAME });
 }
 
 /// XDG 지원 전 버전이 항상 쓴 기본 위치. custom XDG_CONFIG_HOME을 쓰는 경우
@@ -57,7 +57,7 @@ fn entryPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 fn legacyEntryPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const home = try rt.envAlloc(allocator, "HOME");
     defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.config/autostart/{s}", .{ home, ENTRY_NAME });
+    return allocator.print("{s}/.config/autostart/{s}", .{ home, ENTRY_NAME });
 }
 
 fn removeLegacyEntryIfDifferent(rt: Runtime, allocator: std.mem.Allocator, current_path: []const u8) void {
@@ -80,7 +80,7 @@ const created_marker = "autostart-created";
 fn createdMarkerPath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
     const dir = try paths.stateDir(rt, allocator);
     defer allocator.free(dir);
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, created_marker });
+    return allocator.print("{s}/{s}", .{ dir, created_marker });
 }
 
 fn fileExists(rt: Runtime, path: []const u8) bool {
@@ -110,7 +110,7 @@ fn userDisabled(text: []const u8) bool {
             continue;
         }
         if (!in_entry) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, key, "Hidden") and std.ascii.eqlIgnoreCase(value, "true")) return true;
@@ -167,7 +167,7 @@ pub fn enable(rt: Runtime, allocator: std.mem.Allocator) !void {
     // honor 한다. 이 파일은 전 DE 가 공유하므로(XDG user autostart), 예전처럼
     // GNOME 진입 시 파일을 삭제하면 GNOME 을 거친 뒤 KDE/Cinnamon autostart 가
     // 통째로 깨졌다 — NotShowIn 으로 파일을 지우지 않고 DE 왕복에도 살아남게 한다.
-    const entry = try std.fmt.allocPrint(allocator,
+    const entry = try allocator.print(
         \\[Desktop Entry]
         \\Type=Application
         \\Name={s}

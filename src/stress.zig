@@ -110,9 +110,8 @@ pub fn main(init: std.process.Init) !void {
     // producer 모드 판정보다 앞에 둔다 — producer 자식도 같은 실행파일이다.
     instance_context.setRole(.stress);
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    // #821 — 앱과 같은 본체 할당자 (`Runtime.gpa`). 처리량을 앱과 같은 조건에서 잰다.
+    const alloc = rt.gpa;
 
     // producer 모드는 argv 가 아니라 환경변수로 판정한다 (위 문서 주석).
     if (try producerRequest(rt, alloc)) |req| return produce(rt, req);
@@ -232,11 +231,11 @@ fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
 }
 
 fn paneBarrierPath(buf: []u8, base: []const u8, id: pane_layout.PaneId, suffix: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}.{d}.{s}", .{ base, id, suffix });
+    return std.mem.print(buf, "{s}.{d}.{s}", .{ base, id, suffix });
 }
 
 fn globalBarrierPath(buf: []u8, base: []const u8, suffix: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}.{s}", .{ base, suffix });
+    return std.mem.print(buf, "{s}.{s}", .{ base, suffix });
 }
 
 fn createBarrierFile(rt: Runtime, path: []const u8) !void {
@@ -270,14 +269,14 @@ fn waitForProducerStart(rt: Runtime, base: []const u8, id: pane_layout.PaneId) !
 }
 
 fn doneTitle(buf: []u8, id: pane_layout.PaneId) ![]const u8 {
-    return std.fmt.bufPrint(buf, "{s}-stress-done-{d}", .{ app_id.name, id });
+    return std.mem.print(buf, "{s}-stress-done-{d}", .{ app_id.name, id });
 }
 
 fn writeDoneMarker(rt: Runtime, out: std.Io.File, id: pane_layout.PaneId) !void {
     var title_buf: [48]u8 = undefined;
     const title = try doneTitle(&title_buf, id);
     var marker_buf: [64]u8 = undefined;
-    const marker = try std.fmt.bufPrint(&marker_buf, "\x1b]0;{s}\x07", .{title});
+    const marker = try std.mem.print(&marker_buf, "\x1b]0;{s}\x07", .{title});
     try out.writeStreamingAll(rt.io, marker);
 }
 
@@ -320,7 +319,7 @@ fn waitForGrid(rt: Runtime, target: Grid) u64 {
 /// 정해진 바이트를 stdout 에 쏟고 끝낸다. stdout 은 PTY slave 라 부모의 read
 /// thread (또는 우리를 띄운 다른 터미널) 가 그대로 받는다.
 fn produce(rt: Runtime, req: ProducerRequest) !void {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         // producer 의 stdout 은 ConPTY 콘솔이다. 출력 코드페이지를 UTF-8 로 맞춰 cjk 가
         // 콘솔 기본 CP (CP949 등) 로 깨지지 않게 한다 (위 SetConsoleOutputCP 주석).
         _ = SetConsoleOutputCP(65001);
@@ -408,7 +407,7 @@ extern "kernel32" fn GetConsoleScreenBufferInfo(
 /// 두었을 때는 `cols=0 rows=0` 이 적혀서, 그 확인 절차 자체가 Windows 에서 성립하지
 /// 않았다 (실기 검증에서 창 크기를 밖에서 재는 우회가 필요했다).
 fn producerGrid() ?Grid {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         // producer 의 stdout 은 우리 ConPTY 의 콘솔이라 console API 가 그대로 동작한다.
         // **`dwSize` 가 아니라 `srWindow` 를 쓴다** — `dwSize` 는 스크롤백을 포함한 버퍼
         // 크기이고, 우리가 재려는 것은 *보이는* 격자다. 우리는
@@ -427,7 +426,7 @@ fn producerGrid() ?Grid {
 
     var ws: std.posix.winsize = undefined;
     const fd = std.Io.File.stdout().handle;
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         const linux = std.os.linux;
         if (std.posix.errno(linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws))) != .SUCCESS) {
             return null;
@@ -612,26 +611,31 @@ const FrameSplit = struct {
     fps: u32,
     fps_explicit: bool,
     frames: u64,
-    /// 프레임 예산 (`DRAIN_FRAME_BUDGET_NS`) 을 넘긴 프레임 수. 리포트가 값을 함께 찍는다.
+    /// #822 — ring 이 차서 프레임 밖에서 깨운 드레인 수 (`RingFullWake`).
+    wake_drains: u64 = 0,
+    /// 드레인 호출 전체 — 프레임 드레인 (`frames`) + `wake_drains`.
+    drains: u64 = 0,
+    /// 예산 (`DRAIN_FRAME_BUDGET_NS`) 을 넘긴 드레인 호출 수. 예산은 호출마다의 상한이라
+    /// (SPEC §13) 프레임 밖 드레인도 센다. 리포트가 값을 함께 찍는다.
     over_budget: u64,
     /// #574 — pane별 마지막 OSC marker가 VT에 도달한 시각, process 종료 시각, 직접
     /// drain 통계. process 종료 순번 대신 `PaneId` index로 보존한다.
     panes: u32 = 1,
     parsed_done: u32 = 0,
-    parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     exited: u32 = 0,
-    exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     max_chunk_skew: u64 = 0,
     max_drain_ns: u64 = 0,
 };
 
 const FramePaneProgress = struct {
-    last_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    last_service_frame: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
-    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB,
+    last_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    last_service_frame: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
+    max_service_gap_frames: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0),
     max_chunk_skew: u64 = 0,
 
     fn observe(
@@ -748,7 +752,7 @@ const ExitState = struct {
     /// #483 6단계 — pane 마다 producer 가 하나라 마지막 pane 이 끝날 때 `exited`.
     exited_count: std.atomic.Value(u32) = .init(0),
     exited_panes: std.atomic.Value(VisiblePaneMask) = .init(0),
-    tab_ptrs: [pane_layout.MAX_PANES_PER_TAB]usize = [_]usize{0} ** pane_layout.MAX_PANES_PER_TAB,
+    tab_ptrs: [pane_layout.MAX_PANES_PER_TAB]usize = @splat(0),
     total: u32 = 1,
 
     const VisiblePaneMask = u16;
@@ -775,8 +779,36 @@ fn onTabExit(tab_ptr: usize, userdata: ?*anyopaque) void {
     state.recordExit(tab_ptr);
 }
 
+/// #822 — ring 이 차서 read thread 가 기다리기 시작했다는 통보 (`setOutputFull`). 앱은 이 통보로
+/// 잠든 UI 를 깨워 프레임 밖에서 드레인한다 (SPEC §13.1.1 · #728). 예전 `frame` 층은 통보 없이
+/// 프레임마다 한 번만 드레인해서, 프레임 사이에 ring 이 차면 read thread 가 다음 프레임까지 멈췄다.
+/// 그러면 처리량이 *ring 크기 × fps* 근처에 묶여 파싱이 빠른 판이 오히려 느리게 나왔다 (#820
+/// Linux 실측: 파싱이 두 배인 판의 `plain` 이 −10 %).
+///
+/// 깨우기를 놓치지 않는 순서는 ring 의 `waitForSpace` 와 같은 eventcount 다 — 기다리는 쪽이
+/// `seq` 를 먼저 읽고 그 값으로 잔다. 그 사이에 통보가 오면 futex 가 바로 돌아온다.
+const RingFullWake = struct {
+    seq: std.atomic.Value(u32) = .init(0),
+    io: std.Io = undefined,
+
+    /// read thread 에서 불린다.
+    fn notify(userdata: ?*anyopaque) void {
+        const self: *RingFullWake = @ptrCast(@alignCast(userdata.?));
+        _ = self.seq.fetchAdd(1, .seq_cst);
+        self.io.futexWake(u32, &self.seq.raw, 1);
+    }
+
+    /// `seq` 가 `seen` 에서 바뀔 때까지, 길어야 `ns` 동안 잔다. 이유 없이 깰 수도 있다.
+    fn wait(self: *RingFullWake, seen: u32, ns: u64) void {
+        self.io.futexWaitTimeout(u32, &self.seq.raw, seen, .{ .duration = .{
+            .raw = .fromNanoseconds(@intCast(ns)),
+            .clock = .awake,
+        } }) catch {};
+    }
+};
+
 fn stressCurrentPid() u32 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => std.os.windows.GetCurrentProcessId(),
         .linux => @intCast(std.os.linux.getpid()),
         else => @intCast(std.c.getpid()),
@@ -798,6 +830,8 @@ const ProducerSession = struct {
     extra_env: [4]terminal.ExtraEnv = undefined,
     extra_env_len: usize = 2,
     state: ExitState = .{},
+    /// #822 — `frame` 층에서만 배선한다 (`start`).
+    full_wake: RingFullWake = .{},
     core: session_core.SessionCore = undefined,
 
     fn start(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !*ProducerSession {
@@ -811,7 +845,7 @@ const ProducerSession = struct {
         self.shell_command = try toShellCommand(alloc, exe_buf[0..exe_len]);
         errdefer freeShellCommand(alloc, self.shell_command);
 
-        const bytes_text = try std.fmt.bufPrint(&self.bytes_text, "{d}", .{opts.bytes});
+        const bytes_text = try std.mem.print(&self.bytes_text, "{d}", .{opts.bytes});
         self.extra_env = .{
             .{ .name = env_workload, .value = @tagName(opts.workload_kind) },
             .{ .name = env_bytes, .value = bytes_text },
@@ -837,6 +871,12 @@ const ProducerSession = struct {
         );
         errdefer self.core.deinit();
         errdefer self.releaseBarriers() catch {};
+        // #822 — 탭을 만들기 전에 건다. 세션이 새 탭 (분할 pane 포함) 에 복사하고, producer 를
+        // 풀어 주기 전이라 첫 ring full 도 놓치지 않는다.
+        if (opts.layer == .frame) {
+            self.full_wake.io = rt.io;
+            self.core.setOutputFull(RingFullWake.notify, &self.full_wake);
+        }
 
         // 여기서 자식이 뜨고 곧바로 쓰기 시작한다 — 호출자는 바로 비우기 시작해야 한다.
         self.state.total = opts.panes;
@@ -880,13 +920,13 @@ const ProducerSession = struct {
     }
 
     fn prepareBarrierPath(self: *ProducerSession) !void {
-        const env_name = if (builtin.os.tag == .windows) "TEMP" else "TMPDIR";
-        const fallback = if (builtin.os.tag == .windows) "." else "/tmp";
+        const env_name = if (builtin.target.os.tag == .windows) "TEMP" else "TMPDIR";
+        const fallback = if (builtin.target.os.tag == .windows) "." else "/tmp";
         const temp_dir = self.rt.envAlloc(self.alloc, env_name) catch try self.alloc.dupe(u8, fallback);
         defer self.alloc.free(temp_dir);
 
         var name_buf: [96]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buf, "{s}-stress-{d}-{d}", .{ app_id.name, stressCurrentPid(), perf.now() orelse 0 });
+        const name = try std.mem.print(&name_buf, "{s}-stress-{d}-{d}", .{ app_id.name, stressCurrentPid(), perf.now() orelse 0 });
         const path = try std.Io.Dir.path.join(self.alloc, &.{ temp_dir, name });
         defer self.alloc.free(path);
         if (path.len > self.barrier_path.len) return error.NameTooLong;
@@ -899,7 +939,7 @@ const ProducerSession = struct {
     }
 
     fn setProducerPaneId(self: *ProducerSession, id: anytype) void {
-        const text = std.fmt.bufPrint(&self.pane_id_text, "{d}", .{id}) catch unreachable;
+        const text = std.mem.print(&self.pane_id_text, "{d}", .{id}) catch unreachable;
         self.extra_env[3] = .{ .name = env_pane_id, .value = text };
     }
 
@@ -1011,15 +1051,20 @@ fn paneParsedDone(tab: *session_core.Tab, id: pane_layout.PaneId) bool {
     return std.mem.eql(u8, actual, expected);
 }
 
-/// 프레임당 1 회 드레인을 모사한다 — `drainOutputForRender` 를 `--fps` 주기로 한 번씩 부르고,
+/// 프레임 드레인을 모사한다 — `drainOutputForRender` 를 `--fps` 주기로 한 번씩 부르고,
 /// 그 안의 `drainFrame` 이 `session_core.SessionCore.DRAIN_FRAME_BUDGET_NS` 만 파싱한다.
 /// 그래서 처리량이 파서 상한이 아니라 `예산 / 프레임 간격` 으로 눌린다.
 ///
-/// ⚠️ **이 층은 더 이상 앱과 같지 않다.** 사양 A (#387) 이후 세 host 는 **프레임 사이에도**
-/// 드레인하므로 (SPEC §13.1) 실제 앱의 duty 는 이 층보다 훨씬 높다 (Windows ② 60 Hz 실측:
-/// 이 층에 해당하는 구조가 duty 50.6~51.4 %, 실제 앱은 91.5~92.2 %). 그러니 이 층의 숫자는
+/// #822 — 프레임 사이에 ring 이 차면 앱처럼 깨어 한 번 더 드레인한다 (`RingFullWake`, SPEC
+/// §13.1.1 의 ring full 예외). 그 전에는 프레임마다 한 번만 비워서, 처리량이 *ring 크기 × fps*
+/// 근처에 묶였고 파싱이 빠른 판일수록 일찍 비우고 끝나 오히려 느리게 나왔다 (#820 Linux · #822).
+///
+/// ⚠️ **그래도 앱과 같지는 않다.** 앱은 밀린 출력이 있는 동안 **프레임 사이에 계속** 드레인한다
+/// (SPEC §13.1 — Linux poll loop iteration · Windows `PeekMessage` 가 빈 순간 · macOS
+/// `BeforeWaiting`). 이 층은 프레임 시각과 ring 이 찬 순간에만 비운다 (Windows ② 60 Hz 실측:
+/// ring full 깨우기 이전의 이 층이 duty 50.6~51.4 %, 실제 앱은 91.5~92.2 %). 그러니 이 층의 숫자는
 /// **"프레임에 묶였을 때의 하한"** 으로 읽는다. 앱의 실제 배분은 perf 덤프
-/// (`Ctrl+Shift+F12` / `Shift+Cmd+F12`) 로 본다 — 후속 이슈에서 다룰 갭이다.
+/// (`Ctrl+Shift+F12` / `Shift+Cmd+F12`) 로 본다.
 ///
 /// macOS 는 CADisplayLink (`NSWindow.displayLink`) 가 vsync 마다 main thread 에서
 /// 부르고, Linux 는 poll loop, Windows 는 app_controller 의 프레임 경로다. 여기서는
@@ -1043,19 +1088,26 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
     var first_data_ns: ?u64 = null;
     var last_data_ns: u64 = 0;
     var max_drain_ns: u64 = 0;
-    var parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var parsed_done_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     var parsed_done: u32 = 0;
-    var exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var exit_ns: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     var exited: u32 = 0;
     var stop_sent = false;
     var pane_progress: FramePaneProgress = .{};
+    var wake_drains: u64 = 0;
+    var drains: u64 = 0;
+    // #822 — 마지막으로 처리한 ring full 통보. 프레임 드레인 직전에 갱신한다 — 그 드레인이 ring 을
+    // 비우므로, 그 뒤에 온 통보만 프레임 사이에 깨울 이유가 된다.
+    var seen_full: u32 = 0;
 
     while (true) {
+        seen_full = session.full_wake.seq.load(.seq_cst);
         const before_ns = timer.read();
         const had_output = session.core.drainOutputForRender();
         const after_ns = timer.read();
 
         frames += 1;
+        drains += 1;
         if (after_ns - before_ns > frame_budget_ns) over_budget += 1;
         max_drain_ns = @max(max_drain_ns, after_ns - before_ns);
         pane_progress.observe(group, opts.panes, &parsed_done_ns, frames);
@@ -1094,9 +1146,31 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
         // 다음 vsync 까지 기다린다. 예산을 넘겨 이미 늦었으면 따라잡지 않고 지금부터
         // 다시 센다 — 실제 앱도 놓친 vsync 를 몰아서 그리지 않는다.
-        const now_ns = timer.read();
+        //
+        // #822 — 기다리는 동안 ring 이 차면 앱처럼 깨어 프레임 밖에서 드레인한다 (`RingFullWake`).
+        // 그 드레인도 예산은 같고 (`drainOutputForRender`), 프레임 수에는 넣지 않는다.
+        var now_ns = timer.read();
         if (next_frame_ns > now_ns) {
-            rt.sleepNs(next_frame_ns - now_ns);
+            while (now_ns < next_frame_ns) {
+                const seq = session.full_wake.seq.load(.seq_cst);
+                if (seq == seen_full) {
+                    session.full_wake.wait(seq, next_frame_ns - now_ns);
+                    now_ns = timer.read();
+                    continue;
+                }
+                seen_full = seq;
+                const wake_before_ns = timer.read();
+                const wake_output = session.core.drainOutputForRender();
+                now_ns = timer.read();
+                wake_drains += 1;
+                drains += 1;
+                if (now_ns - wake_before_ns > frame_budget_ns) over_budget += 1;
+                max_drain_ns = @max(max_drain_ns, now_ns - wake_before_ns);
+                if (wake_output) {
+                    if (first_data_ns == null) first_data_ns = now_ns;
+                    last_data_ns = now_ns;
+                }
+            }
             next_frame_ns += frame_ns;
         } else {
             next_frame_ns = now_ns + frame_ns;
@@ -1105,8 +1179,8 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
 
     const counters = takeCounters();
     const start_ns = first_data_ns orelse return error.NoOutput;
-    var drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
-    var drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = [_]u64{0} ** pane_layout.MAX_PANES_PER_TAB;
+    var drain_chunks: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
+    var drain_bytes: [pane_layout.MAX_PANES_PER_TAB]u64 = @splat(0);
     for (group.panes[0..opts.panes], 0..) |pane, i| {
         const tab = pane orelse continue;
         drain_chunks[i] = tab.stress_drain_chunks;
@@ -1123,6 +1197,8 @@ fn runFrame(rt: Runtime, alloc: std.mem.Allocator, opts: Options) !void {
             .fps = opts.fps,
             .fps_explicit = opts.fps_explicit,
             .frames = frames,
+            .wake_drains = wake_drains,
+            .drains = drains,
             .over_budget = over_budget,
             .panes = opts.panes,
             .parsed_done = parsed_done,
@@ -1187,14 +1263,14 @@ fn expectedPtyBytes(opts: Options) ?u64 {
 /// 자기 실행파일 경로를 platform 별 `ShellCommand` 표현으로. Windows 는
 /// `CreateProcessW` 가 UTF-16 을 받고, POSIX 는 `execve` 가 UTF-8 을 받는다.
 fn toShellCommand(alloc: std.mem.Allocator, exe_path: []const u8) !terminal.ShellCommand {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         return try std.unicode.utf8ToUtf16LeAllocZ(alloc, exe_path);
     }
     return try alloc.dupe(u8, exe_path);
 }
 
 fn freeShellCommand(alloc: std.mem.Allocator, cmd: terminal.ShellCommand) void {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         alloc.free(std.mem.span(cmd));
     } else {
         alloc.free(cmd);
@@ -1305,11 +1381,11 @@ fn scrollbackLines(tab: *session_core.Tab) usize {
 /// Windows 실기에서 확인됐으므로 (#371) 이제 붙일 수 있는 조건이지만, 이 커밋의 범위가
 /// 아니라 후속으로 둔다. 리포트는 그 자리에 `(unavailable)` 을 찍는다.
 fn peakRssBytes() ?u64 {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.target.os.tag == .windows) return null;
     const usage = std.posix.getrusage(std.posix.rusage.SELF);
     if (usage.maxrss <= 0) return null;
     const raw: u64 = @intCast(usage.maxrss);
-    return if (builtin.os.tag == .macos) raw else raw * 1024;
+    return if (builtin.target.os.tag == .macos) raw else raw * 1024;
 }
 
 fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void {
@@ -1326,11 +1402,11 @@ fn reportScrollback(rt: Runtime, opts: Options, segments: []const Segment) !void
         @as(f64, @floatFromInt(opts.bytes)) / mib,
     });
     w.print("build         {s} simd={} version={s}\n", .{
-        @tagName(builtin.mode),
+        @tagName(builtin.optimize),
         build_options.simd,
         build_options.version,
     });
-    w.print("platform      {s} {s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
+    w.print("platform      {s} {s}\n", .{ @tagName(builtin.target.os.tag), @tagName(builtin.target.cpu.arch) });
     w.print("\n", .{});
 
     w.print("segment  consumed      MiB/s    scrollback lines   peak RSS\n", .{});
@@ -1393,13 +1469,13 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
         @as(f64, @floatFromInt(opts.bytes)) / mib,
     });
     w.print("build         {s} simd={} version={s}\n", .{
-        @tagName(builtin.mode),
+        @tagName(builtin.optimize),
         build_options.simd,
         build_options.version,
     });
     w.print("platform      {s} {s}\n", .{
-        @tagName(builtin.os.tag),
-        @tagName(builtin.cpu.arch),
+        @tagName(builtin.target.os.tag),
+        @tagName(builtin.target.cpu.arch),
     });
     w.print("\n", .{});
 
@@ -1479,8 +1555,12 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
             split.frames,
             split.fps,
         });
-        w.print("  over budget {d} frames ({d} ms 예산 초과)\n", .{
+        w.print("  wake drains {d} (ring 이 차서 프레임 밖에서 깨운 드레인 — 앱의 `output_full_fn`)\n", .{
+            split.wake_drains,
+        });
+        w.print("  over budget {d} / {d} drains ({d} ms 예산 초과)\n", .{
             split.over_budget,
+            split.drains,
             frame_budget_ns / std.time.ns_per_ms,
         });
         w.print("  drain max   {d:.2} ms (한 번 호출의 최장 점유)\n", .{
@@ -1549,7 +1629,7 @@ fn report(rt: Runtime, opts: Options, result: Result) !void {
         // `bytes` 는 남고 `ns` 만 빠진다 — 같은 범위이되 Windows 가 과소 계상이다.
         // 어느 쪽인지 옆에 적어 둔다.
         writeCounter(&w, "readloop", counters.readloop, .{
-            .note = if (builtin.os.tag == .windows)
+            .note = if (builtin.target.os.tag == .windows)
                 "read 복사만 · pending 분은 커널이 복사해 미계상"
             else
                 "read 복사만",
@@ -1595,7 +1675,7 @@ const Report = struct {
     len: usize = 0,
 
     fn print(self: *Report, comptime fmt: []const u8, args: anytype) void {
-        const out = std.fmt.bufPrint(self.buf[self.len..], fmt, args) catch return;
+        const out = std.mem.print(self.buf[self.len..], fmt, args) catch return;
         self.len += out.len;
     }
 

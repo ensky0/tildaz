@@ -151,7 +151,7 @@ pub const Packer = struct {
     size: u32 = INITIAL_ATLAS_SIZE,
     /// 윤곽선. x 오름차순이고 `[0, size)` 를 빈틈없이 덮는다. **비어 있으면 `{ 0, 0, size }` 한 칸으로 본다** —
     /// 그래야 `Packer{ .size = n }` 처럼 할당 없이 만들 수 있고, `rewind` 도 할당 없이 비운다.
-    nodes: std.ArrayListUnmanaged(Node) = .empty,
+    nodes: std.ArrayList(Node) = .empty,
 
     pub const pad: u32 = 1; // 글리프 간 1px padding.
 

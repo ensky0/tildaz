@@ -32,7 +32,7 @@
 //!
 //! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```powershell
-//! zig build-exe tool/osc-title-probe/osc-title-probe_windows.zig -O ReleaseSafe -lc --cache-dir C:/ziglang/tildaz-cache
+//! zig build-exe tool/osc-title-probe/osc-title-probe_windows.zig -O safe -lc --cache-dir C:/ziglang/tildaz-cache
 //! .\osc-title-probe.exe --shell "cmd.exe" --runs 10 --verbose
 //! .\osc-title-probe.exe --shell "powershell.exe -NoProfile" --runs 10
 //! .\osc-title-probe.exe --shell "wsl.exe" --runs 10          # ` --cd ~` 자동 삽입
@@ -48,7 +48,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         @compileError("osc-title-probe 는 Windows 전용 (ConPTY). Linux 는 tool/osc-title-probe/osc-title-probe_linux.zig 를 쓴다.");
     }
 }
@@ -338,7 +338,7 @@ const Parser = struct {
 
     fn dispatchOsc(self: *Parser, rec: *Recorder, s: []const u8) void {
         _ = self;
-        const semi = std.mem.indexOfScalar(u8, s, ';');
+        const semi = std.mem.findScalar(u8, s, ';');
         const code_str = if (semi) |i| s[0..i] else s;
         const payload = if (semi) |i| s[i + 1 ..] else "";
         const code = std.fmt.parseInt(u32, code_str, 10) catch return;
@@ -346,27 +346,27 @@ const Parser = struct {
         switch (code) {
             0, 2 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
                 rec.add(.title, line[0..n]);
             },
             1 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
                 rec.add(.icon, line[0..n]);
             },
             // 색 질의 — Windows tildaz 는 응답하지 않는다 (#269). 기록만.
             10, 11, 12 => {
                 if (std.mem.eql(u8, payload, "?")) {
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query (무응답)", .{code}) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC {d} color query (무응답)", .{code}) catch @as([]u8, line[0..0])).len;
                     rec.add(.ignored, line[0..n]);
                 }
             },
             4 => {
                 if (std.mem.endsWith(u8, payload, "?")) {
-                    const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+                    const idx_end = std.mem.findScalar(u8, payload, ';') orelse return;
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query (무응답)", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC 4;{s} palette query (무응답)", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.ignored, line[0..n]);
                 }
             },
@@ -423,7 +423,7 @@ fn render(out: []u8, prefix: []const u8, s: []const u8) usize {
                 n += 1;
             }
         } else {
-            const hex = std.fmt.bufPrint(out[n..], "\\x{x:0>2}", .{c}) catch break;
+            const hex = std.mem.print(out[n..], "\\x{x:0>2}", .{c}) catch break;
             n += hex.len;
         }
     }
@@ -443,7 +443,7 @@ fn conptySource() []const u8 {
 }
 
 fn setSource(comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.bufPrint(&conpty_source_buf, fmt, args) catch @as([]u8, conpty_source_buf[0..0]);
+    const s = std.mem.print(&conpty_source_buf, fmt, args) catch @as([]u8, conpty_source_buf[0..0]);
     conpty_source_len = s.len;
 }
 
@@ -509,7 +509,7 @@ fn loadConpty(explicit: ?[]const u8, use_system: bool) !void {
     }
 
     const dir_end = exeDirLen(&path_buf) orelse return error.ConptyLoadFailed;
-    const arch_dir = if (builtin.cpu.arch == .aarch64)
+    const arch_dir = if (builtin.target.cpu.arch == .aarch64)
         "vendor\\conpty\\arm64\\conpty.dll"
     else
         "vendor\\conpty\\x64\\conpty.dll";
@@ -559,9 +559,9 @@ fn wslCdInsertion(cmd: []const WCHAR) struct { is_wsl: bool, insert: bool, inser
     if (!is_wsl) return .{ .is_wsl = false, .insert = false, .insert_at = insert_at };
 
     const args = cmd[@min(insert_at, cmd.len)..];
-    if (std.mem.indexOf(WCHAR, args, L("--cd")) != null)
+    if (std.mem.find(WCHAR, args, L("--cd")) != null)
         return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
-    if (std.mem.indexOfScalar(WCHAR, args, '~')) |ti| {
+    if (std.mem.findScalar(WCHAR, args, '~')) |ti| {
         if (ti + 1 == args.len or args[ti + 1] == ' ')
             return .{ .is_wsl = true, .insert = false, .insert_at = insert_at };
     }
@@ -601,7 +601,7 @@ const ExtraEnv = struct {
     names: [max][:0]const WCHAR = undefined,
     values: [max][:0]const WCHAR = undefined,
     count: usize = 0,
-    saved: [max]?[]WCHAR = .{null} ** max,
+    saved: [max]?[]WCHAR = @splat(null),
     wslenv_storage: [1024]WCHAR = undefined,
 
     fn build(self: *ExtraEnv) void {
@@ -659,7 +659,7 @@ const ExtraEnv = struct {
     fn describe(self: *ExtraEnv, out: []u8) []const u8 {
         var tmp: [1024]u8 = undefined;
         const wslenv = std.unicode.utf16LeToUtf8(&tmp, self.values[1]) catch 0;
-        const s = std.fmt.bufPrint(out, "COLORFGBG={s} WSLENV={s}", .{ colorfgbg, tmp[0..wslenv] }) catch @as([]u8, out[0..0]);
+        const s = std.mem.print(out, "COLORFGBG={s} WSLENV={s}", .{ colorfgbg, tmp[0..wslenv] }) catch @as([]u8, out[0..0]);
         return s;
     }
 };
@@ -677,7 +677,7 @@ fn spawnShell(alloc: std.mem.Allocator, shell: []const u8, cols: u16, rows: u16,
     };
     const seq = @atomicRmw(u32, &S.counter, .Add, 1, .monotonic);
     var pipe_name_u8: [128]u8 = undefined;
-    const pipe_name_str = std.fmt.bufPrint(&pipe_name_u8, "\\\\.\\pipe\\tildaz_probe_{d}_{d}", .{ GetCurrentProcessId(), seq }) catch
+    const pipe_name_str = std.mem.print(&pipe_name_u8, "\\\\.\\pipe\\tildaz_probe_{d}_{d}", .{ GetCurrentProcessId(), seq }) catch
         return error.CreatePipeFailed;
     var pipe_name: [128]WCHAR = undefined;
     const pipe_name_n = std.unicode.utf8ToUtf16Le(&pipe_name, pipe_name_str) catch return error.CreatePipeFailed;
@@ -939,8 +939,8 @@ fn runOnce(
 
 /// `OSC 0 title="..."` 형태에서 제목만 뽑는다.
 fn titlePayload(line: []const u8) []const u8 {
-    const start = std.mem.indexOfScalar(u8, line, '"') orelse return "";
-    const end = std.mem.lastIndexOfScalar(u8, line, '"') orelse return "";
+    const start = std.mem.findScalar(u8, line, '"') orelse return "";
+    const end = std.mem.findScalarLast(u8, line, '"') orelse return "";
     if (end <= start) return "";
     return line[start + 1 .. end];
 }

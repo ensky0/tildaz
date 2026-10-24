@@ -5,6 +5,7 @@
 //! Glyph 는 fontconfig + FreeType 으로 raster (ASCII 만 pre-cached, [font/linux/font.zig](../../font/linux/font.zig)).
 
 const std = @import("std");
+const test_text = @import("../../test_text.zig");
 const ghostty = @import("ghostty-vt");
 const themes = @import("../../themes.zig");
 const font = @import("../../font/linux/font.zig");
@@ -3164,7 +3165,7 @@ test "#309 tab clipping keeps a high-index drag source reachable" {
 // #213 재현 — About dialog paint 경로 (compositor 무관). KDE Plasma 1.7x 에서
 // Ctrl+Shift+I crash 가 layer-shell dialog paint (`handleDialogConfigure` →
 // `drawDialogContent`) 에 있는지 격리. layer-shell 미지원 DE (Cinnamon 등) 에선
-// dialog 가 안 떠 GUI 재현 불가하므로 paint 만 직접 호출. ReleaseSafe 로 돌리면
+// dialog 가 안 떠 GUI 재현 불가하므로 paint 만 직접 호출. `safe` 로 돌리면
 // safety panic 의 정확한 source line 확보.
 test "#213 about dialog paint — scale 1.7 + 긴 multi-line + URL" {
     const allocator = std.testing.allocator;
@@ -3245,7 +3246,7 @@ test "#314 overflow About renderer draws 2pt brand separator and movable gray sc
     defer r.deinit(allocator);
 
     const title = "About TildaZ";
-    const msg = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const msg = test_text.repeat("/home/" ++ test_text.repeat("x", 500) ++ "\n", 4);
     const layout = r.computeDialogLayout(title, msg, .about, 1088, 816);
     try std.testing.expect(layout.message_scroll_max > 0);
     try std.testing.expect(layout.visible_message_rows < layout.message_rows);

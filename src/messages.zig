@@ -19,13 +19,13 @@ pub const dialog_title_max_width: usize = 28;
 // 테스트에 케이스가 없어 아무도 몰랐다.
 comptime {
     @setEvalBranchQuota(100_000);
-    for (@typeInfo(@This()).@"struct".decls) |decl| {
-        if (!std.mem.endsWith(u8, decl.name, "_title")) continue;
-        const title: []const u8 = @field(@This(), decl.name);
+    for (@typeInfo(@This()).@"struct".decl_names) |decl_name| {
+        if (!std.mem.endsWith(u8, decl_name, "_title")) continue;
+        const title: []const u8 = @field(@This(), decl_name);
         const width = display_width.stringWidth(title);
         if (width > dialog_title_max_width) @compileError(std.fmt.comptimePrint(
             "messages.{s} is {d} columns wide (\"{s}\"); dialog titles must be at most {d}",
-            .{ decl.name, width, title, dialog_title_max_width },
+            .{ decl_name, width, title, dialog_title_max_width },
         ));
     }
 }
@@ -40,9 +40,9 @@ pub const dialog_indent_step: usize = 2;
 // 아니라 터미널에 찍히고, 고정폭이라 옵션 설명을 열로 맞추는 CLI 관례가 실제로 맞는다.
 comptime {
     @setEvalBranchQuota(1_000_000);
-    for (@typeInfo(@This()).@"struct".decls) |decl| {
-        if (std.mem.eql(u8, decl.name, "help_text")) continue;
-        const T = @TypeOf(@field(@This(), decl.name));
+    for (@typeInfo(@This()).@"struct".decl_names) |decl_name| {
+        if (std.mem.eql(u8, decl_name, "help_text")) continue;
+        const T = @TypeOf(@field(@This(), decl_name));
         const info = @typeInfo(T);
         if (info != .pointer) continue;
         const is_text = switch (@typeInfo(info.pointer.child)) {
@@ -51,14 +51,14 @@ comptime {
             else => false,
         };
         if (!is_text) continue;
-        const text: []const u8 = @field(@This(), decl.name);
+        const text: []const u8 = @field(@This(), decl_name);
         var i: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, text, i, '\n')) |nl| : (i = nl + 1) {
+        while (std.mem.findScalarPos(u8, text, i, '\n')) |nl| : (i = nl + 1) {
             var spaces: usize = 0;
             while (nl + 1 + spaces < text.len and text[nl + 1 + spaces] == ' ') spaces += 1;
             if (spaces % dialog_indent_step != 0) @compileError(std.fmt.comptimePrint(
                 "messages.{s} indents a line by {d} spaces; dialog text indents in steps of {d}",
-                .{ decl.name, spaces, dialog_indent_step },
+                .{ decl_name, spaces, dialog_indent_step },
             ));
         }
     }
@@ -364,7 +364,7 @@ pub fn runFailureMessage(buf: []u8, err: anyerror, config_notice: ?[]const u8) [
         error.RequestEndpointReadyTimeout => request_endpoint_ready_timeout_msg,
         // #577 — 첫 기동이 화면 없이 끝난 경우. generic `WorkerStartTimeout` 대신.
         error.WorkerExitedDuringStartup => worker_exited_during_startup_msg,
-        else => std.fmt.bufPrint(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
+        else => std.mem.print(buf, run_failed_format, .{@errorName(err)}) catch run_failed_fallback_msg,
     };
 }
 
@@ -409,7 +409,7 @@ test "request endpoint run errors have specific user messages" {
     );
     // 이 문구는 사용자에게 **무엇을 볼지** 말해야 한다 — 여기까지 온 실행은 화면에
     // 아무것도 남기지 않았으므로 단서가 로그뿐이다.
-    try std.testing.expect(std.mem.indexOf(u8, worker_exited_during_startup_msg, "log") != null);
+    try std.testing.expect(std.mem.find(u8, worker_exited_during_startup_msg, "log") != null);
     try std.testing.expectEqualStrings(
         "TildaZ failed to start.\n\nError: ExampleFailure",
         runFailureMessage(&buf, error.ExampleFailure, null),
@@ -615,7 +615,7 @@ pub const config_hotkey_invalid_fallback_msg = "Configuration: hotkey invalid";
 /// 시작하면서 생긴 경로다 — 그전에는 위치 표기가 파싱 앞단에서 막혀 이 둘이 `[keys]`
 /// 에서만 났고, 그래서 hotkey 쪽 config 로드부가 `unreachable` 로 두고 있었다.
 ///
-/// 그 `unreachable` 은 ReleaseFast 에서 안전 검사가 없어 **`modifier_required` 안내로
+/// 그 `unreachable` 은 `fast` 에서 안전 검사가 없어 **`modifier_required` 안내로
 /// 떨어졌다** (macOS 실기 확인). `ctrl` 을 이미 준 사용자에게 "modifier 를 달라" 고
 /// 말하는 것이라, #484 가 "거부 이유별로 다른 안내를 보낸다" 로 막으려던 실패 그대로다.
 pub const config_hotkey_position_aliased_format = "Configuration: \"hotkey\" value \"{s}\" uses a key position that macOS reports under a different name.\n\nOn a PC keyboard attached to a Mac, PrintScreen, ScrollLock and Pause arrive as F13, F14 and F15 -- Apple's extended keyboard puts those function keys in the same spots.\n\nUse [F13], [F14] or [F15] instead.";

@@ -15,7 +15,7 @@ keychain access dialog 의 password 가 로그인 password 와 어긋나 막힐 
 ## 옵션 A: ad-hoc (default, 항상 동작)
 
 ```bash
-zig build -Doptimize=ReleaseFast -Dsimd=true
+zig build -Doptimize=fast -Dsimd=true
 ```
 
 `codesign --sign -` (ad-hoc) 으로 서명. 매 빌드마다 hash 변경 → macOS 가 새
@@ -60,7 +60,7 @@ security find-identity -v -p codesigning
 ### 3. 빌드
 
 ```bash
-zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true
+zig build -Dmacos-sign-identity=TildazLocal -Doptimize=fast -Dsimd=true
 ```
 
 처음 빌드 시 keychain access dialog 가 뜸. **macOS 로그인 password** 입력 +
@@ -85,7 +85,7 @@ open zig-out/TildaZ-dev.app
     이고, `Input Monitoring` (입력 모니터링) 은 그대로예요. TCC 서비스 키
     (`kTCCServiceAccessibility`) 도 안 바뀌어서 동작에는 영향이 없어요 — 이름만이에요.
 
-이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true` 로 빌드 + 다시 실행해도
+이후 `zig build -Dmacos-sign-identity=TildazLocal -Doptimize=fast -Dsimd=true` 로 빌드 + 다시 실행해도
 **권한 유지** — signing identity stable. (codesign 창이나 권한 재요구가 다시
 나오면 [문제 해결](#문제-해결) 참고.)
 
@@ -181,9 +181,9 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 잔재를 정리하고 하나만 다시 만들어요. 전부 지우려면
 [`uninstall.sh --purge`](./uninstall.sh) 사용.
 
-## ReleaseFast 빌드 + Applications 설치
+## `fast` 빌드 + Applications 설치
 
-아래 스크립트가 ReleaseFast 빌드와 `/Applications/TildaZ-dev.app` 설치를 한 번에
+아래 스크립트가 `fast` 빌드와 `/Applications/TildaZ-dev.app` 설치를 한 번에
 수행해요. `TildazLocal` identity가 없으면 스크립트가 `setup-cert.sh`를 먼저 부르고,
 그래도 유효한 identity가 없으면 (system trust 명령이 끝나지 않은 경우) 안전하게
 중단해요. SIMD 빌드가 실패하면 SIMD 없이 한 번 더 빌드해 설치까지 끝내요 (#665).
@@ -194,7 +194,7 @@ security set-keychain-password "$HOME/Library/Keychains/login.keychain-db"
 
 기본은 dev예요. 릴리즈를 설치할 때만 `--release`를 붙여요. 이때 번들은 `TildaZ.app`이에요.
 Linux · macOS · Windows 설치 스크립트가 모두 같은 옵션을 써요.
-`ReleaseFast`는 최적화 수준이고 dev/릴리즈 구분과는 별개예요.
+`fast`는 최적화 수준이고 dev/릴리즈 구분과는 별개예요.
 
 설치 경로 또는 identity를 바꿔야 하면 환경변수로 지정할 수 있어요.
 번들 이름은 선택한 종류와 같아야 해요 (`TildaZ-dev.app` 또는 `TildaZ.app`).
@@ -279,7 +279,7 @@ passwordless `sudo`로 runner System Keychain의 code-signing trust에 임시 �
 공개 fingerprint를 검증해요. GitHub는 Linux/macOS hosted VM이 passwordless `sudo`로
 실행됨을 [공식 문서](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)에 명시해요. 로컬 실행에서는 기존 system trust만 읽고
 trust 설정을 바꾸지 않아요. 이어서
-`zig build package -Drelease=true -Dmacos-sign-identity=TildazLocal -Doptimize=ReleaseFast -Dsimd=true`를 실행하면
+`zig build package -Drelease=true -Dmacos-sign-identity=TildazLocal -Doptimize=fast -Dsimd=true`를 실행하면
 (`-Drelease=true` 가 없으면 package 는 실패해요 — #654)
 `dist/macos/package.sh`가:
 

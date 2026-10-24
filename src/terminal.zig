@@ -22,7 +22,7 @@ pub const ExitCallback = *const fn (userdata: ?*anyopaque) void;
 /// 셸 실행 인자의 platform 별 표현. Windows 는 `CreateProcessW` 가 NUL-term
 /// UTF-16 을 받고, POSIX 는 `execve` 가 NUL-term UTF-8 (= zig `[]const u8` +
 /// dupeZ).
-pub const ShellCommand = switch (builtin.os.tag) {
+pub const ShellCommand = switch (builtin.target.os.tag) {
     .windows => [*:0]const u16,
     else => []const u8,
 };
@@ -63,7 +63,7 @@ pub const Options = struct {
 /// comptime 으로 고르는 이유: Windows 구현은 `wsl.exe` 명령줄 토큰을 UTF-16 으로
 /// 훑는 코드라 다른 platform 에서는 컴파일 자체가 안 된다 (`TerminalBackend` 와 같은
 /// 패턴).
-pub const isWslShell = if (builtin.os.tag == .windows)
+pub const isWslShell = if (builtin.target.os.tag == .windows)
     @import("terminal/windows/pty.zig").isWslCommand
 else
     struct {
@@ -72,7 +72,7 @@ else
         }
     }.notWsl;
 
-pub const TerminalBackend = switch (builtin.os.tag) {
+pub const TerminalBackend = switch (builtin.target.os.tag) {
     .windows => @import("terminal/windows.zig").Backend,
     .macos, .linux => @import("terminal/posix.zig").Backend,
     else => UnsupportedTerminalBackend,

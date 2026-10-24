@@ -621,7 +621,7 @@ pub const GlyphAtlas = struct {
     /// 같은 RGBA 경로 — 회색이라 R=G=B=coverage, A=0xFF (subpixel fringing 없음),
     /// `temp_buf` → `UpdateSubresource` 업로드. is_color=false 로 mono shader path.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @backingInt(icon), .source = .tab };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 

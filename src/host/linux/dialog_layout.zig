@@ -4,6 +4,7 @@
 //! viewport와 현재 scale에서 만든 physical pixel metrics를 전달한다.
 
 const std = @import("std");
+const test_text = @import("../../test_text.zig");
 const display_width = @import("../../font/display_width.zig");
 const font_validate = @import("../../font/validate.zig");
 const hotkey_status = @import("../../hotkey_status.zig");
@@ -122,7 +123,17 @@ pub const WrappedLines = struct {
             }
             const seq = std.unicode.utf8ByteSequenceLength(b) catch 1;
             const end = @min(i + seq, self.msg.len);
-            const cp = std.unicode.utf8Decode(self.msg[i..end]) catch 0xFFFD;
+            // #820 — `utf8Decode` 는 0.17 에서 deprecated (길이를 맞춰 넘겨야 하는 API). 예전에는
+            // 글이 글자 중간에서 끝나면 짧은 조각을 넘겨, 길이별 함수의 첫 바이트 단언에 걸릴 수
+            // 있었다. 잘린 글자는 U+FFFD 로 센다.
+            const chunk = self.msg[i..end];
+            const cp: u21 = if (chunk.len != seq) 0xFFFD else switch (seq) {
+                1 => b,
+                2 => std.unicode.utf8Decode2(chunk[0..2].*) catch 0xFFFD,
+                3 => std.unicode.utf8Decode3(chunk[0..3].*) catch 0xFFFD,
+                4 => std.unicode.utf8Decode4(chunk[0..4].*) catch 0xFFFD,
+                else => unreachable,
+            };
             const w: i32 = self.measure.advance(cp);
             if (cp == ' ') {
                 last_space = i;
@@ -394,7 +405,7 @@ test "same logical viewport fits at 1x 1.7x and 2x" {
 }
 
 test "wide viewport is not limited to 72 cells" {
-    const message = "x" ** 100;
+    const message = test_text.repeat("x", 100);
     // preferred 폭에서는 2행이라 화면을 넘고, maximum 폭의 100열 1행은
     // 들어오는 높이다. 과거 72-cell 상한이 되살아나면 이 경계가 실패한다.
     const f = testFonts(100);
@@ -439,16 +450,16 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
 
     // #483 — 가장 긴 종료 확인은 pane 을 함께 적는 쪽이고, 최악은 상한끼리 (`MAX_TABS` 32 × `MAX_PANES_PER_TAB` 16).
     var quit_buf: [128]u8 = undefined;
-    const quit_msg = try std.fmt.bufPrint(&quit_buf, messages.quit_confirm_panes_format, .{ 32, "s", 32 * 16 });
+    const quit_msg = try std.mem.print(&quit_buf, messages.quit_confirm_panes_format, .{ 32, "s", 32 * 16 });
 
     var tab_limit_buf: [128]u8 = undefined;
-    const tab_limit_msg = try std.fmt.bufPrint(&tab_limit_buf, messages.tab_limit_format, .{32});
+    const tab_limit_msg = try std.mem.print(&tab_limit_buf, messages.tab_limit_format, .{32});
 
     // #682 — Tip 블록은 따로 조립된다. 가장 긴 쪽 (두 줄) 으로 잰다.
     var about_tip_buf: [256]u8 = undefined;
-    const about_tip = try std.fmt.bufPrint(&about_tip_buf, messages.about_tip_both_format, .{ "Ctrl+Shift+P", "Ctrl+Shift+L" });
+    const about_tip = try std.mem.print(&about_tip_buf, messages.about_tip_both_format, .{ "Ctrl+Shift+P", "Ctrl+Shift+L" });
     var about_buf: [2048]u8 = undefined;
-    const about_msg = try std.fmt.bufPrint(&about_buf, messages.about_format, .{
+    const about_msg = try std.mem.print(&about_buf, messages.about_format, .{
         "0.6.1",
         "/home/example/.local/bin/tildaz",
         123456,
@@ -464,15 +475,15 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     // `config_not_loaded_title` 이고, 파서가 위치를 주는 흔한 경우는 줄 · 열이 든 판이라 한 줄
     // 길다. 둘 중 긴 쪽으로 잰다.
     var parse_buf: [512]u8 = undefined;
-    const parse_body = try std.fmt.bufPrint(&parse_buf, messages.config_parse_failed_at_format, .{ 12345, 678, "UnexpectedToken" });
+    const parse_body = try std.mem.print(&parse_buf, messages.config_parse_failed_at_format, .{ 12345, 678, "UnexpectedToken" });
     var parse_full_buf: [640]u8 = undefined;
-    const parse_msg = try std.fmt.bufPrint(&parse_full_buf, messages.config_error_with_path_format, .{
+    const parse_msg = try std.mem.print(&parse_full_buf, messages.config_error_with_path_format, .{
         "/home/example/.config/tildaz/config_0.toml",
         parse_body,
     });
 
     var hotkey_invalid_buf: [384]u8 = undefined;
-    const hotkey_invalid_msg = try std.fmt.bufPrint(
+    const hotkey_invalid_msg = try std.mem.print(
         &hotkey_invalid_buf,
         messages.config_hotkey_invalid_format,
         .{"shift+t"},
@@ -489,7 +500,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     const theme_msg = theme_stream.buffered();
 
     var shell_buf: [1024]u8 = undefined;
-    const shell_msg = try std.fmt.bufPrint(&shell_buf, messages.shell_executable_not_found_format, .{
+    const shell_msg = try std.mem.print(&shell_buf, messages.shell_executable_not_found_format, .{
         "/opt/example/TildaZ Shell/bin/example-shell",
         "/opt/example/TildaZ Shell/bin/example-shell",
         messages.shell_examples_posix,
@@ -497,7 +508,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     });
 
     var new_tab_buf: [1024]u8 = undefined;
-    const new_tab_msg = try std.fmt.bufPrint(&new_tab_buf, messages.shell_new_tab_not_found_format, .{
+    const new_tab_msg = try std.mem.print(&new_tab_buf, messages.shell_new_tab_not_found_format, .{
         "/opt/example/TildaZ Shell/bin/example-shell",
         "/home/example/.config/tildaz/config_98.json",
     });
@@ -522,17 +533,17 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
     );
 
     var takeover_buf: [512]u8 = undefined;
-    const takeover_msg = try std.fmt.bufPrint(&takeover_buf, messages.hotkey_takeover_format, .{
+    const takeover_msg = try std.mem.print(&takeover_buf, messages.hotkey_takeover_format, .{
         "Ctrl+Shift+Space",
         "KWin",
         "Show Desktop Grid",
     });
 
     var prompt_buf: [256]u8 = undefined;
-    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
+    const prompt_msg = try std.mem.print(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{32});
 
     var create_error_buf: [512]u8 = undefined;
-    const create_error_msg = try std.fmt.bufPrint(
+    const create_error_msg = try std.mem.print(
         &create_error_buf,
         messages.new_instance_create_failed_format,
         .{"RequestEndpointReadyTimeout"},
@@ -559,7 +570,7 @@ test "current Linux dialog messages fit the 640x480 logical minimum" {
 
     // #758 — 일반 파일이 아닌 config 의 안내 (`config.readFailedNoticeAlloc`). 경로가 첫 줄이다.
     var odd_full_buf: [768]u8 = undefined;
-    const odd_msg = try std.fmt.bufPrint(&odd_full_buf, messages.config_error_with_path_format, .{
+    const odd_msg = try std.mem.print(&odd_full_buf, messages.config_error_with_path_format, .{
         "/home/example/.config/tildaz/config_0.toml",
         messages.config_not_a_file_msg,
     });
@@ -616,14 +627,14 @@ test "#758 the title limit (messages.dialog_title_max_width) fits the 640x480 lo
     // `messages.zig` 의 컴파일 가드가 제목을 이 한도로 막는다. 이 테스트는 그 한도의 **근거**다 —
     // 다이얼로그 치수 (여백 · 그림자 · 글꼴) 가 바뀌어 한도만큼의 제목이 더는 안 들어가면 여기서 실패한다.
     // 측정기가 `칸 폭 × 글자 폭` 이라 어느 한 칸 글자로 채워도 같다. 버튼이 둘인 confirm 도 함께 본다.
-    const title = "W" ** messages.dialog_title_max_width;
+    const title = test_text.repeat("W", messages.dialog_title_max_width);
     try expectFitsLogicalMinimum(title, "x", .info, .{ 0, 0, 0 });
     try expectFitsLogicalMinimum(title, "x", .confirm, .{ 0, 0, 0 });
 }
 
 test "#721 prompt status widens the box up to the preferred width and wraps beyond it" {
     var prompt_buf: [256]u8 = undefined;
-    const prompt_msg = try std.fmt.bufPrint(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
+    const prompt_msg = try std.mem.print(&prompt_buf, messages.new_instance_hotkey_prompt_format, .{2});
     const m = testMetrics(100);
     const viewport = Size{ .w = 1280, .h = 800 };
     // #793 — 기본 폭은 글 영역 폭 그대로다.
@@ -794,7 +805,7 @@ test "dialogs use overflow rows only when content exceeds viewport" {
     try std.testing.expectEqual(@as(usize, 0), ordinary_layout.message_scroll_max);
     try std.testing.expectEqual(ordinary_layout.message_rows, ordinary_layout.visible_message_rows);
 
-    const long_message = ("/home/" ++ ("x" ** 500) ++ "\n") ** 4;
+    const long_message = test_text.repeat("/home/" ++ test_text.repeat("x", 500) ++ "\n", 4);
     const overflow = compute("About TildaZ", long_message, .about, testMetrics(100), f.body(), f.title(), .{ .w = 640, .h = 480 });
     try std.testing.expect(overflow.fits);
     try std.testing.expect(overflow.show_icon);
@@ -828,7 +839,7 @@ test "dialogs use common preferred then maximum width in logical points" {
     // #793 — 580 · 960 은 글 영역 폭이다. 창은 여백 · 그림자만큼 더 넓다.
     try std.testing.expect(compact.wrap_width <= @as(i32, @intCast(ui_metrics.DIALOG_PREFERRED_WIDTH_PT)));
 
-    const message = "x" ** 2000;
+    const message = test_text.repeat("x", 2000);
     const scales = [_]u32{ 100, 170, 200 };
     for (scales) |scale_percent| {
         const sf = testFonts(scale_percent);
@@ -856,12 +867,22 @@ test "dialogs use common preferred then maximum width in logical points" {
     }
 }
 
+test "#820 a message cut inside a character wraps without decoding a short sequence" {
+    // 글이 글자 중간에서 끝나면 (`가` 의 앞 두 바이트) 예전에는 짧은 조각을 `utf8Decode` 에 넘겨
+    // 길이별 함수의 첫 바이트 단언에 걸릴 수 있었다. 이제 잘린 글자는 U+FFFD 한 칸으로 센다.
+    const f = testFonts(100);
+    const msg = "abc" ++ "가"[0..2];
+    var lines: WrappedLines = .{ .msg = msg, .max_width = 10_000, .measure = f.body() };
+    try std.testing.expectEqualStrings(msg, lines.next().?);
+    try std.testing.expect(lines.next() == null);
+}
+
 test "#793 the preferred width is the text area on an ample screen" {
     // 기본 폭을 넘는 한 줄 — 창이 화면을 넘지 않으니 기본 폭에서 줄바꿈한다. 그 폭이 글 영역 폭
     // (`preferred_w`) 그대로여야 한다. 예전에는 그림자 · 여백을 뺀 폭 (580pt 창에 글 약 520) 이었다.
     const f = testFonts(100);
     const m = testMetrics(100);
-    const layout = compute("Some Settings Replaced", "x" ** 200, .info, m, f.body(), f.title(), .{ .w = 1920, .h = 1080 });
+    const layout = compute("Some Settings Replaced", test_text.repeat("x", 200), .info, m, f.body(), f.title(), .{ .w = 1920, .h = 1080 });
     const chrome_w = m.shadow_margin * 2 + m.padding * 2;
     try std.testing.expectEqual(m.preferred_w, layout.wrap_width);
     // 창은 글 영역보다 넓다 — 예전 코드는 창 전체가 `preferred_w` 안이었다.

@@ -8,6 +8,7 @@
 // unknown / type 검증 자동 sync. value range 만 별도 hardcoded.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const toml = @import("toml");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
@@ -39,8 +40,8 @@ const WCHAR = u16;
 pub const MAX_FONT_FAMILIES = font_constants.MAX_CHAIN;
 
 // Linux 는 이 둘이 아닌 `else` 분기 — 별 술어를 두지 않는다.
-const is_windows = builtin.os.tag == .windows;
-const is_macos = builtin.os.tag == .macos;
+const is_windows = builtin.target.os.tag == .windows;
+const is_macos = builtin.target.os.tag == .macos;
 
 // --- DockPosition (cross-platform) ---
 
@@ -439,7 +440,7 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
     const cinnamon_js = @embedFile("cinnamon_extension_js");
     for (keys) |key| {
         var text_buf: [32]u8 = undefined;
-        const text = try std.fmt.bufPrint(&text_buf, "ctrl+{s}", .{key});
+        const text = try std.mem.print(&text_buf, "ctrl+{s}", .{key});
         // ① Linux 등록 이름 (sway · Hyprland · COSMIC · GNOME/Cinnamon 의 앱 쪽).
         const linux = LinuxHotkey.fromString(text) orelse return error.TestUnexpectedResult;
         const name = linuxKeysymName(linux.keysym) orelse {
@@ -450,9 +451,9 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
         //    한 글자 키와 F 키는 규칙으로 만들므로 이름 문자열이 없다.
         if (name.len > 1 and !(name[0] == 'F' and name.len <= 3)) {
             var quoted_buf: [32]u8 = undefined;
-            const quoted = try std.fmt.bufPrint(&quoted_buf, "key = \"{s}\"", .{name});
+            const quoted = try std.mem.print(&quoted_buf, "key = \"{s}\"", .{name});
             for ([_][]const u8{ gnome_js, cinnamon_js }) |js| {
-                if (std.mem.indexOf(u8, js, quoted) == null) {
+                if (std.mem.find(u8, js, quoted) == null) {
                     std.debug.print("확장 JS 에 없음: {s}\n", .{quoted});
                     return error.TestUnexpectedResult;
                 }
@@ -460,7 +461,7 @@ test "#693 — 전역 hotkey 가 받는 키는 Linux 등록 이름 · 확장 JS 
         }
         // ③ 이 OS 의 캡처 — 캡처한 글자가 다시 같은 hotkey 로 읽혀야 한다.
         const native = Hotkey.fromString(text) orelse return error.TestUnexpectedResult;
-        const code: u32 = switch (builtin.os.tag) {
+        const code: u32 = switch (builtin.target.os.tag) {
             .linux => native.keysym,
             .windows => native.vkey,
             .macos => native.keycode,
@@ -557,7 +558,7 @@ fn configKeyName(key: HotkeyNamedKey) []const u8 {
 /// 캡처 (`capturedHotkeyText`) 에는 영향이 없다.
 fn tokenFromNativeKey(native_key: u32) ?HotkeyKeyToken {
     // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다. 파서의 글자는 소문자다.
-    const key = if (builtin.os.tag == .linux and native_key >= 'A' and native_key <= 'Z') native_key + 0x20 else native_key;
+    const key = if (builtin.target.os.tag == .linux and native_key >= 'A' and native_key <= 'Z') native_key + 0x20 else native_key;
     for (std.enums.values(HotkeyNamedKey)) |named| {
         const token: HotkeyKeyToken = .{ .named = named };
         if (nativeKeyOf(token) == key) return token;
@@ -571,7 +572,7 @@ fn tokenFromNativeKey(native_key: u32) ?HotkeyKeyToken {
 
 fn nativeKeyOf(token: HotkeyKeyToken) u32 {
     const hotkey = Hotkey.fromParsed(.{ .ctrl = false, .shift = false, .alt = false, .super = false, .key = token });
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => hotkey.keysym,
         .windows => hotkey.vkey,
         .macos => hotkey.keycode,
@@ -604,7 +605,7 @@ pub fn capturedHotkeyText(buf: []u8, key_code: u32, modifiers: u32) ?[]const u8 
 /// config 가 source of truth 이며 F1 을 별도로 hardcode 하지 않는다. 모양은 `[keys]` 의 메뉴
 /// 글자와 같다 (`bindingDisplay` — 글자는 대문자, macOS 는 `Control` `Option` `Shift` `Cmd`).
 pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
-    const native_key: u32 = switch (builtin.os.tag) {
+    const native_key: u32 = switch (builtin.target.os.tag) {
         .linux => hotkey.keysym,
         .windows => hotkey.vkey,
         .macos => hotkey.keycode,
@@ -625,7 +626,7 @@ pub fn hotkeyDisplay(buf: []u8, hotkey: Hotkey) []const u8 {
 test "configured hotkey display is derived from the parsed native value" {
     var buf: [64]u8 = undefined;
     const parsed = Hotkey.fromString("ctrl+shift+t").?;
-    const expected = if (builtin.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
+    const expected = if (builtin.target.os.tag == .macos) "Control+Shift+T" else "Ctrl+Shift+T";
     try std.testing.expectEqualStrings(expected, hotkeyDisplay(&buf, parsed));
     // #760 — 화면 글자는 `[keys]` 메뉴와 같은 모양이다. 예전에는 캡처 글자를 그대로 써서
     // Linux 가 `Ctrl+Page_Up`, macOS 가 `Command+` 로 보였다.
@@ -814,7 +815,7 @@ test "#760 — 캡처는 세 OS 가 같은 글자로 적는다" {
         try std.testing.expectEqualStrings(if (is_macos) c.mac else c.pc, text);
     }
     // Linux 는 Shift 와 함께 누른 글자가 대문자 keysym 으로 온다.
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         var buf: [64]u8 = undefined;
         try std.testing.expectEqualStrings("ctrl+shift+t", capturedHotkeyText(&buf, 'T', ctrl | CAPTURE_MOD_SHIFT).?);
     }
@@ -867,7 +868,7 @@ test "modifier-free capture only accepts function keys" {
 }
 
 test "config parser rejects unsafe global hotkeys" {
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         try std.testing.expect(Hotkey.fromString("f3") != null);
         try std.testing.expect(Hotkey.fromString("t") == null);
         try std.testing.expect(Hotkey.fromString("shift+t") == null);
@@ -1012,7 +1013,7 @@ test "#496 macOS 에 값이 없는 자리는 그 platform 에서만 거부한다
 
         // #496 1-c — **전역 `hotkey` scope 에서도 같은 거부가 난다.** 위치 표기를 받기
         // 시작하면서 생긴 경로이고, config 로드부는 이것을 `unreachable` 로 두고 있었다.
-        // ReleaseFast 는 안전 검사가 없어 크래시 대신 `modifier_required` 안내로
+        // `fast` 는 안전 검사가 없어 크래시 대신 `modifier_required` 안내로
         // 떨어졌고, `ctrl` 을 이미 준 사용자에게 "modifier 를 달라" 고 말했다 (macOS
         // 실기 확인). 여기서 고정해 두면 그 전제가 다시 깨질 때 테스트가 잡는다.
         try std.testing.expectEqual(
@@ -1126,7 +1127,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
 
     for ('a'..'z' + 1) |c| {
         const letter: u8 = @intCast(c);
-        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(letter)}) catch unreachable;
+        const name = std.mem.print(&name_buf, "Key{c}", .{std.ascii.toUpper(letter)}) catch unreachable;
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = letter }),
@@ -1135,7 +1136,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
     for ('0'..'9' + 1) |c| {
         const digit: u8 = @intCast(c);
-        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{digit}) catch unreachable;
+        const name = std.mem.print(&name_buf, "Digit{c}", .{digit}) catch unreachable;
         const code = physical_key.fromName(name).?;
         try std.testing.expectEqual(
             MacHotkey.keycodeFromKey(.{ .char = digit }),
@@ -1172,12 +1173,12 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
     }
     // `pairs` 가 named 라벨을 **빠짐없이** 덮어야 한다. 라벨을 하나 더하면 여기서
     // 걸리고, 그때 위 표에 대응 위치를 적어야 한다.
-    try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".fields.len, pairs.len);
+    try std.testing.expectEqual(@typeInfo(HotkeyNamedKey).@"enum".field_names.len, pairs.len);
     // 방향은 한쪽뿐이다 — **모든 라벨에는 위치가 있지만 그 반대는 아니다.** 위치
     // 집합이 더 넓다: 라벨이 거부하는 ASCII 기호 자리와 ISO 추가 키를 담는다
     // (`physical_key.zig` 의 정책 문단 참고). 그래서 등호가 아니라 부등호다.
     try std.testing.expect(
-        @typeInfo(PhysicalCode).@"enum".fields.len >= pairs.len + 26 + 10,
+        @typeInfo(PhysicalCode).@"enum".field_names.len >= pairs.len + 26 + 10,
     );
 }
 
@@ -1908,7 +1909,7 @@ pub fn defaultConfigToml(
     try fw.writeAll("]");
     const glyph_fallback_toml = fb_fbs.buffered();
 
-    const head = try std.fmt.allocPrint(allocator,
+    const head = try allocator.print(
         \\# TildaZ config. CONFIG.md explains every setting.
         \\
         \\# Global hotkey. Works even when TildaZ is not focused.
@@ -2574,11 +2575,11 @@ pub fn fallbackCandidate(hotkey: Hotkey) ?FallbackCandidate {
 fn usPositionForKeysym(keysym: u32) ?PhysicalCode {
     var name_buf: [8]u8 = undefined;
     if (keysym >= 'a' and keysym <= 'z') {
-        const name = std.fmt.bufPrint(&name_buf, "Key{c}", .{std.ascii.toUpper(@intCast(keysym))}) catch return null;
+        const name = std.mem.print(&name_buf, "Key{c}", .{std.ascii.toUpper(@intCast(keysym))}) catch return null;
         return physical_key.fromName(name);
     }
     if (keysym >= '0' and keysym <= '9') {
-        const name = std.fmt.bufPrint(&name_buf, "Digit{c}", .{@as(u8, @intCast(keysym))}) catch return null;
+        const name = std.mem.print(&name_buf, "Digit{c}", .{@as(u8, @intCast(keysym))}) catch return null;
         return physical_key.fromName(name);
     }
     return switch (keysym) {
@@ -3013,7 +3014,7 @@ test "#683 — dev 판은 새 config 의 auto_start 기본값이 false 다" {
     const text = try defaultConfigToml(std.testing.allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer std.testing.allocator.free(text);
     const want = if (app_id.is_dev) "auto_start       = false" else "auto_start       = true";
-    try std.testing.expect(std.mem.indexOf(u8, text, want) != null);
+    try std.testing.expect(std.mem.find(u8, text, want) != null);
 }
 
 test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은 예전 고정 글자와 같다" {
@@ -3039,7 +3040,7 @@ test "#682 — 메뉴 글자는 실제 바인딩에서 나온다 · 기본값은
         .{ .command = .keyboard_shortcuts, .mac = "Shift+Cmd+/", .pc = "Ctrl+Shift+/" },
         .{ .command = .about, .mac = "Shift+Cmd+I", .pc = "Ctrl+Shift+I" },
     };
-    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".fields.len, expected.len);
+    try std.testing.expectEqual(@typeInfo(command_menu.Command).@"enum".field_names.len, expected.len);
     for (expected) |e| {
         try std.testing.expectEqualStrings(if (is_macos) e.mac else e.pc, hints.get(e.command, false));
     }
@@ -3088,12 +3089,12 @@ fn pairBindingDisplay(buf: []u8, bindings: []const KeyBinding, a: KeyAction, b: 
     const b_text = firstBindingDisplay(&b_buf, bindings, b);
     if (a_text.len == 0) return copyInto(buf, b_text);
     if (b_text.len == 0) return copyInto(buf, a_text);
-    const a_split = if (std.mem.lastIndexOfScalar(u8, a_text, '+')) |i| i + 1 else 0;
-    const b_split = if (std.mem.lastIndexOfScalar(u8, b_text, '+')) |i| i + 1 else 0;
+    const a_split = if (std.mem.findScalarLast(u8, a_text, '+')) |i| i + 1 else 0;
+    const b_split = if (std.mem.findScalarLast(u8, b_text, '+')) |i| i + 1 else 0;
     if (std.mem.eql(u8, a_text[0..a_split], b_text[0..b_split])) {
-        return std.fmt.bufPrint(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
+        return std.mem.print(buf, "{s}/{s}", .{ a_text, b_text[b_split..] }) catch "";
     }
-    return std.fmt.bufPrint(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
+    return std.mem.print(buf, "{s} / {s}", .{ a_text, b_text }) catch "";
 }
 
 fn copyInto(buf: []u8, text: []const u8) []const u8 {
@@ -3322,7 +3323,7 @@ pub const Config = struct {
         // 사용자가 적은 원문 대신 canonical 표기를 쓴다 — fallback 경로에는 원문 자체가 없다.
         var key_buf: [64]u8 = undefined;
         var msg_buf: [384]u8 = undefined;
-        const msg = std.fmt.bufPrint(
+        const msg = std.mem.print(
             &msg_buf,
             messages.config_hotkey_duplicate_format,
             .{ hotkeyDisplay(&key_buf, config.hotkey), owner },
@@ -3504,16 +3505,16 @@ pub const Config = struct {
                 //
                 // #496 1-c — 여기 `.position_aliased_on_macos` 는 한때 `unreachable` 이었다.
                 // 전역 hotkey 가 위치 표기를 아예 안 받던 시절의 전제였는데 1-c 가 그것을
-                // 받게 하면서 깨졌고, ReleaseFast 는 안전 검사가 없어 엉뚱한 안내로 떨어졌다.
+                // 받게 하면서 깨졌고, `fast` 는 안전 검사가 없어 엉뚱한 안내로 떨어졌다.
                 var buf: [768]u8 = undefined;
                 const why = switch (hotkeyFailure(v.string).?) {
-                    .unknown_key => std.fmt.bufPrint(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
+                    .unknown_key => std.mem.print(&buf, messages.config_hotkey_unknown_key_format, .{v.string}) catch
                         messages.config_hotkey_unknown_key_fallback_msg,
-                    .modifier_required => std.fmt.bufPrint(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
+                    .modifier_required => std.mem.print(&buf, messages.config_hotkey_invalid_format, .{v.string}) catch
                         messages.config_hotkey_invalid_fallback_msg,
-                    .position_aliased_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
+                    .position_aliased_on_macos => std.mem.print(&buf, messages.config_hotkey_position_aliased_format, .{v.string}) catch
                         messages.config_hotkey_position_aliased_fallback_msg,
-                    .position_absent_on_macos => std.fmt.bufPrint(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
+                    .position_absent_on_macos => std.mem.print(&buf, messages.config_hotkey_position_absent_format, .{v.string}) catch
                         messages.config_hotkey_position_absent_fallback_msg,
                 };
                 log.appendLine("config", "{s}", .{why});
@@ -3651,7 +3652,7 @@ pub const Config = struct {
         var n: usize = 0;
         // 파일에 키를 하나 이상 적은 액션. 그 키가 하나도 안 남으면 기본 키로 채운다 (아래).
         // 빈 목록 (`[]`) 은 "이 액션에 키를 두지 않겠다" 는 뜻이라 여기 넣지 않는다.
-        var listed = std.EnumSet(KeyAction).initEmpty();
+        var listed = std.EnumSet(KeyAction).empty;
         for (std.enums.values(KeyAction)) |action| {
             const name = action.configName();
 
@@ -3666,7 +3667,7 @@ pub const Config = struct {
                         // 여기서 죽어서, 액션 하나를 `"ctrl+t"` 로 적은 (대괄호를 빠뜨린)
                         // 사용자가 터미널 전체를 잃었다.
                         var buf: [128]u8 = undefined;
-                        const path = std.fmt.bufPrint(&buf, "keys.{s}", .{name}) catch "keys";
+                        const path = std.mem.print(&buf, "keys.{s}", .{name}) catch "keys";
                         noticeBadValue(path, messages.config_notice_used_default);
                     }
                 }
@@ -4019,7 +4020,7 @@ fn parseFloat(v: toml.Value) ?f32 {
 /// 예전엔 파싱 오류가 이 함수를 지나지 않고 자기 본문에 `Path:` 를 직접 넣어,
 /// 오류 종류에 따라 경로 위치가 달랐다 (파싱은 셋째 줄, 의미 오류는 맨 끝).
 fn configErrorMessageAlloc(allocator: std.mem.Allocator, message: []const u8, config_path: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, messages.config_error_with_path_format, .{ config_path, message });
+    return allocator.print(messages.config_error_with_path_format, .{ config_path, message });
 }
 
 /// #501 — 로드 실패 안내 한 줄을 조립한다. 실패해도 null 을 주고 넘어간다 — 안내를
@@ -4032,7 +4033,7 @@ fn loadNoticeAlloc(
     err: anyerror,
 ) ?[]const u8 {
     var buf: [512]u8 = undefined;
-    const body = std.fmt.bufPrint(&buf, fmt, .{@errorName(err)}) catch return null;
+    const body = std.mem.print(&buf, fmt, .{@errorName(err)}) catch return null;
     return configErrorMessageAlloc(allocator, body, config_path) catch null;
 }
 
@@ -4051,15 +4052,15 @@ test "#758 일반 파일이 아닌 config 는 오류 이름이 아니라 무엇�
     const odd = readFailedNoticeAlloc(a, "/c/config_1.toml", error.NotAFile) orelse return error.TestUnexpectedResult;
     defer a.free(odd);
     try std.testing.expect(std.mem.startsWith(u8, odd, "Config: /c/config_1.toml"));
-    try std.testing.expect(std.mem.indexOf(u8, odd, "not a regular file") != null);
-    try std.testing.expect(std.mem.indexOf(u8, odd, "NotAFile") == null);
-    try std.testing.expect(std.mem.indexOf(u8, odd, "The file was not changed.") != null);
+    try std.testing.expect(std.mem.find(u8, odd, "not a regular file") != null);
+    try std.testing.expect(std.mem.find(u8, odd, "NotAFile") == null);
+    try std.testing.expect(std.mem.find(u8, odd, "The file was not changed.") != null);
 
     // 다른 읽기 실패는 지금처럼 오류 이름을 적는다. 파일은 그대로라는 말은 둘 다 한다.
     const other = readFailedNoticeAlloc(a, "/c/config_1.toml", error.InputOutput) orelse return error.TestUnexpectedResult;
     defer a.free(other);
-    try std.testing.expect(std.mem.indexOf(u8, other, "Error: InputOutput") != null);
-    try std.testing.expect(std.mem.indexOf(u8, other, "The file was not changed.") != null);
+    try std.testing.expect(std.mem.find(u8, other, "Error: InputOutput") != null);
+    try std.testing.expect(std.mem.find(u8, other, "The file was not changed.") != null);
 }
 
 /// #501 — host 가 **창이 뜬 뒤** 한 번 부른다. 안내가 없으면 아무 일도 하지 않는다.
@@ -4170,7 +4171,7 @@ const config_notice_overhead: usize = 1024;
 ///
 /// 자리가 모자라면 **본문을 살린다** — 목록을 통째로 잃는 것이 경로를 잃는 것보다 나쁘다.
 fn configNoticeWithPath(buf: []u8, path: []const u8, body: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
+    return std.mem.print(buf, messages.config_error_with_path_format, .{ path, body }) catch body;
 }
 
 test "#655 안내는 경로를 첫 줄에 붙인다 — 어느 파일을 지울지 알려 준다" {
@@ -4303,7 +4304,7 @@ pub fn showFatalNoticeIfAny(rt: Runtime) void {
     // fatal 문구는 `fatal_notice_capacity` 로 상한이 있다 (그쪽은 담을 때 이미 잘린다).
     // 꼬리를 붙일 자리만 더 잡으면 여기서 다시 잘릴 일이 없다.
     var buf: [fatal_notice_capacity + messages.config_notice_reset_hint.len + 8]u8 = undefined;
-    const body = std.fmt.bufPrint(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
+    const body = std.mem.print(&buf, "{s}\n\n{s}", .{ notice, messages.config_notice_reset_hint }) catch notice;
 
     // 문구는 담을 때 이미 stderr + 로그에 남았다 (`publishFatalNotice`).
     dialog.showFatal(rt, messages.config_error_title, body);
@@ -4400,7 +4401,7 @@ pub fn clearConfigNotice() void {
 /// (`messages.config_notice_item_sep`), 로그는 그 자리를 ` -- ` 로 바꿔 한 줄로 남긴다.
 fn noticeLogFormat(comptime fmt: []const u8) []const u8 {
     const sep = messages.config_notice_item_sep;
-    const i = std.mem.indexOf(u8, fmt, sep) orelse return fmt;
+    const i = std.mem.find(u8, fmt, sep) orelse return fmt;
     return fmt[0..i] ++ messages.config_notice_item_sep_log ++ fmt[i + sep.len ..];
 }
 
@@ -4409,7 +4410,7 @@ fn appendNotice(list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytyp
     var line_buf: [512]u8 = undefined;
     // 조립 실패는 **조용히 넘기지 않는다.** 줄은 잃어도 "다 못 담았다" 는 사실은
     // 남아야 사용자가 로그를 본다.
-    const line = std.fmt.bufPrint(&line_buf, fmt, args) catch {
+    const line = std.mem.print(&line_buf, fmt, args) catch {
         notice_count += 1;
         notice_truncated = true;
         return;
@@ -4449,7 +4450,7 @@ fn noticeBadValue(path: []const u8, used: []const u8) void {
 /// 사용자의 의도에 경계값이 기본값보다 가깝다 (SPEC §7.3).
 fn noticeClamped(path: []const u8, limit: anytype) void {
     var buf: [64]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
+    const text = std.mem.print(&buf, "{d}", .{limit}) catch messages.config_notice_the_limit;
     appendNotice(&repaired_list, messages.config_notice_clamped_format, .{ path, text });
 }
 
@@ -4539,7 +4540,7 @@ fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u
     _ = rt;
     if (fatal_notice_len != 0) return error.InvalidConfig;
 
-    const written = std.fmt.bufPrint(
+    const written = std.mem.print(
         &fatal_notice_buf,
         messages.config_error_with_path_format,
         .{ config_path, message },
@@ -4563,17 +4564,19 @@ fn recordConfigFatalMsg(rt: Runtime, config_path: []const u8, message: []const u
 /// (`Config.load`). 예전에는 fatal 로 담아 host 가 안내 후 종료했다.
 pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err: anyerror) []const u8 {
     return if (parser.error_info) |info| switch (info) {
-        .parse => |pos| std.fmt.bufPrint(
+        .parse => |pos| std.mem.print(
             buf,
             messages.config_parse_failed_at_format,
             .{ pos.line, pos.pos, @errorName(err) },
         ) catch messages.config_parse_failed_fallback_msg,
-        .struct_mapping => std.fmt.bufPrint(
+        // #820 — `unknown_fields` 는 구조체 매핑에서 `disallow_unknown_fields` 를 켰을 때만 온다.
+        // 우리는 `Table` 로 받고 그 옵션도 안 켜서 오지 않지만, 같은 갈래로 둔다.
+        .struct_mapping, .unknown_fields => std.mem.print(
             buf,
             messages.config_parse_failed_format,
             .{@errorName(err)},
         ) catch messages.config_parse_failed_fallback_msg,
-    } else std.fmt.bufPrint(
+    } else std.mem.print(
         buf,
         messages.config_parse_failed_format,
         .{@errorName(err)},
@@ -4583,8 +4586,8 @@ pub fn tomlParseErrorText(buf: []u8, parser: *const toml.Parser(toml.Table), err
 /// 로그 한 줄용 — 위치와 오류 이름만 (`line 3, column 5: UnexpectedToken`).
 fn tomlParseErrorBrief(buf: []u8, parser: *const toml.Parser(toml.Table), err: anyerror) []const u8 {
     if (parser.error_info) |info| switch (info) {
-        .parse => |pos| return std.fmt.bufPrint(buf, "line {d}, column {d}: {s}", .{ pos.line, pos.pos, @errorName(err) }) catch @errorName(err),
-        .struct_mapping => {},
+        .parse => |pos| return std.mem.print(buf, "line {d}, column {d}: {s}", .{ pos.line, pos.pos, @errorName(err) }) catch @errorName(err),
+        .struct_mapping, .unknown_fields => {},
     };
     return @errorName(err);
 }
@@ -4628,7 +4631,7 @@ const ParseFallbackSeen = struct {
 
     fn firstTime(self: *ParseFallbackSeen, kind: Kind, config_path: []const u8, detail: []const u8) bool {
         var h = std.hash.Wyhash.init(0x75_8F_A1_1B);
-        h.update(&[_]u8{@intFromEnum(kind)});
+        h.update(&[_]u8{@backingInt(kind)});
         h.update(config_path);
         h.update(&[_]u8{0});
         h.update(detail);
@@ -4663,7 +4666,7 @@ test "#758 기본값 로그 지문 자리가 다 차면 그냥 적는다" {
     var seen: ParseFallbackSeen = .{};
     var path_buf: [32]u8 = undefined;
     for (0..seen.keys.len) |i| {
-        const path = try std.fmt.bufPrint(&path_buf, "/c/config_{d}.toml", .{i});
+        const path = try std.mem.print(&path_buf, "/c/config_{d}.toml", .{i});
         try std.testing.expect(seen.firstTime(.parse, path, "E"));
     }
     // 자리를 넘긴 파일은 기억하지 못해 매번 적는다 — 적지 않는 것보다 낫다.
@@ -4690,7 +4693,7 @@ fn recordTomlParseError(config_path: []const u8, parser: *const toml.Parser(toml
 
 fn recordConfigFatal(rt: Runtime, config_path: []const u8, comptime fmt: []const u8, args: anytype) LoadError {
     var buf: [1024]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch messages.config_error_fallback_msg;
+    const msg = std.mem.print(&buf, fmt, args) catch messages.config_error_fallback_msg;
     return recordConfigFatalMsg(rt, config_path, msg);
 }
 
@@ -4883,13 +4886,13 @@ fn schemaKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []con
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
-            const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            const close = std.mem.findScalar(u8, line, ']') orelse continue;
             const name = line[1..close];
             in_section = !want_top and std.mem.eql(u8, name, section);
             continue;
         }
         if (!in_section) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         if (key.len == 0) continue;
         if (n == out.len) break;
@@ -4915,7 +4918,7 @@ fn fileKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         const key: []const u8 = if (line[0] == '[') blk: {
-            const close = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            const close = std.mem.findScalar(u8, line, ']') orelse continue;
             const name = std.mem.trim(u8, line[1..close], " \t");
             in_section = !want_top and std.mem.eql(u8, name, section);
             // 하위 섹션의 첫 이름 — 최상위면 머리 이름 전체의 첫 조각, 아니면 `section.` 뒤의 첫 조각.
@@ -4925,11 +4928,11 @@ fn fileKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const
                 name[section.len + 1 ..]
             else
                 continue;
-            const dot = std.mem.indexOfScalar(u8, rest, '.') orelse rest.len;
+            const dot = std.mem.findScalar(u8, rest, '.') orelse rest.len;
             break :blk std.mem.trim(u8, rest[0..dot], " \t");
         } else blk: {
             if (!in_section) continue;
-            const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const eq = std.mem.findScalar(u8, line, '=') orelse continue;
             break :blk std.mem.trim(u8, line[0..eq], " \t");
         };
         if (key.len == 0 or containsKey(out[0..n], key)) continue;
@@ -4943,14 +4946,14 @@ fn fileKeyOrder(doc: []const u8, section: []const u8, out: [][]const u8) []const
 /// `ctx.key` 를 만든다. 최상위면 `key` 그대로다.
 fn joinPath(buf: []u8, ctx: []const u8, key: []const u8) []const u8 {
     if (std.mem.eql(u8, ctx, "(top-level)")) return key;
-    return std.fmt.bufPrint(buf, "{s}.{s}", .{ ctx, key }) catch key;
+    return std.mem.print(buf, "{s}.{s}", .{ ctx, key }) catch key;
 }
 
 // --- Tests ---
 
 test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 않는다" {
     const allocator = std.testing.allocator;
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
 
     // 존재하지 않는 디렉터리 아래 — `createFileAbsolute` 가 실패한다. 실제 config
     // 경로를 건드리지 않으므로 이 test 는 사용자 파일에 영향이 없다.
@@ -4967,12 +4970,12 @@ test "#501 config 를 만들지 못하면 안내를 만들고 시작을 막지 �
     // **결과 상태를 말해야 한다.** 오류만 알려 주고 "그래서 지금 어떤 상태인가" 를
     // 빼면 사용자는 자기 설정이 적용됐는지 모른 채 쓰게 된다 — 이 이슈의 원래 증상과
     // 사실상 같아진다.
-    try std.testing.expect(std.mem.indexOf(u8, notice.?, "default settings") != null);
+    try std.testing.expect(std.mem.find(u8, notice.?, "default settings") != null);
 }
 
 test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는 가리키던 자리에 기본 config 를 쓴다" {
     // 권한 · 링크를 쓰는 test 라 POSIX 만 돈다.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4980,10 +4983,10 @@ test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는
     const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(root);
     // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
-    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
     try tmp.dir.createDirPath(io, app_id.name);
     var cfg_dir = try tmp.dir.openDir(io, app_id.name, .{});
     defer cfg_dir.close(io);
@@ -5009,8 +5012,8 @@ test "#758 읽을 수 없는 config 는 덮어쓰지 않고, 끊어진 링크는
         defer cfg.deinit(allocator);
         defer clearConfigNotice();
         const notice = cfg.load_notice orelse return error.TestUnexpectedResult;
-        try std.testing.expect(std.mem.indexOf(u8, notice, "AccessDenied") != null);
-        try std.testing.expect(std.mem.indexOf(u8, notice, "The file was not changed.") != null);
+        try std.testing.expect(std.mem.find(u8, notice, "AccessDenied") != null);
+        try std.testing.expect(std.mem.find(u8, notice, "The file was not changed.") != null);
     }
     {
         const f = try cfg_dir.openFile(io, "config_5.toml", .{ .mode = .write_only });
@@ -5075,9 +5078,9 @@ test "#758 문법이 깨진 config 는 시작을 막지 않고 기본값 안내�
     const notice = try configErrorMessageAlloc(a, parse_error_buf[0..parse_error_len], path);
     try std.testing.expect(std.mem.startsWith(u8, notice, "Config: " ++ path ++ "\n\n"));
     // 어디를 고칠지 (위치) 와 지금 상태 (기본값 · 파일은 그대로) 를 함께 말한다.
-    try std.testing.expect(std.mem.indexOf(u8, notice, "Line ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, notice, "started with default settings") != null);
-    try std.testing.expect(std.mem.indexOf(u8, notice, "The file was not changed") != null);
+    try std.testing.expect(std.mem.find(u8, notice, "Line ") != null);
+    try std.testing.expect(std.mem.find(u8, notice, "started with default settings") != null);
+    try std.testing.expect(std.mem.find(u8, notice, "The file was not changed") != null);
 }
 
 /// #758 `resolveFonts` 시험용 — 이름표로 "설치돼 있나" 를 답한다. 목록에 없으면 설치돼 있다.
@@ -5130,7 +5133,7 @@ test "#758 적은 주 폰트가 없으면 OS 의 고정폭 폰트로 띄우고 �
     try expectFontChain(&config, &.{ system_monospace_font, "User Emoji" });
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 1), n.count);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family" ++ messages.config_notice_item_sep ++ "\"User Mono\" is not installed, using " ++ system_monospace_font) != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "font.family" ++ messages.config_notice_item_sep ++ "\"User Mono\" is not installed, using " ++ system_monospace_font) != null);
 }
 
 test "#758 기본값 그대로인 주 폰트가 없으면 알리지 않고 OS 폰트로 띄운다" {
@@ -5168,7 +5171,7 @@ test "#758 없는 대체 폰트는 빼고, 적은 이름만 알린다 — 남은
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     // 기본 대체 폰트는 로그에만 남는다.
     try std.testing.expectEqual(@as(usize, 1), n.count);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.glyph_fallback" ++ messages.config_notice_item_sep ++ "\"User Emoji\" is not installed, dropped") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "font.glyph_fallback" ++ messages.config_notice_item_sep ++ "\"User Emoji\" is not installed, dropped") != null);
 }
 
 test "#758 OS 폰트마저 없으면 목록을 그대로 두고 쓸 수 없다고 표시한다" {
@@ -5259,7 +5262,7 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
     @memset(&long_path, 'x');
     const long_message = try configErrorMessageAlloc(std.testing.allocator, messages.config_error_fallback_msg, &long_path);
     defer std.testing.allocator.free(long_message);
-    try std.testing.expect(std.mem.startsWith(u8, long_message, "Config: " ++ ("x" ** 5000)));
+    try std.testing.expect(std.mem.startsWith(u8, long_message, "Config: " ++ test_text.repeat("x", 5000)));
     try std.testing.expect(std.mem.endsWith(u8, long_message, messages.config_error_fallback_msg));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, long_message, &long_path));
 }
@@ -5267,8 +5270,13 @@ test "#316 · #495 어떤 오류 종류든 경로가 같은 자리에 온다" {
 /// 기본 template 의 한 줄을 바꿔 파싱한다 — 값 폴백 test 의 공통 뼈대.
 ///
 /// 부분 할당이 남을 수 있어 (`load` 의 catch 주석) arena 로 감싼다.
+///
+/// #820 — arena 는 **힙에 둔다.** `parse` 가 `arena.allocator()` (= arena 의 주소) 를 전역
+/// `notice_allocator` 에 심는다. 지역 변수로 두고 값으로 복사해 돌려주면 그 주소는 끝난
+/// 스택 자리를 가리키고, `deinit` 의 `clearConfigNotice` 가 그 자리를 arena 로 읽는다.
+/// Zig 0.17 Windows 에서 그 자리가 덮여 `ArenaAllocator.free` 의 `.?` 가 panic 했다.
 const ValueCase = struct {
-    arena: std.heap.ArenaAllocator,
+    arena: *std.heap.ArenaAllocator,
     config: Config,
 
     fn deinit(self: *ValueCase) void {
@@ -5276,6 +5284,7 @@ const ValueCase = struct {
         // arena 를 먼저 내리면 죽은 allocator 로 해제하게 된다.
         clearConfigNotice();
         self.arena.deinit();
+        std.testing.allocator.destroy(self.arena);
         resetFatalNoticeForTest();
     }
 
@@ -5287,7 +5296,9 @@ const ValueCase = struct {
 fn parseWithReplaced(needle: []const u8, with: []const u8) !ValueCase {
     clearConfigNotice();
     resetFatalNoticeForTest();
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    const arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+    errdefer std.testing.allocator.destroy(arena);
+    arena.* = .init(std.testing.allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
@@ -5301,8 +5312,8 @@ fn parseWithReplaced(needle: []const u8, with: []const u8) !ValueCase {
 /// 만드는 가장 정확한 방법이다. 문구를 손으로 적으면 schema 가 넓어질 때 test 가
 /// 조용히 현실과 갈린다.
 fn tomlWithoutSection(allocator: std.mem.Allocator, doc: []const u8, header: []const u8, next_header: []const u8) ![]u8 {
-    const from = std.mem.indexOf(u8, doc, header) orelse return error.TestUnexpectedResult;
-    const to = std.mem.indexOf(u8, doc, next_header) orelse return error.TestUnexpectedResult;
+    const from = std.mem.find(u8, doc, header) orelse return error.TestUnexpectedResult;
+    const to = std.mem.find(u8, doc, next_header) orelse return error.TestUnexpectedResult;
     return std.mem.concat(allocator, u8, &.{ doc[0..from], doc[to..] });
 }
 
@@ -5330,7 +5341,7 @@ test "#655 [input] 이 없는 v0.9.2 config 도 뜬다 — 기본값 + 안내" {
 
     // 안내에는 빠진 키가 나와야 한다 — 사용자가 무엇을 넣어야 하는지 알아야 고친다.
     const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "input") != null);
+    try std.testing.expect(std.mem.find(u8, notice.repaired, "input") != null);
     try std.testing.expectEqual(@as(usize, 0), notice.removable.len);
 }
 
@@ -5356,8 +5367,8 @@ test "#655 pane 액션이 빠진 config 도 뜬다 — 빠진 액션마다 한 �
     // **한 번에 다 알려 준다.** 예전에는 첫 오류 하나만 담아서, 15 개를 고치려면 고치고
     // 재시작하기를 15 번 해야 했다 (`#577 첫 오류만 담는다` 테스트가 그 동작을 고정했다).
     try std.testing.expect(notice.count >= 15);
-    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "keys.split_left") != null);
-    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "keys.zoom_pane") != null);
+    try std.testing.expect(std.mem.find(u8, notice.repaired, "keys.split_left") != null);
+    try std.testing.expect(std.mem.find(u8, notice.repaired, "keys.zoom_pane") != null);
 
     // 빠진 액션은 기본 바인딩으로 돈다.
     try std.testing.expect(config.key_binding_count > 0);
@@ -5372,7 +5383,7 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
 
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
-    const with_junk = try std.fmt.allocPrint(allocator, "{s}\nbogus_key = 1\n", .{full});
+    const with_junk = try allocator.print("{s}\nbogus_key = 1\n", .{full});
     defer allocator.free(with_junk);
 
     var config = try Config.parse(allocator, with_junk, "/home/user/.config/tildaz/config_0.toml");
@@ -5381,7 +5392,7 @@ test "#655 모르는 키는 지우라고 안내하고, 부팅은 막지 않는�
     try std.testing.expect(pendingFatalNotice() == null);
     const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
     // "지울 것" 묶음에 들어가야 한다 — "넣을 것" 과 사용자가 할 일이 다르다.
-    try std.testing.expect(std.mem.indexOf(u8, notice.removable, "bogus_key") != null);
+    try std.testing.expect(std.mem.find(u8, notice.removable, "bogus_key") != null);
     try std.testing.expectEqual(@as(usize, 0), notice.repaired.len);
 }
 
@@ -5395,14 +5406,14 @@ test "#796 모르는 키 · 섹션은 파일에 적힌 차례대로 안내한다
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
     // 최상위 키는 첫 섹션 머리보다 앞이어야 한다 (TOML). 이름은 일부러 사전 순 · 해시 순과 다르게 섞는다.
-    const first_header = std.mem.indexOf(u8, full, "\n[") orelse return error.TestUnexpectedResult;
+    const first_header = std.mem.find(u8, full, "\n[") orelse return error.TestUnexpectedResult;
     var names: [24][]const u8 = undefined;
     var name_bufs: [24][16]u8 = undefined;
     var top: std.ArrayList(u8) = .empty;
     defer top.deinit(allocator);
     for (&names, &name_bufs, 0..) |*name, *buf, i| {
         // 23, 0, 17, 6, 11, … — 7 씩 건너뛴 차례 (24 와 서로소라 모두 한 번씩 나온다).
-        name.* = try std.fmt.bufPrint(buf, "zz_{d:0>2}", .{(i * 7 + 23) % 24});
+        name.* = try std.mem.print(buf, "zz_{d:0>2}", .{(i * 7 + 23) % 24});
         try top.print(allocator, "{s} = 1\n", .{name.*});
     }
     const text = try std.mem.concat(allocator, u8, &.{
@@ -5422,12 +5433,12 @@ test "#796 모르는 키 · 섹션은 파일에 적힌 차례대로 안내한다
     var pos: usize = 0;
     for (names) |name| {
         var line_buf: [32]u8 = undefined;
-        const line = try std.fmt.bufPrint(&line_buf, "  {s}\n", .{name});
-        const at = std.mem.indexOfPos(u8, notice.removable, pos, line) orelse return error.TestUnexpectedResult;
+        const line = try std.mem.print(&line_buf, "  {s}\n", .{name});
+        const at = std.mem.findPos(u8, notice.removable, pos, line) orelse return error.TestUnexpectedResult;
         pos = at + line.len;
     }
-    const b = std.mem.indexOfPos(u8, notice.removable, pos, "  bogus_b\n") orelse return error.TestUnexpectedResult;
-    _ = std.mem.indexOfPos(u8, notice.removable, b, "  bogus_a\n") orelse return error.TestUnexpectedResult;
+    const b = std.mem.findPos(u8, notice.removable, pos, "  bogus_b\n") orelse return error.TestUnexpectedResult;
+    _ = std.mem.findPos(u8, notice.removable, b, "  bogus_a\n") orelse return error.TestUnexpectedResult;
 }
 
 test "#719 parse 밖에서 읽어도 빠진 줄 · 틀린 값은 config 가 없을 때와 같은 값이다" {
@@ -5525,7 +5536,7 @@ test "#527 macos_smoothing — 기본은 끔, 적으면 따르고, 없거나 틀
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
     const default_line = "macos_smoothing   = false";
-    try std.testing.expect(std.mem.indexOf(u8, full, default_line) != null);
+    try std.testing.expect(std.mem.find(u8, full, default_line) != null);
 
     // ① 새 config 는 끔이고 안내가 없다.
     {
@@ -5562,7 +5573,7 @@ test "#527 macos_smoothing — 기본은 끔, 적으면 따르고, 없거나 틀
         defer config.deinit(allocator);
         try std.testing.expect(!config.macos_font_smoothing);
         const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "font.macos_smoothing") != null);
+        try std.testing.expect(std.mem.find(u8, notice.repaired, "font.macos_smoothing") != null);
     }
     // ④ 형이 틀리면 지워져 기본값이 남는다 — `v.boolean` 이 터지지 않는다.
     {
@@ -5577,7 +5588,7 @@ test "#527 macos_smoothing — 기본은 끔, 적으면 따르고, 없거나 틀
         try std.testing.expect(pendingFatalNotice() == null);
         try std.testing.expect(!config.macos_font_smoothing);
         const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "macos_smoothing") != null);
+        try std.testing.expect(std.mem.find(u8, notice.repaired, "macos_smoothing") != null);
     }
 }
 
@@ -5587,7 +5598,7 @@ test "#656 copy_on_select — 기본은 꺼짐, 적으면 따르고, 없거나 �
     const full = try defaultConfigToml(allocator, Defaults.shell, Defaults.hotkeyFor(0));
     defer allocator.free(full);
     const default_line = "copy_on_select = false";
-    try std.testing.expect(std.mem.indexOf(u8, full, default_line) != null);
+    try std.testing.expect(std.mem.find(u8, full, default_line) != null);
 
     // ① 새 config 는 꺼짐이고 안내가 없다.
     {
@@ -5624,7 +5635,7 @@ test "#656 copy_on_select — 기본은 꺼짐, 적으면 따르고, 없거나 �
         defer config.deinit(allocator);
         try std.testing.expect(!config.copy_on_select);
         const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "input.copy_on_select") != null);
+        try std.testing.expect(std.mem.find(u8, notice.repaired, "input.copy_on_select") != null);
     }
     // ④ 형이 틀리면 지워져 기본값이 남는다 — `v.boolean` 이 터지지 않는다.
     {
@@ -5639,7 +5650,7 @@ test "#656 copy_on_select — 기본은 꺼짐, 적으면 따르고, 없거나 �
         try std.testing.expect(pendingFatalNotice() == null);
         try std.testing.expect(!config.copy_on_select);
         const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "copy_on_select") != null);
+        try std.testing.expect(std.mem.find(u8, notice.repaired, "copy_on_select") != null);
     }
 }
 
@@ -5665,7 +5676,7 @@ test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse �
     try std.testing.expect(pendingFatalNotice() == null);
     try std.testing.expectEqual(Defaults.auto_start, config.auto_start);
     const notice = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, notice.repaired, "auto_start") != null);
+    try std.testing.expect(std.mem.find(u8, notice.repaired, "auto_start") != null);
 }
 
 /// 테스트용 — 첫 번째 `needle` 을 `with` 로 바꾼다.
@@ -5673,7 +5684,7 @@ test "#655 타입이 틀린 값은 지워져 기본값이 남는다 — parse �
 /// 못 찾으면 **에러**다. 조용히 원본을 돌려주면 기본 config 의 서식이 바뀐 날
 /// 테스트가 아무것도 검사하지 않으면서 통과한다.
 fn replaceFirst(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, with: []const u8) ![]u8 {
-    const at = std.mem.indexOf(u8, haystack, needle) orelse return error.NeedleNotFound;
+    const at = std.mem.find(u8, haystack, needle) orelse return error.NeedleNotFound;
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, haystack[0..at]);
@@ -5781,8 +5792,8 @@ test "#558 기본 config 가 Windows 의 공백 경로 인용법을 알려 준�
     const quoted_example =
         \\"\"C:\\Program Files\\Git\\bin\\bash.exe\""
     ;
-    try std.testing.expect(std.mem.indexOf(u8, doc, quoted_example) != null);
-    try std.testing.expect(std.mem.indexOf(u8, doc, "the first space ends the executable path") != null);
+    try std.testing.expect(std.mem.find(u8, doc, quoted_example) != null);
+    try std.testing.expect(std.mem.find(u8, doc, "the first space ends the executable path") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -5797,8 +5808,8 @@ test "#655 범위 밖 숫자는 기본값이 아니라 경계로 clamp 한다" {
     var c = try parseWithReplaced("width_percent   = 50.0", "width_percent   = 1000.0");
     defer c.deinit();
     try std.testing.expectEqual(@as(f32, 100.0), c.config.width_percent);
-    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "window.width_percent") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "100") != null);
+    try std.testing.expect(std.mem.find(u8, ValueCase.notice().repaired, "window.width_percent") != null);
+    try std.testing.expect(std.mem.find(u8, ValueCase.notice().repaired, "100") != null);
 }
 
 test "#655 아래쪽 범위 밖도 경계로 들어온다" {
@@ -5817,7 +5828,7 @@ test "#655 모르는 이름의 enum 값은 기본값으로 돌고, 부팅은 막
     var c = try parseWithReplaced("dock_position   = \"top\"", "dock_position   = \"sideways\"");
     defer c.deinit();
     try std.testing.expectEqual(default_dock_position, c.config.dock_position);
-    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "window.dock_position") != null);
+    try std.testing.expect(std.mem.find(u8, ValueCase.notice().repaired, "window.dock_position") != null);
 }
 
 test "#655 모르는 테마 이름 — 기본 테마로 돌고 목록은 로그로 간다" {
@@ -5825,7 +5836,7 @@ test "#655 모르는 테마 이름 — 기본 테마로 돌고 목록은 로그�
     defer c.deinit();
     try std.testing.expectEqual(default_theme, c.config.theme);
     const n = ValueCase.notice();
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "theme") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "theme") != null);
     // 18 개 테마 이름이 다이얼로그로 쏟아지면 나머지 안내가 밀린다 — 항목 하나만 선다.
     // 항목은 키 줄과 설명 줄 두 줄이다 (#781) — 구분자로 센다.
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, n.repaired, messages.config_notice_item_sep));
@@ -5836,11 +5847,11 @@ test "#655 읽을 수 없는 hotkey 는 기본 hotkey 로 돌고 부팅은 된�
     // 기준 문서의 hotkey 는 `Defaults.hotkeyFor(0)` 파생이다 — 개발 빌드는 표를 거꾸로
     // 읽어 `F10` 이므로 (#654) 리터럴 `"F1"` 로 찾으면 그 빌드에서만 못 찾는다.
     var needle_buf: [32]u8 = undefined;
-    const needle = try std.fmt.bufPrint(&needle_buf, "hotkey           = \"{s}\"", .{Defaults.hotkeyFor(0)});
+    const needle = try std.mem.print(&needle_buf, "hotkey           = \"{s}\"", .{Defaults.hotkeyFor(0)});
     var c = try parseWithReplaced(needle, "hotkey           = \"nosuchkey\"");
     defer c.deinit();
     try std.testing.expect(pendingFatalNotice() == null);
-    try std.testing.expect(std.mem.indexOf(u8, ValueCase.notice().repaired, "hotkey") != null);
+    try std.testing.expect(std.mem.find(u8, ValueCase.notice().repaired, "hotkey") != null);
 }
 
 test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액션의 나머지 키는 남는다" {
@@ -5858,9 +5869,9 @@ test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액�
     const full = try defaultConfigToml(a, Defaults.shell, Defaults.hotkeyFor(0));
     // `copy` 의 목록에 쓰레기 하나를 끼워 넣는다. 줄 머리의 `copy ` 로 찾는다 — 그냥 `copy` 면
     // 그보다 앞의 `[input] copy_on_select` (#656) 를 잡는다.
-    const at = (std.mem.indexOf(u8, full, "\ncopy ") orelse return error.TestUnexpectedResult) + 1;
-    const line_end = std.mem.indexOfScalarPos(u8, full, at, '\n') orelse return error.TestUnexpectedResult;
-    const close = std.mem.lastIndexOfScalar(u8, full[at..line_end], ']') orelse return error.TestUnexpectedResult;
+    const at = (std.mem.find(u8, full, "\ncopy ") orelse return error.TestUnexpectedResult) + 1;
+    const line_end = std.mem.findScalarPos(u8, full, at, '\n') orelse return error.TestUnexpectedResult;
+    const close = std.mem.findScalarLast(u8, full[at..line_end], ']') orelse return error.TestUnexpectedResult;
     const broken = try std.mem.concat(a, u8, &.{
         full[0 .. at + close],
         ", \"ctrl+shift+nosuchkey\"",
@@ -5871,7 +5882,7 @@ test "#655 [keys] 의 읽을 수 없는 조합 하나는 버리고, 같은 액�
 
     try std.testing.expect(pendingFatalNotice() == null);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "nosuchkey") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "nosuchkey") != null);
     // 버린 것은 **그 항목 하나**다 — 기본 config 의 바인딩 수가 그대로여야 한다.
     var clean_arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer clean_arena.deinit();
@@ -5930,8 +5941,8 @@ test "#758 [keys] 두 액션에 같은 키를 직접 적으면 둘 다 쓰지 �
         }
     }
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.new_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for close_tab") != null);
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "keys.close_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for new_tab") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "keys.new_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for close_tab") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "keys.close_tab" ++ messages.config_notice_item_sep ++ "\"ctrl+shift+9\" is also set for new_tab") != null);
 }
 
 test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무관하다" {
@@ -5953,7 +5964,7 @@ test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무
 
         // 생성기가 쓰는 모양처럼 **진 쪽도 파일에 기본 키 그대로** 적혀 있다.
         const victim_key = defaultBindings(c.victim)[0];
-        const doc = try std.fmt.allocPrint(a,
+        const doc = try a.print(
             \\shell = "/bin/sh"
             \\[keys]
             \\{s} = ["{s}"]
@@ -5967,7 +5978,7 @@ test "#758 [keys] 바꾼 키가 기본 키를 이긴다 — 액션 순서와 무
         try std.testing.expectEqual(@as(?KeyAction, c.changed), owner.action);
         // 진 쪽은 그 키를 잃고, 안내는 **한 줄**이다 — 기본 키로 다시 채우며 같은 키로 한 번 더 지지 않는다.
         const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-        const line = try std.fmt.allocPrint(a, "keys.{s}" ++ messages.config_notice_item_sep ++ "\"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
+        const line = try a.print("keys.{s}" ++ messages.config_notice_item_sep ++ "\"{s}\" is already used by {s}", .{ c.victim.configName(), victim_key, c.changed.configName() });
         try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, n.repaired, line));
     }
 }
@@ -5993,7 +6004,7 @@ test "#693 같은 액션 안의 중복은 조용히 하나로 합친다" {
     try std.testing.expect(pendingFatalNotice() == null);
     // "이미 쓰였다" 안내가 없어야 한다. 다른 액션은 이 문서에 없어 "넣었다" 안내가 함께 생길 수 있다.
     if (pendingConfigNotice()) |n| {
-        try std.testing.expect(std.mem.indexOf(u8, n.repaired, "increase_font_size") == null);
+        try std.testing.expect(std.mem.find(u8, n.repaired, "increase_font_size") == null);
     }
 
     var n_up: usize = 0;
@@ -6060,7 +6071,7 @@ test "#655 빈 font.family 는 기본 chain 으로 되돌아간다 — 빈 이�
     try std.testing.expect(config.font_families[0].len > 0);
     try std.testing.expectEqual(DEFAULT_FONT_CHAIN_COUNT, config.font_family_count);
     const n = pendingConfigNotice() orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, n.repaired, "font.family") != null);
+    try std.testing.expect(std.mem.find(u8, n.repaired, "font.family") != null);
 }
 
 test "#781 안내 항목은 다이얼로그에서 설명을 다음 줄에 들여 쓰고, 로그에는 한 줄로 남는다" {
@@ -6109,7 +6120,7 @@ test "#758 안내의 목록 끝에는 빈 줄이 하나다 — 두 묶음 사이
         .truncated = false,
     });
     try std.testing.expect(std.mem.endsWith(u8, body, "the default\n\n" ++ messages.config_notice_reset_hint));
-    try std.testing.expect(std.mem.indexOf(u8, body, "\n\n\n") == null);
+    try std.testing.expect(std.mem.find(u8, body, "\n\n\n") == null);
 }
 
 test "#758 버퍼가 모자라 줄 중간에서 끊기면 그 줄을 닫고 잘림 문구를 다음 줄에 세운다" {
@@ -6139,7 +6150,7 @@ test "#655 빈 묶음의 머리글은 세우지 않는다" {
         .truncated = false,
     });
     // "지울 것" 만 있는데 "넣을 것" 머리글이 서면, 사용자는 없는 목록을 찾는다.
-    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_repaired_header) == null);
+    try std.testing.expect(std.mem.find(u8, body, messages.config_notice_repaired_header) == null);
     try std.testing.expect(std.mem.startsWith(u8, body, messages.config_notice_removable_header));
 }
 
@@ -6154,10 +6165,10 @@ test "#655 잘렸으면 본문이 그 사실을 말한다" {
     // 여기서 빠지면 사용자는 목록이 전부인 줄 알고 고친 뒤, 다음 실행에서 처음 보는
     // 항목을 또 만난다. 잘림 문구는 **목록의 끝**에 서고, 빠져나갈 길이 그 뒤에 온다 —
     // 잘린 목록일수록 파일을 버리는 쪽이 빠르므로 순서가 이래야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, body, messages.config_notice_truncated_msg) != null);
+    try std.testing.expect(std.mem.find(u8, body, messages.config_notice_truncated_msg) != null);
     try std.testing.expect(std.mem.endsWith(u8, body, messages.config_notice_reset_hint));
-    const cut = std.mem.indexOf(u8, body, messages.config_notice_truncated_msg).?;
-    const hint = std.mem.indexOf(u8, body, messages.config_notice_reset_hint).?;
+    const cut = std.mem.find(u8, body, messages.config_notice_truncated_msg).?;
+    const hint = std.mem.find(u8, body, messages.config_notice_reset_hint).?;
     try std.testing.expect(cut < hint);
     // #758 — 잘림 문구는 목록 **바로 다음 줄**이다 (빈 줄로 떨어지면 목록과 따로 읽힌다).
     try std.testing.expect(std.mem.endsWith(

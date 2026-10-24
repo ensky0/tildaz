@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Runtime = @import("runtime.zig").Runtime;
 
-const impl = switch (builtin.os.tag) {
+const impl = switch (builtin.target.os.tag) {
     .linux => @import("shortcut_sync/linux.zig"),
     else => struct {
         pub fn sync(_: Runtime, _: std.mem.Allocator, _: []const u32) !void {}
@@ -21,7 +21,7 @@ pub fn removeAll(rt: Runtime, allocator: std.mem.Allocator) !void {
 }
 
 test "platform shortcut synchronization helpers" {
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         const config = @import("config.zig");
         var buf: [96]u8 = undefined;
         const hotkey = config.Hotkey.fromString("ctrl+shift+f12").?;

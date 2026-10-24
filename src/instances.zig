@@ -64,7 +64,7 @@ pub const owner_window_title = app_id.window_base ++ "Owner";
 /// 창 타이틀 = `<window_title_prefix><worker index>` (예 "TildaZ-0" = coordinator, 개발
 /// 빌드는 "TildaZ-dev-0").
 pub fn windowTitle(buf: []u8, index: u32) ![]const u8 {
-    return std.fmt.bufPrint(buf, window_title_prefix ++ "{d}", .{index});
+    return std.mem.print(buf, window_title_prefix ++ "{d}", .{index});
 }
 
 /// 측정용 인스턴스 (#382 의 `-e`) 의 창 타이틀. **worker 의 타이틀과 절대 겹치지 않는
@@ -403,7 +403,7 @@ fn writeEndpointSnapshot(
     state: EndpointState,
 ) !void {
     var buf: [64]u8 = undefined;
-    const content = try std.fmt.bufPrint(&buf, "v1 {d} {s}\n", .{ pid, @tagName(state) });
+    const content = try std.mem.print(&buf, "v1 {d} {s}\n", .{ pid, @tagName(state) });
     _ = try paths.writeFileIfChanged(rt, allocator, path, content);
 }
 
@@ -532,7 +532,7 @@ fn ownerMatchesSnapshot(owner: OwnerPid, snapshot_pid: u32) bool {
         .versioned => |pid| pid == snapshot_pid,
         .legacy_suffix => |suffix| blk: {
             var buf: [16]u8 = undefined;
-            const text = std.fmt.bufPrint(&buf, "{d}", .{snapshot_pid}) catch break :blk false;
+            const text = std.mem.print(&buf, "{d}", .{snapshot_pid}) catch break :blk false;
             if (text.len == 0 or text.len - 1 != suffix.digits) break :blk false;
             const value = if (text.len == 1)
                 0
@@ -589,7 +589,7 @@ fn tryAcquireProcessLock(rt: Runtime, path: []const u8) !?ProcessLock {
 
 fn writeOwnerPid(rt: Runtime, file: std.Io.File) !void {
     var buf: [36]u8 = undefined;
-    const text = try std.fmt.bufPrint(&buf, "\nv1 {d}\n", .{currentProcessId()});
+    const text = try std.mem.print(&buf, "\nv1 {d}\n", .{currentProcessId()});
     try file.setLength(rt.io, 0);
     // #451 — `seekTo(0)` + `writeAll` 을 offset 0 의 positional write 로 대체한다
     // (`fs.File.pwriteAll` 자리). 파일 위치를 남기지 않아 lock 을 공유하는 다른
@@ -598,7 +598,7 @@ fn writeOwnerPid(rt: Runtime, file: std.Io.File) !void {
 }
 
 fn currentProcessId() u32 {
-    return switch (@import("builtin").os.tag) {
+    return switch (@import("builtin").target.os.tag) {
         .windows => std.os.windows.GetCurrentProcessId(),
         .linux => @intCast(std.os.linux.getpid()),
         else => @intCast(std.c.getpid()),
@@ -612,7 +612,7 @@ pub fn spawnWorker(rt: Runtime, allocator: std.mem.Allocator, index: u32) !void 
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exe_len = try std.process.executablePath(rt.io, &exe_buf);
     const exe = exe_buf[0..exe_len];
-    const index_text = try std.fmt.allocPrint(allocator, "{d}", .{index});
+    const index_text = try allocator.print("{d}", .{index});
     defer allocator.free(index_text);
     // #577 · #760 — spawn **직전에** 이전 실행이 남긴 기동 표식을 지운다.
     // `waitUntilRunning` 은 endpoint 상태 파일과 lock 의 owner PID 를 "방금 띄운 worker
@@ -643,7 +643,7 @@ fn clearStaleStartupState(rt: Runtime, lock_path: []const u8, endpoint_path: []c
 }
 
 pub fn defaultShell(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
-    if (@import("builtin").os.tag != .windows) {
+    if (@import("builtin").target.os.tag != .windows) {
         if (rt.envAlloc(allocator, "SHELL") catch null) |shell| return shell;
     }
     return allocator.dupe(u8, config.Defaults.shell);
@@ -783,17 +783,17 @@ pub fn lowerIndexHotkeyConflict(rt: Runtime, allocator: std.mem.Allocator, self_
 
 test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
     // Windows 는 링크를 만들려면 권한이 필요하고, 합성 환경변수 대신 실제 환경을 쓴다 (`paths.testRuntime`).
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (@import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const allocator = std.testing.allocator;
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(root);
     // config 폴더를 이 임시 폴더로 돌린다 (`paths.configDir` 가 `XDG_CONFIG_HOME/<앱>` 을 쓴다).
-    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
 
     try tmp.dir.createDirPath(std.testing.io, app_id.name);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real.toml", .data = "auto_start = false\n" });
@@ -814,16 +814,16 @@ test "#758 launcher 는 링크로 둔 config 도 목록에 넣는다" {
 
 test "#758 launcher 는 열지 못한 config (끊어진 링크 · 읽기 권한 없음) 를 그 번호의 기본값으로 본다" {
     // 링크 · 권한을 쓰는 test 라 POSIX 만 돈다.
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (@import("builtin").target.os.tag == .windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const allocator = std.testing.allocator;
     const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(root);
-    const env = try std.fmt.allocPrintSentinel(allocator, "XDG_CONFIG_HOME={s}", .{root}, 0);
+    const env = try allocator.printSentinel("XDG_CONFIG_HOME={s}", .{root}, 0);
     defer allocator.free(env);
     const block = [_:null]?[*:0]const u8{env.ptr};
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } } };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .{ .block = .{ .slice = &block } }, .gpa = std.testing.allocator };
 
     try tmp.dir.createDirPath(std.testing.io, app_id.name);
     var cfg_dir = try tmp.dir.openDir(std.testing.io, app_id.name, .{});
@@ -888,7 +888,7 @@ test "#758 launcher 는 크기와 무관하게 config 를 읽고, 일반 파일�
 
     // 장치를 가리키는 config — 열리지만 일반 파일이 아니라 읽지 않는다 (`null` = 그 번호의 기본값).
     // `/dev/null` 이 없는 Windows 는 여기까지다 (위 갈래가 같은 `config.readConfigFile` 을 지난다).
-    if (@import("builtin").os.tag == .windows) return;
+    if (@import("builtin").target.os.tag == .windows) return;
     try tmp.dir.symLink(rt.io, "/dev/null", "device.toml", .{});
     const device_path = try std.Io.Dir.path.join(allocator, &.{ root, "device.toml" });
     defer allocator.free(device_path);
@@ -901,7 +901,7 @@ test "#758 launcher 는 문법이 깨진 config 를 그 번호의 기본값으�
     // 대조군이 기본값과 갈리도록 기본값의 반대를 적는다 (dev · 릴리즈 판의 기본값이 다르다).
     const flipped = if (config.Defaults.auto_start) "false" else "true";
 
-    const ok = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n", .{flipped});
+    const ok = try a.print("auto_start = {s}\nhotkey = \"F7\"\n", .{flipped});
     defer a.free(ok);
     try std.testing.expectEqual(!config.Defaults.auto_start, autoStartFromContent(a, ok, path));
     const ok_key = try hotkeyTextFromContent(a, ok, path, 3);
@@ -909,7 +909,7 @@ test "#758 launcher 는 문법이 깨진 config 를 그 번호의 기본값으�
     try std.testing.expectEqualStrings("F7", ok_key);
 
     // 같은 줄 뒤에 섹션 머리의 `]` 를 빠뜨렸다 — 적힌 값이 아니라 **그 번호의 기본값**이어야 한다.
-    const broken = try std.fmt.allocPrint(a, "auto_start = {s}\nhotkey = \"F7\"\n[window\n", .{flipped});
+    const broken = try a.print("auto_start = {s}\nhotkey = \"F7\"\n[window\n", .{flipped});
     defer a.free(broken);
     try std.testing.expectEqual(config.Defaults.auto_start, autoStartFromContent(a, broken, path));
     const broken_key = try hotkeyTextFromContent(a, broken, path, 3);
@@ -997,7 +997,7 @@ test "current process id is available for lock diagnostics" {
 /// #451 — 테스트는 `std.testing.io` 를 쓰고 환경변수는 안 본다 (여기 함수들은 경로를
 /// 인자로 받는다). `paths.zig` 처럼 합성 환경변수가 필요한 경우가 아니라 `.empty` 로 족하다.
 fn testRuntime() Runtime {
-    return .{ .io = std.testing.io, .environ = .empty };
+    return .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
 }
 
 test "spawn 전 정리는 강제 종료가 남긴 owner PID 를 비운다 (#760)" {
@@ -1095,7 +1095,7 @@ test "endpoint probe requires live lock and matching owner pid" {
         // 수정 전 worker가 byte 0부터 쓴 PID도 endpoint의 전체 PID와 suffix를
         // 대조해 업그레이드 중인 launcher가 ready 상태를 계속 읽을 수 있다.
         var legacy_buf: [32]u8 = undefined;
-        const legacy_text = try std.fmt.bufPrint(&legacy_buf, "{d}\n", .{pid});
+        const legacy_text = try std.mem.print(&legacy_buf, "{d}\n", .{pid});
         try worker_lock.file.setLength(rt.io, 0);
         try worker_lock.file.writePositionalAll(rt.io, legacy_text, 0);
         try writeEndpointSnapshot(rt, allocator, endpoint_path, pid, .ready);
@@ -1153,7 +1153,7 @@ const FakeEndpointProbe = struct {
 };
 
 test "endpoint ready wait succeeds after more than fixed 200ms" {
-    const starting = [_]EndpointProbeResult{.starting} ** 22;
+    const starting: [22]EndpointProbeResult = @splat(.starting);
     const results = starting ++ .{.ready};
     var probe = FakeEndpointProbe{ .results = &results };
     try waitUntilEndpointReadyWithProbe(&probe, std.time.ns_per_s);

@@ -704,7 +704,7 @@ test "#534 powerline — 16 자 전부 그리고, MAX_RECTS 를 넘지 않으며
             try std.testing.expect(n > 0);
             try std.testing.expect(n <= MAX_RECTS);
 
-            var hits: [122][62]u8 = .{.{0} ** 62} ** 122;
+            var hits: [122][62]u8 = @splat(@splat(0));
             for (buf[0..n]) |r| {
                 try std.testing.expect(r.cov > 0 and r.cov <= 1);
                 // 셀 밖으로 새면 이웃 셀을 침범한다.

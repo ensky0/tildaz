@@ -35,9 +35,9 @@ fn noticePath(rt: Runtime, allocator: std.mem.Allocator) ![]u8 {
 /// launcher 가 부른다.
 pub fn record(rt: Runtime, allocator: std.mem.Allocator, desktop: []const u8, path: []const u8, line: []const u8) !void {
     for ([_][]const u8{ desktop, path, line }) |part| {
-        if (std.mem.indexOfScalar(u8, part, '\n') != null) return error.UnsupportedPath;
+        if (std.mem.findScalar(u8, part, '\n') != null) return error.UnsupportedPath;
     }
-    const content = try std.fmt.allocPrint(allocator, "{s}\n{s}\n{s}\n", .{ desktop, path, line });
+    const content = try allocator.print("{s}\n{s}\n{s}\n", .{ desktop, path, line });
     defer allocator.free(content);
     const file = try noticePath(rt, allocator);
     defer allocator.free(file);

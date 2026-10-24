@@ -137,7 +137,7 @@ fn isLegacyLine(line: []const u8, syntax: Syntax) bool {
         },
         .lua => {
             if (wrapsAutostart(line, "hl.on(\"hyprland.start\", function() hl.exec_cmd(\"", "\") end)")) return true;
-            return std.mem.indexOf(u8, line, "hl.bind(") != null and mentionsToggle(line);
+            return std.mem.find(u8, line, "hl.bind(") != null and mentionsToggle(line);
         },
     }
 }
@@ -153,12 +153,12 @@ fn wrapsAutostart(line: []const u8, prefix: []const u8, suffix: []const u8) bool
 }
 
 fn isTildazExe(path: []const u8) bool {
-    if (path.len == 0 or std.mem.indexOfAny(u8, path, " \t\"") != null) return false;
+    if (path.len == 0 or std.mem.findAny(u8, path, " \t\"") != null) return false;
     return std.mem.eql(u8, std.Io.Dir.path.basename(path), "tildaz");
 }
 
 fn mentionsToggle(line: []const u8) bool {
-    return std.mem.indexOf(u8, line, "tildaz") != null and std.mem.indexOf(u8, line, "--toggle") != null;
+    return std.mem.find(u8, line, "tildaz") != null and std.mem.find(u8, line, "--toggle") != null;
 }
 
 const testing = std.testing;

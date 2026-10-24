@@ -480,7 +480,7 @@ pub fn macAlias(code: PhysicalCode) ?PhysicalCode {
 /// 이 platform 에서 쓸 수 있는 자리인가. false 면 config 파싱이 거부해야 한다 —
 /// 조용히 미동작으로 두면 사용자가 이유를 알 수 없다.
 pub fn availableOnThisPlatform(code: PhysicalCode) bool {
-    if (builtin.os.tag == .macos) return entry(code).mac != null;
+    if (builtin.target.os.tag == .macos) return entry(code).mac != null;
     return true;
 }
 
@@ -516,10 +516,10 @@ fn entry(code: PhysicalCode) Entry {
 }
 
 test "표가 enum 을 빠짐없이 정확히 한 번씩 덮는다" {
-    const fields = @typeInfo(PhysicalCode).@"enum".fields;
-    try std.testing.expectEqual(fields.len, table.len);
-    inline for (fields) |f| {
-        const code = @field(PhysicalCode, f.name);
+    const code_names = @typeInfo(PhysicalCode).@"enum".field_names;
+    try std.testing.expectEqual(code_names.len, table.len);
+    inline for (code_names) |code_name| {
+        const code = @field(PhysicalCode, code_name);
         var seen: usize = 0;
         for (table) |e| {
             if (e.code == code) seen += 1;
@@ -696,8 +696,8 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         .{ .label = "cinnamon", .js = @embedFile("cinnamon_extension_js") },
     };
     for (sources) |source| {
-        const open = std.mem.indexOf(u8, source.js, "const POSITION_KEYCODES = {").?;
-        const close = std.mem.indexOfPos(u8, source.js, open, "\n};").?;
+        const open = std.mem.find(u8, source.js, "const POSITION_KEYCODES = {").?;
+        const close = std.mem.findPos(u8, source.js, open, "\n};").?;
         const block = source.js[open..close];
 
         var bindable_rows: usize = 0;
@@ -710,8 +710,8 @@ test "#496 1-c the Shell extension position tables match physical_key" {
             var needle_buf: [64]u8 = undefined;
             // JS 는 xkb keycode (= evdev + 8) 를 두 자리 hex 로 적는다 — GTK 의
             // `is_keycode()` 가 그 형태만 인정하기 때문이다.
-            const needle = try std.fmt.bufPrint(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
-            if (std.mem.indexOf(u8, block, needle) == null) {
+            const needle = try std.mem.print(&needle_buf, "{s}: 0x{x:0>2},", .{ lower, @as(u32, e.evdev) + 8 });
+            if (std.mem.find(u8, block, needle) == null) {
                 std.debug.print("{s} extension 의 위치 표에 없다: {s}\n", .{ source.label, needle });
                 return error.PositionTableOutOfSync;
             }
@@ -721,7 +721,7 @@ test "#496 1-c the Shell extension position tables match physical_key" {
         // 살아 있다는 뜻이다. 개수로 잡는다.
         var js_rows: usize = 0;
         var offset: usize = 0;
-        while (std.mem.indexOfPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
+        while (std.mem.findPos(u8, block, offset, ": 0x")) |at| : (offset = at + 4) js_rows += 1;
         try std.testing.expectEqual(bindable_rows, js_rows);
     }
 }

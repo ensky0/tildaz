@@ -140,8 +140,8 @@ const Node = union(enum) {
 /// 통째로 복사해 둔 것을 다시 넣는 식으로 한다.
 pub const Tree = struct {
     nodes: [MAX_NODES]Node = undefined,
-    parent: [MAX_NODES]NodeIndex = [_]NodeIndex{NO_NODE} ** MAX_NODES,
-    alive: [MAX_NODES]bool = [_]bool{false} ** MAX_NODES,
+    parent: [MAX_NODES]NodeIndex = @splat(NO_NODE),
+    alive: [MAX_NODES]bool = @splat(false),
     root: NodeIndex = NO_NODE,
     pane_count: u8 = 0,
 

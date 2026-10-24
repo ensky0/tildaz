@@ -146,7 +146,7 @@ fn syncFile(rt: Runtime, allocator: std.mem.Allocator, source_path: []const u8, 
 fn compileGnomeSchemas(rt: Runtime, allocator: std.mem.Allocator, extension_dir: []const u8) !void {
     const schemas_dir = try std.Io.Dir.path.join(allocator, &.{ extension_dir, "schemas" });
     defer allocator.free(schemas_dir);
-    const temp_name = try std.fmt.allocPrint(allocator, ".tildaz-compile-{d}", .{std.c.getpid()});
+    const temp_name = try allocator.print(".tildaz-compile-{d}", .{std.c.getpid()});
     defer allocator.free(temp_name);
     const temp_dir = try std.Io.Dir.path.join(allocator, &.{ schemas_dir, temp_name });
     defer allocator.free(temp_dir);
@@ -182,8 +182,8 @@ test "#719 확장의 기본 키 표는 앱의 Defaults.hotkeyFor 와 같다" {
     for ([_][]const u8{ gnome_resources[0].content, cinnamon_resources[0].content }) |js| {
         // 표 — 릴리즈 차례로 적혀 있다. dev 판의 앱은 그것을 거꾸로 읽는다.
         const open = "const DEFAULT_HOTKEYS = [";
-        const at = (std.mem.indexOf(u8, js, open) orelse return error.DefaultHotkeyTableMissing) + open.len;
-        const close = std.mem.indexOfScalarPos(u8, js, at, ']') orelse return error.DefaultHotkeyTableMissing;
+        const at = (std.mem.find(u8, js, open) orelse return error.DefaultHotkeyTableMissing) + open.len;
+        const close = std.mem.findScalarPos(u8, js, at, ']') orelse return error.DefaultHotkeyTableMissing;
         var it = std.mem.tokenizeAny(u8, js[at..close], "\", ");
         var i: u32 = 0;
         while (it.next()) |name| : (i += 1) {
@@ -193,13 +193,13 @@ test "#719 확장의 기본 키 표는 앱의 Defaults.hotkeyFor 와 같다" {
         }
         try std.testing.expectEqual(count, i);
         // 거꾸로 읽는 조건과 그 판정 — 렌더된 `APP` 가 dev 판에서만 `-dev` 로 끝나야 한다.
-        try std.testing.expect(std.mem.indexOf(u8, js, "const IS_DEV = APP.endsWith(\"-dev\");") != null);
-        try std.testing.expect(std.mem.indexOf(u8, js, "IS_DEV ? DEFAULT_HOTKEYS.length - 1 - index : index") != null);
+        try std.testing.expect(std.mem.find(u8, js, "const IS_DEV = APP.endsWith(\"-dev\");") != null);
+        try std.testing.expect(std.mem.find(u8, js, "IS_DEV ? DEFAULT_HOTKEYS.length - 1 - index : index") != null);
         const rendered = try render(std.testing.allocator, js);
         defer std.testing.allocator.free(rendered);
         var app_line_buf: [64]u8 = undefined;
-        const app_line = try std.fmt.bufPrint(&app_line_buf, "const APP = \"{s}\";", .{app_id.name});
-        try std.testing.expect(std.mem.indexOf(u8, rendered, app_line) != null);
+        const app_line = try std.mem.print(&app_line_buf, "const APP = \"{s}\";", .{app_id.name});
+        try std.testing.expect(std.mem.find(u8, rendered, app_line) != null);
         try std.testing.expectEqual(app_id.is_dev, std.mem.endsWith(u8, app_id.name, "-dev"));
     }
 }
@@ -232,17 +232,17 @@ test "#676 disabling a Shell extension restores hidden terminal windows" {
         },
     };
     for (sources) |source| {
-        const disable_at = std.mem.indexOf(u8, source.js, source.disable_needle) orelse
+        const disable_at = std.mem.find(u8, source.js, source.disable_needle) orelse
             return error.ExtensionDisableMissing;
         const disable_body = source.js[disable_at..];
-        const disconnect_at = std.mem.indexOf(u8, disable_body, source.map_disconnect_needle) orelse
+        const disconnect_at = std.mem.find(u8, disable_body, source.map_disconnect_needle) orelse
             return error.ExtensionMapDisconnectMissing;
-        const restore_at = std.mem.indexOf(u8, disable_body, "if (win.minimized) win.unminimize();") orelse
+        const restore_at = std.mem.find(u8, disable_body, "if (win.minimized) win.unminimize();") orelse
             return error.ExtensionWindowRestoreMissing;
         // 복원이 다시 map handler를 타 hidden_start로 최소화되지 않게 먼저 끊는다.
         try std.testing.expect(disconnect_at < restore_at);
         if (source.restores_opacity)
-            try std.testing.expect(std.mem.indexOf(u8, disable_body[0..restore_at], "actor.opacity = 255;") != null);
+            try std.testing.expect(std.mem.find(u8, disable_body[0..restore_at], "actor.opacity = 255;") != null);
     }
 }
 
@@ -253,9 +253,9 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
         try std.testing.expect(resource.content.len > 0);
     }
     // 파일이 서로 바뀌지 않았는지 — 각 종류의 표식을 본다.
-    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[0].content, "imports.gi") != null or
-        std.mem.indexOf(u8, gnome_resources[0].content, "import ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, gnome_resources[2].content, "<schemalist") != null);
+    try std.testing.expect(std.mem.find(u8, gnome_resources[0].content, "imports.gi") != null or
+        std.mem.find(u8, gnome_resources[0].content, "import ") != null);
+    try std.testing.expect(std.mem.find(u8, gnome_resources[2].content, "<schemalist") != null);
 
     // #654 — 리소스는 `__TILDAZ_*__` 토큰을 담고 쓰는 시점에 치환된다. 그래서 metadata 가
     // 맞는 파일인지는 **치환 결과**로 본다.
@@ -263,14 +263,14 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
     for ([_][]const u8{ gnome_resources[1].content, cinnamon_resources[1].content }) |metadata| {
         const rendered = try render(allocator, metadata);
         defer allocator.free(rendered);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, uuid) != null);
+        try std.testing.expect(std.mem.find(u8, rendered, uuid) != null);
     }
     // gschema 의 id 는 파일 **이름** (`relative_path`) 과 같은 값에서 나온다 — 둘이 어긋나면
     // `glib-compile-schemas` 가 읽는 id 와 우리가 만든 파일 이름이 갈린다.
     {
         const rendered = try render(allocator, gnome_resources[2].content);
         defer allocator.free(rendered);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, app_id.extension_schema) != null);
+        try std.testing.expect(std.mem.find(u8, rendered, app_id.extension_schema) != null);
     }
     // 창 제목 접두어 — 확장이 이 값으로 worker 창을 찾으므로 `instances.zig` 가 내는 제목과
     // 글자 단위로 같아야 한다 (#654).
@@ -278,7 +278,7 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
         const rendered = try render(allocator, js);
         defer allocator.free(rendered);
         const needle = "const WINDOW_TITLE_PREFIX = \"" ++ @import("../../instances.zig").window_title_prefix ++ "\";";
-        try std.testing.expect(std.mem.indexOf(u8, rendered, needle) != null);
+        try std.testing.expect(std.mem.find(u8, rendered, needle) != null);
     }
     // **치환 뒤에 토큰이 남으면 안 된다.** 남은 채로 깔리면 셸이 그 확장을 읽지 못하고 그
     // 실패는 사용자 화면에서 조용하다. `package.sh` 의 같은 검사와 짝이다 (그쪽은 배포물을,
@@ -286,7 +286,7 @@ test "#583 B8 extension 리소스는 바이너리가 싣는다 (빈 파일이 �
     for (gnome_resources ++ cinnamon_resources) |resource| {
         const rendered = try render(allocator, resource.content);
         defer allocator.free(rendered);
-        try std.testing.expect(std.mem.indexOf(u8, rendered, "__TILDAZ_") == null);
+        try std.testing.expect(std.mem.find(u8, rendered, "__TILDAZ_") == null);
     }
     // GNOME 과 Cinnamon 의 extension.js 는 다른 셸 API 를 쓰는 다른 파일이다.
     try std.testing.expect(!std.mem.eql(u8, gnome_resources[0].content, cinnamon_resources[0].content));

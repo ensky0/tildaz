@@ -72,8 +72,8 @@ pub const GlyphAtlas = struct {
     ///
     /// 글리프 바이트는 판 형식 그대로다. `gray` 는 커버리지 1 바이트, `color` 는 BGRA8 premultiplied
     /// (B*a, G*a, R*a, a). 자리마다 `w * bpp` 바이트 줄이 `h` 개 이어진다.
-    uploads: std.ArrayListUnmanaged(Upload) = .empty,
-    upload_bytes: std.ArrayListUnmanaged(u8) = .empty,
+    uploads: std.ArrayList(Upload) = .empty,
+    upload_bytes: std.ArrayList(u8) = .empty,
 
     /// #584 ① — 프레임 중간에 자리를 못 잡았다. **그 자리에서 비우지 않는다** — 호출자가
     /// 이미 그린 것을 flush 하고 텍스처를 올린 뒤 비우고 재시도한다 (SPEC §12.6). 예전에는
@@ -215,7 +215,7 @@ pub const GlyphAtlas = struct {
     /// 셰이더 tint 경로 사용. scale · 크기 변경 시 `rebuildFonts` 가 `reset` 하므로 다음 render
     /// 에서 새 size 로 재라스터.
     pub fn getOrInsertIcon(self: *GlyphAtlas, icon: tab_icons.Icon, size: u32, stroke_px: f32) ?AtlasEntry {
-        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @intFromEnum(icon), .source = .tab };
+        const key = GlyphKey{ .font_id = atlas_common.ICON_FONT_ID, .index = @backingInt(icon), .source = .tab };
         if (self.cache.get(key)) |entry| return entry;
         if (size == 0 or size > tab_icons.MAX_SIZE) return null;
 

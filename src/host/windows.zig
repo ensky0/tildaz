@@ -31,11 +31,11 @@ extern "user32" fn GetDpiForWindow(?*anyopaque) callconv(.c) c_uint;
 
 const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
-pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.builtin.StackTrace) noreturn {
+pub fn showPanic(msg: []const u8, addr: usize, _: ?*std.lang.StackTrace) noreturn {
     // #197 — macOS / Linux showPanic 와 동일하게 crash 를 로그에 남긴다 (parity).
     log.logPanic(msg, addr);
     var buf: [512]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
+    const text = std.mem.print(&buf, messages.panic_format, .{ msg, addr }) catch messages.panic_fallback_msg;
     dialog.showError(g_rt, messages.crash_title, text);
     std.process.exit(1);
 }
@@ -79,9 +79,8 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     // #197 — env TILDAZ_VERBOSE 면 protocol/timing/detail 로그까지 (기본은 lifecycle).
     log.setVerbose(rt.envHas("TILDAZ_VERBOSE"));
 
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+    // #821 — 본체 할당자 (`Runtime.gpa` — std 시작 코드가 모드에 맞게 고른 `init.gpa`).
+    const alloc = rt.gpa;
 
     // Load configuration. parse() 가 schema (validateStructure) + 각 필드
     // range 모두 fatal 처리 — 별도 validate() 호출 불필요.
@@ -275,7 +274,7 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     app.renderer = RendererBackend.init(alloc, app.window.hwnd, font_chain, app.window.font_size.spec(), @intCast(app.window.cell_width_px), @intCast(app.window.cell_height_px), theme_bg, config.opacity_alpha) catch |err| {
         log.appendLine("startup", "renderer init failed: {s}", .{@errorName(err)});
         var msg_buf: [1024]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, messages.renderer_init_failed_format, .{
+        const msg = std.mem.print(&msg_buf, messages.renderer_init_failed_format, .{
             @errorName(err),
             log.filePath() orelse messages.unknown_path_msg,
         }) catch messages.renderer_init_failed_fallback_msg;

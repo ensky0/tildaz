@@ -20,8 +20,8 @@
 //!
 //! 빌드 · 실행 (본체 빌드에는 들어가지 않아요):
 //! ```powershell
-//! zig build-exe -O ReleaseSafe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
-//!     -O ReleaseSafe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
+//! zig build-exe -O safe --dep directwrite '-Mroot=tool/synthetic-style-probe_windows.zig' `
+//!     -O safe '-Mdirectwrite=src/font/windows/directwrite.zig' --cache-dir C:/ziglang/tildaz-cache
 //! ```
 //! PowerShell 에서는 `-M…=…` 인자를 따옴표로 감싸요. 감싸지 않으면 PowerShell 5.1 이 `=` 에서 나눠
 //! `found another zig file '.zig'` 로 빌드가 실패해요.
@@ -38,7 +38,7 @@ const builtin = @import("builtin");
 const dw = @import("directwrite");
 
 comptime {
-    if (builtin.os.tag != .windows) @compileError("synthetic-style-probe 는 Windows 전용이에요.");
+    if (builtin.target.os.tag != .windows) @compileError("synthetic-style-probe 는 Windows 전용이에요.");
 }
 
 const BOOL = dw.BOOL;
@@ -60,7 +60,7 @@ var out_alloc: std.mem.Allocator = undefined;
 var dump: std.ArrayList(u8) = .empty;
 
 fn p(comptime fmt: []const u8, args: anytype) void {
-    const s = std.fmt.allocPrint(out_alloc, fmt, args) catch return;
+    const s = out_alloc.print(fmt, args) catch return;
     dump.appendSlice(out_alloc, s) catch {};
     var written: u32 = 0;
     // STD_OUTPUT_HANDLE = -11
@@ -260,7 +260,7 @@ fn probeFamily(factory: *dw.IDWriteFactory, coll: *dw.IDWriteFontCollection, nam
         return;
     }
 
-    var fbuf: [8]?*dw.IUnknown = .{null} ** 8;
+    var fbuf: [8]?*dw.IUnknown = @splat(null);
     const files = base.?.GetFiles(&fbuf) orelse {
         p("  GetFiles 실패\n", .{});
         return;

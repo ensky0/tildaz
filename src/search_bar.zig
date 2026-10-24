@@ -530,8 +530,8 @@ pub fn textWidthPx(text: []const u8, cw: f32) f32 {
 pub fn countText(ui: Ui, buf: []u8) []const u8 {
     if (ui.searching) return "…";
     if (ui.total == 0) return "0/0";
-    if (ui.current == 0) return std.fmt.bufPrint(buf, "{d}", .{ui.total}) catch "…";
-    return std.fmt.bufPrint(buf, "{d}/{d}", .{ ui.current, ui.total }) catch "…";
+    if (ui.current == 0) return std.mem.print(buf, "{d}", .{ui.total}) catch "…";
+    return std.mem.print(buf, "{d}/{d}", .{ ui.current, ui.total }) catch "…";
 }
 
 /// 테스트용 — 셀 14×20 pt, 스크롤바 없음의 평범한 창. 격자 바닥은 창 바닥에서 패딩 6 pt

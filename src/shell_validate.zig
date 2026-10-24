@@ -16,6 +16,7 @@
 //!   host 가 default config 생성 전에 끝내고, 이후 disk config 의 명시값만 사용.
 
 const std = @import("std");
+const test_text = @import("test_text.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const builtin = @import("builtin");
 const dialog = @import("dialog.zig");
@@ -43,7 +44,7 @@ fn allocMessageOrFallback(
     args: anytype,
     fallback: []const u8,
 ) ValidationMessage {
-    const owned = std.fmt.allocPrint(allocator, fmt, args) catch
+    const owned = allocator.print(fmt, args) catch
         return .{ .text = fallback };
     return .{ .text = owned, .owned = owned };
 }
@@ -142,7 +143,7 @@ pub fn checkForNewTab(rt: Runtime, allocator: std.mem.Allocator, shell: []const 
 /// 양쪽으로 strip (사용자가 `"\"...\""` 로 적었을 때 보호).
 fn firstShellToken(shell: []const u8) []const u8 {
     if (shell.len == 0) return shell;
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         if (shell[0] == '"') {
             const close = std.mem.findScalarPos(u8, shell, 1, '"') orelse return shell[1..];
             return shell[1..close];
@@ -157,14 +158,14 @@ fn firstShellToken(shell: []const u8) []const u8 {
 }
 
 fn executableExists(allocator: std.mem.Allocator, token: []const u8) bool {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => existsWindows(token),
         else => existsPosix(allocator, token),
     };
 }
 
 fn examples() []const u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => messages.shell_examples_windows,
         else => messages.shell_examples_posix,
     };
@@ -213,8 +214,8 @@ fn existsPosix(allocator: std.mem.Allocator, token: []const u8) bool {
 
 test "shell validation preserves long and multibyte failure details beyond 1024 bytes" {
     const allocator = std.testing.allocator;
-    const shell = "/missing/" ++ ("셸" ** 600);
-    const config_path = "/tmp/" ++ ("경로/" ** 400) ++ "config_998.json";
+    const shell = "/missing/" ++ test_text.repeat("셸", 600);
+    const config_path = "/tmp/" ++ test_text.repeat("경로/", 400) ++ "config_998.json";
     const message = formatValidationFailure(
         allocator,
         .executable_not_found,
@@ -252,8 +253,8 @@ test "shell validation uses the specific static fallback only when allocation fa
 
 test "new tab failure message preserves long shell and final config path" {
     const allocator = std.testing.allocator;
-    const shell = "/missing/" ++ ("x" ** 1600);
-    const config_path = "/tmp/" ++ ("y/" ** 900) ++ "config_998.json";
+    const shell = "/missing/" ++ test_text.repeat("x", 1600);
+    const config_path = "/tmp/" ++ test_text.repeat("y/", 900) ++ "config_998.json";
     const message = allocMessageOrFallback(
         allocator,
         messages.shell_new_tab_not_found_format,
@@ -270,10 +271,10 @@ test "new tab failure message preserves long shell and final config path" {
 
 test "valid shell returns null without preparing an error message" {
     const allocator = std.testing.allocator;
-    const shell = if (builtin.os.tag == .windows) "cmd.exe" else "/bin/sh";
+    const shell = if (builtin.target.os.tag == .windows) "cmd.exe" else "/bin/sh";
     if (!executableExists(allocator, shell)) return error.SkipZigTest;
     // #451 — 유효한 셸이면 config 경로를 읽기 전에 `null` 로 빠져나오므로 환경변수가
     // 필요 없다. `Environ.empty` 로 두어 테스트가 기계의 환경에 안 묶이게 한다.
-    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty };
+    const rt: Runtime = .{ .io = std.testing.io, .environ = .empty, .gpa = std.testing.allocator };
     try std.testing.expect(validationMessage(rt, allocator, shell) == null);
 }

@@ -355,7 +355,7 @@ pub const ConPty = struct {
         const pid = GetCurrentProcessId();
         const seq = @atomicRmw(u32, &S.counter, .Add, 1, .monotonic);
         var pipe_name_u8: [256]u8 = undefined;
-        const pipe_name_str = std.fmt.bufPrint(
+        const pipe_name_str = std.mem.print(
             &pipe_name_u8,
             "\\\\.\\pipe\\tildaz_{d}_{d}",
             .{ pid, seq },
@@ -568,7 +568,7 @@ pub const ConPty = struct {
 
         // 자식 프로세스에 추가 환경변수 전달 (기존값 저장 → SetEnv → CreateProcess → 복원)
         const MAX_EXTRA_ENV = 8;
-        var saved_vals: [MAX_EXTRA_ENV]?[]u16 = .{null} ** MAX_EXTRA_ENV;
+        var saved_vals: [MAX_EXTRA_ENV]?[]u16 = @splat(null);
         errdefer {
             for (&saved_vals) |*maybe_buf| {
                 if (maybe_buf.*) |buf| {

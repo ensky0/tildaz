@@ -25,7 +25,7 @@ pub fn parseAction(text: []const u8) ?Action {
 
 /// Linux 만 지원한다. 다른 OS 는 데스크톱 설정 파일을 고치는 일이 없다 (macOS 는 LaunchAgent ·
 /// Windows 는 레지스트리를 앱이 직접 다룬다).
-pub const supported = builtin.os.tag == .linux;
+pub const supported = builtin.target.os.tag == .linux;
 
 const impl = if (supported) @import("desktop_setup/linux.zig") else struct {
     pub fn run(_: Runtime, _: std.mem.Allocator, _: Action) !void {

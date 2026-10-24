@@ -22,7 +22,7 @@
 //!
 //! 빌드 / 실행 (본체 빌드에는 들어가지 않고 `zig build probe-check`가 호환만 확인):
 //! ```sh
-//! zig build-exe tool/osc-title-probe/osc-title-probe_linux.zig -O ReleaseSafe -lc
+//! zig build-exe tool/osc-title-probe/osc-title-probe_linux.zig -O safe -lc
 //! ./osc-title-probe --shell /bin/bash --runs 10 --verbose
 //! ./osc-title-probe --shell /usr/bin/fish --runs 10 --no-reply   # 질의 응답 없이 비교
 //! ./osc-title-probe --shell /usr/bin/zsh --runs 5 --home /tmp/empty  # 사용자 rc 없는 셸
@@ -37,7 +37,7 @@ const posix = std.posix;
 const linux = std.os.linux;
 
 comptime {
-    if (builtin.os.tag != .linux) {
+    if (builtin.target.os.tag != .linux) {
         @compileError("osc-title-probe 는 Linux 전용 (POSIX PTY). Windows 는 ConPTY 용 별도 도구가 필요하다.");
     }
 }
@@ -229,7 +229,7 @@ const Parser = struct {
 
     fn dispatchOsc(self: *Parser, rec: *Recorder, s: []const u8) void {
         _ = self;
-        const semi = std.mem.indexOfScalar(u8, s, ';');
+        const semi = std.mem.findScalar(u8, s, ';');
         const code_str = if (semi) |i| s[0..i] else s;
         const payload = if (semi) |i| s[i + 1 ..] else "";
         const code = std.fmt.parseInt(u32, code_str, 10) catch return;
@@ -237,12 +237,12 @@ const Parser = struct {
         switch (code) {
             0, 2 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC {d} title=\"{s}\"", .{ code, payload }) catch @as([]u8, line[0..0])).len;
                 rec.add(.title, line[0..n]);
             },
             1 => {
                 var line: [180]u8 = undefined;
-                const n = (std.fmt.bufPrint(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
+                const n = (std.mem.print(&line, "OSC 1 icon=\"{s}\"", .{payload}) catch @as([]u8, line[0..0])).len;
                 rec.add(.icon, line[0..n]);
             },
             // 색 질의 — ghostty-vt 가 terminal 의 현재 색으로 답한다.
@@ -250,10 +250,10 @@ const Parser = struct {
                 if (std.mem.eql(u8, payload, "?")) {
                     const color = if (code == 11) theme_bg else theme_fg;
                     var out: [64]u8 = undefined;
-                    const resp = std.fmt.bufPrint(&out, "\x1b]{d};{s}\x1b\\", .{ code, color }) catch return;
+                    const resp = std.mem.print(&out, "\x1b]{d};{s}\x1b\\", .{ code, color }) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC {d} color query -> {s}", .{ code, color }) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC {d} color query -> {s}", .{ code, color }) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -261,16 +261,16 @@ const Parser = struct {
                 // OSC 4 ; n ; ? — palette 질의. 값은 테마 palette 이지만 시점
                 // 측정에는 무관하므로 회색으로 답하고 기록한다.
                 if (std.mem.endsWith(u8, payload, "?")) {
-                    const idx_end = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+                    const idx_end = std.mem.findScalar(u8, payload, ';') orelse return;
                     var out: [64]u8 = undefined;
-                    const resp = std.fmt.bufPrint(
+                    const resp = std.mem.print(
                         &out,
                         "\x1b]4;{s};rgb:8080/8080/8080\x1b\\",
                         .{payload[0..idx_end]},
                     ) catch return;
                     rec.respond(resp);
                     var line: [180]u8 = undefined;
-                    const n = (std.fmt.bufPrint(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
+                    const n = (std.mem.print(&line, "OSC 4;{s} palette query -> answered", .{payload[0..idx_end]}) catch @as([]u8, line[0..0])).len;
                     rec.add(.answered, line[0..n]);
                 }
             },
@@ -344,7 +344,7 @@ const Parser = struct {
                     // 2027 (grapheme cluster) 은 tildaz 가 켠다 → set(1).
                     // 나머지는 recognized-but-reset(2) 로 답한다 (근사).
                     const value: u8 = if (first_param == 2027) 1 else 2;
-                    const resp = std.fmt.bufPrint(&out, "\x1b[?{d};{d}$y", .{ first_param, value }) catch return;
+                    const resp = std.mem.print(&out, "\x1b[?{d};{d}$y", .{ first_param, value }) catch return;
                     rec.respond(resp);
                     const n = render(&line, "CSI ", s);
                     rec.add(.answered, line[0..n]);
@@ -360,7 +360,7 @@ const Parser = struct {
 };
 
 fn firstParam(body: []const u8) []const u8 {
-    const semi = std.mem.indexOfScalar(u8, body, ';') orelse return body;
+    const semi = std.mem.findScalar(u8, body, ';') orelse return body;
     return body[0..semi];
 }
 
@@ -380,7 +380,7 @@ fn render(out: []u8, prefix: []const u8, s: []const u8) usize {
                 n += 1;
             }
         } else {
-            const hex = std.fmt.bufPrint(out[n..], "\\x{x:0>2}", .{c}) catch break;
+            const hex = std.mem.print(out[n..], "\\x{x:0>2}", .{c}) catch break;
             n += hex.len;
         }
     }
@@ -399,7 +399,7 @@ fn buildEnvp(
 ) ![*:null]const ?[*:0]const u8 {
     const buf = try arena.allocSentinel(?[*:0]const u8, map.count(), null);
     for (map.keys(), map.values(), 0..) |key, value, i| {
-        buf[i] = (try std.fmt.allocPrintSentinel(arena, "{s}={s}", .{ key, value }, 0)).ptr;
+        buf[i] = (try arena.printSentinel("{s}={s}", .{ key, value }, 0)).ptr;
     }
     return buf.ptr;
 }
@@ -446,7 +446,7 @@ fn spawnShell(
         posix.tcsetattr(slave_fd, .NOW, tio) catch {};
     } else |_| {}
 
-    const shell_z = try alloc.dupeZ(u8, shell);
+    const shell_z = try alloc.dupeSentinel(u8, shell, 0);
     defer alloc.free(shell_z);
 
     var env_map = try environ.createMap(alloc);
@@ -467,7 +467,7 @@ fn spawnShell(
     defer env_arena.deinit();
     const envp = try buildEnvp(env_arena.allocator(), &env_map);
 
-    const home_z_owned: ?[:0]u8 = if (home_override) |h| try alloc.dupeZ(u8, h) else null;
+    const home_z_owned: ?[:0]u8 = if (home_override) |h| try alloc.dupeSentinel(u8, h, 0) else null;
     defer if (home_z_owned) |h| alloc.free(h);
     // fork 뒤에는 환경 조회나 할당을 하지 않는다. 부모의 환경 블록은 프로세스 수명이고
     // `getPosix` 반환값은 이미 NUL-종단이라 그대로 `chdir`에 쓸 수 있다.
@@ -603,8 +603,8 @@ fn runOnce(
 
 /// `OSC 0 title="..."` 형태에서 제목만 뽑는다.
 fn titlePayload(line: []const u8) []const u8 {
-    const start = std.mem.indexOfScalar(u8, line, '"') orelse return "";
-    const end = std.mem.lastIndexOfScalar(u8, line, '"') orelse return "";
+    const start = std.mem.findScalar(u8, line, '"') orelse return "";
+    const end = std.mem.findScalarLast(u8, line, '"') orelse return "";
     if (end <= start) return "";
     return line[start + 1 .. end];
 }

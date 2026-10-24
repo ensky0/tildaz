@@ -40,7 +40,7 @@ pub const FaceStyle = enum(u2) {
     }
 
     pub fn index(self: FaceStyle) usize {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

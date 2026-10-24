@@ -179,7 +179,7 @@ trap 'terminals_cleanup_all || true; hygiene_end || true; rm -rf "$WORK_DIR"' EX
 
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
-    echo "먼저 빌드해요: zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --mb 1" >&2
+    echo "먼저 빌드해요: zig build stress -Doptimize=fast -Dsimd=true -- throughput --mb 1" >&2
     exit 1
 fi
 

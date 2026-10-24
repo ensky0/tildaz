@@ -144,10 +144,10 @@ fn unregisterOthers(allocator: std.mem.Allocator, bus: *dbus.SessionBus, paths: 
             continue;
         }
 
-        const component_z = allocator.dupeZ(u8, unique_name) catch continue;
+        const component_z = allocator.dupeSentinel(u8, unique_name, 0) catch continue;
         defer allocator.free(component_z);
         var stale_action_buf: [32]u8 = undefined;
-        const stale_action = std.fmt.bufPrintSentinel(&stale_action_buf, "toggle-{d}", .{index}, 0) catch continue;
+        const stale_action = std.mem.printSentinel(&stale_action_buf, "toggle-{d}", .{index}, 0) catch continue;
         unregisterShortcut(&bus.api, bus.conn, component_z.ptr, stale_action.ptr) catch |err| {
             log.appendLineVerbose("kglobalaccel", "stale KDE action cleanup skipped for instance {}: {s}", .{ index, @errorName(err) });
             continue;
@@ -213,7 +213,7 @@ fn removeGroupsFromFileOrError(rt: Runtime, allocator: std.mem.Allocator) !void 
     if (!try paths_mod.writeFileIfChanged(rt, allocator, path, next)) return;
     log.appendLine("kglobalaccel", "removed our groups from {s} (kglobalaccel is not running)", .{path});
     var buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
-    console.outLine(rt.io, std.fmt.bufPrint(&buf, messages.desktop_updated_format, .{path}) catch path);
+    console.outLine(rt.io, std.mem.print(&buf, messages.desktop_updated_format, .{path}) catch path);
 }
 
 /// `[<id>.instanceN]` 그룹 (헤더부터 다음 그룹 직전까지) 을 뺀 내용. 없으면 `null`. 판정은
@@ -297,7 +297,7 @@ fn allComponentPaths(allocator: std.mem.Allocator, bus: *dbus.SessionBus, auto_s
 }
 
 fn componentUniqueName(allocator: std.mem.Allocator, bus: *dbus.SessionBus, path: []const u8) ![]u8 {
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
     const call = bus.api.message_new_method_call(destination, path_z.ptr, "org.freedesktop.DBus.Properties", "Get") orelse return error.KGlobalAccelMessageAllocFailed;
     defer bus.api.message_unref(call);
@@ -356,7 +356,7 @@ pub fn cleanupLegacyIdentity(rt: Runtime, bus: *dbus.SessionBus) void {
         };
     }
     var legacy_action_buf: [32]u8 = undefined;
-    const legacy_action = std.fmt.bufPrintSentinel(&legacy_action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}, 0) catch return;
+    const legacy_action = std.mem.printSentinel(&legacy_action_buf, "toggle-{d}", .{instance_context.requireWorkerIndex()}, 0) catch return;
     unregisterShortcut(&bus.api, bus.conn, legacy_component, legacy_action.ptr) catch |err| {
         log.appendLineVerbose("kglobalaccel", "legacy numbered KDE action cleanup skipped: {s}", .{@errorName(err)});
     };
@@ -694,9 +694,10 @@ pub const Client = struct {
         callback: PressedCallback,
         user_data: ?*anyopaque,
     ) !*Client {
-        const owner_rule = try allocator.dupeZ(
+        const owner_rule = try allocator.dupeSentinel(
             u8,
             "type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.kde.kglobalaccel'",
+            0,
         );
         errdefer allocator.free(owner_rule);
 
@@ -816,8 +817,7 @@ pub const Client = struct {
         if (self.component_match_rule) |old_rule| self.allocator.free(old_rule);
         self.component_match_rule = null;
 
-        const new_rule = try std.fmt.allocPrintSentinel(
-            self.allocator,
+        const new_rule = try self.allocator.printSentinel(
             "type='signal',interface='{s}',member='{s}',path='{s}'",
             .{ std.mem.span(component_interface), std.mem.span(component_pressed), new_path },
             0,
@@ -975,7 +975,7 @@ fn claimKey(rt: Runtime, allocator: std.mem.Allocator, api: *const dbus.Api, con
         std.mem.eql(u8, owner.action, std.mem.span(action()))) return;
 
     var message_buf: [512]u8 = undefined;
-    const confirm_message = std.fmt.bufPrint(&message_buf, messages.hotkey_takeover_format, .{
+    const confirm_message = std.mem.print(&message_buf, messages.hotkey_takeover_format, .{
         key_display,
         owner.display_component,
         owner.display_action,

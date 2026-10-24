@@ -72,7 +72,7 @@ powershell.exe -NoProfile -File tool\conpty-update_windows.ps1 -Version <판>   
 | 한글 IME · 붙여넣기 · 탭 전환 | `powershell -STA -File tool\key-redraw-check_windows.ps1 -Bin <판>` | 실패 0 (붙여넣기 칸은 클립보드에 서식이 있으면 도구가 건너뛴다) |
 | 검색바 IME · 한자 후보창 | `tool\search-bar-check_windows.ps1 -Mode C -Bin <판>` | 6 / 6 |
 | dead key | `tool\deadkey-check\deadkey-check_windows.ps1 -Bin <판>` | 전부 OK |
-| 처리량 — **번들한 이유라 떨어지면 안 된다** | 두 판 worktree 에서 번갈아 `zig build stress -Doptimize=ReleaseFast -Dsimd=true -- throughput --layer pty --mb 64` 5 회씩 | 지금 판과 같은 범위 |
+| 처리량 — **번들한 이유라 떨어지면 안 된다** | 두 판 worktree 에서 번갈아 `zig build stress -Doptimize=fast -Dsimd=true -- throughput --layer pty --mb 64` 5 회씩 | 지금 판과 같은 범위 |
 | 컴파일 · 단위 테스트 | `zig build check` · `zig build test` | 통과 |
 
 - arm64 는 작업 기기에 Windows arm64 가 없어 실기를 못 해요. 도구의 서명 확인과 `zig build check` 로 대신해요.

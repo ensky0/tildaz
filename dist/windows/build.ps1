@@ -15,20 +15,20 @@
 # 아예 안 받아요 (AGENTS.md "실행 환경" 참고).
 #
 # 사용법:
-#   dist\windows\build.ps1                      # dev 빌드 (ReleaseFast + SIMD)
+#   dist\windows\build.ps1                      # dev 빌드 (fast + SIMD)
 #   dist\windows\build.ps1 --release            # 릴리즈 빌드
 #   dist\windows\build.ps1 --no-simd            # scalar 진단 빌드
 #   dist\windows\build.ps1 --clean
-#   dist\windows\build.ps1 --optimize Debug
+#   dist\windows\build.ps1 --optimize debug     # debug · safe · fast · small (Zig 0.17 이름, #820)
 #   dist\windows\build.ps1 --cache-dir C:\tmp\zig-cache
 #   dist\windows\build.ps1 --check               # 6-target compile-only 검증 (#201)
-#   dist\windows\build.ps1 --test                # 단위 테스트 (ReleaseSafe)
+#   dist\windows\build.ps1 --test                # 단위 테스트 (safe)
 
 # PowerShell 고유 인자 표기 대신 세 OS 공통 --release 를 그대로 받는다.
 # dev 는 옵션이 없는 기본값이다. 환경변수나 경로로 종류를 추측하지 않는다.
 $ErrorActionPreference = "Stop"
 $Clean = $false
-$Optimize = "ReleaseFast"
+$Optimize = "fast"
 $CacheDir = "C:\ziglang\tildaz-cache"
 $Check = $false
 $Test = $false
@@ -63,7 +63,7 @@ for ($i = 0; $i -lt $ScriptArgs.Count; $i++) {
         }
     }
 }
-if (@('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall') -cnotcontains $Optimize) {
+if (@('debug', 'safe', 'fast', 'small') -cnotcontains $Optimize) {
     [Console]::Error.WriteLine("ERROR: invalid optimization mode: $Optimize")
     exit 2
 }
@@ -99,17 +99,17 @@ if ($Check) {
     Invoke-Zig @("check")
     Write-Host "--- check OK ---"
 } elseif ($Test) {
-    # 단위 테스트. debug .sframe 링커 에러 회피 위해 ReleaseSafe.
-    Write-Host "--- zig build test -Doptimize=ReleaseSafe ---"
-    Invoke-Zig @("test", "-Doptimize=ReleaseSafe")
+    # 단위 테스트. debug .sframe 링커 에러 회피 위해 safe.
+    Write-Host "--- zig build test -Doptimize=safe ---"
+    Invoke-Zig @("test", "-Doptimize=safe")
     Write-Host "--- test OK ---"
 } else {
     Write-Host "--- Pre-build zig-out\bin ---"
     if (Test-Path zig-out\bin) { Get-ChildItem zig-out\bin } else { Write-Host "(no zig-out\bin)" }
 
-    # 공식 구성과 같은 ReleaseFast는 SIMD on. Debug 등 다른 mode와 --no-simd
+    # 공식 구성과 같은 fast는 SIMD on. debug 등 다른 mode와 --no-simd
     # 진단 빌드는 scalar를 유지한다 (#19).
-    $SimdValue = if ($Optimize -eq "ReleaseFast" -and -not $NoSimd) { "true" } else { "false" }
+    $SimdValue = if ($Optimize -eq "fast" -and -not $NoSimd) { "true" } else { "false" }
     Write-Host "--- zig build -Doptimize=$Optimize -Dsimd=$SimdValue ---"
     Invoke-Zig @("-Doptimize=$Optimize", "-Dsimd=$SimdValue")
 

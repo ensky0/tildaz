@@ -98,7 +98,7 @@ const Ctx = struct {
 
     fn sayPath(self: Ctx, comptime fmt: []const u8, path: []const u8) void {
         var buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
-        self.say(std.fmt.bufPrint(&buf, fmt, .{path}) catch path);
+        self.say(std.mem.print(&buf, fmt, .{path}) catch path);
     }
 
     /// 없으면 `null`.
@@ -148,7 +148,7 @@ const Ctx = struct {
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         while (it.next()) |dir| {
             if (!std.Io.Dir.path.isAbsolute(dir)) continue;
-            const candidate = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
+            const candidate = std.mem.print(&buf, "{s}/{s}", .{ dir, name }) catch continue;
             std.Io.Dir.accessAbsolute(self.rt.io, candidate, .{ .execute = true }) catch continue;
             return true;
         }
@@ -304,7 +304,7 @@ fn editUserConfig(ctx: Ctx, path: []const u8, base: ?[]const u8, syntax: sway_hy
 fn sway(ctx: Ctx) !bool {
     const own = try ctx.join(&.{ ctx.config_home, "sway", app_id.name ++ ".conf" });
     defer ctx.allocator.free(own);
-    const include_line = try std.fmt.allocPrint(ctx.allocator, "include {s}", .{own});
+    const include_line = try ctx.allocator.print("include {s}", .{own});
     defer ctx.allocator.free(include_line);
 
     // sway 가 찾는 순서 (`config.c` `get_config_path`) 의 sway 전용 두 자리. i3 설정은 i3 도
@@ -346,7 +346,7 @@ fn sway(ctx: Ctx) !bool {
         if (i3_config) |i3_path| {
             try writeSwayOwn(ctx, own);
             var buf: [2 * std.Io.Dir.max_path_bytes + 160]u8 = undefined;
-            ctx.say(std.fmt.bufPrint(&buf, messages.desktop_sway_i3_config_format, .{ i3_path, own }) catch messages.desktop_sway_not_installed_msg);
+            ctx.say(std.mem.print(&buf, messages.desktop_sway_i3_config_format, .{ i3_path, own }) catch messages.desktop_sway_not_installed_msg);
             return false;
         }
         if (!ctx.installed("sway")) {
@@ -367,7 +367,7 @@ fn sway(ctx: Ctx) !bool {
 }
 
 fn writeSwayOwn(ctx: Ctx, own: []const u8) !void {
-    const content = try std.fmt.allocPrint(ctx.allocator, "# {s}\nexec {s} --autostart\n", .{ file_header, ctx.exe });
+    const content = try ctx.allocator.print("# {s}\nexec {s} --autostart\n", .{ file_header, ctx.exe });
     defer ctx.allocator.free(content);
     try ctx.write(own, content, ctx.exists(own));
 }
@@ -385,7 +385,7 @@ fn hyprland(ctx: Ctx) !bool {
     const own_conf = try ctx.join(&.{ dir, app_id.name ++ ".conf" });
     defer ctx.allocator.free(own_conf);
     const lua_include = "pcall(require, \"" ++ app_id.name ++ "\")";
-    const conf_include = try std.fmt.allocPrint(ctx.allocator, "source = {s}", .{own_conf});
+    const conf_include = try ctx.allocator.print("source = {s}", .{own_conf});
     defer ctx.allocator.free(conf_include);
 
     if (ctx.mode == .remove) {
@@ -444,7 +444,7 @@ fn hyprland(ctx: Ctx) !bool {
 fn removeConfOwn(ctx: Ctx, main_conf: []const u8, own_conf: []const u8) !void {
     if (try ctx.read(main_conf)) |text| {
         defer ctx.allocator.free(text);
-        if (std.mem.indexOf(u8, text, own_conf) != null) {
+        if (std.mem.find(u8, text, own_conf) != null) {
             log.appendLine("desktop", "{s} still sources {s} — emptying it instead of deleting", .{ main_conf, own_conf });
             try ctx.write(own_conf, "# " ++ file_header ++ "\n", true);
             return;
@@ -456,7 +456,7 @@ fn removeConfOwn(ctx: Ctx, main_conf: []const u8, own_conf: []const u8) !void {
 fn writeHyprlandOwn(ctx: Ctx, own: []const u8, syntax: sway_hyprland_files.Syntax) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(ctx.allocator);
-    const command = try std.fmt.allocPrint(ctx.allocator, "{s} --autostart", .{ctx.exe});
+    const command = try ctx.allocator.print("{s} --autostart", .{ctx.exe});
     defer ctx.allocator.free(command);
     switch (syntax) {
         .lua => {
@@ -487,7 +487,7 @@ fn systemHyprlandConfig(ctx: Ctx) bool {
     while (it.next()) |d| {
         if (!std.Io.Dir.path.isAbsolute(d)) continue;
         for ([_][]const u8{ "lua", "conf" }) |ext| {
-            const p = std.fmt.bufPrint(&buf, "{s}/hypr/hyprland.{s}", .{ d, ext }) catch continue;
+            const p = std.mem.print(&buf, "{s}/hypr/hyprland.{s}", .{ d, ext }) catch continue;
             if (ctx.exists(p)) return true;
         }
     }

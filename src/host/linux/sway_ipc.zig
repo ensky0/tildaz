@@ -105,7 +105,7 @@ pub fn registerToggleIfSway(
     // #451 — `fs.selfExePath` ➡️ `std.process.executablePath` (길이를 돌려준다).
     const exe_len = std.process.executablePath(rt.io, &exe_buf) catch |err| {
         log.appendLine("sway", "executablePath failed: {s}", .{@errorName(err)});
-        return std.fmt.bufPrint(reason_buf, messages.hotkey_reason_backend_failed_format, .{@errorName(err)}) catch
+        return std.mem.print(reason_buf, messages.hotkey_reason_backend_failed_format, .{@errorName(err)}) catch
             fitReason(reason_buf, messages.linux_hotkey_failed_fallback_msg);
     };
     const exe_path = exe_buf[0..exe_len];
@@ -125,7 +125,7 @@ pub fn registerToggleIfSway(
     // 경고는 사용자에게 의미가 없다. 실측으로 이 플래그가 IPC 응답을 바꾸지 않는 것도
     // 확인했다 — 빼도 얻는 정보가 없다.
     var cmd_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
-    const command = std.fmt.bufPrint(&cmd_buf, "{s} --no-warn {s} exec \"{s}\" --toggle {d}", .{ verb, accel, exe_path, instance_context.requireWorkerIndex() }) catch {
+    const command = std.mem.print(&cmd_buf, "{s} --no-warn {s} exec \"{s}\" --toggle {d}", .{ verb, accel, exe_path, instance_context.requireWorkerIndex() }) catch {
         log.appendLine("sway", "bind command too long", .{});
         return fitReason(reason_buf, messages.sway_reason_command_too_long_msg);
     };
@@ -134,7 +134,7 @@ pub fn registerToggleIfSway(
     var detail_buf: [192]u8 = undefined;
     const outcome = runCommand(allocator, sock_path, command, &detail_buf) catch |err| {
         log.appendLine("sway", "{s} IPC failed: {s}", .{ verb, @errorName(err) });
-        return std.fmt.bufPrint(reason_buf, messages.sway_reason_ipc_failed_format, .{@errorName(err)}) catch
+        return std.mem.print(reason_buf, messages.sway_reason_ipc_failed_format, .{@errorName(err)}) catch
             fitReason(reason_buf, messages.linux_hotkey_failed_fallback_msg);
     };
     if (outcome.ok) {
@@ -143,7 +143,7 @@ pub fn registerToggleIfSway(
     }
     log.appendLine("sway", "{s} auto-register rejected (sway success=false) — accel={s} detail={s}", .{ verb, accel, outcome.detail });
     if (outcome.detail.len == 0) return fitReason(reason_buf, messages.sway_reason_rejected_msg);
-    return std.fmt.bufPrint(reason_buf, messages.sway_reason_rejected_format, .{outcome.detail}) catch
+    return std.mem.print(reason_buf, messages.sway_reason_rejected_format, .{outcome.detail}) catch
         fitReason(reason_buf, messages.sway_reason_rejected_msg);
 }
 
@@ -213,7 +213,7 @@ pub fn registerWindowRuleIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: 
     // 창이 리사이즈 + sticky 됐다). 세미콜론으로 이은 독립 규칙 4개는 한 IPC 왕복에
     // 전부 등록되고 전부 적용된다 (같은 실기에서 확인).
     var cmd_buf: [512]u8 = undefined;
-    const command = std.fmt.bufPrint(
+    const command = std.mem.print(
         &cmd_buf,
         "for_window [app_id=\"{s}\"] floating enable; " ++
             "for_window [app_id=\"{s}\"] sticky enable; " ++
@@ -265,7 +265,7 @@ pub fn moveWindowIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *const c
     };
 
     var cmd_buf: [128]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "move position {d} ppt {d} ppt", .{ @round(pos.x), @round(pos.y) }) catch return;
+    const cmd = std.mem.print(&cmd_buf, "move position {d} ppt {d} ppt", .{ @round(pos.x), @round(pos.y) }) catch return;
     const ok = runForAppId(rt, allocator, app_id, cmd);
     log.appendLine("sway", "move {s} — {s} to ({d},{d}) ppt", .{ if (ok) "ok" else "rejected", app_id, @round(pos.x), @round(pos.y) });
 }
@@ -299,7 +299,7 @@ pub fn restoreDockLayoutIfSway(rt: Runtime, allocator: std.mem.Allocator, cfg: *
     const w = std.math.clamp(cfg.width_percent, 0.0, 100.0);
     const h = std.math.clamp(cfg.height_percent, 0.0, 100.0);
     var cmd_buf: [96]u8 = undefined;
-    const cmd = std.fmt.bufPrint(
+    const cmd = std.mem.print(
         &cmd_buf,
         "resize set width {d} ppt height {d} ppt",
         .{ @round(w), @round(h) },
@@ -375,7 +375,7 @@ pub fn showFromScratchpad(rt: Runtime, allocator: std.mem.Allocator, cfg: *const
 pub fn runForAppId(rt: Runtime, allocator: std.mem.Allocator, app_id: []const u8, command: []const u8) bool {
     const sock_path = rt.environ.getPosix("SWAYSOCK") orelse return false;
     var buf: [512]u8 = undefined;
-    const full = std.fmt.bufPrint(&buf, "[app_id=\"{s}\"] {s}", .{ app_id, command }) catch {
+    const full = std.mem.print(&buf, "[app_id=\"{s}\"] {s}", .{ app_id, command }) catch {
         log.appendLine("sway", "command too long — skipped: {s}", .{command});
         return false;
     };

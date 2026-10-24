@@ -14,7 +14,7 @@ const builtin = @import("builtin");
 const Runtime = @import("runtime.zig").Runtime;
 const instances = @import("instances.zig");
 
-const impl = switch (builtin.os.tag) {
+const impl = switch (builtin.target.os.tag) {
     .windows => @import("autostart/windows.zig"),
     .macos => @import("autostart/macos.zig"),
     .linux => @import("autostart/linux.zig"),
