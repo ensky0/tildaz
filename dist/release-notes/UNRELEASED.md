@@ -19,9 +19,4 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
-- Building from source now requires Zig 0.17.0.
-  ([#820](https://github.com/ensky0/tildaz/issues/820))
-- macOS 15 or later is now required. macOS 14 is no longer supported.
-  ([#825](https://github.com/ensky0/tildaz/issues/825))
-
 ## Body candidates
