@@ -1,7 +1,7 @@
 #!/bin/sh
 # TildaZ uninstaller for Linux and macOS. Removes what install.sh installed.
 #
-#   curl -LsSf https://ensky0.github.io/tildaz/uninstall.sh | sh
+#   curl -LsSf https://tildaz.dev/uninstall.sh | sh
 #
 # What it removes:
 #   Linux: runs the uninstall.sh that came with the release (app menu entry, icon,
@@ -105,7 +105,7 @@ main() {
     case "$(uname -s)" in
         Linux) uninstall_linux ;;
         Darwin) uninstall_macos ;;
-        *) err "unsupported OS: $(uname -s). On Windows, run in PowerShell: irm https://ensky0.github.io/tildaz/uninstall.ps1 | iex" ;;
+        *) err "unsupported OS: $(uname -s). On Windows, run in PowerShell: irm https://tildaz.dev/uninstall.ps1 | iex" ;;
     esac
 }
 

@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://ensky0.github.io/tildaz/</loc>
+    <loc>https://tildaz.dev/</loc>
     <lastmod>2026-10-21</lastmod>
   </url>
   <url>
-    <loc>https://ensky0.github.io/tildaz/install/</loc>
+    <loc>https://tildaz.dev/install/</loc>
     <lastmod>2026-10-21</lastmod>
   </url>
   <url>
-    <loc>https://ensky0.github.io/tildaz/config/</loc>
+    <loc>https://tildaz.dev/config/</loc>
     <lastmod>2026-10-21</lastmod>
   </url>
   <url>
-    <loc>https://ensky0.github.io/tildaz/linux-wayland/</loc>
+    <loc>https://tildaz.dev/linux-wayland/</loc>
     <lastmod>2026-10-21</lastmod>
   </url>
   <url>
-    <loc>https://ensky0.github.io/tildaz/benchmarks/</loc>
+    <loc>https://tildaz.dev/benchmarks/</loc>
     <lastmod>2026-10-21</lastmod>
   </url>
 </urlset>

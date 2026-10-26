@@ -13,7 +13,7 @@ TildaZ
 ## Project URL
 
 - GitHub repository: https://github.com/ensky0/tildaz
-- Project website: https://ensky0.github.io/tildaz/
+- Project website: https://tildaz.dev/
 - Latest release: https://github.com/ensky0/tildaz/releases/latest
 
 ## Project description (short)

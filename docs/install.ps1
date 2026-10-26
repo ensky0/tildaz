@@ -1,6 +1,6 @@
 # TildaZ installer for Windows.
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://tildaz.dev/install.ps1 | iex"
 #
 # What it does:
 #   1. Finds the latest release (or $env:TILDAZ_VERSION) on GitHub.

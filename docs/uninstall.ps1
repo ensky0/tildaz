@@ -1,6 +1,6 @@
 # TildaZ uninstaller for Windows. Removes what install.ps1 installed.
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/uninstall.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://tildaz.dev/uninstall.ps1 | iex"
 #
 # What it removes:
 #   - the auto-start entry (HKCU\...\Run\tildaz), if it points at the installed app

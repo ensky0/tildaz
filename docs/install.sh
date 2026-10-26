@@ -1,7 +1,7 @@
 #!/bin/sh
 # TildaZ installer for Linux and macOS.
 #
-#   curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh
+#   curl -LsSf https://tildaz.dev/install.sh | sh
 #
 # What it does:
 #   1. Finds the latest release (or TILDAZ_VERSION) on GitHub.
@@ -247,7 +247,7 @@ main() {
     case "$(uname -s)" in
         Linux) install_linux ;;
         Darwin) install_macos ;;
-        *) err "unsupported OS: $(uname -s). On Windows, run in PowerShell: irm https://ensky0.github.io/tildaz/install.ps1 | iex" ;;
+        *) err "unsupported OS: $(uname -s). On Windows, run in PowerShell: irm https://tildaz.dev/install.ps1 | iex" ;;
     esac
 }
 

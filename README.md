@@ -13,8 +13,8 @@ GNOME, Cinnamon, COSMIC, Hyprland, and sway. No Electron, no GTK or Qt runtime
 dependency — just a terminal that appears when you need it and disappears when
 you do not.
 
-**Website**: https://ensky0.github.io/tildaz/ ·
-**Benchmarks**: https://ensky0.github.io/tildaz/benchmarks/ ·
+**Website**: https://tildaz.dev/ ·
+**Benchmarks**: https://tildaz.dev/benchmarks/ ·
 **Install**: [one command](#install) ·
 **Download**: https://github.com/ensky0/tildaz/releases/latest
 
@@ -63,12 +63,12 @@ admin rights are needed.
 
 ```sh
 # Linux and macOS
-curl -LsSf https://ensky0.github.io/tildaz/install.sh | sh
+curl -LsSf https://tildaz.dev/install.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://tildaz.dev/install.ps1 | iex"
 ```
 
 The script checks the download's SHA-256, adds TildaZ to your app menu, and
@@ -97,12 +97,12 @@ Quit TildaZ and run:
 
 ```sh
 # Linux and macOS
-curl -LsSf https://ensky0.github.io/tildaz/uninstall.sh | sh
+curl -LsSf https://tildaz.dev/uninstall.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://ensky0.github.io/tildaz/uninstall.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://tildaz.dev/uninstall.ps1 | iex"
 ```
 
 The uninstaller keeps your config and logs, and prints where they are.
