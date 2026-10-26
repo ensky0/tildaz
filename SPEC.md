@@ -635,6 +635,7 @@ config 조회보다 **먼저** 판정한다.
 | 복사 (단축키) | Ctrl+Shift+C | Cmd+C | Ctrl+Shift+C ([40af18b](https://github.com/ensky0/tildaz/commit/40af18b), L6) | ✅ | ✅ | ✅ |
 | 복사 (마우스 선택이 끝날 때 — 드래그를 놓음 · 더블클릭) | **`[input] copy_on_select = true` 일 때만** CLIPBOARD 에 넣는다 — 기본은 꺼짐 ([#656](https://github.com/ensky0/tildaz/issues/656)). 긁기만 해도 `Ctrl+Shift+C` 로 담아 둔 내용이 날아가서다. 세 host 가 `tab_actions.selectionFinished` 를 부른다 | 동일 (`tildazMouseUp` 분기) | 동일 + **PRIMARY 에는 늘** 넣는다 (`zwp_primary_selection_device_v1`, [#657](https://github.com/ensky0/tildaz/issues/657)) | ✅ | ✅ | ✅ |
 | 붙여넣기 (단축키) | Ctrl+Shift+V | Cmd+V | Ctrl+Shift+V ([40af18b](https://github.com/ensky0/tildaz/commit/40af18b)) | ✅ | ✅ | ✅ |
+| 선택 영역 붙여넣기 (`paste_selection`, [#831](https://github.com/ensky0/tildaz/issues/831)) | Shift+Insert — 선택 영역이 없어 **클립보드**를 붙인다 (Windows Terminal 과 같다) | 기본 바인딩 없음 — Mac 키보드에 Insert 가 없다 (ghostty 와 같다). 바인딩하면 클립보드 | Shift+Insert — **PRIMARY** 를 붙인다 (가운데 클릭과 같다 · xterm · kitty · foot · VTE 와 같다) | ✅ | — | ✅ |
 | 마우스 우클릭 | `copy_on_select = false` 이고 **선택이 있으면 복사하고 선택을 지운다** (붙여넣지 않는다). 선택이 없으면 붙여넣기. `true` 면 늘 붙여넣기 — Windows Terminal 과 같다 ([#656](https://github.com/ensky0/tildaz/issues/656)). `tab_actions.rightClickCopiesSelection` 뒤 `WM_RBUTTONDOWN` → `pasteClipboard` (cmd.exe console 표준 패턴) | 동일 (`tildazRightMouseDown` → `handlePaste`) | `wl_pointer.button` BTN_RIGHT → `wl_data_offer.receive` → PTY ([40af18b](https://github.com/ensky0/tildaz/commit/40af18b)) | ✅ | ✅ | ✅ |
 | 붙여넣기 (가운데 클릭) | 없음 — PRIMARY 가 없다 | 없음 — 같은 이유 | PRIMARY 를 붙인다 ([#657](https://github.com/ensky0/tildaz/issues/657)). 앱이 mouse reporting 을 켜면 가운데 클릭은 앱에 가고, `Shift`+가운데 클릭은 우회해 붙인다 (xterm 관례). 열린 메뉴는 닫기만, 비활성 pane 은 포커스만 (우클릭과 같다) | — | — | ✅ |
 
@@ -1593,6 +1594,7 @@ hotkey = "ctrl+f9"              # punctuation 대신 함수 키 — 어느 자�
 | Page key | `pageup` / `pgup` / `page_up`, `pagedown` / `pgdn` / `page_down` | ✅ | ✅ | keysym | keycode | VK — 어느 layout 에나 있는 단일 물리 키 ([#482](https://github.com/ensky0/tildaz/issues/482)) |
 | Arrow | `left` `right` `up` `down` | ✅ | ✅ | keysym | keycode | VK ([#483](https://github.com/ensky0/tildaz/issues/483)) |
 | Backspace | `backspace` | ❌ | ✅ | keysym | keycode | VK ([#693](https://github.com/ensky0/tildaz/issues/693)) |
+| Insert | `insert` | ❌ | ✅ — 수식키 없이는 ❌, Shift 하나로는 ✅ | keysym | keycode (`kVK_Help` 자리) | VK ([#831](https://github.com/ensky0/tildaz/issues/831)) |
 | Backtick | `` ` `` 또는 `grave` / `backquote` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_3` ⚠️ |
 | Bracket | `[` `]` 또는 `bracketleft` / `bracketright` | ✅ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_4` / `VK_OEM_6` ⚠️ ([#493](https://github.com/ensky0/tildaz/issues/493)) |
 | Slash | `/` 또는 `slash` | ❌ | ✅ | 키가 낸 글자 | 키가 낸 글자 | `VK_OEM_2` ⚠️ ([#682](https://github.com/ensky0/tildaz/issues/682)) |

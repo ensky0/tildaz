@@ -161,6 +161,9 @@ const HotkeyNamedKey = enum {
     plus,
     /// 글자를 내지 않지만 PTY 로 DEL 을 보낸다 — 방향키처럼 modifier 가 필요하다.
     backspace,
+    /// #831 — `shift+insert` (붙여넣기) 의 키. 글자를 내지 않지만 PTY 로 `ESC[2~` 를 보내므로
+    /// 맨 키는 받지 않고, Shift 하나만 있어도 받는다 (`parseHotkeyString`).
+    insert,
 };
 
 const HotkeyKeyToken = union(enum) {
@@ -262,7 +265,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
     // 않고 모르는 키로 거부한다 (#208).
     // #693 — 글자 크기 키 넷도 같은 이유로 `[keys]` 전용이다.
     if (scope == .global_hotkey and resolved == .named) switch (resolved.named) {
-        .slash, .equal, .minus, .plus, .backspace => return .unknown_key,
+        .slash, .equal, .minus, .plus, .backspace, .insert => return .unknown_key,
         else => {},
     };
     // #496 — 이 platform 에서 값이 없는 자리는 거부한다. 조용히 미동작으로 두면
@@ -329,6 +332,8 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 // modifier 없이 바인딩하면 셸 · vim 의 커서 이동을 뺏는다. 아래 위치 규칙의
                 // `else => true` 와 같은 취급이다.
                 .arrow_left, .arrow_right, .arrow_up, .arrow_down => true,
+                // #831 — 아래 `shift_is_enough` 가 따로 본다.
+                .insert => true,
             },
             // #496 — 위치도 같은 기준이다. 그 *자리* 가 글자를 내는지로 본다: 어떤
             // layout 에서든 `KeyW` 자리는 글자를 내고 `F5` 자리는 내지 않는다.
@@ -348,7 +353,15 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
                 else => true,
             },
         };
-        if (types_text and !(ctrl or alt or super)) return .modifier_required;
+        // #831 — Insert 는 글자를 내지 않으므로 Shift 하나로도 타이핑을 훔치지 않는다. 그래서
+        // 터미널의 오랜 붙여넣기 키 `shift+insert` (IBM CUA · xterm 관례) 를 받는다. 맨 Insert 는
+        // 여전히 거부한다 — vim 의 Insert/Replace 전환을 뺏는다.
+        const shift_is_enough = switch (resolved) {
+            .named => |n| n == .insert,
+            .code => |c| c == .insert,
+            .char => false,
+        };
+        if (types_text and !(ctrl or alt or super or (shift and shift_is_enough))) return .modifier_required;
     }
     return .{ .ok = .{ .ctrl = ctrl, .shift = shift, .alt = alt, .super = super, .key = resolved } };
 }
@@ -356,7 +369,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
 /// 키 이름 토큰 → 정규화된 key. 두 표기 모두 받음 (사용자 친화):
 ///   - 이름: `f1`, `grave` / `backquote`, `space`, `tab`, `escape` / `esc`,
 ///     `return` / `enter`, `bracketleft` · `bracketright` · `slash` · `equal` · `minus` ·
-///     `plus` · `backspace`
+///     `plus` · `backspace` · `insert`
 ///   - literal: `` ` `` `[` `]` `/` `=` `-`, ASCII letter (a-z / A-Z), digit (0-9)
 ///
 /// **기호 키는 글자와 이름을 둘 다 받는다** (#693). `+` 만 구분자라 이름으로만 적는다.
@@ -365,7 +378,7 @@ fn parseHotkeyString(s: []const u8, scope: HotkeyScope) HotkeyParse {
 /// symbol (`~`, `!`, `=`, `-` 등) 모두 받았으나 backend key-name 매핑 부재로 `"F1"` silent
 /// fallback이 발생했다. 표에 없는 키를 명시 reject해 잘못된 binding을 조용히 만드는 일을
 /// 막는다. 키를 더하려면 세 표와 표시 이름을 함께 채운다 (AGENTS.md `# 새 단축키 기본값
-/// 고르기` 의 라벨 키 절). `/` · `=` · `-` · `+` · `backspace` 는 `[keys]` 전용이다 — 전역
+/// 고르기` 의 라벨 키 절). `/` · `=` · `-` · `+` · `backspace` · `insert` 는 `[keys]` 전용이다 — 전역
 /// hotkey 로는 데스크톱 등록 이름을 확인하지 않았다 (`parseHotkeyString`).
 fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
     const map = [_]struct { name: []const u8, key: HotkeyNamedKey }{
@@ -398,7 +411,8 @@ fn hotkeyKeyFromName(name: []const u8) ?HotkeyKeyToken {
         // kitty 와 같다 (`kitty/options/definition.py`). `+` 만 구분자라 이름으로만 적는다.
         .{ .name = "slash", .key = .slash },              .{ .name = "equal", .key = .equal },
         .{ .name = "minus", .key = .minus },              .{ .name = "plus", .key = .plus },
-        .{ .name = "backspace", .key = .backspace },
+        // #831 — `insert` 는 `shift+insert` 붙여넣기의 키다. 이름은 kitty · ghostty 와 같다.
+        .{ .name = "backspace", .key = .backspace },      .{ .name = "insert", .key = .insert },
     };
     for (map) |entry| {
         if (eqIc(name, entry.name)) return .{ .named = entry.key };
@@ -547,6 +561,7 @@ fn configKeyName(key: HotkeyNamedKey) []const u8 {
         .minus => "-",
         .plus => "plus",
         .backspace => "backspace",
+        .insert => "insert",
     };
 }
 
@@ -739,6 +754,8 @@ const LinuxHotkey = struct {
                 .minus => 0x2d,
                 .plus => 0x2b,
                 .backspace => 0xff08,
+                // #831 — `XKB_KEY_Insert` (`wayland_minimal.xkb_key_insert`).
+                .insert => 0xff63,
             },
         };
     }
@@ -861,7 +878,7 @@ test "modifier-free capture only accepts function keys" {
         try std.testing.expect(capturedHotkeyText(&buf, nativeKeyOf(key), CAPTURE_MOD_SHIFT) == null);
     }
     // `[keys]` 전용 키는 수식키가 있어도 캡처하지 않는다 — 전역 hotkey 로 등록할 이름이 없다.
-    const app_only = [_]HotkeyKeyToken{ .{ .named = .slash }, .{ .named = .minus }, .{ .named = .backspace } };
+    const app_only = [_]HotkeyKeyToken{ .{ .named = .slash }, .{ .named = .minus }, .{ .named = .backspace }, .{ .named = .insert } };
     for (app_only) |key| {
         try std.testing.expect(capturedHotkeyText(&buf, nativeKeyOf(key), CAPTURE_MOD_CTRL) == null);
     }
@@ -1164,6 +1181,7 @@ test "#496 physical_key 의 macOS 열이 keycodeFromKey 와 같다" {
         // `+` 는 자기 자리가 없다 — US 에서 `=` 자리의 Shift 값이라 그 자리로 둔다 (`grave` 가
         // `backquote` 인 것과 같은 방식). macOS 매칭은 라벨 `+` 로 하므로 독일어 배열도 맞는다.
         .{ .named = .plus, .code = .equal },                  .{ .named = .backspace, .code = .backspace },
+        .{ .named = .insert, .code = .insert },
     };
     for (pairs) |pair| {
         try std.testing.expectEqual(
@@ -1310,8 +1328,8 @@ test "#493 default [keys] has no conflicting bindings" {
     // (`cmd+=` · `shift+cmd+=` · `cmd+plus` · `cmd+-` · `cmd+0` · `shift+cmd+backspace`), Linux ·
     // Windows 에 4 개 (`ctrl+shift+=` · `ctrl+shift+plus` · `ctrl+shift+-` · `ctrl+shift+backspace`)
     // 를 더한다. macOS 만 둘이 더 많은 이유는 그 표의 주석에 있다. #760 이 탭 전환의 PgUp / PgDn
-    // 둘을 뺐다.
-    try std.testing.expectEqual(@as(usize, if (is_macos) 46 else 44), count);
+    // 둘을 뺐다. #831 이 Linux · Windows 에 `shift+insert` 하나를 더했다 (macOS 는 없음).
+    try std.testing.expectEqual(@as(usize, if (is_macos) 46 else 45), count);
 }
 
 test "#493 generated config carries every action so none is silently missing" {
@@ -1521,6 +1539,8 @@ const WindowsHotkey = struct {
                 .equal, .plus => 0xBB,
                 .minus => 0xBD,
                 .backspace => 0x08,
+                // #831 — `VK_INSERT`.
+                .insert => 0x2D,
             },
         };
     }
@@ -1605,6 +1625,7 @@ const MacHotkey = struct {
                 .minus => 0x2D,
                 .plus => 0x2B,
                 .backspace => 0,
+                .insert => 0,
                 // 나머지는 layout 무관 — keycode 로 매칭한다.
                 .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12 => 0,
                 .space, .tab, .escape, .@"return", .page_up, .page_down => 0,
@@ -1663,6 +1684,8 @@ const MacHotkey = struct {
                 .equal, .plus => 0x18,
                 .minus => 0x1B,
                 .backspace => 0x33,
+                // #831 — `kVK_Help`. PC 키보드의 Insert 가 이 자리로 온다 (`physical_key.zig` 표).
+                .insert => 0x72,
             },
             // kVK_ANSI_* — parseHotkeyString 의 char 는 소문자 letter / digit 만.
             .char => |c| switch (c) {
@@ -2136,6 +2159,8 @@ fn macDefaultBindings(action: KeyAction) []const []const u8 {
         .switch_tab9 => &.{"cmd+9"},
         .copy => &.{"cmd+c"},
         .paste => &.{"cmd+v"},
+        // #831 — Mac 키보드에는 Insert 키가 없다 (ghostty 도 macOS 에는 두지 않는다).
+        .paste_selection => &.{},
         .fullscreen => &.{"cmd+return"},
         .fullscreen_workarea => &.{"shift+cmd+return"},
         .quit => &.{"cmd+q"},
@@ -2203,6 +2228,9 @@ fn pcDefaultBindings(action: KeyAction) []const []const u8 {
         .switch_tab9 => &.{"alt+9"},
         .copy => &.{"ctrl+shift+c"},
         .paste => &.{"ctrl+shift+v"},
+        // #831 — Linux 는 선택 영역 (xterm · kitty · foot · VTE), Windows 는 클립보드 (Windows
+        // Terminal) 를 붙여넣는다. 둘 다 그 OS 터미널들의 Shift+Insert 와 같다.
+        .paste_selection => &.{"shift+insert"},
         .fullscreen => &.{"alt+return"},
         .fullscreen_workarea => &.{"shift+alt+return"},
         .quit => &.{"alt+f4"},
@@ -2259,7 +2287,7 @@ fn appendKeysSection(w: *std.Io.Writer) !void {
         .{ .title = null, .actions = &.{ .new_tab, .close_tab, .prev_tab, .next_tab, .switch_tab1, .switch_tab2, .switch_tab3, .switch_tab4, .switch_tab5, .switch_tab6, .switch_tab7, .switch_tab8, .switch_tab9 } },
         .{ .title = "Panes", .actions = &.{ .split_left, .split_right, .split_up, .split_down, .focus_pane_left, .focus_pane_right, .focus_pane_up, .focus_pane_down, .resize_pane_left, .resize_pane_right, .resize_pane_up, .resize_pane_down, .equalize_panes, .zoom_pane, .close_pane } },
         .{ .title = "Search", .actions = &.{.find} },
-        .{ .title = "Clipboard", .actions = &.{ .copy, .paste } },
+        .{ .title = "Clipboard", .actions = &.{ .copy, .paste, .paste_selection } },
         .{ .title = "Window", .actions = &.{ .fullscreen, .fullscreen_workarea, .quit } },
         .{ .title = "Font size", .actions = &.{ .increase_font_size, .decrease_font_size, .reset_font_size } },
         .{ .title = "Tools", .actions = &.{ .reset_terminal, .show_about, .open_config, .open_log, .open_shortcuts, .dump_perf } },
@@ -2302,6 +2330,11 @@ pub const KeyAction = enum {
     switch_tab9,
     copy,
     paste,
+    /// #831 — 선택 영역 붙여넣기. Linux 는 PRIMARY (마우스로 마지막에 긁은 글자 — 가운데
+    /// 클릭과 같다, #657) 를, 선택 영역이 없는 Windows · macOS 는 클립보드를 붙여넣는다
+    /// (ghostty `paste_from_selection` · WezTerm `PasteFrom` 과 같은 방식). 기본 키
+    /// `shift+insert` 는 IBM CUA 에서 와 xterm 이후 거의 모든 터미널이 붙여넣기로 쓰는 키다.
+    paste_selection,
     fullscreen,
     fullscreen_workarea,
     quit,
@@ -2467,9 +2500,15 @@ pub fn appBindingHotkey(text: []const u8) ?Hotkey {
 ///     뽑았다 (macOS `keycodeToTabIndex`, Linux `sym - xkb_key_1`, Windows
 ///     `wParam - 0x31`). 액션을 다 펼쳐 적기로 한 결정의 값을 여기서 돌려받는다.
 ///   - `paste` 는 `Shortcut` 이 아니라 `Input.paste` 다 (preedit commit 정책이
-///     다르다).
+///     다르다). `paste_selection` 도 같은 `Input.paste` 이고 `paste_source` 만 다르다.
+/// #831 — 붙여넣을 곳. `selection` 은 Linux 의 PRIMARY 이고, 선택 영역이 없는 Windows ·
+/// macOS 에서는 클립보드로 읽는다.
+pub const PasteSource = enum { clipboard, selection };
+
 pub const ActionInput = struct {
     input: input_policy.Input,
+    /// #831 — `Input.paste` 일 때 어디서 붙여넣을지. 조합 확정 정책은 둘이 같다.
+    paste_source: PasteSource = .clipboard,
     /// `switch_tab` 일 때 0-based 탭 인덱스. 그 외에는 null.
     tab_index: ?usize = null,
     /// #483 — `split` · `focus_pane` · `resize_pane` 일 때 방향. 그 외에는 null.
@@ -2495,6 +2534,7 @@ pub fn inputForAction(action: KeyAction) ActionInput {
         .switch_tab9 => .{ .input = .{ .shortcut = .switch_tab }, .tab_index = 8 },
         .copy => .{ .input = .{ .shortcut = .copy } },
         .paste => .{ .input = .paste },
+        .paste_selection => .{ .input = .paste, .paste_source = .selection },
         .fullscreen => .{ .input = .{ .shortcut = .fullscreen } },
         .fullscreen_workarea => .{ .input = .{ .shortcut = .fullscreen_workarea } },
         .quit => .{ .input = .{ .shortcut = .quit } },
@@ -2972,6 +3012,7 @@ pub fn bindingDisplay(buf: []u8, parsed: ParsedHotkey, macos: bool) []const u8 {
             .minus => "-",
             .plus => "+",
             .backspace => "Backspace",
+            .insert => "Insert",
         }) catch return "",
         // 위치 표기는 사용자가 적은 이름 그대로 (`[KeyW]`) — 무엇을 눌러야 하는지가
         // layout 에 달려 있어 글자 하나로 줄이면 틀린 안내가 될 수 있다.
@@ -3007,6 +3048,27 @@ pub fn commandMenuHints(bindings: []const KeyBinding, toggle_hotkey: []const u8)
     }
     hints.setFullscreenWorkarea(firstBindingDisplay(&buf, bindings, .fullscreen_workarea));
     return hints;
+}
+
+test "#831 — insert 는 Shift 하나로 바인딩되고 맨 키와 전역 hotkey 는 거부된다" {
+    try std.testing.expect(parseHotkeyString("shift+insert", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("shift+[Insert]", .app_binding) == .ok);
+    try std.testing.expect(parseHotkeyString("ctrl+insert", .app_binding) == .ok);
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("insert", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("[Insert]", .app_binding));
+    // Shift 완화는 Insert 만이다 — 다른 키의 규칙은 그대로다.
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+left", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.modifier_required, parseHotkeyString("shift+t", .app_binding));
+    try std.testing.expectEqual(HotkeyParse.unknown_key, parseHotkeyString("ctrl+insert", .global_hotkey));
+
+    const want: []const []const u8 = if (is_macos) &.{} else &.{"shift+insert"};
+    const got = defaultBindings(.paste_selection);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |w, g| try std.testing.expectEqualStrings(w, g);
+    const mapped = inputForAction(.paste_selection);
+    try std.testing.expect(mapped.input == .paste);
+    try std.testing.expectEqual(PasteSource.selection, mapped.paste_source);
+    try std.testing.expectEqual(PasteSource.clipboard, inputForAction(.paste).paste_source);
 }
 
 test "#683 — dev 판은 새 config 의 auto_start 기본값이 false 다" {

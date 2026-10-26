@@ -529,6 +529,11 @@ pub const App = struct {
         pub fn paste(h: ActionHost) void {
             h.app.window.requestPaste();
         }
+        /// #831 — Windows 에는 선택 영역 (PRIMARY) 이 없어 클립보드를 붙여넣는다 (Windows
+        /// Terminal 의 Shift+Insert 와 같다).
+        pub fn pasteSelection(h: ActionHost) void {
+            h.app.window.requestPaste();
+        }
         /// 키 경로의 `quit` 은 `Window.runKeyAction` 이 먼저 `WM_CLOSE` 로 보낸다. 여기는 그 밖의
         /// 진입점이 생겨도 같은 확인 다이얼로그를 타게 둔 자리다.
         pub fn quit(h: ActionHost) void {

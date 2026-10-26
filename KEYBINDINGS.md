@@ -21,6 +21,7 @@
 | Larger / smaller text (all tabs and panes) | Ctrl+Shift+= / - | Cmd+= / - |
 | Text size from your config | Ctrl+Shift+Backspace | Cmd+0 *or* Shift+Cmd+Backspace |
 | Copy / paste | Ctrl+Shift+C / V | Cmd+C / V |
+| Paste the selection — the clipboard on Windows | Shift+Insert | — |
 | Fullscreen (cover taskbar / dock) | Alt+Enter | Cmd+Enter |
 | Fullscreen (keep taskbar / dock) | Shift+Alt+Enter | Shift+Cmd+Enter |
 | Reset terminal | Ctrl+Shift+R | Shift+Cmd+R |

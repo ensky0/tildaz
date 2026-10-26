@@ -46,6 +46,8 @@
 //!   - `yieldTopmost()` — 바깥 앱을 띄우기 전에 우리 창이 비켜 준다 (#655).
 //!   - `fullscreenKind() ?FullscreenKind` · `toggleFullscreen(kind)`
 //!   - `toggleVisibility()` · `showAbout()` · `paste()` · `quit()`
+//!   - `pasteSelection()` — 선택 영역 붙여넣기 (#831). Linux 는 PRIMARY, 선택 영역이 없는
+//!     Windows · macOS 는 `paste()` 와 같다.
 
 const std = @import("std");
 const log = @import("log.zig");
@@ -85,7 +87,10 @@ pub const CellSize = struct { w: u32, h: u32 };
 pub fn run(host: anytype, action: config.ActionInput) bool {
     const shortcut = switch (action.input) {
         .paste => {
-            host.paste();
+            switch (action.paste_source) {
+                .clipboard => host.paste(),
+                .selection => host.pasteSelection(),
+            }
             return true;
         },
         .shortcut => |sc| sc,

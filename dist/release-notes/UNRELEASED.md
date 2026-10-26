@@ -20,5 +20,8 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 - **GNOME · Cinnamon:** the TildaZ Shell extension has a new ID (`tildaz@tildaz.dev`). TildaZ removes the old one on first start. On GNOME, log out and back in after upgrading to load the new extension ([#830](https://github.com/ensky0/tildaz/issues/830)).
+- New `[keys]` action `paste_selection` (`Shift+Insert` on Linux and Windows). Your config does not have it yet, so the startup notice lists it until you add it. ([#831](https://github.com/ensky0/tildaz/issues/831))
 
 ## Body candidates
+
+- `Shift+Insert` pastes, as in most terminals — the last mouse selection on Linux, the clipboard on Windows. ([#831](https://github.com/ensky0/tildaz/issues/831))
