@@ -127,8 +127,9 @@ pub fn prepareShellExtension(rt: Runtime, allocator: std.mem.Allocator) Status {
     var enabled = listContains(&api, settings, key_enabled_extensions, extension_uuid);
     const explicitly_disabled = target.owner == .gnome and
         listContains(&api, settings, key_disabled_extensions, extension_uuid);
+    const legacy = legacyState(rt, allocator, &api, settings, target);
 
-    if (shouldEnableFirstUse(newly_installed, enabled, explicitly_disabled)) {
+    if (shouldEnableFirstUse(newly_installed, enabled, explicitly_disabled, legacy)) {
         ensureInList(allocator, &api, settings, key_enabled_extensions, extension_uuid) catch |err| {
             log.appendLine(label, "Shell extension first-time enable failed: {s}", .{@errorName(err)});
             return .{ .inactive = target.owner };
@@ -139,6 +140,7 @@ pub fn prepareShellExtension(rt: Runtime, allocator: std.mem.Allocator) Status {
     } else {
         log.appendLine(label, "Shell extension synchronized; existing enabled state preserved", .{});
     }
+    if (legacy != .absent) removeLegacyExtension(rt, allocator, &api, settings, target, legacy);
 
     const all_user_extensions_disabled = target.owner == .gnome and
         api.settings_get_boolean(settings, key_disable_user_extensions) != 0;
@@ -147,8 +149,69 @@ pub fn prepareShellExtension(rt: Runtime, allocator: std.mem.Allocator) Status {
     return .{ .active = target.owner };
 }
 
-fn shouldEnableFirstUse(newly_installed: bool, enabled: bool, explicitly_disabled: bool) bool {
-    return newly_installed and !enabled and !explicitly_disabled;
+/// #830 — 옛 UUID (`app_id.legacy_extension_uuid`) 가 남긴 것. 사용자가 옛 확장을 켜 두었는지
+/// 꺼 두었는지를 새 UUID 로 옮기려고 가른다.
+const Legacy = enum {
+    /// 옛 폴더도 목록의 자리도 없다.
+    absent,
+    /// 켜진 목록에 있었다 (GNOME 은 꺼진 목록에 없는 것까지).
+    enabled,
+    /// 폴더나 목록의 자리는 있는데 켜져 있지 않았다 — 사용자가 끈 것으로 본다 (#676).
+    disabled,
+};
+
+fn legacyState(rt: Runtime, allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, target: ShellExtensionTarget) Legacy {
+    const in_enabled = listContains(api, settings, key_enabled_extensions, app_id.legacy_extension_uuid);
+    const in_disabled = target.owner == .gnome and
+        listContains(api, settings, key_disabled_extensions, app_id.legacy_extension_uuid);
+    const installed = shell_extension.legacyInstalled(rt, allocator, target.kind) catch false;
+    return classifyLegacy(installed, in_enabled, in_disabled);
+}
+
+fn classifyLegacy(installed: bool, in_enabled: bool, in_disabled: bool) Legacy {
+    if (in_enabled and !in_disabled) return .enabled;
+    if (installed or in_enabled or in_disabled) return .disabled;
+    return .absent;
+}
+
+/// #830 — 옛 UUID 를 켜진 · 꺼진 목록에서 빼고 옛 폴더를 지운다. 남겨 두면 다시 로그인했을 때
+/// 옛 확장과 새 확장이 같은 창 · 같은 단축키를 함께 잡는다. GNOME 은 목록이 바뀌는 순간 옛 확장을
+/// 내리고, 새 UUID 는 다시 로그인해야 읽는다. 실패해도 기동은 막지 않는다 — 다음 실행에 다시 한다.
+fn removeLegacyExtension(rt: Runtime, allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, target: ShellExtensionTarget, legacy: Legacy) void {
+    const label = target.owner.logCategory();
+    removeFromList(allocator, api, settings, key_enabled_extensions, app_id.legacy_extension_uuid) catch |err| {
+        log.appendLine(label, "legacy Shell extension list cleanup failed: {s}", .{@errorName(err)});
+        return;
+    };
+    if (target.owner == .gnome) {
+        removeFromList(allocator, api, settings, key_disabled_extensions, app_id.legacy_extension_uuid) catch |err| {
+            log.appendLine(label, "legacy Shell extension list cleanup failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+    api.settings_sync();
+    shell_extension.removeLegacy(rt, allocator, target.kind) catch |err| {
+        log.appendLine(label, "legacy Shell extension directory removal failed: {s}", .{@errorName(err)});
+        return;
+    };
+    // GNOME 은 새 UUID 를 다시 로그인해야 읽는다. Cinnamon 은 목록이 바뀌면 바로 읽는다 (AGENTS.md 실측).
+    const next_step = switch (target.owner) {
+        .gnome => "log out and back in to load ",
+        .cinnamon => "replaced by ",
+    };
+    log.appendLine(label, "legacy Shell extension {s} removed (was {s}); {s}{s}", .{
+        app_id.legacy_extension_uuid, @tagName(legacy), next_step, extension_uuid,
+    });
+}
+
+fn shouldEnableFirstUse(newly_installed: bool, enabled: bool, explicitly_disabled: bool, legacy: Legacy) bool {
+    if (enabled or explicitly_disabled) return false;
+    return switch (legacy) {
+        .absent => newly_installed,
+        // #830 — 사용자가 옛 확장을 켜 두었으면 새 UUID 도 켜고, 꺼 두었으면 켜지 않는다.
+        .enabled => true,
+        .disabled => false,
+    };
 }
 
 fn extensionActive(
@@ -296,6 +359,32 @@ fn ensureInList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GSet
         return error.GSettingsWriteFailed;
 }
 
+/// 리스트 strv (`key`) 에서 `value` 를 뺀다. 없으면 쓰지 않는다 (idempotent). 나머지 항목과
+/// 순서는 그대로 둔다.
+fn removeFromList(allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, key: [*:0]const u8, value: [*:0]const u8) !void {
+    const existing = api.settings_get_strv(settings, key);
+    defer api.strfreev(existing);
+    const entries = existing orelse return;
+
+    var list: std.ArrayList(?[*:0]const u8) = .empty;
+    defer list.deinit(allocator);
+
+    const unwanted = std.mem.span(value);
+    var found = false;
+    var i: usize = 0;
+    while (entries[i]) |s| : (i += 1) {
+        if (std.mem.eql(u8, std.mem.span(s), unwanted)) {
+            found = true;
+            continue;
+        }
+        try list.append(allocator, s);
+    }
+    if (!found) return;
+    try list.append(allocator, null); // NULL-terminate (g_settings_set_strv 요구).
+    if (api.settings_set_strv(settings, key, list.items.ptr) == 0)
+        return error.GSettingsWriteFailed;
+}
+
 fn listContains(api: *const Api, settings: *c.GSettings, key: [*:0]const u8, value: [*:0]const u8) bool {
     const existing = api.settings_get_strv(settings, key);
     defer api.strfreev(existing);
@@ -347,10 +436,39 @@ test "#676 Shell extension state respects explicit and global disable" {
     try T.expect(extensionActive(.cinnamon, true, false, false));
     try T.expect(!extensionActive(.cinnamon, false, false, false));
 
-    try T.expect(shouldEnableFirstUse(true, false, false));
-    try T.expect(!shouldEnableFirstUse(false, false, false));
-    try T.expect(!shouldEnableFirstUse(true, false, true));
-    try T.expect(!shouldEnableFirstUse(true, true, false));
+    try T.expect(shouldEnableFirstUse(true, false, false, .absent));
+    try T.expect(!shouldEnableFirstUse(false, false, false, .absent));
+    try T.expect(!shouldEnableFirstUse(true, false, true, .absent));
+    try T.expect(!shouldEnableFirstUse(true, true, false, .absent));
+}
+
+test "#830 legacy extension UUID carries the user's choice to the new UUID" {
+    const T = std.testing;
+    try T.expectEqual(Legacy.absent, classifyLegacy(false, false, false));
+    try T.expectEqual(Legacy.enabled, classifyLegacy(true, true, false));
+    // 폴더 없이 목록의 자리만 남은 경우도 켜 둔 것이다 (폴더를 손으로 지운 경우).
+    try T.expectEqual(Legacy.enabled, classifyLegacy(false, true, false));
+    // GNOME 은 꺼진 목록이 켜진 목록보다 우선이다.
+    try T.expectEqual(Legacy.disabled, classifyLegacy(true, true, true));
+    try T.expectEqual(Legacy.disabled, classifyLegacy(true, false, false));
+    try T.expectEqual(Legacy.disabled, classifyLegacy(false, false, true));
+
+    // 옛 확장을 켜 두었으면 새 폴더가 이미 있어도 (지난 실행이 중간에 멈춘 경우) 켠다.
+    try T.expect(shouldEnableFirstUse(true, false, false, .enabled));
+    try T.expect(shouldEnableFirstUse(false, false, false, .enabled));
+    // 꺼 두었으면 처음 깔린 새 UUID 도 켜지 않는다 (#676).
+    try T.expect(!shouldEnableFirstUse(true, false, false, .disabled));
+    // 새 UUID 를 사용자가 GNOME 에서 끈 것은 옛 상태보다 우선한다.
+    try T.expect(!shouldEnableFirstUse(true, false, true, .enabled));
+}
+
+test "#830 legacy UUID is the same build kind with the old namespace" {
+    const T = std.testing;
+    try T.expect(std.mem.endsWith(u8, app_id.extension_uuid, "@tildaz.dev"));
+    try T.expect(std.mem.endsWith(u8, app_id.legacy_extension_uuid, "@ensky0.github.io"));
+    const new_name = app_id.extension_uuid[0..std.mem.indexOfScalar(u8, app_id.extension_uuid, '@').?];
+    const old_name = app_id.legacy_extension_uuid[0..std.mem.indexOfScalar(u8, app_id.legacy_extension_uuid, '@').?];
+    try T.expectEqualStrings(new_name, old_name);
 }
 
 // =============================================================================

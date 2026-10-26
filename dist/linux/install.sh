@@ -211,12 +211,16 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 # 릴리즈가 각자의 UUID 로 깔리도록 복사하면서 치환한다. `src/host/linux/shell_extension.zig`
 # 의 `substitutions` 와 **같은 토큰**이어야 한다 (앱도 기동 때 같은 파일을 쓴다).
 # 소스 디렉터리 이름은 릴리즈 UUID 로 고정돼 있다 (git 에 담긴 이름).
-EXT_SRC_UUID="tildaz@ensky0.github.io"
+# 네임스페이스는 사이트 도메인이다 (#830 — `src/app_id.zig` 의 `extension_uuid` 와 같아야 한다).
+# `EXT_LEGACY_UUID` 는 #830 이전의 같은 판 UUID 로, 아래에서 거둔다.
+EXT_SRC_UUID="tildaz@tildaz.dev"
 if [[ "$IS_DEV" -eq 1 ]]; then
-    EXT_UUID="tildaz-dev@ensky0.github.io"
+    EXT_UUID="tildaz-dev@tildaz.dev"
+    EXT_LEGACY_UUID="tildaz-dev@ensky0.github.io"
     EXT_NAME="TildaZ Drop-down (dev)"
 else
-    EXT_UUID="tildaz@ensky0.github.io"
+    EXT_UUID="tildaz@tildaz.dev"
+    EXT_LEGACY_UUID="tildaz@ensky0.github.io"
     EXT_NAME="TildaZ Drop-down"
 fi
 EXT_SCHEMA="org.gnome.shell.extensions.$TILDAZ_ID"
@@ -318,6 +322,25 @@ if [[ -d "$CIN_SRC" ]]; then
     else
         CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings·python3 미설치, 시스템 설정 > 확장에서 활성화 + 재로그인)"
     fi
+fi
+
+# #830 — 옛 UUID 의 확장을 거둔다. 남겨 두면 다시 로그인했을 때 옛 확장과 새 확장이 같은 창 ·
+# 같은 단축키를 함께 잡는다. 앱도 기동 때 같은 일을 한다 (`gsettings_hotkey.removeLegacyExtension`).
+LEGACY_EXT_REMOVED=()
+for legacy_dir in "$DATA_HOME/gnome-shell/extensions/$EXT_LEGACY_UUID" "$DATA_HOME/cinnamon/extensions/$EXT_LEGACY_UUID"; do
+    if [[ -d "$legacy_dir" ]]; then
+        rm -rf "$legacy_dir"
+        LEGACY_EXT_REMOVED+=("$legacy_dir")
+    fi
+done
+gsettings_strv_edit org.gnome.shell enabled-extensions remove "$EXT_LEGACY_UUID" || true
+gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_LEGACY_UUID" || true
+gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_LEGACY_UUID" || true
+
+if [[ ${#LEGACY_EXT_REMOVED[@]} -gt 0 ]]; then
+    echo "Removed the old Shell extension ($EXT_LEGACY_UUID) — log out and back in to load $EXT_UUID:"
+    for f in "${LEGACY_EXT_REMOVED[@]}"; do echo "  $f"; done
+    echo ""
 fi
 
 if [[ ${#STALE_REMOVED[@]} -gt 0 ]]; then

@@ -62,7 +62,8 @@ for id in "${TILDAZ_IDS[@]}"; do
 done
 # 확장 UUID 도 두 갈래다 (#654). 예전에는 하나뿐이라 **개발 빌드를 지우면 릴리즈의
 # 확장까지 지워졌다** (실기 확인). 위 `TILDAZ_IDS` 와 같은 이유로 둘 다 훑는다.
-TILDAZ_EXT_UUIDS=(tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
+# #830 이전의 UUID (`@ensky0.github.io`) 도 훑는다 — 옛 판이 남긴 것이 있을 수 있다.
+TILDAZ_EXT_UUIDS=(tildaz@tildaz.dev tildaz-dev@tildaz.dev tildaz@ensky0.github.io tildaz-dev@ensky0.github.io)
 removed=0
 
 # 사용자 데스크톱 설정은 tildaz 가 지운다 (#700) — sway · Hyprland 자동실행 (우리 파일과 불러오는

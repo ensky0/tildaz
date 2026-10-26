@@ -1690,7 +1690,7 @@ xkbcli dump-keymap --raw | wc -c           # 연결 시점 keymap 의 크기 (wl
     ```sh
     gsettings get org.gnome.shell enabled-extensions
     gsettings get org.gnome.shell disabled-extensions        # 여기 있으면 enabled 에 있어도 안 켜져요
-    gnome-extensions info tildaz-dev@ensky0.github.io | grep State
+    gnome-extensions info tildaz-dev@tildaz.dev | grep State
     ```
 
   - **앱도 두 목록과 전체 비활성 값을 함께 봐요 (#676).** `enabled-extensions`에 있어도
@@ -2053,7 +2053,7 @@ grim shot.png                                                          # sway �
     G "[...Main.keybindingManager.bindings.entries()].map(([id,b])=>id+':'+b.name+'='+b.bindings).join(' | ')"
     G "const C=imports.gi.Clutter; const d=C.get_default_backend().get_default_seat().create_virtual_device(C.InputDeviceType.KEYBOARD_DEVICE);
        const t=global.get_current_time()*1000; d.notify_keyval(t,C.KEY_F9,C.KeyState.PRESSED); d.notify_keyval(t+20000,C.KEY_F9,C.KeyState.RELEASED); 'sent'"
-    G "imports.ui.extension.reloadExtension('tildaz@ensky0.github.io', imports.ui.extension.Type.EXTENSION); 'reloaded'"
+    G "imports.ui.extension.reloadExtension('tildaz@tildaz.dev', imports.ui.extension.Type.EXTENSION); 'reloaded'"
     ```
 
   - **⚠️ 그 가상 키가 바인딩을 발화하지 않은 회차가 있어요** (2026-10-16 · Cinnamon 6.6.9 Wayland · 미니PC ·
@@ -2743,18 +2743,20 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
 - **실기에서 둘을 헷갈리지 않으려면 로그의 `exe=` 와 경로를 봐요.** dev 창은 제목이
   `TildaZ-dev-N` (KDE 단축키 목록 · desktop 항목의 표시 이름은 `TildaZ-dev_N`) 이고 config 는
   `<XDG_CONFIG>/tildaz-dev/` 예요.
-- **데스크톱 확장 (GNOME · Cinnamon) 도 UUID 가 갈려요** (`tildaz-dev@ensky0.github.io`).
+- **데스크톱 확장 (GNOME · Cinnamon) 도 UUID 가 갈려요** (`tildaz-dev@tildaz.dev`).
   예전에는 하나를 공유해서 ① 개발 빌드를 지우면 릴리즈의 확장까지 꺼졌고, ② 개발 빌드는
   **전역 hotkey 를 아무 데도 등록하지 않았어요** — 확장이 개발 창을 안 잡는데도 앱은
   "확장이 담당한다" 로 보고 gsettings 등록을 건너뛰었거든요. 이제 각자의 확장이 자기 창을
   잡으니 GNOME · Cinnamon 에서도 개발 빌드가 그대로 동작해요.
-- **확장 UUID 의 `@ensky0.github.io` 는 사이트 주소가 아니에요 — 사이트가 `tildaz.dev` 로 옮겨도 그대로 둬요**
-  ([#829](https://github.com/ensky0/tildaz/issues/829) · 2026-10-26 사용자 결정). UUID 는 확장의 이름표이고 어디에도
-  접속하지 않아요. GNOME 문서는 뒤쪽에 *"a namespace you control, such as `username.github.io`"* 를 권해요
-  ([gjs.guide](https://gjs.guide/extensions/overview/anatomy.html)) — GitHub 계정은 계속 우리 것이라 지금도 맞아요.
-  바꾸면 GNOME 에게는 **다른 확장**이에요. 새 UUID 는 다시 로그인해야 읽히고 앱은 확장이 꺼져 있으면 시작하지 않아서
-  (#676), 업그레이드한 사용자는 다시 로그인할 때까지 TildaZ 가 안 떠요. 옛 확장을 거두는 일회성 이전 코드도 필요해요.
-  그래서 사이트 주소를 일괄 치환할 때는 `https://ensky0.github.io/tildaz/` 패턴만 바꿔요 (`…@ensky0.github.io` 는 안 걸려요).
+- **확장 UUID 의 네임스페이스는 사이트 도메인 `tildaz.dev` 예요** ([#830](https://github.com/ensky0/tildaz/issues/830) — 그전에는
+  `@ensky0.github.io`). UUID 는 확장의 이름표이고 어디에도 접속하지 않아요. GNOME 문서는 뒤쪽에 *"a namespace you control"*
+  를 권해요 ([gjs.guide](https://gjs.guide/extensions/overview/anatomy.html)). 처음에는 그대로 두기로 했다가
+  ([#829 댓글](https://github.com/ensky0/tildaz/issues/829#issuecomment-6405413331)) 사용자가 바꾸기로 했어요 (2026-10-26:
+  *"확 바꿔버리자"*). **바꾸면 GNOME 에게는 다른 확장이에요** — 그래서 앱 (`gsettings_hotkey.removeLegacyExtension`) 과
+  `install.sh` 가 옛 UUID (`app_id.legacy_extension_uuid`) 의 폴더와 켜진 · 꺼진 목록 자리를 거둬요. 남기면 다시 로그인했을 때
+  두 확장이 같은 창 · 같은 단축키를 함께 잡아요. 사용자가 옛 확장을 꺼 두었으면 새 UUID 도 켜지 않아요 (#676 규칙).
+  GNOME 은 새 UUID 를 다시 로그인해야 읽어서, 업그레이드한 사용자는 그때까지 *"Shell Extension Required"* 를 봐요 —
+  일회성 이전을 코드에 둔 예외예요 (안 하면 기능이 깨져서 문서의 명령으로 대신할 수 없어요). `uninstall.sh` 는 옛 · 새 넷을 다 지워요.
 - **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
   의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.

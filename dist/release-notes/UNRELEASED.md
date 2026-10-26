@@ -19,4 +19,6 @@ Internal changes belong in neither.
 
 ## Upgrade notes
 
+- **GNOME · Cinnamon:** the TildaZ Shell extension has a new ID (`tildaz@tildaz.dev`). TildaZ removes the old one on first start. On GNOME, log out and back in after upgrading to load the new extension ([#830](https://github.com/ensky0/tildaz/issues/830)).
+
 ## Body candidates
