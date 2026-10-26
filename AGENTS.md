@@ -2748,6 +2748,13 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   **전역 hotkey 를 아무 데도 등록하지 않았어요** — 확장이 개발 창을 안 잡는데도 앱은
   "확장이 담당한다" 로 보고 gsettings 등록을 건너뛰었거든요. 이제 각자의 확장이 자기 창을
   잡으니 GNOME · Cinnamon 에서도 개발 빌드가 그대로 동작해요.
+- **확장 UUID 의 `@ensky0.github.io` 는 사이트 주소가 아니에요 — 사이트가 `tildaz.dev` 로 옮겨도 그대로 둬요**
+  ([#829](https://github.com/ensky0/tildaz/issues/829) · 2026-10-26 사용자 결정). UUID 는 확장의 이름표이고 어디에도
+  접속하지 않아요. GNOME 문서는 뒤쪽에 *"a namespace you control, such as `username.github.io`"* 를 권해요
+  ([gjs.guide](https://gjs.guide/extensions/overview/anatomy.html)) — GitHub 계정은 계속 우리 것이라 지금도 맞아요.
+  바꾸면 GNOME 에게는 **다른 확장**이에요. 새 UUID 는 다시 로그인해야 읽히고 앱은 확장이 꺼져 있으면 시작하지 않아서
+  (#676), 업그레이드한 사용자는 다시 로그인할 때까지 TildaZ 가 안 떠요. 옛 확장을 거두는 일회성 이전 코드도 필요해요.
+  그래서 사이트 주소를 일괄 치환할 때는 `https://ensky0.github.io/tildaz/` 패턴만 바꿔요 (`…@ensky0.github.io` 는 안 걸려요).
 - **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
   의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.
