@@ -64,7 +64,20 @@ uninstall_linux() {
     fi
 }
 
+# Homebrew keeps a record of each cask under <prefix>/Caskroom. brew may not be in
+# PATH here, so the default prefixes are checked too.
+brew_cask_installed() {
+    for prefix in "$(brew --prefix 2>/dev/null)" /opt/homebrew /usr/local; do
+        if [ -n "$prefix" ] && [ -d "$prefix/Caskroom/tildaz" ]; then return 0; fi
+    done
+    return 1
+}
+
 uninstall_macos() {
+    # Leave a Homebrew install to brew, so its record goes away with the app.
+    if brew_cask_installed; then
+        err "TildaZ was installed by Homebrew. Remove it with: brew uninstall --cask tildaz"
+    fi
     if pgrep -f '/TildaZ.app/Contents/MacOS/' >/dev/null 2>&1; then
         err "TildaZ is running. Quit it (Cmd+Q) and run this uninstaller again."
     fi

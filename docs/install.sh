@@ -183,8 +183,22 @@ install_linux() {
     say "Started TildaZ. Press its hotkey (F1 by default) to show or hide it."
 }
 
+# Homebrew keeps a record of each cask under <prefix>/Caskroom. brew may not be in
+# PATH here, so the default prefixes are checked too.
+brew_cask_installed() {
+    for prefix in "$(brew --prefix 2>/dev/null)" /opt/homebrew /usr/local; do
+        if [ -n "$prefix" ] && [ -d "$prefix/Caskroom/tildaz" ]; then return 0; fi
+    done
+    return 1
+}
+
 install_macos() {
     command -v hdiutil >/dev/null 2>&1 || err "hdiutil is required"
+    # Do not overwrite a Homebrew install. brew would keep the old version in its
+    # record and replace this copy on the next brew upgrade.
+    if brew_cask_installed; then
+        err "TildaZ is already installed by Homebrew. Update it with: brew upgrade --cask tildaz"
+    fi
     if pgrep -f '/TildaZ.app/Contents/MacOS/' >/dev/null 2>&1; then
         err "TildaZ is running. Quit it (Cmd+Q) and run this installer again."
     fi

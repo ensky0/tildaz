@@ -82,8 +82,8 @@ and back in first so the Shell extension loads. You can read
 | macOS | `/Applications/TildaZ.app` (`~/Applications` if `/Applications` is not writable) |
 | Windows | `%LOCALAPPDATA%\Programs\TildaZ`, plus a Start Menu shortcut |
 
-- **Already installed a Linux package or AppImage?** Keep updating it that way.
-  The script stops instead of installing a second copy next to it.
+- **Already installed a Linux package, an AppImage, or the Homebrew cask?** Keep
+  updating it that way. The script stops instead of installing over it.
 - **Used the Windows zip before?** Quit it first. The script tells you where
   the old folder is, and your config carries over.
 
@@ -119,7 +119,7 @@ Or download a package from
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
 | Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). |
-| macOS 15+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. |
+| macOS 15+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. Or install it with Homebrew: `brew install --cask ensky0/tildaz/tildaz`. |
 | Windows 10 1809+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere, keep the `_internal` folder next to `tildaz.exe`, and run `tildaz.exe`. 1809 (build 17763) is the minimum of the bundled ConPTY runtime; tested on Windows 11. |
 | Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |
 
