@@ -2758,6 +2758,10 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   GNOME 은 새 UUID 를 다시 로그인해야 읽어서, 업그레이드한 사용자는 첫 실행에 *"Log Out to Finish Setup"* 를 봐요
   (그 실행이 확장 폴더를 처음 만든 경우 — 다시 로그인 전에 한 번 더 띄우면 *"Shell Extension Required"*) —
   일회성 이전을 코드에 둔 예외예요 (안 하면 기능이 깨져서 문서의 명령으로 대신할 수 없어요). `uninstall.sh` 는 옛 · 새 넷을 다 지워요.
+  **⚠️ 목록은 옛 UUID 를 먼저 빼고 새 UUID 를 나중에 넣어요.** 두 확장은 바인딩 이름 (`<앱>-toggle-N`) 과 등록 결과 파일이 같아서,
+  옛 확장의 `disable()` 이 새 확장의 것을 지워요. Cinnamon 은 목록이 바뀔 때마다 빠진 확장을 먼저 내리고 그다음 올려요
+  (`/usr/share/cinnamon/js/ui/extensionSystem.js` 의 `onEnabledExtensionsChanged`). 2026-10-28 Cinnamon 6.6.9 실기에서 거꾸로
+  (새 추가 → 옛 제거) 했더니 업그레이드 첫 실행에 단축키가 사라져 *"Shell Extension Required"* 가 떴어요 ([#830](https://github.com/ensky0/tildaz/issues/830)).
 - **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`
   의 `render` · `install.sh` · `package.sh`) **토큰 이름을 바꾸면 세 곳을 함께** 봐요.

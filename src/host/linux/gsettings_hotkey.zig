@@ -133,23 +133,36 @@ pub fn prepareShellExtension(rt: Runtime, allocator: std.mem.Allocator) Status {
     api.schema_unref(schema);
     const settings = api.settings_new(target.schema) orelse return .{ .inactive = target.owner };
     defer api.object_unref(settings);
-    var enabled = listContains(&api, settings, key_enabled_extensions, extension_uuid);
+    const was_enabled = listContains(&api, settings, key_enabled_extensions, extension_uuid);
+    var enabled = was_enabled;
     const explicitly_disabled = target.owner == .gnome and
         listContains(&api, settings, key_disabled_extensions, extension_uuid);
     const legacy = legacyState(rt, allocator, &api, settings, target);
 
-    if (shouldEnableFirstUse(newly_installed, enabled, explicitly_disabled, legacy)) {
+    // #830 — 옛 UUID 를 **먼저** 목록에서 빼고 새 UUID 를 그다음에 넣는다. 두 확장은 바인딩 이름
+    // (`<앱>-toggle-N`) 과 등록 결과 파일이 같아서, 옛 확장의 `disable()` 이 새 확장의 것을 지운다.
+    // Cinnamon 은 목록이 바뀔 때마다 빠진 확장을 먼저 내리고 그다음 올리므로
+    // (`extensionSystem.js` 의 `onEnabledExtensionsChanged`), 이 순서면 옛 확장이 다 내려간 뒤에 새
+    // 확장이 등록한다. 새 UUID 가 이미 켜져 있었으면 함께 뺐다가 다시 넣는다 — 그대로 두면 이미 올라온
+    // 새 확장의 바인딩을 옛 확장이 지운 채 남는다.
+    if (legacy != .absent) {
+        removeLegacyExtension(rt, allocator, &api, settings, target, legacy, was_enabled);
+        if (was_enabled) enabled = false;
+    }
+    const enable_first_use = shouldEnableFirstUse(newly_installed, was_enabled, explicitly_disabled, legacy);
+    if (enable_first_use or (was_enabled and !enabled)) {
         ensureInList(allocator, &api, settings, key_enabled_extensions, extension_uuid) catch |err| {
-            log.appendLine(label, "Shell extension first-time enable failed: {s}", .{@errorName(err)});
+            log.appendLine(label, "Shell extension enable failed: {s}", .{@errorName(err)});
             return .{ .inactive = target.owner };
         };
         api.settings_sync();
         enabled = true;
+    }
+    if (enable_first_use) {
         log.appendLine(label, "Shell extension synchronized and enabled for first use", .{});
     } else {
         log.appendLine(label, "Shell extension synchronized; existing enabled state preserved", .{});
     }
-    if (legacy != .absent) removeLegacyExtension(rt, allocator, &api, settings, target, legacy);
 
     const all_user_extensions_disabled = target.owner == .gnome and
         api.settings_get_boolean(settings, key_disable_user_extensions) != 0;
@@ -195,12 +208,19 @@ fn classifyLegacy(installed: bool, in_enabled: bool, in_disabled: bool) Legacy {
 /// #830 — 옛 UUID 를 켜진 · 꺼진 목록에서 빼고 옛 폴더를 지운다. 남겨 두면 다시 로그인했을 때
 /// 옛 확장과 새 확장이 같은 창 · 같은 단축키를 함께 잡는다. GNOME 은 목록이 바뀌는 순간 옛 확장을
 /// 내리고, 새 UUID 는 다시 로그인해야 읽는다. 실패해도 기동은 막지 않는다 — 다음 실행에 다시 한다.
-fn removeLegacyExtension(rt: Runtime, allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, target: ShellExtensionTarget, legacy: Legacy) void {
+/// `also_new` 면 새 UUID 도 켜진 목록에서 뺀다 — 호출처가 곧바로 다시 넣는다 (`prepareShellExtension`).
+fn removeLegacyExtension(rt: Runtime, allocator: std.mem.Allocator, api: *const Api, settings: *c.GSettings, target: ShellExtensionTarget, legacy: Legacy, also_new: bool) void {
     const label = target.owner.logCategory();
     removeFromList(allocator, api, settings, key_enabled_extensions, app_id.legacy_extension_uuid) catch |err| {
         log.appendLine(label, "legacy Shell extension list cleanup failed: {s}", .{@errorName(err)});
         return;
     };
+    if (also_new) {
+        removeFromList(allocator, api, settings, key_enabled_extensions, extension_uuid) catch |err| {
+            log.appendLine(label, "legacy Shell extension list cleanup failed: {s}", .{@errorName(err)});
+            return;
+        };
+    }
     if (target.owner == .gnome) {
         removeFromList(allocator, api, settings, key_disabled_extensions, app_id.legacy_extension_uuid) catch |err| {
             log.appendLine(label, "legacy Shell extension list cleanup failed: {s}", .{@errorName(err)});

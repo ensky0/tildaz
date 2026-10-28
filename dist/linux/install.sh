@@ -280,6 +280,19 @@ PY
     gsettings set "$schema" "$key" "$new" 2>/dev/null
 }
 
+# #830 — 옛 UUID 를 새 UUID 를 켜기 **전에** 목록에서 뺀다. 두 확장은 바인딩 이름 (`<앱>-toggle-N`) 과
+# 등록 결과 파일이 같아서, 옛 확장이 내려가며 새 확장의 것을 지운다. Cinnamon 은 목록이 바뀔 때마다
+# 빠진 확장을 먼저 내리고 그다음 올리므로 (`extensionSystem.js` 의 `onEnabledExtensionsChanged`), 이
+# 순서면 옛 확장이 다 내려간 뒤에 새 확장이 등록한다. 새 UUID 가 이미 켜져 있었으면 함께 뺀다 — 아래
+# Cinnamon 블록이 다시 넣는다. 앱도 같은 순서로 한다 (`gsettings_hotkey.prepareShellExtension`).
+if command -v gsettings >/dev/null 2>&1 && \
+    gsettings get org.cinnamon enabled-extensions 2>/dev/null | grep -qF "'$EXT_LEGACY_UUID'"; then
+    gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_LEGACY_UUID" || true
+    gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_UUID" || true
+fi
+gsettings_strv_edit org.gnome.shell enabled-extensions remove "$EXT_LEGACY_UUID" || true
+gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_LEGACY_UUID" || true
+
 EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
@@ -324,8 +337,9 @@ if [[ -d "$CIN_SRC" ]]; then
     fi
 fi
 
-# #830 — 옛 UUID 의 확장을 거둔다. 남겨 두면 다시 로그인했을 때 옛 확장과 새 확장이 같은 창 ·
-# 같은 단축키를 함께 잡는다. 앱도 기동 때 같은 일을 한다 (`gsettings_hotkey.removeLegacyExtension`).
+# #830 — 옛 UUID 의 확장 폴더를 거둔다. 남겨 두면 다시 로그인했을 때 옛 확장과 새 확장이 같은 창 ·
+# 같은 단축키를 함께 잡는다. 목록의 자리는 위에서 이미 뺐다. 앱도 기동 때 같은 일을 한다
+# (`gsettings_hotkey.removeLegacyExtension`).
 LEGACY_EXT_REMOVED=()
 for legacy_dir in "$DATA_HOME/gnome-shell/extensions/$EXT_LEGACY_UUID" "$DATA_HOME/cinnamon/extensions/$EXT_LEGACY_UUID"; do
     if [[ -d "$legacy_dir" ]]; then
@@ -333,9 +347,6 @@ for legacy_dir in "$DATA_HOME/gnome-shell/extensions/$EXT_LEGACY_UUID" "$DATA_HO
         LEGACY_EXT_REMOVED+=("$legacy_dir")
     fi
 done
-gsettings_strv_edit org.gnome.shell enabled-extensions remove "$EXT_LEGACY_UUID" || true
-gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_LEGACY_UUID" || true
-gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_LEGACY_UUID" || true
 
 if [[ ${#LEGACY_EXT_REMOVED[@]} -gt 0 ]]; then
     echo "Removed the old Shell extension ($EXT_LEGACY_UUID) — log out and back in to load $EXT_UUID:"
