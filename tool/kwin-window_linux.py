@@ -151,7 +151,9 @@ if (best !== null) {{
         + " output=" + o.width + "," + o.height + " dpr=" + w.output.devicePixelRatio
         + " pid=" + w.pid + " class=" + w.resourceClass;
     var act = workspace.windowList ? workspace.activeWindow : workspace.activeClient;
-    msg += " active=" + (act === w ? "yes" : "no") + " active_pid=" + (act ? act.pid : 0);
+    msg += " active=" + (act === w ? "yes" : "no") + " active_pid=" + (act ? act.pid : 0)
+        + " active_class=" + (act ? act.resourceClass : "-")
+        + " active_caption=" + (act ? String(act.caption).replace(/\\s+/g, "_") || "-" : "-");
 }}
 callDBus("{name}", "/", "{IFACE}", "Report", msg);
 """
@@ -184,6 +186,9 @@ callDBus("{name}", "/", "{IFACE}", "Report", msg);
         return 1
     print(rx.value)
     if a.check_active and " active=yes" not in rx.value:
+        # 측정기의 `round.err` 에 남아 어느 창이 포커스를 가졌는지 보인다.
+        print("활성 창이 대상이 아니에요: " + " ".join(kv for kv in rx.value.split() if kv.startswith("active")),
+              file=sys.stderr)
         return 3
     if a.click:
         f = dict(kv.split("=", 1) for kv in rx.value.split())

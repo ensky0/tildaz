@@ -285,9 +285,10 @@ int main(int argc, char *argv[]) {
     }
 
     // 장치를 먼저 꽂는다 — 새 입력 장치가 생기면 compositor 가 keymap 을 다시 보내는 구간이 있다
-    // (AGENTS.md 의 uinput 함정). 스트림을 여는 동안 가라앉는다.
+    // (AGENTS.md 의 uinput 함정). 스트림을 여는 동안 가라앉고, 클릭 앞에서는 0.5 초를 채운다 (#826).
     int kb = make_keyboard();
     int ptr = click ? make_pointer() : -1;
+    uint64_t devices_ns = now_ns();
     if (kb < 0 || (click && ptr < 0)) {
         fprintf(stderr, "/dev/uinput 을 못 열었어요: %s\n", strerror(errno));
         return 2;
@@ -364,6 +365,10 @@ int main(int argc, char *argv[]) {
     }
 
     if (click) {
+        // 새 장치를 compositor 가 붙이기 전에 누르면 클릭이 사라진다 (#826). 스트림을 여는 시간에 기대면 22 ms 만에
+        // 누른 회차가 있었다 (KDE). `kwin-window_linux.py` 의 `click` 과 같은 0.5 초를 장치를 만든 때부터 채운다.
+        double since_ms = (double)(now_ns() - devices_ns) / 1e6;
+        if (since_ms < 500) sleep_ms((int)(500 - since_ms));
         // 창 가운데 (물리 px) → 절대좌표 0..32767. libinput 이 그 범위를 출력 전체에 선형으로 펼친다.
         int W = (int)d.info.size.width, H = (int)d.info.size.height;
         double cx = d.rx + d.rw / 2.0, cy = d.ry + d.rh / 2.0;

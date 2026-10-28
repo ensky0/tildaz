@@ -245,7 +245,7 @@ measure_round_linux() {
     sleep 1
     _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
         --rect "$_rect" --output "$_outp" --dpr "$_dpr" --click \
-        --focus-check "python3 '$REPO_ROOT/tool/kwin-window_linux.py' --child-pid $1 --check-active >/dev/null 2>&1" \
+        --focus-check "python3 '$REPO_ROOT/tool/kwin-window_linux.py' --child-pid $1 --check-active >/dev/null" \
         --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
     measure_round_linux_tally "$2"
 }
