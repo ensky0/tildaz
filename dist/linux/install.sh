@@ -349,7 +349,9 @@ for legacy_dir in "$DATA_HOME/gnome-shell/extensions/$EXT_LEGACY_UUID" "$DATA_HO
 done
 
 if [[ ${#LEGACY_EXT_REMOVED[@]} -gt 0 ]]; then
-    echo "Removed the old Shell extension ($EXT_LEGACY_UUID) — log out and back in to load $EXT_UUID:"
+    # 이 스크립트는 지금 데스크톱을 보지 않으므로 두 셸을 한 문장에 적는다 — GNOME 은 새 UUID 를
+    # 다시 로그인해야 읽고, Cinnamon 은 목록이 바뀌면 바로 읽는다 (#830 · AGENTS.md 실측).
+    echo "Removed the old Shell extension ($EXT_LEGACY_UUID). GNOME loads $EXT_UUID after you log out and back in; Cinnamon loads it right away:"
     for f in "${LEGACY_EXT_REMOVED[@]}"; do echo "  $f"; done
     echo ""
 fi
