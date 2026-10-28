@@ -21,6 +21,7 @@ keymap 이 잠깐 흔들려 (cosmic-comp 실측) 그 사이의 키가 발화하�
 import argparse
 import fcntl
 import os
+import stat
 import struct
 import sys
 import time
@@ -82,11 +83,26 @@ def parse_combo(text: str) -> list[str]:
     return out
 
 
+def ensure_fifo(path: str) -> None:
+    """#830 — 명령 통로를 FIFO 로 준비한다. 경로에 다른 것이 있으면 멈춘다.
+
+    FIFO 가 생기기 전에 `echo … > 경로` 가 먼저 돌면 같은 경로에 보통 파일이 생긴다. 그 파일을
+    읽으면 끝까지 읽고 다시 여는 일을 되풀이해 같은 명령을 끝없이 실행한다 (2026-10-28 GNOME 회차 —
+    F10 두 번이 44 번이 됐다). 그래서 장치 준비를 기다리기 전에 먼저 만든다.
+    """
+    if os.path.lexists(path):
+        if not stat.S_ISFIFO(os.lstat(path).st_mode):
+            sys.exit(f"[ukbd] {path} exists but is not a FIFO — remove it and start again")
+        return
+    os.mkfifo(path, 0o600)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fifo", required=True, help="명령을 받을 FIFO 경로 (없으면 만든다)")
     ap.add_argument("--name", default="tildaz-654-ukbd", help="장치 이름 (/proc/bus/input/devices 에 보인다)")
     args = ap.parse_args()
+    ensure_fifo(args.fifo)
 
     fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
@@ -98,9 +114,6 @@ def main() -> int:
     fcntl.ioctl(fd, UI_DEV_CREATE)
     print(f"[ukbd] device created ({args.name}); settling {SETTLE:.0f}s", flush=True)
     time.sleep(SETTLE)
-
-    if not os.path.exists(args.fifo):
-        os.mkfifo(args.fifo, 0o600)
     print(f"[ukbd] ready — fifo {args.fifo}", flush=True)
 
     try:

@@ -35,6 +35,7 @@ import argparse
 import os
 import select
 import socket
+import stat
 import struct
 import sys
 import time
@@ -235,6 +236,19 @@ class VirtualPointer:
             self.button(name, False)
 
 
+def ensure_fifo(path):
+    """#830 — 명령 통로를 FIFO 로 준비한다. 경로에 다른 것이 있으면 멈춘다.
+
+    FIFO 가 생기기 전에 `echo … > 경로` 가 먼저 돌면 같은 경로에 보통 파일이 생기고, 그 파일을 읽으면
+    같은 명령을 끝없이 되풀이한다 (2026-10-28 `ukbd_linux.py` 회차). 그래서 연결보다 먼저 만든다.
+    """
+    if os.path.lexists(path):
+        if not stat.S_ISFIFO(os.lstat(path).st_mode):
+            sys.exit(f"vptr: {path} exists but is not a FIFO — remove it and start again")
+        return
+    os.mkfifo(path, 0o600)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fifo", required=True, help="명령을 읽을 FIFO 경로 (없으면 만든다)")
@@ -242,6 +256,7 @@ def main():
                     help="절대 좌표의 기준 크기. 기본은 wl_output 의 현재 mode")
     ap.add_argument("--hold", type=int, default=40, help="click 의 누름 유지 ms (기본 40)")
     args = ap.parse_args()
+    ensure_fifo(args.fifo)
 
     wl = Wayland()
     if args.extent:
@@ -250,8 +265,6 @@ def main():
     else:
         extent = wl.output_extent()
     vp = VirtualPointer(wl, extent)
-    if not os.path.exists(args.fifo):
-        os.mkfifo(args.fifo, 0o600)
     print(f"vptr: attached to {wl.path} · seat={vp.seat} · extent={extent[0]}x{extent[1]} · fifo={args.fifo}",
           flush=True)
 

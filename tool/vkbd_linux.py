@@ -41,6 +41,7 @@ import array
 import os
 import select
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -277,6 +278,19 @@ class VirtualKeyboard:
         self.wl.roundtrip()
 
 
+def ensure_fifo(path):
+    """#830 — 명령 통로를 FIFO 로 준비한다. 경로에 다른 것이 있으면 멈춘다.
+
+    FIFO 가 생기기 전에 `echo … > 경로` 가 먼저 돌면 같은 경로에 보통 파일이 생기고, 그 파일을 읽으면
+    같은 명령을 끝없이 되풀이한다 (2026-10-28 `ukbd_linux.py` 회차). 그래서 연결보다 먼저 만든다.
+    """
+    if os.path.lexists(path):
+        if not stat.S_ISFIFO(os.lstat(path).st_mode):
+            sys.exit(f"vkbd: {path} exists but is not a FIFO — remove it and start again")
+        return
+    os.mkfifo(path, 0o600)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fifo", required=True, help="명령을 읽을 FIFO 경로 (없으면 만든다)")
@@ -284,11 +298,10 @@ def main():
     ap.add_argument("--variant", default="", help="xkb variant (예 intl — dead key 회차. 글자 자리는 us 와 같다)")
     ap.add_argument("--delay", type=int, default=12, help="type 의 글자 사이 ms (기본 12)")
     args = ap.parse_args()
+    ensure_fifo(args.fifo)
 
     wl = Wayland()
     vk = VirtualKeyboard(wl, args.layout, args.variant)
-    if not os.path.exists(args.fifo):
-        os.mkfifo(args.fifo, 0o600)
     print(f"vkbd: attached to {wl.path} · seat={vk.seat} · keymap={args.layout}{'(' + args.variant + ')' if args.variant else ''} · fifo={args.fifo}", flush=True)
 
     while True:
