@@ -2755,7 +2755,8 @@ layer-shell namespace · **데스크톱 확장 (UUID · gschema)** · macOS bund
   *"확 바꿔버리자"*). **바꾸면 GNOME 에게는 다른 확장이에요** — 그래서 앱 (`gsettings_hotkey.removeLegacyExtension`) 과
   `install.sh` 가 옛 UUID (`app_id.legacy_extension_uuid`) 의 폴더와 켜진 · 꺼진 목록 자리를 거둬요. 남기면 다시 로그인했을 때
   두 확장이 같은 창 · 같은 단축키를 함께 잡아요. 사용자가 옛 확장을 꺼 두었으면 새 UUID 도 켜지 않아요 (#676 규칙).
-  GNOME 은 새 UUID 를 다시 로그인해야 읽어서, 업그레이드한 사용자는 그때까지 *"Shell Extension Required"* 를 봐요 —
+  GNOME 은 새 UUID 를 다시 로그인해야 읽어서, 업그레이드한 사용자는 첫 실행에 *"Log Out to Finish Setup"* 를 봐요
+  (그 실행이 확장 폴더를 처음 만든 경우 — 다시 로그인 전에 한 번 더 띄우면 *"Shell Extension Required"*) —
   일회성 이전을 코드에 둔 예외예요 (안 하면 기능이 깨져서 문서의 명령으로 대신할 수 없어요). `uninstall.sh` 는 옛 · 새 넷을 다 지워요.
 - **확장 소스는 레포에 한 벌이고 `__TILDAZ_*__` 토큰을 담아요** — 그 파일을 사용자
   디렉터리에 **그대로 복사하면 동작하지 않아요.** 치환하는 곳이 셋이라 (`shell_extension.zig`

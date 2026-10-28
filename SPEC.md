@@ -355,7 +355,10 @@ Linux 지원 수준은 desktop 이름이 아니라 실제 capability + 검증 �
   drop-down 배치 + 토글 + 창 목록 숨김(Alt-Tab / taskbar / window-list / Expo)을
   담당한다. 이 확장은 **필수**다. 첫 설치 때만 앱이 활성 목록에 넣고, 사용자가 끈 상태와
   GNOME의 전체 사용자 확장 비활성 설정은 바꾸지 않는다. 비활성이면 일반 창으로
-  fallback하지 않고 첫 PTY 전에 안내 후 종료한다. 예전 버전이 만든 GSettings
+  fallback하지 않고 첫 PTY 전에 안내 후 종료한다. GNOME 에서 이번 실행이 확장 폴더를 처음 만들었으면
+  (첫 설치 · 확장 이름이 바뀐 업그레이드) 셸이 다시 로그인해야 그 확장을 읽으므로, 확장의 응답을 기다리지
+  않고 *"Log Out to Finish Setup"* 안내로 다시 로그인을 알린다 ([#830](https://github.com/ensky0/tildaz/issues/830)).
+  Cinnamon 은 목록 변경을 바로 읽어 해당하지 않는다. 예전 버전이 만든 GSettings
   custom-keybinding은 launcher가 모두 제거하되 사용자 항목과 다른 판의 항목은 보존한다.
   Shell extension은 config directory 변경을 감시해 index/accelerator 차이만 remove/add한다.
   config가 source of truth다. 숨김(minimize) 시 extension이 keyboard focus를 MRU 다음 창으로 넘긴다 — mutter/muffin 이

@@ -83,6 +83,15 @@ pub const Status = union(enum) {
     not_applicable,
     active: ShellExtensionOwner,
     inactive: ShellExtensionOwner,
+    /// #830 — 이번 실행이 확장 폴더를 처음 만들었고 켜 두었지만, 셸이 아직 그 확장을 모른다.
+    /// GNOME 은 새 UUID 를 다시 로그인해야 읽어서, 확장의 응답을 기다려도 오지 않는다.
+    relogin_required: Relogin,
+};
+
+pub const Relogin = struct {
+    owner: ShellExtensionOwner,
+    /// 옛 UUID 를 거두고 새로 깐 업그레이드인가 (아니면 처음 설치).
+    updated: bool,
 };
 
 /// `XDG_CURRENT_DESKTOP`의 콜론 구분 토큰을 exact/case-insensitive로 판정한다.
@@ -146,7 +155,16 @@ pub fn prepareShellExtension(rt: Runtime, allocator: std.mem.Allocator) Status {
         api.settings_get_boolean(settings, key_disable_user_extensions) != 0;
     if (!extensionActive(target.owner, enabled, explicitly_disabled, all_user_extensions_disabled))
         return .{ .inactive = target.owner };
+    if (needsRelogin(target.owner, newly_installed))
+        return .{ .relogin_required = .{ .owner = target.owner, .updated = legacy != .absent } };
     return .{ .active = target.owner };
+}
+
+/// #830 — 켜진 확장을 셸이 아직 못 읽은 것이 확실한 경우. GNOME 은 확장 목록을 로그인 때
+/// 읽어서, 이번 실행이 폴더를 처음 만든 확장은 다시 로그인하기 전까지 없는 것과 같다
+/// (AGENTS.md 실측). Cinnamon 은 목록이 바뀌면 바로 읽어서 해당하지 않는다.
+fn needsRelogin(owner: ShellExtensionOwner, newly_installed: bool) bool {
+    return owner == .gnome and newly_installed;
 }
 
 /// #830 — 옛 UUID (`app_id.legacy_extension_uuid`) 가 남긴 것. 사용자가 옛 확장을 켜 두었는지
@@ -440,6 +458,14 @@ test "#676 Shell extension state respects explicit and global disable" {
     try T.expect(!shouldEnableFirstUse(false, false, false, .absent));
     try T.expect(!shouldEnableFirstUse(true, false, true, .absent));
     try T.expect(!shouldEnableFirstUse(true, true, false, .absent));
+}
+
+test "#830 GNOME needs a re-login only for an extension folder made this run" {
+    const T = std.testing;
+    try T.expect(needsRelogin(.gnome, true));
+    try T.expect(!needsRelogin(.gnome, false));
+    // Cinnamon 은 목록 변경을 바로 읽는다.
+    try T.expect(!needsRelogin(.cinnamon, true));
 }
 
 test "#830 legacy extension UUID carries the user's choice to the new UUID" {
