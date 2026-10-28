@@ -74,8 +74,8 @@ const vt_features_disabled = "-kitty-graphics,-glyph-protocol";
 /// `@embedFile` 은 module 경로 (`src/`) 를 벗어나지 못하므로 익명 import 로 넘긴다. 앱 소스를
 /// 컴파일하는 module 은 모두 이 함수를 지나야 한다 — 하나라도 빠지면 그 module 만 컴파일이 깨진다.
 fn addShellExtensionResources(b: *std.Build, mod: *std.Build.Module) void {
-    const gnome = "dist/linux/gnome-extension/tildaz@ensky0.github.io/";
-    const cinnamon = "dist/linux/cinnamon-extension/tildaz@ensky0.github.io/";
+    const gnome = "dist/linux/gnome-extension/tildaz@tildaz.dev/";
+    const cinnamon = "dist/linux/cinnamon-extension/tildaz@tildaz.dev/";
     mod.addAnonymousImport("gnome_extension_js", .{ .root_source_file = b.path(gnome ++ "extension.js") });
     mod.addAnonymousImport("gnome_extension_metadata", .{ .root_source_file = b.path(gnome ++ "metadata.json") });
     mod.addAnonymousImport("gnome_extension_gschema", .{

@@ -211,12 +211,16 @@ ln -sf "$TILDAZ_EXE" "$BIN_LINK"
 # 릴리즈가 각자의 UUID 로 깔리도록 복사하면서 치환한다. `src/host/linux/shell_extension.zig`
 # 의 `substitutions` 와 **같은 토큰**이어야 한다 (앱도 기동 때 같은 파일을 쓴다).
 # 소스 디렉터리 이름은 릴리즈 UUID 로 고정돼 있다 (git 에 담긴 이름).
-EXT_SRC_UUID="tildaz@ensky0.github.io"
+# 네임스페이스는 사이트 도메인이다 (#830 — `src/app_id.zig` 의 `extension_uuid` 와 같아야 한다).
+# `EXT_LEGACY_UUID` 는 #830 이전의 같은 판 UUID 로, 아래에서 거둔다.
+EXT_SRC_UUID="tildaz@tildaz.dev"
 if [[ "$IS_DEV" -eq 1 ]]; then
-    EXT_UUID="tildaz-dev@ensky0.github.io"
+    EXT_UUID="tildaz-dev@tildaz.dev"
+    EXT_LEGACY_UUID="tildaz-dev@ensky0.github.io"
     EXT_NAME="TildaZ Drop-down (dev)"
 else
-    EXT_UUID="tildaz@ensky0.github.io"
+    EXT_UUID="tildaz@tildaz.dev"
+    EXT_LEGACY_UUID="tildaz@ensky0.github.io"
     EXT_NAME="TildaZ Drop-down"
 fi
 EXT_SCHEMA="org.gnome.shell.extensions.$TILDAZ_ID"
@@ -276,6 +280,19 @@ PY
     gsettings set "$schema" "$key" "$new" 2>/dev/null
 }
 
+# #830 — 옛 UUID 를 새 UUID 를 켜기 **전에** 목록에서 뺀다. 두 확장은 바인딩 이름 (`<앱>-toggle-N`) 과
+# 등록 결과 파일이 같아서, 옛 확장이 내려가며 새 확장의 것을 지운다. Cinnamon 은 목록이 바뀔 때마다
+# 빠진 확장을 먼저 내리고 그다음 올리므로 (`extensionSystem.js` 의 `onEnabledExtensionsChanged`), 이
+# 순서면 옛 확장이 다 내려간 뒤에 새 확장이 등록한다. 새 UUID 가 이미 켜져 있었으면 함께 뺀다 — 아래
+# Cinnamon 블록이 다시 넣는다. 앱도 같은 순서로 한다 (`gsettings_hotkey.prepareShellExtension`).
+if command -v gsettings >/dev/null 2>&1 && \
+    gsettings get org.cinnamon enabled-extensions 2>/dev/null | grep -qF "'$EXT_LEGACY_UUID'"; then
+    gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_LEGACY_UUID" || true
+    gsettings_strv_edit org.cinnamon enabled-extensions remove "$EXT_UUID" || true
+fi
+gsettings_strv_edit org.gnome.shell enabled-extensions remove "$EXT_LEGACY_UUID" || true
+gsettings_strv_edit org.gnome.shell disabled-extensions remove "$EXT_LEGACY_UUID" || true
+
 EXT_SRC="$SCRIPT_DIR/gnome-extension/$EXT_SRC_UUID"
 EXT_MSG=""
 if [[ -d "$EXT_SRC" ]]; then
@@ -318,6 +335,25 @@ if [[ -d "$CIN_SRC" ]]; then
     else
         CIN_MSG="$CIN_DST  (복사됨 — Cinnamon 아님/gsettings·python3 미설치, 시스템 설정 > 확장에서 활성화 + 재로그인)"
     fi
+fi
+
+# #830 — 옛 UUID 의 확장 폴더를 거둔다. 남겨 두면 다시 로그인했을 때 옛 확장과 새 확장이 같은 창 ·
+# 같은 단축키를 함께 잡는다. 목록의 자리는 위에서 이미 뺐다. 앱도 기동 때 같은 일을 한다
+# (`gsettings_hotkey.removeLegacyExtension`).
+LEGACY_EXT_REMOVED=()
+for legacy_dir in "$DATA_HOME/gnome-shell/extensions/$EXT_LEGACY_UUID" "$DATA_HOME/cinnamon/extensions/$EXT_LEGACY_UUID"; do
+    if [[ -d "$legacy_dir" ]]; then
+        rm -rf "$legacy_dir"
+        LEGACY_EXT_REMOVED+=("$legacy_dir")
+    fi
+done
+
+if [[ ${#LEGACY_EXT_REMOVED[@]} -gt 0 ]]; then
+    # 이 스크립트는 지금 데스크톱을 보지 않으므로 두 셸을 한 문장에 적는다 — GNOME 은 새 UUID 를
+    # 다시 로그인해야 읽고, Cinnamon 은 목록이 바뀌면 바로 읽는다 (#830 · AGENTS.md 실측).
+    echo "Removed the old Shell extension ($EXT_LEGACY_UUID). GNOME loads $EXT_UUID after you log out and back in; Cinnamon loads it right away:"
+    for f in "${LEGACY_EXT_REMOVED[@]}"; do echo "  $f"; done
+    echo ""
 fi
 
 if [[ ${#STALE_REMOVED[@]} -gt 0 ]]; then

@@ -81,8 +81,8 @@ ICON_SRC="$REPO_ROOT/docs/favicon.svg"
 LICENSE_SRC="$REPO_ROOT/LICENSE"
 NOTICES_SRC="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
 DESKTOP_TEMPLATE="$SCRIPT_DIR/tildaz.desktop"
-GNOME_EXT_SRC="$SCRIPT_DIR/gnome-extension/tildaz@ensky0.github.io"
-CINNAMON_EXT_SRC="$SCRIPT_DIR/cinnamon-extension/tildaz@ensky0.github.io"
+GNOME_EXT_SRC="$SCRIPT_DIR/gnome-extension/tildaz@tildaz.dev"
+CINNAMON_EXT_SRC="$SCRIPT_DIR/cinnamon-extension/tildaz@tildaz.dev"
 RELEASE_ROOT="$REPO_ROOT/zig-out/release"
 mkdir -p "$RELEASE_ROOT"
 
@@ -125,7 +125,7 @@ render_extension_tree() {
         rel="${f#"$src"/}"
         out="$dst/$rel"
         mkdir -p "$(dirname "$out")"
-        sed -e 's|__TILDAZ_EXT_UUID__|tildaz@ensky0.github.io|g' \
+        sed -e 's|__TILDAZ_EXT_UUID__|tildaz@tildaz.dev|g' \
             -e 's|__TILDAZ_EXT_SCHEMA__|org.gnome.shell.extensions.tildaz|g' \
             -e 's|__TILDAZ_EXT_NAME__|TildaZ Drop-down|g' \
             -e 's|__TILDAZ_TITLE_PREFIX__|TildaZ-|g' \
@@ -136,8 +136,8 @@ render_extension_tree() {
 
 install_extension_resources() {
     local root="$1"
-    local gnome="$root/gnome-extension/tildaz@ensky0.github.io"
-    local cinnamon="$root/cinnamon-extension/tildaz@ensky0.github.io"
+    local gnome="$root/gnome-extension/tildaz@tildaz.dev"
+    local cinnamon="$root/cinnamon-extension/tildaz@tildaz.dev"
     mkdir -p "$gnome" "$cinnamon"
     render_extension_tree "$GNOME_EXT_SRC" "$gnome"
     render_extension_tree "$CINNAMON_EXT_SRC" "$cinnamon"
@@ -146,11 +146,11 @@ install_extension_resources() {
 validate_extension_resources() {
     local root="$1"
     local required=(
-        "gnome-extension/tildaz@ensky0.github.io/extension.js"
-        "gnome-extension/tildaz@ensky0.github.io/metadata.json"
-        "gnome-extension/tildaz@ensky0.github.io/schemas/org.gnome.shell.extensions.tildaz.gschema.xml"
-        "cinnamon-extension/tildaz@ensky0.github.io/extension.js"
-        "cinnamon-extension/tildaz@ensky0.github.io/metadata.json"
+        "gnome-extension/tildaz@tildaz.dev/extension.js"
+        "gnome-extension/tildaz@tildaz.dev/metadata.json"
+        "gnome-extension/tildaz@tildaz.dev/schemas/org.gnome.shell.extensions.tildaz.gschema.xml"
+        "cinnamon-extension/tildaz@tildaz.dev/extension.js"
+        "cinnamon-extension/tildaz@tildaz.dev/metadata.json"
     )
     local relative
     for relative in "${required[@]}"; do
@@ -275,11 +275,11 @@ END
         echo "ERROR: portable install did not install tildaz.svg" >&2
         exit 1
     }
-    [[ -f "$VERIFY/home/.local/share/gnome-shell/extensions/tildaz@ensky0.github.io/extension.js" ]] || {
+    [[ -f "$VERIFY/home/.local/share/gnome-shell/extensions/tildaz@tildaz.dev/extension.js" ]] || {
         echo "ERROR: portable install did not install the GNOME Shell extension" >&2
         exit 1
     }
-    [[ -f "$VERIFY/home/.local/share/cinnamon/extensions/tildaz@ensky0.github.io/extension.js" ]] || {
+    [[ -f "$VERIFY/home/.local/share/cinnamon/extensions/tildaz@tildaz.dev/extension.js" ]] || {
         echo "ERROR: portable install did not install the Cinnamon extension" >&2
         exit 1
     }
@@ -511,8 +511,8 @@ END
     validate_desktop_exec "$RPM_DESKTOP" "/usr/bin/tildaz"
     local RPM_FILES
     RPM_FILES="$(rpm -qlp "$RPM")"
-    grep -qxF '/usr/share/tildaz/gnome-extension/tildaz@ensky0.github.io/extension.js' <<< "$RPM_FILES"
-    grep -qxF '/usr/share/tildaz/cinnamon-extension/tildaz@ensky0.github.io/extension.js' <<< "$RPM_FILES"
+    grep -qxF '/usr/share/tildaz/gnome-extension/tildaz@tildaz.dev/extension.js' <<< "$RPM_FILES"
+    grep -qxF '/usr/share/tildaz/cinnamon-extension/tildaz@tildaz.dev/extension.js' <<< "$RPM_FILES"
     rm -rf "$RPMTREE"
     write_sha256 "$RPM"
     echo "--- Output ---"
@@ -684,8 +684,8 @@ END
     bsdtar -xOf "$PKG" usr/share/applications/tildaz.desktop \
         > "$BUILD/packaged-tildaz.desktop"
     validate_desktop_exec "$BUILD/packaged-tildaz.desktop" "/usr/bin/tildaz"
-    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/gnome-extension/tildaz@ensky0.github.io/extension.js'
-    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/cinnamon-extension/tildaz@ensky0.github.io/extension.js'
+    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/gnome-extension/tildaz@tildaz.dev/extension.js'
+    bsdtar -tf "$PKG" | grep -qxF 'usr/share/tildaz/cinnamon-extension/tildaz@tildaz.dev/extension.js'
     rm -rf "$BUILD"
     write_sha256 "$PKG"
     echo "--- Output ---"

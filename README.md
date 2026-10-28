@@ -126,7 +126,7 @@ Or download a package from
 On GNOME and Cinnamon, TildaZ runs through its own Shell extension. TildaZ
 installs and turns it on the first time it starts. GNOME loads a newly
 installed extension only after you log out and back in, so the first start may
-stop with **Shell Extension Required**. Log in again and start TildaZ.
+stop with **Log Out to Finish Setup**. Log in again and start TildaZ.
 Cinnamon loads the extension right away.
 
 First launch creates the default config:

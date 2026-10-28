@@ -82,13 +82,7 @@ const cinnamon_resources = [_]Resource{
 /// 어긋나면 안 된다. 결과 종류 (`synced` · `kept_installed` · `unavailable`) 도 함께 사라졌다:
 /// 이제 실패는 오류이고 성공은 한 가지다.
 pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
-    // #700 — 두 셸 모두 `g_get_user_data_dir()` 아래에서 사용자 확장을 찾는다 (`paths.dataHome`).
-    const data = try paths.dataHome(rt, allocator);
-    defer allocator.free(data);
-    const destination_dir = switch (kind) {
-        .gnome => try std.Io.Dir.path.join(allocator, &.{ data, "gnome-shell", "extensions", uuid }),
-        .cinnamon => try std.Io.Dir.path.join(allocator, &.{ data, "cinnamon", "extensions", uuid }),
-    };
+    const destination_dir = try userExtensionDir(rt, allocator, kind, uuid);
     defer allocator.free(destination_dir);
 
     // #676 — Cinnamon은 GNOME의 `disabled-extensions` 같은 명시적 차단 목록이 없다.
@@ -128,6 +122,32 @@ pub fn syncForCurrentUser(rt: Runtime, allocator: std.mem.Allocator, kind: Kind)
         if (changed or !compiled_exists) try compileGnomeSchemas(rt, allocator, destination_dir);
     }
     return newly_installed;
+}
+
+/// 셸이 사용자 확장을 찾는 폴더. 소유권을 넘긴다.
+fn userExtensionDir(rt: Runtime, allocator: std.mem.Allocator, kind: Kind, extension_uuid: []const u8) ![]u8 {
+    // #700 — 두 셸 모두 `g_get_user_data_dir()` 아래에서 사용자 확장을 찾는다 (`paths.dataHome`).
+    const data = try paths.dataHome(rt, allocator);
+    defer allocator.free(data);
+    return switch (kind) {
+        .gnome => try std.Io.Dir.path.join(allocator, &.{ data, "gnome-shell", "extensions", extension_uuid }),
+        .cinnamon => try std.Io.Dir.path.join(allocator, &.{ data, "cinnamon", "extensions", extension_uuid }),
+    };
+}
+
+/// #830 — 옛 UUID (`app_id.legacy_extension_uuid`) 의 사용자 폴더가 남아 있는가.
+pub fn legacyInstalled(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !bool {
+    const dir = try userExtensionDir(rt, allocator, kind, app_id.legacy_extension_uuid);
+    defer allocator.free(dir);
+    std.Io.Dir.accessAbsolute(rt.io, dir, .{}) catch return false;
+    return true;
+}
+
+/// #830 — 옛 UUID 의 사용자 폴더를 지운다. 없으면 아무 일도 하지 않는다.
+pub fn removeLegacy(rt: Runtime, allocator: std.mem.Allocator, kind: Kind) !void {
+    const dir = try userExtensionDir(rt, allocator, kind, app_id.legacy_extension_uuid);
+    defer allocator.free(dir);
+    try std.Io.Dir.cwd().deleteTree(rt.io, dir);
 }
 
 /// disk → disk 복사. #583 B8 이후 쓰임이 하나 남았다 — `glib-compile-schemas` 가 임시

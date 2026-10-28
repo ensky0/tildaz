@@ -1587,6 +1587,8 @@ const Client = struct {
     /// #676 — GNOME · Cinnamon에서 설정상 활성인 extension의 실제 상태 파일이 없거나
     /// 사용자가 extension을 꺼 둔 경우. 일반 창 fallback 대신 첫 PTY 전에 안내한다.
     shell_extension_required: ?gsettings_hotkey.ShellExtensionOwner = null,
+    /// #830 — 확장은 켜 두었지만 셸이 다시 로그인해야 읽는 경우. 위 안내 대신 이 안내를 띄운다.
+    shell_extension_relogin: ?gsettings_hotkey.Relogin = null,
     shell_extension_status: gsettings_hotkey.Status = .not_applicable,
     // surface visibility toggle state. macOS `g_visible` 동등. false
     // = 평소 (layer-shell mapped), true = hidden (wl_surface.attach(NULL) +
@@ -9003,6 +9005,11 @@ const Client = struct {
                 self.shell_extension_required = owner;
                 return;
             },
+            // 확장의 응답은 다시 로그인하기 전에는 오지 않으니 기다리지 않는다.
+            .relogin_required => |relogin| {
+                self.shell_extension_relogin = relogin;
+                return;
+            },
             .active => |owner| switch (gsettings_hotkey.waitForShellExtensionHotkeyState(
                 self.rt,
                 self.allocator,
@@ -9026,6 +9033,16 @@ const Client = struct {
     /// 호출 시점은 shell · font 검증과 같은 구간이다 — Wayland globals + keyboard 가
     /// 준비돼 overlay 를 그릴 수 있고, 첫 탭 PTY 를 아직 안 띄웠다.
     fn fatalIfHotkeyClaimFailed(self: *Client) void {
+        if (self.shell_extension_relogin) |relogin| {
+            var msg_buf: [512]u8 = undefined;
+            const desktop = relogin.owner.displayName();
+            const msg = std.mem.print(&msg_buf, messages.linux_shell_extension_relogin_format, .{
+                if (relogin.updated) "updated" else "installed", desktop, desktop,
+            }) catch messages.linux_shell_extension_relogin_fallback_msg;
+            log.userFacing("fatal", msg);
+            self.runFatalDialog(messages.linux_shell_extension_relogin_title, msg);
+            std.process.exit(1);
+        }
         if (self.shell_extension_required) |owner| {
             var msg_buf: [1536]u8 = undefined;
             const msg = std.mem.print(&msg_buf, messages.linux_shell_extension_required_format, .{

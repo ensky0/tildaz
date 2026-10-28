@@ -835,6 +835,18 @@ pub const linux_shell_extension_required_format =
 pub const linux_shell_extension_required_fallback_msg =
     "TildaZ requires its Shell extension. Enable TildaZ Drop-down in Extensions, then start TildaZ again.";
 
+/// #830 — 이번 실행이 확장을 처음 깔았거나 새 이름으로 바꿔 깔아서, 셸이 다시 로그인해야 읽는 경우.
+/// 확장은 이미 켜 두었으니 "켜라" 가 아니라 "다시 로그인" 이 할 일이다. 인자: `installed` / `updated`,
+/// 데스크톱 이름 둘.
+pub const linux_shell_extension_relogin_title = "Log Out to Finish Setup";
+pub const linux_shell_extension_relogin_format =
+    \\TildaZ {s} its {s} Shell extension. {s} loads new extensions only when you log in.
+    \\
+    \\Log out and back in, then start TildaZ again.
+;
+pub const linux_shell_extension_relogin_fallback_msg =
+    "TildaZ set up its Shell extension. Log out and back in, then start TildaZ again.";
+
 /// 위 format 의 두 번째 인자 — 등록 상대의 이름. 데스크톱 이름을 그대로 쓰지 않고 실제
 /// **등록 상대**를 적는다 (KDE 의 상대는 Plasma 가 아니라 KGlobalAccel 데몬이다).
 pub const hotkey_owner_kglobalaccel = "KGlobalAccel";

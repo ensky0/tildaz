@@ -42,7 +42,14 @@ pub const is_dev = build_options.dev;
 /// ② 개발 빌드는 그 확장이 자기 창 (`tildaz-dev.instanceN`) 을 안 잡는데도 "확장이
 /// 있으니 전역 hotkey 는 확장이 담당한다" 로 판단해 **hotkey 를 아무 데도 등록하지
 /// 않는다.** 둘 다 실기에서 확인했다.
-pub const extension_uuid = if (build_options.dev) "tildaz-dev@ensky0.github.io" else "tildaz@ensky0.github.io";
+///
+/// 뒤쪽 네임스페이스는 사이트 도메인이다 (#830 — 사이트가 `tildaz.dev` 로 옮겨 가며 바꿨다).
+pub const extension_uuid = if (build_options.dev) "tildaz-dev@tildaz.dev" else "tildaz@tildaz.dev";
+
+/// #830 이전의 같은 판 UUID. 옛 판이 남긴 확장 폴더와 켜진 · 꺼진 목록의 자리를 거두는 데만
+/// 쓴다 (`gsettings_hotkey.prepareShellExtension`). 거두지 않으면 다시 로그인했을 때 옛
+/// 확장과 새 확장이 같은 창 · 같은 단축키를 함께 잡는다.
+pub const legacy_extension_uuid = if (build_options.dev) "tildaz-dev@ensky0.github.io" else "tildaz@ensky0.github.io";
 
 /// GNOME 확장의 GSettings 스키마 id. `metadata.json` 의 `settings-schema` · gschema 파일의
 /// `id` · 그 파일의 이름이 모두 이 값을 따른다. 같은 id 를 두 확장이 쓰면 설정 경로가
