@@ -214,7 +214,7 @@ wait_ready() {
     return 0
 }
 
-# Linux 회차 하나 — 창 위치를 KWin 에 묻고, portal 스트림을 열어 측정기를 돌린다. 표시 하나 (`.` · `!` ·
+# Linux 회차 하나 — 창 위치를 KWin 에 묻고, portal 스트림을 열어 측정기를 돌린다. 표시 하나 (`.` · `!` · `f` (포커스를 잃어 멈춤) ·
 # `?`) 를 stdout 에 내고, 그 회차의 miss 수를 `round.miss` 에 둔다. 표본은 대상의 `.samples` 에 붙인다.
 #
 #   measure_round_linux <터미널 안 프로그램의 pid> <대상 이름> <회차>
@@ -241,9 +241,12 @@ measure_round_linux() {
     _outp=$(printf '%s' "$_geo" | sed -n 's/.*output=\([^ ]*\).*/\1/p')
     _dpr=$(printf '%s' "$_geo" | sed -n 's/.*dpr=\([^ ]*\).*/\1/p')
     # 셸이 뜬 직후의 첫 그림 (프롬프트 · 격자 조정) 이 가라앉을 때까지 (macOS 판과 같은 대기).
+    # 키마다 KWin 의 활성 창이 이 창인지 먼저 본다 (#826 — 아니면 키가 사용자가 쓰던 창에 들어간다).
     sleep 1
     _out=$(python3 "$REPO_ROOT/tool/screencast-portal_linux.py" -- "$K2S" --pw-fd '{fd}' --node '{node}' \
-        --rect "$_rect" --output "$_outp" --dpr "$_dpr" --click --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
+        --rect "$_rect" --output "$_outp" --dpr "$_dpr" --click \
+        --focus-check "python3 '$REPO_ROOT/tool/kwin-window_linux.py' --child-pid $1 --check-active >/dev/null 2>&1" \
+        --presses "$PRESSES" --gap-ms "$GAP_MS" 2>"$WORK_DIR/round.err" || true)
     measure_round_linux_tally "$2"
 }
 
@@ -271,6 +274,13 @@ measure_round_linux_tally() {
     [ "$VERBOSE" = 1 ] && sed 's/^/    /' "$WORK_DIR/round.err" >&2
     _m=$(printf '%s\n' "$_out" | sed -n 's/.* miss=\([0-9]*\).*/\1/p' | tail -1)
     [ -n "$_m" ] || { sed 's/^/  ⚠ /' "$WORK_DIR/round.err" >&2; printf '!'; return 0; }
+    # 포커스를 잃어 키를 멈춘 회차 — 표본을 버린다 (#826).
+    if printf '%s\n' "$_out" | grep -q ' focus=no'; then
+        sed 's/^/  ⚠ /' "$WORK_DIR/round.err" >&2
+        echo "$_m" > "$WORK_DIR/round.miss"
+        printf 'f'
+        return 0
+    fi
     echo "$_m" > "$WORK_DIR/round.miss"
     if [ "$_m" -gt $((PRESSES / 2)) ]; then printf '!'; return 0; fi
     printf '%s\n' "$_out" | sed -n 's/^press *[0-9]* *\([0-9.]*\) ms$/\1/p' >> "$WORK_DIR/$1.samples"
@@ -307,7 +317,7 @@ run_terminal() {
             fi
             case "$_mark" in
                 .) ;;
-                !) _bad=$((_bad + 1)) ;;
+                !|f) _bad=$((_bad + 1)) ;;
             esac
             _miss=$((_miss + $(cat "$WORK_DIR/round.miss" 2>/dev/null || echo "$PRESSES")))
         elif [ "$_ready" = 1 ]; then

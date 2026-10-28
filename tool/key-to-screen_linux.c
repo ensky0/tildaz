@@ -18,12 +18,16 @@
 // - 포커스는 **창 가운데를 한 번 눌러** 잡는다 (`--click`). layer-shell 창 (TildaZ) 은 띄우기만 해서는
 //   키보드 포커스를 안 받는다 (AGENTS.md 의 KDE 커서 절). 누르는 장치는 절대좌표 uinput 포인터라 화면
 //   물리 px 과 1:1 이다 (`ydotool mousemove -a` 는 ABS 축이 없어 조용히 무시된다 — 같은 절).
+// - **`--focus-check CMD` 를 주면 키마다 먼저 그 명령을 돌린다** (#826). 실패하면 키를 하나도 더 보내지 않고
+//   `focus=no` 로 끝난다. uinput 키는 그때 포커스를 가진 창으로 가서, 클릭이 대상 창에 포커스를 못 주면 사용자가
+//   쓰던 창에 들어간다 — 2026-10-28 KDE 회차에서 `a` 가 VS Code 에 들어갔다. KDE 는 `kwin-window_linux.py
+//   --check-active` 를 준다. 확인한 뒤에 시각을 재기 시작하므로 확인 비용은 지연에 안 들어간다.
 // - 키보드와 포인터는 **장치를 따로** 만든다. 한 장치에 키와 ABS 축을 섞으면 libinput 이 어떻게 분류할지
 //   보장이 없다.
 //
 //   cc -O2 -o /tmp/key-to-screen tool/key-to-screen_linux.c $(pkg-config --cflags --libs libpipewire-0.3)
 //   tool/screencast-portal_linux.py -- /tmp/key-to-screen --pw-fd {fd} --node {node}
-//       --rect X,Y,W,H --output OW,OH [--click] [--presses 30] [--gap-ms 250]
+//       --rect X,Y,W,H --output OW,OH [--click] [--focus-check CMD] [--presses 30] [--gap-ms 250]
 //
 // `--rect` · `--output` 은 KWin 의 논리 좌표다 (`tool/kwin-window_linux.py`). 물리 배율은 받은 스트림
 // 크기 ÷ `OW` 로 정한다 — 화면이 하나라고 본다.
@@ -258,7 +262,7 @@ static int cmp_double(const void *a, const void *b) {
 
 int main(int argc, char *argv[]) {
     int pw_fd = -1, presses = 30, gap_ms = 250, click = 0, find_marker = 0;
-    const char *go_file = NULL;
+    const char *go_file = NULL, *focus_check = NULL;
     uint32_t node = 0;
     struct data d = {0};
     for (int i = 1; i < argc; i++) {
@@ -273,9 +277,10 @@ int main(int argc, char *argv[]) {
         else if (!strcmp(argv[i], "--click")) click = 1;
         else if (!strcmp(argv[i], "--find-marker")) find_marker = 1;
         else if (!strcmp(argv[i], "--go-file") && i + 1 < argc) go_file = argv[++i];
+        else if (!strcmp(argv[i], "--focus-check") && i + 1 < argc) focus_check = argv[++i];
     }
     if (pw_fd < 0 || node == 0 || (d.lrect[2] <= 0 && !find_marker) || d.out_w <= 0 || d.dpr <= 0) {
-        fprintf(stderr, "쓰는 법: key-to-screen --pw-fd N --node ID {--rect X,Y,W,H | --find-marker [--go-file F]} --output OW,OH --dpr S [--click] [--presses N] [--gap-ms MS]\n");
+        fprintf(stderr, "쓰는 법: key-to-screen --pw-fd N --node ID {--rect X,Y,W,H | --find-marker [--go-file F]} --output OW,OH --dpr S [--click] [--focus-check CMD] [--presses N] [--gap-ms MS]\n");
         return 2;
     }
 
@@ -375,8 +380,14 @@ int main(int argc, char *argv[]) {
     sleep_ms(800); // 포커스가 옮겨 가고 클릭이 그린 것이 가라앉을 때까지 (macOS 판과 같은 대기)
 
     double *lat = calloc((size_t)presses, sizeof(double));
-    int got = 0, miss = 0;
+    int got = 0, miss = 0, focus_lost = 0;
     for (int i = 0; i < presses; i++) {
+        if (focus_check != NULL && system(focus_check) != 0) {
+            fprintf(stderr, "press %d 앞에서 포커스가 대상 창에 없어요 — 키를 더 보내지 않았어요 (--focus-check)\n", i + 1);
+            focus_lost = 1;
+            miss += presses - i;
+            break;
+        }
         sleep_ms(gap_ms);
         uint64_t n0 = atomic_load(&g_count);
         uint64_t base_hash = g_ring[(n0 - 1) % RING].hash;
@@ -418,6 +429,10 @@ int main(int argc, char *argv[]) {
     qsort(lat, (size_t)got, sizeof(double), cmp_double);
     double sum = 0;
     for (int a = 0; a < got; a++) sum += lat[a];
+    if (focus_lost) {
+        printf("samples=%d miss=%d focus=no\n", got, miss);
+        return 3;
+    }
     if (got > 0)
         printf("samples=%d miss=%d mean_ms=%.2f median_ms=%.2f min_ms=%.2f max_ms=%.2f frames_seen=%llu\n", got, miss,
                sum / got, lat[got / 2], lat[0], lat[got - 1], (unsigned long long)atomic_load(&g_count));

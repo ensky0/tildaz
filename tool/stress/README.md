@@ -2333,6 +2333,11 @@ kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 �
 포커스는 창 가운데를 절대좌표 uinput 포인터로 한 번 눌러 잡아요 — layer-shell 창 (TildaZ) 은 띄우기만 해서는
 키보드 포커스를 안 받아요.
 
+**키를 보내기 전마다 KWin 의 활성 창이 그 창인지 확인해요** (`--check-active` · [#826](https://github.com/ensky0/tildaz/issues/826)).
+아니면 그 회차는 키를 멈추고 `f` 로 표시해요. uinput 키는 포커스를 가진 창으로 가서, 확인이 없던 때에는 클릭이
+포커스를 못 준 회차의 `a` 가 사용자가 쓰던 VS Code 에 들어갔어요. **GNOME · COSMIC 의 표식 방식에는 아직 이 확인이
+없어요** — 활성 창을 물을 길이 없어서예요. 그 회차는 측정 동안 기기를 건드리지 않는 것이 유일한 방어예요.
+
 **GNOME 은 창 위치를 다른 프로세스에 안 알려 줘요** (`org.gnome.Shell.Introspect.GetWindows` 가 `AccessDenied`).
 그래서 GNOME 회차는 측정 프로그램이 처음에 화면을 마젠타로 칠하고, 측정기가 캡처에서 그 사각형을 찾아 영역으로
 써요 (`key-to-screen_linux.c` 의 `--find-marker`). 찾으면 `.go` 파일로 알리고, 프로그램이 화면을 지운 뒤 키를

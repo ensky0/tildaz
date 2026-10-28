@@ -3,6 +3,7 @@
 
     tool/kwin-window_linux.py --child-pid <터미널 안 프로그램의 pid> [--activate]
     tool/kwin-window_linux.py --child-pid <pid> --click          # 창 가운데를 한 번 누른다
+    tool/kwin-window_linux.py --child-pid <pid> --check-active   # 활성 창이 그 창이면 0, 아니면 3
     → rect=X,Y,W,H output=OW,OH dpr=S  (논리 좌표 · 창 영역은 그 화면 기준 · S 는 화면 배율)
 
 - **창은 터미널 안에서 도는 프로그램의 조상 pid 로 찾는다.** 띄운 프로세스와 창 주인이 다른 대상이 있다 —
@@ -17,6 +18,9 @@
 - `--click` 은 창 가운데를 절대좌표 uinput 포인터로 한 번 누른다. 포커스가 있는지에 따라 커서 깜빡임 같은
   유휴 동작이 달라져서 (`compare-memory.sh` 머리 주석) 모든 대상을 같게 둔다. 축 0..32767 을 libinput 이
   화면 전체에 펼치므로 화면이 하나라고 본다 (`tool/key-to-screen_linux.c` 와 같은 방식).
+- `--check-active` 는 KWin 의 지금 활성 창이 그 창인지 본다 (#826). 합성 키는 포커스를 가진 창으로 가서, 아니면
+  사용자가 쓰던 창에 들어간다 — 2026-10-28 KDE 회차에서 측정기의 `a` 가 VS Code 에 들어갔다. 측정기는 키를
+  보내기 전마다 이것을 부르고, 아니면 키를 보내지 않는다.
 """
 
 import argparse
@@ -110,6 +114,7 @@ def main():
     ap.add_argument("--child-pid", type=int, required=True)
     ap.add_argument("--activate", action="store_true")
     ap.add_argument("--click", action="store_true")
+    ap.add_argument("--check-active", action="store_true")
     ap.add_argument("--timeout", type=float, default=3.0)
     a = ap.parse_args()
 
@@ -145,6 +150,8 @@ if (best !== null) {{
     msg = "rect=" + (g.x - o.x) + "," + (g.y - o.y) + "," + g.width + "," + g.height
         + " output=" + o.width + "," + o.height + " dpr=" + w.output.devicePixelRatio
         + " pid=" + w.pid + " class=" + w.resourceClass;
+    var act = workspace.windowList ? workspace.activeWindow : workspace.activeClient;
+    msg += " active=" + (act === w ? "yes" : "no") + " active_pid=" + (act ? act.pid : 0);
 }}
 callDBus("{name}", "/", "{IFACE}", "Report", msg);
 """
@@ -176,6 +183,8 @@ callDBus("{name}", "/", "{IFACE}", "Report", msg);
         print(f"조상 pid {pids} 의 창이 없어요", file=sys.stderr)
         return 1
     print(rx.value)
+    if a.check_active and " active=yes" not in rx.value:
+        return 3
     if a.click:
         f = dict(kv.split("=", 1) for kv in rx.value.split())
         rx_, ry_, rw_, rh_ = (float(v) for v in f["rect"].split(","))
