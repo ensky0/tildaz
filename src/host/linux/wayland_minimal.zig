@@ -960,6 +960,9 @@ test "#296 · #493 3-c classifyInput — native xkb → config binding → 공�
     try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .copy } }), C(b, xkb_key_c_upper, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_lower, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .paste }), C(b, xkb_key_v_upper, true, true, false));
+    // #831 — Shift+Insert 는 선택 영역 붙여넣기. 맨 Insert 는 바인딩이 아니라 PTY 로 간다.
+    try T.expectEqual(@as(?A, .{ .input = .paste, .paste_source = .selection }), C(b, xkb_key_insert, false, true, false));
+    try T.expectEqual(@as(?A, null), C(b, xkb_key_insert, false, false, false));
     try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .new_tab } }), C(b, xkb_key_t_lower, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .close_tab } }), C(b, xkb_key_w_lower, true, true, false));
     try T.expectEqual(@as(?A, .{ .input = .{ .shortcut = .show_about } }), C(b, xkb_key_i_lower, true, true, false));
@@ -6545,6 +6548,10 @@ const Client = struct {
         pub fn paste(h: *LinuxActionHost) void {
             h.client.requestPaste();
         }
+        /// #831 — 가운데 클릭과 같은 PRIMARY.
+        pub fn pasteSelection(h: *LinuxActionHost) void {
+            h.client.requestPasteFrom(&h.client.primary);
+        }
         /// main loop 의 `drainQuitRequest` 가 확인 다이얼로그를 띄운다.
         pub fn quit(h: *LinuxActionHost) void {
             h.client.pending_quit_request = true;
@@ -7293,7 +7300,11 @@ const Client = struct {
                 // 로 정책을 정확히 한 번 적용한다. generic resolve/switch 보다 먼저 분기해
                 // 이중 commit 을 막는다.
                 if (classified.input == .paste) {
-                    self.requestPaste();
+                    // #831 — `paste_selection` (`shift+insert`) 은 가운데 클릭과 같은 PRIMARY.
+                    switch (classified.paste_source) {
+                        .clipboard => self.requestPaste(),
+                        .selection => self.requestPasteFrom(&self.primary),
+                    }
                     return;
                 }
                 const searching = self.searchFocused();

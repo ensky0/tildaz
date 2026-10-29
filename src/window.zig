@@ -3338,7 +3338,8 @@ pub const Window = struct {
     fn runKeyAction(self: *Window, action: config_mod.KeyAction) void {
         const mapped = config_mod.inputForAction(action);
         // `paste` 는 클립보드 읽기가 host 쪽 일이고 preedit commit 정책도 달라서 (`Input.paste`)
-        // 따로 처리한다.
+        // 따로 처리한다. #831 — `paste_selection` 도 여기로 온다. Windows 에는 선택 영역이 없어
+        // `paste_source` 와 무관하게 클립보드다.
         if (mapped.input == .paste) {
             if (self.write_fn) |write_fn| self.pasteClipboard(write_fn);
             return;

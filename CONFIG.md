@@ -356,6 +356,7 @@ here would give it two homes to drift between.
 | | `reset_font_size` | Go back to `font.size_point`. A restart also goes back |
 | Clipboard | `copy` | Copy the selection |
 | | `paste` | Paste the clipboard |
+| | `paste_selection` | Paste the last mouse selection (Linux). Windows and macOS have no such selection, so it pastes the clipboard |
 | Window | `fullscreen` | Fullscreen, covering the taskbar / dock / panels |
 | | `fullscreen_workarea` | Fullscreen, keeping the taskbar / dock / panels visible |
 | | `quit` | Quit, after the confirmation dialog |
@@ -417,14 +418,14 @@ the equivalent work.
 
 **By label**: `f1`–`f12`, `a`–`z`, `0`–`9`, `space`, `tab`, `escape`,
 `return`, `pageup`, `pagedown`, `left` / `right` / `up` / `down` (the arrow
-keys), `backspace`, and the symbols `` ` `` `[` `]` `/` `=` `-`. Write `+` as
+keys), `backspace`, `insert`, and the symbols `` ` `` `[` `]` `/` `=` `-`. Write `+` as
 `plus` — `+` already separates the keys.
 
 Case does not matter. Anything else is dropped at startup and named in the
 dialog — including layout-specific characters such as `²` on French AZERTY. Only
 that one entry goes; the other keys you gave the action still work, and an action
-left with nothing falls back to its default binding. The symbols and `Backspace`
-work in `[keys]` only, not in `hotkey`.
+left with nothing falls back to its default binding. The symbols, `Backspace` and
+`Insert` work in `[keys]` only, not in `hotkey`.
 
 **Symbol keys on Windows.** On Linux and macOS a symbol label matches the key
 that types that character on your layout. Windows does not report the character
@@ -471,7 +472,9 @@ the terminal. Keys that type nothing may be bound bare: by label `F1`–`F12`,
 `[NumLock]`, `[CapsLock]`, `[PrintScreen]`, `[ScrollLock]`, `[Pause]` and
 `[ContextMenu]`. Arrow and editing keys count as typing keys even though they
 produce no character, because they send escape sequences that programs in the
-terminal expect to receive.
+terminal expect to receive. `Insert` is the one exception: `Shift` alone is enough
+for it, so `shift+insert` — the paste key of most terminals — works. A bare `Insert`
+still needs a modifier.
 
 **Digit bindings ignore Shift.** On layouts where the digit row needs Shift —
 French AZERTY, where the unshifted row is `&é"'(-è_çà` — `Alt+1` physically
@@ -520,7 +523,7 @@ invalid value falls back to the default hotkey and is named in the dialog):
 - **Accepted keys**, in full: `f1`–`f12`, `a`–`z`, `0`–`9`, `space`, `tab`,
   `escape`, `return`, `pageup`, `pagedown`, `left` / `right` / `up` / `down`,
   `` ` ``, `[`, and `]`. Letter case does not matter. This is the label set
-  `[keys]` accepts, minus `backspace` and the symbols `/` `=` `-` `plus` — otherwise the two differ in what they allow *without*
+  `[keys]` accepts, minus `backspace`, `insert` and the symbols `/` `=` `-` `plus` — otherwise the two differ in what they allow *without*
   a modifier, not in which keys they know.
 - **Any other key is rejected**, and that includes layout-specific keys such as
   `²` (`twosuperior`) on French AZERTY. The accepted set is deliberately narrow:

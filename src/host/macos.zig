@@ -1613,7 +1613,8 @@ fn macEventLabel(event: objc.id, flags: c_ulong, kc: c_ushort) u32 {
 fn runKeyAction(action: config.KeyAction) bool {
     const mapped = config.inputForAction(action);
     // #282 A3 / #340 — paste 는 조합을 먼저 확정하고 payload 를 잇는다. pending 적용은
-    // 우클릭과 공통 helper 한 곳이다.
+    // 우클릭과 공통 helper 한 곳이다. #831 — `paste_selection` 도 여기로 온다. macOS 에는
+    // 선택 영역이 없어 `paste_source` 와 무관하게 클립보드다.
     if (mapped.input == .paste) {
         applyPasteInputPolicy();
         handlePaste();
@@ -4307,6 +4308,10 @@ const MacActionHost = struct {
     /// 메뉴 경로의 붙여넣기. 키 경로는 `runKeyAction` 이 입력 정책 (`applyPasteInputPolicy`) 을
     /// 먼저 적용하고 `handlePaste` 를 직접 부른다.
     pub fn paste(_: MacActionHost) void {
+        handlePaste();
+    }
+    /// #831 — macOS 에는 선택 영역 (PRIMARY) 이 없어 클립보드를 붙여넣는다.
+    pub fn pasteSelection(_: MacActionHost) void {
         handlePaste();
     }
     /// #713 — `terminate:` 는 다음 차례에 부른다. 입력 정책은 `runKeyAction` 이 이미 적용했고,
