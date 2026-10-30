@@ -13,6 +13,10 @@
 // `outputscreencastsource.cpp`) 이다. 그래서 도착 시각을 쓴다. "앱이 그림을 넘기기까지 + KWin 이 캡처를
 // 그려 보내는 비용" 이고, 한 DE 표 안에서 대상끼리 견주는 데 쓴다. OS 사이에 절대값을 견주지 않는다.
 //
+// - **스트림에 `node.latency = 128/48000` (2.7 ms) 을 준다** (#826). xdg-desktop-portal-cosmic 의 스트림은 스스로
+//   주기를 정하지 않아 (`DRIVER` 가 아니다 — `screencast_thread.rs`) PipeWire 그래프의 기본 주기 (1024/48000 =
+//   21.3 ms) 마다 한 장씩만 캡처한다. 그러면 COSMIC 의 값이 21.3 ms 단위로 끊긴다 (2026-10-30 실측 — 프레임이
+//   15 · 36 · 58 · 79 · 100 ms 에만 왔다). 128 을 주니 간격이 2.7~8 ms 가 됐고 cosmic-comp 의 CPU 는 그대로였다.
 // - 화면이 안 바뀌면 프레임이 안 온다. 키가 창에 안 닿으면 `miss` 로 드러난다.
 // - 해시는 창 영역 (`--rect`, 논리 좌표) 만 본다. 시계 · 다른 창의 변화를 키의 결과로 잡지 않게.
 // - 포커스는 **창 가운데를 한 번 눌러** 잡는다 (`--click`). layer-shell 창 (TildaZ) 은 띄우기만 해서는
@@ -302,9 +306,10 @@ int main(int argc, char *argv[]) {
     pw_thread_loop_lock(d.loop);
     struct pw_core *core = pw_context_connect_fd(ctx, fcntl(pw_fd, F_DUPFD_CLOEXEC, 5), NULL, 0);
     if (core == NULL) { pw_thread_loop_unlock(d.loop); fprintf(stderr, "PipeWire 연결 실패\n"); return 2; }
+    // 그래프 주기를 짧게 청한다 — 머리 주석의 `node.latency` 항목.
     d.stream = pw_stream_new(core, "tildaz key-to-screen",
                              pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
-                                               PW_KEY_MEDIA_ROLE, "Screen", NULL));
+                                               PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_NODE_LATENCY, "128/48000", NULL));
     pw_stream_add_listener(d.stream, &d.listener, &stream_events, &d);
 
     // 32 비트 RGB 넷을 받는다. 크기 · 주사율은 범위로 두어 KWin 이 정하게 한다 (OBS `build_format` 과 같은 모양).

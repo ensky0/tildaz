@@ -17,6 +17,10 @@
 //   120 Hz 를 못 따라간다.
 // - 마젠타 조건은 R 과 B 가 같아서 BGRx · RGBx 어느 바이트 순서로 와도 판정이 같다.
 // - 띄운 명령은 기다리지 않는다 (런처는 곧 끝나고 터미널은 계속 떠 있다). 정리는 부르는 쪽 몫이다.
+// - **스트림에 `node.latency = 128/48000` (2.7 ms) 을 준다** (#826). xdg-desktop-portal-cosmic 의 스트림은 스스로
+//   주기를 정하지 않아 (`DRIVER` 가 아니다 — `screencast_thread.rs`) PipeWire 그래프의 기본 주기 (1024/48000 =
+//   21.3 ms) 마다 한 장씩만 캡처한다. 그러면 COSMIC 의 값이 21.3 ms 단위로 끊긴다 (2026-10-30 실측 — 프레임이
+//   15 · 36 · 58 · 79 · 100 ms 에만 왔다). 128 을 주니 간격이 2.7~8 ms 가 됐고 cosmic-comp 의 CPU 는 그대로였다.
 // - 스트림 여는 코드는 `key-to-screen_linux.c` 와 같다 (화면 전체 확인 · 기본 크기 = 화면 물리 크기).
 
 #include <errno.h>
@@ -153,9 +157,10 @@ int main(int argc, char *argv[]) {
     pw_thread_loop_lock(loop);
     struct pw_core *core = pw_context_connect_fd(ctx, fcntl(pw_fd, F_DUPFD_CLOEXEC, 5), NULL, 0);
     if (core == NULL) { pw_thread_loop_unlock(loop); fprintf(stderr, "PipeWire 연결 실패\n"); return 2; }
+    // 그래프 주기를 짧게 청한다 — 머리 주석의 `node.latency` 항목.
     d.stream = pw_stream_new(core, "tildaz startup-to-screen",
                              pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
-                                               PW_KEY_MEDIA_ROLE, "Screen", NULL));
+                                               PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_NODE_LATENCY, "128/48000", NULL));
     pw_stream_add_listener(d.stream, &d.listener, &stream_events, &d);
     uint8_t buffer[2048];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
