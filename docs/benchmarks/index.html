@@ -101,7 +101,7 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
         <h2>Linux</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on CJK output and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul it is tied with Alacritty and foot. Emoji with VS-16 is its weak spot: it is third, at 95% of Alacritty. It starts first on KDE Plasma and GNOME and second to Alacritty on COSMIC. Once scrollback is full, it uses the least memory of the terminals with matching settings. On KDE Plasma, foot has the lowest latency and TildaZ is second. On GNOME and COSMIC, TildaZ has the lowest latency, tied with Alacritty on COSMIC.</p>
+      <p class="perf-lede">TildaZ is first on CJK output and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul it is tied with Alacritty and foot. Emoji with VS-16 is its weak spot: it is third, at 95% of Alacritty. It starts first on each desktop. Once scrollback is full, it uses the least memory of the terminals with matching settings. On KDE Plasma, foot has the lowest latency and TildaZ is second. On GNOME, TildaZ has the lowest latency. On COSMIC, it is tied with Alacritty.</p>
       <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.1, GNOME Shell 51.1, COSMIC (cosmic-comp 1.0.0) · October 28–30, 2026<br>TildaZ v0.10.7 release · foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
       <h3>Throughput · MiB/s, higher is better · KDE Plasma</h3>
       <div class="table-wrap">
@@ -166,9 +166,9 @@
               <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
             </thead>
             <tbody>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>45.56</strong></td><td class="tz"><strong>66.66</strong></td></tr>
-              <tr><th scope="row">Alacritty</th><td>45.91</td><td>67.40</td></tr>
-              <tr><th scope="row">COSMIC Terminal</th><td>47.11</td><td>68.01</td></tr>
+              <tr><th scope="row">Alacritty</th><td><strong>40.32</strong></td><td><strong>46.47</strong></td></tr>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">40.53</td><td class="tz">47.42</td></tr>
+              <tr><th scope="row">COSMIC Terminal</th><td>46.17</td><td>49.37</td></tr>
             </tbody>
           </table>
         </div>
@@ -234,9 +234,9 @@
               <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
             </thead>
             <tbody>
-              <tr><th scope="row">Alacritty</th><td><strong>79.9</strong></td></tr>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">99.7</td></tr>
-              <tr><th scope="row">COSMIC Terminal</th><td>123.0</td></tr>
+              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>69.0</strong></td></tr>
+              <tr><th scope="row">Alacritty</th><td>70.6</td></tr>
+              <tr><th scope="row">COSMIC Terminal</th><td>117.0</td></tr>
             </tbody>
           </table>
         </div>
@@ -244,7 +244,8 @@
       </div>
       <ul class="perf-notes">
         <li><strong>Throughput and memory come from KDE Plasma only.</strong> On its own desktop, GNOME Terminal was 46% faster with plain text (68.3 vs 46.7 MiB/s). COSMIC Terminal was about the same on both.</li>
-        <li><strong>Latency and startup were measured on each desktop. Do not compare them across desktops.</strong> On Linux, both end when the frame reaches the capture tool, and that path differs by desktop. On COSMIC, every terminal is slow, which points to the desktop's screen capture rather than the terminals (not confirmed).</li>
+        <li><strong>Latency and startup were measured on each desktop. Do not compare them across desktops.</strong> On Linux, both end when the frame reaches the capture tool. KDE Plasma and GNOME pass a frame to it as soon as they compose it. COSMIC passes it after the frame is on the screen.</li>
+        <li>This laptop's panel saves power while the screen is still (Panel Self Refresh). The first frame after that reaches the screen about 30 ms late, on every desktop and in every terminal. Only the COSMIC latency includes this delay, so every terminal there is near 40 ms (<a href="https://github.com/ensky0/tildaz/issues/826" target="_blank" rel="noopener">#826</a>).</li>
         <li><sup class="bench-mark">†</sup> GNOME Terminal uses the scrollback from your profile (10,000 lines here). It cannot be set from the command line.</li>
         <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency and startup.</li>
         <li>On GNOME, TildaZ cannot be given a grid size, so it ran at 43x13 instead of 120x40 for latency.</li>
