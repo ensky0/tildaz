@@ -27,7 +27,7 @@ index 72b7aab..69a62aa 100644
 +    // TEMP #763 — presentation-time 측정 패치. 커밋하지 않는다.
 +    temp763_presentation_id: u32 = 0,
 +    temp763_clk: u32 = 0xffff_ffff,
-+    temp763_fb: [32]Temp763Fb = [_]Temp763Fb{.{}} ** 32,
++    temp763_fb: [32]Temp763Fb = @splat(.{}),
 +    temp763_first_key: u64 = 0,
 +    temp763_first_msc: u64 = 0,
 +    temp763_first_ns: u64 = 0,

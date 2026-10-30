@@ -527,6 +527,20 @@ Windows 11 의 *동적 새로 고침 빈도* 는 화면 내용에 따라 주사�
   `MaxRefreshRate` 와 견주면 안 돼요 — 그 값은 **모든 해상도의 최대**라, 3840x2160 에서는 60 Hz
   뿐인 화면이 `1280x1024@75` 때문에 75 로 나와요 ([#729](https://github.com/ensky0/tildaz/issues/729) ·
   데스크탑 Ryzen 7 5700G 실측). `hygiene.sh` 는 `EnumDisplaySettingsW` 로 지금 해상도의 모드만 훑어요.
+- **모니터가 여럿이면 `CurrentRefreshRate` 를 믿지 말아요.** 그 값은 GPU 하나에 하나라 어느 화면
+  값인지 몰라요. 내장 120 Hz 가 주 화면인데 외장의 60 이 나와 거짓 경고가 났어요
+  ([#838](https://github.com/ensky0/tildaz/issues/838) · 노트북 Ryzen AI 7 350 + DELL U2723QE). 외장을
+  **뺀 뒤에도** 외장의 `3840x2160 @60` 이 그대로 남아 있었어요. 그래서 `hygiene.sh` 는 화면이 하나이고
+  그 값의 해상도가 주 화면과 같을 때만 그 값을 써요. 아니면 주 화면의 현재 모드를 읽어요. 화면이 여럿이면
+  `refresh=120Hz(primary of 2)` 로 남겨요 (측정 창은 주 화면에 떠요). 이때 DRR 을 현재값으로 잡아낼 수
+  있는지는 확인하지 않았어요.
+- **Linux (KDE Plasma) 는 주 화면이 아니라 포인터가 있는 화면을 봐요** ([#838](https://github.com/ensky0/tildaz/issues/838)).
+  KDE 는 새 창을 우선순위 (주 화면) 와 상관없이 KWin 의 활성 화면 (포인터가 있는 화면) 에 띄워요 — foot 과
+  TildaZ 측정 창 모두 그랬어요 (같은 노트북 + DELL U2723QE). 예전에는 `kscreen-doctor -o` 에서 처음 나온 화면을
+  읽어서, 창은 내장 120 Hz 에 뜨는데 외장의 60 을 기록했어요. 지금은 `kwin-window_linux.py --active-output` 으로
+  그 화면을 고르고 `refresh=120.00Hz(active of 2)` 로 남겨요. 그 화면을 못 알아내면 짐작하지 않고 경고로 멈춰요.
+  **측정하는 동안 포인터를 다른 화면으로 옮기지 말아요** — 창이 그 화면에 떠요. 외장을 뺀 뒤 옛 값이 남는
+  일은 KDE 에서는 없었어요.
   **전원도 함께 봐요** — `Get-CimInstance Win32_Battery` 의 `BatteryStatus` 가
   `2` 여야 AC 예요 (`1` = 배터리, 이때 패널이 60 Hz 로 강등되기도 해요).
 - 끄는 곳: **설정 → 시스템 → 디스플레이 → 고급 디스플레이 → 새로 고침 빈도** 에서 "동적" 이
@@ -2332,6 +2346,11 @@ Dock · Spotlight 로 여는 길이에요. 처리량 · 지연의 AppleScript �
 kitty `--detach` · `gnome-terminal-server` 처럼 띄운 프로세스와 창 주인이 다른 대상도 같은 규칙으로 잡혀요.
 포커스는 창 가운데를 절대좌표 uinput 포인터로 한 번 눌러 잡아요 — layer-shell 창 (TildaZ) 은 띄우기만 해서는
 키보드 포커스를 안 받아요.
+
+**키를 보내기 전마다 KWin 의 활성 창이 그 창인지 확인해요** (`--check-active` · [#826](https://github.com/ensky0/tildaz/issues/826)).
+아니면 그 회차는 키를 멈추고 `f` 로 표시해요. uinput 키는 포커스를 가진 창으로 가서, 확인이 없던 때에는 클릭이
+포커스를 못 준 회차의 `a` 가 사용자가 쓰던 VS Code 에 들어갔어요. **GNOME · COSMIC 의 표식 방식에는 아직 이 확인이
+없어요** — 활성 창을 물을 길이 없어서예요. 그 회차는 측정 동안 기기를 건드리지 않는 것이 유일한 방어예요.
 
 **GNOME 은 창 위치를 다른 프로세스에 안 알려 줘요** (`org.gnome.Shell.Introspect.GetWindows` 가 `AccessDenied`).
 그래서 GNOME 회차는 측정 프로그램이 처음에 화면을 마젠타로 칠하고, 측정기가 캡처에서 그 사각형을 찾아 영역으로

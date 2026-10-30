@@ -255,6 +255,8 @@ while read -r name; do
             med = (n % 2) ? v[(n + 1) / 2] : (v[n / 2] + v[n / 2 + 1]) / 2
             printf "%-14s %8.1f %8.1f %8.1f %8.1f %6d\n", name, med, sum / n, v[1], v[n], n
         }'
+    # 회차 순서 그대로 — 값이 두 무리로 갈리는지 보려면 중앙값만으로는 모자라요 (#826 COSMIC).
+    printf '               회차별: %s ms\n' "$(awk '{ printf "%s%.1f", (NR > 1 ? "  " : ""), $1 }' "$_s")"
 done < "$RESULTS"
 echo ""
 if [ "$IS_MACOS" = 1 ]; then

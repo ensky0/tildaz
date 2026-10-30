@@ -199,8 +199,52 @@ PS1
 #   `1280x1024@75` 때문에 *"최대 75 Hz"* 로 늘 걸렸다 (데스크탑 Ryzen 7 5700G · Dell U2723QE 실측).
 #   대신 `EnumDisplaySettingsW` 로 **지금 해상도의 모드만** 훑는다 — Linux 의 `kscreen-doctor`
 #   경로가 같은 오탐을 고친 방식과 같다.
+# - **화면이 여럿이면 현재값도 주 화면의 `EnumDisplaySettingsW` 에서 읽는다** (#838).
+#   `CurrentRefreshRate` 는 어댑터당 값 하나라 GPU 하나가 두 화면을 맡으면 어느 화면 값인지
+#   모른다 — 내장 120 Hz 가 주 화면인데 외장의 60 이 나와 최대 (주 화면 120) 와 견줘져 거짓
+#   경고가 났다 (노트북 Ryzen AI 7 350 + DELL U2723QE 확장 실측). 외장을 **뺀 뒤에도** WMI 가
+#   외장의 3840x2160@60 을 그대로 냈다 (같은 날 실측). 그래서 WMI 값은 화면이 하나이고 해상도가
+#   주 화면과 같을 때만 쓴다. 아니면 DRR 을 현재값으로 못 잡을 수 있다 (확인 필요). 셋째 값은 화면 수다.
 #
 # 여러 줄 C# 라 한 줄 `-Command` 에 넣지 않고 임시 `.ps1` 로 부른다 (따옴표가 두 겹으로 엉킨다).
+# KDE 의 주사율 — **측정 창이 뜰 화면 하나**의 현재값 · 같은 해상도의 최대 · 켜진 화면 수 · 고른 까닭을 낸다 (#838).
+#
+#   120.00 120.00 2 active
+#
+# - KDE 는 새 창을 우선순위 (주 화면) 가 아니라 **KWin 의 활성 화면** 에 띄운다 — 2026-10-31 내장 · DELL U2723QE
+#   에서 foot 과 TildaZ 측정 창이 우선순위와 상관없이 포인터가 있는 화면에 떴다. 그 화면은
+#   `kwin-window_linux.py --active-output` 이 KWin 에 묻는다.
+# - 예전에는 `kscreen-doctor -o` 를 통째로 쪼개 **처음 나온** `*` 모드를 읽었다. 출력 순서는 우선순위와 무관해서
+#   내장 (120 Hz) 에 창이 뜨는데 외장 (60 Hz) 을 기록했다. 최대값도 모든 화면에 걸쳐 찾아서 해상도가 같은 화면이
+#   둘이면 섞일 수 있었다.
+# - 화면이 하나면 KWin 에 묻지 않고 그 화면을 쓴다 (`only`). 여럿인데 활성 화면을 못 알아내면 짐작하지 않고
+#   화면 수만 낸다 — 부르는 쪽이 `?` 로 남기고 경고한다.
+# - **최대는 그 화면의 지금 해상도 안에서만** 찾는다 — 저해상도 모드가 최대가 되지 않게 (아래 KDE 갈래 주석).
+hygiene_refresh_kde() {
+    _hk_kw="${REPO_ROOT:+$REPO_ROOT/tool/kwin-window_linux.py}"
+    [ -n "$_hk_kw" ] || _hk_kw="$(dirname "$0")/../kwin-window_linux.py"
+    _hk_act=""
+    [ -f "$_hk_kw" ] && _hk_act=$(python3 "$_hk_kw" --active-output 2>/dev/null | sed -n 's/^name=//p')
+    kscreen-doctor -j 2>/dev/null | python3 -c '
+import json, sys
+act = sys.argv[1]
+try:
+    outs = [o for o in json.load(sys.stdin).get("outputs", []) if o.get("enabled")]
+except ValueError:
+    sys.exit(0)
+if len(outs) == 1:
+    o, why = outs[0], "only"
+else:
+    o, why = next((x for x in outs if x.get("name") == act), None), "active"
+cur = None if o is None else next((m for m in o.get("modes", []) if m.get("id") == o.get("currentModeId")), None)
+if cur is None:
+    print("- - %d none" % len(outs))
+    sys.exit(0)
+mx = max(m["refreshRate"] for m in o["modes"] if m.get("size") == cur.get("size"))
+print("%.2f %.2f %d %s" % (cur["refreshRate"], mx, len(outs), why))
+' "$_hk_act" 2>/dev/null
+}
+
 hygiene_refresh_windows() {
     _ps=$(mktemp --suffix=.ps1) || return 0
     cat > "$_ps" <<'PS1'
@@ -241,11 +285,32 @@ public static class TzRefresh {
         }
         return max;
     }
+
+    // 주 화면의 지금 모드 { 폭, 높이, 주사율 }. 못 읽으면 { 0, 0, 0 }.
+    public static uint[] PrimaryMode() {
+        DEVMODEW cur = new DEVMODEW();
+        cur.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODEW));
+        if (!EnumDisplaySettingsW(null, ENUM_CURRENT_SETTINGS, ref cur)) return new uint[] { 0, 0, 0 };
+        return new uint[] { cur.dmPelsWidth, cur.dmPelsHeight, cur.dmDisplayFrequency };
+    }
+
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
+    // 바탕 화면에 붙은 화면 수 (SM_CMONITORS). 복제 모드는 하나로 센다.
+    public static int MonitorCount() { return GetSystemMetrics(80); }
 }
 '@
+$n = [TzRefresh]::MonitorCount()
+$p = [TzRefresh]::PrimaryMode()
 $v = Get-CimInstance Win32_VideoController | Select-Object -First 1
+# WMI 값은 화면이 하나이고 해상도가 주 화면과 같을 때만 그 화면의 것이다 (#838).
+if ($n -eq 1 -and $v.CurrentHorizontalResolution -eq $p[0] -and $v.CurrentVerticalResolution -eq $p[1]) {
+    $cur = $v.CurrentRefreshRate
+} else {
+    $cur = $p[2]
+}
 $max = [TzRefresh]::MaxAtCurrentResolution()
-if ($null -ne $v.CurrentRefreshRate -and $max -gt 0) { "$($v.CurrentRefreshRate) $max" }
+if ($null -ne $cur -and $cur -gt 0 -and $max -gt 0) { "$cur $max $n" }
 PS1
     powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$_ps")" 2>/dev/null | tr -d '\r'
     rm -f "$_ps"
@@ -358,30 +423,30 @@ AC 미연결 — 배터리에서는 스로틀링이 걸리고 패널이 낮은 �
                 HYG_PROFILE=$(powerprofilesctl get 2>/dev/null || echo "?")
             fi
 
-            # KDE 는 `kscreen-doctor` 로 현재 모드와 그 화면의 최대를 볼 수 있다. `*` 가 현재
-            # 모드다. 다른 DE 에는 이 도구가 없어서 건너뛰고, **없는 것을 통과로 읽지 않도록**
-            # `?` 를 그대로 남긴다.
+            # KDE 는 `kscreen-doctor` 로 현재 모드와 그 화면의 최대를 볼 수 있다. 다른 DE 에는 이 도구가 없어서
+            # 건너뛰고, **없는 것을 통과로 읽지 않도록** `?` 를 그대로 남긴다.
+            # **최대는 "지금 쓰는 해상도" 안에서만 찾는다.** 모든 모드에서 찾으면 저해상도 모드가 최대가 되어 늘
+            # 걸린다 — 3840x2160@60 인 화면이 `1280x1024@75.03` 때문에 *"최대는 75 Hz"* 로 잡혔다 (Firebat ZY-A8
+            # 실측). 해상도를 바꾸는 건 측정 조건을 바꾸는 것이라 경고의 해법이 될 수 없다. 어느 화면을 보는지는
+            # `hygiene_refresh_kde` 머리 주석 (#838).
             if command -v kscreen-doctor >/dev/null 2>&1; then
-                # ESC 를 sed 스크립트에 리터럴로 못 적는다 — `\033` 은 GNU sed 가 안 받고
-                # (`\x1b` 는 받지만 BSD sed 가 안 받는다), 색 코드가 남으면 앵커가 빗나가
-                # 조용히 `?` 가 된다 (실측).
-                _esc=$(printf '\033')
-                _ks=$(kscreen-doctor -o 2>/dev/null | sed "s/${_esc}\[[0-9;]*m//g" || true)
-                _cur=$(echo "$_ks" | tr ' ' '\n' | sed -n 's/^[0-9]*:[0-9x]*@\([0-9.]*\)\*.*$/\1/p' | head -1)
-                # **최대는 "지금 쓰는 해상도" 안에서만 찾는다.** 모든 모드에서 찾으면
-                # 저해상도 모드가 최대가 되어 늘 걸린다 — 3840x2160@60 인 화면이
-                # `1280x1024@75.03` 때문에 *"최대는 75 Hz"* 로 잡혔다 (Firebat ZY-A8 실측).
-                # 해상도를 바꾸는 건 측정 조건을 바꾸는 것이라 경고의 해법이 될 수 없다.
-                _res=$(echo "$_ks" | tr ' ' '\n' | sed -n 's/^[0-9]*:\([0-9]*x[0-9]*\)@[0-9.]*\*.*$/\1/p' | head -1)
-                _max=""
-                [ -n "$_res" ] && _max=$(echo "$_ks" | tr ' ' '\n' |
-                    sed -n "s/^[0-9]*:${_res}@\([0-9.]*\).*\$/\1/p" | sort -g | tail -1)
-                if [ -n "$_cur" ]; then
+                _rr=$(hygiene_refresh_kde)
+                _cur= _max= _mons= _why=
+                [ -n "$_rr" ] && read -r _cur _max _mons _why <<EOF
+$_rr
+EOF
+                if [ -n "$_cur" ] && [ "$_cur" != - ]; then
                     HYG_REFRESH="${_cur}Hz"
-                    if [ -n "$_max" ] && [ "$_cur" != "$_max" ]; then
+                    # 화면이 여럿이면 측정 창이 뜰 화면 (KWin 활성 화면) 의 값이라고 남긴다 — Windows 의
+                    # `(primary of N)` 과 같은 꼴이다.
+                    [ "${_mons:-1}" -gt 1 ] && HYG_REFRESH="${_cur}Hz(active of ${_mons})"
+                    if [ "$_cur" != "$_max" ]; then
                         _warn="$_warn
 주사율이 $_cur Hz 인데 이 화면의 최대는 $_max Hz 예요 — 고정 최대값을 고르거나 이 값으로 잰다고 기록해요"
                     fi
+                elif [ "${_mons:-0}" -gt 1 ]; then
+                    _warn="$_warn
+화면이 ${_mons} 개인데 측정 창이 뜰 화면 (KWin 활성 화면) 을 못 알아냈어요 — 주사율을 확인하지 않았어요"
                 fi
             fi
             ;;
@@ -406,9 +471,14 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
                 HYG_POWER=AC
             fi
             _rr=$(hygiene_refresh_windows)
-            _cur=${_rr% *}; _max=${_rr#* }
+            _cur= _max= _mons=
+            [ -n "$_rr" ] && read -r _cur _max _mons <<EOF
+$_rr
+EOF
             if [ -n "$_cur" ]; then
                 HYG_REFRESH="${_cur}Hz"
+                # 화면이 여럿이면 주 화면의 값이라고 남긴다 — 측정 창은 주 화면에 뜬다 (#838).
+                [ "${_mons:-1}" -gt 1 ] && HYG_REFRESH="${_cur}Hz(primary of ${_mons})"
                 # 1 Hz 차이는 같은 값으로 본다 — `CurrentRefreshRate` 가 60 Hz 화면을 59 로
                 # 보고하고 모드 목록은 60 이다 (#729 실측). DRR 은 60 ↔ 120 처럼 크게 갈린다.
                 if [ -n "$_max" ] && [ "$((_max - _cur))" -gt 1 ]; then
