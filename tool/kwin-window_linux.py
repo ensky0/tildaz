@@ -4,6 +4,7 @@
     tool/kwin-window_linux.py --child-pid <터미널 안 프로그램의 pid> [--activate]
     tool/kwin-window_linux.py --child-pid <pid> --click          # 창 가운데를 한 번 누른다
     tool/kwin-window_linux.py --child-pid <pid> --check-active   # 활성 창이 그 창이면 0, 아니면 3
+    tool/kwin-window_linux.py --active-output                    # → name=eDP-1 (새 창이 뜰 화면)
     → rect=X,Y,W,H output=OW,OH dpr=S  (논리 좌표 · 창 영역은 그 화면 기준 · S 는 화면 배율)
 
 - **창은 터미널 안에서 도는 프로그램의 조상 pid 로 찾는다.** 띄운 프로세스와 창 주인이 다른 대상이 있다 —
@@ -21,6 +22,9 @@
 - `--check-active` 는 KWin 의 지금 활성 창이 그 창인지 본다 (#826). 합성 키는 포커스를 가진 창으로 가서, 아니면
   사용자가 쓰던 창에 들어간다 — 2026-10-28 KDE 회차에서 측정기의 `a` 가 VS Code 에 들어갔다. 측정기는 키를
   보내기 전마다 이것을 부르고, 아니면 키를 보내지 않는다.
+- `--active-output` 은 KWin 의 활성 화면 (`workspace.activeScreen`) 이름을 찍는다 (#838). 새 창은 우선순위
+  (주 화면) 가 아니라 이 화면에 뜬다 — 2026-10-31 화면 둘 (내장 · DELL U2723QE) 에서 foot 과 TildaZ 측정 창이
+  모두 포인터가 있는 화면에 떴다. `hygiene.sh` 가 이 화면의 주사율을 본다.
 """
 
 import argparse
@@ -111,15 +115,20 @@ class Receiver(dbus.service.Object):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--child-pid", type=int, required=True)
+    ap.add_argument("--child-pid", type=int)
+    ap.add_argument("--active-output", action="store_true")
     ap.add_argument("--activate", action="store_true")
     ap.add_argument("--click", action="store_true")
     ap.add_argument("--check-active", action="store_true")
     ap.add_argument("--timeout", type=float, default=3.0)
     a = ap.parse_args()
-
-    pids = ancestors(a.child_pid)
-    if not pids:
+    if a.active_output:
+        pids = []
+    elif a.child_pid is None:
+        ap.error("--child-pid 나 --active-output 중 하나가 필요해요")
+    else:
+        pids = ancestors(a.child_pid)
+    if not a.active_output and not pids:
         print(f"pid {a.child_pid} 가 없어요", file=sys.stderr)
         return 2
 
@@ -131,7 +140,13 @@ def main():
     rx = Receiver(bus, loop)
 
     # `activeWindow` 는 Plasma 6, `activeClient` 는 5 다 (`hygiene.sh` 와 같은 갈림).
-    js = f"""
+    if a.active_output:
+        js = f"""
+var o = workspace.activeScreen;
+callDBus("{name}", "/", "{IFACE}", "Report", o ? "name=" + o.name : "none");
+"""
+    else:
+        js = f"""
 var pids = {pids};
 var list = workspace.windowList ? workspace.windowList() : workspace.clientList();
 var best = null;
@@ -182,7 +197,7 @@ callDBus("{name}", "/", "{IFACE}", "Report", msg);
         print("KWin 이 답하지 않았어요", file=sys.stderr)
         return 2
     if rx.value == "none":
-        print(f"조상 pid {pids} 의 창이 없어요", file=sys.stderr)
+        print("KWin 에 활성 화면이 없어요" if a.active_output else f"조상 pid {pids} 의 창이 없어요", file=sys.stderr)
         return 1
     print(rx.value)
     if a.check_active and " active=yes" not in rx.value:
