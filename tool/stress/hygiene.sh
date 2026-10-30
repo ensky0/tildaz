@@ -199,6 +199,12 @@ PS1
 #   `1280x1024@75` 때문에 *"최대 75 Hz"* 로 늘 걸렸다 (데스크탑 Ryzen 7 5700G · Dell U2723QE 실측).
 #   대신 `EnumDisplaySettingsW` 로 **지금 해상도의 모드만** 훑는다 — Linux 의 `kscreen-doctor`
 #   경로가 같은 오탐을 고친 방식과 같다.
+# - **화면이 여럿이면 현재값도 주 화면의 `EnumDisplaySettingsW` 에서 읽는다** (#838).
+#   `CurrentRefreshRate` 는 어댑터당 값 하나라 GPU 하나가 두 화면을 맡으면 어느 화면 값인지
+#   모른다 — 내장 120 Hz 가 주 화면인데 외장의 60 이 나와 최대 (주 화면 120) 와 견줘져 거짓
+#   경고가 났다 (노트북 Ryzen AI 7 350 + DELL U2723QE 확장 실측). 외장을 **뺀 뒤에도** WMI 가
+#   외장의 3840x2160@60 을 그대로 냈다 (같은 날 실측). 그래서 WMI 값은 화면이 하나이고 해상도가
+#   주 화면과 같을 때만 쓴다. 아니면 DRR 을 현재값으로 못 잡을 수 있다 (확인 필요). 셋째 값은 화면 수다.
 #
 # 여러 줄 C# 라 한 줄 `-Command` 에 넣지 않고 임시 `.ps1` 로 부른다 (따옴표가 두 겹으로 엉킨다).
 hygiene_refresh_windows() {
@@ -241,11 +247,32 @@ public static class TzRefresh {
         }
         return max;
     }
+
+    // 주 화면의 지금 모드 { 폭, 높이, 주사율 }. 못 읽으면 { 0, 0, 0 }.
+    public static uint[] PrimaryMode() {
+        DEVMODEW cur = new DEVMODEW();
+        cur.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODEW));
+        if (!EnumDisplaySettingsW(null, ENUM_CURRENT_SETTINGS, ref cur)) return new uint[] { 0, 0, 0 };
+        return new uint[] { cur.dmPelsWidth, cur.dmPelsHeight, cur.dmDisplayFrequency };
+    }
+
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
+    // 바탕 화면에 붙은 화면 수 (SM_CMONITORS). 복제 모드는 하나로 센다.
+    public static int MonitorCount() { return GetSystemMetrics(80); }
 }
 '@
+$n = [TzRefresh]::MonitorCount()
+$p = [TzRefresh]::PrimaryMode()
 $v = Get-CimInstance Win32_VideoController | Select-Object -First 1
+# WMI 값은 화면이 하나이고 해상도가 주 화면과 같을 때만 그 화면의 것이다 (#838).
+if ($n -eq 1 -and $v.CurrentHorizontalResolution -eq $p[0] -and $v.CurrentVerticalResolution -eq $p[1]) {
+    $cur = $v.CurrentRefreshRate
+} else {
+    $cur = $p[2]
+}
 $max = [TzRefresh]::MaxAtCurrentResolution()
-if ($null -ne $v.CurrentRefreshRate -and $max -gt 0) { "$($v.CurrentRefreshRate) $max" }
+if ($null -ne $cur -and $cur -gt 0 -and $max -gt 0) { "$cur $max $n" }
 PS1
     powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$_ps")" 2>/dev/null | tr -d '\r'
     rm -f "$_ps"
@@ -406,9 +433,14 @@ AC 미연결 (BatteryStatus=1) — 배터리에서는 스로틀링이 걸리고 
                 HYG_POWER=AC
             fi
             _rr=$(hygiene_refresh_windows)
-            _cur=${_rr% *}; _max=${_rr#* }
+            _cur= _max= _mons=
+            [ -n "$_rr" ] && read -r _cur _max _mons <<EOF
+$_rr
+EOF
             if [ -n "$_cur" ]; then
                 HYG_REFRESH="${_cur}Hz"
+                # 화면이 여럿이면 주 화면의 값이라고 남긴다 — 측정 창은 주 화면에 뜬다 (#838).
+                [ "${_mons:-1}" -gt 1 ] && HYG_REFRESH="${_cur}Hz(primary of ${_mons})"
                 # 1 Hz 차이는 같은 값으로 본다 — `CurrentRefreshRate` 가 60 Hz 화면을 59 로
                 # 보고하고 모드 목록은 60 이다 (#729 실측). DRR 은 60 ↔ 120 처럼 크게 갈린다.
                 if [ -n "$_max" ] && [ "$((_max - _cur))" -gt 1 ]; then

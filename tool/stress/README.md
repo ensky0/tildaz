@@ -527,6 +527,13 @@ Windows 11 의 *동적 새로 고침 빈도* 는 화면 내용에 따라 주사�
   `MaxRefreshRate` 와 견주면 안 돼요 — 그 값은 **모든 해상도의 최대**라, 3840x2160 에서는 60 Hz
   뿐인 화면이 `1280x1024@75` 때문에 75 로 나와요 ([#729](https://github.com/ensky0/tildaz/issues/729) ·
   데스크탑 Ryzen 7 5700G 실측). `hygiene.sh` 는 `EnumDisplaySettingsW` 로 지금 해상도의 모드만 훑어요.
+- **모니터가 여럿이면 `CurrentRefreshRate` 를 믿지 말아요.** 그 값은 GPU 하나에 하나라 어느 화면
+  값인지 몰라요. 내장 120 Hz 가 주 화면인데 외장의 60 이 나와 거짓 경고가 났어요
+  ([#838](https://github.com/ensky0/tildaz/issues/838) · 노트북 Ryzen AI 7 350 + DELL U2723QE). 외장을
+  **뺀 뒤에도** 외장의 `3840x2160 @60` 이 그대로 남아 있었어요. 그래서 `hygiene.sh` 는 화면이 하나이고
+  그 값의 해상도가 주 화면과 같을 때만 그 값을 써요. 아니면 주 화면의 현재 모드를 읽어요. 화면이 여럿이면
+  `refresh=120Hz(primary of 2)` 로 남겨요 (측정 창은 주 화면에 떠요). 이때 DRR 을 현재값으로 잡아낼 수
+  있는지는 확인하지 않았어요.
   **전원도 함께 봐요** — `Get-CimInstance Win32_Battery` 의 `BatteryStatus` 가
   `2` 여야 AC 예요 (`1` = 배터리, 이때 패널이 60 Hz 로 강등되기도 해요).
 - 끄는 곳: **설정 → 시스템 → 디스플레이 → 고급 디스플레이 → 새로 고침 빈도** 에서 "동적" 이
