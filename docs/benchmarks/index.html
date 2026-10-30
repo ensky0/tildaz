@@ -257,8 +257,8 @@
         <p class="eyebrow">MacBook Pro M5 Pro · 120 Hz</p>
         <h2>macOS</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on Hangul and emoji output. It is second to Alacritty on ANSI color and CJK, and third on plain text, behind Alacritty and Ghostty. It starts fastest and uses the least memory of the terminals with matching settings. Latency is its weak spot: fourth of seven, about 7 ms behind Alacritty and kitty.</p>
-      <p class="bench-machine">MacBook Pro · Apple M5 Pro · macOS 27.0.1 · built-in display, 3024x1964 at 120 Hz · AC power · October 21, 2026<br>Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.3.1 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
+      <p class="perf-lede">Ghostty 1.4.0 is first on every throughput workload. TildaZ is second on Hangul and emoji output, and third on the rest. It starts fastest and uses the least memory of the terminals with matching settings. Latency is its weak spot: fourth of seven, about 6 ms behind Alacritty and kitty.</p>
+      <p class="bench-machine">MacBook Pro · Apple M5 Pro · macOS 27.2 · built-in display, 3024x1964 at 120 Hz · AC power · October 30, 2026<br>TildaZ v0.10.7 release · Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.4.0 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
       <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
@@ -267,12 +267,12 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Alacritty</th><th scope="col">kitty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">iTerm2</th><th scope="col">Terminal.app<sup class="bench-mark">†</sup></th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz">128.5</td><td><strong>146.4</strong></td><td>126.4</td><td>133.7</td><td>45.3</td><td>87.6</td><td>45.8</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">128.1</td><td><strong>132.1</strong></td><td>106.8</td><td>87.7</td><td>49.3</td><td>18.9</td><td>31.8</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>124.0</strong></td><td>114.0</td><td>92.4</td><td>122.5</td><td>45.7</td><td>15.0</td><td>39.7</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz">119.3</td><td><strong>141.2</strong></td><td>96.6</td><td>84.7</td><td>46.4</td><td>7.4</td><td>39.4</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz"><strong>130.3</strong></td><td>98.3</td><td>102.8</td><td>33.3</td><td>67.1</td><td>13.9</td><td>42.4</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz"><strong>135.0</strong></td><td>134.5</td><td>107.3</td><td>43.2</td><td>70.3</td><td>22.8</td><td>43.9</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz">129.8</td><td>144.0</td><td>124.0</td><td><strong>263.7</strong></td><td>45.5</td><td>90.1</td><td>43.5</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">129.9</td><td>140.7</td><td>109.5</td><td><strong>229.6</strong></td><td>49.3</td><td>19.2</td><td>32.7</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz">123.0</td><td>115.6</td><td>93.9</td><td><strong>231.3</strong></td><td>47.1</td><td>14.8</td><td>38.2</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz">128.0</td><td>145.6</td><td>96.7</td><td><strong>148.7</strong></td><td>46.8</td><td>7.4</td><td>39.0</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">130.1</td><td>100.2</td><td>102.6</td><td><strong>133.9</strong></td><td>67.7</td><td>14.5</td><td>40.4</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">132.0</td><td>138.6</td><td>109.2</td><td><strong>163.2</strong></td><td>71.2</td><td>23.2</td><td>41.4</td></tr>
           </tbody>
         </table>
       </div>
@@ -284,13 +284,13 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Alacritty</th><td><strong>12.03</strong></td><td><strong>18.57</strong></td></tr>
-            <tr><th scope="row">kitty</th><td>12.40</td><td>18.82</td></tr>
-            <tr><th scope="row">iTerm2</th><td>17.48</td><td>22.89</td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">19.51</td><td class="tz">25.58</td></tr>
-            <tr><th scope="row">Terminal.app</th><td>21.34</td><td>27.49</td></tr>
-            <tr><th scope="row">Ghostty</th><td>23.40</td><td>29.54</td></tr>
-            <tr><th scope="row">WezTerm</th><td>32.58</td><td>36.49</td></tr>
+            <tr><th scope="row">Alacritty</th><td><strong>12.49</strong></td><td>19.43</td></tr>
+            <tr><th scope="row">kitty</th><td>13.05</td><td><strong>19.22</strong></td></tr>
+            <tr><th scope="row">iTerm2</th><td>18.12</td><td>21.91</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">18.37</td><td class="tz">25.46</td></tr>
+            <tr><th scope="row">Ghostty</th><td>22.41</td><td>26.69</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>23.16</td><td>26.63</td></tr>
+            <tr><th scope="row">WezTerm</th><td>32.73</td><td>36.43</td></tr>
           </tbody>
         </table>
       </div>
@@ -302,13 +302,13 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>54.5</strong></td><td class="tz"><strong>102.6</strong></td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Terminal.app<sup class="bench-mark">†</sup></th><td>59.0</td><td>61.3</td><td>0.27</td></tr>
-            <tr><th scope="row">Alacritty</th><td>65.0</td><td>176.3</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">WezTerm</th><td>85.9</td><td>111.9</td><td>0.04</td></tr>
-            <tr><th scope="row">Ghostty</th><td>158.7</td><td>184.4</td><td>0.76</td></tr>
-            <tr><th scope="row">kitty</th><td>204.5</td><td>325.2</td><td>0.20</td></tr>
-            <tr><th scope="row">iTerm2</th><td>212.1</td><td>250.2</td><td>0.92</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>53.3</strong></td><td class="tz"><strong>121.3</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Terminal.app<sup class="bench-mark">†</sup></th><td>58.3</td><td>81.0</td><td>0.25</td></tr>
+            <tr><th scope="row">Alacritty</th><td>64.5</td><td>196.0</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>86.5</td><td>133.4</td><td>0.04</td></tr>
+            <tr><th scope="row">Ghostty</th><td>156.1</td><td>160.5</td><td>0.37</td></tr>
+            <tr><th scope="row">kitty</th><td>204.0</td><td>325.2</td><td>0.19</td></tr>
+            <tr><th scope="row">iTerm2</th><td>215.2</td><td>251.5</td><td>0.99</td></tr>
           </tbody>
         </table>
       </div>
@@ -320,19 +320,20 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>185.5</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>239.6</td></tr>
-            <tr><th scope="row">Ghostty</th><td>259.3</td></tr>
-            <tr><th scope="row">WezTerm</th><td>302.3</td></tr>
-            <tr><th scope="row">Terminal.app</th><td>392.6</td></tr>
-            <tr><th scope="row">kitty</th><td>475.1</td></tr>
-            <tr><th scope="row">iTerm2</th><td>751.1</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>200.6</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>267.0</td></tr>
+            <tr><th scope="row">Ghostty</th><td>287.9</td></tr>
+            <tr><th scope="row">WezTerm</th><td>334.0</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>424.1</td></tr>
+            <tr><th scope="row">kitty</th><td>484.0</td></tr>
+            <tr><th scope="row">iTerm2</th><td>721.1</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
         <li><sup class="bench-mark">†</sup> Terminal.app uses the scrollback from your profile. It cannot be set by script.</li>
         <li>Latency ends at the time macOS reports the frame was shown. Startup opens each app with <code>open</code>, the same path as the Dock or Spotlight.</li>
+        <li>Filled memory is about 20 MiB higher than on macOS 27.0.1 for several terminals, TildaZ included. TildaZ v0.10.6 measures the same as v0.10.7 on macOS 27.2, so the change is not in TildaZ.</li>
       </ul>
     </section>
 
