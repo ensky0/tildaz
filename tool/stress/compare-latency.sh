@@ -35,7 +35,7 @@
 #   - **입력 소스가 한글이면 `a` 가 IME 로 간다.** 터미널마다 IME 처리가 달라 같은 잣대가 깨진다.
 #     macOS 는 ABC 로 잠깐 바꾸고 끝나면 되돌린다 (`measure-input-latency.sh` 와 같은 처리). Linux 는 fcitx5 를
 #     잠깐 내리고 끝나면 되살린다 — 영문 모드여도 text-input-v3 로 키를 가로채기 때문이다 (AGENTS.md 의 fcitx5
-#     함정). 되살린 fcitx5 가 KDE 배열 목록을 자기 `Default Layout` 으로 덮어쓰므로 배열이 둘 이상이면 멈춘다.
+#     함정). KDE 는 KWin 의 입력기 설정으로 내리고 되살린다 (`fcitx_kwin_set` 주석 · #836). 되살린 fcitx5 가 KDE 배열 목록을 자기 `Default Layout` 으로 덮어쓰므로 배열이 둘 이상이면 멈춘다.
 #   - 키가 그 창에 안 닿으면 화면이 안 바뀌어 `miss` 로 드러난다. 회차의 절반 넘게 miss 면 그
 #     회차를 버린다.
 #   - ScreenCaptureKit 자체의 지연이 섞인다. 절대값보다 **같은 실행 안의 대상끼리** 견준다.
@@ -133,13 +133,36 @@ fi
 
 IME_RESTORE_ID=""
 FCITX_RESTORE=0
+# KDE 에서 내린 입력기의 `kwinrc [Wayland] InputMethod` 값 — 되살릴 때 그대로 돌려놓는다 (아래 `fcitx_kwin_set`).
+FCITX_KWIN_IM=""
+
+# KDE 는 fcitx5 를 **KWin 이** 띄운다 — `kwinrc [Wayland] InputMethod` 가 가리키는 desktop 항목을 KWin 이 실행하며
+# 입력기 전용 Wayland 연결 (`WAYLAND_SOCKET`) 을 함께 넘긴다 (KWin 6.8.1 `inputmethod.cpp` 의 `startInputMethod`).
+# 그래서 셸에서 `fcitx5 -d` 로 되살리면 그 연결이 없어 **한글이 안 들어간다** (#836 · 2026-10-31 사용자 보고). 또
+# KWin 은 입력기가 *죽었을* 때 (`CrashExit`) 만 다시 띄우고, `pkill` 처럼 정상 종료하면 그대로 둔다.
+# KWin 은 그 값을 지켜보다 바뀌면 입력기를 끄거나 새로 띄운다 (`main_wayland.cpp` 의 `KConfigWatcher` →
+# `setInputMethodCommand`). 시스템 설정의 "가상 키보드" 가 하는 일과 같다. `--notify` 가 있어야 KWin 이 알아챈다.
+#
+#   fcitx_kwin_set <값>      # "" 이면 끄고, 원래 값이면 KWin 이 다시 띄운다
+fcitx_kwin_set() {
+    kwriteconfig6 --file kwinrc --group Wayland --key InputMethod --notify "$1"
+}
 cleanup() {
     # Windows — 남은 측정 창을 트리째 끝낸다. 회차 정리 (`run_terminal`) 가 못 끝낸 것만 남는다.
     [ "$IS_WINDOWS" = 1 ] && { "$WORK_DIR/proc-usage.exe" kill latency-child.exe \
         "alacritty.exe;wezterm-gui.exe;WindowsTerminal.exe;conhost.exe;$(win_exe_of tildaz)" >/dev/null 2>&1 || true; }
     terminals_cleanup_all || true
     [ -n "$IME_RESTORE_ID" ] && "$MAC_INPUT" ime-set "$IME_RESTORE_ID" >/dev/null 2>&1 || true
-    if [ "$FCITX_RESTORE" = 1 ] && ! pgrep -x fcitx5 >/dev/null 2>&1; then
+    if [ "$FCITX_RESTORE" = kwin ]; then
+        fcitx_kwin_set "$FCITX_KWIN_IM" || true
+        _t=0
+        while ! pgrep -x fcitx5 >/dev/null 2>&1 && [ "$_t" -lt 20 ]; do sleep 0.25; _t=$((_t + 1)); done
+        if pgrep -x fcitx5 >/dev/null 2>&1; then
+            echo "fcitx5 를 되살렸어요 (KWin 이 띄움)."
+        else
+            echo "⚠ KWin 이 fcitx5 를 다시 띄우지 않았어요 — 시스템 설정 → 키보드 → 가상 키보드에서 Fcitx 5 를 골라 주세요." >&2
+        fi
+    elif [ "$FCITX_RESTORE" = 1 ] && ! pgrep -x fcitx5 >/dev/null 2>&1; then
         (setsid nohup fcitx5 -d >/dev/null 2>&1 &) || true
         echo "fcitx5 를 되살렸어요."
     fi
@@ -418,9 +441,26 @@ elif pgrep -x fcitx5 >/dev/null 2>&1; then
         echo "입력 배열이 둘 이상이에요 — fcitx5 를 되살리면 목록이 지워질 수 있어서 멈춰요. fcitx5 를 직접 끄고 다시 돌려요." >&2
         exit 1
     fi
-    pkill -x fcitx5 || true
-    FCITX_RESTORE=1
-    echo "fcitx5 를 잠깐 내렸어요 (끝나면 되살려요)."
+    _kwin_im=""
+    [ "$IS_KDE" = 1 ] && command -v kwriteconfig6 >/dev/null 2>&1 &&
+        _kwin_im=$(kreadconfig6 --file kwinrc --group Wayland --key InputMethod 2>/dev/null)
+    if [ -n "$_kwin_im" ]; then
+        # KWin 이 띄운 입력기는 KWin 으로 내린다 — 위 `fcitx_kwin_set` 주석.
+        FCITX_KWIN_IM="$_kwin_im"
+        FCITX_RESTORE=kwin
+        fcitx_kwin_set ""
+        _t=0
+        while pgrep -x fcitx5 >/dev/null 2>&1 && [ "$_t" -lt 20 ]; do sleep 0.25; _t=$((_t + 1)); done
+        if pgrep -x fcitx5 >/dev/null 2>&1; then
+            echo "KWin 이 fcitx5 를 내리지 않았어요 — 측정을 멈춰요 (끝에 입력기 설정은 되돌려요)." >&2
+            exit 1
+        fi
+        echo "fcitx5 를 잠깐 내렸어요 — KWin 입력기 설정으로 (끝나면 KWin 이 되살려요)."
+    else
+        pkill -x fcitx5 || true
+        FCITX_RESTORE=1
+        echo "fcitx5 를 잠깐 내렸어요 (끝나면 되살려요)."
+    fi
 fi
 echo ""
 
