@@ -341,8 +341,8 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
         <h2>Windows</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on plain text, Hangul, and CJK output. Windows Terminal is about twice as fast with emoji, and slightly faster with ANSI color. The two tie on latency. Leaving conhost aside, TildaZ uses the least memory on an empty screen, and Windows Terminal uses less once scrollback is full. Only conhost starts faster.</p>
-      <p class="bench-machine">Same laptop as Linux · Windows 11 Pro 25H2 · built-in display, 2880x1800 at 120 Hz, 150% scale · AC power, Best performance mode · October 21, 2026<br>Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
+      <p class="perf-lede">TildaZ is first on plain text, Hangul, and CJK output. Windows Terminal is almost twice as fast with emoji, and slightly faster with ANSI color. The two tie on latency. Leaving conhost aside, TildaZ uses the least memory, both on an empty screen and with scrollback full. Only conhost starts faster.</p>
+      <p class="bench-machine">Same laptop as Linux · Windows 11 Pro 25H2 · built-in display, 2880x1800 at 120 Hz, 150% scale · AC power, Best performance mode · October 29–30, 2026<br>TildaZ v0.10.7 release · Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
       <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
@@ -351,12 +351,12 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Windows Terminal</th><th scope="col">conhost<sup class="bench-mark">†</sup></th><th scope="col">WezTerm</th><th scope="col">Alacritty</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>296.1</strong></td><td>237.7</td><td>177.9</td><td>12.9</td><td>11.1</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">80.4</td><td><strong>83.3</strong></td><td>15.8</td><td>12.1</td><td>10.6</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>157.7</strong></td><td>107.5</td><td>62.6</td><td>6.8</td><td>6.0</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>128.4</strong></td><td>102.1</td><td>90.7</td><td>9.2</td><td>7.8</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz">80.3</td><td><strong>171.2</strong></td><td>83.0</td><td>13.9</td><td>11.7</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">93.6</td><td><strong>164.4</strong></td><td>121.5</td><td>27.8</td><td>n/a</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>316.5</strong></td><td>235.0</td><td>150.4</td><td>13.7</td><td>11.9</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">74.2</td><td><strong>81.4</strong></td><td>18.2</td><td>10.7</td><td>10.9</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>144.9</strong></td><td>116.7</td><td>75.0</td><td>6.8</td><td>6.0</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>142.0</strong></td><td>98.3</td><td>84.9</td><td>9.0</td><td>7.8</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">96.0</td><td><strong>168.7</strong></td><td>82.5</td><td>14.6</td><td>12.6</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">103.4</td><td><strong>183.9</strong></td><td>112.9</td><td>29.1</td><td>n/a</td></tr>
           </tbody>
         </table>
       </div>
@@ -368,11 +368,11 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>10.52</strong></td><td class="tz">15.15</td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>10.54</td><td><strong>14.85</strong></td></tr>
-            <tr><th scope="row">conhost</th><td>19.89</td><td>23.32</td></tr>
-            <tr><th scope="row">WezTerm</th><td>26.71</td><td>46.10</td></tr>
-            <tr><th scope="row">Alacritty</th><td>28.30</td><td>31.79</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>10.82</strong></td><td class="tz"><strong>13.93</strong></td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>10.90</td><td>16.37</td></tr>
+            <tr><th scope="row">WezTerm</th><td>15.66</td><td>44.73</td></tr>
+            <tr><th scope="row">conhost</th><td>19.14</td><td>21.72</td></tr>
+            <tr><th scope="row">Alacritty</th><td>27.31</td><td>31.42</td></tr>
           </tbody>
         </table>
       </div>
@@ -384,11 +384,11 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">conhost<sup class="bench-mark">†</sup></th><td>3.7</td><td>3.8</td><td>0.16</td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>34.2</strong></td><td class="tz">80.5</td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>42.5</td><td><strong>65.0</strong></td><td>0.52</td></tr>
-            <tr><th scope="row">Alacritty</th><td>87.7</td><td>189.5</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">WezTerm</th><td>258.0</td><td>253.2</td><td>0.16</td></tr>
+            <tr><th scope="row">conhost<sup class="bench-mark">†</sup></th><td>3.7</td><td>3.7</td><td>0.21</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>24.6</strong></td><td class="tz"><strong>57.4</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>49.1</td><td>70.6</td><td>0.62</td></tr>
+            <tr><th scope="row">Alacritty</th><td>71.7</td><td>173.4</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>254.0</td><td>250.3</td><td>0.05</td></tr>
           </tbody>
         </table>
       </div>
@@ -400,11 +400,11 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">conhost</th><td><strong>183.0</strong></td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">304.0</td></tr>
-            <tr><th scope="row">Alacritty</th><td>373.5</td></tr>
-            <tr><th scope="row">WezTerm</th><td>624.1</td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>731.7</td></tr>
+            <tr><th scope="row">conhost</th><td><strong>208.0</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">297.4</td></tr>
+            <tr><th scope="row">Alacritty</th><td>358.1</td></tr>
+            <tr><th scope="row">WezTerm</th><td>638.8</td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>640.6</td></tr>
           </tbody>
         </table>
       </div>
@@ -413,6 +413,7 @@
         <li>Alacritty cannot run the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
         <li><strong>The runs were pinned to the four fast CPU cores.</strong> This CPU mixes fast and small cores, and unpinned runs varied a lot. On Linux, pinned and unpinned runs gave the same results, so Linux was not pinned.</li>
         <li>Latency and startup end at the time Windows reports the frame was presented (DXGI <code>LastPresentTime</code>).</li>
+        <li>Latency was measured after the laptop woke from sleep. Right after a reboot, this laptop showed the first frame after an idle screen about 20 ms later, in every app (<a href="https://github.com/ensky0/tildaz/issues/836" target="_blank" rel="noopener">#836</a>).</li>
       </ul>
     </section>
 
