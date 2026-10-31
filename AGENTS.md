@@ -3010,6 +3010,10 @@ upstream이 움직이면 CI의 `zig build -Dsimd=true --fetch`가 캐시 불일�
 
 ghostty 의존성을 갱신하려면 `dist/update-ghostty.sh`를 실행해서 upstream `main` HEAD sha 기준으로 URL과 hash를 함께 업데이트해요.
 
+**ghostty pin 갱신은 [#841](https://github.com/ensky0/tildaz/issues/841) 하나에 계속 쌓아요** (2026-10-31 사용자 결정: *"경험이 쌓이게"*).
+회차마다 새 이슈를 만들지 않고, 그 이슈에 회차 댓글 (계획 · 결과 · 함정) 을 더해요. 회차가 끝나도 닫지 않아요
+(`long-term watch`). 그래서 PR 본문은 `Closes #841` 이 아니라 `Refs #841` 이에요. 그 전 회차는 #460 · #723 · #816 에 있어요.
+
 **ghostty 에는 우리 패치를 얹어요** ([#812](https://github.com/ensky0/tildaz/issues/812)). 패치는
 [`vendor/ghostty/patches/`](vendor/ghostty/patches) 에 두고, `zig build` 가 설정 단계에서 `zig-pkg/ghostty-*` 에 얹어요
 (`build.zig` 의 `ghosttyDependency` · 규칙은 [`build/vendor_patch.zig`](build/vendor_patch.zig)). fork 를 따로 두지 않으려고
