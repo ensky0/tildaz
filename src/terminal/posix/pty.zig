@@ -179,6 +179,10 @@ pub const Pty = struct {
         }
 
         closeFd(pair.slave);
+        // #839 — `readLoop` 이 `EAGAIN` 뒤 바로 다시 읽으려면 master 가 non-blocking 이어야 한다.
+        // blocking 이면 데이터가 없을 때 `read` 가 멈춰 shutdown pipe 를 못 본다. 자식은 master 를
+        // 닫고 slave 만 쓰니 (`childExec`) 영향이 없다.
+        if (!setNonblock(pair.master)) return error.OpenPtyFailed;
         return .{
             .master_fd = pair.master,
             .shutdown_pipe = shutdown_pipe,
@@ -234,14 +238,34 @@ pub const Pty = struct {
         closeFd(self.shutdown_pipe[1]);
     }
 
+    /// 다 쓸 때까지 돌아오지 않는다. 호출하는 쪽 (`session_core` 의 `writeLoop` · `interruptWrite`)
+    /// 은 돌려준 값을 보지 않는다 — master 가 blocking 이던 때는 커널이 다 쓸 때까지 기다려 줬다.
+    /// #839 로 master 가 non-blocking 이 되어, 큐가 차면 (`EAGAIN`) 여기서 `POLLOUT` 을 기다린다.
+    /// 기다리는 동안 shutdown pipe 도 본다 — `deinit` 이 자식이 안 읽는 PTY 에 막히지 않게.
     pub fn write(self: *Pty, data: []const u8) !usize {
-        const rc = posix.system.write(self.master_fd, data.ptr, data.len);
-        if (sysFailed(rc)) return switch (posix.errno(rc)) {
-            // non-blocking master 가 가득 찬 것은 오류가 아니다 — 호출자가 다시 보낸다.
-            .AGAIN => 0,
-            else => error.WriteFailed,
-        };
-        return @intCast(rc);
+        var off: usize = 0;
+        while (off < data.len) {
+            const rc = posix.system.write(self.master_fd, data[off..].ptr, data.len - off);
+            if (!sysFailed(rc)) {
+                off += @intCast(rc);
+                continue;
+            }
+            switch (posix.errno(rc)) {
+                .INTR => continue,
+                .AGAIN => {
+                    var fds = [_]posix.pollfd{
+                        .{ .fd = self.master_fd, .events = posix.POLL.OUT, .revents = 0 },
+                        .{ .fd = self.shutdown_pipe[0], .events = posix.POLL.IN, .revents = 0 },
+                    };
+                    const pr = posix.system.poll(&fds, fds.len, -1);
+                    if (sysFailed(pr) and posix.errno(pr) != .INTR) return error.WriteFailed;
+                    if ((fds[1].revents & posix.POLL.IN) != 0) return off;
+                    if ((fds[0].revents & (posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL)) != 0) return error.WriteFailed;
+                },
+                else => return error.WriteFailed,
+            }
+        }
+        return off;
     }
 
     pub fn resize(self: *Pty, cols: u16, rows: u16) !void {
@@ -325,6 +349,14 @@ fn openShutdownPipe() !([2]posix.fd_t) {
         setCloexec(fds[1]);
     }
     return fds;
+}
+
+/// #839 — `O_NONBLOCK` 을 켠다. 실패하면 false. 모양은 ghostty 1.4.0 `ReadThread.setNonblock` 과 같다.
+fn setNonblock(fd: posix.fd_t) bool {
+    const flags = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+    if (sysFailed(flags)) return false;
+    const nonblock: usize = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+    return !sysFailed(posix.system.fcntl(fd, posix.F.SETFL, @as(usize, @intCast(flags)) | nonblock));
 }
 
 fn setCloexec(fd: posix.fd_t) void {
@@ -413,31 +445,63 @@ fn resizeFd(fd: posix.fd_t, cols: u16, rows: u16) !void {
     }
 }
 
+/// #839 — 한 번 깨운 뒤 이만큼 읽었으면 쓰는 쪽이 큐를 채우고 있는 것으로 본다. 그때만 `EAGAIN`
+/// 뒤 바로 다시 읽는다. 이보다 적으면 (타이핑 · 짧은 출력) 바로 `poll` 로 돌아가 예전과 같은 길을
+/// 탄다. macOS 커널이 master 읽기 한 번을 약 1 KiB 로 자르므로, 1 KiB 를 채웠다는 것은 큐가 찼다는
+/// 뜻이다 — ghostty 1.4.0 `ReadThread.bridge_threshold` 와 같은 값.
+const read_retry_threshold = 1024;
+/// #839 — `EAGAIN` 뒤 잠들지 않고 바로 다시 `read` 하는 횟수. 쓰는 쪽은 비운 큐를 몇 µs 안에 다시
+/// 채워서, 그 사이를 `poll` 로 자면 자고 깨는 비용이 1 KiB 마다 든다. ghostty 1.4.0
+/// `ReadThread.bridge_spin_max` 와 같은 값 (그쪽 주석: 8~16 번이 틈의 90 % 넘게 잡는다).
+const read_retry_max = 16;
+
 /// #744 — master 가 EOF (`read` 0 · 오류 — Linux 는 slave 를 쥔 프로세스가 다 사라지면 `EIO`) 로
 /// 끝나면 `eof_cb` 를 부른다. shutdown pipe 로 멈출 때는 출력이 끝난 것이 아니라 부르지 않는다.
+///
+/// #839 — master 는 non-blocking 이다 (`Pty.init`). `poll` 로 깬 뒤 읽을 수 있는 만큼 읽고, 읽을
+/// 때마다 넘긴다. `EAGAIN` 이 나오면 그 깨움 뒤 `read_retry_threshold` 이상 읽었을 때만
+/// `read_retry_max` 번까지 바로 다시 읽는다. macOS 에서 처리량이 두 배 가까이 오른다 — 잠들고
+/// 깨는 왕복이 상한이던 자리다 (SPEC §13.6). 다시 보기를 `poll(…, 0)` 으로 하면 이 효과가
+/// 사라진다 (실측) — 그래서 `read` 를 직접 부른다.
 fn readLoop(master_fd: posix.fd_t, shutdown_fd: posix.fd_t, callback: Pty.ReadCallback, eof_cb: ?Pty.ExitCallback, userdata: ?*anyopaque) void {
     var buf: [65536]u8 = undefined;
     var fds = [_]posix.pollfd{
         .{ .fd = master_fd, .events = posix.POLL.IN, .revents = 0 },
         .{ .fd = shutdown_fd, .events = posix.POLL.IN, .revents = 0 },
     };
-    while (true) {
+    wait: while (true) {
         if (sysFailed(posix.system.poll(&fds, fds.len, -1))) return;
         // #223 — deinit 이 self-pipe 로 깨움 (daemon 이 slave 를 쥐어 master 에
         // EOF 가 안 와도 read thread 안전 종료 → join deadlock 회피).
         if ((fds[1].revents & posix.POLL.IN) != 0) return;
-        if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) != 0) {
+        if ((fds[0].revents & (posix.POLL.IN | posix.POLL.HUP | posix.POLL.ERR)) == 0) continue;
+        var since_wake: usize = 0;
+        var retries: usize = 0;
+        // 한 번 깨운 뒤 `buf.len` 을 읽으면 `poll` 로 돌아간다 — 출력이 끊이지 않아도 위의
+        // shutdown 확인 (#223) 을 지나게.
+        while (since_wake < buf.len) {
             // #160/#254 — poll 대기 (idle) 는 계측 밖, read 복사 시간만.
             // #394 로 **Windows 도 같은 범위**다 (`terminal/windows/pty.zig` 의 readLoop
             // 이 `ERROR_IO_PENDING` 대기를 계측 밖으로 뺐다). 다만 그쪽 pending 경로는
             // 커널이 대기 중에 복사를 끝내 우리가 잴 수 없어서 `ns` 만 빠지고
             // `calls` · `bytes` 는 남는다 — 같은 범위이되 Windows 가 과소 계상이다.
+            // #839 — `EAGAIN` 으로 끝난 읽기는 세지 않는다.
             const t0 = perf.now();
             const rc = posix.system.read(master_fd, &buf, buf.len);
-            if (sysFailed(rc)) break;
+            if (sysFailed(rc)) switch (posix.errno(rc)) {
+                .INTR => continue,
+                .AGAIN => {
+                    if (since_wake < read_retry_threshold or retries >= read_retry_max) continue :wait;
+                    retries += 1;
+                    continue;
+                },
+                else => break :wait,
+            };
             const n: usize = @intCast(rc);
             perf.addTimedBytes(&perf.readloop, t0, @intCast(n));
-            if (n == 0) break;
+            if (n == 0) break :wait;
+            retries = 0;
+            since_wake += n;
             callback(buf[0..n], userdata);
         }
     }
@@ -580,4 +644,98 @@ test "pty — cwd 지정 시 그 디렉토리에서 시작, 갈 수 없으면 �
         _ = try pty.write("P=$PWD; cd \"$HOME\"; [ \"$P\" = \"$PWD\" ] && echo tz366_home_ok\n");
         try std.testing.expect(waitFor("tz366_home_ok"));
     }
+}
+
+/// #839 — 큰 출력 · 입력 테스트용. 받은 바이트 중 `target` 의 개수만 세고, 끝 256 바이트를 표식
+/// 찾기용으로 남긴다 (`TestCollector` 는 앞 8 KiB 만 담아 큰 양을 못 센다).
+const BulkCollector = struct {
+    var mu: std.Io.Mutex = .init;
+    var target: u8 = 0;
+    var count: usize = 0;
+    var tail: [256]u8 = undefined;
+    var tail_len: usize = 0;
+
+    fn reset(t: u8) void {
+        mu.lockUncancelable(std.testing.io);
+        defer mu.unlock(std.testing.io);
+        target = t;
+        count = 0;
+        tail_len = 0;
+    }
+    fn onRead(data: []const u8, _: ?*anyopaque) void {
+        mu.lockUncancelable(std.testing.io);
+        defer mu.unlock(std.testing.io);
+        for (data) |c| {
+            if (c == target) count += 1;
+        }
+        if (data.len >= tail.len) {
+            @memcpy(&tail, data[data.len - tail.len ..]);
+            tail_len = tail.len;
+            return;
+        }
+        const keep = @min(tail_len, tail.len - data.len);
+        std.mem.copyForwards(u8, tail[0..keep], tail[tail_len - keep .. tail_len]);
+        @memcpy(tail[keep..][0..data.len], data);
+        tail_len = keep + data.len;
+    }
+    fn onExit(_: ?*anyopaque) void {}
+    fn tailContains(needle: []const u8) bool {
+        mu.lockUncancelable(std.testing.io);
+        defer mu.unlock(std.testing.io);
+        return std.mem.find(u8, tail[0..tail_len], needle) != null;
+    }
+    fn countNow() usize {
+        mu.lockUncancelable(std.testing.io);
+        defer mu.unlock(std.testing.io);
+        return count;
+    }
+    fn waitTail(needle: []const u8, timeout_ms: u64) bool {
+        var waited_ms: u64 = 0;
+        while (waited_ms < timeout_ms) : (waited_ms += 20) {
+            if (tailContains(needle)) return true;
+            sleepNs(20 * std.time.ns_per_ms);
+        }
+        return false;
+    }
+};
+
+// #839 — master 가 non-blocking 이고 `readLoop` 이 `EAGAIN` 뒤 바로 다시 읽어도 큰 출력을 하나도
+// 잃지 않는지. 자식이 `Z` 를 4 MiB 쓰고 끝 표식을 쓴다. 명령에 `Z` 가 그대로 나오면 tty 의 에코가
+// 세어지므로 8 진수 (`\132`) 로 쓴다.
+//
+// 표식은 명령 안에서 따옴표로 쪼갠다 (`tz839_out_''done`). tty 는 입력한 명령 줄을 그대로 되돌려
+// 보여서, 쪼개지 않으면 그 에코가 표식으로 잡혀 출력이 끝나기 전에 기다림이 끝난다.
+test "pty — 큰 출력을 바로 다시 읽기로 하나도 잃지 않는다 (#839)" {
+    const total: usize = 4 * 1024 * 1024;
+    BulkCollector.reset('Z');
+    var pty = try Pty.init(testRuntime(), std.testing.allocator, 80, 24, "/bin/sh", null, null);
+    defer pty.deinit();
+    try pty.startReadThread(BulkCollector.onRead, BulkCollector.onExit, null, null);
+
+    _ = try pty.write("head -c 4194304 /dev/zero | tr '\\000' '\\132'; echo tz839_out_''done\n");
+    try std.testing.expect(BulkCollector.waitTail("tz839_out_done", 20_000));
+    try std.testing.expectEqual(total, BulkCollector.countNow());
+}
+
+// #839 — master 가 non-blocking 이 되어도 `Pty.write` 가 큰 입력을 다 쓰는지. 자식 tty 를 raw 로
+// 두고 (canonical 은 한 줄 길이 한도가 있다) 1 MiB 를 쓴 뒤 자식의 `wc -c` 를 본다. PTY 버퍼보다
+// 커서 `EAGAIN` 뒤 `POLLOUT` 을 기다리는 길을 탄다. 표식은 위 테스트처럼 쪼갠다 — 특히 준비
+// 표식을 명령의 에코로 잘못 잡으면 raw 가 켜지기 전에 쓰게 되어 canonical 의 줄 길이 한도에 걸린다.
+test "pty — 큰 입력을 다 쓴다 (#839)" {
+    const total: usize = 1024 * 1024;
+    BulkCollector.reset(0);
+    var pty = try Pty.init(testRuntime(), std.testing.allocator, 80, 24, "/bin/sh", null, null);
+    defer pty.deinit();
+    try pty.startReadThread(BulkCollector.onRead, BulkCollector.onExit, null, null);
+
+    _ = try pty.write("stty raw -echo; echo tz839_raw_''ready; head -c 1048576 | wc -c | tr -d ' '; echo tz839_in_''done\n");
+    try std.testing.expect(BulkCollector.waitTail("tz839_raw_ready", 5000));
+
+    const data = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(data);
+    @memset(data, 'a');
+    try std.testing.expectEqual(total, try pty.write(data));
+
+    try std.testing.expect(BulkCollector.waitTail("tz839_in_done", 20_000));
+    try std.testing.expect(BulkCollector.tailContains("1048576"));
 }
