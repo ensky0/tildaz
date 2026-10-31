@@ -35,8 +35,8 @@
         .ghostty = .{
             // 특정 커밋으로 고정. `refs/heads/main.tar.gz` 는 upstream main 이
             // 움직이면 CI 프리페치가 해시 불일치로 실패 (c41a9ef 참고).
-            .url = "https://github.com/ghostty-org/ghostty/archive/f54340ad77814fe319d136e5e915d6a48de8dd23.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBCwB2hQVxHcUiN4kYlsRDu1qcBPAbNJb35Kkyx752",
+            .url = "https://github.com/ghostty-org/ghostty/archive/c911f96ee8fedd4594b5b69f1128fcb03f560622.tar.gz",
+            .hash = "ghostty-1.4.1-dev-5UdBC-hfiAWU5DI7uGqGeYjYXjhFrJJj7i_CKBkZ-xdB",
         },
         // TOML config 파서 (#493). MIT.
         //
