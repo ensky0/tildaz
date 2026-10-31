@@ -3022,6 +3022,37 @@ frame callback 이 도착했는지 보고 양보하기 (macOS 의 아래 아이�
 안에서 다음 `CADisplayLink` 발사가 임박했는지 보고 양보하기. 근거와 macOS 열 네 점 실측은
 [#387](https://github.com/ensky0/tildaz/issues/387) 에 있다.
 
+### 13.6 PTY 읽기 — `EAGAIN` 뒤 바로 다시 읽는다 ([#839](https://github.com/ensky0/tildaz/issues/839))
+
+macOS · Linux 의 읽기 스레드 ([`terminal/posix/pty.zig`](src/terminal/posix/pty.zig) 의 `readLoop`) 는 master fd 를
+**non-blocking** 으로 두고, `poll` 로 깬 뒤 읽을 수 있는 만큼 읽으며 **읽을 때마다** ring 에 넘긴다.
+
+| 규칙 | 값 | 이유 |
+|---|---|---|
+| `EAGAIN` 이면 잠들지 않고 `read` 를 바로 다시 부른다 | 16 번까지 | macOS 커널은 master 읽기 한 번을 약 1 KiB 로 자른다. 쓰는 쪽은 비운 큐를 몇 µs 안에 다시 채우는데, 그 틈마다 `poll` 로 자면 1 KiB 마다 자고 깨는 비용이 든다 |
+| 바로 다시 읽기는 한 번 깬 뒤 이만큼 읽었을 때만 | 1 KiB | 그보다 적으면 타이핑 · 짧은 출력이다. 바로 `poll` 로 돌아가 예전과 같은 길을 탄다 |
+| 한 번 깬 뒤 이만큼 읽으면 `poll` 로 한 번 돌아간다 | 64 KiB | 출력이 끊이지 않아도 shutdown pipe 를 보게 (#223). 처리량에 차이가 없다 (실측) |
+| 다시 보기는 `read` 로 한다 | — | `poll(…, 0)` 으로 먼저 보면 효과가 통째로 사라진다 (macOS 실측) |
+| `Pty.write` 는 다 쓸 때까지 돌아오지 않는다 | — | 호출하는 쪽은 돌려준 값을 보지 않는다. `EAGAIN` 이면 `POLLOUT` 을 기다리고, 그동안 shutdown pipe 도 본다 |
+
+1 KiB · 16 번은 ghostty 1.4.0 [`ReadThread`](https://github.com/ghostty-org/ghostty/blob/v1.4.0/src/termio/Exec.zig#L1320-L1344)
+와 같은 값이다. ghostty 의 다른 장치 — 64 KiB 로 모아 넘기기 · bridge poll · 파서가 쉬면 깨우는 pipe · 실행 우선순위
+(`user_initiated`) — 는 넣지 않았다. 하나씩 빼서 쟀을 때 처리량에 차이가 없었다 ([하나씩 빼 보기](https://github.com/ensky0/tildaz/issues/839#issuecomment-6536629669) ·
+[모으기 없는 판](https://github.com/ensky0/tildaz/issues/839#issuecomment-6536855033)).
+
+**실측 (MacBook Pro M5 Pro · macOS 27.2 · 120 Hz · 64 MiB · 120x40 · 이 구현과 그 전 `main` 을 번갈아):** 앱 처리량
+`plain` 130 → 216 · `hangul` 124 → 205 · `cjk` 131 → 218 · `ansi` 129 → 195 · `emoji_vs16` 130 → 154 · `zwj` 137 → 170 MiB/s
+(+19~67 %). PTY 층은 `plain` 131 → 299 · `cjk` 143 → 334 · `zwj` 173 → 220 MiB/s 다. 질의 응답 왕복 (`CSI 6n`) 은 두 판이
+median 약 1.8 ms · p95 약 6.3 ms 로 같다. 값과 절차는 #839 의 정식 구현 검증 · 분석 댓글에 있다.
+
+**Linux 는 효과가 작다.** Linux 는 읽기 사이에 큐가 거의 비지 않아서, 바로 다시 읽어 받는 일이 드물다 (읽기의
+0.03~0.6 %). `plain` · `hangul` · `cjk` 의 상한은 읽는 쪽이 아니라 쓰는 쪽이다 — 커널이 줄마다 `\n` 을 `\r\n` 으로 따로 쓰느라
+(ONLCR) 쓰는 프로세스가 한 코어를 다 쓴다 ([분석 · Linux](https://github.com/ensky0/tildaz/issues/839#issuecomment-6536804841)). 그래도 같은
+코드를 Linux 에도 켠다 — 실험 판으로 재 보니 나빠지지 않았다 (PTY 층 ±1.3 % · 앱 −1.6~+1.6 %,
+[실험 3 · Linux](https://github.com/ensky0/tildaz/issues/839#issuecomment-6537066721)). Windows 는 ConPTY 파이프를 읽는 다른 코드
+([`terminal/windows/pty.zig`](src/terminal/windows/pty.zig)) 이고, 한 번에 64~128 KiB 를 읽어 이 문제가 없다
+([Windows 결과](https://github.com/ensky0/tildaz/issues/839#issuecomment-6534095694)).
+
 ---
 
 ## 부록 A — 미구현 항목 (cross-platform 동등성 룰)
