@@ -1183,6 +1183,16 @@ tool\render-ab-shot\render-ab-shot_windows.ps1 … -NewTab        # Ctrl+Shift+T
   - `clusters.py --cmd` 의 래퍼는 그래서 `type` 대신 Python 으로 본문을 통째로 읽어 한 번에 써요. 화면을 손으로 만들 때도
     같은 방법을 써요 (`sys.stdout.buffer.write(open(path,'rb').read())`).
   - 그 전에 찍은 Windows 회차 (`clusters.py --cmd` 화면) 는 이 `�` 가 섞인 화면이에요.
+- **⚠️ 드문 글리프만 몇 px 튀면 Windows 글꼴 캐시 탓일 수 있어요** ([#844](https://github.com/ensky0/tildaz/issues/844)).
+  DirectWrite 는 시스템 글꼴의 글리프를 그릴 때, Windows 글꼴 캐시 서비스 (`FontCache`) 에 그 항목이 있으면 그것을 쓰고
+  없으면 직접 계산해요. 두 결과가 크기마다 글리프의 1 ~ 2.5 % 에서 가장자리 몇 px 달라요 (최대 31/255). grid fitting
+  (윤곽을 픽셀 격자에 맞추는 단계) 에서 생기는 차이예요. 항목은 처음 그린 뒤에 생기고, 다른 앱이 글자를 많이 그리면 밀려나요.
+  - 그래서 먼저 찍은 판에서만 `c̷` · `c̸` 같은 드문 글리프가 튈 수 있어요. **같은 판을 한 번 더 찍어** 차이가 사라지면 이
+    경우예요. 항목이 늦게 들어가 바로 안 사라질 때도 있어요 (#844 에서 9 분 걸린 적이 있어요).
+  - 우리 코드는 바꾸지 않기로 했어요 (#844 결정). 눈에 안 보이는 차이이고, Windows Terminal · Skia 도 같은 동작을 받아들여요.
+  - 일부러 만들려면 관리자 PowerShell 에서 `FontCache` 서비스를 멈추고
+    `%WINDIR%\ServiceProfiles\LocalService\AppData\Local\FontCache\*FontCache*.dat` 를 지운 뒤 다시 켜요. 서비스가 도는 동안은
+    파일 이름 앞에 `~` 가 붙고 멈추면 떨어져서, `~FontCache-*` 로 지우면 아무것도 안 지워져요 (오류도 안 나요).
 - **`-e` 회차는 config 를 만들지도 hotkey 를 등록하지도 않아요** (`global hotkey not registered (stress run)`) — 사용자의
   `F1` 과 충돌하지 않고 `config_9.toml` 도 남지 않아요. 로그는 `%APPDATA%\tildaz\tildaz_stress.log` (개발 빌드는 `%APPDATA%\tildaz-dev\`) 예요. 단축키가
   필요한 회차 (`-NewTab`) 만 `config_0.toml` 을 복사해 `config_9.toml` 을 잠깐 만들고 (`auto_start = false`) 끝나면 지워요.
