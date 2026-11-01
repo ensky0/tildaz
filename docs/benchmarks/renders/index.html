@@ -50,7 +50,7 @@
       <h1>What each terminal drew.</h1>
       <p>A throughput number only means something if the terminal drew the right thing. These are the screens at the end of each workload, side by side.</p>
       <nav class="render-os-nav" aria-label="Operating systems">
-        <a href="#linux">Linux <small>soon</small></a>
+        <a href="#linux">Linux</a>
         <a href="#macos">macOS <small>soon</small></a>
         <a href="#windows">Windows</a>
         <a href="../">← Benchmarks</a>
@@ -74,7 +74,168 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · KDE Plasma</p>
         <h2>Linux</h2>
       </div>
-      <p class="render-pending">Screenshots will be added in the Linux round (<a href="https://github.com/ensky0/tildaz/issues/848" target="_blank" rel="noopener">#848</a>).</p>
+      <p class="perf-lede">TildaZ, foot, Ghostty and Konsole drew every workload correctly. kitty drew the right glyphs in much wider cells. Alacritty and GNOME Terminal split the family emoji into separate people, and WezTerm and GNOME Terminal squeezed ❤️ into one cell.</p>
+      <p class="bench-machine">November 1, 2026 · KDE Plasma 6.8.1 · TildaZ v0.10.8 release · foot 1.28.0 · kitty 0.49.2 · Alacritty 0.17.0 · Ghostty 1.3.1 · WezTerm 20240203-110809-5046fc22 · GNOME Terminal 3.60.0 · Konsole 26.08.2 · COSMIC Terminal 1.10.0</p>
+
+      <h3>Hangul · <span class="render-sample">한글가나다라</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="linux/hangul-tildaz.webp"><img src="linux/hangul-tildaz-crop.png" alt="TildaZ drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-foot.webp"><img src="linux/hangul-foot-crop.png" alt="foot drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>foot</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-kitty.webp"><img src="linux/hangul-kitty-crop.png" alt="kitty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict">Correct glyphs, but much wider cells</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-alacritty.webp"><img src="linux/hangul-alacritty-crop.png" alt="Alacritty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-ghostty.webp"><img src="linux/hangul-ghostty-crop.png" alt="Ghostty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-wezterm.webp"><img src="linux/hangul-wezterm-crop.png" alt="WezTerm drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-gnome-terminal.webp"><img src="linux/hangul-gnome-terminal-crop.png" alt="GNOME Terminal drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>GNOME Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-konsole.webp"><img src="linux/hangul-konsole-crop.png" alt="Konsole drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Konsole</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/hangul-cosmic-term.webp"><img src="linux/hangul-cosmic-term-crop.png" alt="COSMIC Terminal drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>COSMIC Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Mixed CJK and emoji · <span class="render-sample">한글 💎👋🏿👨‍👩‍👧 ABC ▆</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="linux/cjk-tildaz.webp"><img src="linux/cjk-tildaz-crop.png" alt="TildaZ drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-foot.webp"><img src="linux/cjk-foot-crop.png" alt="foot drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>foot</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-kitty.webp"><img src="linux/cjk-kitty-crop.png" alt="kitty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict">Correct glyphs, but much wider cells</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-alacritty.webp"><img src="linux/cjk-alacritty-crop.png" alt="Alacritty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Monochrome ❤️ · skin tone as a box · family split into people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-ghostty.webp"><img src="linux/cjk-ghostty-crop.png" alt="Ghostty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-wezterm.webp"><img src="linux/cjk-wezterm-crop.png" alt="WezTerm drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">❤️ squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-gnome-terminal.webp"><img src="linux/cjk-gnome-terminal-crop.png" alt="GNOME Terminal drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>GNOME Terminal</strong><span class="render-verdict issue">❤️ squeezed into one cell · skin tone as a box · family split into people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-konsole.webp"><img src="linux/cjk-konsole-crop.png" alt="Konsole drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Konsole</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/cjk-cosmic-term.webp"><img src="linux/cjk-cosmic-term-crop.png" alt="COSMIC Terminal drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>COSMIC Terminal</strong><span class="render-verdict issue">Small monochrome ❤️</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Emoji with VS-16 · <span class="render-sample">❤️</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-tildaz.webp"><img src="linux/emoji_vs16-tildaz-crop.png" alt="TildaZ drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-foot.webp"><img src="linux/emoji_vs16-foot-crop.png" alt="foot drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>foot</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-kitty.webp"><img src="linux/emoji_vs16-kitty-crop.png" alt="kitty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict">Correct glyphs, but much wider cells</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-alacritty.webp"><img src="linux/emoji_vs16-alacritty-crop.png" alt="Alacritty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">White outline, one cell wide, overlapping</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-ghostty.webp"><img src="linux/emoji_vs16-ghostty-crop.png" alt="Ghostty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-wezterm.webp"><img src="linux/emoji_vs16-wezterm-crop.png" alt="WezTerm drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">Red, but squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-gnome-terminal.webp"><img src="linux/emoji_vs16-gnome-terminal-crop.png" alt="GNOME Terminal drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>GNOME Terminal</strong><span class="render-verdict issue">Red, but squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-konsole.webp"><img src="linux/emoji_vs16-konsole-crop.png" alt="Konsole drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Konsole</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/emoji_vs16-cosmic-term.webp"><img src="linux/emoji_vs16-cosmic-term-crop.png" alt="COSMIC Terminal drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>COSMIC Terminal</strong><span class="render-verdict issue">Small monochrome outline</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>ZWJ emoji sequences · <span class="render-sample">👨‍👩‍👧</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="linux/zwj-tildaz.webp"><img src="linux/zwj-tildaz-crop.png" alt="TildaZ drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-foot.webp"><img src="linux/zwj-foot-crop.png" alt="foot drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>foot</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-kitty.webp"><img src="linux/zwj-kitty-crop.png" alt="kitty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict">Correct glyphs, but much wider cells</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-alacritty.webp"><img src="linux/zwj-alacritty-crop.png" alt="Alacritty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Split into three people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-ghostty.webp"><img src="linux/zwj-ghostty-crop.png" alt="Ghostty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-wezterm.webp"><img src="linux/zwj-wezterm-crop.png" alt="WezTerm drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-gnome-terminal.webp"><img src="linux/zwj-gnome-terminal-crop.png" alt="GNOME Terminal drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>GNOME Terminal</strong><span class="render-verdict issue">Split into three people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-konsole.webp"><img src="linux/zwj-konsole-crop.png" alt="Konsole drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Konsole</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="linux/zwj-cosmic-term.webp"><img src="linux/zwj-cosmic-term-crop.png" alt="COSMIC Terminal drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>COSMIC Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+      </div>
     </section>
 
     <section id="macos" class="section compact-section bench-os">
