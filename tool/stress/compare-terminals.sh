@@ -177,6 +177,22 @@ terminals_init
 # 내려간 채로 남았다 (실측). 복원은 하나라도 빠지면 사용자 환경이 바뀐 채 끝난다.
 trap 'terminals_cleanup_all || true; hygiene_end || true; rm -rf "$WORK_DIR"' EXIT
 
+# 리눅스 캡처 도구를 **지금 데스크톱으로** 고른다 (#848). 깔려 있는 순서로 고르면 KDE 에서도
+# grim 이 잡힌다 — sway · Hyprland 를 함께 쓰는 기기에는 grim 이 깔려 있는데, KWin 은
+# `zwlr_screencopy` 를 내주지 않아 grim 이 실패한다. 2026-11-01 KDE 회차에서 18 장이 그렇게
+# 다 실패했다. 데스크톱이 모르는 것이면 깔린 것 중 하나로 물러선다.
+linux_capture_tool() {
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *KDE*) _want=spectacle ;;
+        *GNOME*) _want=gnome-screenshot ;;
+        *) _want=grim ;;
+    esac
+    for _t in "$_want" grim spectacle gnome-screenshot; do
+        if command -v "$_t" >/dev/null 2>&1; then echo "$_t"; return 0; fi
+    done
+    echo ""
+}
+
 if [ ! -x "$PRODUCER" ]; then
     echo "producer 가 없어요: $PRODUCER" >&2
     echo "먼저 빌드해요: zig build stress -Doptimize=fast -Dsimd=true -- throughput --mb 1" >&2
@@ -206,16 +222,15 @@ if [ -n "$CAPTURE_DIR" ]; then
         *)
             # 리눅스는 compositor 마다 통로가 달라서, 없으면 미리 알린다 — 다 돌고 나서
             # "한 장도 없다" 를 알게 되는 것보다 낫다.
-            if command -v grim >/dev/null 2>&1; then
-                echo "  캡처 도구: grim (wlroots 계열)"
-            elif command -v spectacle >/dev/null 2>&1; then
-                echo "  캡처 도구: spectacle (KDE Plasma)"
-            elif command -v gnome-screenshot >/dev/null 2>&1; then
-                echo "  캡처 도구: gnome-screenshot"
-            else
-                echo "  ⚠ 캡처 도구가 없어요 — grim (sway · Hyprland) 이나 spectacle (KDE) 을 설치해 주세요."
-                echo "    Wayland 는 client 가 화면을 읽을 수 없어서 compositor 별 도구가 필요해요."
-            fi
+            case "$(linux_capture_tool)" in
+                grim) echo "  캡처 도구: grim (wlroots 계열)" ;;
+                spectacle) echo "  캡처 도구: spectacle (KDE Plasma)" ;;
+                gnome-screenshot) echo "  캡처 도구: gnome-screenshot" ;;
+                *)
+                    echo "  ⚠ 캡처 도구가 없어요 — grim (sway · Hyprland) 이나 spectacle (KDE) 을 설치해 주세요."
+                    echo "    Wayland 는 client 가 화면을 읽을 수 없어서 compositor 별 도구가 필요해요."
+                    ;;
+            esac
             ;;
     esac
 fi
@@ -366,7 +381,7 @@ wait_for() {
 # 목적이 아니다.
 #
 # **리눅스는 하나로 다 되는 방법이 없다.** Wayland 는 client 가 화면을 읽을 수 없고 통로가
-# compositor 마다 다르다. 되는 것을 순서대로 시도한다.
+# compositor 마다 다르다. 지금 데스크톱에 맞는 것을 고른다 (`linux_capture_tool`).
 #   - `grim` — wlroots 계열 (sway · Hyprland). `zwlr_screencopy` 를 쓴다.
 #   - `spectacle -a` — KDE Plasma. KWin 은 `zwlr_screencopy` 를 client 에게 노출하지 않아 grim 이
 #     안 되고, `org.kde.KWin.ScreenShot2` 는 호출자를 검증해 직접 부를 수 없다. Spectacle 이
@@ -686,9 +701,13 @@ capture_screen() {
             #
             # **이름 매칭도 남겨 둔다.** bundle identifier 가 없는 창이 있고 (`-` 로 나온다),
             # 번들 안 바이너리를 직접 띄우는 tildaz 가 그럴 수 있다. 둘 중 하나만 맞아도 고른다.
+            #
+            # **iTerm2 · Terminal.app 은 측정 창만 고른다** (넷째 인자 `1` — 지연 도구와 같다). 꺼져
+            # 있던 앱을 깨우면 기본 창이 하나 더 열리고, 그 창의 id 가 더 커서 번들의 마지막 창을
+            # 고르면 빈 프롬프트가 찍혔다 (#848 macOS 회차 — iTerm2 네 장 중 세 장).
             _wid=""
             if [ -n "$MAC_CAPTURE" ]; then
-                _wid=$(mac_window_of "$_ctarget" "$MAC_CAPTURE")
+                _wid=$(mac_window_of "$_ctarget" "$MAC_CAPTURE" "" 1)
             fi
             # 창을 못 찾았거나 창 단위 캡처가 실패하면 전체 화면으로 물러선다 — 가려져 있으면
             # 안 보이지만 없는 것보다 낫다. **어느 쪽이었는지 표시를 남긴다** — 예전에는 macOS 가
@@ -725,7 +744,8 @@ capture_screen() {
             # **찍기 전에 대상이 살아 있는지 본다** (#448). 어느 도구를 쓰든 같다 — 창이 이미
             # 닫혔으면 무엇을 찍어도 대상이 아니므로, 도구 선택보다 이 판정이 먼저다.
             capture_target_alive "$_ctarget" || CAPTURE_NOWIN=1
-            if command -v grim >/dev/null 2>&1; then
+            _ctool=$(linux_capture_tool)
+            if [ "$_ctool" = grim ]; then
                 # wlroots 계열 (sway · Hyprland). **화면 단위**라 창 단위 성공이 애초에 없다 —
                 # 그래서 정상 결과도 `~` 다 (#448). 전에는 `@` 로 찍혀서 Windows · macOS 의
                 # `@` (창 단위로 찍었다) 와 **같은 표시가 다른 뜻**이었다.
@@ -734,7 +754,7 @@ capture_screen() {
                 # **검증할 수 없어서 넣지 않았다** — 별도 이슈 몫이다.
                 grim "$_png" >/dev/null 2>&1 || true
                 CAPTURE_FELLBACK=1
-            elif command -v spectacle >/dev/null 2>&1; then
+            elif [ "$_ctool" = spectacle ]; then
                 # KDE Plasma. **`-a` (활성 창) 라 창 단위로 찍힌다** — grim (화면 단위) 과 다르다.
                 # 방금 뜬 창이 포커스를 받으므로 대개 대상이 잡히고, 활성 창은 맨 앞이라 가려짐
                 # 문제도 없다. 그래서 이 경로만 `@` 를 그대로 둔다.
@@ -747,7 +767,7 @@ capture_screen() {
                 # `Alacritty` · `org.wezfurlong.wezterm` …). #414 가 macOS 에서 *"언어별 이름 표는
                 # 두지 않는다"* 며 거부한 것과 같은 표가 필요해져서 **별개 결정으로 남겼다.**
                 spectacle -b -n -a -o "$_png" >/dev/null 2>&1 || true
-            elif command -v gnome-screenshot >/dev/null 2>&1; then
+            elif [ "$_ctool" = gnome-screenshot ]; then
                 # GNOME. grim 과 같이 **화면 단위**라 정상 결과도 `~` 다 (#448).
                 gnome-screenshot -f "$_png" >/dev/null 2>&1 || true
                 CAPTURE_FELLBACK=1
