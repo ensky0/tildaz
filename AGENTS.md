@@ -1444,6 +1444,9 @@ zig build-exe -O safe --dep directwrite '-Mroot=tool/synthetic-style-probe_windo
 올리는 도구와 올린 뒤 확인할 목록은 [`vendor/conpty/README.md`](vendor/conpty/README.md) 의 "업데이트 방법" · "업데이트 후 확인" 절에 있어요 ([#757](https://github.com/ensky0/tildaz/issues/757)).
 번들 부품 옆에 두는 것이 찾기 쉬워서 이 문서가 아니라 거기가 단일 출처예요. 먼저 `-Notes` 로 변경량을 보고, 적으면 다음 판까지 모아요.
 
+**판을 올리는 회차는 [#842](https://github.com/ensky0/tildaz/issues/842) 하나에 계속 쌓아요** (2026-10-31 사용자 결정 — ghostty 의 #841 과 같은 방식). 회차가 끝나도 닫지 않아서 (`long-term watch`) PR 본문은 `Refs #842` 예요.
+시작하기 전에 그 이슈 본문의 문답을 먼저 읽어요 — OpenConsole 을 뺄 수 있나 · 직접 빌드해 링크할 수 있나 · 콘솔 서버 없이 터미널을 만들 수 있나. 빌드 때 nuget 에서 받아 오는 안은 하지 않기로 했어요 (2026-11-01 사용자 결정). Zig 패키지 관리자가 `.nupkg` 를 못 받는 것도 그 이슈에 확인해 뒀어요.
+
 # Windows — 키보드 layout 조회 실측 방법
 
 위 macOS 절과 같은 물음을 Windows 에서 재는 도구예요. [`tool/layout-probe/layout-probe_windows.zig`](tool/layout-probe/layout-probe_windows.zig) 가 scancode `0x01`..`0x58` 을 layout 별로 한 표에 덤프해요 — VK (`MapVirtualKeyExW`) · 라벨 base/shift/AltGr (`ToUnicodeEx`) · 역방향 (`VkKeyScanExW`).
