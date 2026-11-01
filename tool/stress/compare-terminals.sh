@@ -701,9 +701,13 @@ capture_screen() {
             #
             # **이름 매칭도 남겨 둔다.** bundle identifier 가 없는 창이 있고 (`-` 로 나온다),
             # 번들 안 바이너리를 직접 띄우는 tildaz 가 그럴 수 있다. 둘 중 하나만 맞아도 고른다.
+            #
+            # **iTerm2 · Terminal.app 은 측정 창만 고른다** (넷째 인자 `1` — 지연 도구와 같다). 꺼져
+            # 있던 앱을 깨우면 기본 창이 하나 더 열리고, 그 창의 id 가 더 커서 번들의 마지막 창을
+            # 고르면 빈 프롬프트가 찍혔다 (#848 macOS 회차 — iTerm2 네 장 중 세 장).
             _wid=""
             if [ -n "$MAC_CAPTURE" ]; then
-                _wid=$(mac_window_of "$_ctarget" "$MAC_CAPTURE")
+                _wid=$(mac_window_of "$_ctarget" "$MAC_CAPTURE" "" 1)
             fi
             # 창을 못 찾았거나 창 단위 캡처가 실패하면 전체 화면으로 물러선다 — 가려져 있으면
             # 안 보이지만 없는 것보다 낫다. **어느 쪽이었는지 표시를 남긴다** — 예전에는 macOS 가

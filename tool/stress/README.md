@@ -2423,7 +2423,9 @@ COSMIC 실기 결과는 [#756 ⑧](https://github.com/ensky0/tildaz/issues/756#i
   ABC 로 잠깐 바꾸고 끝나면 되돌려요.
 - **Terminal.app · iTerm2 를 깨우면 앱이 기본 창을 하나 더 열어요.** 그 창이 측정 창을 가리면 클릭이
   그쪽으로 가요 — Terminal.app 이 키 10 개 중 9 개를 놓쳤어요. 깨운 앱이면 측정 창이 뜬 뒤 기본
-  창을 닫아요 (`mac_close_woken_extras`). 처리량 도구에는 아직 안 넣었어요.
+  창을 닫아요 (`mac_close_woken_extras`). 처리량 도구에는 아직 안 넣었어요. 처리량 도구의 `--capture` 는
+  그 기본 창을 찍지 않게 측정 창 (iTerm2 프로필 · Terminal.app 태그) 만 골라요 ([#848](https://github.com/ensky0/tildaz/issues/848)
+  에서 iTerm2 네 장 중 세 장이 빈 프롬프트였어요).
 - **iTerm2 3.7.4 의 창 이름은 실행 중인 명령이에요** (`sh` · `-bash`). 프로필 이름으로 창을 고르면
   아무 창도 안 잡혀요. 세션의 프로필 이름으로 갈라요 (`iterm2_windows`). AppleScript 의 창 id 는
   화면 창 id 와 같아요.
