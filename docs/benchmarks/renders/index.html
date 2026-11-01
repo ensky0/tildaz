@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TildaZ Benchmark Renders - How Each Terminal Drew the Output</title>
+  <meta name="description" content="Screenshots from the TildaZ throughput benchmark: how TildaZ and other terminals drew Hangul, mixed CJK and emoji, VS-16 emoji, and ZWJ emoji sequences.">
+  <link rel="canonical" href="https://tildaz.dev/benchmarks/renders/">
+  <meta property="og:title" content="TildaZ Benchmark Renders">
+  <meta property="og:description" content="How each terminal drew the throughput workloads, side by side.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://tildaz.dev/benchmarks/renders/">
+  <meta property="og:image" content="https://tildaz.dev/social-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://tildaz.dev/social-preview.png">
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="../../fonts/JetBrainsMono-subset.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../style.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "TildaZ", "item": "https://tildaz.dev/" },
+      { "@type": "ListItem", "position": 2, "name": "Benchmarks", "item": "https://tildaz.dev/benchmarks/" },
+      { "@type": "ListItem", "position": 3, "name": "Renders", "item": "https://tildaz.dev/benchmarks/renders/" }
+    ]
+  }
+  </script>
+</head>
+<body class="subpage">
+  <nav class="nav" aria-label="Primary navigation">
+    <a class="brand" href="../../">
+      <img src="../../favicon.svg" alt="" class="brand-icon">
+      <span>TildaZ</span>
+    </a>
+    <div class="nav-links">
+      <a href="../../">Overview</a>
+      <a href="../../install/">Install</a>
+      <a href="../../config/">Config</a>
+      <a href="../../linux-wayland/">Linux</a>
+      <a href="../">Benchmarks</a>
+      <a href="https://github.com/ensky0/tildaz" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="page-hero">
+      <p class="eyebrow">Benchmarks · Renders</p>
+      <h1>What each terminal drew.</h1>
+      <p>A throughput number only means something if the terminal drew the right thing. These are the screens at the end of each workload, side by side.</p>
+      <nav class="render-os-nav" aria-label="Operating systems">
+        <a href="#linux">Linux <small>soon</small></a>
+        <a href="#macos">macOS <small>soon</small></a>
+        <a href="#windows">Windows</a>
+        <a href="../">← Benchmarks</a>
+      </nav>
+    </section>
+
+    <section class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">How to read</p>
+        <h2>Same output, different pictures.</h2>
+      </div>
+      <ul class="perf-notes bench-rules">
+        <li>Each picture is the last screen of an 8 MiB run of the throughput workload. These runs were separate from the timed runs, because taking a screenshot uses CPU.</li>
+        <li>Each card shows the top left of the window. Select it to open the full screenshot.</li>
+        <li><span class="render-verdict ok">Correct</span> means one color glyph per emoji, two cells wide. Anything else is described in a few words.</li>
+      </ul>
+    </section>
+
+    <section id="linux" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">Ryzen AI 7 350 laptop · KDE Plasma</p>
+        <h2>Linux</h2>
+      </div>
+      <p class="render-pending">Screenshots will be added in the Linux round (<a href="https://github.com/ensky0/tildaz/issues/848" target="_blank" rel="noopener">#848</a>).</p>
+    </section>
+
+    <section id="macos" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">MacBook Pro · M5 Pro</p>
+        <h2>macOS</h2>
+      </div>
+      <p class="render-pending">Screenshots will be added in the macOS round (<a href="https://github.com/ensky0/tildaz/issues/848" target="_blank" rel="noopener">#848</a>).</p>
+    </section>
+
+    <section id="windows" class="section compact-section bench-os">
+      <div class="section-heading">
+        <p class="eyebrow">Ryzen AI 7 350 laptop · 150% scale</p>
+        <h2>Windows</h2>
+      </div>
+      <p class="perf-lede">TildaZ and Windows Terminal drew every workload correctly. So Windows Terminal's lead on emoji throughput does not come from drawing less. conhost and Alacritty drew emoji as monochrome outlines and split the family emoji into separate people.</p>
+      <p class="bench-machine">November 1, 2026 · TildaZ v0.10.8 release · Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
+
+      <h3>Hangul · <span class="render-sample">한글가나다라</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="windows/hangul-tildaz.png"><img src="windows/hangul-tildaz-crop.png" alt="TildaZ drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/hangul-wt.png"><img src="windows/hangul-wt-crop.png" alt="Windows Terminal drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Windows Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/hangul-wezterm.png"><img src="windows/hangul-wezterm-crop.png" alt="WezTerm drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/hangul-conhost.png"><img src="windows/hangul-conhost-crop.png" alt="conhost drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>conhost</strong><span class="render-verdict issue">Packed narrower than two cells</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/hangul-alacritty.png"><img src="windows/hangul-alacritty-crop.png" alt="Alacritty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Packed narrower than two cells</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Mixed CJK and emoji · <span class="render-sample">한글 💎👋🏿👨‍👩‍👧 ABC ▆</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="windows/cjk-tildaz.png"><img src="windows/cjk-tildaz-crop.png" alt="TildaZ drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/cjk-wt.png"><img src="windows/cjk-wt-crop.png" alt="Windows Terminal drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Windows Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/cjk-wezterm.png"><img src="windows/cjk-wezterm-crop.png" alt="WezTerm drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">❤️ squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/cjk-conhost.png"><img src="windows/cjk-conhost-crop.png" alt="conhost drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>conhost</strong><span class="render-verdict issue">Monochrome outlines · family split into people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/cjk-alacritty.png"><img src="windows/cjk-alacritty-crop.png" alt="Alacritty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Monochrome outlines · skin tone as a box · family split into people</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Emoji with VS-16 · <span class="render-sample">❤️</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="windows/emoji_vs16-tildaz.png"><img src="windows/emoji_vs16-tildaz-crop.png" alt="TildaZ drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/emoji_vs16-wt.png"><img src="windows/emoji_vs16-wt-crop.png" alt="Windows Terminal drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Windows Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/emoji_vs16-wezterm.png"><img src="windows/emoji_vs16-wezterm-crop.png" alt="WezTerm drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">Red, but squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/emoji_vs16-conhost.png"><img src="windows/emoji_vs16-conhost-crop.png" alt="conhost drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>conhost</strong><span class="render-verdict issue">Small monochrome outline</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/emoji_vs16-alacritty.png"><img src="windows/emoji_vs16-alacritty-crop.png" alt="Alacritty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">White outline, one cell wide, overlapping</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>ZWJ emoji sequences · <span class="render-sample">👨‍👩‍👧</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="windows/zwj-tildaz.png"><img src="windows/zwj-tildaz-crop.png" alt="TildaZ drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/zwj-wt.png"><img src="windows/zwj-wt-crop.png" alt="Windows Terminal drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Windows Terminal</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/zwj-wezterm.png"><img src="windows/zwj-wezterm-crop.png" alt="WezTerm drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="windows/zwj-conhost.png"><img src="windows/zwj-conhost-crop.png" alt="conhost drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>conhost</strong><span class="render-verdict issue">Three small monochrome people</span></figcaption>
+        </figure>
+        <figure class="render-card render-card-empty">
+          <div class="render-empty">No screenshot</div>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict">Cannot run this workload on Windows</span></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="method" class="section compact-section">
+      <div class="section-heading">
+        <p class="eyebrow">Method</p>
+        <h2>Take them yourself.</h2>
+      </div>
+      <ul class="perf-notes">
+        <li>The screenshots come from <code>compare-terminals.sh --mb 8 --repeat 1 --capture</code> in <a href="https://github.com/ensky0/tildaz/blob/main/tool/stress/README.md" target="_blank" rel="noopener">tool/stress</a>, with the same window size and settings as the timed runs.</li>
+        <li>Notes for each screenshot: <a href="https://github.com/ensky0/tildaz/issues/848" target="_blank" rel="noopener">#848</a>.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div>
+      <img src="../../favicon.svg" alt="" class="footer-icon">
+      <span>TildaZ</span>
+    </div>
+    <p><a href="../../">Home</a> · <a href="../../install/">Install</a> · <a href="../../config/">Config</a> · <a href="../../linux-wayland/">Linux Wayland</a> · <a href="../">Benchmarks</a></p>
+  </footer>
+</body>
+</html>

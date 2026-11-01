@@ -52,6 +52,7 @@
         <a class="button secondary" href="#linux">Linux</a>
         <a class="button secondary" href="#macos">macOS</a>
         <a class="button secondary" href="#windows">Windows</a>
+        <a class="button secondary" href="renders/">Screenshots</a>
       </div>
     </section>
 
@@ -412,6 +413,7 @@
       </div>
       <ul class="perf-notes">
         <li><sup class="bench-mark">†</sup> conhost has no scrollback: its buffer is the window.</li>
+        <li><strong>TildaZ and Windows Terminal drew every emoji workload correctly.</strong> conhost and Alacritty drew emoji as monochrome outlines and split the family emoji into separate people. <a href="renders/#windows">See the screenshots</a>.</li>
         <li>Alacritty cannot run the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
         <li><strong>The runs were pinned to the four fast CPU cores.</strong> This CPU mixes fast and small cores, and unpinned runs varied a lot. On Linux, pinned and unpinned runs gave the same results, so Linux was not pinned.</li>
         <li>Latency and startup end at the time Windows reports the frame was presented (DXGI <code>LastPresentTime</code>).</li>
@@ -428,6 +430,7 @@
         <li>TildaZ is the v0.10.7 release. The versions of the other terminals are listed under each OS.</li>
         <li>Every run used AC power, with other windows minimized.</li>
         <li>The scripts are <code>compare-terminals.sh</code> (throughput), <code>compare-latency.sh</code>, <code>compare-memory.sh</code>, and <code>compare-startup.sh</code> in <a href="https://github.com/ensky0/tildaz/blob/main/tool/stress/README.md" target="_blank" rel="noopener">tool/stress</a>. Its README covers the setup and the pitfalls on each OS.</li>
+        <li>How each terminal drew the throughput workloads: <a href="renders/">screenshots</a>.</li>
         <li>Full results, including min, max, and grid sizes: <a href="https://github.com/ensky0/tildaz/issues/826" target="_blank" rel="noopener">#826</a>. Earlier rounds: <a href="https://github.com/ensky0/tildaz/issues/809" target="_blank" rel="noopener">#809</a>, <a href="https://github.com/ensky0/tildaz/issues/756" target="_blank" rel="noopener">#756</a>.</li>
       </ul>
     </section>
