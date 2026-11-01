@@ -10,6 +10,8 @@
 # - `-Notes` 는 microsoft/terminal 릴리즈 본문 끝의 "Binary files ... bear the version number `X`" 로
 #   각 릴리즈의 ConPTY 판을 알아내, 지금 판보다 크고 대상 판 이하인 릴리즈만 본다. 그 본문에서
 #   ConPTY · conhost · 콘솔 호스팅 항목만 뽑고, 미리보기와 안정판에 같은 줄이 있으면 한 번만 낸다.
+#   지금 판 이하 릴리즈에 이미 있는 PR 만 가리키는 줄은 빼고 끝에 그 PR 번호를 낸다 (#842 —
+#   미리보기 노트가 같은 날 나온 안정판의 변경을 다시 적는다).
 #   GitHub API 를 인증 없이 부른다 (시간당 60 회 — 한 번에 1 회 쓴다).
 # - `-Version` 은 nupkg 를 새 빈 폴더에 받아 푼다. 바꿀 네 파일의 Authenticode 서명이 유효하고
 #   서명자가 Microsoft 인지 확인한 뒤에만 복사한다. 판 번호가 적힌 문서 두 곳
@@ -65,14 +67,24 @@ if ($List) {
 if ($Notes) {
     $rel = Invoke-RestMethod 'https://api.github.com/repos/microsoft/terminal/releases?per_page=100' -Headers @{ 'User-Agent' = 'tildaz-conpty-update' }
     $pick = @()
+    # 지금 판 이하 릴리즈가 담은 PR 번호. 미리보기 노트가 같은 날 나온 안정판의 변경을 다시 적어서 (#842),
+    # 그 PR 만 가리키는 줄은 이미 번들에 있는 변경이다.
+    $have = New-Object System.Collections.Generic.HashSet[string]
+    $haveRel = 0
     foreach ($r in $rel) {
         $m = [regex]::Match([string]$r.body, 'version number `([^`]+)`')
         if (-not $m.Success) { continue }
         $bin = $m.Groups[1].Value
-        if ((Cmp $bin $cur) -le 0 -or (Cmp $bin $Notes) -gt 0) { continue }
+        if ((Cmp $bin $cur) -le 0) {
+            foreach ($pr in [regex]::Matches([string]$r.body, '#(\d{3,})')) { [void]$have.Add($pr.Groups[1].Value) }
+            $haveRel++
+            continue
+        }
+        if ((Cmp $bin $Notes) -gt 0) { continue }
         $pick += [pscustomobject]@{ tag = $r.tag_name; bin = $bin; date = $r.published_at; body = [string]$r.body }
     }
-    "지금 번들 $cur → $Notes 사이 Terminal 릴리즈 $($pick.Count) 개"
+    "지금 번들 $cur → $Notes 사이 Terminal 릴리즈 $($pick.Count) 개 (견준 지금 판 이하 릴리즈 $haveRel 개)"
+    $dropped = New-Object System.Collections.Generic.List[string]
     $seen = New-Object System.Collections.Generic.HashSet[string]
     $kw = '(?i)conpty|conhost|openconsole|console host|pseudo ?console'
     foreach ($r in ($pick | Sort-Object { $k = Key $_.bin; '{0:d4}{1:d4}{2:d12}' -f $k[0], $k[1], $k[2] }, date)) {
@@ -82,10 +94,19 @@ if ($Notes) {
             if ($line -notmatch '^\s*[\*\-]\s') { continue }
             if (-not ($inSection -or $line -match $kw)) { continue }
             $t = $line.Trim()
+            # PR 번호가 없는 줄은 이미 있는지 알 수 없어 그대로 낸다.
+            $prs = @([regex]::Matches($t, '#(\d{3,})') | ForEach-Object { $_.Groups[1].Value })
+            if ($prs.Count -and -not ($prs | Where-Object { -not $have.Contains($_) })) {
+                foreach ($p in $prs) { if (-not $dropped.Contains($p)) { $dropped.Add($p) } }
+                continue
+            }
             if ($seen.Add($t)) { $out += "  $t" }
         }
         "## $($r.tag) (ConPTY $($r.bin), $(([string]$r.date).Substring(0, 10)))"
         if ($out.Count) { $out } else { "  (ConPTY · 콘솔 항목 없음)" }
+    }
+    if ($dropped.Count) {
+        "지금 판에 이미 있는 변경이라 뺐다: " + (($dropped | ForEach-Object { "#$_" }) -join ' · ')
     }
     return
 }

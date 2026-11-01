@@ -55,6 +55,8 @@ powershell.exe -NoProfile -File tool\conpty-update_windows.ps1 -Version <판>   
 ```
 
 - **먼저 `-Notes` 로 변경량을 봐요.** Terminal 릴리즈 노트에서 ConPTY · conhost 항목만 뽑아요. 별로 없으면 다음 판까지 모아서 올려요.
+  - 지금 판에 이미 있는 변경은 빼고, 뺀 PR 번호를 끝에 한 줄로 보여 줘요. 미리보기 노트가 같은 날 나온 안정판의 변경을 다시 적어서예요 ([#842](https://github.com/ensky0/tildaz/issues/842)).
+  - PR 번호가 없는 줄은 이미 있는지 알 수 없어 그대로 보여 줘요.
 - `-Version` 은 바꿀 네 파일의 Authenticode 서명이 유효하고 서명자가 Microsoft 인지 확인한 뒤에만 복사해요.
 - 판 번호가 적힌 곳은 이 파일의 `- 버전:` 줄과 `dist/signpath-application.md` 두 곳이에요. 도구가 둘 다 고쳐요.
   `- 버전:` 줄이 도구가 지금 판을 읽는 단일 출처라 모양을 바꾸지 않아요.
