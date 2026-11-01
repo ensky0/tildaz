@@ -21,7 +21,7 @@
 #   tar.gz   — tar / gzip / sha256sum (POSIX 표준)
 #   deb      — dpkg-deb (Ubuntu / Debian runner 기본 포함)
 #   rpm      — rpmbuild (apt install rpm 또는 RHEL 계열 native)
-#   AppImage — appimagetool (없으면 자동 다운로드 — github continuous release)
+#   AppImage — appimagetool (없으면 자동 다운로드 — 고정 판 + sha256 확인, #846)
 #              FUSE 없이 --appimage-extract-and-run 으로 실행
 #   pkg      — makepkg / bsdtar (Arch Linux base-devel / libarchive)
 #
@@ -78,6 +78,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 ICON_SRC="$REPO_ROOT/docs/favicon.svg"
+ICON_PNG_SRC="$SCRIPT_DIR/tildaz.png"
 LICENSE_SRC="$REPO_ROOT/LICENSE"
 NOTICES_SRC="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
 DESKTOP_TEMPLATE="$SCRIPT_DIR/tildaz.desktop"
@@ -554,8 +555,11 @@ StartupWMClass=tildaz
 StartupNotify=false
 END
     validate_desktop_exec "$APPDIR/tildaz.desktop" "tildaz"
-    # AppImage root icon — appimagetool 가 hicolor 트리에 자동 인식 시켰지만
-    # 일부 환경에서 fallback 용으로 root 에 직접 둠.
+    # AppImage root icon — appimagetool 은 root 의 <Icon>.png 로 .DirIcon 을
+    # 만든다. 파일 관리자가 SVG 를 못 읽을 수 있어 .DirIcon 은 PNG 여야 하고,
+    # continuous 판 (2026-10-31) 부터는 PNG 가 없으면 멈춘다 (#846). PNG 는
+    # docs/favicon.svg 에서 만든 256x256 이다 (macOS .icns · Windows .ico 와 같은 방식).
+    cp "$ICON_PNG_SRC" "$APPDIR/tildaz.png"
     cp "$ICON_SRC" "$APPDIR/tildaz.svg"
 
     cat > "$APPDIR/AppRun" << 'END'
@@ -578,12 +582,25 @@ END
             x86_64|aarch64) ;;
             *) echo "ERROR: unsupported host arch '$HOST_ARCH' for appimagetool" >&2; exit 1 ;;
         esac
-        APPIMAGETOOL="$RELEASE_ROOT/appimagetool-${HOST_ARCH}.AppImage"
+        # 판을 고정하고 해시를 확인한다. continuous 판은 예고 없이 바뀌어
+        # 릴리즈 날 빌드를 깬 적이 있다 (#846). 올릴 때는 두 해시를 함께 바꾼다.
+        local APPIMAGETOOL_VERSION="1.9.1" APPIMAGETOOL_SHA256
+        case "$HOST_ARCH" in
+            x86_64)  APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
+            aarch64) APPIMAGETOOL_SHA256="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
+        esac
+        APPIMAGETOOL="$RELEASE_ROOT/appimagetool-${APPIMAGETOOL_VERSION}-${HOST_ARCH}.AppImage"
         if [[ ! -x "$APPIMAGETOOL" ]]; then
-            local URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${HOST_ARCH}.AppImage"
+            local URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${HOST_ARCH}.AppImage"
             echo "Downloading appimagetool from $URL"
-            curl -sSL -o "$APPIMAGETOOL" "$URL"
-            chmod +x "$APPIMAGETOOL"
+            curl -fsSL -o "$APPIMAGETOOL.part" "$URL"
+            if ! echo "$APPIMAGETOOL_SHA256  $APPIMAGETOOL.part" | sha256sum -c --quiet -; then
+                echo "ERROR: appimagetool sha256 mismatch ($URL)" >&2
+                rm -f "$APPIMAGETOOL.part"
+                exit 1
+            fi
+            chmod +x "$APPIMAGETOOL.part"
+            mv "$APPIMAGETOOL.part" "$APPIMAGETOOL"
         fi
     fi
 
