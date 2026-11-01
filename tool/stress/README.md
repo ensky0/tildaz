@@ -1581,6 +1581,9 @@ tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 | sway · Hyprland | `grim` | **`~`** | ⚠️ 돼요. 전체 화면이라 **가려진 창은 못 찍어요** (타일링이라 보통 안 가려지긴 해요). 창 단위 성공이 없으니 정상 결과도 `~` 예요 ([#448](https://github.com/ensky0/tildaz/issues/448)) |
 | GNOME 43+ | — | — | ❌ `gnome-screenshot` 이 제거돼서 **경로가 없어요** (있으면 `grim` 과 같이 전체 화면 · `~`) |
 
+도구는 `XDG_CURRENT_DESKTOP` 으로 골라요. 깔린 순서로 고르던 때는 grim 이 깔린 기기에서 KDE 도 grim 을 써서
+캡처가 모두 실패했어요 ([#848](https://github.com/ensky0/tildaz/issues/848)).
+
 **어느 도구든 찍기 전에 대상이 살아 있는지 먼저 봐요** ([#448](https://github.com/ensky0/tildaz/issues/448)).
 없으면 `?` 이고, 그 회차는 [#413](https://github.com/ensky0/tildaz/issues/413) 의 재시도가 hold 를
 늘려 다시 찍어요. 예전에는 Linux 만 이 판정이 없어서 **창이 이미 닫힌 회차도 `@` 로 통과**했어요.
