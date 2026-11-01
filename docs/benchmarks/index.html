@@ -102,9 +102,9 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
         <h2>Linux</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on CJK output and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul it is tied with Alacritty and foot. Emoji with VS-16 is its weak spot: it is third, at 95% of Alacritty. It starts first on each desktop. Once scrollback is full, it uses the least memory of the terminals with matching settings. On KDE Plasma, foot has the lowest latency and TildaZ is second. On GNOME, TildaZ has the lowest latency. On COSMIC, it is tied with Alacritty.</p>
-      <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.1, GNOME Shell 51.1, COSMIC (cosmic-comp 1.0.0) · October 28–30, 2026<br>TildaZ v0.10.7 release · foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
-      <h3>Throughput · MiB/s, higher is better · KDE Plasma</h3>
+      <p class="perf-lede">TildaZ is first on CJK output and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul it is tied with foot and Alacritty. Emoji with VS-16 is its weak spot: it is third, at 93% of Alacritty, which draws that heart as a one-cell outline. It starts first. Once scrollback is full, it uses the least memory of the terminals with matching settings. foot has the lowest latency and TildaZ is second.</p>
+      <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.1 · November 1, 2026<br>TildaZ v0.10.8 release · foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
+      <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
           <caption>Linux throughput on KDE Plasma, MiB/s</caption>
@@ -112,70 +112,36 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">foot</th><th scope="col">kitty</th><th scope="col">Alacritty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">GNOME Terminal<sup class="bench-mark">†</sup></th><th scope="col">Konsole</th><th scope="col">COSMIC Terminal<sup class="bench-mark">†</sup></th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz">172.7</td><td><strong>178.0</strong></td><td>154.6</td><td>112.3</td><td>121.0</td><td>29.7</td><td>46.7</td><td>16.7</td><td>(101.3)</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">139.4</td><td><strong>214.0</strong></td><td>128.0</td><td>126.0</td><td>56.1</td><td>30.4</td><td>40.6</td><td>20.9</td><td>(112.2)</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz">122.1</td><td>121.9</td><td>110.3</td><td><strong>122.9</strong></td><td>102.2</td><td>39.9</td><td>34.4</td><td>13.5</td><td>(106.7)</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>155.3</strong></td><td>138.4</td><td>115.3</td><td>117.9</td><td>63.5</td><td>39.2</td><td>30.5</td><td>17.3</td><td>(106.0)</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz">115.3</td><td>104.7</td><td>121.1</td><td><strong>121.6</strong></td><td>26.4</td><td>53.9</td><td>27.1</td><td>21.5</td><td>(106.6)</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">123.0</td><td><strong>131.2</strong></td><td>119.6</td><td>108.0</td><td>33.9</td><td>57.6</td><td>34.1</td><td>39.6</td><td>(96.5)</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz">172.8</td><td><strong>176.9</strong></td><td>154.7</td><td>110.7</td><td>122.5</td><td>29.8</td><td>52.8</td><td>16.7</td><td>(102.1)</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">142.3</td><td><strong>217.2</strong></td><td>128.2</td><td>125.6</td><td>56.4</td><td>30.0</td><td>39.8</td><td>21.0</td><td>(112.1)</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>123.4</strong></td><td>121.4</td><td>110.6</td><td>120.7</td><td>99.2</td><td>38.8</td><td>36.2</td><td>13.5</td><td>(106.2)</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>155.9</strong></td><td>140.0</td><td>115.0</td><td>119.2</td><td>63.0</td><td>39.5</td><td>31.5</td><td>17.1</td><td>(105.0)</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">114.4</td><td>104.1</td><td>121.2</td><td><strong>122.5</strong></td><td>26.2</td><td>55.7</td><td>26.8</td><td>21.3</td><td>(106.2)</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">122.4</td><td><strong>132.4</strong></td><td>119.9</td><td>108.1</td><td>34.0</td><td>57.7</td><td>38.4</td><td>39.4</td><td>(95.8)</td></tr>
           </tbody>
         </table>
       </div>
       <h3>Key-to-screen latency · ms, lower is better</h3>
-      <div class="bench-grid">
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>KDE Plasma</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
-            </thead>
-            <tbody>
-              <tr><th scope="row">foot</th><td><strong>9.04</strong></td><td><strong>12.83</strong></td></tr>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">10.27</td><td class="tz">13.98</td></tr>
-              <tr><th scope="row">kitty</th><td>11.44</td><td>15.24</td></tr>
-              <tr><th scope="row">Alacritty</th><td>11.79</td><td>14.25</td></tr>
-              <tr><th scope="row">COSMIC Terminal</th><td>13.14</td><td>18.59</td></tr>
-              <tr><th scope="row">GNOME Terminal</th><td>13.21</td><td>16.62</td></tr>
-              <tr><th scope="row">WezTerm</th><td>13.73</td><td>18.70</td></tr>
-              <tr><th scope="row">Konsole</th><td>19.95</td><td>23.11</td></tr>
-              <tr><th scope="row">Ghostty</th><td>20.85</td><td>26.35</td></tr>
-            </tbody>
-          </table>
-        </div>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Linux key-to-screen latency on KDE Plasma</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">foot</th><td><strong>10.09</strong></td><td>14.50</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">10.39</td><td class="tz"><strong>13.93</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>10.85</td><td>14.60</td></tr>
+            <tr><th scope="row">kitty</th><td>11.46</td><td>15.60</td></tr>
+            <tr><th scope="row">GNOME Terminal</th><td>12.68</td><td>16.48</td></tr>
+            <tr><th scope="row">WezTerm</th><td>12.69</td><td>18.66</td></tr>
+            <tr><th scope="row">COSMIC Terminal</th><td>13.30</td><td>17.48</td></tr>
+            <tr><th scope="row">Ghostty</th><td>19.79</td><td>27.23</td></tr>
+            <tr><th scope="row">Konsole</th><td>20.06</td><td>24.15</td></tr>
+          </tbody>
+        </table>
       </div>
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>GNOME</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
-            </thead>
-            <tbody>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>7.22</strong></td><td class="tz"><strong>11.97</strong></td></tr>
-              <tr><th scope="row">Alacritty</th><td>7.67</td><td>13.39</td></tr>
-              <tr><th scope="row">GNOME Terminal</th><td>10.42</td><td>16.90</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>COSMIC</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
-            </thead>
-            <tbody>
-              <tr><th scope="row">Alacritty</th><td><strong>40.32</strong></td><td><strong>46.47</strong></td></tr>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">40.53</td><td class="tz">47.42</td></tr>
-              <tr><th scope="row">COSMIC Terminal</th><td>46.17</td><td>49.37</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      </div>
-      <h3>Memory · lower is better · KDE Plasma</h3>
+      <h3>Memory · lower is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
           <caption>Linux memory (PSS) on KDE Plasma</caption>
@@ -183,74 +149,39 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">foot</th><td><strong>33.9</strong></td><td>90.8</td><td><strong>0.00</strong></td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">46.6</td><td class="tz"><strong>80.6</strong></td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Konsole</th><td>49.9</td><td>105.1</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>59.0</td><td>151.4</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">GNOME Terminal<sup class="bench-mark">†</sup></th><td>59.6</td><td>63.8</td><td>0.07</td></tr>
-            <tr><th scope="row">WezTerm</th><td>81.1</td><td>109.8</td><td>0.03</td></tr>
-            <tr><th scope="row">Ghostty</th><td>104.0</td><td>108.2</td><td>0.53</td></tr>
-            <tr><th scope="row">kitty</th><td>129.7</td><td>251.2</td><td>0.03</td></tr>
-            <tr><th scope="row">COSMIC Terminal<sup class="bench-mark">†</sup></th><td>(72.2)</td><td>(182.8)</td><td>(0.00)</td></tr>
+            <tr><th scope="row">foot</th><td><strong>35.8</strong></td><td>92.6</td><td><strong>0.00</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">57.3</td><td class="tz"><strong>92.3</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Konsole</th><td>61.1</td><td>115.5</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">GNOME Terminal<sup class="bench-mark">†</sup></th><td>61.8</td><td>65.7</td><td>0.03</td></tr>
+            <tr><th scope="row">Alacritty</th><td>70.0</td><td>162.5</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>89.6</td><td>118.5</td><td>0.03</td></tr>
+            <tr><th scope="row">Ghostty</th><td>116.2</td><td>119.8</td><td>0.57</td></tr>
+            <tr><th scope="row">kitty</th><td>139.7</td><td>261.2</td><td>0.03</td></tr>
+            <tr><th scope="row">COSMIC Terminal<sup class="bench-mark">†</sup></th><td>(82.3)</td><td>(192.8)</td><td>(0.00)</td></tr>
           </tbody>
         </table>
       </div>
       <h3>Startup · ms, lower is better</h3>
-      <div class="bench-grid">
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>KDE Plasma</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
-            </thead>
-            <tbody>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>102.8</strong></td></tr>
-              <tr><th scope="row">Alacritty</th><td>119.8</td></tr>
-              <tr><th scope="row">Konsole</th><td>157.6</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>GNOME</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
-            </thead>
-            <tbody>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>89.5</strong></td></tr>
-              <tr><th scope="row">Alacritty</th><td>107.6</td></tr>
-              <tr><th scope="row">GNOME Terminal</th><td>254.8</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="bench-cell">
-        <div class="table-wrap">
-          <table class="perf-table bench-table">
-            <caption>COSMIC</caption>
-            <thead>
-              <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
-            </thead>
-            <tbody>
-              <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>69.0</strong></td></tr>
-              <tr><th scope="row">Alacritty</th><td>70.6</td></tr>
-              <tr><th scope="row">COSMIC Terminal</th><td>117.0</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <div class="table-wrap">
+        <table class="perf-table bench-table">
+          <caption>Linux startup on KDE Plasma</caption>
+          <thead>
+            <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
+          </thead>
+          <tbody>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>104.5</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>119.0</td></tr>
+            <tr><th scope="row">Konsole</th><td>154.8</td></tr>
+          </tbody>
+        </table>
       </div>
       <ul class="perf-notes">
-        <li><strong>Throughput and memory come from KDE Plasma only.</strong> On its own desktop, GNOME Terminal was 46% faster with plain text (68.3 vs 46.7 MiB/s). COSMIC Terminal was about the same on both.</li>
-        <li><strong>Latency and startup were measured on each desktop. Do not compare them across desktops.</strong> On Linux, both end when the frame reaches the capture tool. KDE Plasma and GNOME pass a frame to it as soon as they compose it. COSMIC passes it after the frame is on the screen.</li>
-        <li>This laptop's panel saves power while the screen is still (Panel Self Refresh). The first frame after that reaches the screen about 30 ms late, on every desktop and in every terminal. Only the COSMIC latency includes this delay, so every terminal there is near 40 ms (<a href="https://github.com/ensky0/tildaz/issues/826" target="_blank" rel="noopener">#826</a>).</li>
+        <li><strong>Everything on Linux was measured on KDE Plasma.</strong> Earlier rounds also measured latency and startup on GNOME and COSMIC (<a href="https://github.com/ensky0/tildaz/issues/826" target="_blank" rel="noopener">#826</a>).</li>
+        <li><strong>TildaZ, foot, Ghostty and Konsole drew every emoji workload correctly.</strong> Alacritty and GNOME Terminal split the family emoji into separate people, and WezTerm and GNOME Terminal squeezed ❤️ into one cell. <a href="renders/#linux">See the screenshots</a>.</li>
+        <li>Latency ends when KDE Plasma hands the frame to the capture tool, right after composing it. It does not include the panel's power-saving delay after a still screen (Panel Self Refresh, <a href="https://github.com/ensky0/tildaz/issues/836" target="_blank" rel="noopener">#836</a>).</li>
         <li><sup class="bench-mark">†</sup> GNOME Terminal uses the scrollback from your profile (10,000 lines here). It cannot be set from the command line.</li>
-        <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency and startup.</li>
-        <li>On GNOME, TildaZ cannot be given a grid size, so it ran at 43x13 instead of 120x40 for latency.</li>
-        <li>Startup opens each terminal's desktop entry: <code>kioclient exec</code> on KDE Plasma, <code>gio launch</code> on GNOME and COSMIC.</li>
+        <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency.</li>
+        <li>Startup opens each terminal's desktop entry with <code>kioclient exec</code>.</li>
       </ul>
     </section>
 
