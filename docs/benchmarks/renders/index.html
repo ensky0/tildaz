@@ -51,7 +51,7 @@
       <p>A throughput number only means something if the terminal drew the right thing. These are the screens at the end of each workload, side by side.</p>
       <nav class="render-os-nav" aria-label="Operating systems">
         <a href="#linux">Linux</a>
-        <a href="#macos">macOS <small>soon</small></a>
+        <a href="#macos">macOS</a>
         <a href="#windows">Windows</a>
         <a href="../">← Benchmarks</a>
       </nav>
@@ -243,7 +243,136 @@
         <p class="eyebrow">MacBook Pro · M5 Pro</p>
         <h2>macOS</h2>
       </div>
-      <p class="render-pending">Screenshots will be added in the macOS round (<a href="https://github.com/ensky0/tildaz/issues/848" target="_blank" rel="noopener">#848</a>).</p>
+      <p class="perf-lede">TildaZ, kitty, Ghostty and iTerm2 drew every workload correctly. Alacritty drew emoji as small monochrome outlines and split the family emoji into separate people. WezTerm squeezed ❤️ into one cell, and Terminal.app drew emoji at the wrong width, so the text after them shifts.</p>
+      <p class="bench-machine">November 1, 2026 · macOS 27.2 · TildaZ v0.10.8 release · Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.4.0 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
+
+      <h3>Hangul · <span class="render-sample">한글가나다라</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="macos/hangul-tildaz.webp"><img src="macos/hangul-tildaz-crop.png" alt="TildaZ drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-alacritty.webp"><img src="macos/hangul-alacritty-crop.png" alt="Alacritty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-kitty.webp"><img src="macos/hangul-kitty-crop.png" alt="kitty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-ghostty.webp"><img src="macos/hangul-ghostty-crop.png" alt="Ghostty drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-wezterm.webp"><img src="macos/hangul-wezterm-crop.png" alt="WezTerm drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-iterm2.webp"><img src="macos/hangul-iterm2-crop.png" alt="iTerm2 drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>iTerm2</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/hangul-terminal.webp"><img src="macos/hangul-terminal-crop.png" alt="Terminal.app drawing the Hangul workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Terminal.app</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Mixed CJK and emoji · <span class="render-sample">한글 💎👋🏿👨‍👩‍👧 ABC ▆</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="macos/cjk-tildaz.webp"><img src="macos/cjk-tildaz-crop.png" alt="TildaZ drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-alacritty.webp"><img src="macos/cjk-alacritty-crop.png" alt="Alacritty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Monochrome ❤️ · skin tone as a box · family split into people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-kitty.webp"><img src="macos/cjk-kitty-crop.png" alt="kitty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-ghostty.webp"><img src="macos/cjk-ghostty-crop.png" alt="Ghostty drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-wezterm.webp"><img src="macos/cjk-wezterm-crop.png" alt="WezTerm drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">❤️ squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-iterm2.webp"><img src="macos/cjk-iterm2-crop.png" alt="iTerm2 drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>iTerm2</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/cjk-terminal.webp"><img src="macos/cjk-terminal-crop.png" alt="Terminal.app drawing the mixed CJK and emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Terminal.app</strong><span class="render-verdict issue">Emoji are too wide, so the text after them shifts</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>Emoji with VS-16 · <span class="render-sample">❤️</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-tildaz.webp"><img src="macos/emoji_vs16-tildaz-crop.png" alt="TildaZ drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-alacritty.webp"><img src="macos/emoji_vs16-alacritty-crop.png" alt="Alacritty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Small white outline, one cell wide</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-kitty.webp"><img src="macos/emoji_vs16-kitty-crop.png" alt="kitty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-ghostty.webp"><img src="macos/emoji_vs16-ghostty-crop.png" alt="Ghostty drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-wezterm.webp"><img src="macos/emoji_vs16-wezterm-crop.png" alt="WezTerm drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict issue">Red, but squeezed into one cell</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-iterm2.webp"><img src="macos/emoji_vs16-iterm2-crop.png" alt="iTerm2 drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>iTerm2</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/emoji_vs16-terminal.webp"><img src="macos/emoji_vs16-terminal-crop.png" alt="Terminal.app drawing the VS-16 emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Terminal.app</strong><span class="render-verdict issue">Red, but one cell wide and overlapping</span></figcaption>
+        </figure>
+      </div>
+
+      <h3>ZWJ emoji sequences · <span class="render-sample">👨‍👩‍👧</span></h3>
+      <div class="render-grid">
+        <figure class="render-card">
+          <a href="macos/zwj-tildaz.webp"><img src="macos/zwj-tildaz-crop.png" alt="TildaZ drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>TildaZ</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-alacritty.webp"><img src="macos/zwj-alacritty-crop.png" alt="Alacritty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Alacritty</strong><span class="render-verdict issue">Split into three people</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-kitty.webp"><img src="macos/zwj-kitty-crop.png" alt="kitty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>kitty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-ghostty.webp"><img src="macos/zwj-ghostty-crop.png" alt="Ghostty drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Ghostty</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-wezterm.webp"><img src="macos/zwj-wezterm-crop.png" alt="WezTerm drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>WezTerm</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-iterm2.webp"><img src="macos/zwj-iterm2-crop.png" alt="iTerm2 drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>iTerm2</strong><span class="render-verdict ok">Correct</span></figcaption>
+        </figure>
+        <figure class="render-card">
+          <a href="macos/zwj-terminal.webp"><img src="macos/zwj-terminal-crop.png" alt="Terminal.app drawing the ZWJ emoji workload" loading="lazy" width="560" height="380"></a>
+          <figcaption><strong>Terminal.app</strong><span class="render-verdict issue">Too wide, so the families spread apart</span></figcaption>
+        </figure>
+      </div>
     </section>
 
     <section id="windows" class="section compact-section bench-os">
