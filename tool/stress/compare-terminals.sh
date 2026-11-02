@@ -17,6 +17,12 @@
 #
 #   tool/stress/compare-terminals.sh --mb 64 --workload plain --repeat 5
 #
+# **창이 뜬 뒤 1 초 기다렸다가 잰다** (#852 · `--start-delay-ms`). 회차마다 터미널을 새로 띄우므로,
+# 곧바로 쏟으면 앱의 시작 처리와 측정 구간이 겹친다. macOS TildaZ 는 출력이 도착한 뒤 약 30 ms 동안
+# AppKit 시작 처리로 파싱을 못 해서, 64 MiB 처리량이 v0.10.8 표의 210.8 에서 지연을 두자 259.3 MiB/s
+# 가 됐다 (#851 측정 H). 사용자가 겪는 것은 이미 떠 있는 창의 처리량이다. **v0.10.8 까지의 사이트 표는
+# 지연 없이 잰 값이다** — 그 표와 견줄 때는 `--start-delay-ms 0` 으로 잰다.
+#
 # TildaZ 도 자동이다 — 측정 내부용 `-e` · `-size` 옵션을 쓴다 (#382). 그 인스턴스는
 # worker lock 을 잡지 않고 전역 핫키도 등록하지 않아서, 평소 쓰는 TildaZ 가 떠 있어도
 # 충돌하지 않는다. 다만 **기록용 측정에서는 평소 쓰는 worker 를 종료한다** — 다른 터미널은
@@ -78,6 +84,9 @@ CAPTURE_DELAY=2
 # 반환해서, 앞 회차 창이 오래 남아 있으면 새 프로세스가 안 뜨고 `StartTime` 필터에 걸린다
 # (#413 실측: hold 15 초에서 wt 3 회차 중 2 회차가 `?` 였다. 기본 4 초에서는 안 났다).
 CAPTURE_RETRY_HOLD_MS=15000
+# 그리드를 확인한 뒤 출력을 시작하기까지 기다리는 시간 (#852 — 머리 주석). 1 초는 넉넉한 값이다 —
+# #851 측정 G 에서 macOS TildaZ 는 창을 띄우기 시작한 뒤 약 50 ms 에 첫 파싱을 했다.
+START_DELAY_MS=1000
 
 # 위생 점검에 걸려도 강행할지 (`--ignore-hygiene`).
 IGNORE_HYGIENE=0
@@ -102,6 +111,8 @@ while [ $# -gt 0 ]; do
         --scrollback) SCROLLBACK="$2"; shift 2 ;;
         # 표기는 `measure-repeat.sh` 와 맞춘다 (그쪽에 이미 `--hold-ms` 가 있다).
         --hold-ms) HOLD_MS="$2"; shift 2 ;;
+        # 0 이면 예전처럼 곧바로 쏟는다 (v0.10.8 까지의 표와 견줄 때).
+        --start-delay-ms) START_DELAY_MS="$2"; shift 2 ;;
         # 경로는 선택이다. 안 주면 `tool/stress/shots`. 다음 인자가 `-` 로 시작하면 옵션이므로
         # 경로로 보지 않는다.
         --capture)
@@ -122,6 +133,10 @@ done
 
 case "$SCROLLBACK" in
     ''|*[!0-9]*) echo "--scrollback 은 0 이상의 정수여야 해요: $SCROLLBACK" >&2; exit 2 ;;
+esac
+
+case "$START_DELAY_MS" in
+    ''|*[!0-9]*) echo "--start-delay-ms 는 0 이상의 정수여야 해요: $START_DELAY_MS" >&2; exit 2 ;;
 esac
 
 case "$REPEAT" in
@@ -205,6 +220,7 @@ echo "bytes      $BYTES ($MB MiB)"
 echo "목표 그리드 ${COLS}x${ROWS}"
 echo "scrollback ${SCROLLBACK} 줄 (모든 대상 동일 — 아래 예외 참고)"
 echo "반복       ${REPEAT} 회"
+echo "시작 지연  ${START_DELAY_MS} ms (그리드 확인 뒤 — 이미 떠 있는 창의 처리량)"
 echo "producer   $PRODUCER"
 if [ -n "$CAPTURE_DIR" ]; then
     echo "캡처       $CAPTURE_DIR (회차마다 화면 PNG · hold ${HOLD_MS} ms)"
@@ -315,7 +331,8 @@ echo ""
 # 처리량 지표가 producer 에게 주는 것 — 워크로드와 보낼 바이트 수. 나머지 (timing 경로 · 목표
 # 격자) 는 `terminals.sh` 의 `producer_env_lines` 가 붙인다.
 PRODUCER_ENV="TILDAZ_STRESS_WORKLOAD=$WORKLOAD
-TILDAZ_STRESS_BYTES=$BYTES"
+TILDAZ_STRESS_BYTES=$BYTES
+TILDAZ_STRESS_START_DELAY_MS=$START_DELAY_MS"
 
 # 처리량에서 건너뛰는 대상. `terminals.sh` 의 훅이다.
 #
