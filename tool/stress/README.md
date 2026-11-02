@@ -1630,7 +1630,8 @@ tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
   210.8 → 259.3 MiB/s 가 되어 Ghostty (258.3) 와 같아졌어요 (#851 측정 H · 외장 화면 60 Hz).
 - 파싱을 별도 스레드에서 하는 터미널 (Ghostty 등) 은 이 겹침의 손해가 작아서, 지연이 없으면
   **시작 처리 구조의 차이**가 처리량으로 잡혀요.
-- **v0.10.8 까지의 사이트 표는 지연 없이 잰 값이에요.** 그 표와 견줄 때는 `--start-delay-ms 0` 으로 재요.
+- **사이트 표는 #852 부터 1 초 대기 값이에요.** 그 전 표 (v0.10.8 첫 회차 [#848](https://github.com/ensky0/tildaz/issues/848) 까지) 는 지연 없이 잰 값이라, 그 표와 견줄 때는 `--start-delay-ms 0` 으로 재요.
+- 1 초 대기의 효과는 OS 마다 달랐어요 (#848 재측정). Linux 는 모든 대상이 3 % 안, macOS 는 TildaZ 만 크게 (plain +36 %), Windows 는 TildaZ (+5~15 %) 와 Windows Terminal (+6~24 %) 이 함께 올랐어요. Windows 의 원인은 재 보지 않았어요.
 
 **대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
 대상 목록과 대상마다 띄우는 방법은 [`terminals.sh`](terminals.sh) 에 있어요 — 처리량 말고 다른

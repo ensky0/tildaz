@@ -232,18 +232,18 @@
             </tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td>172.8</td><td>210.8</td><td>321.0</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td>142.3</td><td>197.4</td><td>86.9</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td>123.4</td><td>207.2</td><td>169.6</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td>155.9</td><td>217.6</td><td>150.4</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td>114.4</td><td>156.7</td><td>95.8</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td>122.4</td><td>169.1</td><td>105.3</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td>174.4</td><td>262.9</td><td>323.6</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td>142.4</td><td>214.4</td><td>91.5</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td>123.4</td><td>237.9</td><td>169.0</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td>154.1</td><td>245.9</td><td>173.8</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td>114.8</td><td>165.3</td><td>104.2</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td>121.6</td><td>170.6</td><td>111.7</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
         <li><strong>Read each column on its own.</strong> Linux and Windows are the same dual-boot laptop, so those two columns differ only in host implementation. macOS is a different machine, so reading straight across a row mixes in a CPU difference.</li>
-        <li>Built ReleaseFast with SIMD, on AC power, with a 32,767-line scrollback. Every figure is the trimmed mean of five runs.</li>
+        <li>Built ReleaseFast with SIMD, on AC power, with a 32,767-line scrollback. The output starts one second after the window is ready, as in a window that is already open. Every figure is the trimmed mean of five runs.</li>
         <li><strong>How does that compare with other terminals?</strong> <a href="benchmarks/">Benchmarks</a> puts TildaZ next to the terminals people use on each OS, with key-to-screen latency, memory, and startup time too — weak spots included.</li>
       </ul>
     </section>

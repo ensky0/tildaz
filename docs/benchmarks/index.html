@@ -66,6 +66,7 @@
         <li>Linux and Windows ran on the same laptop. macOS ran on a MacBook Pro. All three displays ran at 120 Hz.</li>
         <li><strong>Bold</strong> is the best value in a row or column. The TildaZ column and row are highlighted.</li>
         <li><sup class="bench-mark">†</sup> marks a terminal whose scrollback or grid could not be matched. It is left out when picking the best value for throughput and memory. Each OS lists the reasons below its tables.</li>
+        <li><sup class="bench-mark">‡</sup> marks a value from a terminal that drew that workload incorrectly. It is also left out when picking the best value. <a href="renders/">The screenshots</a> show what each terminal drew.</li>
       </ul>
       <div class="table-wrap bench-defs">
         <table>
@@ -73,7 +74,7 @@
             <tr><th scope="col">Metric</th><th scope="col">What it measures</th></tr>
           </thead>
           <tbody>
-            <tr><td>Throughput</td><td>How fast the terminal takes in and draws 64 MiB of output in a 120x40 grid with 32,767 lines of scrollback. Mean of five runs, without the fastest and the slowest.</td></tr>
+            <tr><td>Throughput</td><td>How fast the terminal takes in and draws 64 MiB of output in a 120x40 grid with 32,767 lines of scrollback. The output starts one second after the window is ready, so startup work is not counted. Mean of five runs, without the fastest and the slowest.</td></tr>
             <tr><td>Key-to-screen latency</td><td>From a synthetic key press to the first frame that changes, with the terminal idle. 150 presses per terminal. The 95th percentile (p95) shows the slow tail.</td></tr>
             <tr><td>Memory</td><td>All of the terminal's own processes, on an empty screen and after printing 40,000 lines. Idle CPU is the CPU time used over the next 30 seconds, where one core is 100%. Median of three runs.</td></tr>
             <tr><td>Startup</td><td>From launch to the first frame that shows the program running inside the terminal. Each app had been launched before (warm start). Median of five runs.</td></tr>
@@ -102,8 +103,8 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
         <h2>Linux</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on CJK output and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul it is tied with foot and Alacritty. Emoji with VS-16 is its weak spot: it is third, at 93% of Alacritty, which draws that heart as a one-cell outline. It starts first. Once scrollback is full, it uses the least memory of the terminals with matching settings. foot has the lowest latency and TildaZ is second.</p>
-      <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.1 · November 1, 2026<br>TildaZ v0.10.8 release · foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
+      <p class="perf-lede">TildaZ is first on Hangul and CJK output, and second to foot on plain text, ANSI color, and ZWJ emoji. On Hangul, TildaZ, Alacritty, and foot are within 1%. Emoji with VS-16 is its weak spot: of the terminals that draw ❤️ correctly, it is second, 4% behind kitty. It starts first. Once scrollback is full, it uses the least memory of the terminals with matching settings. foot has the lowest latency; TildaZ and kitty are tied for second.</p>
+      <p class="bench-machine">Lenovo Yoga Slim 7 14AKP10 · AMD Ryzen AI 7 350 · CachyOS · built-in display, 2880x1800 at 120 Hz · AC power · KDE Plasma 6.8.1 · November 2, 2026<br>TildaZ v0.10.8 release · foot 1.28.0 · Alacritty 0.17.0 · kitty 0.49.2 · WezTerm 20240203-110809-5046fc22 · Ghostty 1.3.1 · Konsole 26.08.2 · GNOME Terminal 3.60.0 · COSMIC Terminal 1.10.0</p>
       <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
@@ -112,12 +113,12 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">foot</th><th scope="col">kitty</th><th scope="col">Alacritty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">GNOME Terminal<sup class="bench-mark">†</sup></th><th scope="col">Konsole</th><th scope="col">COSMIC Terminal<sup class="bench-mark">†</sup></th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz">172.8</td><td><strong>176.9</strong></td><td>154.7</td><td>110.7</td><td>122.5</td><td>29.8</td><td>52.8</td><td>16.7</td><td>(102.1)</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">142.3</td><td><strong>217.2</strong></td><td>128.2</td><td>125.6</td><td>56.4</td><td>30.0</td><td>39.8</td><td>21.0</td><td>(112.1)</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>123.4</strong></td><td>121.4</td><td>110.6</td><td>120.7</td><td>99.2</td><td>38.8</td><td>36.2</td><td>13.5</td><td>(106.2)</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>155.9</strong></td><td>140.0</td><td>115.0</td><td>119.2</td><td>63.0</td><td>39.5</td><td>31.5</td><td>17.1</td><td>(105.0)</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz">114.4</td><td>104.1</td><td>121.2</td><td><strong>122.5</strong></td><td>26.2</td><td>55.7</td><td>26.8</td><td>21.3</td><td>(106.2)</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">122.4</td><td><strong>132.4</strong></td><td>119.9</td><td>108.1</td><td>34.0</td><td>57.7</td><td>38.4</td><td>39.4</td><td>(95.8)</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz">174.4</td><td><strong>179.9</strong></td><td>156.2</td><td>111.6</td><td>121.5</td><td>30.1</td><td>52.0</td><td>16.8</td><td>(99.2)</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">142.4</td><td><strong>217.4</strong></td><td>129.1</td><td>125.6</td><td>56.9</td><td>30.6</td><td>41.7</td><td>21.4</td><td>(110.5)</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>123.4</strong></td><td>122.0</td><td>110.6</td><td>122.3</td><td>103.1</td><td>40.3</td><td>38.2</td><td>13.6</td><td>(106.2)</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>154.1</strong></td><td>140.4</td><td>115.6</td><td>118.8<sup class="bench-mark">‡</sup></td><td>62.6</td><td>40.4<sup class="bench-mark">‡</sup></td><td>37.0<sup class="bench-mark">‡</sup></td><td>17.4</td><td>(104.9)</td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">114.8</td><td>104.4</td><td><strong>120.0</strong></td><td>123.2<sup class="bench-mark">‡</sup></td><td>26.3</td><td>56.6<sup class="bench-mark">‡</sup></td><td>26.9<sup class="bench-mark">‡</sup></td><td>21.6</td><td>(104.9)</td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">121.6</td><td><strong>132.2</strong></td><td>119.4</td><td>108.0<sup class="bench-mark">‡</sup></td><td>33.8</td><td>58.9</td><td>55.2<sup class="bench-mark">‡</sup></td><td>40.4</td><td>(95.1)</td></tr>
           </tbody>
         </table>
       </div>
@@ -129,15 +130,15 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">foot</th><td><strong>10.09</strong></td><td>14.50</td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">10.39</td><td class="tz"><strong>13.93</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>10.85</td><td>14.60</td></tr>
-            <tr><th scope="row">kitty</th><td>11.46</td><td>15.60</td></tr>
-            <tr><th scope="row">GNOME Terminal</th><td>12.68</td><td>16.48</td></tr>
-            <tr><th scope="row">WezTerm</th><td>12.69</td><td>18.66</td></tr>
-            <tr><th scope="row">COSMIC Terminal</th><td>13.30</td><td>17.48</td></tr>
-            <tr><th scope="row">Ghostty</th><td>19.79</td><td>27.23</td></tr>
-            <tr><th scope="row">Konsole</th><td>20.06</td><td>24.15</td></tr>
+            <tr><th scope="row">foot</th><td><strong>9.95</strong></td><td><strong>13.62</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">10.68</td><td class="tz">14.49</td></tr>
+            <tr><th scope="row">kitty</th><td>10.75</td><td>15.43</td></tr>
+            <tr><th scope="row">Alacritty</th><td>11.34</td><td>14.97</td></tr>
+            <tr><th scope="row">COSMIC Terminal</th><td>12.78</td><td>18.31</td></tr>
+            <tr><th scope="row">GNOME Terminal</th><td>12.83</td><td>17.50</td></tr>
+            <tr><th scope="row">WezTerm</th><td>13.19</td><td>18.97</td></tr>
+            <tr><th scope="row">Konsole</th><td>19.77</td><td>23.36</td></tr>
+            <tr><th scope="row">Ghostty</th><td>20.08</td><td>26.50</td></tr>
           </tbody>
         </table>
       </div>
@@ -149,15 +150,15 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">foot</th><td><strong>35.8</strong></td><td>92.6</td><td><strong>0.00</strong></td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">57.3</td><td class="tz"><strong>92.3</strong></td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Konsole</th><td>61.1</td><td>115.5</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">GNOME Terminal<sup class="bench-mark">†</sup></th><td>61.8</td><td>65.7</td><td>0.03</td></tr>
-            <tr><th scope="row">Alacritty</th><td>70.0</td><td>162.5</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">WezTerm</th><td>89.6</td><td>118.5</td><td>0.03</td></tr>
-            <tr><th scope="row">Ghostty</th><td>116.2</td><td>119.8</td><td>0.57</td></tr>
-            <tr><th scope="row">kitty</th><td>139.7</td><td>261.2</td><td>0.03</td></tr>
-            <tr><th scope="row">COSMIC Terminal<sup class="bench-mark">†</sup></th><td>(82.3)</td><td>(192.8)</td><td>(0.00)</td></tr>
+            <tr><th scope="row">foot</th><td><strong>29.7</strong></td><td>86.6</td><td><strong>0.00</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">45.9</td><td class="tz"><strong>80.3</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>51.0</td><td>143.5</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">GNOME Terminal<sup class="bench-mark">†</sup></th><td>51.8</td><td>55.4</td><td>0.07</td></tr>
+            <tr><th scope="row">Konsole</th><td>55.5</td><td>109.7</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>77.7</td><td>107.4</td><td>0.03</td></tr>
+            <tr><th scope="row">Ghostty</th><td>97.4</td><td>100.9</td><td>0.50</td></tr>
+            <tr><th scope="row">kitty</th><td>121.1</td><td>242.6</td><td>0.07</td></tr>
+            <tr><th scope="row">COSMIC Terminal<sup class="bench-mark">†</sup></th><td>(59.2)</td><td>(169.7)</td><td>(0.00)</td></tr>
           </tbody>
         </table>
       </div>
@@ -169,18 +170,21 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>104.5</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>119.0</td></tr>
-            <tr><th scope="row">Konsole</th><td>154.8</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>109.3</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>116.2</td></tr>
+            <tr><th scope="row">Konsole</th><td>158.4</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
+        <li><strong>Alacritty is fastest on VS-16 emoji, but it draws them wrong.</strong> It draws ❤️ as a white outline in one cell, not a color emoji in two cells. Of the terminals that draw it correctly, kitty is first and TildaZ is second.</li>
+        <li><sup class="bench-mark">‡</sup> The terminal drew that workload incorrectly, so the value is left out when picking the best. Alacritty and GNOME Terminal split the family emoji into three people. WezTerm and GNOME Terminal squeeze ❤️ into one cell. TildaZ, foot, kitty, Ghostty and Konsole drew every workload correctly; kitty uses much wider cells. <a href="renders/#linux">See the screenshots</a>.</li>
+        <li>GNOME Terminal jumps between about 30 and 55 MiB/s from run to run, under the same conditions.</li>
+        <li>Starting the output right away, without the one-second wait, changed every terminal by 3% or less (<a href="https://github.com/ensky0/tildaz/issues/852" target="_blank" rel="noopener">#852</a>).</li>
         <li><strong>Everything on Linux was measured on KDE Plasma.</strong> Earlier rounds also measured latency and startup on GNOME and COSMIC (<a href="https://github.com/ensky0/tildaz/issues/826" target="_blank" rel="noopener">#826</a>).</li>
-        <li><strong>TildaZ, foot, Ghostty and Konsole drew every emoji workload correctly.</strong> Alacritty and GNOME Terminal split the family emoji into separate people, and WezTerm and GNOME Terminal squeezed ❤️ into one cell. <a href="renders/#linux">See the screenshots</a>.</li>
         <li>Latency ends when KDE Plasma hands the frame to the capture tool, right after composing it. It does not include the panel's power-saving delay after a still screen (Panel Self Refresh, <a href="https://github.com/ensky0/tildaz/issues/836" target="_blank" rel="noopener">#836</a>).</li>
         <li><sup class="bench-mark">†</sup> GNOME Terminal uses the scrollback from your profile (10,000 lines here). It cannot be set from the command line.</li>
-        <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency.</li>
+        <li><sup class="bench-mark">†</sup> COSMIC Terminal has a fixed grid and a fixed 100,000-line scrollback, so its throughput and memory are in parentheses. Its grid size has little effect on latency. It draws ❤️ as a small monochrome outline.</li>
         <li>Startup opens each terminal's desktop entry with <code>kioclient exec</code>.</li>
       </ul>
     </section>
@@ -190,8 +194,8 @@
         <p class="eyebrow">MacBook Pro M5 Pro · 120 Hz</p>
         <h2>macOS</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on mixed CJK, VS-16 emoji, and ZWJ output, and second to Ghostty 1.4.0 on plain text, ANSI color, and Hangul. It starts fastest and uses the least memory of the terminals with matching settings. Latency is its weak spot: fourth of seven, about 6 ms behind kitty and Alacritty.</p>
-      <p class="bench-machine">MacBook Pro · Apple M5 Pro · macOS 27.2 · built-in display, 3024x1964 at 120 Hz · AC power · November 1, 2026<br>TildaZ v0.10.8 release · Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.4.0 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
+      <p class="perf-lede">TildaZ is first on five of the six throughput workloads. On ANSI color, Ghostty 1.4.0 is 4% ahead. TildaZ starts fastest and uses the least memory of the terminals with matching settings. Latency is its weak spot: fourth of seven, about 5–6 ms behind Alacritty and kitty.</p>
+      <p class="bench-machine">MacBook Pro · Apple M5 Pro · macOS 27.2 · built-in display, 3024x1964 at 120 Hz · AC power · November 2, 2026<br>TildaZ v0.10.8 release · Alacritty 0.17.0 · kitty 0.49.2 · Ghostty 1.4.0 · WezTerm 20240203-110809-5046fc22 · iTerm2 3.7.6 · Terminal.app 2.15</p>
       <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
@@ -200,12 +204,12 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Alacritty</th><th scope="col">kitty</th><th scope="col">Ghostty</th><th scope="col">WezTerm</th><th scope="col">iTerm2</th><th scope="col">Terminal.app<sup class="bench-mark">†</sup></th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz">210.8</td><td>144.0</td><td>129.5</td><td><strong>255.3</strong></td><td>45.1</td><td>92.9</td><td>43.9</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">197.4</td><td>140.2</td><td>107.4</td><td><strong>234.6</strong></td><td>49.4</td><td>18.5</td><td>31.9</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz">207.2</td><td>115.0</td><td>93.1</td><td><strong>230.1</strong></td><td>46.8</td><td>14.9</td><td>38.2</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>217.6</strong></td><td>142.8</td><td>96.9</td><td>150.2</td><td>46.7</td><td>7.5</td><td>38.9</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz"><strong>156.7</strong></td><td>99.3</td><td>103.6</td><td>135.1</td><td>68.2</td><td>14.5</td><td>41.3</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz"><strong>169.1</strong></td><td>141.0</td><td>108.5</td><td>162.1</td><td>70.8</td><td>23.7</td><td>41.9</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>262.9</strong></td><td>145.8</td><td>131.6</td><td>233.0</td><td>45.9</td><td>90.9</td><td>46.0</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">214.4</td><td>142.3</td><td>113.7</td><td><strong>223.2</strong></td><td>49.1</td><td>19.2</td><td>33.3</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>237.9</strong></td><td>114.0</td><td>93.8</td><td>219.7</td><td>46.0</td><td>14.9</td><td>39.2</td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>245.9</strong></td><td>145.1<sup class="bench-mark">‡</sup></td><td>98.5</td><td>144.6</td><td>46.7<sup class="bench-mark">‡</sup></td><td>7.4</td><td>38.9<sup class="bench-mark">‡</sup></td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz"><strong>165.3</strong></td><td>100.5<sup class="bench-mark">‡</sup></td><td>104.8</td><td>121.3</td><td>67.8<sup class="bench-mark">‡</sup></td><td>14.4</td><td>42.6<sup class="bench-mark">‡</sup></td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz"><strong>170.6</strong></td><td>139.4<sup class="bench-mark">‡</sup></td><td>110.8</td><td>153.9</td><td>70.1</td><td>24.0</td><td>42.3<sup class="bench-mark">‡</sup></td></tr>
           </tbody>
         </table>
       </div>
@@ -217,13 +221,13 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">kitty</th><td><strong>12.82</strong></td><td><strong>18.83</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>12.89</td><td>19.26</td></tr>
-            <tr><th scope="row">iTerm2</th><td>18.16</td><td>21.78</td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">18.77</td><td class="tz">25.84</td></tr>
-            <tr><th scope="row">Terminal.app</th><td>21.11</td><td>27.03</td></tr>
-            <tr><th scope="row">Ghostty</th><td>22.03</td><td>26.58</td></tr>
-            <tr><th scope="row">WezTerm</th><td>32.77</td><td>36.56</td></tr>
+            <tr><th scope="row">Alacritty</th><td><strong>12.59</strong></td><td><strong>19.17</strong></td></tr>
+            <tr><th scope="row">kitty</th><td>13.50</td><td>19.38</td></tr>
+            <tr><th scope="row">iTerm2</th><td>17.56</td><td>22.54</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">18.41</td><td class="tz">28.52</td></tr>
+            <tr><th scope="row">Ghostty</th><td>21.35</td><td>27.20</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>22.45</td><td>27.00</td></tr>
+            <tr><th scope="row">WezTerm</th><td>32.48</td><td>37.03</td></tr>
           </tbody>
         </table>
       </div>
@@ -235,13 +239,13 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>53.2</strong></td><td class="tz"><strong>129.2</strong></td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Terminal.app<sup class="bench-mark">†</sup></th><td>58.5</td><td>80.7</td><td>0.28</td></tr>
-            <tr><th scope="row">Alacritty</th><td>64.5</td><td>196.0</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">WezTerm</th><td>86.9</td><td>133.8</td><td>0.04</td></tr>
-            <tr><th scope="row">Ghostty</th><td>156.1</td><td>160.5</td><td>0.37</td></tr>
-            <tr><th scope="row">kitty</th><td>203.8</td><td>325.2</td><td>0.18</td></tr>
-            <tr><th scope="row">iTerm2</th><td>225.0</td><td>260.0</td><td>1.00</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>53.0</strong></td><td class="tz"><strong>117.0</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Terminal.app<sup class="bench-mark">†</sup></th><td>58.8</td><td>89.3</td><td>0.22</td></tr>
+            <tr><th scope="row">Alacritty</th><td>66.2</td><td>178.0</td><td><strong>0.00</strong></td></tr>
+            <tr><th scope="row">WezTerm</th><td>88.3</td><td>135.4</td><td>0.04</td></tr>
+            <tr><th scope="row">Ghostty</th><td>158.3</td><td>162.7</td><td>0.35</td></tr>
+            <tr><th scope="row">kitty</th><td>206.1</td><td>331.3</td><td>0.17</td></tr>
+            <tr><th scope="row">iTerm2</th><td>225.9</td><td>256.9</td><td>0.95</td></tr>
           </tbody>
         </table>
       </div>
@@ -253,21 +257,24 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>191.7</strong></td></tr>
-            <tr><th scope="row">Alacritty</th><td>246.2</td></tr>
-            <tr><th scope="row">Ghostty</th><td>280.0</td></tr>
-            <tr><th scope="row">WezTerm</th><td>328.9</td></tr>
-            <tr><th scope="row">Terminal.app</th><td>400.7</td></tr>
-            <tr><th scope="row">kitty</th><td>492.4</td></tr>
-            <tr><th scope="row">iTerm2</th><td>756.3</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>183.7</strong></td></tr>
+            <tr><th scope="row">Alacritty</th><td>259.5</td></tr>
+            <tr><th scope="row">Ghostty</th><td>299.7</td></tr>
+            <tr><th scope="row">WezTerm</th><td>328.1</td></tr>
+            <tr><th scope="row">Terminal.app</th><td>426.0</td></tr>
+            <tr><th scope="row">kitty</th><td>489.9</td></tr>
+            <tr><th scope="row">iTerm2</th><td>796.8</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
+        <li><strong>No first place on macOS comes from drawing less.</strong> TildaZ and Ghostty drew every workload correctly. Alacritty is a close second on mixed CJK, but with monochrome emoji and the family emoji split into three people.</li>
+        <li><sup class="bench-mark">‡</sup> The terminal drew that workload incorrectly, so the value is left out when picking the best. Alacritty draws emoji as small monochrome outlines and splits the family emoji. WezTerm squeezes ❤️ into one cell. Terminal.app draws emoji at the wrong width, so the text after them shifts. TildaZ, kitty, Ghostty and iTerm2 drew every workload correctly. <a href="renders/#macos">See the screenshots</a>.</li>
+        <li>Ghostty's plain-text value is pulled down by two slow runs, at about 200 MiB/s. In extra runs it was about 256, still 3% behind TildaZ.</li>
+        <li><strong>Without the one-second wait, TildaZ is slower</strong> — 193 MiB/s on plain text instead of 263. For about 30 ms after launch, macOS app startup work keeps it from reading output (<a href="https://github.com/ensky0/tildaz/issues/851" target="_blank" rel="noopener">#851</a>). The other terminals change by 5% or less.</li>
         <li><sup class="bench-mark">†</sup> Terminal.app uses the scrollback from your profile. It cannot be set by script.</li>
-        <li><strong>TildaZ, kitty, Ghostty and iTerm2 drew every emoji workload correctly.</strong> Alacritty drew emoji as small monochrome outlines, WezTerm squeezed ❤️ into one cell, and Terminal.app drew emoji at the wrong width. <a href="renders/#macos">See the screenshots</a>.</li>
         <li>Latency ends at the time macOS reports the frame was shown. Startup opens each app with <code>open</code>, the same path as the Dock or Spotlight.</li>
-        <li>Filled memory is about 20 MiB higher than on macOS 27.0.1 for several terminals, TildaZ included. TildaZ v0.10.6, v0.10.7 and v0.10.8 measure the same on macOS 27.2, so the change is not in TildaZ.</li>
+        <li>Filled memory on macOS 27.2 is higher than on 27.0.1 for several terminals, TildaZ included. TildaZ v0.10.6, v0.10.7 and v0.10.8 measure the same on 27.2, so the change is not in TildaZ.</li>
       </ul>
     </section>
 
@@ -276,8 +283,8 @@
         <p class="eyebrow">Ryzen AI 7 350 laptop · 120 Hz</p>
         <h2>Windows</h2>
       </div>
-      <p class="perf-lede">TildaZ is first on plain text, Hangul, and CJK output, and ties Windows Terminal on ANSI color. Windows Terminal is about 1.7 times as fast with emoji, and it draws them correctly too. TildaZ has the lowest latency, just ahead of Windows Terminal. Leaving conhost aside, TildaZ uses the least memory, both on an empty screen and with scrollback full. Only conhost starts faster.</p>
-      <p class="bench-machine">Same laptop as Linux · Windows 11 Pro 25H2 · built-in display, 2880x1800 at 120 Hz, 150% scale · AC power, Best performance mode · November 1, 2026<br>TildaZ v0.10.8 release · Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
+      <p class="perf-lede">TildaZ is first on plain text, Hangul, and CJK output. Windows Terminal is 5% faster with ANSI color and about twice as fast with emoji, and it draws the emoji correctly too. TildaZ has the lowest latency, just ahead of Windows Terminal. Leaving conhost aside, TildaZ uses the least memory, both on an empty screen and with scrollback full. Only conhost starts faster.</p>
+      <p class="bench-machine">Same laptop as Linux · Windows 11 Pro 25H2 · built-in display, 2880x1800 at 120 Hz, 150% scale · AC power, Best performance mode · November 2, 2026<br>TildaZ v0.10.8 release · Windows Terminal 1.24.12741.0 · conhost (Windows build 26200) · Alacritty 0.17.0 · WezTerm 20240203-110809-5046fc22</p>
       <h3>Throughput · MiB/s, higher is better</h3>
       <div class="table-wrap">
         <table class="perf-table bench-table">
@@ -286,12 +293,12 @@
             <tr><th scope="col">Workload</th><th scope="col" class="tz">TildaZ</th><th scope="col">Windows Terminal</th><th scope="col">conhost<sup class="bench-mark">†</sup></th><th scope="col">WezTerm</th><th scope="col">Alacritty</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>321.0</strong></td><td>235.7</td><td>159.4</td><td>14.2</td><td>13.5</td></tr>
-            <tr><th scope="row">ANSI color escapes</th><td class="tz">86.9</td><td><strong>87.1</strong></td><td>16.9</td><td>11.9</td><td>10.5</td></tr>
-            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>169.6</strong></td><td>119.6</td><td>75.5</td><td>7.1</td><td>6.1</td></tr>
-            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>150.4</strong></td><td>100.0</td><td>87.4</td><td>9.2</td><td>7.5</td></tr>
-            <tr><th scope="row">Emoji with VS-16</th><td class="tz">95.8</td><td><strong>162.4</strong></td><td>83.1</td><td>13.7</td><td>11.8</td></tr>
-            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">105.3</td><td><strong>185.1</strong></td><td>106.7</td><td>29.0</td><td>n/a</td></tr>
+            <tr><th scope="row">Plain ASCII</th><td class="tz"><strong>323.6</strong></td><td>295.4</td><td>176.1</td><td>13.3</td><td>11.6</td></tr>
+            <tr><th scope="row">ANSI color escapes</th><td class="tz">91.5</td><td><strong>96.3</strong></td><td>17.5</td><td>12.3</td><td>11.2</td></tr>
+            <tr><th scope="row">Hangul, wide cells</th><td class="tz"><strong>169.0</strong></td><td>138.2</td><td>75.3<sup class="bench-mark">‡</sup></td><td>6.7</td><td>6.4<sup class="bench-mark">‡</sup></td></tr>
+            <tr><th scope="row">Mixed CJK and emoji</th><td class="tz"><strong>173.8</strong></td><td>108.6</td><td>91.7<sup class="bench-mark">‡</sup></td><td>9.5<sup class="bench-mark">‡</sup></td><td>8.3<sup class="bench-mark">‡</sup></td></tr>
+            <tr><th scope="row">Emoji with VS-16</th><td class="tz">104.2</td><td><strong>212.1</strong></td><td>86.8<sup class="bench-mark">‡</sup></td><td>14.5<sup class="bench-mark">‡</sup></td><td>12.6<sup class="bench-mark">‡</sup></td></tr>
+            <tr><th scope="row">ZWJ emoji sequences</th><td class="tz">111.7</td><td><strong>232.0</strong></td><td>125.5<sup class="bench-mark">‡</sup></td><td>27.8</td><td>n/a</td></tr>
           </tbody>
         </table>
       </div>
@@ -303,11 +310,11 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th><th scope="col">p95</th></tr>
           </thead>
           <tbody>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>10.41</strong></td><td class="tz"><strong>13.72</strong></td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>10.80</td><td>15.79</td></tr>
-            <tr><th scope="row">WezTerm</th><td>13.40</td><td>44.37</td></tr>
-            <tr><th scope="row">conhost</th><td>19.23</td><td>22.90</td></tr>
-            <tr><th scope="row">Alacritty</th><td>27.13</td><td>32.19</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>10.77</strong></td><td class="tz"><strong>14.64</strong></td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>10.90</td><td>15.79</td></tr>
+            <tr><th scope="row">WezTerm</th><td>16.85</td><td>46.83</td></tr>
+            <tr><th scope="row">conhost</th><td>19.16</td><td>23.17</td></tr>
+            <tr><th scope="row">Alacritty</th><td>27.71</td><td>32.13</td></tr>
           </tbody>
         </table>
       </div>
@@ -319,11 +326,11 @@
             <tr><th scope="col">Terminal</th><th scope="col">Empty MiB</th><th scope="col">Filled MiB</th><th scope="col">Idle CPU %</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">conhost<sup class="bench-mark">†</sup></th><td>3.7</td><td>3.8</td><td>0.10</td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>35.6</strong></td><td class="tz"><strong>74.3</strong></td><td class="tz"><strong>0.00</strong></td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>55.5</td><td>78.4</td><td>0.57</td></tr>
-            <tr><th scope="row">Alacritty</th><td>91.9</td><td>193.6</td><td><strong>0.00</strong></td></tr>
-            <tr><th scope="row">WezTerm</th><td>260.1</td><td>256.1</td><td>0.10</td></tr>
+            <tr><th scope="row">conhost<sup class="bench-mark">†</sup></th><td>3.7</td><td>3.7</td><td>0.16</td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz"><strong>24.4</strong></td><td class="tz"><strong>57.4</strong></td><td class="tz"><strong>0.00</strong></td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>49.2</td><td>71.1</td><td>0.68</td></tr>
+            <tr><th scope="row">Alacritty</th><td>72.0</td><td>173.4</td><td>0.05</td></tr>
+            <tr><th scope="row">WezTerm</th><td>253.9</td><td>251.0</td><td>0.16</td></tr>
           </tbody>
         </table>
       </div>
@@ -335,22 +342,23 @@
             <tr><th scope="col">Terminal</th><th scope="col">Median</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row">conhost</th><td><strong>205.9</strong></td></tr>
-            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">306.7</td></tr>
-            <tr><th scope="row">Alacritty</th><td>417.0</td></tr>
-            <tr><th scope="row">WezTerm</th><td>666.2</td></tr>
-            <tr><th scope="row">Windows Terminal</th><td>840.3</td></tr>
+            <tr><th scope="row">conhost</th><td><strong>207.3</strong></td></tr>
+            <tr class="tz-row"><th scope="row" class="tz">TildaZ</th><td class="tz">330.1</td></tr>
+            <tr><th scope="row">Alacritty</th><td>415.8</td></tr>
+            <tr><th scope="row">WezTerm</th><td>657.5</td></tr>
+            <tr><th scope="row">Windows Terminal</th><td>973.2</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="perf-notes">
+        <li><strong>No first place on Windows comes from drawing less.</strong> Windows Terminal drew every workload correctly, so its lead on ANSI color and emoji is real. conhost is faster than TildaZ on ZWJ emoji, but it draws three small monochrome people instead of one family emoji.</li>
+        <li><sup class="bench-mark">‡</sup> The terminal drew that workload incorrectly, so the value is left out when picking the best. conhost and Alacritty draw emoji as monochrome outlines, split the family emoji, and pack Hangul narrower than two cells. WezTerm squeezes ❤️ into one cell. TildaZ and Windows Terminal drew every workload correctly. <a href="renders/#windows">See the screenshots</a>.</li>
+        <li>Without the one-second wait, TildaZ is 5–13% slower and Windows Terminal 6–19% slower, so TildaZ edges ahead on ANSI color (<a href="https://github.com/ensky0/tildaz/issues/852" target="_blank" rel="noopener">#852</a>).</li>
         <li><sup class="bench-mark">†</sup> conhost has no scrollback: its buffer is the window.</li>
-        <li><strong>TildaZ and Windows Terminal drew every emoji workload correctly.</strong> conhost and Alacritty drew emoji as monochrome outlines and split the family emoji into separate people. <a href="renders/#windows">See the screenshots</a>.</li>
-        <li>Alacritty cannot run the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
+        <li>Alacritty stops responding on the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
         <li><strong>The runs were pinned to the four fast CPU cores.</strong> This CPU mixes fast and small cores, and unpinned runs varied a lot. On Linux, pinned and unpinned runs gave the same results, so Linux was not pinned.</li>
-        <li>Filled memory is about 15–20 MiB higher than in the v0.10.7 round for TildaZ and Alacritty. TildaZ v0.10.7 measures the same as v0.10.8 on the same day, so the change is not in TildaZ.</li>
         <li>Latency and startup end at the time Windows reports the frame was presented (DXGI <code>LastPresentTime</code>).</li>
-        <li>Latency, memory, and startup were measured after the laptop woke from sleep with the lid closed. Turning only the screen off was not enough. Right after a reboot, this laptop showed the first frame after an idle screen about 20 ms later, in every app (<a href="https://github.com/ensky0/tildaz/issues/836" target="_blank" rel="noopener">#836</a>).</li>
+        <li>Everything was measured after the laptop woke from sleep with the lid closed. Turning only the screen off was not enough. Right after a reboot, this laptop showed the first frame after an idle screen about 20 ms later, in every app (<a href="https://github.com/ensky0/tildaz/issues/836" target="_blank" rel="noopener">#836</a>).</li>
       </ul>
     </section>
 
