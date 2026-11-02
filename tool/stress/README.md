@@ -1619,6 +1619,19 @@ tool/stress/compare-terminals.sh --mb 64 --workload plain --cols 120 --rows 40
 구간은 줄바꿈이 더 많아서 **불리하게** 작용하고 있었어요. 상한까지 기다려도 목표에 도달하지
 못하면 그때는 예전처럼 `측정 중 resize` 가 떠서 그 회차가 걸러져요.
 
+**그리드를 확인한 뒤 1 초 더 기다렸다가 재요** (`--start-delay-ms`, 기본 1000 ·
+[#852](https://github.com/ensky0/tildaz/issues/852)). 회차마다 터미널을 새로 띄우므로, 곧바로 쏟으면
+**앱의 시작 처리와 측정 구간이 겹쳐요.** 사용자가 겪는 것은 이미 떠 있는 창의 처리량이에요.
+
+- macOS TildaZ 는 출력이 도착한 뒤 약 30 ms 동안 AppKit 시작 처리 (`finishLaunching` · 활성화 뒤
+  run loop 첫 바퀴) 로 파싱을 못 했어요. 그동안 ring 이 차서 producer 가 멈춰요
+  ([#851](https://github.com/ensky0/tildaz/issues/851) 측정 F · G).
+- 64 MiB 는 약 250 ms 짜리 측정이라 그 30 ms 가 10 % 넘게 차지했어요. 지연을 두자 v0.10.8 의 plain 이
+  210.8 → 259.3 MiB/s 가 되어 Ghostty (258.3) 와 같아졌어요 (#851 측정 H · 외장 화면 60 Hz).
+- 파싱을 별도 스레드에서 하는 터미널 (Ghostty 등) 은 이 겹침의 손해가 작아서, 지연이 없으면
+  **시작 처리 구조의 차이**가 처리량으로 잡혀요.
+- **v0.10.8 까지의 사이트 표는 지연 없이 잰 값이에요.** 그 표와 견줄 때는 `--start-delay-ms 0` 으로 재요.
+
 **대상은 그 platform 에 설치된 것만 자동으로 골라요** (`command -v` 로 확인해요).
 대상 목록과 대상마다 띄우는 방법은 [`terminals.sh`](terminals.sh) 에 있어요 — 처리량 말고 다른
 지표도 같은 코드로 띄우려고 떼어 냈어요 ([#756](https://github.com/ensky0/tildaz/issues/756)).

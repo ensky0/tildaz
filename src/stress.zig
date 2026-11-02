@@ -74,6 +74,11 @@ const env_timing_file = "TILDAZ_STRESS_TIMING_FILE";
 /// 기다리는 것은 **timing 파일을 쓴 뒤**다. 하네스는 timing 파일을 보고 측정이 끝난 것을
 /// 알고 캡처를 시작하므로, 순서가 반대면 하네스가 창이 닫힌 뒤에 찍으러 온다.
 const env_hold_ms = "TILDAZ_STRESS_HOLD_MS";
+/// 그리드를 확인한 뒤 이 밀리초만큼 기다렸다가 출력을 시작한다 (#852). 하네스는 회차마다 터미널을
+/// 새로 띄우므로, 기다리지 않으면 **앱의 시작 처리와 측정 구간이 겹친다** — macOS TildaZ 는 출력이
+/// 도착한 뒤 약 30 ms 동안 AppKit 시작 처리로 파싱을 못 했고, 64 MiB 처리량이 10 % 넘게 내려갔다
+/// (#851 측정 F · G · H). 사용자가 겪는 것은 이미 떠 있는 창의 처리량이라 그 조건으로 잰다.
+const env_start_delay_ms = "TILDAZ_STRESS_START_DELAY_MS";
 /// producer 가 이 그리드가 될 때까지 기다렸다가 출력을 시작한다 (`ProducerRequest.target_grid`).
 const env_grid = "TILDAZ_STRESS_GRID";
 /// `frame --panes N`의 producer를 모두 준비한 뒤 함께 시작하고, 마지막 VT marker가
@@ -154,6 +159,8 @@ const ProducerRequest = struct {
     timing_path: ?[]const u8 = null,
     /// timing 을 쓴 뒤 이만큼 더 살아 있는다 (`env_hold_ms`). 0 이면 곧바로 끝낸다.
     hold_ms: u32 = 0,
+    /// 그리드를 확인한 뒤 이만큼 기다렸다가 타이머를 켠다 (`env_start_delay_ms`). 0 이면 곧바로.
+    start_delay_ms: u32 = 0,
     /// 있으면 tty 그리드가 이 값이 될 때까지 기다렸다가 출력을 시작한다 (`env_grid`).
     ///
     /// **왜 필요한가** — 일부 터미널은 셸을 spawn 한 **뒤에** 창 크기에 맞춰 PTY 를 resize
@@ -194,6 +201,13 @@ fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
         hold_ms = std.fmt.parseInt(u32, text, 10) catch 0;
     }
 
+    // 값이 이상하면 **0 으로 본다** — 위 `hold_ms` 와 같은 규칙이다.
+    var start_delay_ms: u32 = 0;
+    if (rt.envAlloc(alloc, env_start_delay_ms) catch null) |text| {
+        defer alloc.free(text);
+        start_delay_ms = std.fmt.parseInt(u32, text, 10) catch 0;
+    }
+
     // `120x40` 형식. 이상하면 **없는 것으로 본다** — 기다리지 않는 쪽이 안전하다.
     var target_grid: ?Grid = null;
     if (rt.envAlloc(alloc, env_grid) catch null) |text| {
@@ -224,6 +238,7 @@ fn producerRequest(rt: Runtime, alloc: std.mem.Allocator) !?ProducerRequest {
         .bytes = bytes,
         .timing_path = timing_path,
         .hold_ms = hold_ms,
+        .start_delay_ms = start_delay_ms,
         .target_grid = target_grid,
         .start_barrier = start_barrier,
         .pane_id = pane_id,
@@ -341,6 +356,9 @@ fn produce(rt: Runtime, req: ProducerRequest) !void {
     // 목표 그리드를 받았으면 그 전에 **기다린다** (`target_grid` 주석). 기다린 뒤에 읽어야
     // `grid_start` 가 실제로 출력한 그리드와 같다.
     const grid_wait_ms = if (req.target_grid) |t| waitForGrid(rt, t) else 0;
+    // #852 — 그리드를 본 **뒤에** 기다린다. 그리드 대기는 창이 뜨기까지의 시간이라, 그 전에 세면
+    // 느리게 뜨는 터미널은 기다림이 짧아진다.
+    if (req.start_delay_ms > 0) rt.sleepNs(@as(u64, req.start_delay_ms) * std.time.ns_per_ms);
     if (req.start_barrier) |base| try waitForProducerStart(rt, base, req.pane_id.?);
     const grid_start = producerGrid();
 
