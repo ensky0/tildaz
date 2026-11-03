@@ -2960,19 +2960,8 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
    instance 상한이 내려가 기존 config 가 인식 안 되는 주의가 나왔는데, 머지 시점에 적어 둘
    자리가 없었어요). **반대 방향도 규칙이에요** — 업그레이드 주의를 만드는 PR 은 그 파일에
    한 줄을 **같은 PR 에서** 추가해요. 코드와 문서를 같은 PR 에 담는 규칙과 같은 이유예요.
-3. **정식 버전은 벤치를 먼저 돌리고 벤치 문서를 같은 릴리즈에서 고쳐요** (2026-11-03 사용자 지시:
-   *"앞으로 벤치부터 하고 릴리즈 하는게 나을 것 같아. 릴리즈 할 때 doc도 같이 수정하도록"*).
-   릴리즈할 main 을 Linux · macOS · Windows 세 기기에서 재요. 사이트에 이전 버전 숫자가 남지 않게 하려는 규칙이에요.
-   - 잴 것: [`docs/benchmarks/index.html`](docs/benchmarks/index.html) 의 OS 마다 네 표 (처리량 · 키 입력 지연 ·
-     메모리 · 시작 시간) 와 렌더 페이지 ([`docs/benchmarks/renders/`](docs/benchmarks/renders)).
-     도구는 `tool/stress/` 의 `compare-terminals.sh` · `compare-latency.sh` · `compare-memory.sh` ·
-     `compare-startup.sh` 이고, 함정은 [`tool/stress/README.md`](tool/stress/README.md) 에 있어요.
-   - 고칠 곳: 위 두 페이지와 첫 페이지 ([`docs/index.html`](docs/index.html)) 의 성능 표, 그리고 페이지의 판 표기
-     (`vX.Y.Z`). 이 커밋도 1 · 2 단계와 함께 main 에 올려요.
-   - 숫자가 나빠졌으면 태그를 올리지 말고 원인부터 봐요.
-   - 측정은 실기라서 `# 실행 환경` 대로 시작 전에 알리고 동의를 받아요.
-4. 커밋하고 `git push origin main` 해요.
-5. 아래 두 명령으로 태그를 push해 Actions를 트리거해요. 어느 OS 의 어느 기기에서 해도 같아요 —
+3. 커밋하고 `git push origin main` 해요.
+4. 아래 두 명령으로 태그를 push해 Actions를 트리거해요. 어느 OS 의 어느 기기에서 해도 같아요 —
    빌드는 전부 runner 가 하고 로컬은 태그만 올려요 (2026-09-05 까지 "Windows PowerShell 에서" 로
    적혀 있었는데 이유가 없는 관례였어요).
 
@@ -2981,7 +2970,7 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
    git push origin vX.Y.Z
    ```
 
-6. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
+5. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
 
 ## 한 줄 설치 스크립트 — 릴리즈마다 고칠 필요는 없어요 ([#803](https://github.com/ensky0/tildaz/issues/803))
 
