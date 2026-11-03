@@ -607,7 +607,7 @@ test "#374 점선·파선도 underline_color 를 따르고 취소선·윗줄과 
     const ul = ghostty.color.RGB{ .r = 255, .g = 0, .b = 0 };
     inline for (.{ .dotted, .dashed }) |kind| {
         const got = collect(.{
-            .underline_color = .{ .rgb = ul },
+            .underline_color = .rgb(ul),
             .flags = .{ .underline = kind, .strikethrough = true, .overline = true },
         });
         // 윗줄 + 취소선은 fg, 나머지 밑줄 조각은 전부 underline_color.
@@ -624,7 +624,7 @@ test "#374 점선·파선도 underline_color 를 따르고 취소선·윗줄과 
 test "underline_color (SGR 58) 는 밑줄에만 적용되고 취소선·윗줄은 fg 를 쓴다" {
     const ul = ghostty.color.RGB{ .r = 255, .g = 0, .b = 0 };
     const got = collect(.{
-        .underline_color = .{ .rgb = ul },
+        .underline_color = .rgb(ul),
         .flags = .{ .underline = .single, .strikethrough = true, .overline = true },
     });
     try std.testing.expectEqual(@as(usize, 3), got.n);
@@ -636,7 +636,7 @@ test "underline_color (SGR 58) 는 밑줄에만 적용되고 취소선·윗줄�
 
 test "underline_color 가 palette 색이면 palette 에서 읽는다" {
     const got = collect(.{
-        .underline_color = .{ .palette = 1 },
+        .underline_color = .palette(1),
         .flags = .{ .underline = .single },
     });
     try std.testing.expectEqual(test_palette[1], got.r[0].color);

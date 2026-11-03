@@ -193,8 +193,8 @@ test "selection/inverse — cell 고유 fg/bg 교환" {
     const cell_fg = ghostty.color.RGB{ .r = 1, .g = 2, .b = 3 };
     const cell_bg = ghostty.color.RGB{ .r = 4, .g = 5, .b = 6 };
     const style = ghostty.Style{
-        .fg_color = .{ .rgb = cell_fg },
-        .bg_color = .{ .rgb = cell_bg },
+        .fg_color = .rgb(cell_fg),
+        .bg_color = .rgb(cell_bg),
     };
     const raw = ghostty.Cell{};
     // selected: fg ← cell bg, bg ← cell fg
@@ -215,7 +215,7 @@ test "selection — cell 고유 색 없으면 theme fg/bg 로 교환" {
 test "bold — 평시 fg 는 bright 승격, 교환 bg 는 승격 없음" {
     // palette 1 (red) + bold → 평시 fg 는 bright red (palette 9).
     const style = ghostty.Style{
-        .fg_color = .{ .palette = 1 },
+        .fg_color = .palette(1),
         .flags = .{ .bold = true },
     };
     const raw = ghostty.Cell{};
@@ -245,8 +245,8 @@ test "#376 blink 의 off 위상은 faint 로 표현된다" {
 test "#376 blink off 위상의 fg 는 faint 와 같은 색이다 — 같은 blend 경로" {
     const cell_fg = ghostty.color.RGB{ .r = 100, .g = 150, .b = 200 };
     const raw = ghostty.Cell{};
-    const blink = ghostty.Style{ .fg_color = .{ .rgb = cell_fg }, .flags = .{ .blink = true } };
-    const faint = ghostty.Style{ .fg_color = .{ .rgb = cell_fg }, .flags = .{ .faint = true } };
+    const blink = ghostty.Style{ .fg_color = .rgb(cell_fg), .flags = .{ .blink = true } };
+    const faint = ghostty.Style{ .fg_color = .rgb(cell_fg), .flags = .{ .faint = true } };
 
     // off 위상 = faint 셀과 동일한 색.
     try std.testing.expectEqual(
@@ -262,7 +262,7 @@ test "#376 blink off 위상의 fg 는 faint 와 같은 색이다 — 같은 blen
 
 test "faint — fg 를 bg 와 50% blend" {
     const style = ghostty.Style{
-        .fg_color = .{ .rgb = .{ .r = 100, .g = 100, .b = 100 } },
+        .fg_color = .rgb(.{ .r = 100, .g = 100, .b = 100 }),
         .flags = .{ .faint = true },
     };
     const raw = ghostty.Cell{};

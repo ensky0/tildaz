@@ -25,9 +25,11 @@ fork 저장소를 따로 두지 않으려고 고른 방식이에요 (#812 ⑥). 
 
 ## 패치 목록
 
-| 파일 | 무엇 | 효과 |
+지금 얹는 패치는 없어요.
+
+| 파일 | 무엇 | 언제 빠졌나 |
 |---|---|---|
-| [`0001-grapheme-capacity-from-filled-page.patch`](patches/0001-grapheme-capacity-from-filled-page.patch) | `PageList.grow` 가 새 page 의 grapheme 용량을 방금 가득 찬 page 의 사용량 (× 1.25) 으로 잡아요. byte 한도의 재사용 경로는 그 용량에 맞는 heap page 도 다시 써요. 원래는 새 page 마다 기본 용량에서 시작해 두 배씩 키우며 page 를 통째로 복사했어요 ([ghostty Discussion #10244](https://github.com/ghostty-org/ghostty/discussions/10244)). | 해석기만 · 미니PC Ryzen 7 8845HS: `cjk` 41.6 → 131.0 · `emoji_vs16` 45.5 → 80.7 · `zwj` 71.2 → 88.3 MiB/s ([#812 ⑦](https://github.com/ensky0/tildaz/issues/812#issuecomment-6279259175)) |
+| `0001-grapheme-capacity-from-filled-page.patch` | `PageList.grow` 가 새 page 의 grapheme 용량을 방금 가득 찬 page 의 사용량 (× 1.25) 으로 잡았어요 ([#812](https://github.com/ensky0/tildaz/issues/812)). 해석기만 · 미니PC Ryzen 7 8845HS: `cjk` 41.6 → 131.0 MiB/s ([#812 ⑦](https://github.com/ensky0/tildaz/issues/812#issuecomment-6279259175)). style 몫은 브랜치 `feat/855-style-capacity` 에만 있어요 ([#855](https://github.com/ensky0/tildaz/issues/855)). | pin `6676bba` 에서 지웠어요. upstream [ghostty #14985](https://github.com/ghostty-org/ghostty/pull/14985) 가 새 page 에 style · grapheme · string · hyperlink 용량을 모두 이어 줘서 같은 일을 해요 ([#841](https://github.com/ensky0/tildaz/issues/841)) |
 
 ## ghostty pin 을 올릴 때
 
@@ -47,7 +49,7 @@ cp -r "$G" /tmp/ghostty-edit         # 복사본을 고친다
 # … /tmp/ghostty-edit/src/terminal/PageList.zig 를 고친다 …
 diff -u --label a/src/terminal/PageList.zig --label b/src/terminal/PageList.zig \
     "$G/src/terminal/PageList.zig" /tmp/ghostty-edit/src/terminal/PageList.zig \
-    > vendor/ghostty/patches/0001-grapheme-capacity-from-filled-page.patch
+    > vendor/ghostty/patches/0001-<이름>.patch
 ```
 
 - 원본이 이미 패치된 상태면 (한 번 빌드한 checkout) `zig-pkg/ghostty-*` 를 지우고 `zig build --fetch` 로 다시 받아요.
@@ -55,7 +57,7 @@ diff -u --label a/src/terminal/PageList.zig --label b/src/terminal/PageList.zig 
 - **같은 줄을 고치는 변경은 한 패치 파일에 합쳐요.** 적용기는 패치마다 글 내용으로 "적용 전 / 적용됨" 을 가려요.
   뒤 패치가 앞 패치가 고친 줄을 다시 고치면, 다 얹힌 소스에서 앞 패치가 "적용됨" 으로 보이지 않아 빌드가 멈춰요
   (2026-10-20 #812 ⑫ 실험에서 실제로 그랬어요). 패치 파일을 나누는 것은 서로 다른 곳을 고치는 변경끼리만이에요.
-- 패치에 그 동작을 지키는 ghostty 쪽 테스트를 함께 넣어요. 0001 은 `PageList grow sizes the next page's graphemes from the filled page (TildaZ #812)` 예요.
+- 패치에 그 동작을 지키는 ghostty 쪽 테스트를 함께 넣어요. 예전 0001 은 `PageList grow sizes the next page's graphemes from the filled page (TildaZ #812)` 를 넣었어요.
 
 ### ghostty 테스트 돌리기
 
