@@ -352,10 +352,10 @@
         </table>
       </div>
       <ul class="perf-notes">
-        <li><strong>No first place on Windows comes from drawing less.</strong> Windows Terminal drew every workload correctly, so its lead on ANSI color and emoji is real. conhost is level with TildaZ on ZWJ emoji, but it draws three small monochrome people instead of one family emoji.</li>
+        <li><strong>No first place on Windows comes from drawing less.</strong> Windows Terminal drew every workload correctly, so its lead on emoji is real. conhost is level with TildaZ on ZWJ emoji, but it draws three small monochrome people instead of one family emoji.</li>
         <li>CJK and emoji with VS-16 varied more between runs, so each terminal ran five times. The table shows the mean of the middle three (<a href="https://github.com/ensky0/tildaz/issues/857" target="_blank" rel="noopener">#857</a>).</li>
         <li><sup class="bench-mark">‡</sup> The terminal drew that workload incorrectly, so the value is left out when picking the best. conhost and Alacritty draw emoji as monochrome outlines, split the family emoji, and pack Hangul narrower than two cells. WezTerm squeezes ❤️ into one cell. TildaZ and Windows Terminal drew every workload correctly. <a href="renders/#windows">See the screenshots</a>.</li>
-        <li>Without the one-second wait, TildaZ is 5–13% slower and Windows Terminal 6–19% slower, so TildaZ edges ahead on ANSI color (<a href="https://github.com/ensky0/tildaz/issues/852" target="_blank" rel="noopener">#852</a>).</li>
+        <li>Without the one-second wait, TildaZ was 5–13% slower and Windows Terminal 6–19% slower, measured with v0.10.8 (<a href="https://github.com/ensky0/tildaz/issues/852" target="_blank" rel="noopener">#852</a>).</li>
         <li><sup class="bench-mark">†</sup> conhost has no scrollback: its buffer is the window.</li>
         <li>Alacritty stops responding on the ZWJ workload on Windows. WezTerm was started with <code>-n</code>, which skips the user config.</li>
         <li><strong>The runs were pinned to the four fast CPU cores.</strong> This CPU mixes fast and small cores, and unpinned runs varied a lot. On Linux, pinned and unpinned runs gave the same results, so Linux was not pinned.</li>
