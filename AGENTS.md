@@ -2574,11 +2574,12 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 - **새 테스트 도구를 만들면 끝나는 자리에 이 코드를 넣어요.** 창을 내리지 않는 도구도 측정 창이
   포커스를 가져가니 같아요.
 - 구현은 [`tool/stress/hygiene.sh`](tool/stress/hygiene.sh) 의 `hygiene_raise_launcher` 예요. `hygiene_end`
-  가 불러요. 부모 프로세스를 거슬러 올라가 측정을 시킨 창을 찾고 (VS Code 터미널도 에이전트도 VS Code 로
-  이어져요), 못 찾으면 창을 내리기 직전의 맨 앞 창을 올려요.
-- **⚠️ 지금은 `feat/756-terminal-bench` 브랜치에만 있어요** ([`431f45a`](https://github.com/ensky0/tildaz/commit/431f45a) ·
-  [`4539b6e`](https://github.com/ensky0/tildaz/commit/4539b6e)). 그 브랜치가 머지되기 전에는 main 의 도구가 창을
-  올리지 않아요.
+  가 불러요. 부모 프로세스를 거슬러 올라가 측정을 시킨 창을 찾고, 못 찾으면 창을 내리기 직전의 맨 앞 창을
+  올려요.
+- **macOS 는 사슬의 가장 위 `.app` 을 올려요.** 처음 만나는 `.app` 은 창 없는 도우미일 수 있어요. Claude 데스크톱
+  앱은 셸 바로 위가 Claude Code 명령줄 번들 (`~/Library/Application Support/Claude/claude-code/<판>/…/claude.app`)
+  이고 그 위가 `/Applications/Claude.app` 이에요. 처음 것을 올리던 동안은 Claude 앱에서 돌린 측정 뒤에 창이 안
+  올라왔어요 (2026-11-04 사용자 지적). VS Code 는 터미널도 에이전트도 맨 위가 `Visual Studio Code.app` 이에요.
 - 올리는 것은 그 창 하나예요. 다른 배경 창은 되살리지 않고, 평소 쓰는 TildaZ worker 도 다시 띄우지
   않아요 (바로 아래).
 

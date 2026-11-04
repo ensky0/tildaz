@@ -693,7 +693,7 @@ KWINJS
 #
 #   | OS | 찾는 것 | 올리는 법 |
 #   |---|---|---|
-#   | macOS | 실행 파일 경로가 `.app/` 안에 있는 첫 조상 → **가장 바깥 `.app`** (`Code Helper (Plugin).app` 이 `Visual Studio Code.app` 안에 있다) | `open -a` — 앱을 활성화하면 숨김도 풀린다 |
+#   | macOS | 실행 파일 경로가 `.app/` 안에 있는 **가장 위 조상**의 가장 바깥 `.app` (`Code Helper (Plugin).app` 은 `Visual Studio Code.app` 안에 있고, Claude 데스크톱 앱은 창 없는 `claude.app` 위에 `Claude.app` 이 있다) | `open -a` — 앱을 활성화하면 숨김도 풀린다 |
 #   | Linux (KDE) | 조상 pid 목록 | KWin 스크립트로 pid 가 맞는 창을 복원 · 활성화 |
 #   | Windows | 창이 있는 첫 조상 (`MainWindowHandle`) | `SW_RESTORE` + `SetForegroundWindow` |
 #
@@ -725,17 +725,22 @@ public class TzFront { [DllImport("user32.dll")] public static extern IntPtr Get
 hygiene_raise_launcher() {
     case "$HYG_PLATFORM" in
         macos)
+            # 사슬의 **가장 위** `.app` 을 올린다. 처음 만나는 것은 창이 없는 도우미일 수 있다 —
+            # Claude 데스크톱 앱은 셸 바로 위가 `~/Library/Application Support/Claude/claude-code/<판>/…/claude.app`
+            # (명령줄 프로그램 번들) 이고, 그 위가 `/Applications/Claude.app` 이다 (2026-11-04 macOS 실측).
+            _app=""
             _p=$$
             while [ -n "$_p" ] && [ "$_p" -gt 1 ]; do
                 _c=$(ps -o comm= -p "$_p" 2>/dev/null)
                 case "$_c" in
-                    *.app/*)
-                        open -a "${_c%%.app/*}.app" >/dev/null 2>&1 || true
-                        return 0
-                        ;;
+                    *.app/*) _app="${_c%%.app/*}.app" ;;
                 esac
                 _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
             done
+            if [ -n "$_app" ]; then
+                open -a "$_app" >/dev/null 2>&1 || true
+                return 0
+            fi
             case "$HYG_FRONT" in
                 *.app) open -a "$HYG_FRONT" >/dev/null 2>&1 || true ;;
             esac
