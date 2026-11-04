@@ -2566,6 +2566,25 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 외장 모니터(60 Hz)에서 프레임 주기가 갈리므로, 이 줄과 platform별 화면 정보
 (`window initialized: dpi=..` 등)를 근거로 남겨요.
 
+**노트북 (Ryzen AI 7 350) 의 Windows 측정은 덮개를 닫아 실제로 잠들었다 깬 뒤에 해요** (2026-11-04 사용자 지시).
+재부팅 직후에는 화면이 멈췄다가 다시 그릴 때 첫 그림이 20 ms 쯤 늦어요. 모든 앱이 그래서 지연 표가 통째로 커져요
+([#836](https://github.com/ensky0/tildaz/issues/836) — 내장 패널의 절전 기능 PSR 이 풀리는 데 걸리는 시간이에요).
+덮개를 닫아 기기가 실제로 잠들었다 깨면 풀려요. **화면만 꺼진 대기로는 안 풀려요** ([#848](https://github.com/ensky0/tildaz/issues/848#issuecomment-6557814578)).
+
+- 확인은 둘이에요. ① Kernel-Power 이벤트 507 의 `SleepEntered` 가 `true` 이고 `HwDripsResidencyInUs` 가 0 이 아닌가
+  (덮개를 닫으면 `Reason=15`, 화면만 꺼지면 `Reason=12` · `false` 예요). ② TildaZ · WT 지연 30 키가 10 ms 안팎인가
+  (`compare-latency.sh --repeat 1 --presses 30 --only tildaz,wt`) — 안 풀렸으면 30 ms 안팎이에요.
+
+    ```powershell
+    Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-Power';Id=507} -MaxEvents 3 |
+      % { $d=@{}; ([xml]$_.ToXml()).Event.EventData.Data | % { $d[$_.Name]=$_.'#text' }; "$($_.TimeCreated) Reason=$($d.Reason) SleepEntered=$($d.SleepEntered) Drips=$($d.HwDripsResidencyInUs)" }
+    ```
+
+- 페이지에 실은 Windows 값은 모두 이 조건이에요. 페이지 주석도 그렇게 적혀 있어요.
+- **메모리 (Private Working Set) 는 이 조건으로 맞춰지지 않아요 — 확인 필요.** 같은 조건 (덮개로 잠들었다 깸 · 지연 10 ms)
+  에서도 TildaZ 와 판이 그대로인 Alacritty 가 함께 +15~20 MiB 크게 나온 날이 있어요 (11-01 · 11-04). 페이지 값 (11-02) 은
+  재부팅하고 바로 덮개를 닫았다 연 뒤였어요. 원인은 [#857](https://github.com/ensky0/tildaz/issues/857) 에서 봐요.
+
 **테스트가 끝나면 측정을 시킨 창 (보통 VS Code) 을 다시 앞으로 올려요** (2026-10-14 사용자 지시:
 *"모든 테스트에는 끝나고 vscode 다시 띄우는 코드 넣으라고"*). 측정 위생이 배경 창을 전부 내리고, 측정
 창이 포커스를 가져가요. 그대로 끝나면 화면이 비어서 측정이 끝났는지 알 수 없어요. 같은 날
