@@ -1,0 +1,246 @@
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -4128,12 +4128,27 @@
+                 break :prune;
+             },
+ 
+-            // Heap-owned pages can't be reused because they may be
+-            // any size (larger or smaller than a standard page), so
+-            // just destroy them.
+-            .heap => {
++            // TildaZ #812 · #841: a heap-owned page is reused when the
++            // new page needs heap memory too and the old page's capacity
++            // covers it (see heapPageFits). Output that keeps many
++            // graphemes fills every page past the pool size, and freeing
++            // and allocating the heap page per grow costs a page fault
++            // for every page of memory touched afterwards. Other heap
++            // pages may be any size, so they are destroyed.
++            .heap => if (pooled or !heapPageFits(first.capacity(), cap)) {
+                 self.destroyNode(first);
+                 break :prune;
++            } else {
++                // The old page keeps its own capacity: its memory was
++                // allocated for exactly that layout, and destroyNode and
++                // page_size count that length.
++                const fc = first.capacity();
++                const old_memory = first.restore(.discard).memory;
++                const reuse_layout = Page.layout(fc);
++                assert(old_memory.len == reuse_layout.total_size);
++                @memset(old_memory, 0);
++                first.data = .{ .resident = .initBuf(.init(old_memory), reuse_layout) };
++                return self.growReuseFinish(first, last, grow_cap);
+             },
+         }
+ 
+@@ -4156,34 +4171,7 @@
+ 
+         // Initialize our new page and reinsert it as the last
+         first.data = .{ .resident = .initBuf(.init(item), layout) };
+-        const page = first.page();
+-        page.size.rows = 1;
+-        self.pages.insertAfter(last, first);
+-        self.total_rows += 1;
+-        self.pushGrowHint(grow_cap.need, grow_cap.used);
+-
+-        // Reusing the node gives it a fresh generation. Do not begin a new
+-        // page_serial_epoch here: generations are not monotonic in list order,
+-        // so older live successors may have lower generations. The epoch only
+-        // advances when reset invalidates the entire list.
+-        first.serial = self.page_serial;
+-        self.page_serial += 1;
+-
+-        // We don't update page_size. A pool-owned page always counts as
+-        // one pool item, whatever its layout.
+-
+-        page.assertIntegrity();
+-
+-        // An earlier grow may have left us over the byte limit, because
+-        // pruning would have cut into the active area (see the trimming
+-        // costs in growCapacity). Reuse swaps one pool item for another,
+-        // so it can't fix that on its own. Enforce the limit here.
+-        self.limits.enforce(self, .bytes);
+-
+-        // Byte-limit recycling may leave history above the independent line
+-        // limit, so enforce it after the recycled page becomes the new tail.
+-        self.limits.enforce(self, .lines);
+-        return first;
++        return self.growReuseFinish(first, last, grow_cap);
+     }
+ 
+     // We need to allocate a new memory buffer.
+@@ -4278,6 +4266,68 @@
+ ///
+ /// This doesn't change the PageList. `grow` stores the returned `need`
+ /// in `grow_hints` once the new page exists.
++/// The end of a grow that reused the pruned first page (TildaZ #812 ·
++/// #841): `first` already holds its new, zeroed layout.
++fn growReuseFinish(
++    self: *PageList,
++    first: *List.Node,
++    last: *List.Node,
++    grow_cap: GrowCapacity,
++) *List.Node {
++    const page = first.page();
++    page.size.rows = 1;
++    self.pages.insertAfter(last, first);
++    self.total_rows += 1;
++    self.pushGrowHint(grow_cap.need, grow_cap.used);
++
++    // Reusing the node gives it a fresh generation. Do not begin a new
++    // page_serial_epoch here: generations are not monotonic in list order,
++    // so older live successors may have lower generations. The epoch only
++    // advances when reset invalidates the entire list.
++    first.serial = self.page_serial;
++    self.page_serial += 1;
++
++    // We don't update page_size. A pool-owned page always counts as
++    // one pool item, whatever its layout, and a reused heap page keeps
++    // its memory and so its length.
++
++    page.assertIntegrity();
++
++    // An earlier grow may have left us over the byte limit, because
++    // pruning would have cut into the active area (see the trimming
++    // costs in growCapacity). Reuse swaps one page for another of the
++    // same size, so it can't fix that on its own. Enforce the limit here.
++    self.limits.enforce(self, .bytes);
++
++    // Byte-limit recycling may leave history above the independent line
++    // limit, so enforce it after the recycled page becomes the new tail.
++    self.limits.enforce(self, .lines);
++    return first;
++}
++
++/// Whether a pruned heap page with capacity `fc` can be reused for a grow
++/// that wants capacity `cap` (TildaZ #812 · #841). The page keeps `fc`, so
++/// it must hold what `cap` asks for. It must not be much larger, or one
++/// old outsized page would stay alive forever: each dimension `cap`
++/// grows may be at most twice what it asks for, and the others must be
++/// the standard size `cap` already has.
++fn heapPageFits(fc: Capacity, cap: Capacity) bool {
++    if (fc.cols != cap.cols) return false;
++    if (fc.rows < cap.rows or fc.rows > cap.rows * 2) return false;
++    inline for (.{
++        "styles",
++        "grapheme_bytes",
++        "string_bytes",
++        "hyperlink_bytes",
++        "hyperlink_cells",
++    }) |f| {
++        const want: usize = @field(cap, f);
++        const have: usize = @field(fc, f);
++        if (have < want or have > want * 2) return false;
++    }
++    return true;
++}
++
+ fn growCapacity(self: *const PageList, last: *List.Node) GrowCapacity {
+     const need = self.utilizationCapacity(last);
+ 
+@@ -12238,8 +12288,106 @@
+             0;
+         try testing.expectEqual(expected_offset, scrollbar_after.offset);
+     }
++}
++
++test "PageList heapPageFits (TildaZ #812 · #841)" {
++    const testing = std.testing;
++    const cap: Capacity = .{ .cols = 80, .rows = 100, .grapheme_bytes = 16384 };
++
++    // The same capacity, or larger by up to twice in each dimension.
++    try testing.expect(heapPageFits(cap, cap));
++    var big = cap;
++    big.grapheme_bytes = 32768;
++    big.rows = 200;
++    try testing.expect(heapPageFits(big, cap));
++
++    // Too small in any dimension, or more than twice as large.
++    var small = cap;
++    small.grapheme_bytes = 16383;
++    try testing.expect(!heapPageFits(small, cap));
++    small = cap;
++    small.rows = 99;
++    try testing.expect(!heapPageFits(small, cap));
++    var huge = cap;
++    huge.grapheme_bytes = 32769;
++    try testing.expect(!heapPageFits(huge, cap));
++    huge = cap;
++    huge.styles = cap.styles * 2 + 1;
++    try testing.expect(!heapPageFits(huge, cap));
++
++    // A different column count never fits.
++    var narrow = cap;
++    narrow.cols = 79;
++    try testing.expect(!heapPageFits(narrow, cap));
+ }
+ 
++test "PageList grow reuses pruned heap pages for grapheme-heavy output (TildaZ #812 · #841)" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var s = try init(alloc, .{ .cols = 80, .rows = 24, .max_size = null });
++    defer s.deinit();
++
++    // Fill the last page with a grapheme in every cell, as emoji output
++    // with a variation selector does, growing the page the way Screen does
++    // when it runs out. That is far more than a standard page holds, so
++    // the page can't be trimmed to fit a pool item. Stops after starting
++    // the next page.
++    const Fill = struct {
++        fn run(list: *PageList) !void {
++            while (true) {
++                for (0..80) |x| {
++                    while (true) {
++                        const node = list.pages.last.?;
++                        const page = node.page();
++                        const rac = page.getRowAndCell(x, node.rows() - 1);
++                        rac.cell.* = .{
++                            .content_tag = .codepoint,
++                            .content = .{ .codepoint = .{ .data = 'e' } },
++                        };
++                        page.appendGrapheme(rac.row, rac.cell, 0x0301) catch |err| switch (err) {
++                            error.OutOfMemory => {
++                                _ = try list.increaseCapacity(node, .grapheme_bytes);
++                                continue;
++                            },
++                        };
++                        break;
++                    }
++                }
++                if (try list.grow() != null) return;
++            }
++        }
++    };
++
++    // Two pages carry the grapheme capacity, so the third is born on the
++    // heap with it.
++    try Fill.run(&s);
++    try Fill.run(&s);
++    try testing.expectEqual(.heap, s.pages.last.?.owned);
++    const heap_len = s.pages.last.?.page().memory.len;
++    try testing.expect(heap_len > std_size);
++
++    // Cap the scrollback at a few such pages so that every new page
++    // prunes the first one.
++    s.limits.set(.bytes, s.page_size + 2 * heap_len);
++    for (0..12) |_| {
++        try Fill.run(&s);
++        try s.verifyIntegrity();
++        try testing.expect(s.page_size <= s.limits.max(.bytes) + heap_len);
++    }
++
++    // The scrollback now cycles through heap pages of one size.
++    var it = s.pages.first;
++    var heap_pages: usize = 0;
++    while (it) |node| : (it = node.next) {
++        if (node.owned == .heap) {
++            heap_pages += 1;
++            try testing.expectEqual(heap_len, node.page().memory.len);
++        }
++    }
++    try testing.expect(heap_pages >= 2);
++}
++
+ test "PageList grow prune scrollback with viewport pin not in pruned page" {
+     const testing = std.testing;
+     const alloc = testing.allocator;

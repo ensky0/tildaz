@@ -27,7 +27,13 @@ fork 저장소를 따로 두지 않으려고 고른 방식이에요 (#812 ⑥). 
 
 | 파일 | 무엇 | 효과 |
 |---|---|---|
-| [`0001-grapheme-capacity-from-filled-page.patch`](patches/0001-grapheme-capacity-from-filled-page.patch) | `PageList.grow` 가 새 page 의 grapheme 용량을 방금 가득 찬 page 의 사용량 (× 1.25) 으로 잡아요. byte 한도의 재사용 경로는 그 용량에 맞는 heap page 도 다시 써요. 원래는 새 page 마다 기본 용량에서 시작해 두 배씩 키우며 page 를 통째로 복사했어요 ([ghostty Discussion #10244](https://github.com/ghostty-org/ghostty/discussions/10244)). | 해석기만 · 미니PC Ryzen 7 8845HS: `cjk` 41.6 → 131.0 · `emoji_vs16` 45.5 → 80.7 · `zwj` 71.2 → 88.3 MiB/s ([#812 ⑦](https://github.com/ensky0/tildaz/issues/812#issuecomment-6279259175)) |
+| [`0001-reuse-pruned-heap-page.patch`](patches/0001-reuse-pruned-heap-page.patch) | byte 한도에서 맨 앞 page 를 지울 때, 그 page 가 heap page 이고 새 page 도 heap 이어야 하면 옛 page 의 메모리를 다시 써요. 옛 용량이 새 용량 이상이고 두 배를 넘지 않을 때만이에요 (`heapPageFits`). 원래는 heap page 를 매번 OS 에 돌려주고 새로 받아서, 새 메모리를 처음 쓸 때마다 페이지 폴트가 났어요. 묶음 글자가 많은 출력은 page 마다 표준 크기를 넘어 heap page 가 돼요 ([#841](https://github.com/ensky0/tildaz/issues/841)). | 해석기만 · MacBook Pro M5 Pro · 256 MiB: `emoji_vs16` 176.7 → 215.7 MiB/s, 페이지 폴트 396,772 → 1,350 번 |
+
+예전 패치는 이렇게 바뀌었어요.
+
+| 파일 | 무엇 | 언제 빠졌나 |
+|---|---|---|
+| `0001-grapheme-capacity-from-filled-page.patch` | `PageList.grow` 가 새 page 의 grapheme 용량을 방금 가득 찬 page 의 사용량 (× 1.25) 으로 잡고, 맞는 heap page 를 다시 썼어요 ([#812](https://github.com/ensky0/tildaz/issues/812)). 해석기만 · 미니PC Ryzen 7 8845HS: `cjk` 41.6 → 131.0 MiB/s ([#812 ⑦](https://github.com/ensky0/tildaz/issues/812#issuecomment-6279259175)). style 몫은 브랜치 `feat/855-style-capacity` 에만 있어요 ([#855](https://github.com/ensky0/tildaz/issues/855)). | pin `6676bba` 에서 지웠어요. upstream [ghostty #14985](https://github.com/ghostty-org/ghostty/pull/14985) 가 용량 이어 받기를 style · grapheme · string · hyperlink 모두 대신해요. heap page 재사용은 대신하지 않아서 위 새 0001 로 남겼어요 ([#841](https://github.com/ensky0/tildaz/issues/841)) |
 
 ## ghostty pin 을 올릴 때
 
@@ -47,7 +53,7 @@ cp -r "$G" /tmp/ghostty-edit         # 복사본을 고친다
 # … /tmp/ghostty-edit/src/terminal/PageList.zig 를 고친다 …
 diff -u --label a/src/terminal/PageList.zig --label b/src/terminal/PageList.zig \
     "$G/src/terminal/PageList.zig" /tmp/ghostty-edit/src/terminal/PageList.zig \
-    > vendor/ghostty/patches/0001-grapheme-capacity-from-filled-page.patch
+    > vendor/ghostty/patches/0001-<이름>.patch
 ```
 
 - 원본이 이미 패치된 상태면 (한 번 빌드한 checkout) `zig-pkg/ghostty-*` 를 지우고 `zig build --fetch` 로 다시 받아요.
@@ -55,7 +61,7 @@ diff -u --label a/src/terminal/PageList.zig --label b/src/terminal/PageList.zig 
 - **같은 줄을 고치는 변경은 한 패치 파일에 합쳐요.** 적용기는 패치마다 글 내용으로 "적용 전 / 적용됨" 을 가려요.
   뒤 패치가 앞 패치가 고친 줄을 다시 고치면, 다 얹힌 소스에서 앞 패치가 "적용됨" 으로 보이지 않아 빌드가 멈춰요
   (2026-10-20 #812 ⑫ 실험에서 실제로 그랬어요). 패치 파일을 나누는 것은 서로 다른 곳을 고치는 변경끼리만이에요.
-- 패치에 그 동작을 지키는 ghostty 쪽 테스트를 함께 넣어요. 0001 은 `PageList grow sizes the next page's graphemes from the filled page (TildaZ #812)` 예요.
+- 패치에 그 동작을 지키는 ghostty 쪽 테스트를 함께 넣어요. 0001 은 `PageList heapPageFits (TildaZ #812 · #841)` 와 `PageList grow reuses pruned heap pages for grapheme-heavy output (TildaZ #812 · #841)` 예요. 두 번째는 재사용 경로가 page 구조와 메모리 계산을 깨지 않는지를 봐요. 재사용했는지 자체는 테스트로 가를 수 없어서 (반납 뒤 새로 받아도 주소 · 용량이 같을 수 있어요) 페이지 폴트 수로 확인했어요.
 
 ### ghostty 테스트 돌리기
 

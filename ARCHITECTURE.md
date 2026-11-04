@@ -346,6 +346,10 @@ MiB/s). That cost is inside ghostty-vt, the same place as (1) below.
 [#403](https://github.com/ensky0/tildaz/issues/403) later traced it: the time is not
 spent decoding escapes. With many styles, ghostty-vt regrows each new page's style
 capacity from its initial size and copies the page every time (`PageList.grow`).
+Upstream [ghostty #14985](https://github.com/ghostty-org/ghostty/pull/14985) now
+carries that capacity into the next page. With that pin
+([#841](https://github.com/ensky0/tildaz/issues/841)) the M5 Pro `ansi` parser went
+from 236 to 477 MiB/s (parse only, same run).
 
 The cluster story below is measured on Windows; the `ansi` finding above is from
 Linux. Both are the same parser, so neither is host-specific.

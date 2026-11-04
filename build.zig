@@ -116,8 +116,11 @@ fn applyGhosttyPatches(b: *std.Build, dep: *std.Build.Dependency) void {
 
     const io = b.graph.io;
     const patches_path = "vendor/ghostty/patches";
-    var patches = b.root.openDir(io, patches_path, .{ .iterate = true }) catch |err|
-        std.debug.panic("cannot open {s}: {s}", .{ patches_path, @errorName(err) });
+    // 얹을 패치가 없으면 폴더도 없다 — git 은 빈 폴더를 담지 않는다 (#841 회차 2 에서 0001 을 지운 뒤).
+    var patches = b.root.openDir(io, patches_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => std.debug.panic("cannot open {s}: {s}", .{ patches_path, @errorName(err) }),
+    };
     defer patches.close(io);
     var ghostty_root = dep.builder.root.openDir(io, ".", .{}) catch |err|
         std.debug.panic("cannot open the ghostty source: {s}", .{@errorName(err)});

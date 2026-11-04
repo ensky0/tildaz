@@ -90,7 +90,7 @@ category와 format string을 소유하고, 각 host는 값만 넘겨요.** 같�
 
 **문서만 바뀌는 변경은 PR 없이 main 에 바로 push 할 수 있어요** (2026-08-10 사용자 지시: *"이런건 그냥 main에 바로 넣어"*). 위의 "같은 PR 에 담아요" 와 충돌하지 않아요 — 코드와 함께 가는 문서는 그 PR 에 담아요.
 
-**단 main 직행은 *의무가 아니라 편의*예요** (2026-08-29 사용자 지시: *"브랜치에 얹기 귀찮을 때 main에 바로 넣으라는거지"*). **머지될 브랜치가 이미 열려 있으면 그 브랜치에 얹어 함께 머지해요** — 그게 리뷰에 문맥이 함께 남고 커밋도 한 번이에요. main 직행은 얹을 브랜치가 없거나, 있어도 그 작업과 무관해서 끼워 넣는 것이 더 번거로울 때 쓰는 길이에요. (그날 `#544` 브랜치가 열려 있는데도 AGENTS.md 를 main 에 따로 넣었어요 — 이 문장이 "직행해야 한다" 로 읽혔기 때문이에요.)
+**단 main 직행은 *의무가 아니라 편의*예요** (2026-08-29 사용자 지시: *"브랜치에 얹기 귀찮을 때 main에 바로 넣으라는거지"*). **머지될 브랜치가 이미 열려 있으면 그 브랜치에 얹어 함께 머지해요** — 그게 리뷰에 문맥이 함께 남고 커밋도 한 번이에요. main 직행은 **작업하던 브랜치가 없을 때만** 쓰는 길이에요. 브랜치의 작업과 무관한 문서여도 그 브랜치에 얹어요 (2026-11-03 사용자 지시: *"작업하던 브랜치가 있으면 main에 넣지 말고 작업하던 브랜치에 넣어"*). (2026-08-29 에 `#544` 브랜치가 열려 있는데도 AGENTS.md 를 main 에 따로 넣었어요 — 이 문장이 "직행해야 한다" 로 읽혔기 때문이에요. 2026-11-03 에는 그때 있던 예외 *"그 작업과 무관하면 main 직행"* 을 근거로 릴리즈 규칙을 main 에 넣었다가 되돌렸어요 (`561a113` → `21a5e29`). main 은 force push 가 막혀 있어서 지울 수 없고, 되돌리는 커밋만 남길 수 있어요.)
 
 **여러 단계로 나눈 큰 작업은 PR 을 마지막에 한 번만 올려요** (2026-08-26 사용자 지시: *"PR 을
 작업 다 하고 마지막에 올리자 … PR 에 지저분하게 계속 뭐 추가하는 거 안 좋아 보이더라고"*).
@@ -2566,6 +2566,25 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 외장 모니터(60 Hz)에서 프레임 주기가 갈리므로, 이 줄과 platform별 화면 정보
 (`window initialized: dpi=..` 등)를 근거로 남겨요.
 
+**노트북 (Ryzen AI 7 350) 의 Windows 측정은 덮개를 닫아 실제로 잠들었다 깬 뒤에 해요** (2026-11-04 사용자 지시).
+재부팅 직후에는 화면이 멈췄다가 다시 그릴 때 첫 그림이 20 ms 쯤 늦어요. 모든 앱이 그래서 지연 표가 통째로 커져요
+([#836](https://github.com/ensky0/tildaz/issues/836) — 내장 패널의 절전 기능 PSR 이 풀리는 데 걸리는 시간이에요).
+덮개를 닫아 기기가 실제로 잠들었다 깨면 풀려요. **화면만 꺼진 대기로는 안 풀려요** ([#848](https://github.com/ensky0/tildaz/issues/848#issuecomment-6557814578)).
+
+- 확인은 둘이에요. ① Kernel-Power 이벤트 507 의 `SleepEntered` 가 `true` 이고 `HwDripsResidencyInUs` 가 0 이 아닌가
+  (덮개를 닫으면 `Reason=15`, 화면만 꺼지면 `Reason=12` · `false` 예요). ② TildaZ · WT 지연 30 키가 10 ms 안팎인가
+  (`compare-latency.sh --repeat 1 --presses 30 --only tildaz,wt`) — 안 풀렸으면 30 ms 안팎이에요.
+
+    ```powershell
+    Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-Power';Id=507} -MaxEvents 3 |
+      % { $d=@{}; ([xml]$_.ToXml()).Event.EventData.Data | % { $d[$_.Name]=$_.'#text' }; "$($_.TimeCreated) Reason=$($d.Reason) SleepEntered=$($d.SleepEntered) Drips=$($d.HwDripsResidencyInUs)" }
+    ```
+
+- 페이지에 실은 Windows 값은 모두 이 조건이에요. 페이지 주석도 그렇게 적혀 있어요.
+- **메모리 (Private Working Set) 는 이 조건으로 맞춰지지 않아요 — 확인 필요.** 같은 조건 (덮개로 잠들었다 깸 · 지연 10 ms)
+  에서도 TildaZ 와 판이 그대로인 Alacritty 가 함께 +15~20 MiB 크게 나온 날이 있어요 (11-01 · 11-04). 페이지 값 (11-02) 은
+  재부팅하고 바로 덮개를 닫았다 연 뒤였어요. 원인은 [#857](https://github.com/ensky0/tildaz/issues/857) 에서 봐요.
+
 **테스트가 끝나면 측정을 시킨 창 (보통 VS Code) 을 다시 앞으로 올려요** (2026-10-14 사용자 지시:
 *"모든 테스트에는 끝나고 vscode 다시 띄우는 코드 넣으라고"*). 측정 위생이 배경 창을 전부 내리고, 측정
 창이 포커스를 가져가요. 그대로 끝나면 화면이 비어서 측정이 끝났는지 알 수 없어요. 같은 날
@@ -2574,11 +2593,12 @@ Linux · macOS · Windows 모두 현재 창의 화면 timing을 공통 로그
 - **새 테스트 도구를 만들면 끝나는 자리에 이 코드를 넣어요.** 창을 내리지 않는 도구도 측정 창이
   포커스를 가져가니 같아요.
 - 구현은 [`tool/stress/hygiene.sh`](tool/stress/hygiene.sh) 의 `hygiene_raise_launcher` 예요. `hygiene_end`
-  가 불러요. 부모 프로세스를 거슬러 올라가 측정을 시킨 창을 찾고 (VS Code 터미널도 에이전트도 VS Code 로
-  이어져요), 못 찾으면 창을 내리기 직전의 맨 앞 창을 올려요.
-- **⚠️ 지금은 `feat/756-terminal-bench` 브랜치에만 있어요** ([`431f45a`](https://github.com/ensky0/tildaz/commit/431f45a) ·
-  [`4539b6e`](https://github.com/ensky0/tildaz/commit/4539b6e)). 그 브랜치가 머지되기 전에는 main 의 도구가 창을
-  올리지 않아요.
+  가 불러요. 부모 프로세스를 거슬러 올라가 측정을 시킨 창을 찾고, 못 찾으면 창을 내리기 직전의 맨 앞 창을
+  올려요.
+- **macOS 는 사슬의 가장 위 `.app` 을 올려요.** 처음 만나는 `.app` 은 창 없는 도우미일 수 있어요. Claude 데스크톱
+  앱은 셸 바로 위가 Claude Code 명령줄 번들 (`~/Library/Application Support/Claude/claude-code/<판>/…/claude.app`)
+  이고 그 위가 `/Applications/Claude.app` 이에요. 처음 것을 올리던 동안은 Claude 앱에서 돌린 측정 뒤에 창이 안
+  올라왔어요 (2026-11-04 사용자 지적). VS Code 는 터미널도 에이전트도 맨 위가 `Visual Studio Code.app` 이에요.
 - 올리는 것은 그 창 하나예요. 다른 배경 창은 되살리지 않고, 평소 쓰는 TildaZ worker 도 다시 띄우지
   않아요 (바로 아래).
 
@@ -2960,8 +2980,23 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
    instance 상한이 내려가 기존 config 가 인식 안 되는 주의가 나왔는데, 머지 시점에 적어 둘
    자리가 없었어요). **반대 방향도 규칙이에요** — 업그레이드 주의를 만드는 PR 은 그 파일에
    한 줄을 **같은 PR 에서** 추가해요. 코드와 문서를 같은 PR 에 담는 규칙과 같은 이유예요.
-3. 커밋하고 `git push origin main` 해요.
-4. 아래 두 명령으로 태그를 push해 Actions를 트리거해요. 어느 OS 의 어느 기기에서 해도 같아요 —
+3. **정식 버전은 벤치를 먼저 돌리고 벤치 문서를 같은 릴리즈에서 고쳐요** (2026-11-03 사용자 지시:
+   *"앞으로 벤치부터 하고 릴리즈 하는게 나을 것 같아. 릴리즈 할 때 doc도 같이 수정하도록"*).
+   릴리즈할 main 을 Linux · macOS · Windows 세 기기에서 재요. 사이트에 이전 버전 숫자가 남지 않게 하려는 규칙이에요.
+   - **벤치 전에 그 기기에서 그 판의 검증부터 해요** (2026-11-04 사용자 지시: *"검증부터 하고 벤치를 돌려야지 …
+     화면이 다르면 벤치는 필요 없으니까"*). 테스트 · 컴파일 검사 (`zig build test` · `zig build check`) 와 렌더 A/B
+     (`render-ab-shot` 로 `render-test` · `clusters.py many` 를 직전 판과 견줘 `0 px`) 가 그것이에요. 그림이 다르면 같은 일을
+     잰 숫자가 아니라서 벤치는 버려요. 같은 날 Windows 에서 벤치를 먼저 돌리고 검증을 뒤에 했어요 ([#857](https://github.com/ensky0/tildaz/issues/857)).
+   - 잴 것: [`docs/benchmarks/index.html`](docs/benchmarks/index.html) 의 OS 마다 네 표 (처리량 · 키 입력 지연 ·
+     메모리 · 시작 시간) 와 렌더 페이지 ([`docs/benchmarks/renders/`](docs/benchmarks/renders)).
+     도구는 `tool/stress/` 의 `compare-terminals.sh` · `compare-latency.sh` · `compare-memory.sh` ·
+     `compare-startup.sh` 이고, 함정은 [`tool/stress/README.md`](tool/stress/README.md) 에 있어요.
+   - 고칠 곳: 위 두 페이지와 첫 페이지 ([`docs/index.html`](docs/index.html)) 의 성능 표, 그리고 페이지의 판 표기
+     (`vX.Y.Z`). 이 커밋도 1 · 2 단계와 함께 main 에 올려요.
+   - 숫자가 나빠졌으면 태그를 올리지 말고 원인부터 봐요.
+   - 측정은 실기라서 `# 실행 환경` 대로 시작 전에 알리고 동의를 받아요.
+4. 커밋하고 `git push origin main` 해요.
+5. 아래 두 명령으로 태그를 push해 Actions를 트리거해요. 어느 OS 의 어느 기기에서 해도 같아요 —
    빌드는 전부 runner 가 하고 로컬은 태그만 올려요 (2026-09-05 까지 "Windows PowerShell 에서" 로
    적혀 있었는데 이유가 없는 관례였어요).
 
@@ -2970,7 +3005,7 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
    git push origin vX.Y.Z
    ```
 
-5. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
+6. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
 
 ## 한 줄 설치 스크립트 — 릴리즈마다 고칠 필요는 없어요 ([#803](https://github.com/ensky0/tildaz/issues/803))
 
