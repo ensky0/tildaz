@@ -2983,6 +2983,10 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
 3. **정식 버전은 벤치를 먼저 돌리고 벤치 문서를 같은 릴리즈에서 고쳐요** (2026-11-03 사용자 지시:
    *"앞으로 벤치부터 하고 릴리즈 하는게 나을 것 같아. 릴리즈 할 때 doc도 같이 수정하도록"*).
    릴리즈할 main 을 Linux · macOS · Windows 세 기기에서 재요. 사이트에 이전 버전 숫자가 남지 않게 하려는 규칙이에요.
+   - **벤치 전에 그 기기에서 그 판의 검증부터 해요** (2026-11-04 사용자 지시: *"검증부터 하고 벤치를 돌려야지 …
+     화면이 다르면 벤치는 필요 없으니까"*). 테스트 · 컴파일 검사 (`zig build test` · `zig build check`) 와 렌더 A/B
+     (`render-ab-shot` 로 `render-test` · `clusters.py many` 를 직전 판과 견줘 `0 px`) 가 그것이에요. 그림이 다르면 같은 일을
+     잰 숫자가 아니라서 벤치는 버려요. 같은 날 Windows 에서 벤치를 먼저 돌리고 검증을 뒤에 했어요 ([#857](https://github.com/ensky0/tildaz/issues/857)).
    - 잴 것: [`docs/benchmarks/index.html`](docs/benchmarks/index.html) 의 OS 마다 네 표 (처리량 · 키 입력 지연 ·
      메모리 · 시작 시간) 와 렌더 페이지 ([`docs/benchmarks/renders/`](docs/benchmarks/renders)).
      도구는 `tool/stress/` 의 `compare-terminals.sh` · `compare-latency.sh` · `compare-memory.sh` ·
