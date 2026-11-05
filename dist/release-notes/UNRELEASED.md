@@ -20,3 +20,5 @@ Internal changes belong in neither.
 ## Upgrade notes
 
 ## Body candidates
+
+- GNOME · Cinnamon no longer crash and log you out when every monitor goes away for a moment, such as when a KVM switches to another PC ([#859](https://github.com/ensky0/tildaz/issues/859)).

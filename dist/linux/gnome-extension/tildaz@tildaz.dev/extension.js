@@ -204,6 +204,14 @@ function clearHotkeyState(index) {
   }
 }
 
+/* #859 — 모니터가 하나도 없는지. KVM 전환 · 케이블 분리 때 잠깐 0 개가 된다. 그동안 창의
+ * 모니터는 NULL 이고, mutter 의 `move_to_monitor` 는 검사 없이 `window->monitor->number` 를 읽어
+ * 셸이 죽는다 (#856). mutter 도 이때는 창을 옮기지 않는다 (`meta_window_idle_move_resize` 의
+ * headless 확인). `get_current_monitor()` 는 0 을 돌려주니 번호로는 가를 수 없다. */
+function noMonitors() {
+  return global.display.get_n_monitors() === 0 || Main.layoutManager.primaryIndex < 0;
+}
+
 /* #654 — 제목의 접두어는 `WINDOW_TITLE_PREFIX` 토큰으로 받는다 (`instances.zig` 의
  * `window_title_prefix` 와 짝). 한쪽만 바뀌면 여기서 번호를 못 읽어 확장이 그 창을 통째로
  * 놓친다 — 배치 · 토글 · 전역 hotkey 가 죽는다. 그래서 정규식에 접두어를 박지 않고, 접두어를
@@ -331,6 +339,7 @@ export default class TildazExtension extends Extension {
     this._managed = new Set();
     this._placed = new Set();
     this._taskbarPatched = new Set();
+    this._unmanagedIds = new Map(); // #859 관리 중인 창 → `unmanaged` 시그널 (_manage)
     this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
     this._shellSettings = null;
     this._shellSettingsId = 0;
@@ -508,6 +517,11 @@ export default class TildazExtension extends Extension {
         win.unstick();
       } catch (_e) {}
     }
+    for (const [win, id] of this._unmanagedIds || []) {
+      try {
+        win.disconnect(id);
+      } catch (_e) {}
+    }
     for (const win of this._taskbarPatched || []) {
       // configurable:true 로 정의했으므로 delete → GObject prototype getter 복귀.
       try {
@@ -530,6 +544,7 @@ export default class TildazExtension extends Extension {
     this._managed = null;
     this._placed = null;
     this._taskbarPatched = null;
+    this._unmanagedIds = null;
     this._accelerators = null;
     this._dialogClassWatchers = null;
     this._dialogIdleIds = null;
@@ -934,9 +949,15 @@ export default class TildazExtension extends Extension {
 
     if (term) {
       this._restoreDialogParent(term);
-      win.move_to_monitor(term.get_monitor());
-      this._centerDialogOn(win, term);
+      // #859 — 모니터가 없으면 옮기지 않는다. 모니터가 돌아와 부모가 제자리로 가면
+      // `_followDialogParent` 가 가운데로 다시 놓는다.
+      if (!noMonitors()) {
+        win.move_to_monitor(term.get_monitor());
+        this._centerDialogOn(win, term);
+      }
       this._followDialogParent(win, term);
+    } else if (noMonitors()) {
+      console.log(`${LOG_TAG} no monitor — dialog left where it is`);
     } else {
       const dr = win.get_frame_rect();
       const mi = global.display.get_current_monitor();
@@ -956,6 +977,7 @@ export default class TildazExtension extends Extension {
   }
 
   _centerDialogOn(win, term) {
+    if (noMonitors()) return; // #859
     const dr = win.get_frame_rect();
     const tr = term.get_frame_rect();
     const x = tr.x + Math.round((tr.width - dr.width) / 2);
@@ -1074,15 +1096,24 @@ export default class TildazExtension extends Extension {
   // tildaz xdg buffer 재그리기 race 로 flicker 가 나므로, 최초 1회만 우측에 맞춘다.
   _ensurePlacedOnce(win, cfg) {
     if (this._placed.has(win)) return;
-    this._place(win, cfg);
-    this._placed.add(win);
+    // #859 — 모니터가 없어 건너뛰었으면 "배치함" 으로 두지 않는다. 다음 단축키나 모니터가
+    // 돌아올 때의 재배치가 놓는다.
+    if (this._place(win, cfg)) this._placed.add(win);
   }
 
-  /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치. */
+  /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치.
+   *  놓았으면 true. 모니터가 없으면 아무것도 안 하고 false (#859). */
   _place(win, c) {
+    // 관리 목록에는 먼저 넣는다 — 모니터가 돌아올 때 `_replaceAllForMonitorChange` 가 이 창을 놓는다.
+    this._manage(win);
+    this._skipTaskbar(win); // 위치와 무관해서 모니터가 없어도 한다 (숨겨 둔 창이 목록에 안 보이게)
+    if (noMonitors()) {
+      console.log(`${LOG_TAG} no monitor — placement skipped until one returns`);
+      return false;
+    }
     const mi = Main.layoutManager.primaryIndex;
     const a = win.get_work_area_for_monitor(mi);
-    if (!a) return;
+    if (!a) return false;
 
     let w = Math.round((a.width * Math.min(c.wp, 100)) / 100);
     let h = Math.round((a.height * Math.min(c.hp, 100)) / 100);
@@ -1125,8 +1156,23 @@ export default class TildazExtension extends Extension {
       win.move_resize_frame(false, x, y, w, h);
     win.make_above();
     win.stick();
-    this._skipTaskbar(win);
+    return true;
+  }
+
+  // #859 — 관리 목록에 넣고, 창이 닫히면 뺀다. 빼지 않으면 닫힌 창이 목록에 남아 재배치와
+  // 다이얼로그의 부모 고르기 (`_showParentAndPlaceDialog`) 가 그 창을 집는다.
+  _manage(win) {
+    if (this._unmanagedIds.has(win)) return;
     this._managed.add(win);
+    this._unmanagedIds.set(
+      win,
+      win.connect("unmanaged", () => {
+        this._managed?.delete(win);
+        this._placed?.delete(win);
+        this._taskbarPatched?.delete(win);
+        this._unmanagedIds?.delete(win);
+      })
+    );
   }
 
   // #373 — 해상도 / 모니터 구성이 바뀌면 관리 중인 창을 모두 다시 배치한다.
