@@ -168,6 +168,8 @@ mkdir -p "$W/config" "$W/data/gnome-shell/extensions/tildaz-dev@tildaz.dev" "$W/
 chmod 700 "$W/run"
 cleanup() {
   rm -f "$RUN"/instance9.*
+  # nested 셸이 실제 runtime 폴더에 만든 소켓. 셸은 이미 내렸지만, 듣는 프로세스가 있으면 남긴다.
+  ss -xlp 2>/dev/null | grep -q "wayland-zmon " || rm -f "$XDG_RUNTIME_DIR/wayland-zmon" "$XDG_RUNTIME_DIR/wayland-zmon.lock"
   if [ $KEEP = 1 ]; then echo "작업 폴더: $W"; else rm -rf "$W"; fi
 }
 trap cleanup EXIT
