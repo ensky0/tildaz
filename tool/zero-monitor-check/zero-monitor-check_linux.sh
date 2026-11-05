@@ -5,12 +5,15 @@
 #   tool/zero-monitor-check/zero-monitor-check_linux.sh                         # zig-out 의 dev 빌드
 #   tool/zero-monitor-check/zero-monitor-check_linux.sh --bin /path/to/tildaz   # 다른 판 (고치기 전 판 대조)
 #   … --keep                                                                    # 작업 폴더를 남긴다
+#   … --close-first                                                             # A 다음 바로 E (고치기 전 판은 C 에서 죽어 E 에 못 닿는다)
 #
 # 회차 (판정은 셸 로그의 `[tildaz-dev] placed 9 on monitor N: x,y WxH` 와 셸 프로세스):
 #   A  처음 뜰 때 마우스 모니터에 놓는다 (포인터를 주 모니터가 *아닌* 쪽에 둔다)
 #   B  단축키로 숨기고 포인터를 다른 모니터로 옮겨 보이면 그 모니터로 온다
 #   C  모니터를 모두 없애도 셸이 산다 (#856 — 고치기 전 판은 여기서 SIGSEGV)
 #   D  크기가 다른 모니터로 돌아오면 그 모니터에 맞춰 다시 놓는다
+#   E  TildaZ 를 닫은 뒤 모니터 구성이 바뀌어도 셸이 산다 (닫힌 창이 관리 목록에 남으면 확장이 그 창을
+#      다시 배치한다 — Cinnamon 은 고치기 전 판이 여기서 muffin 단언으로 멈췄다)
 #
 # 격리: 셸 · 앱 모두 임시 `XDG_CONFIG_HOME` · `XDG_DATA_HOME` · `XDG_STATE_HOME` 와 자기 세션 버스
 # (`dbus-run-session`) 를 쓴다. dconf 도 그 임시 폴더라 사용자 설정을 읽지도 쓰지도 않는다.
@@ -26,7 +29,7 @@ ROOT=$(cd "$HERE/../.." && pwd)
 
 if [ "${1:-}" = "--inner" ]; then
   # ── dbus-run-session 안 ────────────────────────────────────────────────────────────
-  W=$2 BIN=$3
+  W=$2 BIN=$3 CLOSE_FIRST=$4
   SHELL_LOG=$W/shell.log
   F1=0xffbe                         # config_9 의 기본 hotkey (dev 판 index 9 = F1)
   vm() {                            # vm <명령…> → ack 의 결과
@@ -70,6 +73,22 @@ PY
   }
   primary_of() { python3 -c 'import json,sys; print([d["connector"] for d in json.loads(sys.argv[1]) if d["primary"]][0])' "$1"; }
   RESULT=0
+  e_case() {
+    kill -TERM "$APP" 2>/dev/null
+    local i; for i in $(seq 50); do kill -0 "$APP" 2>/dev/null || break; sleep 0.1; done
+    sleep 1
+    echo "add: $(vm start 1024x768)"; sleep 2
+    alive; verdict "E shell survives a monitor change after TildaZ closed" $?
+  }
+  finish() {
+    vm quit >/dev/null
+    kill -TERM "$APP" 2>/dev/null; sleep 1; kill -KILL "$APP" 2>/dev/null
+    kill -TERM "$SHELL_PID" 2>/dev/null; sleep 2; kill -KILL "$SHELL_PID" 2>/dev/null
+    kill "$VPID" 2>/dev/null
+    wait 2>/dev/null
+    echo "RESULT=$RESULT"
+    exit $RESULT
+  }
   verdict() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; RESULT=1; fi; }
 
   gsettings set org.gnome.shell enabled-extensions "['tildaz-dev@tildaz.dev']"
@@ -95,6 +114,7 @@ PY
   APP=$!
   line=$(wait_placed "$n"); sleep 1
   r=$(inside "$line" "$M" "$FAR_CONN"); verdict "A first show on the pointer's monitor — $r" $?
+  [ "$CLOSE_FIRST" = 1 ] && { e_case; finish; }
 
   # B — 숨기고 다른 모니터에서 보이기
   vm key $F1 >/dev/null; sleep 1
@@ -120,24 +140,19 @@ PY
   else
     verdict "D skipped (shell is gone)" 1
   fi
-
-  vm quit >/dev/null
-  kill -TERM "$APP" 2>/dev/null; sleep 1; kill -KILL "$APP" 2>/dev/null
-  kill -TERM "$SHELL_PID" 2>/dev/null; sleep 2; kill -KILL "$SHELL_PID" 2>/dev/null
-  kill "$VPID" 2>/dev/null
-  wait 2>/dev/null
-  echo "RESULT=$RESULT"
-  exit $RESULT
+  if alive; then e_case; else verdict "E skipped (shell is gone)" 1; fi
+  finish
 fi
 
 # ── 바깥 — 준비 · 정리 ─────────────────────────────────────────────────────────────
 BIN=$ROOT/zig-out/install-dev/bin/tildaz
 [ -x "$BIN" ] || BIN=$ROOT/zig-out/bin/tildaz
-KEEP=0
+KEEP=0 CLOSE_FIRST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --close-first) CLOSE_FIRST=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -171,7 +186,7 @@ echo "빌드: $BIN ($("$BIN" --version 2>/dev/null | head -1))"
 env -u WAYLAND_DISPLAY -u DISPLAY -u SWAYSOCK -u HYPRLAND_INSTANCE_SIGNATURE -u DBUS_SESSION_BUS_ADDRESS \
   HOME="$W/home" XDG_CONFIG_HOME="$W/config" XDG_DATA_HOME="$W/data" XDG_STATE_HOME="$W/state" \
   XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_DESKTOP=gnome GSETTINGS_BACKEND=dconf \
-  timeout 120 dbus-run-session -- bash "$0" --inner "$W" "$BIN" 2> "$W/session.err"
+  timeout 120 dbus-run-session -- bash "$0" --inner "$W" "$BIN" "$CLOSE_FIRST" 2> "$W/session.err"
 rc=$?
 grep -E "placed 9|no monitor|SIGSEGV|crashed|which_monitor" "$W/shell.log" | sed 's/^/  shell: /'
 exit $rc

@@ -2172,6 +2172,10 @@ tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # �
 | B | 단축키로 숨기고 다른 모니터에서 보이면 그 모니터로 온다 |
 | C | 모니터가 0 개가 돼도 셸이 산다 |
 | D | 크기가 다른 모니터로 돌아오면 그 모니터에 맞춰 놓는다 |
+| E | TildaZ 를 닫은 뒤 모니터 구성이 바뀌어도 셸이 산다 |
+
+- **#859 이전 판은 C 에서 셸이 죽어 E 에 못 닿아요.** 그 판의 E 는 `--close-first` (A 다음 바로 E) 로 봐요.
+  고치기 전 판은 E 에서 `meta_window_get_workspaces: code should not be reached` 로 멈췄어요 — 확장이 닫힌 창을 다시 배치했어요.
 
 - **판정은 확장 로그예요** — 창을 실제로 옮길 때 `placed 9 on monitor N: x,y WxH` 를 남겨요. #859 이전 판에는 이 줄이
   없어서 A · B · D 는 `no-placement` 로 나와요. 그 판으로는 C (셸이 죽는가) 만 봐요.
@@ -2184,8 +2188,12 @@ tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # �
   Wayland 없이 한 번 띄워 만들어요 (`config_9.toml` 이 셸보다 먼저 있어야 확장이 단축키를 등록해요 — 앱은 그 결과를 1 초만 기다려요).
 - `XDG_RUNTIME_DIR` 만 실제 것이에요 — mutter 가 실제 pipewire 를 쓰고, 확장과 앱이 `tildaz-dev/run/instance9.hotkey` 를
   주고받아요. 그래서 dev instance 9 가 떠 있으면 시작하지 않고, 끝나면 `instance9.*` 를 지워요.
-- **Cinnamon 은 이 도구로 못 재요.** nested Cinnamon 은 부모 compositor 위에 창으로 떠서 (`--nested`) 화면 없이 띄우는 방법과
-  가상 모니터를 만들 길이 확인되지 않았어요 (추정 — 확인 필요).
+- **Cinnamon 은 이 도구로 못 재요.** muffin 에는 `RecordVirtual` 도 `--headless` 도 없어서, nested Cinnamon 을 지금 화면 위에
+  창으로 띄워요. 모니터 수는 `MUFFIN_DEBUG_NUM_DUMMY_MONITORS=2` 로 시작할 때 정해요 (0 은 안 받는 것으로 보여요 — 추정).
+  nested muffin 에서는 가상 포인터 (`create_virtual_device` · `warp_pointer`) 도 가상 키 F1 도 안 먹었어요. 그래서
+  `org.Cinnamon.Eval` 로 직접 해요 — 창을 `move_to_monitor(1)` 로 옮기고 `Main.layoutManager.emit("monitors-changed")` 를 보내요.
+  모니터 0 개는 `global.display.get_n_monitors = () => 0` 로 잠깐 덮어 흉내 내요. 우리 검사가 도는지만 보고, muffin 이
+  실제로 죽는 장면은 못 만들어요. 2026-11-05 회차의 명령은 [#859](https://github.com/ensky0/tildaz/issues/859) 에 있어요.
 
 # Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
 

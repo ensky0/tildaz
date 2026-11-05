@@ -4,7 +4,8 @@
 `zero-monitor-check_linux.sh` 가 nested `gnome-shell` 의 세션 버스 안에서 띄운다. 명령은
 <ctl>/cmd 에 한 줄로 쓰고 (원자적으로 — mv), 끝나면 <ctl>/ack 에 `<번호> <결과>` 를 적는다.
 
-  <번호> start 1600x900 1280x720   가상 모니터를 크기마다 하나씩 만든다 (모두 생길 때까지 기다린다)
+  <번호> start 1600x900 1280x720   가상 모니터를 크기마다 하나씩 더한다 (모두 생길 때까지 기다린다).
+                                   부를 때마다 세션을 하나 더 열어 이미 있는 모니터에 더해진다
   <번호> stop                      모두 없앤다 → 모니터 0 개 (0 개가 될 때까지 기다린다)
   <번호> pointer <i> <x> <y>       i 번째 모니터 (start 순서) 의 좌표로 포인터를 옮긴다
   <번호> key <keysym>              키를 눌렀다 뗀다 (예: 0xffbe = F1)
@@ -31,7 +32,7 @@ CTL = sys.argv[1]
 SINK = "tz-zmon-sink"
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 loop = GLib.MainLoop()
-st = {"rd": None, "streams": [], "sizes": [], "gst": [], "linked": set(), "subs": []}
+st = {"rd": [], "streams": [], "sizes": [], "gst": [], "linked": set()}
 
 
 def log(msg):
@@ -92,8 +93,7 @@ def wait(pred, timeout=10.0):
 
 
 def start(sizes):
-    if st["rd"]:
-        return "already started"
+    before = len(monitors()) if st["rd"] else 0
     (rd,) = call("org.gnome.Mutter.RemoteDesktop", "/org/gnome/Mutter/RemoteDesktop",
                  "org.gnome.Mutter.RemoteDesktop", "CreateSession", None, "(o)").unpack()
     sid = bus.call_sync("org.gnome.Mutter.RemoteDesktop", rd, "org.freedesktop.DBus.Properties", "Get",
@@ -102,7 +102,8 @@ def start(sizes):
     (sc,) = call("org.gnome.Mutter.ScreenCast", "/org/gnome/Mutter/ScreenCast",
                  "org.gnome.Mutter.ScreenCast", "CreateSession",
                  GLib.Variant("(a{sv})", ({"remote-desktop-session-id": GLib.Variant("s", sid)},)), "(o)").unpack()
-    st["streams"], st["sizes"], st["linked"] = [], [], set()
+    if not st["rd"]:
+        st["streams"], st["sizes"], st["linked"] = [], [], set()
     for w, h in sizes:
         mode = {"size": GLib.Variant("(uu)", (w, h)), "is-preferred": GLib.Variant("b", True)}
         props = {"cursor-mode": GLib.Variant("u", 0), "is-platform": GLib.Variant("b", True),
@@ -117,19 +118,21 @@ def start(sizes):
              "always-copy=true", "!", "fakesink"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     call("org.gnome.Mutter.RemoteDesktop", rd, "org.gnome.Mutter.RemoteDesktop.Session", "Start")
-    st["rd"] = rd
-    ok = wait(lambda: link_ports() >= len(sizes) and len(monitors()) == len(sizes))
+    st["rd"].append(rd)
+    want = before + len(sizes)
+    ok = wait(lambda: link_ports() >= len(st["streams"]) and len(monitors()) == want)
     return f"{'ok' if ok else 'timeout'} {json.dumps(monitors())}"
 
 
 def stop():
     if not st["rd"]:
         return "not started"
-    try:
-        call("org.gnome.Mutter.RemoteDesktop", st["rd"], "org.gnome.Mutter.RemoteDesktop.Session", "Stop")
-    except GLib.Error as e:
-        log(f"stop error: {e.message}")
-    st["rd"] = None
+    for rd in st["rd"]:
+        try:
+            call("org.gnome.Mutter.RemoteDesktop", rd, "org.gnome.Mutter.RemoteDesktop.Session", "Stop")
+        except GLib.Error as e:
+            log(f"stop error: {e.message}")
+    st["rd"] = []
     ok = wait(lambda: monitors() == [])
     for g in st["gst"]:
         g.terminate()
@@ -143,7 +146,7 @@ def pointer(i, x, y):
     # 동안 열 번 보내고 마지막을 목표 자리로 둔다. 같은 자리는 이동으로 치지 않을 수 있어 1 px 씩 흔든다.
     for k in range(10):
         dx = 0 if k == 9 else (1 if k % 2 else -1)
-        call("org.gnome.Mutter.RemoteDesktop", st["rd"], "org.gnome.Mutter.RemoteDesktop.Session",
+        call("org.gnome.Mutter.RemoteDesktop", st["rd"][0], "org.gnome.Mutter.RemoteDesktop.Session",
              "NotifyPointerMotionAbsolute", GLib.Variant("(sdd)", (st["streams"][i], x + dx, y)))
         time.sleep(0.1)
     return "ok"
@@ -151,7 +154,7 @@ def pointer(i, x, y):
 
 def key(keysym):
     for down in (True, False):
-        call("org.gnome.Mutter.RemoteDesktop", st["rd"], "org.gnome.Mutter.RemoteDesktop.Session",
+        call("org.gnome.Mutter.RemoteDesktop", st["rd"][0], "org.gnome.Mutter.RemoteDesktop.Session",
              "NotifyKeyboardKeysym", GLib.Variant("(ub)", (keysym, down)))
         time.sleep(0.05)
     return "ok"

@@ -21,5 +21,5 @@ Internal changes belong in neither.
 
 ## Body candidates
 
-- GNOME · Cinnamon no longer crash and log you out when every monitor goes away for a moment, such as when a KVM switches to another PC ([#859](https://github.com/ensky0/tildaz/issues/859)).
+- GNOME · Cinnamon no longer crash and log you out when monitors change, such as when a KVM switches to another PC or after TildaZ was closed ([#859](https://github.com/ensky0/tildaz/issues/859)).
 - On GNOME with several monitors, TildaZ now opens on the monitor with the mouse pointer, as on the other desktops ([#859](https://github.com/ensky0/tildaz/issues/859)).
