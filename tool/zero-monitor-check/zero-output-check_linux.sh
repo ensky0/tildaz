@@ -58,19 +58,26 @@ case "$DE" in
 esac
 echo "데스크톱: $DE · 창: $KIND · 빌드: $BIN ($("$BIN" --version 2>/dev/null | head -1))"
 
-APP_PID= GUARD_PID=
+APP_PID= GUARD_PID= OWNED=0
+RUN=${XDG_RUNTIME_DIR:?}/$APP/run
 cleanup() {
   [ -n "$GUARD_PID" ] && kill "$GUARD_PID" 2>/dev/null
   [ -n "$APP_PID" ] && { kill -TERM "$APP_PID" 2>/dev/null; sleep 1; kill -KILL "$APP_PID" 2>/dev/null; }
-  if [ "$KIND" = worker ]; then rm -f "$CONF/config_9.toml" "$STATE/tildaz_9.log"; fi
+  # 이 회차가 만든 것만 지운다. 아래 가드에 걸려 멈출 때 남의 config_9 · instance9 를 지우면 안 된다.
+  # worker 는 끝난 뒤에도 instance9.lock · .endpoint · .hotkey 가 남아, 지우지 않으면 다음 회차가
+  # 위 가드에 걸려 시작하지 못했다 (2026-11-05 GNOME · Cinnamon 회차).
+  if [ "$KIND" = worker ] && [ "$OWNED" = 1 ]; then
+    rm -f "$CONF/config_9.toml" "$STATE/tildaz_9.log" "$RUN"/instance9.*
+  fi
   rm -rf "$W"
 }
 trap cleanup EXIT
 
 if [ "$KIND" = worker ]; then
   [ -e "$CONF/config_9.toml" ] && die "이미 있다: $CONF/config_9.toml — 다른 회차가 남긴 것인지 보고 지운다"
-  [ -e "${XDG_RUNTIME_DIR:?}/$APP/run/instance9.lock" ] && die "dev instance 9 가 떠 있다"
+  [ -e "$RUN/instance9.lock" ] && die "dev instance 9 가 떠 있다 ($RUN/instance9.lock) — 내리고 다시"
   SHELL_PID=$(pgrep -xo "$SHELL_NAME") || die "$SHELL_NAME 이 안 보인다"
+  OWNED=1
   # 이 판의 완전한 config 를 만든다 (키가 빠지면 시작 안내 다이얼로그가 뜬다). Wayland 없이 띄우면 config 만 만들고 끝난다.
   mkdir -p "$W/c" "$W/s" "$W/r" "$W/h"; chmod 700 "$W/r"
   env -i PATH="$PATH" HOME="$W/h" XDG_CONFIG_HOME="$W/c" XDG_STATE_HOME="$W/s" XDG_RUNTIME_DIR="$W/r" \

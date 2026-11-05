@@ -2205,6 +2205,13 @@ tool/zero-monitor-check/zero-output-check_linux.sh --off-cmd '…' --on-cmd '…
 
 - **케이블을 뽑는 쪽이 가장 확실해요** — KVM 전환과 같은 일이에요. 외장 모니터 하나만 쓰는 기기 (미니PC) 에서 해요.
   노트북 내장 패널은 뽑을 수 없어요.
+- **도구가 "뽑으세요" 를 찍은 뒤에 뽑아요.** 그 전이나 90 초 뒤에 뽑으면 회차가 성립하지 않아요 (출력 판정 두 줄이 FAIL).
+  2026-11-05 GNOME · Cinnamon 에서 한 번씩 그랬어요. 뽑은 시각은 커널 로그의 `USB disconnect` 로 확인해요
+  (미니PC 의 모니터 케이블은 USB-C 라 허브의 USB 장치가 함께 떨어져요).
+- **Cinnamon 은 셸이 모니터 0 개를 봤는지 따로 확인해요.** 2026-11-05 미니PC (Cinnamon 6.6.9) 에서 muffin 은 케이블을 뽑은
+  10 초 동안 출력을 그대로 두었다가, 다시 꽂을 때 옛 출력을 지우고 1 초 뒤 새 출력을 붙였어요. 확장 로그에
+  `no monitor — placement skipped` 가 없어서 0 개 검사는 시험되지 않았어요 (GNOME 은 그 줄이 나왔어요). 확장 로그는
+  journal 이 아니라 셸의 표준 오류예요 — `readlink /proc/$(pgrep -x cinnamon)/fd/2`.
 - DE 명령으로 끄면 그동안 화면이 안 보여요. 도구가 죽어도 `--guard` 초 (기본 40) 뒤에 `--on-cmd` 를 부르는 안전장치가
   따로 돌아요. DE 마다 마지막 출력을 끄게 두는지는 다르고, 확인한 결과는 [#859](https://github.com/ensky0/tildaz/issues/859) 에 적어요.
 - 판정은 앱 로그예요 — 출력이 사라졌다 (`bound wl_output removed`) 돌아왔는가, 앱이 살아 있고 종료 확인 경로
