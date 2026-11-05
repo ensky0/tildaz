@@ -2195,6 +2195,24 @@ tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # �
   모니터 0 개는 `global.display.get_n_monitors = () => 0` 로 잠깐 덮어 흉내 내요. 우리 검사가 도는지만 보고, muffin 이
   실제로 죽는 장면은 못 만들어요. 2026-11-05 회차의 명령은 [#859](https://github.com/ensky0/tildaz/issues/859) 에 있어요.
 
+**실제 세션은 `zero-output-check_linux.sh` 로 재요.** nested 로 못 만드는 경우예요 — KDE · COSMIC · Hyprland · sway 의
+layer-shell 경로와, 실제 GNOME · Cinnamon 셸이에요.
+
+```sh
+tool/zero-monitor-check/zero-output-check_linux.sh --manual 90                       # 사람이 케이블을 뽑았다 꽂는다
+tool/zero-monitor-check/zero-output-check_linux.sh --off-cmd '…' --on-cmd '…'          # 데스크톱 명령으로 끈다
+```
+
+- **케이블을 뽑는 쪽이 가장 확실해요** — KVM 전환과 같은 일이에요. 외장 모니터 하나만 쓰는 기기 (미니PC) 에서 해요.
+  노트북 내장 패널은 뽑을 수 없어요.
+- DE 명령으로 끄면 그동안 화면이 안 보여요. 도구가 죽어도 `--guard` 초 (기본 40) 뒤에 `--on-cmd` 를 부르는 안전장치가
+  따로 돌아요. DE 마다 마지막 출력을 끄게 두는지는 다르고, 확인한 결과는 [#859](https://github.com/ensky0/tildaz/issues/859) 에 적어요.
+- 판정은 앱 로그예요 — 출력이 사라졌다 (`bound wl_output removed`) 돌아왔는가, 앱이 살아 있고 `pending_quit_request` 가
+  없는가. GNOME · Cinnamon 은 셸 PID 가 그대로인지도 봐요.
+- KDE · COSMIC · Hyprland · sway 는 `-e` 측정 창이라 config · 전역 hotkey 를 안 건드려요. GNOME · Cinnamon 은 확장이 잡는
+  worker 여야 해서, 실제 dev config 폴더에 `config_9.toml` 을 잠깐 둬요. 그 확장은 **재는 판의 dev 확장**이어야 해요 —
+  `bash dist/linux/install.sh` 뒤 다시 로그인해야 셸이 새 확장을 읽어요.
+
 # Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
 
 **커서 모양은 headless sway 로 못 재요.** 그 compositor 가 커서를 화면에 아예 안 그리는 구간이 있어서
