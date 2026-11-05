@@ -2156,6 +2156,37 @@ grim shot.png                                                          # sway �
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
 
+# Linux — GNOME 확장의 모니터 배치를 재는 법 ([#859](https://github.com/ensky0/tildaz/issues/859))
+
+[`tool/zero-monitor-check/`](tool/zero-monitor-check) 가 nested `gnome-shell --headless` 에 가상 모니터 · 포인터 · 키를 넣어
+재요. 화면에 아무것도 안 뜨고 사람 손도 필요 없어요. 그래도 실기라 시작 전에 알려요.
+
+```sh
+tool/zero-monitor-check/zero-monitor-check_linux.sh                      # zig-out 의 dev 빌드
+tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # 고치기 전 판과 견줄 때
+```
+
+| 회차 | 무엇 |
+|---|---|
+| A | 처음 뜰 때 마우스 모니터에 놓는다 (포인터를 주 모니터가 아닌 쪽에 둬요) |
+| B | 단축키로 숨기고 다른 모니터에서 보이면 그 모니터로 온다 |
+| C | 모니터가 0 개가 돼도 셸이 산다 |
+| D | 크기가 다른 모니터로 돌아오면 그 모니터에 맞춰 놓는다 |
+
+- **판정은 확장 로그예요** — 창을 실제로 옮길 때 `placed 9 on monitor N: x,y WxH` 를 남겨요. #859 이전 판에는 이 줄이
+  없어서 A · B · D 는 `no-placement` 로 나와요. 그 판으로는 C (셸이 죽는가) 만 봐요.
+- **모니터는 mutter ScreenCast `RecordVirtual` 로 만들고 세션을 멈춰 없애요.** 스트림을 받는 쪽이 붙어야 모니터가 생겨요.
+  `gst-launch-1.0 pipewiresrc` 의 자동 연결은 `target not found` 로 실패해서 (pipewire 1.6.10 · wireplumber 0.5.18)
+  `autoconnect=false` 로 띄우고 `pw-link` 로 포트를 직접 이어요.
+- **세션을 연 직후의 포인터 이동은 버려질 때가 있어요.** 버릴 이동 하나로는 부족했어요. 밖에서 포인터 위치를 읽을 길이
+  없어서, 이동을 1 초 동안 열 번 보내요.
+- **dconf 도 격리해요.** 빈 dconf 에 확장만 켜서 사용자 설정을 읽지도 쓰지도 않아요. 확장 파일과 `config_9.toml` 은 앱을
+  Wayland 없이 한 번 띄워 만들어요 (`config_9.toml` 이 셸보다 먼저 있어야 확장이 단축키를 등록해요 — 앱은 그 결과를 1 초만 기다려요).
+- `XDG_RUNTIME_DIR` 만 실제 것이에요 — mutter 가 실제 pipewire 를 쓰고, 확장과 앱이 `tildaz-dev/run/instance9.hotkey` 를
+  주고받아요. 그래서 dev instance 9 가 떠 있으면 시작하지 않고, 끝나면 `instance9.*` 를 지워요.
+- **Cinnamon 은 이 도구로 못 재요.** nested Cinnamon 은 부모 compositor 위에 창으로 떠서 (`--nested`) 화면 없이 띄우는 방법과
+  가상 모니터를 만들 길이 확인되지 않았어요 (추정 — 확인 필요).
+
 # Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
 
 **커서 모양은 headless sway 로 못 재요.** 그 compositor 가 커서를 화면에 아예 안 그리는 구간이 있어서
