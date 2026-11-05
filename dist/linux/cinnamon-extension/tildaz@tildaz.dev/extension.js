@@ -433,7 +433,7 @@ function replaceAllForMonitorChange() {
       if (index === null) continue;
       const cfg = st.configs.get(index);
       if (!cfg) continue;
-      place(win, cfg);
+      place(win, cfg, true);
     } catch (e) {
       global.logError(LOG_TAG + " monitors-changed replace failed: " + e);
     }
@@ -888,6 +888,20 @@ function noMonitors() {
   return global.display.get_n_monitors() === 0;
 }
 
+/* #859 — 놓을 모니터 (SPEC `표시 모니터`). 보일 때는 마우스 모니터 (`keep` false), 해상도 · 구성이
+ * 바뀔 때는 창이 있던 모니터 (`keep` true). 창의 모니터가 없거나 범위 밖이면 마우스 모니터예요.
+ * 예전에는 구성이 바뀔 때도 마우스 모니터로 옮겨 SPEC 과 달랐어요. `noMonitors()` 가 false 일
+ * 때만 부른다. */
+function targetMonitor(win, keep) {
+  const n = global.display.get_n_monitors();
+  if (keep) {
+    const m = win.get_monitor();
+    if (m >= 0 && m < n) return m;
+  }
+  const cur = global.display.get_current_monitor();
+  return cur >= 0 && cur < n ? cur : 0;
+}
+
 // #859 — 관리 목록에 넣고, 창이 닫히면 뺀다. 빼지 않으면 닫힌 창이 목록에 남아 재배치와
 // 다이얼로그의 부모 고르기 (`placeDialog`) 가 그 창을 집는다.
 function manage(win) {
@@ -986,7 +1000,7 @@ function onMap(actor) {
   const cfg = readConfig(index);
   st.configs.set(index, cfg);
   registerHotkey(index, cfg);
-  place(win, cfg);
+  place(win, cfg, false);
   // hidden_start=true → 배치 후 숨김(첫 hotkey 로 등장). tildaz 는 Cinnamon 에서
   // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
@@ -1047,7 +1061,7 @@ function toggle(index) {
     }
     // 재배치 — minimize/unminimize 는 geometry 를 보존하지만, drift / 첫 show /
     // 다른 모니터로 커서 이동 대비해 위치를 다시 확정(커서 모니터 기준).
-    place(win, st.configs.get(index));
+    place(win, st.configs.get(index), false);
     Main.activateWindow(win);
     // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
     // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
@@ -1085,9 +1099,9 @@ function defocusAfterHide(win) {
   }
 }
 
-/** config 의 dock_position/width/height/offset 으로 *마우스 커서가 있는 모니터*
- *  workArea 기준 배치 (SPEC: drop-down 은 커서 모니터에). */
-function place(win, c) {
+/** config 의 dock_position/width/height/offset 으로 `targetMonitor` 의 workArea 기준 배치
+ *  (SPEC: drop-down 은 커서 모니터에, relayout 은 현재 모니터 유지). */
+function place(win, c, keep) {
   // 관리 목록에는 먼저 넣는다 — 모니터가 돌아올 때 `replaceAllForMonitorChange` 가 이 창을 놓는다.
   manage(win);
   skipTaskbar(win); // 위치와 무관해서 모니터가 없어도 한다
@@ -1095,7 +1109,7 @@ function place(win, c) {
     global.log(`${LOG_TAG} no monitor — placement skipped until one returns`);
     return;
   }
-  const mi = global.display.get_current_monitor();
+  const mi = targetMonitor(win, keep);
   const a = win.get_work_area_for_monitor(mi);
   if (!a) return;
 
@@ -1135,8 +1149,11 @@ function place(win, c) {
   // 해상도를 캐시해 spurious broadcast 를 거르고 — window.zig 의 last_display_w/h —
   // Linux layer-shell 은 wl_output.mode 를 이전 값과 비교한다. 같은 규칙이다.)
   const cur = win.get_frame_rect();
-  if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h)
+  if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h) {
     win.move_resize_frame(false, x, y, w, h);
+    // 드문 일이라 남긴다 — 어느 모니터에 놓았는지가 진단 근거다 (#859 · tool/zero-monitor-check).
+    global.log(`${LOG_TAG} placed ${workerIndex(win)} on monitor ${mi}: ${x},${y} ${w}x${h}`);
+  }
   win.make_above();
   win.stick();
 }
