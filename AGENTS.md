@@ -2207,8 +2207,10 @@ tool/zero-monitor-check/zero-output-check_linux.sh --off-cmd '…' --on-cmd '…
   노트북 내장 패널은 뽑을 수 없어요.
 - DE 명령으로 끄면 그동안 화면이 안 보여요. 도구가 죽어도 `--guard` 초 (기본 40) 뒤에 `--on-cmd` 를 부르는 안전장치가
   따로 돌아요. DE 마다 마지막 출력을 끄게 두는지는 다르고, 확인한 결과는 [#859](https://github.com/ensky0/tildaz/issues/859) 에 적어요.
-- 판정은 앱 로그예요 — 출력이 사라졌다 (`bound wl_output removed`) 돌아왔는가, 앱이 살아 있고 `pending_quit_request` 가
-  없는가. GNOME · Cinnamon 은 셸 PID 가 그대로인지도 봐요.
+- 판정은 앱 로그예요 — 출력이 사라졌다 (`bound wl_output removed`) 돌아왔는가, 앱이 살아 있고 종료 확인 경로
+  (`drainQuitRequest`) 를 밟지 않았는가. GNOME · Cinnamon 은 셸 PID 가 그대로인지도 봐요.
+  **`pending_quit_request` set 줄은 표식이 못 돼요** — closed 이벤트마다 *항상* 찍히고 (#241), batch 끝 검사가
+  topology 변화와 겹치면 recreate 로 바꿔요. 2026-11-05 KDE 실기에서 정상 recreate 가 이 grep 때문에 FAIL 로 나왔어요.
 - KDE · COSMIC · Hyprland · sway 는 `-e` 측정 창이라 config · 전역 hotkey 를 안 건드려요. GNOME · Cinnamon 은 확장이 잡는
   worker 여야 해서, 실제 dev config 폴더에 `config_9.toml` 을 잠깐 둬요. 그 확장은 **재는 판의 dev 확장**이어야 해요 —
   `bash dist/linux/install.sh` 뒤 다시 로그인해야 셸이 새 확장을 읽어요.

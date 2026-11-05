@@ -19,7 +19,10 @@
 #
 # 판정 (앱 로그 `tildaz_stress.log` / `tildaz_9.log` 와 프로세스):
 #   - 출력이 사라졌다 (`bound wl_output removed`) 돌아왔다 (`wl_output bound after hotplug`) — 회차가 성립했는가
-#   - 앱이 살아 있다 · `pending_quit_request` 가 없다 (출력이 없어 닫힌 표면을 "사용자가 닫았다" 로 읽지 않았다)
+#   - 앱이 살아 있다 · 종료 확인 경로 (`drainQuitRequest`) 를 밟지 않았다 (출력이 없어 닫힌 표면을
+#     "사용자가 닫았다" 로 읽지 않았다). `pending_quit_request` set 줄은 closed 마다 *항상* 찍히고
+#     batch 끝 검사가 topology 변화와 겹치면 recreate 로 바꿔요 — 그 문자열은 표식이 못 된다
+#     (2026-11-05 KDE 실기에서 정상 recreate 가 FAIL 로 나온 것을 고침)
 #   - GNOME · Cinnamon: 셸 PID 가 그대로다 (셸이 죽으면 세션이 내려가 로그아웃된다 — 고치기 전 판의 #856)
 # 실기 측정이다 — 시작 전에 알리고 동의를 받는다 (AGENTS.md `# 실행 환경`).
 set -u
@@ -117,7 +120,7 @@ verdict() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; RESULT=1;
 [ "$(removed)" -gt "$R0" ]; verdict "the outputs went away (bound wl_output removed)" $?
 [ "$(returned)" -gt "$B0" ]; verdict "the outputs came back (wl_output bound after hotplug)" $?
 kill -0 "$APP_PID" 2>/dev/null; verdict "TildaZ is still running" $?
-! grep -q "pending_quit_request" "$LOG"; verdict "TildaZ did not treat the closed surface as a quit" $?
+! grep -q "drainQuitRequest" "$LOG"; verdict "TildaZ did not reach the quit-confirm path" $?
 if [ -n "$SHELL_NAME" ]; then
   [ "$(pgrep -xo "$SHELL_NAME")" = "$SHELL_PID" ]; verdict "$SHELL_NAME kept its pid $SHELL_PID" $?
 fi
