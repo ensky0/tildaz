@@ -105,12 +105,19 @@ returned() { grep -c "wl_output bound after hotplug" "$LOG"; }
 R0=$(removed) B0=$(returned)
 if [ "$MODE" = manual ]; then
   echo ">>> 지금 모니터 케이블을 뽑고, 5~10 초 뒤 다시 꽂아 주세요. (${MANUAL_SECONDS} 초 기다려요)"
-  end=$((SECONDS + MANUAL_SECONDS))
+  # 출력 변화가 15 초 동안 멈출 때까지 기다린다. 첫 "돌아옴" 에서 끝내면 안 된다 — Hyprland 0.57 은 마지막
+  # 모니터가 빠지는 그 순간 대체 출력 (fallback) 을 붙여서, 진짜 모니터가 돌아오기 전에 "돌아옴" 이 한 번 온다
+  # (2026-11-06 실측: 제거와 대체 출력 연결이 같은 1 ms). 그때 끝내면 진짜 모니터로 옮겨 가는지를 못 본다.
+  end=$((SECONDS + MANUAL_SECONDS)) quiet=0 last=
   while [ $SECONDS -lt $end ]; do
-    [ "$(removed)" -gt "$R0" ] && [ "$(returned)" -gt "$B0" ] && break
+    cur="$(removed) $(returned)"
+    if [ "$(removed)" -gt "$R0" ] && [ "$(returned)" -gt "$B0" ]; then
+      if [ "$cur" = "$last" ]; then quiet=$((quiet + 1)); else quiet=0; fi
+      [ $quiet -ge 30 ] && break
+    fi
+    last=$cur
     sleep 0.5
   done
-  sleep 1
 else
   # 도구가 죽어도 화면이 돌아오게 — 따로 도는 안전장치
   setsid sh -c "sleep $GUARD; $ON_CMD" > /dev/null 2>&1 < /dev/null &
@@ -139,6 +146,11 @@ kill -0 "$APP_PID" 2>/dev/null; verdict "TildaZ is still running" $?
 if [ -n "$SHELL_NAME" ]; then
   [ "$(pgrep -xo "$SHELL_NAME")" = "$SHELL_PID" ]; verdict "$SHELL_NAME kept its pid $SHELL_PID" $?
 fi
+# 모니터가 실제로 0 개였던 시간 — 첫 제거부터 다음 연결까지. 0 ms 근처면 compositor 가 대체 출력을 붙인 것이라
+# 앱의 "출력 0 개" 경로 (#859 의 미루기) 는 시험되지 않았다. 판정이 아니라 정보로 찍는다.
+awk 'function ms(s){ split(substr(s,13,12),t,/[:.]/); return ((t[1]*60+t[2])*60+t[3])*1000+t[4] }
+     /bound wl_output removed/ && !r { r=ms($0) } /wl_output bound after hotplug/ && r && !b { b=ms($0) }
+     END{ if (r && b) printf "INFO zero-output gap %d ms%s\n", b-r, (b-r<100 ? " — the compositor attached a fallback output; the no-output path was not exercised" : "") }' "$LOG"
 echo "--- 앱 로그 (출력 · 표면 · 종료 관련)"
 grep -E "wl_output|layer-surface closed|recreate|quit|\[exit\]|\[fatal\]" "$LOG" | tail -20
 echo "RESULT=$RESULT"

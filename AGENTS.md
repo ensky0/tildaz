@@ -2221,6 +2221,10 @@ tool/zero-monitor-check/zero-output-check_linux.sh --off-cmd '…' --on-cmd '…
 - **돌아온 뒤 창이 모니터에 다시 붙었는지도 봐요** (`drainSurfaceOutputs entered=[N]`). 앱이 살아 있어도 창이 안 보일 수
   있어요 — 2026-11-06 COSMIC 에서 다른 판정을 전부 통과한 채 창이 사라졌어요 (#859 · `a1a3df5` 에서 고침). 도구가 최대
   15 초 기다려요.
+- **Hyprland 는 마지막 모니터가 빠지는 그 순간 대체 출력을 붙여요** (2026-11-06 · Hyprland 0.57.1). 제거와 연결이 같은
+  1 ms 라 앱에는 모니터 0 개인 순간이 없어요. 그래서 도구는 첫 "돌아옴" 에서 끝내지 않고 출력 변화가 15 초 멈출 때까지
+  기다려요 — 첫 판은 거기서 끝내 진짜 모니터가 돌아오기 전에 창을 내렸어요. 도구가 찍는 `zero-output gap` 이 0 ms 근처면
+  0 개 경로는 시험되지 않은 거예요.
 - KDE · COSMIC · Hyprland · sway 는 `-e` 측정 창이라 config · 전역 hotkey 를 안 건드려요. GNOME · Cinnamon 은 확장이 잡는
   worker 여야 해서, 실제 dev config 폴더에 `config_9.toml` 을 잠깐 둬요. 그 확장은 **재는 판의 dev 확장**이어야 해요 —
   `bash dist/linux/install.sh` 뒤 다시 로그인해야 셸이 새 확장을 읽어요.
