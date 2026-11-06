@@ -93,6 +93,9 @@ PY
 
   gsettings set org.gnome.shell enabled-extensions "['tildaz-dev@tildaz.dev']"
   gsettings set org.gnome.shell disable-user-extensions false
+  # 빈 dconf 는 "첫 로그인" 이라 gnome-tour 가 깔린 기기에서는 환영 대화상자가 뜬다. 그 대화상자는 시스템
+  # 모달이라 확장의 단축키를 막아 B 가 늘 실패했다 (미니PC · 2026-11-06). 스키마 설명대로 큰 번호로 끈다.
+  gsettings set org.gnome.shell welcome-dialog-last-shown-version "999999"
   gnome-shell --headless --wayland --no-x11 --wayland-display=wayland-zmon > "$SHELL_LOG" 2>&1 &
   SHELL_PID=$!
   for _ in $(seq 60); do [ -S "$XDG_RUNTIME_DIR/wayland-zmon" ] && break; sleep 0.25; done

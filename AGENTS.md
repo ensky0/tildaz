@@ -2184,6 +2184,10 @@ tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # �
   `autoconnect=false` 로 띄우고 `pw-link` 로 포트를 직접 이어요.
 - **세션을 연 직후의 포인터 이동은 버려질 때가 있어요.** 버릴 이동 하나로는 부족했어요. 밖에서 포인터 위치를 읽을 길이
   없어서, 이동을 1 초 동안 열 번 보내요.
+- **빈 dconf 는 셸에게 "첫 로그인" 이에요.** gnome-tour 가 깔린 기기에서는 환영 대화상자가 떠요. 그 대화상자는 시스템
+  모달 (`Shell.ActionMode.SYSTEM_MODAL`) 이라 확장의 단축키를 막아요. 2026-11-06 미니PC 에서 B 가 늘 실패한 원인이었어요
+  (gnome-tour 가 없는 노트북은 통과). 도구가 `welcome-dialog-last-shown-version` 을 큰 번호로 넣어 꺼요. 셸 상태를 물어볼 때는
+  셸을 `--unsafe-mode` 로 띄우고 `org.gnome.Shell.Eval` 로 `main.js` 의 `actionMode` · `modalCount` 를 읽어요.
 - **dconf 도 격리해요.** 빈 dconf 에 확장만 켜서 사용자 설정을 읽지도 쓰지도 않아요. 확장 파일과 `config_9.toml` 은 앱을
   Wayland 없이 한 번 띄워 만들어요 (`config_9.toml` 이 셸보다 먼저 있어야 확장이 단축키를 등록해요 — 앱은 그 결과를 1 초만 기다려요).
 - `XDG_RUNTIME_DIR` 만 실제 것이에요 — mutter 가 실제 pipewire 를 쓰고, 확장과 앱이 `tildaz-dev/run/instance9.hotkey` 를
