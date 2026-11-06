@@ -2988,6 +2988,13 @@ fn syncGeometryAfterScreenChange() void {
     if (g_renderer == null) return;
     const tab = g_session.activeTab() orelse return;
 
+    // #859 — 모니터가 모두 빠지면 창이 어느 화면에도 없어 배율이 0 으로 올 수 있다. 그 값으로
+    // 글꼴을 다시 만들면 0 으로 나눈다. 화면이 돌아오면 같은 알림이 다시 오니 그때 맞춘다.
+    const scale_pt = windowBackingScale() orelse {
+        log.appendLine("geom", "screen changed but the window has no screen — geometry sync deferred until one returns (#859)", .{});
+        return;
+    };
+
     // 1. 새 visibleFrame 기준으로 윈도우 위치 / 크기 재설정.
     repositionWindow();
 
@@ -2997,9 +3004,6 @@ fn syncGeometryAfterScreenChange() void {
     const content_view = get_cv(g_window, objc.sel("contentView")) orelse return;
     const get_rect = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) NSRect);
     const cv_bounds = get_rect(content_view, objc.sel("bounds"));
-    const get_double = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
-    const scale_pt = get_double(g_window, objc.sel("backingScaleFactor"));
-
     const set_layer_frame = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) void);
     set_layer_frame(g_metal_layer, objc.sel("setFrame:"), cv_bounds);
     const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
@@ -4842,8 +4846,9 @@ pub fn run(rt: Runtime, opts: run_options.RunOptions) !void {
     const set_layer_frame = objc.objcSend(fn (objc.id, objc.SEL, NSRect) callconv(.c) void);
     set_layer_frame(layer, objc.sel("setFrame:"), cv_bounds);
 
-    const backing_scale = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
-    const scale_pt = backing_scale(g_window, objc.sel("backingScaleFactor"));
+    // #859 — 화면 없이 시작하면 (모니터 없는 맥미니의 자동 로그인 · 자동 시작) 배율이 없다.
+    // 1.0 으로 시작하고, 화면이 생기면 `syncGeometryAfterScreenChange` 가 진짜 배율로 다시 만든다.
+    const scale_pt = windowBackingScale() orelse 1.0;
     const set_contents_scale = objc.objcSend(fn (objc.id, objc.SEL, f64) callconv(.c) void);
     set_contents_scale(layer, objc.sel("setContentsScale:"), scale_pt);
 
@@ -5724,6 +5729,15 @@ fn eventTapCallback(
 /// `NSEvent.mouseLocation`(global, NSScreen.frame 과 같은 좌표 공간)을 포함하는 NSScreen 을
 /// 찾고, 없으면 mainScreen fallback. 경계는 half-open [origin, origin+size) — 두 모니터
 /// 인접 경계에서 한쪽만 claim.
+/// 창의 배율 (`backingScaleFactor`). 0 이하면 null — 창이 어느 화면에도 없을 때다 (#859).
+/// Apple 문서는 그 경우를 적지 않았지만 SDL · GTK 가 실제로 0 을 받았다
+/// (SDL bug 4822 · GTK quartz `get_scale_factor` NULL 검사).
+fn windowBackingScale() ?f64 {
+    const backing = objc.objcSend(fn (objc.id, objc.SEL) callconv(.c) f64);
+    const s = backing(g_window, objc.sel("backingScaleFactor"));
+    return if (s > 0) s else null;
+}
+
 fn screenForCursor() objc.id {
     const NSScreen = objc.getClass("NSScreen");
     const NSEvent = objc.getClass("NSEvent");
