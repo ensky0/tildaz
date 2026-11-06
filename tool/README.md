@@ -34,6 +34,7 @@
 | 도구 | 무엇 | 자세한 곳 |
 |---|---|---|
 | [`mouse-probe/`](mouse-probe) | TUI mouse reporting 프로브 (`mouse-probe.sh` · OS 무관) 와 macOS 자동 판정 (`mouse-auto-check_macos.sh`) | [`mouse-probe/README.md`](mouse-probe/README.md) · AGENTS.md `# macOS — 합성 입력으로 …` |
+| [`zero-monitor-check/`](zero-monitor-check) | Linux · 모니터가 바뀔 때 TildaZ 와 셸 ([#859](https://github.com/ensky0/tildaz/issues/859)). `zero-monitor-check_linux.sh` 는 nested headless GNOME 에서 사람 손 없이 (마우스 모니터 · 모니터 0 개 · 돌아온 모니터 · 닫힌 창), `zero-output-check_linux.sh` 는 **실제 세션**에서 모든 출력이 사라졌다 돌아올 때 | AGENTS.md `# Linux — GNOME 확장의 모니터 배치를 재는 법` |
 | [`stress/`](stress) | 처리량 · 응답 지연 · 유휴 전력 측정 하네스 한 벌. `hygiene.sh` 를 공유해요 | [`stress/README.md`](stress/README.md) · AGENTS.md `# 실행 환경` |
 
 `stress/` 안쪽도 같은 규칙이에요 — `check-input-loss_linux_macos.sh` (Windows 는 `-e` 에 러너를

@@ -204,6 +204,28 @@ function clearHotkeyState(index) {
   }
 }
 
+/* #859 — 모니터가 하나도 없는지. KVM 전환 · 케이블 분리 때 잠깐 0 개가 된다. 그동안 창의
+ * 모니터는 NULL 이고, mutter 의 `move_to_monitor` 는 검사 없이 `window->monitor->number` 를 읽어
+ * 셸이 죽는다 (#856). mutter 도 이때는 창을 옮기지 않는다 (`meta_window_idle_move_resize` 의
+ * headless 확인). `get_current_monitor()` 는 0 을 돌려주니 번호로는 가를 수 없다. */
+function noMonitors() {
+  return global.display.get_n_monitors() === 0 || Main.layoutManager.primaryIndex < 0;
+}
+
+/* #859 — 놓을 모니터 (SPEC `표시 모니터`). 보일 때는 마우스 모니터 (`keep` false), 해상도 · 구성이
+ * 바뀔 때는 창이 있던 모니터 (`keep` true). 창의 모니터가 없거나 범위 밖이면 마우스 모니터예요.
+ * 예전에는 늘 주 모니터 (`primaryIndex`) 였어요 — Cinnamon · Windows · macOS 와 달랐어요.
+ * `noMonitors()` 가 false 일 때만 부른다. */
+function targetMonitor(win, keep) {
+  const n = global.display.get_n_monitors();
+  if (keep) {
+    const m = win.get_monitor();
+    if (m >= 0 && m < n) return m;
+  }
+  const cur = global.display.get_current_monitor();
+  return cur >= 0 && cur < n ? cur : 0;
+}
+
 /* #654 — 제목의 접두어는 `WINDOW_TITLE_PREFIX` 토큰으로 받는다 (`instances.zig` 의
  * `window_title_prefix` 와 짝). 한쪽만 바뀌면 여기서 번호를 못 읽어 확장이 그 창을 통째로
  * 놓친다 — 배치 · 토글 · 전역 hotkey 가 죽는다. 그래서 정규식에 접두어를 박지 않고, 접두어를
@@ -329,8 +351,8 @@ export default class TildazExtension extends Extension {
     this._dialogIdleIds = new Set();
     this._dialogFollowers = new Map(); // #782 dialog → 부모 창 시그널 (_followDialogParent)
     this._managed = new Set();
-    this._placed = new Set();
     this._taskbarPatched = new Set();
+    this._unmanagedIds = new Map(); // #859 관리 중인 창 → `unmanaged` 시그널 (_manage)
     this._startupHookId = 0; // hidden preload 의 startup-complete overview 닫기 hook
     this._shellSettings = null;
     this._shellSettingsId = 0;
@@ -372,8 +394,8 @@ export default class TildazExtension extends Extension {
     this._armDialogCreationHandler();
     this._armMapHandler();
 
-    // #373 — 해상도 / 모니터 구성 변경 시 재배치. 이게 없으면 _ensurePlacedOnce 의
-    // 1회 가드 때문에 tildaz 를 재시작할 때까지 옛 work-area 기준 크기로 남는다.
+    // #373 — 해상도 / 모니터 구성 변경 시 재배치. 이게 없으면 다음 단축키로 보일 때까지
+    // 옛 work-area 기준 크기로 남는다 (숨겨 둔 창도 지금 맞춰 둔다).
     // 세 platform 의 동작(Windows WM_DISPLAYCHANGE / macOS
     // NSApplicationDidChangeScreenParameters / Linux layer-shell wl_output.mode)과 맞춘다.
     //
@@ -508,6 +530,11 @@ export default class TildazExtension extends Extension {
         win.unstick();
       } catch (_e) {}
     }
+    for (const [win, id] of this._unmanagedIds || []) {
+      try {
+        win.disconnect(id);
+      } catch (_e) {}
+    }
     for (const win of this._taskbarPatched || []) {
       // configurable:true 로 정의했으므로 delete → GObject prototype getter 복귀.
       try {
@@ -528,8 +555,8 @@ export default class TildazExtension extends Extension {
     this._appSystem = null;
     this._configs = null;
     this._managed = null;
-    this._placed = null;
     this._taskbarPatched = null;
+    this._unmanagedIds = null;
     this._accelerators = null;
     this._dialogClassWatchers = null;
     this._dialogIdleIds = null;
@@ -732,17 +759,17 @@ export default class TildazExtension extends Extension {
       return;
     }
 
-    // 보이기 — flicker 방지: show 마다 move_resize_frame 을 호출하면 tildaz(xdg
-    // client) 가 configure→buffer 재그리기 race 로 '왼쪽 전체→우측' 희번덕이 난다.
-    // placement 는 launch 시 1회만 하고(아래 _ensurePlacedOnce), 이후 show 는
-    // minimize 가 유지한 geometry 그대로 unminimize + activate 만 한다.
+    // 보이기 — #859 마우스 모니터에 놓는다 (SPEC `표시 모니터`). 숨은 채로 먼저 옮기고 나서
+    // 되살려 옮기는 모습이 안 보이게 한다. 위치가 같으면 `_place` 가 창을 건드리지 않아
+    // (#373) 예전의 "show 마다 재배치하면 희번덕인다" 는 걱정이 없다 — 그래서 1 회 가드
+    // (`_ensurePlacedOnce`) 를 없앴다. 그 가드가 다른 모니터로 옮기는 것까지 막고 있었다.
     // hidden preload(_launch hidden=true)는 opacity 0 으로 숨겨둔 상태라 여기서
     // 처음 보일 때 255 로 복원한다 — 복원 누락 시 unminimize 해도 안 보인다.
     this._skipEffect(win);
+    this._place(win, this._configs.get(index), false);
     const actor = win.get_compositor_private();
     if (actor) actor.opacity = 255;
     if (win.minimized) win.unminimize();
-    this._ensurePlacedOnce(win, this._configs.get(index));
     Main.activateWindow(win);
     // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
     // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
@@ -884,7 +911,7 @@ export default class TildazExtension extends Extension {
       // 이동이 그대로 보인다(실측 버그).
       wm.emit("kill-window-effects", actor);
       actor.opacity = 0;
-      this._ensurePlacedOnce(win, cfg);
+      this._place(win, cfg, false);
 
       if (hidden) {
         // preload: 절대 보이지 않게. opacity 0(invisible) 인 채로 배치까지 끝낸 뒤
@@ -934,9 +961,15 @@ export default class TildazExtension extends Extension {
 
     if (term) {
       this._restoreDialogParent(term);
-      win.move_to_monitor(term.get_monitor());
-      this._centerDialogOn(win, term);
+      // #859 — 모니터가 없으면 옮기지 않는다. 모니터가 돌아와 부모가 제자리로 가면
+      // `_followDialogParent` 가 가운데로 다시 놓는다.
+      if (!noMonitors()) {
+        win.move_to_monitor(term.get_monitor());
+        this._centerDialogOn(win, term);
+      }
       this._followDialogParent(win, term);
+    } else if (noMonitors()) {
+      console.log(`${LOG_TAG} no monitor — dialog left where it is`);
     } else {
       const dr = win.get_frame_rect();
       const mi = global.display.get_current_monitor();
@@ -956,6 +989,7 @@ export default class TildazExtension extends Extension {
   }
 
   _centerDialogOn(win, term) {
+    if (noMonitors()) return; // #859
     const dr = win.get_frame_rect();
     const tr = term.get_frame_rect();
     const x = tr.x + Math.round((tr.width - dr.width) / 2);
@@ -1070,17 +1104,17 @@ export default class TildazExtension extends Extension {
     }
   }
 
-  // 한 창에 대해 placement(move_resize_frame) 를 한 번만 수행. show 마다 재배치하면
-  // tildaz xdg buffer 재그리기 race 로 flicker 가 나므로, 최초 1회만 우측에 맞춘다.
-  _ensurePlacedOnce(win, cfg) {
-    if (this._placed.has(win)) return;
-    this._place(win, cfg);
-    this._placed.add(win);
-  }
-
-  /** config 의 dock_position/width/height/offset 으로 primary monitor workArea 기준 배치. */
-  _place(win, c) {
-    const mi = Main.layoutManager.primaryIndex;
+  /** config 의 dock_position/width/height/offset 으로 `targetMonitor` 의 workArea 기준 배치.
+   *  모니터가 없으면 아무것도 안 한다 (#859). 다음 단축키나 모니터가 돌아올 때의 재배치가 놓는다. */
+  _place(win, c, keep) {
+    // 관리 목록에는 먼저 넣는다 — 모니터가 돌아올 때 `_replaceAllForMonitorChange` 가 이 창을 놓는다.
+    this._manage(win);
+    this._skipTaskbar(win); // 위치와 무관해서 모니터가 없어도 한다 (숨겨 둔 창이 목록에 안 보이게)
+    if (noMonitors()) {
+      console.log(`${LOG_TAG} no monitor — placement skipped until one returns`);
+      return;
+    }
+    const mi = targetMonitor(win, keep);
     const a = win.get_work_area_for_monitor(mi);
     if (!a) return;
 
@@ -1114,25 +1148,40 @@ export default class TildazExtension extends Extension {
     }
 
     win.move_to_monitor(mi);
-    // #373 — 목표 rect 가 지금과 같으면 창을 건드리지 않는다. monitors-changed 가
-    // 예상보다 자주 오더라도 *크기가 실제로 달라질 때만* move_resize_frame 이 나가므로
-    // 위 _ensurePlacedOnce 주석의 flicker 우려가 코드로 닫힌다. (Windows 는
+    // #373 — 목표 rect 가 지금과 같으면 창을 건드리지 않는다. monitors-changed 나 단축키가
+    // 예상보다 자주 오더라도 *위치 · 크기가 실제로 달라질 때만* move_resize_frame 이 나가므로
+    // show 마다 재배치해도 희번덕이지 않는다. (Windows 는
     // WM_DISPLAYCHANGE 의 lParam 해상도를 캐시해 spurious broadcast 를 거르고 —
     // window.zig 의 last_display_w/h — Linux layer-shell 은 wl_output.mode 를 이전 값과
     // 비교한다. 같은 규칙을 여기에도 둔다.)
     const cur = win.get_frame_rect();
-    if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h)
+    if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h) {
       win.move_resize_frame(false, x, y, w, h);
+      // 드문 일이라 남긴다 — 어느 모니터에 놓았는지가 진단 근거다 (#859 · tool/zero-monitor-check).
+      console.log(`${LOG_TAG} placed ${workerIndex(win)} on monitor ${mi}: ${x},${y} ${w}x${h}`);
+    }
     win.make_above();
     win.stick();
-    this._skipTaskbar(win);
-    this._managed.add(win);
   }
 
-  // #373 — 해상도 / 모니터 구성이 바뀌면 관리 중인 창을 모두 다시 배치한다.
-  // _ensurePlacedOnce 를 우회하고 _place 를 직접 부르는 게 핵심 — 그 1회 가드가
-  // "show 마다 재배치" 를 막으면서 "해상도가 바뀌어도 재배치 안 함" 까지 같이 막고
-  // 있었다. minimized(hidden_start / F1 로 숨긴) 창도 재배치한다: mutter 가 minimize
+  // #859 — 관리 목록에 넣고, 창이 닫히면 뺀다. 빼지 않으면 닫힌 창이 목록에 남아 재배치와
+  // 다이얼로그의 부모 고르기 (`_showParentAndPlaceDialog`) 가 그 창을 집는다.
+  _manage(win) {
+    if (this._unmanagedIds.has(win)) return;
+    this._managed.add(win);
+    this._unmanagedIds.set(
+      win,
+      win.connect("unmanaged", () => {
+        this._managed?.delete(win);
+        this._taskbarPatched?.delete(win);
+        this._unmanagedIds?.delete(win);
+      })
+    );
+  }
+
+  // #373 — 해상도 / 모니터 구성이 바뀌면 관리 중인 창을 모두 다시 배치한다. 모니터는
+  // 창이 있던 그대로다 (SPEC `표시 모니터` — relayout 은 현재 모니터 유지, #859).
+  // minimized(hidden_start / F1 로 숨긴) 창도 재배치한다: mutter 가 minimize
   // 중에도 frame geometry 를 보존하므로 지금 맞춰 두면 다음 show 가 옳은 크기로 뜬다.
   _replaceAllForMonitorChange() {
     for (const win of this._managed || []) {
@@ -1141,7 +1190,7 @@ export default class TildazExtension extends Extension {
         if (index === null) continue;
         const cfg = this._configs?.get(index);
         if (!cfg) continue;
-        this._place(win, cfg);
+        this._place(win, cfg, true);
       } catch (e) {
         console.log(`${LOG_TAG} monitors-changed replace failed: ${e}`);
       }

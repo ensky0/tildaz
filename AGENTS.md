@@ -2156,6 +2156,83 @@ grim shot.png                                                          # sway �
 - 끝나면 `echo quit > $R/vkbd.fifo` · 앱 `kill -TERM` · `swaymsg exit` · `rm -rf $R` 순서로 치우고 `pgrep -a tildaz` 로
   사용자 instance 0 만 남았는지 봐요.
 
+# Linux — GNOME 확장의 모니터 배치를 재는 법 ([#859](https://github.com/ensky0/tildaz/issues/859))
+
+[`tool/zero-monitor-check/`](tool/zero-monitor-check) 가 nested `gnome-shell --headless` 에 가상 모니터 · 포인터 · 키를 넣어
+재요. 화면에 아무것도 안 뜨고 사람 손도 필요 없어요. 그래도 실기라 시작 전에 알려요.
+
+```sh
+tool/zero-monitor-check/zero-monitor-check_linux.sh                      # zig-out 의 dev 빌드
+tool/zero-monitor-check/zero-monitor-check_linux.sh --bin <다른 판>      # 고치기 전 판과 견줄 때
+```
+
+| 회차 | 무엇 |
+|---|---|
+| A | 처음 뜰 때 마우스 모니터에 놓는다 (포인터를 주 모니터가 아닌 쪽에 둬요) |
+| B | 단축키로 숨기고 다른 모니터에서 보이면 그 모니터로 온다 |
+| C | 모니터가 0 개가 돼도 셸이 산다 |
+| D | 크기가 다른 모니터로 돌아오면 그 모니터에 맞춰 놓는다 |
+| E | TildaZ 를 닫은 뒤 모니터 구성이 바뀌어도 셸이 산다 |
+
+- **#859 이전 판은 C 에서 셸이 죽어 E 에 못 닿아요.** 그 판의 E 는 `--close-first` (A 다음 바로 E) 로 봐요.
+  고치기 전 판은 E 에서 `meta_window_get_workspaces: code should not be reached` 로 멈췄어요 — 확장이 닫힌 창을 다시 배치했어요.
+
+- **판정은 확장 로그예요** — 창을 실제로 옮길 때 `placed 9 on monitor N: x,y WxH` 를 남겨요. #859 이전 판에는 이 줄이
+  없어서 A · B · D 는 `no-placement` 로 나와요. 그 판으로는 C (셸이 죽는가) 만 봐요.
+- **모니터는 mutter ScreenCast `RecordVirtual` 로 만들고 세션을 멈춰 없애요.** 스트림을 받는 쪽이 붙어야 모니터가 생겨요.
+  `gst-launch-1.0 pipewiresrc` 의 자동 연결은 `target not found` 로 실패해서 (pipewire 1.6.10 · wireplumber 0.5.18)
+  `autoconnect=false` 로 띄우고 `pw-link` 로 포트를 직접 이어요.
+- **세션을 연 직후의 포인터 이동은 버려질 때가 있어요.** 버릴 이동 하나로는 부족했어요. 밖에서 포인터 위치를 읽을 길이
+  없어서, 이동을 1 초 동안 열 번 보내요.
+- **빈 dconf 는 셸에게 "첫 로그인" 이에요.** gnome-tour 가 깔린 기기에서는 환영 대화상자가 떠요. 그 대화상자는 시스템
+  모달 (`Shell.ActionMode.SYSTEM_MODAL`) 이라 확장의 단축키를 막아요. 2026-11-06 미니PC 에서 B 가 늘 실패한 원인이었어요
+  (gnome-tour 가 없는 노트북은 통과). 도구가 `welcome-dialog-last-shown-version` 을 큰 번호로 넣어 꺼요. 셸 상태를 물어볼 때는
+  셸을 `--unsafe-mode` 로 띄우고 `org.gnome.Shell.Eval` 로 `main.js` 의 `actionMode` · `modalCount` 를 읽어요.
+- **dconf 도 격리해요.** 빈 dconf 에 확장만 켜서 사용자 설정을 읽지도 쓰지도 않아요. 확장 파일과 `config_9.toml` 은 앱을
+  Wayland 없이 한 번 띄워 만들어요 (`config_9.toml` 이 셸보다 먼저 있어야 확장이 단축키를 등록해요 — 앱은 그 결과를 1 초만 기다려요).
+- `XDG_RUNTIME_DIR` 만 실제 것이에요 — mutter 가 실제 pipewire 를 쓰고, 확장과 앱이 `tildaz-dev/run/instance9.hotkey` 를
+  주고받아요. 그래서 dev instance 9 가 떠 있으면 시작하지 않고, 끝나면 `instance9.*` 를 지워요.
+- **Cinnamon 은 이 도구로 못 재요.** muffin 에는 `RecordVirtual` 도 `--headless` 도 없어서, nested Cinnamon 을 지금 화면 위에
+  창으로 띄워요. 모니터 수는 `MUFFIN_DEBUG_NUM_DUMMY_MONITORS=2` 로 시작할 때 정해요 (0 은 안 받는 것으로 보여요 — 추정).
+  nested muffin 에서는 가상 포인터 (`create_virtual_device` · `warp_pointer`) 도 가상 키 F1 도 안 먹었어요. 그래서
+  `org.Cinnamon.Eval` 로 직접 해요 — 창을 `move_to_monitor(1)` 로 옮기고 `Main.layoutManager.emit("monitors-changed")` 를 보내요.
+  모니터 0 개는 `global.display.get_n_monitors = () => 0` 로 잠깐 덮어 흉내 내요. 우리 검사가 도는지만 보고, muffin 이
+  실제로 죽는 장면은 못 만들어요. 2026-11-05 회차의 명령은 [#859](https://github.com/ensky0/tildaz/issues/859) 에 있어요.
+
+**실제 세션은 `zero-output-check_linux.sh` 로 재요.** nested 로 못 만드는 경우예요 — KDE · COSMIC · Hyprland · sway 의
+layer-shell 경로와, 실제 GNOME · Cinnamon 셸이에요.
+
+```sh
+tool/zero-monitor-check/zero-output-check_linux.sh --manual 90                       # 사람이 케이블을 뽑았다 꽂는다
+tool/zero-monitor-check/zero-output-check_linux.sh --off-cmd '…' --on-cmd '…'          # 데스크톱 명령으로 끈다
+```
+
+- **케이블을 뽑는 쪽이 가장 확실해요** — KVM 전환과 같은 일이에요. 외장 모니터 하나만 쓰는 기기 (미니PC) 에서 해요.
+  노트북 내장 패널은 뽑을 수 없어요.
+- **도구가 "뽑으세요" 를 찍은 뒤에 뽑아요.** 그 전이나 90 초 뒤에 뽑으면 회차가 성립하지 않아요 (출력 판정 두 줄이 FAIL).
+  2026-11-05 GNOME · Cinnamon 에서 한 번씩 그랬어요. 뽑은 시각은 커널 로그의 `USB disconnect` 로 확인해요
+  (미니PC 의 모니터 케이블은 USB-C 라 허브의 USB 장치가 함께 떨어져요).
+- **Cinnamon 은 셸이 모니터 0 개를 봤는지 따로 확인해요.** 2026-11-05 미니PC (Cinnamon 6.6.9) 에서 muffin 은 케이블을 뽑은
+  10 초 동안 출력을 그대로 두었다가, 다시 꽂을 때 옛 출력을 지우고 1 초 뒤 새 출력을 붙였어요. 확장 로그에
+  `no monitor — placement skipped` 가 없어서 0 개 검사는 시험되지 않았어요 (GNOME 은 그 줄이 나왔어요). 확장 로그는
+  journal 이 아니라 셸의 표준 오류예요 — `readlink /proc/$(pgrep -x cinnamon)/fd/2`.
+- DE 명령으로 끄면 그동안 화면이 안 보여요. 도구가 죽어도 `--guard` 초 (기본 40) 뒤에 `--on-cmd` 를 부르는 안전장치가
+  따로 돌아요. DE 마다 마지막 출력을 끄게 두는지는 다르고, 확인한 결과는 [#859](https://github.com/ensky0/tildaz/issues/859) 에 적어요.
+- 판정은 앱 로그예요 — 출력이 사라졌다 (`bound wl_output removed`) 돌아왔는가, 앱이 살아 있고 종료 확인 경로
+  (`drainQuitRequest`) 를 밟지 않았는가. GNOME · Cinnamon 은 셸 PID 가 그대로인지도 봐요.
+  **`pending_quit_request` set 줄은 표식이 못 돼요** — closed 이벤트마다 *항상* 찍히고 (#241), batch 끝 검사가
+  topology 변화와 겹치면 recreate 로 바꿔요. 2026-11-05 KDE 실기에서 정상 recreate 가 이 grep 때문에 FAIL 로 나왔어요.
+- **돌아온 뒤 창이 모니터에 다시 붙었는지도 봐요** (`drainSurfaceOutputs entered=[N]`). 앱이 살아 있어도 창이 안 보일 수
+  있어요 — 2026-11-06 COSMIC 에서 다른 판정을 전부 통과한 채 창이 사라졌어요 (#859 · `a1a3df5` 에서 고침). 도구가 최대
+  15 초 기다려요.
+- **Hyprland 는 마지막 모니터가 빠지는 그 순간 대체 출력을 붙여요** (2026-11-06 · Hyprland 0.57.1). 제거와 연결이 같은
+  1 ms 라 앱에는 모니터 0 개인 순간이 없어요. 그래서 도구는 첫 "돌아옴" 에서 끝내지 않고 출력 변화가 15 초 멈출 때까지
+  기다려요 — 첫 판은 거기서 끝내 진짜 모니터가 돌아오기 전에 창을 내렸어요. 도구가 찍는 `zero-output gap` 이 0 ms 근처면
+  0 개 경로는 시험되지 않은 거예요.
+- KDE · COSMIC · Hyprland · sway 는 `-e` 측정 창이라 config · 전역 hotkey 를 안 건드려요. GNOME · Cinnamon 은 확장이 잡는
+  worker 여야 해서, 실제 dev config 폴더에 `config_9.toml` 을 잠깐 둬요. 그 확장은 **재는 판의 dev 확장**이어야 해요 —
+  `bash dist/linux/install.sh` 뒤 다시 로그인해야 셸이 새 확장을 읽어요.
+
 # Linux — 실제 KDE 세션에서 커서 모양을 재는 법 (headless 로 못 재는 것)
 
 **커서 모양은 headless sway 로 못 재요.** 그 compositor 가 커서를 화면에 아예 안 그리는 구간이 있어서

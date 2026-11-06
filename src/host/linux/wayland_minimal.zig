@@ -1477,6 +1477,9 @@ const Client = struct {
     //   일반 add 경로로 처리된다.)
     output_topology_pending: bool = false,
     pending_output_recreate: bool = false,
+    //  - output_recreate_deferred: #859 — pending_output_recreate 가 "출력이 하나도 없어"
+    //    미뤄진 상태. 로그를 미룰 때 · 다시 만들 때 한 번씩만 남기려고 둔다.
+    output_recreate_deferred: bool = false,
     // fractional scaling — KDE Plasma 6 의 125% / 150% / 170% 등. compositor 가
     // advertise 안 한 환경 (GNOME mutter / wlroots 등) 에선 0 이라 미사용 — `preferred_scale`
     // default `fractional_scale_denominator` (= 120 = 1.0x) 로 no-op 동작.
@@ -9404,6 +9407,15 @@ const Client = struct {
             return;
         }
         if (self.surface_hidden) {
+            // #859 — 출력이 하나도 없으면 보이지 않는다. layer-shell 의 보이기는 표면을 새로
+            // 만들거나 다시 붙이는데, 출력 없이 만든 표면은 cosmic-comp 에서 출력이 돌아와도
+            // 안 보인다 (`drainOutputRecreate` 주석). 숨긴 상태를 그대로 두어, 모니터가 돌아온 뒤
+            // 단축키를 다시 누르면 보인다. mutter 도 출력이 없으면 창 이동을 건너뛴다
+            // (`meta_window_idle_move_resize`). sway · xdg 경로는 이 자리를 안 탄다.
+            if (self.layer_shell_id != 0 and !self.hasBoundOutput()) {
+                log.appendLine("toggle", "show skipped — no output (#859)", .{});
+                return;
+            }
             // #801 — 숨은 채 다이얼로그 (host overlay) 가 떠 있었으면 터미널을 그 뒤에 띄우고
             // 다이얼로그를 앞에 둔다. 아래 갈래가 모두 여기서 끝나므로 `defer` 로 건다.
             defer if (dialog_mod.isOpen()) dialog_mod.bringToFront();
@@ -9957,10 +9969,41 @@ const Client = struct {
     /// 경로로 안 온다(handleEvent 의 toplevel close 분기에서 hidden 무시).
     fn drainOutputRecreate(self: *Client) void {
         if (!self.pending_output_recreate) return;
+        if (self.layer_surface_id == 0) {
+            self.pending_output_recreate = false;
+            self.output_recreate_deferred = false;
+            return;
+        }
+        // #859 — 출력이 하나도 없으면 다시 만들지 않고 기다린다. 이때 만든 표면은 compositor 가
+        // 마음대로 다뤄요. cosmic-comp 은 이미 없어진 옛 출력에 붙이고 (`new_layer_surface` 가
+        // seat 의 마지막 활성 출력을 씀), 출력이 다시 붙어도 옮기지도 닫지도 않아서 창이 영영
+        // 안 보였다 (2026-11-06 실측). 프로토콜은 `closed` 뒤 새 표면을 언제 만들지 client 에게
+        // 맡기고 (*"create a new surface if they so choose"*), waybar 도 출력이 붙을 때 만든다.
+        // 요청은 남겨 두어, 새 wl_output 이 bind 된 batch 의 drain 에서 바로 처리된다.
+        if (!self.hasBoundOutput()) {
+            if (!self.output_recreate_deferred) {
+                self.output_recreate_deferred = true;
+                log.appendLine("wayland", "no output — surface recreate deferred until one returns (#859)", .{});
+            }
+            return;
+        }
         self.pending_output_recreate = false;
-        if (self.layer_surface_id == 0) return;
+        if (self.output_recreate_deferred) {
+            self.output_recreate_deferred = false;
+            log.appendLine("wayland", "output returned — recreating the deferred surface (#859)", .{});
+        }
         log.appendLineVerbose("input", "drainOutputRecreate — swapMainSurfaceSeamless after output loss (visible) (#241)", .{});
         self.swapMainSurfaceSeamless();
+    }
+
+    /// #859 — bind 한 wl_output 이 하나라도 있는가. 모든 모니터가 빠지면 (KVM 전환 · 케이블
+    /// 분리) false 다. `handleRegistryGlobalRemove` 가 slot 을 비우고, 새 global 이 오면
+    /// `handleRegistryGlobal` 이 bind 해 다시 채운다.
+    fn hasBoundOutput(self: *const Client) bool {
+        for (self.outputs) |slot| {
+            if (slot.object_id != 0) return true;
+        }
+        return false;
     }
 
     fn drainQuitRequest(self: *Client) void {

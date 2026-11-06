@@ -258,6 +258,7 @@ function enable() {
     dialogFollowers: new Map(), // #782 dialog → 부모 창 시그널 (followDialogParent)
     managed: new Set(),
     taskbarPatched: new Set(),
+    unmanagedIds: new Map(), // #859 관리 중인 창 → `unmanaged` 시그널 (manage)
     tracker: null, // is_window_interesting 패치한 WindowTracker (disable 시 복원)
     expoProto: null, // isExpoWindow 패치한 ExpoWorkspaceThumbnail.prototype (disable 복원)
     wm: null, // _shouldAnimate 를 덮어쓴 Main.wm (disable 시 복원)
@@ -432,7 +433,7 @@ function replaceAllForMonitorChange() {
       if (index === null) continue;
       const cfg = st.configs.get(index);
       if (!cfg) continue;
-      place(win, cfg);
+      place(win, cfg, true);
     } catch (e) {
       global.logError(LOG_TAG + " monitors-changed replace failed: " + e);
     }
@@ -494,6 +495,11 @@ function disable() {
       if (win.minimized) win.unminimize();
       win.unmake_above();
       win.unstick();
+    } catch (_e) {}
+  }
+  for (const [win, id] of st?.unmanagedIds || []) {
+    try {
+      win.disconnect(id);
     } catch (_e) {}
   }
   for (const win of st?.taskbarPatched || []) {
@@ -874,6 +880,43 @@ function wmClassEq(win, id) {
   return c === id || (c && c.toLowerCase() === id);
 }
 
+/* #859 — 모니터가 하나도 없는지. KVM 전환 · 케이블 분리 때 잠깐 0 개가 된다. 그동안 창의
+ * 모니터는 NULL 이고, muffin 의 `move_to_monitor` 는 검사 없이 `window->monitor->number` 를 읽어
+ * 셸이 죽는다 (#856 은 GNOME 에서 같은 자리). `get_current_monitor()` 는 0 을 돌려주니 번호로는
+ * 가를 수 없다. */
+function noMonitors() {
+  return global.display.get_n_monitors() === 0;
+}
+
+/* #859 — 놓을 모니터 (SPEC `표시 모니터`). 보일 때는 마우스 모니터 (`keep` false), 해상도 · 구성이
+ * 바뀔 때는 창이 있던 모니터 (`keep` true). 창의 모니터가 없거나 범위 밖이면 마우스 모니터예요.
+ * 예전에는 구성이 바뀔 때도 마우스 모니터로 옮겨 SPEC 과 달랐어요. `noMonitors()` 가 false 일
+ * 때만 부른다. */
+function targetMonitor(win, keep) {
+  const n = global.display.get_n_monitors();
+  if (keep) {
+    const m = win.get_monitor();
+    if (m >= 0 && m < n) return m;
+  }
+  const cur = global.display.get_current_monitor();
+  return cur >= 0 && cur < n ? cur : 0;
+}
+
+// #859 — 관리 목록에 넣고, 창이 닫히면 뺀다. 빼지 않으면 닫힌 창이 목록에 남아 재배치와
+// 다이얼로그의 부모 고르기 (`placeDialog`) 가 그 창을 집는다.
+function manage(win) {
+  if (st.unmanagedIds.has(win)) return;
+  st.managed.add(win);
+  st.unmanagedIds.set(
+    win,
+    win.connect("unmanaged", () => {
+      st?.managed.delete(win);
+      st?.taskbarPatched.delete(win);
+      st?.unmanagedIds.delete(win);
+    })
+  );
+}
+
 /** app_id(wm_class)와 title이 모두 같은 번호인 worker면 index, 아니면 null. */
 /* #654 — 제목의 접두어는 `WINDOW_TITLE_PREFIX` 토큰으로 받는다 (`instances.zig` 의
  * `window_title_prefix` 와 짝). 한쪽만 바뀌면 여기서 번호를 못 읽어 확장이 그 창을 통째로
@@ -957,7 +1000,7 @@ function onMap(actor) {
   const cfg = readConfig(index);
   st.configs.set(index, cfg);
   registerHotkey(index, cfg);
-  place(win, cfg);
+  place(win, cfg, false);
   // hidden_start=true → 배치 후 숨김(첫 hotkey 로 등장). tildaz 는 Cinnamon 에서
   // native shortcut 경로에서는 자기 hidden_start 를 무시하고 항상 창을 만들어
   // (showing on start), 숨김은 여기서 minimize 로 실현한다(KDE 와 동일 결과).
@@ -1018,7 +1061,7 @@ function toggle(index) {
     }
     // 재배치 — minimize/unminimize 는 geometry 를 보존하지만, drift / 첫 show /
     // 다른 모니터로 커서 이동 대비해 위치를 다시 확정(커서 모니터 기준).
-    place(win, st.configs.get(index));
+    place(win, st.configs.get(index), false);
     Main.activateWindow(win);
     // #801 — 숨은 채 다이얼로그가 떠 있었으면 터미널을 그 뒤에 두고 다이얼로그를 앞으로.
     // 위 activateWindow 가 터미널에 포커스를 줘서 그대로 두면 다이얼로그가 뒤로 밀린다.
@@ -1056,10 +1099,17 @@ function defocusAfterHide(win) {
   }
 }
 
-/** config 의 dock_position/width/height/offset 으로 *마우스 커서가 있는 모니터*
- *  workArea 기준 배치 (SPEC: drop-down 은 커서 모니터에). */
-function place(win, c) {
-  const mi = global.display.get_current_monitor();
+/** config 의 dock_position/width/height/offset 으로 `targetMonitor` 의 workArea 기준 배치
+ *  (SPEC: drop-down 은 커서 모니터에, relayout 은 현재 모니터 유지). */
+function place(win, c, keep) {
+  // 관리 목록에는 먼저 넣는다 — 모니터가 돌아올 때 `replaceAllForMonitorChange` 가 이 창을 놓는다.
+  manage(win);
+  skipTaskbar(win); // 위치와 무관해서 모니터가 없어도 한다
+  if (noMonitors()) {
+    global.log(`${LOG_TAG} no monitor — placement skipped until one returns`);
+    return;
+  }
+  const mi = targetMonitor(win, keep);
   const a = win.get_work_area_for_monitor(mi);
   if (!a) return;
 
@@ -1099,12 +1149,13 @@ function place(win, c) {
   // 해상도를 캐시해 spurious broadcast 를 거르고 — window.zig 의 last_display_w/h —
   // Linux layer-shell 은 wl_output.mode 를 이전 값과 비교한다. 같은 규칙이다.)
   const cur = win.get_frame_rect();
-  if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h)
+  if (!cur || cur.x !== x || cur.y !== y || cur.width !== w || cur.height !== h) {
     win.move_resize_frame(false, x, y, w, h);
+    // 드문 일이라 남긴다 — 어느 모니터에 놓았는지가 진단 근거다 (#859 · tool/zero-monitor-check).
+    global.log(`${LOG_TAG} placed ${workerIndex(win)} on monitor ${mi}: ${x},${y} ${w}x${h}`);
+  }
   win.make_above();
   win.stick();
-  skipTaskbar(win);
-  st.managed.add(win);
 }
 
 /** dialog(tildaz-dialog)를 managed 터미널 위 중앙에 배치. 터미널이 없으면 커서
@@ -1115,6 +1166,9 @@ function placeDialog(win) {
     restoreDialogParent(term);
     centerDialogOn(win, term);
     followDialogParent(win, term);
+  } else if (noMonitors()) {
+    // #859 — 모니터가 없으면 옮기지 않는다.
+    global.log(`${LOG_TAG} no monitor — dialog left where it is`);
   } else {
     const dr = win.get_frame_rect();
     const mi = global.display.get_current_monitor();
@@ -1132,6 +1186,7 @@ function placeDialog(win) {
 }
 
 function centerDialogOn(win, term) {
+  if (noMonitors()) return; // #859 — 부모가 제자리로 가면 followDialogParent 가 다시 놓는다
   const dr = win.get_frame_rect();
   const tr = term.get_frame_rect();
   const x = tr.x + Math.round((tr.width - dr.width) / 2);
