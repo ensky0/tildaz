@@ -19,6 +19,7 @@
 #
 # 판정 (앱 로그 `tildaz_stress.log` / `tildaz_9.log` 와 프로세스):
 #   - 출력이 사라졌다 (`bound wl_output removed`) 돌아왔다 (`wl_output bound after hotplug`) — 회차가 성립했는가
+#   - 돌아온 뒤 창 표면이 모니터에 다시 붙었다 (`drainSurfaceOutputs entered=[N]`) — 앱이 살아도 창이 안 보일 수 있다 (#859 COSMIC)
 #   - 앱이 살아 있다 · 종료 확인 경로 (`drainQuitRequest`) 를 밟지 않았다 (출력이 없어 닫힌 표면을
 #     "사용자가 닫았다" 로 읽지 않았다). `pending_quit_request` set 줄은 closed 마다 *항상* 찍히고
 #     batch 끝 검사가 topology 변화와 겹치면 recreate 로 바꿔요 — 그 문자열은 표식이 못 된다
@@ -109,7 +110,7 @@ if [ "$MODE" = manual ]; then
     [ "$(removed)" -gt "$R0" ] && [ "$(returned)" -gt "$B0" ] && break
     sleep 0.5
   done
-  sleep 5
+  sleep 1
 else
   # 도구가 죽어도 화면이 돌아오게 — 따로 도는 안전장치
   setsid sh -c "sleep $GUARD; $ON_CMD" > /dev/null 2>&1 < /dev/null &
@@ -119,13 +120,20 @@ else
   sleep "$OFF_SECONDS"
   sh -c "$ON_CMD" > "$W/on.out" 2>&1; echo "    on rc=$? $(head -c 300 "$W/on.out")"
   kill "$GUARD_PID" 2>/dev/null; GUARD_PID=
-  sleep 6
+  sleep 1
 fi
+# 마지막 출력 복귀 뒤에 표면이 모니터에 다시 붙었는가 (`wl_surface.enter`). 2026-11-06 COSMIC 에서 앱은 살아
+# 있는데 창이 영영 안 보였다 — 모니터 0 개일 때 만든 표면을 cosmic-comp 이 다시 붙이지 않았다 (#859).
+# 그 회차는 위 판정을 전부 통과해서, 이 줄이 없으면 못 잡는다. 붙을 때까지 최대 15 초 기다린다.
+attached() { awk '/wl_output bound after hotplug/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$LOG" \
+  | grep -q "drainSurfaceOutputs entered=\[[0-9]"; }
+for _ in $(seq 30); do attached && break; sleep 0.5; done
 
 RESULT=0
 verdict() { if [ "$2" = 0 ]; then echo "PASS $1"; else echo "FAIL $1"; RESULT=1; fi; }
 [ "$(removed)" -gt "$R0" ]; verdict "the outputs went away (bound wl_output removed)" $?
 [ "$(returned)" -gt "$B0" ]; verdict "the outputs came back (wl_output bound after hotplug)" $?
+attached; verdict "TildaZ is back on a monitor after the outputs returned (drainSurfaceOutputs entered=[N])" $?
 kill -0 "$APP_PID" 2>/dev/null; verdict "TildaZ is still running" $?
 ! grep -q "drainQuitRequest" "$LOG"; verdict "TildaZ did not reach the quit-confirm path" $?
 if [ -n "$SHELL_NAME" ]; then
