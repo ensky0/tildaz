@@ -1,0 +1,93 @@
+name: AUR
+
+# AUR `tildaz-bin` 갱신 (#862). 일은 dist/linux/aur/update.sh 가 하고, 여기는
+# Arch 컨테이너 · SSH 키 · 시험판 건너뛰기만 맡는다.
+#
+# 트리거
+#   - workflow_call: release.yml 의 publish 뒤. 정식 판이면 바로 push.
+#   - workflow_dispatch: 손으로 다시 돌릴 때 (발행 뒤 이 잡만 실패했을 때 등).
+#     dry_run 이 기본값이라 push 하려면 꺼야 한다.
+#
+# 비밀값: AUR_SSH_PRIVATE_KEY — AUR 계정에 등록한 공개 키의 짝. dry_run 은 키 없이 돈다.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+    secrets:
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Released tag to publish to the AUR (e.g. v0.10.10)'
+        required: true
+      dry_run:
+        description: 'Do not push; only show the commit'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    runs-on: ubuntu-26.04
+    container: archlinux:base-devel
+    steps:
+      - name: Resolve version
+        id: vars
+        run: |
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # full SemVer 에 '-' 가 있으면 prerelease — AUR 사용자에게 보내지 않는다.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease $TAG — skipping the AUR"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # archlinux:base-devel 에는 git · ssh 가 없다 (checkout 도 git 이 필요).
+      - name: Install git / openssh
+        if: steps.vars.outputs.skip == 'false'
+        run: pacman -Sy --noconfirm --needed git openssh
+
+      - name: Checkout at tag
+        if: steps.vars.outputs.skip == 'false'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+
+      # makepkg 는 root 를 거부한다 → builder 사용자로 스크립트를 돌린다.
+      - name: Update AUR
+        if: steps.vars.outputs.skip == 'false'
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          ARGS=(--version "${{ steps.vars.outputs.version }}")
+          KEY_ENV=()
+          if [[ "$DRY_RUN" == "true" ]]; then
+            ARGS+=(--dry-run)
+          else
+            if [[ -z "$AUR_KEY" ]]; then
+              echo "::error::AUR_SSH_PRIVATE_KEY secret is not set"
+              exit 1
+            fi
+            install -m 600 -o builder /dev/null /home/builder/aur_key
+            printf '%s\n' "$AUR_KEY" > /home/builder/aur_key
+            KEY_ENV=(AUR_SSH_KEY_FILE=/home/builder/aur_key)
+          fi
+          cp dist/linux/aur/PKGBUILD dist/linux/aur/update.sh /home/builder/
+          chown builder /home/builder/PKGBUILD /home/builder/update.sh
+          sudo -u builder env "${KEY_ENV[@]}" bash /home/builder/update.sh "${ARGS[@]}"
+          rm -f /home/builder/aur_key
