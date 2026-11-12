@@ -403,9 +403,10 @@ jobs:
 
       # archlinux:base-devel 컨테이너엔 git 이 없어 checkout 이 실패한다 → pkg
       # 조합만 checkout 전에 설치 (다른 조합은 runner 에 git 기본 존재).
+      # -Syu — -Sy 만 하면 부분 업그레이드라 의존성이 깨질 수 있어요 (#862).
       - name: Install git (Arch container)
         if: matrix.format == 'pkg'
-        run: pacman -Sy --noconfirm --needed git
+        run: pacman -Syu --noconfirm --needed git
 
       - name: Checkout at tag
         uses: actions/checkout@v7

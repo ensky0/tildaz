@@ -54,9 +54,10 @@ jobs:
           fi
 
       # archlinux:base-devel 에는 git · ssh 가 없다 (checkout 도 git 이 필요).
+      # -Sy 만 하면 부분 업그레이드라 새 의존성 (openssl 4) 이 옛 패키지와 부딪혀요 — -Syu.
       - name: Install git / openssh
         if: steps.vars.outputs.skip == 'false'
-        run: pacman -Sy --noconfirm --needed git openssh
+        run: pacman -Syu --noconfirm --needed git openssh
 
       - name: Checkout at tag
         if: steps.vars.outputs.skip == 'false'
