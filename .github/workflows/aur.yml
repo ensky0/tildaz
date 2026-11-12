@@ -59,16 +59,19 @@ jobs:
         if: steps.vars.outputs.skip == 'false'
         run: pacman -Syu --noconfirm --needed git openssh
 
-      - name: Checkout at tag
+      # 태그가 아니라 이 워크플로가 도는 커밋을 받는다. 스크립트는 판 번호만 쓰고,
+      # 손으로 옛 태그를 다시 돌릴 때 그 태그에는 AUR 파일이 없을 수 있다 (v0.10.10).
+      # 릴리즈에서 불릴 때는 이 커밋이 곧 그 태그다.
+      - name: Checkout
         if: steps.vars.outputs.skip == 'false'
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
           fetch-depth: 1
 
       # makepkg 는 root 를 거부한다 → builder 사용자로 스크립트를 돌린다.
       - name: Update AUR
         if: steps.vars.outputs.skip == 'false'
+        shell: bash
         env:
           AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
