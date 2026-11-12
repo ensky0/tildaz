@@ -346,7 +346,7 @@ Architecture: ${DEBARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Depends: libxkbcommon0, libfreetype6, libfontconfig1
 Recommends: libharfbuzz0b, libdbus-1-3, libglib2.0-0
-Maintainer: ensky0 <bongjun.yi@navercorp.com>
+Maintainer: ensky0 <ensky0@gmail.com>
 Homepage: https://github.com/ensky0/tildaz
 Description: Quake-style drop-down terminal for Wayland
  TildaZ is a drop-down terminal with native Wayland support
@@ -647,7 +647,7 @@ build_pkg() {
     # native hotkey용 library는 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
     # 런타임 변수라 heredoc 에서 escape — ${PACKAGE_VERSION}만 여기서 확장.
     cat > "$BUILD/PKGBUILD" << END
-# Maintainer: ensky0 <bongjun.yi@navercorp.com>
+# Maintainer: ensky0 <ensky0 at gmail dot com>
 pkgname=tildaz
 pkgver=${PACKAGE_VERSION}
 pkgrel=1

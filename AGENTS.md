@@ -3098,6 +3098,21 @@ GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 
    ```
 
 6. Actions가 초록불이면 GitHub Release가 자동 생성돼요.
+7. 정식 버전이면 같은 워크플로가 이어서 AUR `tildaz-bin` 을 새 판으로 고쳐 push 해요 (아래 절).
+
+## AUR `tildaz-bin` — 릴리즈가 나가면 CI 가 고쳐요 ([#862](https://github.com/ensky0/tildaz/issues/862))
+
+AUR 은 Arch 사용자가 `yay -S tildaz-bin` 으로 까는 곳이에요. 패키지는 Release 의 Linux tarball 을 받아 사용자 기기에서 묶어요.
+그래서 Arch aarch64 `.pkg.tar.zst` 가 없어도 x86_64 · aarch64 둘 다 돼요.
+
+- PKGBUILD 틀은 [`dist/linux/aur/PKGBUILD`](dist/linux/aur/PKGBUILD) 예요. 판과 sha256 두 줄만 자리표시예요.
+- [`dist/linux/aur/update.sh`](dist/linux/aur/update.sh) 가 sha256 을 받아 채우고, `.SRCINFO` 를 만들고, 한 번 묶어 본 뒤 push 해요.
+- [`.github/workflows/aur.yml`](.github/workflows/aur.yml) 이 `release.yml` 의 `publish` 뒤에 돌아요. 시험판 (`-dev.N` 등) 은 건너뛰어요.
+- 비밀값 `AUR_SSH_PRIVATE_KEY` 가 AUR 계정에 등록한 키의 짝이에요.
+- **AUR 잡만 실패하면** 릴리즈는 이미 나간 거예요. Actions 에서 `AUR` 워크플로를 태그와 함께 손으로 돌려요 (`dry_run` 을 꺼야 push 해요).
+- **PKGBUILD 틀을 고치면** 다음 릴리즈에 함께 나가요. 판이 그대로인 채 바로 내보내야 하면 `pkgrel` 을 올려야 해요 — 스크립트는 같은 판에 다른 내용을 보면 멈춰요.
+- 손으로 돌릴 때: Arch 나 Debian (`pacman-package-manager` · `libarchive-tools`) 에서 `dist/linux/aur/update.sh --version X.Y.Z --dry-run`.
+- 패키지 의존성 (`depends` · `optdepends`) 은 공식 Arch 패키지 ([`dist/linux/package.sh`](dist/linux/package.sh)) 와 맞춰요. 한쪽을 고치면 다른 쪽도 봐요.
 
 ## 한 줄 설치 스크립트 — 릴리즈마다 고칠 필요는 없어요 ([#803](https://github.com/ensky0/tildaz/issues/803))
 

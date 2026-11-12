@@ -628,3 +628,15 @@ jobs:
           # full SemVer 에 '-' 가 있으면 prerelease (dev / alpha / beta / rc 공통).
           prerelease: ${{ contains(steps.vars.outputs.version, '-') }}
           fail_on_unmatched_files: true
+
+  # AUR `tildaz-bin` 갱신 (#862). 발행이 끝난 뒤에만 돈다 — AUR 은 Release 의
+  # tarball 을 받으므로 그 파일이 공개된 다음이어야 한다. 시험판은 aur.yml 이
+  # 건너뛴다. 이 잡만 실패하면 릴리즈는 이미 나간 것이니 AUR 워크플로를 손으로
+  # (workflow_dispatch, dry_run 끔) 다시 돌린다.
+  aur:
+    needs: publish
+    uses: ./.github/workflows/aur.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
