@@ -118,7 +118,7 @@ Or download a package from
 | Linux Debian / Ubuntu | `tildaz_X.Y.Z-1_{amd64,arm64}.deb` | `sudo dpkg -i tildaz_*.deb` (or open with the Software app). |
 | Linux Fedora / RHEL / openSUSE | `tildaz-X.Y.Z-1.{x86_64,aarch64}.rpm` | `sudo dnf install ./tildaz-*.rpm` (or `rpm -Uvh`). |
 | Linux distro-independent — single file | `TildaZ-X.Y.Z-{x86_64,aarch64}.AppImage` | `chmod +x TildaZ-*.AppImage && ./TildaZ-*.AppImage` — runs on any glibc 2.28+ system. |
-| Linux Arch / Manjaro / EndeavourOS | `tildaz-X.Y.Z-1-x86_64.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst` (x86_64). Or install [`tildaz-bin`](https://aur.archlinux.org/packages/tildaz-bin) from the AUR (x86_64 / aarch64), e.g. `yay -S tildaz-bin`. |
+| Linux Arch / Manjaro / EndeavourOS / Arch Linux ARM | `tildaz-X.Y.Z-1-<x86_64\|aarch64>.pkg.tar.zst` | `sudo pacman -U tildaz-*.pkg.tar.zst`. Or install [`tildaz-bin`](https://aur.archlinux.org/packages/tildaz-bin) from the AUR (x86_64 / aarch64), e.g. `yay -S tildaz-bin`. |
 | macOS 15+ universal | `tildaz-vX.Y.Z-macos.dmg` | Drag `TildaZ.app` into Applications. Apple Silicon and Intel are both included. Or install it with Homebrew: `brew install --cask ensky0/tildaz/tildaz`. |
 | Windows 10 1809+ x64 | `tildaz-vX.Y.Z-win-x64.zip` | Unzip anywhere, keep the `_internal` folder next to `tildaz.exe`, and run `tildaz.exe`. 1809 (build 17763) is the minimum of the bundled ConPTY runtime; tested on Windows 11. |
 | Windows 11 ARM64 | `tildaz-vX.Y.Z-win-arm64.zip` | Same layout as the x64 zip with ARM64-native binaries. |

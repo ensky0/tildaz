@@ -3030,12 +3030,12 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들어요.
 
 **발행은 `publish` 잡 한 곳에서만 해요** ([#668](https://github.com/ensky0/tildaz/issues/668)).
 빌드 잡 12 개는 `actions/upload-artifact` 로 아티팩트만 남기고, `publish` 가 전부 내려받아
-**자산 24 개 (조합 12 × 본체 + `.sha256`)** 를 확인한 뒤 Release 를 한 번에 만들어요.
+**자산 26 개 (조합 13 × 본체 + `.sha256`)** 를 확인한 뒤 Release 를 한 번에 만들어요.
 
 - 예전에는 12 개 잡이 각자 `action-gh-release` 로 **같은 Release 를 동시에** 건드렸고, 그
   경합이 두 증상을 만들었어요 — v0.10.1 에서 `.sha256` 두 개가 빠져 **22/24** 로 나갔고
   (`Error creating asset temp dir`), v0.10.0 에서는 같은 초에 **빈 draft** 가 하나 더 생겼어요.
-- **24 개가 다 모여야 발행해요.** 빌드 잡이 하나라도 실패하면 `publish` 가 아예 돌지 않아요 —
+- **26 개가 다 모여야 발행해요.** 빌드 잡이 하나라도 실패하면 `publish` 가 아예 돌지 않아요 —
   반쪽 릴리즈가 조용히 나가는 것을 막는 게 목적이라, 한 조합이 깨지면 고쳐서 전체를 다시
   돌려요 (2026-09-18 결정).
 
@@ -3052,7 +3052,7 @@ runner에서 각 platform/architecture 아티팩트와 SHA256을 만들어요.
 
 GitHub 이 **OS 최신 2 개 버전만** 지원하므로 핀은 주기적으로 만료돼요. 올릴 때는 `pr-verify`
 세 OS 가 PR 에서 돌고, `release.yml` 은 PR 로 안 도니 **`-dev.N` prerelease 태그**로 한 바퀴
-돌려 24/24 를 확인해요.
+돌려 26/26 을 확인해요.
 
 순서는 아래와 같아요.
 

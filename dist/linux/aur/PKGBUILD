@@ -7,12 +7,9 @@ pkgdesc='Quake-style drop-down terminal for Wayland, built on libghostty-vt'
 arch=('x86_64' 'aarch64')
 url='https://github.com/ensky0/tildaz'
 license=('AGPL-3.0-or-later')
-depends=('glibc' 'libxkbcommon' 'freetype2' 'fontconfig')
-optdepends=('harfbuzz: ligature rendering'
-            'dbus: KDE Plasma global hotkey (KGlobalAccel)'
-            'glib2: GNOME / Cinnamon Shell extension settings'
-            'libglvnd: GPU rendering (EGL / GLES)'
-            'mesa: GPU rendering (GBM buffers)')
+# Same list as the official packages (dist/linux/package.sh, #865).
+depends=('glibc' 'libxkbcommon' 'freetype2' 'fontconfig' 'harfbuzz' 'dbus' 'glib2'
+         'libglvnd' 'mesa' 'xdg-utils')
 provides=("${_pkgname}=${pkgver}")
 conflicts=("${_pkgname}")
 options=('!strip' '!debug')

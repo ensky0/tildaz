@@ -377,12 +377,17 @@ jobs:
             format: rpm
             runner: ubuntu-26.04-arm
           # Arch Linux (.pkg.tar.zst) — base 매트릭스에 없는 format 이라 include 로
-          # 단일 조합만 추가. archlinux 컨테이너에서 root 로 zig 빌드 후, makepkg 는
+          # 두 조합을 추가. archlinux 컨테이너에서 root 로 zig 빌드 후, makepkg 는
           # 비root 가 필요 → build_pkg 가 root 면 `builder` 유저로 떨어뜨려 실행.
-          # Arch 공식 아키텍처는 x86_64 뿐 (aarch64 는 Arch Linux ARM 별도).
+          # aarch64 는 Arch Linux ARM 용 (#865). archlinux 이미지는 amd64 뿐이라
+          # x86_64 컨테이너에서 cross-build 하고 makepkg 설정의 CARCH 만 바꿔 묶는다.
           - arch: x86_64
             format: pkg
             zig_target: x86_64-linux-gnu.2.28
+            container: archlinux:base-devel
+          - arch: aarch64
+            format: pkg
+            zig_target: aarch64-linux-gnu.2.28
             container: archlinux:base-devel
     # 기본은 x86_64 호스트 cross-build, aarch64 rpm 만 ARM runner (#211),
     # pkg 만 archlinux 컨테이너 (matrix.container 없으면 빈 값 = 컨테이너 미사용).
@@ -503,7 +508,7 @@ jobs:
               deb)      MATCHES=(zig-out/release/tildaz_*_${DEBARCH}.deb) ;;
               rpm)      MATCHES=(zig-out/release/tildaz-*-1.${ARCH}.rpm) ;;
               AppImage) MATCHES=(zig-out/release/TildaZ-*-${ARCH}.AppImage) ;;
-              pkg)      MATCHES=(zig-out/release/tildaz-*-1-x86_64.pkg.tar.zst) ;;
+              pkg)      MATCHES=(zig-out/release/tildaz-*-1-${ARCH}.pkg.tar.zst) ;;
           esac
           if [[ ${#MATCHES[@]} -ne 1 ]]; then
             echo "ERROR: expected exactly one ${{ matrix.format }} artifact, found ${#MATCHES[@]}"
@@ -551,7 +556,7 @@ jobs:
   # Release 를 건드리던 것이 두 증상의 원인이었다 — ① 자산 누락 (v0.10.1 이 22/24 로
   # 나갔다: `Error creating asset temp dir`) 과 ② 같은 초에 생긴 빈 draft (v0.10.0).
   #
-  # 24 개가 다 모였을 때만 발행한다. needs 가 하나라도 실패하면 이 잡이 아예 돌지
+  # 26 개가 다 모였을 때만 발행한다. needs 가 하나라도 실패하면 이 잡이 아예 돌지
   # 않으므로 반쪽 릴리즈가 조용히 나가지 않는다 (2026-09-18 결정). 대신 한 조합이
   # 깨지면 고친 뒤 워크플로를 다시 돌려야 한다.
   publish:
@@ -596,13 +601,13 @@ jobs:
           merge-multiple: true
           path: assets
 
-      # 조합 12 개 (windows 2 + macos 1 + linux 9) × (본체 + .sha256) = 24.
+      # 조합 13 개 (windows 2 + macos 1 + linux 10) × (본체 + .sha256) = 26.
       # 숫자가 어긋나면 발행하지 않는다 — 자산이 빠진 릴리즈가 사람 눈에 안 띈 채
       # 발행되는 것을 막는 것이 이 검사의 목적이다 (#668 의 "확인할 것").
       - name: Verify asset count
         run: |
-          EXPECTED_TOTAL=24
-          EXPECTED_SHA=12
+          EXPECTED_TOTAL=26
+          EXPECTED_SHA=13
           find assets -type f | sort | sed 's|^|  |'
           TOTAL=$(find assets -type f | wc -l | tr -d ' ')
           SHA=$(find assets -type f -name '*.sha256' | wc -l | tr -d ' ')
