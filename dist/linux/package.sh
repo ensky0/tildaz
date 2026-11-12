@@ -13,7 +13,7 @@
 #   deb      → tildaz_<ver>_<debarch>.deb   (debarch: x86_64→amd64, aarch64→arm64)
 #   rpm      → tildaz-<ver>-1.<arch>.rpm
 #   AppImage → TildaZ-<ver>-<arch>.AppImage
-#   pkg      → tildaz-<ver>-1-x86_64.pkg.tar.zst (Arch Linux, x86_64 전용)
+#   pkg      → tildaz-<ver>-1-<arch>.pkg.tar.zst (Arch Linux · Arch Linux ARM)
 #
 # 각 옆에 .sha256 sidecar 생성 (GNU sha256sum -c 호환).
 #
@@ -23,7 +23,13 @@
 #   rpm      — rpmbuild (apt install rpm 또는 RHEL 계열 native)
 #   AppImage — appimagetool (없으면 자동 다운로드 — 고정 판 + sha256 확인, #846)
 #              FUSE 없이 --appimage-extract-and-run 으로 실행
-#   pkg      — makepkg / bsdtar (Arch Linux base-devel / libarchive)
+#   pkg      — makepkg / bsdtar (Arch Linux base-devel / libarchive). aarch64 도 x86_64
+#              호스트에서 묶는다 (바이너리를 실행하지 않으므로 CARCH 만 바꾼다, #865)
+#
+# 런타임 의존성 (#865): 세 형식 모두 같은 목록을 필수로 적는다 — glibc 2.28+ ·
+# xkbcommon · freetype · fontconfig · harfbuzz · dbus · glib (+ glib-compile-schemas) ·
+# EGL · GLES · gbm · xdg-open. 라이브러리는 전부 dlopen 이라 자동 추출이 못 잡는다.
+# 목록을 바꾸면 dist/linux/aur/PKGBUILD 도 함께 고친다.
 #
 # 사용법:
 #   dist/linux/package.sh --version 0.6.2-dev.1 --arch x86_64 --format tar.gz
@@ -344,8 +350,7 @@ Section: utils
 Priority: optional
 Architecture: ${DEBARCH}
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libxkbcommon0, libfreetype6, libfontconfig1
-Recommends: libharfbuzz0b, libdbus-1-3, libglib2.0-0
+Depends: libc6 (>= 2.28), libxkbcommon0, libfreetype6, libfontconfig1, libharfbuzz0b, libdbus-1-3, libglib2.0-0t64 | libglib2.0-0, libglib2.0-bin, libegl1, libgles2, libgbm1, xdg-utils
 Maintainer: ensky0 <ensky0@gmail.com>
 Homepage: https://github.com/ensky0/tildaz
 Description: Quake-style drop-down terminal for Wayland
@@ -428,12 +433,15 @@ URL:            https://github.com/ensky0/tildaz
 BuildArch:      ${RPMARCH}
 # native 의존성은 모두 runtime dlopen 이라 rpmbuild 자동 dep 추출은 비활성.
 AutoReqProv:    no
-# 단, core 라이브러리(키보드/폰트)는 명시 Requires. distro 간 패키지명 차이
+# 그래서 필요한 것을 모두 명시 Requires (#865). distro 간 패키지명 차이
 # (Fedora freetype ↔ openSUSE libfreetype6) 를 피하려 이름 대신 SONAME
 # capability 를 쓴다 — rpm 이 각 lib 에 대해 자동 Provides 하므로 distro 무관.
-# ligature / native hotkey용 library는 dlopen graceful degrade라 weak Recommends.
+# 명령 둘은 파일 경로로 (/usr/bin 은 저장소 primary metadata 에 들어 dnf · zypper 가 푼다).
+Requires:       libc.so.6(GLIBC_2.28)(64bit)
 Requires:       libxkbcommon.so.0()(64bit) libfreetype.so.6()(64bit) libfontconfig.so.1()(64bit)
-Recommends:     libharfbuzz.so.0()(64bit) libdbus-1.so.3()(64bit) libgio-2.0.so.0()(64bit)
+Requires:       libharfbuzz.so.0()(64bit) libdbus-1.so.3()(64bit) libgio-2.0.so.0()(64bit)
+Requires:       libEGL.so.1()(64bit) libGLESv2.so.2()(64bit) libgbm.so.1()(64bit)
+Requires:       /usr/bin/glib-compile-schemas /usr/bin/xdg-open
 
 %description
 TildaZ is a drop-down terminal with native Wayland support (layer-shell)
@@ -614,8 +622,9 @@ END
 }
 
 #-----------------------------------------------------------------------
-# Format: pkg — Arch Linux (.pkg.tar.zst via makepkg). x86_64 전용.
-# (Arch 공식 아키텍처는 x86_64 뿐 — aarch64 는 Arch Linux ARM 별도 프로젝트.)
+# Format: pkg — Arch Linux (.pkg.tar.zst via makepkg). x86_64 · aarch64.
+# aarch64 는 Arch Linux ARM 용이다 (Arch 공식은 x86_64 뿐, #865). 바이너리를 실행하지
+# 않고 묶기만 하므로 x86_64 호스트에서 makepkg 설정의 CARCH 만 바꿔 만든다.
 # makepkg 는 root 로 실행을 거부 → CI 는 비root builder 로 호출 (release.yml
 # build-arch job). 우린 이미 빌드된 $BINARY 를 -bin 방식으로 패키징만 한다.
 #-----------------------------------------------------------------------
@@ -624,12 +633,8 @@ build_pkg() {
         echo "ERROR: makepkg not found — Arch package needs base-devel (pacman -S base-devel)" >&2
         exit 1
     }
-    if [[ "$ARCH" != "x86_64" ]]; then
-        echo "ERROR: Arch .pkg only supports x86_64 (got '$ARCH')" >&2
-        exit 1
-    fi
     local BUILD="$RELEASE_ROOT/arch-build"
-    local PKG="$RELEASE_ROOT/tildaz-${PACKAGE_VERSION}-1-x86_64.pkg.tar.zst"
+    local PKG="$RELEASE_ROOT/tildaz-${PACKAGE_VERSION}-1-${ARCH}.pkg.tar.zst"
 
     rm -rf "$BUILD" "$PKG" "$PKG.sha256"
     mkdir -p "$BUILD"
@@ -643,22 +648,20 @@ build_pkg() {
     rm -rf "$BUILD/shell-extensions"
     install_legal_docs "$BUILD"
 
-    # 의존성은 deb/rpm 과 동일 정책: core(키보드/폰트) hard depends, ligature/
-    # native hotkey용 library는 optdepends (dlopen graceful). \$srcdir / \$pkgdir 는 makepkg
-    # 런타임 변수라 heredoc 에서 escape — ${PACKAGE_VERSION}만 여기서 확장.
+    # 의존성은 deb/rpm 과 같은 목록을 모두 필수로 (#865 — 파일 머리 주석).
+    # mesa 는 libgbm, libglvnd 는 libEGL · libGLESv2 를 준다. \$srcdir / \$pkgdir 는
+    # makepkg 런타임 변수라 heredoc 에서 escape — ${PACKAGE_VERSION}만 여기서 확장.
     cat > "$BUILD/PKGBUILD" << END
 # Maintainer: ensky0 <ensky0 at gmail dot com>
 pkgname=tildaz
 pkgver=${PACKAGE_VERSION}
 pkgrel=1
 pkgdesc='Quake-style drop-down terminal for Wayland'
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url='https://github.com/ensky0/tildaz'
 license=('AGPL-3.0-or-later')
-depends=('libxkbcommon' 'freetype2' 'fontconfig')
-optdepends=('harfbuzz: ligature rendering'
-            'dbus: KDE Plasma KGlobalAccel global hotkey'
-            'glib2: GNOME/Cinnamon Shell extension settings and legacy hotkey cleanup')
+depends=('glibc' 'libxkbcommon' 'freetype2' 'fontconfig' 'harfbuzz' 'dbus' 'glib2'
+         'libglvnd' 'mesa' 'xdg-utils')
 source=('tildaz' 'tildaz.desktop' 'tildaz.svg' 'shell-extensions.tar.gz'
         'LICENSE' 'THIRD-PARTY-NOTICES.md')
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
@@ -682,22 +685,33 @@ END
     # makepkg 는 root 실행을 거부한다. CI(archlinux 컨테이너)는 root 라 비root
     # `builder` 유저로 떨어뜨려 실행 (root 는 무암호 sudo 가능). 로컬에서 비root
     # 로 돌리면 그대로 직접 실행.
+    #
+    # 대상 아키텍처는 makepkg 설정의 CARCH 로 정한다 (환경 변수는 설정 파일이 덮어써요).
+    # 시스템 설정을 복사해 끝에 덮어쓰고 --config 로 넘긴다.
+    cp "${MAKEPKG_CONF:-/etc/makepkg.conf}" "$BUILD/makepkg.conf"
+    printf '\nCARCH="%s"\nCHOST="%s-unknown-linux-gnu"\n' "$ARCH" "$ARCH" >> "$BUILD/makepkg.conf"
     if [[ "$(id -u)" -eq 0 ]]; then
         id builder >/dev/null 2>&1 || useradd -m builder
         chown -R builder:builder "$BUILD"
-        sudo -u builder env PKGDEST="$BUILD" bash -c "cd '$BUILD' && makepkg -f --nodeps --nosign"
+        sudo -u builder env PKGDEST="$BUILD" bash -c "cd '$BUILD' && makepkg --config '$BUILD/makepkg.conf' -f --nodeps --nosign"
     else
-        ( cd "$BUILD" && PKGDEST="$BUILD" makepkg -f --nodeps --nosign )
+        ( cd "$BUILD" && PKGDEST="$BUILD" makepkg --config "$BUILD/makepkg.conf" -f --nodeps --nosign )
     fi
 
     local OUT
-    OUT=$(ls "$BUILD"/tildaz-${PACKAGE_VERSION}-1-x86_64.pkg.tar.zst 2>/dev/null | head -1)
+    OUT=$(ls "$BUILD"/tildaz-${PACKAGE_VERSION}-1-${ARCH}.pkg.tar.zst 2>/dev/null | head -1)
     if [[ -z "$OUT" ]]; then
         echo "ERROR: makepkg did not produce the expected package" >&2
         ls -la "$BUILD" >&2
         exit 1
     fi
     mv "$OUT" "$PKG"
+    local PKGARCH
+    PKGARCH=$(bsdtar -xOf "$PKG" .PKGINFO | sed -n 's/^arch = //p')
+    if [[ "$PKGARCH" != "$ARCH" ]]; then
+        echo "ERROR: .PKGINFO arch is '$PKGARCH', expected '$ARCH'" >&2
+        exit 1
+    fi
     bsdtar -xOf "$PKG" usr/share/applications/tildaz.desktop \
         > "$BUILD/packaged-tildaz.desktop"
     validate_desktop_exec "$BUILD/packaged-tildaz.desktop" "/usr/bin/tildaz"

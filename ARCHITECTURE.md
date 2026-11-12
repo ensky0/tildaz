@@ -276,7 +276,7 @@ while adapting it to each platform's native constraints:
 
 | Platform | Artifact | Signing |
 |---|---|---|
-| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.tar.gz`, `tildaz_<ver>_<amd64\|arm64>.deb`, `tildaz-<ver>-1.<arch>.rpm`, `TildaZ-<ver>-<arch>.AppImage`, plus an Arch package `tildaz-<ver>-1-x86_64.pkg.tar.zst` (x86_64 only). The `.deb`, `.rpm`, and Arch names carry each format's version spelling below | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb` / `.rpm` packages declare the core libraries (xkbcommon, freetype, fontconfig) as dependencies so a fresh install pulls them in. |
+| Linux x86_64 / aarch64 | `tildaz-v<ver>-linux-<arch>.tar.gz`, `tildaz_<ver>_<amd64\|arm64>.deb`, `tildaz-<ver>-1.<arch>.rpm`, `TildaZ-<ver>-<arch>.AppImage`, plus an Arch package `tildaz-<ver>-1-<arch>.pkg.tar.zst` (aarch64 is for Arch Linux ARM). The `.deb`, `.rpm`, and Arch names carry each format's version spelling below | Unsigned; relies on per-distro install path verification. Native dependencies (Wayland / xkbcommon / FreeType / fontconfig / HarfBuzz / D-Bus) are all runtime `dlopen`, so the binary itself has no hard-linked libraries beyond glibc 2.28+. The `.deb`, `.rpm`, and Arch packages declare every library and command the app uses as required dependencies (glibc 2.28+, xkbcommon, FreeType, fontconfig, HarfBuzz, D-Bus, GLib with `glib-compile-schemas`, EGL / GLES / GBM, `xdg-open`), since `dlopen` hides them from automatic dependency detection (#865). |
 | macOS | `tildaz-v<ver>-macos.dmg` | Universal app bundle (Apple Silicon + Intel), stable self-signed TildaZ identity; not Apple-notarized |
 | Windows x64 | `tildaz-v<ver>-win-x64.zip` | Currently unsigned TildaZ binary; bundled Microsoft ConPTY files are Microsoft-signed |
 | Windows ARM64 | `tildaz-v<ver>-win-arm64.zip` | Same as x64 with ARM64-native binaries |
@@ -297,7 +297,7 @@ The release workflow checks that:
   prerelease validation tag);
 - dependencies in `build.zig.zon` are pinned to 40-character commit SHA tarball
   URLs rather than rolling branch references;
-- all 24 assets (12 builds, each with a `.sha256` file) are present. Build jobs
+- all 26 assets (13 builds, each with a `.sha256` file) are present. Build jobs
   only upload artifacts; one `publish` job checks the count and then creates
   the GitHub Release ([#668](https://github.com/ensky0/tildaz/issues/668)).
 
